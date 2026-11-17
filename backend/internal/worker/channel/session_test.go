@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1886,6 +1887,71 @@ func TestSendStream_ReportsAGoneTransportAtDebug(t *testing.T) {
 		"and it keeps the attributes that make it diagnosable")
 }
 
+// A rekey reply that a closing session refuses to send is the expected end of
+// the session, so its failure logs at debug level, as every other send that a
+// teardown refuses does. A rekey request can reach a session after its close
+// stopped sends: HandleMessage holds the session that it looked up, and a close
+// from another goroutine, such as CloseAll on a disconnect, does not wait for it.
+// A reply that a live session fails to send is still a fault, and keeps its
+// level.
+func TestHandleRekeyRequest_LogsAFailedReplyAtTheLevelOfItsCause(t *testing.T) {
+	tooSoon := time.Now()
+	due := time.Now().Add(-contracts.MinRekeyInterval - time.Second)
+	writeFailed := errors.New("write failed")
+	cases := map[string]struct {
+		lastRekeyAt time.Time
+		closing     bool
+		message     string
+		wantLevel   string
+	}{
+		"reject of a closing session": {lastRekeyAt: tooSoon, closing: true, message: "failed to send rekey reject", wantLevel: "DEBUG"},
+		"ack of a closing session":    {lastRekeyAt: due, closing: true, message: "failed to send rekey ack", wantLevel: "DEBUG"},
+		"reject of a live session":    {lastRekeyAt: tooSoon, message: "failed to send rekey reject", wantLevel: "WARN"},
+		"ack of a live session":       {lastRekeyAt: due, message: "failed to send rekey ack", wantLevel: "ERROR"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ck, err := noiseutil.GenerateCompositeKeypair()
+			require.NoError(t, err)
+			var sent atomic.Int32
+			sendFn := func(*leapmuxv1.ConnectRequest) error {
+				sent.Add(1)
+				return writeFailed
+			}
+			mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sendFn, func(*leapmuxv1.ConnectRequest) bool { return true }, 0, 0)
+			const channelID = "ch-rekey-reply"
+			t.Cleanup(func() { mgr.HandleClose(channelID) })
+			performHandshake(t, mgr, ck, channelID, "user-rekey-reply")
+			sess, ok := mgr.getSession(channelID)
+			require.True(t, ok)
+			sess.lastRekeyAt = tc.lastRekeyAt
+			envelope, _ := initiatorStartRekey(t, ck.MlkemPublicKeyBytes())
+
+			buf := testutil.CaptureDefaultLogger(t)
+			if tc.closing {
+				sess.stopSends()
+			}
+			sess.handleRekeyRequest(9, envelope.GetRekeyRequest())
+
+			var failure []string
+			for _, line := range strings.Split(buf.String(), "\n") {
+				if strings.Contains(line, tc.message) {
+					failure = append(failure, line)
+				}
+			}
+			require.Len(t, failure, 1, "the failure logs one line, and the diagnostic itself is kept")
+			assert.Contains(t, failure[0], "level="+tc.wantLevel)
+			if tc.closing {
+				assert.NotContains(t, buf.String(), "level=WARN", "a closing session logs no warning")
+				assert.NotContains(t, buf.String(), "level=ERROR", "a closing session logs no error")
+				assert.Zero(t, sent.Load(), "a closing session writes no rekey reply")
+			} else {
+				assert.Equal(t, int32(1), sent.Load(), "a live session tries to write its rekey reply")
+			}
+		})
+	}
+}
+
 // The send log reads the error from the reply's error field, which is now the
 // only thing that marks a failure. A reply without one logs as a success.
 func TestBoundSenderLogsTheErrorOfAReply(t *testing.T) {
@@ -3068,6 +3134,109 @@ func TestCloseAll_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 
 	first := <-order
 	assert.Equal(t, "cancel", first, "OnCancel must run before sess.ctx cancel reaches the handler")
+}
+
+// Closing a channel must send nothing on it. The Hub forgets a channel before
+// it tells the Worker to close it, so a frame that the Worker sends while it
+// closes the channel reaches a Hub that cannot route the frame. The Hub then
+// logs "worker sent message for an unowned channel". WatchEvents sent such a
+// frame on every close: the End frame that ends its stream when the stream is
+// cancelled.
+//
+// Each case sends its final frame at a different point of the close:
+//   - inside OnCancel, while the session context is still live
+//   - from the handler goroutine that OnCancel wakes, which is how WatchEvents
+//     sends its End frame. OnCancel waits for that send, so the send happens
+//     before the close ends the session context.
+//   - from the handler after the session context ends
+func TestCloseSendsNothingFromAStreamThatEndsWithTheChannel(t *testing.T) {
+	t.Parallel()
+
+	closers := map[string]func(*Manager, string){
+		"HandleClose": func(mgr *Manager, channelID string) { mgr.HandleClose(channelID) },
+		"CloseAll":    func(mgr *Manager, _ string) { mgr.CloseAll() },
+	}
+	type finalFrame int
+	const (
+		fromOnCancel finalFrame = iota
+		fromTheGoroutineThatOnCancelWakes
+		afterTheSessionContextEnds
+	)
+	cases := map[string]finalFrame{
+		"from OnCancel":                          fromOnCancel,
+		"from the goroutine that OnCancel wakes": fromTheGoroutineThatOnCancelWakes,
+		"after the session context ends":         afterTheSessionContextEnds,
+	}
+
+	for closerName, closeChannel := range closers {
+		for caseName, when := range cases {
+			t.Run(closerName+"/"+caseName, func(t *testing.T) {
+				t.Parallel()
+
+				mgr, kp, sender := setupTestManager(t)
+				const channelID = "ch-final-frame"
+				end := &leapmuxv1.InnerStreamMessage{End: true}
+				ready := make(chan struct{})
+				sendErr := make(chan error, 1)
+
+				dispatcher := NewDispatcher()
+				dispatcher.Handle("stream", Registration{Streaming: true}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
+					streamCtx, endStream := context.WithCancel(ctx)
+					defer endStream()
+					sent := make(chan struct{})
+					ctrl := &streamRequestRecordingController{}
+					switch when {
+					case fromOnCancel:
+						ctrl.onCancelHook = func() { sendErr <- w.SendStream(end) }
+					case fromTheGoroutineThatOnCancelWakes:
+						ctrl.onCancelHook = func() {
+							endStream()
+							<-sent
+						}
+					case afterTheSessionContextEnds:
+					}
+					release, ok := w.BindStream(ctrl)
+					if !ok {
+						sendErr <- errors.New("BindStream refused the stream")
+						return
+					}
+					defer release()
+					close(ready)
+					switch when {
+					case fromOnCancel:
+						<-ctx.Done()
+					case fromTheGoroutineThatOnCancelWakes:
+						<-streamCtx.Done()
+						sendErr <- w.SendStream(end)
+						close(sent)
+					case afterTheSessionContextEnds:
+						<-ctx.Done()
+						sendErr <- w.SendStream(end)
+					}
+				})
+				mgr.SetDispatcher(dispatcher)
+
+				initiatorSession := performHandshake(t, mgr, kp, channelID, "user-final-frame")
+				openCT := sendRequest(t, initiatorSession, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
+				mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, Ciphertext: openCT, CorrelationId: 5})
+				<-ready
+				require.Empty(t, sender.messages(), "the stream sends nothing before the close")
+
+				closeChannel(mgr, channelID)
+
+				var err error
+				select {
+				case err = <-sendErr:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the stream never sent its final frame")
+				}
+				require.ErrorIs(t, err, channelwire.ErrSendAborted,
+					"the close refuses the final frame instead of sending it")
+				assert.True(t, IsTransportTeardown(err), "a refused final frame is reported as a teardown")
+				assert.Empty(t, sender.messages(), "no frame for a closed channel reaches the Hub")
+			})
+		}
+	}
 }
 
 func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {

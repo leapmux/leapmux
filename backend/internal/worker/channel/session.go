@@ -86,8 +86,11 @@ type channelSession struct {
 	// (and CloseAll) so handlers that pass ctx to subprocesses /
 	// `exec.CommandContext` see the cancellation as soon as the
 	// channel goes away — no waiting for a 30s read timeout to bite.
-	ctx        context.Context
-	cancel     context.CancelFunc
+	ctx    context.Context
+	cancel context.CancelFunc
+	// stopSends ends sender.lifetime, a child of ctx. close calls it before it
+	// does anything else, so the session sends nothing once its close begins.
+	stopSends  context.CancelFunc
 	reassembly *reassembler // per-channel chunk-reassembly state machine (see chunker.go)
 	// lastRekeyAt is the handshake time until the first successful in-band
 	// rekey, then the time of the latest accepted rekey. Captured via
@@ -108,6 +111,26 @@ type channelSession struct {
 	// client->worker InnerStreamRequest frames can revise or cancel a
 	// subscription without tearing the channel down.
 	streams streamRegistry
+}
+
+// close ends a session that its caller already removed from Manager.sessions.
+// The caller must not hold the manager's lock, so a handler's cleanup can take
+// the lock again. The order of the three steps matters:
+//
+//  1. stopSends ends the sender's lifetime, so the session sends nothing more.
+//     The Hub forgets a channel before it tells the Worker to close it, so a
+//     frame sent after this point reaches a Hub that cannot route the frame.
+//     A stream that ends with a final frame, such as the End frame of
+//     WatchEvents, would otherwise send that frame on every close.
+//  2. releaseAll calls the OnCancel of each stream controller while ctx is
+//     still live. A handler that saw ctx end first could release its stream,
+//     and its controller would then never see OnCancel.
+//  3. cancel ends ctx, which every handler of this channel holds, so a handler
+//     that waits on a subprocess unwinds at once.
+func (sess *channelSession) close() {
+	sess.stopSends()
+	sess.streams.releaseAll()
+	sess.cancel()
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -365,6 +388,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	sendLifetime, stopSends := context.WithCancel(ctx)
 
 	m.mu.Lock()
 	// Reject re-open of an already-active channel id rather than
@@ -386,6 +410,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	// a new channel with the same id.
 	if _, exists := m.sessions[req.GetChannelId()]; exists {
 		m.mu.Unlock()
+		stopSends()
 		cancel()
 		return rejectChannelReopen(req.GetChannelId())
 	}
@@ -400,11 +425,12 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			sendFn:         m.sendFn,
 			maxPayload:     maxPayload,
 			maxReassembled: reassembledMax,
-			lifetime:       ctx,
+			lifetime:       sendLifetime,
 			errorSends:     make(chan errorSend, errorSendQueueSize),
 		},
 		ctx:            ctx,
 		cancel:         cancel,
+		stopSends:      stopSends,
 		reassembly:     newReassembler(reassembledMax, m.maxIncompleteChunked),
 		lastRekeyAt:    time.Now(),
 		compositeKey:   m.compositeKey,
@@ -419,8 +445,8 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		m.onNegotiatedMaxMessageSize(req.GetChannelId(), effectiveMax)
 	}
 	m.mu.Unlock()
-	// One drainer per session; it exits when HandleClose/CloseAll cancel
-	// sess.ctx (see channelSender.errorSends).
+	// One drainer per session; it exits when the sender's lifetime ends (see
+	// channelSession.close and channelSender.errorSends).
 	go sess.sender.drainErrorSends()
 
 	slog.Info("channel opened",
@@ -579,8 +605,11 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 		if cleanup, err := sess.streams.deliver(requestID, kind.StreamRequest); err != nil {
 			afterSend := func(sendErr error) {
 				if sendErr != nil {
-					// Stop sends before cancellation can report success for this failed stream.
-					sess.cancel()
+					// Stop sends before cancellation can report success for this
+					// failed stream. HandleClose also stops them, but it finds the
+					// session by its ID, and a close that runs at the same time
+					// can remove the session from the map before it stops sends.
+					sess.stopSends()
 					m.HandleClose(sess.ChannelID)
 				}
 				cleanup()
@@ -628,7 +657,7 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 				RetryAfterMs: retryAfter.Milliseconds(),
 			}},
 		}); err != nil {
-			slog.Warn("failed to send rekey reject",
+			slog.Log(context.Background(), sendFailureLevel(err), "failed to send rekey reject",
 				"channel_id", sess.ChannelID,
 				"correlation_id", requestID,
 				"error", err,
@@ -744,8 +773,14 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 		sess.Session.RekeySendWithSecret(dhForSend, pqForSend)
 	}); err != nil {
 		// Receive is already rotated; without an Ack the initiator will not
-		// rotate Send and the session is desynced. Fail closed.
-		slog.Error("failed to send rekey ack after receive rekey; closing channel",
+		// rotate Send and the session is desynced. Fail closed. A session that
+		// is already closing loses nothing to the desync, so that failure is
+		// the expected end of the session, not a fault.
+		level := slog.LevelError
+		if IsTransportTeardown(err) {
+			level = slog.LevelDebug
+		}
+		slog.Log(context.Background(), level, "failed to send rekey ack after receive rekey; closing channel",
 			"channel_id", sess.ChannelID,
 			"correlation_id", requestID,
 			"error", err,
@@ -841,22 +876,10 @@ func (m *Manager) HandleClose(channelID string) {
 	// finds the session.
 
 	if ok {
-		// Release stream controllers BEFORE cancelling sess.ctx so a
-		// controller that wants to run a synchronous teardown (e.g. the
-		// watch session's UnwatchAll) still has a live session to do it
-		// against.
-		sess.streams.releaseAll()
-	}
-
-	// Cancel the session ctx after dropping the lock so handlers
-	// blocked on subprocess wait can unwind without re-entering the
-	// manager's lock from their cleanup paths.
-	if ok && sess.cancel != nil {
-		sess.cancel()
-	}
-
-	if ok && m.onReleasedMaxMessageSize != nil {
-		m.onReleasedMaxMessageSize(channelID)
+		sess.close()
+		if m.onReleasedMaxMessageSize != nil {
+			m.onReleasedMaxMessageSize(channelID)
+		}
 	}
 
 	if m.closeCallback != nil {
@@ -866,31 +889,16 @@ func (m *Manager) HandleClose(channelID string) {
 	slog.Info("channel closed", "channel_id", channelID)
 }
 
-// CloseAll removes all channel sessions. Stream controllers are released
-// (OnCancel) before each session ctx is cancelled, matching HandleClose.
+// CloseAll removes all channel sessions and closes each one after it drops the
+// lock, in the order that channelSession.close states, as HandleClose does.
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
-	channels := make([]string, 0, len(m.sessions))
-	cancels := make([]context.CancelFunc, 0, len(m.sessions))
-	sessions := make([]*channelSession, 0, len(m.sessions))
-	for id, sess := range m.sessions {
-		channels = append(channels, id)
-		sessions = append(sessions, sess)
-		if sess.cancel != nil {
-			cancels = append(cancels, sess.cancel)
-		}
-	}
+	sessions := m.sessions
 	m.sessions = make(map[string]*channelSession)
 	m.mu.Unlock()
 
-	// Release stream controllers before cancelling session ctxs (same
-	// ordering as HandleClose).
 	for _, sess := range sessions {
-		sess.streams.releaseAll()
-	}
-
-	for _, cancel := range cancels {
-		cancel()
+		sess.close()
 	}
 
 	if m.onReleasedAllMaxMessageSizes != nil {
@@ -899,13 +907,13 @@ func (m *Manager) CloseAll() {
 		// Fallback when only the per-channel hook is wired (unit tests).
 		// Production bootstrap always sets onReleasedAllMaxMessageSizes so
 		// agent refcount clears under one lock instead of N times.
-		for _, id := range channels {
+		for id := range sessions {
 			m.onReleasedMaxMessageSize(id)
 		}
 	}
 
 	if m.closeCallback != nil {
-		for _, id := range channels {
+		for id := range sessions {
 			m.closeCallback(id)
 		}
 	}
@@ -926,9 +934,11 @@ type channelSender struct {
 	// maxReassembled is the send/reassembly ceiling (payload + envelope headroom).
 	maxPayload     int
 	maxReassembled int
-	// lifetime is the session's context. It bounds a sender parked on the gate
-	// (or on the connection writer's byte budget) so a torn-down session never
-	// strands one. nil in focused unit tests, which the gate accepts.
+	// lifetime admits this session's frames to the wire. It is a child of the
+	// session's context, and the session's close ends it first (see
+	// channelSession.close). Once it ends, the gate refuses every send, and a
+	// sender that waits on the gate returns, so a closed session never strands
+	// one. nil in focused unit tests, which the gate accepts.
 	lifetime context.Context
 	// streams is the session's client-frame registry. Bound after the session
 	// is constructed so boundSender.BindStream can register without holding

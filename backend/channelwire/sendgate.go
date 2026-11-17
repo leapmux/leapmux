@@ -90,7 +90,7 @@ func (g *SendGate) acquireSequence(ctx, lifetime context.Context, correlationID 
 
 // ErrSendAborted reports that a send stopped before it acquired a permit.
 // A caller cancellation before the first frame does not damage the channel.
-// After the first frame, only the transport lifetime can stop permit acquisition.
+// After the first frame, only the end of the transport lifetime can stop the send.
 var ErrSendAborted = errors.New("channel send aborted before the frame was written")
 
 func (g *SendGate) init() {
@@ -102,10 +102,23 @@ func (g *SendGate) init() {
 
 // acquire takes a permit or returns ErrSendAborted when a context ends.
 // A nil lifetime adds no cancellation source.
-// The fast path permits an uncontended acquisition with a cancelled context.
-// This matches ctxutil.Mutex. Two contexts require this separate mechanism.
+//
+// A lifetime that already ended refuses even a free permit. The lifetime
+// belongs to the transport, so a frame written after it ends reaches a peer
+// that no longer routes the channel. The Hub forgets a channel before it tells
+// the Worker to close it, so a Worker frame written then is a frame for a
+// channel the Hub does not know.
+//
+// The fast path permits an uncontended acquisition with a cancelled ctx.
+// This matches ctxutil.Mutex, and it lets a caller whose own operation ended
+// still write a final frame. Two contexts require this separate mechanism.
 // Tests observe waiting. Pass nil when no test needs the count.
 func acquire(permit chan struct{}, waiting *atomic.Int32, ctx, lifetime context.Context) error {
+	if lifetime != nil {
+		if err := lifetime.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrSendAborted, err)
+		}
+	}
 	select {
 	case permit <- struct{}{}:
 		return nil
@@ -143,7 +156,8 @@ func (g *SendGate) WithFrame(ctx, lifetime context.Context, fn func() error) err
 // Send splits plaintext and writes each chunk through sendChunk.
 // A sequence permit prevents another message with the same ID from entering.
 // The operation context controls acquisition only before the first frame.
-// Each later frame observes only the transport lifetime.
+// Each later frame observes only the transport lifetime, which stops the
+// message between two chunks when it ends.
 // A caller cancellation must not leave an incomplete message at the receiver.
 // Pass nil for a sender without a separate transport lifetime.
 func (g *SendGate) Send(ctx, lifetime context.Context, correlationID uint64, plaintext []byte,
