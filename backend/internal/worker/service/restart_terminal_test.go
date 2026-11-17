@@ -281,7 +281,7 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	dispatchRestart(d, id, w)
 	require.Empty(t, w.errors)
 
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(id) }, "respawn")
+	waitForTerminalSpawn(t, svc, id, "respawn")
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	// Drive a small bit of output so the ScreenBuffer's counter advances
@@ -523,7 +523,7 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 
 		dispatchRestart(d, id, w)
 		require.Empty(t, w.errors)
-		testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(id) }, "respawn")
+		waitForTerminalSpawn(t, svc, id, "respawn")
 		testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 		// A successful respawn proves dbTerm.Shell propagated through to
