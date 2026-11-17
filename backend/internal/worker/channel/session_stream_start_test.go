@@ -137,32 +137,36 @@ func decryptInnerMessage(t *testing.T, session *noiseutil.Session, message *leap
 	return &envelope
 }
 
-// A server-streaming request that arrives after the session closed its stream
-// registry, but before the session ends, cannot prepare its stream. The client
-// holds the request's correlation id as a stream, so the refusal must be a
-// stream error frame: a unary error on that id carries no End frame and leaves
-// a Go tunnel client waiting for its own timeout.
+// A server-streaming request whose correlation id still belongs to a live
+// stream cannot prepare its stream. The client holds the request's correlation
+// id as a stream, so the refusal must be a stream error frame: a unary error on
+// that id carries no End frame and leaves a Go tunnel client waiting for its
+// own timeout.
 func TestDispatchAsync_RefusesAStreamItCannotPrepareWithAStreamErrorFrame(t *testing.T) {
 	manager, key, sender := setupTestManager(t)
 	const channelID = "stream-prepare-refused"
 	t.Cleanup(func() { manager.HandleClose(channelID) })
-	invoked := make(chan struct{}, 1)
+	invoked := make(chan struct{}, 2)
 	dispatcher := NewDispatcher()
-	dispatcher.Handle("stream", Registration{Streaming: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+	dispatcher.Handle("stream", Registration{Streaming: true}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		invoked <- struct{}{}
+		<-ctx.Done()
 	})
 	manager.SetDispatcher(dispatcher)
 	session := performHandshake(t, manager, key, channelID, "user")
 
-	// HandleClose closes the registry before it cancels the session, so the
-	// drainer still runs while a request decrypted in between finds the
-	// registry closed. Close it alone to hold the session in that state.
-	live, ok := manager.getSession(channelID)
-	require.True(t, ok)
-	live.streams.releaseAll()
-
+	// The first request opens the stream on id 7, and its handler holds the
+	// stream until the channel closes.
 	opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
 	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
+	select {
+	case <-invoked:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first stream request never reached its handler")
+	}
+
+	reused := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
+	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: reused})
 
 	messages := sender.waitForMessages(1)
 	require.Len(t, messages, 1)

@@ -337,6 +337,76 @@ func TestSendGateLifetimeUnwedgesParkedSender(t *testing.T) {
 	}
 }
 
+// A send that starts after its lifetime ended must write nothing, even when no
+// other sender holds a permit. The lifetime belongs to the transport, so a
+// frame written after it ends reaches a peer that no longer routes the channel.
+func TestSendGateRefusesAnUncontendedSendAfterTheLifetimeEnded(t *testing.T) {
+	var gate SendGate
+	life, endLife := context.WithCancel(context.Background())
+	endLife()
+
+	var calls atomic.Int32
+	err := gate.Send(context.Background(), life, 1, []byte("x"), func([]byte, leapmuxv1.ChannelMessageFlags) error {
+		calls.Add(1)
+		return nil
+	})
+	require.ErrorIs(t, err, ErrSendAborted)
+	require.ErrorIs(t, err, context.Canceled, "the abort states the lifetime's own error")
+	assert.Zero(t, calls.Load(), "a send after the lifetime ended writes no frame")
+	assert.Empty(t, gate.sequences, "a refused send releases its sequence")
+
+	ran := false
+	err = gate.WithFrame(context.Background(), life, func() error {
+		ran = true
+		return nil
+	})
+	require.ErrorIs(t, err, ErrSendAborted)
+	assert.False(t, ran, "WithFrame runs nothing after the lifetime ended")
+
+	require.NoError(t, gate.Send(context.Background(), nil, 2, []byte("ok"),
+		func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil }),
+		"a refused send leaves every permit free")
+}
+
+// The end of the lifetime stops a message between its chunks, even though the
+// frame permit is free: the transport that would carry the rest is gone.
+func TestSendGateLifetimeEndStopsACommittedMessage(t *testing.T) {
+	var gate SendGate
+	life, endLife := context.WithCancel(context.Background())
+	big := make([]byte, contracts.MaxPlaintextPerChunk+10)
+
+	var calls atomic.Int32
+	err := gate.Send(context.Background(), life, 1, big, func([]byte, leapmuxv1.ChannelMessageFlags) error {
+		if calls.Add(1) == 1 {
+			endLife()
+		}
+		return nil
+	})
+	require.ErrorIs(t, err, ErrSendAborted)
+	assert.Equal(t, int32(1), calls.Load(), "no chunk follows the end of the lifetime")
+
+	require.NoError(t, gate.Send(context.Background(), nil, 2, big,
+		func([]byte, leapmuxv1.ChannelMessageFlags) error { return nil }),
+		"a stopped message releases the frame and chunked permits")
+}
+
+// Only the lifetime refuses an uncontended permit. A cancelled operation
+// context still takes a free permit, as ctxutil.Mutex does, so a caller can
+// write a final frame after its own context ended.
+func TestSendGateAdmitsAnUncontendedSendWithACancelledContext(t *testing.T) {
+	var gate SendGate
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	life := context.Background()
+
+	var calls atomic.Int32
+	require.NoError(t, gate.Send(ctx, life, 1, []byte("x"), func([]byte, leapmuxv1.ChannelMessageFlags) error {
+		calls.Add(1)
+		return nil
+	}))
+	assert.Equal(t, int32(1), calls.Load())
+}
+
 func TestSendGateZeroValueAndNilLifetime(t *testing.T) {
 	var gate SendGate
 	require.NoError(t, gate.Send(context.Background(), nil, 1, []byte("ok"),
