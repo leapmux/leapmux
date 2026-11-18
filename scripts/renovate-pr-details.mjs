@@ -246,32 +246,40 @@ export function renderDetailComments(record) {
   validateDetailRecord(record)
   const text = DETAIL_FIELDS.map(field => storableText(record[field]).trim()).filter(Boolean).join('\n\n---\n\n')
   return splitDetailText(text).map((chunk, index, chunks) => {
-    const body = `${COMMENT_MARKER}${index + 1} -->\n## Renovate update details (${index + 1}/${chunks.length})\n\n${chunk.prefix}${chunk.raw}${chunk.suffix}`
+    const part = chunks.length > 1
+      ? ` (${index + 1}/${chunks.length})`
+      : ''
+    const body = `${COMMENT_MARKER}${index + 1} -->\n## Renovate update details${part}\n\n${chunk.prefix}${chunk.raw}${chunk.suffix}`
     if (Buffer.byteLength(body) > 50000)
       throw new Error('A PR detail comment exceeds the safe GitHub comment limit.')
     return body
   })
 }
 
-/** Migrate the existing bot description only when its fixed Result text still matches. */
-export function partitionLegacyBody(body, template) {
+/** Separate the update table and details in a description from the previous template. */
+export function partitionLegacyBody(body) {
   const headings = [
-    ...body.matchAll(/^## (Motivation|Modifications|Result)\s*$/gm),
+    ...body.matchAll(/^## (Motivation|Modifications|Result)[ \t]*$/gm),
   ]
+  if (!headings.length && body.trimStart().startsWith('This PR contains the following updates:\n\n|'))
+    return null
   if (headings.map(match => match[1]).join(',') !== 'Motivation,Modifications,Result')
-    throw new Error('The existing PR must contain the three core Renovate sections.')
-  const resultText = template.slice(template.indexOf('## Result') + '## Result'.length).trim()
-  const resultStart = headings[2].index + headings[2][0].length
-  const tail = body.slice(resultStart).trimStart()
-  if (!resultText || !tail.startsWith(resultText))
-    throw new Error('The existing PR Result text differs from the configured template.')
-  const prefix = body.slice(0, headings[0].index).trim()
+    throw new Error('The existing PR must contain the three sections from the previous Renovate template.')
+  const [motivation, modifications, result] = headings
+  const motivationText = body.slice(motivation.index + motivation[0].length, modifications.index).trim()
+  const resultText = '- Dependency changes remain subject to human review and required CI.'
+  const tail = body.slice(result.index + result[0].length).trimStart()
+  if (motivationText !== '- Keep dependencies current and address reported vulnerabilities.'
+    || (tail !== resultText && !tail.startsWith(`${resultText}\n`))) {
+    throw new Error('The existing PR text differs from the previous Renovate template.')
+  }
+  const table = body.slice(modifications.index + modifications[0].length, result.index).trim()
+  const prefix = body.slice(0, motivation.index).trim()
   const suffix = tail.slice(resultText.length).trim()
   const debug = suffix.match(/<!--renovate-debug:[\s\S]*?-->/g) ?? []
   const details = suffix.replace(/<!--renovate-debug:[\s\S]*?-->/g, '').trim()
-  const core = `${body.slice(headings[0].index, resultStart).trimEnd()}\n\n${resultText}`
   return {
-    body: `${core}${debug.length
+    body: `${table}${debug.length
       ? `\n${debug.join('\n')}`
       : ''}\n`,
     details: [prefix, details].filter(Boolean).join('\n\n'),

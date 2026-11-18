@@ -30,6 +30,7 @@ const { PackageFiles } = await engine('workers/repository/package-files.js')
 const { getWarnings } = await engine('workers/repository/errors-warnings.js')
 const { smartTruncate } = await engine('modules/platform/utils/pr-body.js')
 const { cronMatches, isScheduledNow } = await engine('workers/repository/update/branch/schedule.js')
+const { computeInternalChecksStatus } = await engine('workers/repository/update/branch/status-checks.js')
 const { generateBranchConfig } = await engine('workers/repository/updates/generate.js')
 const { branchifyUpgrades } = await engine('workers/repository/updates/branchify.js')
 
@@ -45,9 +46,9 @@ function rule(dep) {
 }
 
 describe('renovate policy with the pinned engine', () => {
-  it('creates one maintenance branch for both Bun lockfiles and Cargo', async () => {
+  it('creates one maintenance branch for all Bun lockfiles and Cargo', async () => {
     const files = {
-      bun: ['frontend', '.github/renovate'].map(directory => ({
+      bun: ['frontend', '.github/renovate', 'site'].map(directory => ({
         packageFile: `${directory}/package.json`,
         lockFiles: [`${directory}/bun.lock`],
         deps: [],
@@ -68,10 +69,62 @@ describe('renovate policy with the pinned engine', () => {
     }, files)
     expect(branches).toHaveLength(1)
     const [branch] = branches
-    expect(branch.upgrades.map(upgrade => upgrade.packageFile).sort()).toEqual(['.github/renovate/package.json', 'desktop/rust/Cargo.toml', 'frontend/package.json'])
+    expect(branch.upgrades.map(upgrade => upgrade.packageFile).sort()).toEqual([
+      '.github/renovate/package.json',
+      'desktop/rust/Cargo.toml',
+      'frontend/package.json',
+      'site/package.json',
+    ])
     expect(branch.upgrades.every(upgrade => upgrade.updateType === 'lockFileMaintenance' && upgrade.isLockFileMaintenance)).toBe(true)
     expect(branch.skipArtifactsUpdate).toBe(false)
     expect(branch.prTitle).toBe('chore(deps): Update lockfiles')
+    expect(await computeInternalChecksStatus(branch)).toMatchObject({ stabilityStatus: 'green' })
+  })
+  it('uses crate names for single Cargo updates and the prost pair', async () => {
+    const cargoUpdate = (depName, currentValue, lockedVersion, newVersion) => ({
+      depName,
+      packageName: depName,
+      datasource: 'crate',
+      currentValue,
+      lockedVersion,
+      isSingleVersion: true,
+      updates: [
+        {
+          updateType: 'patch',
+          newValue: currentValue,
+          newVersion,
+          isLockfileUpdate: true,
+        },
+      ],
+    })
+    const prost = cargoUpdate('prost', '0.14', '0.14.4', '0.14.6')
+    const prostBuild = cargoUpdate('prost-build', '0.14', '0.14.4', '0.14.6')
+    const quote = cargoUpdate('quote', '1', '1.0.45', '1.0.46')
+    const serde = cargoUpdate('serde', '1', '1.0.229', '1.0.230')
+    const branchFor = async (deps) => {
+      const { branches } = await branchifyUpgrades({
+        ...config(),
+        errors: [],
+        warnings: [],
+        repoIsOnboarded: true,
+      }, {
+        cargo: [
+          { packageFile: 'desktop/rust/Cargo.toml', deps },
+        ],
+      })
+      const updates = branches.filter(branch => !branch.isLockFileMaintenance)
+      expect(updates).toHaveLength(1)
+      return updates[0]
+    }
+    const single = await branchFor([quote])
+    expect(single.branchName).toBe('renovate/rust')
+    expect(single.prTitle).toBe('chore(deps): Update quote to v1.0.46')
+    const prostGroup = await branchFor([prost, prostBuild])
+    expect(prostGroup.branchName).toBe('renovate/prost')
+    expect(prostGroup.prTitle).toBe('chore(deps): Update prost to v0.14.6')
+    const rustGroup = await branchFor([quote, serde])
+    expect(rustGroup.branchName).toBe('renovate/rust')
+    expect(rustGroup.prTitle).toBe('chore(deps): Update Rust dependencies')
   })
   it('keeps Go security artifacts skipped while Bun and Cargo security companions remain together', async () => {
     const security = { isVulnerabilityAlert: true, force: policy.vulnerabilityAlerts }
@@ -559,7 +612,7 @@ describe('renovate policy with the pinned engine', () => {
     expect(cronMatches(workflow.on.schedule[0].cron, now, 'UTC')).toBe(true)
     expect(now.setZone(policy.timezone).toFormat('yyyy-MM-dd HH:mm')).toBe('2026-10-27 03:17')
   })
-  it('renders capitalized dependency titles shorter than 72 characters and exactly three PR sections', async () => {
+  it('renders capitalized dependency titles shorter than 72 characters', async () => {
     for (const [manager, packageFile, depName] of [
       ['gomod', 'backend/go.mod', 'github.com/cenkalti/backoff/v7'],
       ['gomod', 'site/go.mod', 'github.com/imfing/hextra'],
@@ -584,72 +637,29 @@ describe('renovate policy with the pinned engine', () => {
       expect(branch.prTitle).toMatch(/^chore\(deps\): Update /)
       expect(branch.prTitle.length).toBeLessThan(72)
     }
-    const body = compile(policy.prBodyTemplate, {
-      table: '- Runtime: 1 → 2',
-      notes: '',
-      changelogs: '',
-      warnings: 'Artifact generation failed.',
-    }, false)
-    const maintenance = mergeChildConfig(config(), config().lockFileMaintenance)
-    const branch = generateBranchConfig([
-      {
-        ...maintenance,
-        branchName: 'renovate/lock-file-maintenance',
-        manager: 'bun',
-        packageFile: 'frontend/package.json',
-        updateType: 'lockFileMaintenance',
-        isLockFileMaintenance: true,
-      },
-    ])
-    expect(branch.prTitle).toBe('chore(deps): Update lockfiles')
-    expect([
-      ...body.matchAll(/^## (.+)$/gm),
-    ].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-    expect(body).not.toContain('Artifact generation failed.')
+  })
+  it('omits the commit body and the PR footer', () => {
     expect(policy.commitBody).toBe('')
     expect(policy.commitTrailers).toEqual([])
     expect(policy.commitBodyTable).toBe(false)
     expect(policy.prFooter).toBe('')
   })
-  it('keeps upstream details and warnings out of the three core PR sections', () => {
+  it('renders only the dependency table even when upstream details exceed the platform limit', () => {
+    const table = '| Package | Change |\n|---|---|\n| prost | 0.14.5 → 0.14.6 |'
     const warnings = getWarnings({
       warnings: [
         { topic: 'fixture', message: 'Artifact generation failed.' },
       ],
     })
+    const details = 'Upstream security and release details.\n'.repeat(1600)
+    expect(details.length).toBeGreaterThan(58000)
     const body = compile(policy.prBodyTemplate, {
-      table: '- Runtime: 1 → 2',
+      table,
       warnings,
-      notes: 'Security advisory details.',
-      changelogs: 'Release note details.',
+      notes: details,
+      changelogs: details,
     }, false)
-    expect([
-      ...body.matchAll(/^#{1,2} (.+)$/gm),
-    ].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-    expect(body).not.toContain('Artifact generation failed.')
-    expect(body).not.toContain('Security advisory details.')
-    expect(body).not.toContain('Release note details.')
-  })
-  it('keeps the core body short when upstream notes exceed the platform limit', () => {
-    const warnings = getWarnings({
-      warnings: [
-        { topic: 'fixture', message: 'Artifact generation failed.' },
-      ],
-    })
-    for (const largeField of ['notes', 'changelogs']) {
-      const body = compile(policy.prBodyTemplate, {
-        table: '- Runtime: 1 → 2',
-        warnings,
-        [largeField]: 'Upstream security and release details.\n'.repeat(1600),
-      }, false)
-      const rendered = smartTruncate(body, 58000)
-      expect(rendered.length).toBeLessThanOrEqual(58000)
-      expect([
-        ...rendered.matchAll(/^#{1,2} (.+)$/gm),
-      ].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-      expect(rendered).not.toContain('Artifact generation failed.')
-      expect(rendered.length).toBeLessThan(1000)
-      expect(rendered).toContain('human review and required CI')
-    }
+    expect(body).toBe(table)
+    expect(smartTruncate(body, 58000)).toBe(table)
   })
 })

@@ -302,12 +302,13 @@ export async function configureSkippedDependencies({ policy, alerts }) {
       throw new Error('Skipped dependencies require the package files that Renovate extracted.')
     return renderSkippedDependencies(PackageFiles.data, { alerts, ageMs, timeZone })
   })
-  const footer = '{{{leapmuxSkippedDependencies}}}'
+  const skippedFooter = '{{{leapmuxSkippedDependencies}}}'
+  const configuredFooter = policy.dependencyDashboard?.footer
   return {
     // A footer that the policy sets stays, above the section.
-    dependencyDashboardFooter: typeof policy.dependencyDashboardFooter === 'string' && policy.dependencyDashboardFooter.trim() !== ''
-      ? `${policy.dependencyDashboardFooter}\n\n${footer}`
-      : footer,
+    footer: typeof configuredFooter === 'string' && configuredFooter.trim() !== ''
+      ? `${configuredFooter}\n\n${skippedFooter}`
+      : skippedFooter,
     dispose,
   }
 }
