@@ -61,6 +61,12 @@ describe('boot splash palette', () => {
 })
 
 describe('bootSplashDocumentCss', () => {
+  it('sets both text size adjustment properties on the document root', () => {
+    const root = cssRule(bootSplashDocumentCss(), 'html')
+    expect(cssValue(root, '-webkit-text-size-adjust')).toBe('100%')
+    expect(cssValue(root, 'text-size-adjust')).toBe('100%')
+  })
+
   it('covers html/body/#app fill, safe-area body lock, and the shared gap token', () => {
     const css = bootSplashDocumentCss()
     // The gap token is seeded on the SPLASH, never on `:root`. This seed is

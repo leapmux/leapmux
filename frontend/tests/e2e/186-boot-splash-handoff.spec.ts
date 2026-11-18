@@ -45,6 +45,32 @@ const TREES: Record<string, string> = {
 const here = dirname(fileURLToPath(import.meta.url))
 const oatCss = readFileSync(resolve(here, '../../node_modules/@knadh/oat/oat.min.css'), 'utf8')
 
+test.describe('mobile document configuration', () => {
+  test('sets text size adjustment before the app stylesheet loads', async ({ page }) => {
+    await page.route('**/_build/**', route => route.abort())
+    await page.goto('/')
+
+    const label = page.locator('#boot-splash .boot-splash-loading p')
+    const adjustment = await label.evaluate(element =>
+      getComputedStyle(element).getPropertyValue('-webkit-text-size-adjust'),
+    )
+    expect(adjustment).toBe('100%')
+  })
+
+  test('uses the system status bar style for the standalone web app', async ({ page }) => {
+    await page.goto('/')
+
+    expect(await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').count()).toBe(0)
+    await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute('content', 'yes')
+    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute('content', /viewport-fit=cover/)
+    const manifestURL = await page.locator('link[rel="manifest"]').getAttribute('href')
+    expect(manifestURL).toBe('/manifest.webmanifest')
+    const manifest = await page.request.get('/manifest.webmanifest')
+    await expect(manifest).toBeOK()
+    expect(await manifest.json()).toMatchObject({ display: 'standalone' })
+  })
+})
+
 /**
  * The static splash in the served document must yield to the client app.
  *

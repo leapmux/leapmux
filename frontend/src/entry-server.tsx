@@ -72,8 +72,12 @@ export default createHandler((event) => {
             <meta name="theme-color" media="(prefers-color-scheme: dark)" content={bootSplashDark.background} />
             <meta name="theme-color" content={bootSplashLight.background} />
             <link rel="apple-touch-icon" href="/icons/leapmux-icon-square-apple-touch.png" />
+            {/*
+              Let iOS use the page color for the standalone status bar.
+              The deprecated black-translucent style can blur the app's top edge.
+              https://bugs.webkit.org/show_bug.cgi?id=317153#c2
+            */}
             <meta name="apple-mobile-web-app-capable" content="yes" />
-            <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
             {/*
               Zero-JS splash polarity + html/body fill until the app stylesheet
               takes over. `bootSplashDocumentCss` is the only splash stylesheet
