@@ -16,17 +16,17 @@ type processOwnerPlatform struct {
 	job *JobObject
 }
 
-func (c execProcessCommand) start() error {
+func startProcessCommand(attributes **syscall.SysProcAttr, start func() error) error {
 	// Run no child code until its job can contain the processes it creates.
-	original := c.command.SysProcAttr
-	var attributes syscall.SysProcAttr
+	original := *attributes
+	var launchAttributes syscall.SysProcAttr
 	if original != nil {
-		attributes = *original
+		launchAttributes = *original
 	}
-	attributes.CreationFlags |= windows.CREATE_SUSPENDED
-	c.command.SysProcAttr = &attributes
-	defer func() { c.command.SysProcAttr = original }()
-	return c.command.Start()
+	launchAttributes.CreationFlags |= windows.CREATE_SUSPENDED
+	*attributes = &launchAttributes
+	defer func() { *attributes = original }()
+	return start()
 }
 
 // The command's handle retains the exact identity even when a short command
@@ -66,7 +66,7 @@ func (p *processOwnerPlatform) attachAndResume(root ProcessIdentity) error {
 var getProcessIDOfThread = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessIdOfThread")
 
 func resumeInitialThread(pid uint32) (result error) {
-	// Go's StartProcess closes the initial thread handle. Find the thread while
+	// os/exec and go-pty close the initial thread handle. Find the thread while
 	// the command still holds the process handle, which prevents PID reuse.
 	threadID, err := initialThreadID(pid)
 	if err != nil {

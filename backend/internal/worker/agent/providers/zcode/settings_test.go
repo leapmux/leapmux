@@ -531,7 +531,11 @@ func TestHandleZCodeStateUpdated_WorkspaceModelCatalogPatchRefreshesTheCatalog(t
 	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeWorkspace, "catalog_changed",
 		`{"modelCatalog":{"revision":2},"mode":{"current":"yolo"},"runtime":{"eventSeq":42},"model":{"current":{"providerId":"personal:p","modelId":"B"}}}`))
 	zcodeAnswerRegistryRefresh(t, a, stdin, 1)
+	assert.Zero(t, sink.SettingsRefreshCount(), "the workspace patch must not publish session settings")
 	zcodeAnswerCatalogResume(t, a, stdin, 1, `[{"ref":{"providerId":"personal:p","modelId":"A"}}]`)
+	require.Eventually(t, func() bool {
+		return !zcodeCatalogRefreshActive(a)
+	}, 30*time.Second, time.Millisecond)
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -539,7 +543,7 @@ func TestHandleZCodeStateUpdated_WorkspaceModelCatalogPatchRefreshesTheCatalog(t
 	assert.Equal(t, "high", a.thoughtLevel, "workspace data is no session setting")
 	assert.Equal(t, "personal:p/A", a.model, "workspace data is no session setting")
 	assert.Equal(t, int64(7), a.lastSeq, "a workspace patch moves no event watermark")
-	assert.Equal(t, 0, sink.SettingsRefreshCount())
+	assert.Equal(t, 1, sink.SettingsRefreshCount(), "the completed catalog refresh must publish once")
 }
 
 // A burst of workspace patches requests exactly one following pass: the refresh

@@ -12,20 +12,23 @@ import (
 	"strconv"
 	"testing"
 
+	pty "github.com/aymanbagabas/go-pty"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // suspendCountCommand measures the initial thread before the owner assigns its job.
 type suspendCountCommand struct {
-	execProcessCommand
+	processCommand
 	keepExtraSuspension bool
 	previousCount       uint32
 	probeErr            error
 }
 
 func (c *suspendCountCommand) start() error {
-	if err := c.execProcessCommand.start(); err != nil {
+	if err := c.processCommand.start(); err != nil {
 		return err
 	}
 	c.previousCount, c.probeErr = probeInitialThreadSuspendCount(uint32(c.process().Pid), c.keepExtraSuspension)
@@ -80,6 +83,31 @@ func TestWindowsProcessOwnerReapsTheChildWhenResumeLeavesItSuspended(t *testing.
 	require.ErrorIs(t, owner.Close(), startErr)
 }
 
+func TestWindowsPTYProcessSuspendsTheChildUntilJobAssignment(t *testing.T) {
+	terminal, err := pty.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = terminal.Close() })
+	owner, err := PreparePTYProcess(testutil.DeadlineContext(t), terminal, PTYLaunch{
+		Program: os.Args[0],
+		Args:    []string{"-test.run=^TestHelperProcessOwnerExitsBeforeIdentity$"},
+		Env:     append(os.Environ(), "LEAPMUX_TEST_OWNER_EXIT_CODE=0"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = owner.Close()
+		_ = owner.Wait()
+	})
+	probe := &suspendCountCommand{processCommand: owner.cmd}
+	owner.cmd = probe
+
+	require.NoError(t, owner.Start())
+	require.NoError(t, probe.probeErr)
+	require.EqualValues(t, 1, probe.previousCount)
+	require.NoError(t, owner.Wait())
+	require.True(t, owner.ProcessState().Success())
+	require.NoError(t, owner.Close())
+}
+
 func prepareSuspensionProbe(t *testing.T, keepExtraSuspension bool) (*ProcessOwner, *suspendCountCommand, io.WriteCloser, *bytes.Buffer) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHelperProcessWaitsForStdin$")
@@ -90,7 +118,7 @@ func prepareSuspensionProbe(t *testing.T, keepExtraSuspension bool) (*ProcessOwn
 	cmd.Stdout = &output
 	owner := PrepareProcess(cmd)
 	probe := &suspendCountCommand{
-		execProcessCommand:  execProcessCommand{command: cmd},
+		processCommand:      owner.cmd,
 		keepExtraSuspension: keepExtraSuspension,
 	}
 	owner.cmd = probe

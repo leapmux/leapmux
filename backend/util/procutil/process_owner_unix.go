@@ -10,7 +10,9 @@ import (
 
 type processOwnerPlatform struct{}
 
-func (c execProcessCommand) start() error { return c.command.Start() }
+func startProcessCommand(_ **syscall.SysProcAttr, start func() error) error {
+	return start()
+}
 
 func identifyStartedProcess(process *os.Process) (ProcessIdentity, bool) {
 	return IdentifyProcess(process.Pid)

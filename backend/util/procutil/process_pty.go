@@ -26,7 +26,7 @@ func (c ptyProcessCommand) start() error {
 	if err := c.ctx.Err(); err != nil {
 		return err
 	}
-	return c.command.Start()
+	return startProcessCommand(&c.command.SysProcAttr, c.command.Start)
 }
 func (c ptyProcessCommand) wait() error             { return c.command.Wait() }
 func (c ptyProcessCommand) process() *os.Process    { return c.command.Process }
