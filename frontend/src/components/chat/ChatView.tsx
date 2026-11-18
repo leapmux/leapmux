@@ -81,27 +81,6 @@ export const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
  * that rests on the strip holds it lit past this window -- see the rail's `hovered`.
  */
 export const RAIL_VISIBLE_IDLE_MS = 1200
-/**
- * The longest coast the rail will hold itself lit for, measured from the last
- * real user input.
- *
- * A flick's glide fires no touch or pointer event -- only `scroll` -- so the
- * rail has to relight from those. The hook calls `onMomentumScroll` for each
- * scroll event that moved the view while no pointer or touch is down. An own
- * write of the hook, such as a stick to the bottom, records its position
- * first, so the event of that write is no move and is not reported.
- *
- * This cap is the second safeguard behind the hook: a scroll that the browser
- * makes by itself, such as one that brings a focused element into view, also
- * moves the view while nothing is down, so the hook reports it too. Without a
- * cap, each such scroll would relight the rail. Measured from the last INPUT
- * and never re-based by a scroll, so a turn with no reader input can never
- * reach it at all.
- *
- * Long enough for the hardest flick on a long transcript; the rail then fades
- * `RAIL_VISIBLE_IDLE_MS` after the last coast scroll, not at this bound.
- */
-export const RAIL_COAST_MAX_MS = 4000
 // How long an outgoing skeleton lingers (fading via rowSkeletonClosing) after
 // its real content takes over, so the swap reads as a crossfade instead of a
 // pop. The shared motion token keeps this unmount timer and the CSS fade
@@ -677,22 +656,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   // Two scroll-activity windows over the SAME gesture stream, differing in length AND in
   // which events feed them (see createScrollActivity):
-  //   - highlightActivity takes EVERY scroll, our own programmatic writes included -- a
-  //     frequent stick-to-bottom writes are exactly when the highlighter and premeasure
-  //     warm-up must stay out of the way.
-  //   - railActivity takes MOVEMENT only: a scroll input that actually moved, plus each
-  //     scroll event that the hook reports through `onMomentumScroll` -- one that moved
-  //     the view while no pointer or touch is down. Such an event opens the window only
-  //     within `RAIL_COAST_MAX_MS` of the last input, which also limits a scroll that the
-  //     browser makes by itself. A rail lit by our own scrollTop writes would stay lit
-  //     for a whole response, defeating its auto-hide when it matters most, and one lit
-  //     by a bare press put a scrollbar on screen every time the reader touched the
-  //     transcript.
+  //   - highlightActivity takes every scroll. Stick-to-bottom writes also pause highlighting
+  //     and premeasure warm-up.
+  //   - railActivity opens on scroll input. Motion after the reader lifts their finger
+  //     extends the window until the view goes quiet. The scroll hook ignores its own writes.
   const highlightActivity = createScrollActivity({ idleMs: SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS })
-  const railActivity = createScrollActivity({
-    idleMs: RAIL_VISIBLE_IDLE_MS,
-    momentumGraceMs: RAIL_COAST_MAX_MS,
-  })
+  const railActivity = createScrollActivity({ idleMs: RAIL_VISIBLE_IDLE_MS })
   const syntaxHighlightingPaused = highlightActivity.active
 
   // Staging bands: the loaded rows that get a hidden copy -- the rows that a waiting
@@ -962,7 +931,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     if (props.rail !== undefined)
       railActivity.noteInput()
   }
-  /** A coast scroll: it relights the rail only inside `RAIL_COAST_MAX_MS`. */
+  /** Motion without a pointer or touch down can extend an open rail window. */
   const noteRailCoast = () => {
     if (props.rail !== undefined)
       railActivity.noteScroll()
@@ -1010,13 +979,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     ...(saveViewportScrollOnCleanup !== undefined
       ? { onSaveViewportScroll: saveViewportScrollOnCleanup }
       : {}),
-    // Each scroll event that moved the view while no pointer or touch is down,
-    // such as the reader's own coast. Relighting on it holds the rail for the
-    // whole fling -- no pointer or touch event fires then, only `scroll`, and
-    // the hook is the one place that can tell that scroll apart from our own
-    // programmatic writes. Routed through the coast entry, so a scroll that
-    // the browser makes by itself still cannot relight it past
-    // `RAIL_COAST_MAX_MS` from a real input.
+    // A fling sends only scroll events after the finger lifts. The hook reports this motion
+    // so the rail stays visible until scrolling stops.
     onMomentumScroll: () => noteRailCoast(),
   })
   // Now that the scroll hook (which owns follow mode) exists, point the virtualizer's
@@ -1164,9 +1128,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // stick-to-bottom writes scrollTop for footer and row commits. The highlight pause
     // WANTS those (that churn is exactly when highlighting and the premeasure warm-up must
     // not run), so it keeps taking noteInput. The RAIL takes none of them here. It
-    // relights from `onMomentumScroll` (in the useChatScroll options above), which the
-    // hook calls for each event that moved the view while no pointer or touch is down,
-    // and the `RAIL_COAST_MAX_MS` cap limits a scroll that the browser makes by itself.
+    // stays visible through `onMomentumScroll`, which only extends a window opened by input.
     onScroll: () => {
       highlightActivity.noteInput()
       scroll.handlers.onScroll()

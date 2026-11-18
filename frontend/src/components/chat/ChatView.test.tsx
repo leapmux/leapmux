@@ -34,7 +34,7 @@ import { LOOKAHEAD_PREMEASURE_ROWS } from './chatPremeasureBands'
 import { WARMUP_IDLE_DELAY_MS } from './chatPremeasureWarmup'
 import { STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
 import { railIdle } from './ChatScrollRail.css'
-import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, STAGING_WIDTH_SETTLE_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
+import { ChatView, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, STAGING_WIDTH_SETTLE_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
 import { messageListRailActive, railedRowContent, rowSkeletonClosing, virtualLayer, virtualSpacer } from './ChatView.css'
 import { computeOverscanPx } from './chatViewportGeometry'
 import { bandRow, bleedRow } from './messageStyles.css'
@@ -5841,9 +5841,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // closed it. Fired through the hook's callback because the stub here
       // never runs the real scroll handler (see mockState.scrollOpts).
       const COAST_TICK_MS = RAIL_VISIBLE_IDLE_MS - 100
-      const COAST_TICKS = 3
-      // The whole coast stays inside the cap; outrunning it is the next test.
-      expect(COAST_TICK_MS * COAST_TICKS).toBeLessThan(RAIL_COAST_MAX_MS)
+      const COAST_TICKS = 8
       for (let tick = 0; tick < COAST_TICKS; tick++) {
         vi.advanceTimersByTime(COAST_TICK_MS)
         mockState.scrollOpts?.onMomentumScroll?.()
@@ -5857,12 +5855,7 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(rail(container).className).toContain(railIdle)
     })
 
-    // The cap on that relight. The hook also reports a scroll that the browser makes
-    // by itself, such as one that brings a focused element into view, and an uncapped
-    // relight would then light the rail again for each such scroll, however long after
-    // the last input. The cap is measured from the last INPUT and never re-based by a
-    // scroll.
-    it('stops relighting the rail once a coast outruns its bound', () => {
+    it('does not relight the rail on a bare scroll after the idle window closes', () => {
       vi.useFakeTimers({
         toFake: ['performance', 'setTimeout', 'clearTimeout'],
       })
@@ -5872,11 +5865,13 @@ describe('chat view virtualized with stubbed deps', () => {
       fireEvent.touchMove(scroller(container))
       fireEvent.touchEnd(scroller(container))
 
-      vi.advanceTimersByTime(RAIL_COAST_MAX_MS + 1)
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS)
+      expect(rail(container).className).toContain(railIdle)
       mockState.scrollOpts?.onMomentumScroll?.()
 
-      // The window closed on its own idle timer, and that scroll did not reopen it.
       expect(rail(container).className).toContain(railIdle)
+      fireEvent.touchMove(scroller(container))
+      expect(rail(container).className).not.toContain(railIdle)
     })
 
     // A finger landing on the transcript scrolls nothing. Lighting the rail for it put

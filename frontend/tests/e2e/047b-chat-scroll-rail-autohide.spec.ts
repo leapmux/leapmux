@@ -70,6 +70,54 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '0')
   })
 
+  test('keeps the rail visible through a long touch coast', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await page.setViewportSize({ width: 390, height: 450 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.clock.install()
+    await page.reload()
+    await seedOverflowingConversation(page, modelScript, 2)
+
+    const rail = page.locator(RAIL)
+    const scroller = chatScrollContainer(page)
+    await expect(rail).toHaveCSS('opacity', '0')
+    const touchScroll = () => scroller.evaluate((element) => {
+      const dispatchTouch = (type: string, touches: { clientX: number, clientY: number }[]) => {
+        const event = new Event(type, { bubbles: true })
+        Object.defineProperty(event, 'touches', { value: touches })
+        element.dispatchEvent(event)
+      }
+      dispatchTouch('touchstart', [
+        { clientX: 90, clientY: 100 },
+      ])
+      dispatchTouch('touchmove', [
+        { clientX: 90, clientY: 124 },
+      ])
+      dispatchTouch('touchend', [])
+    })
+    const coastStep = () => scroller.evaluate((element) => {
+      const before = element.scrollTop
+      element.scrollTop = before - 8
+      element.dispatchEvent(new Event('scroll'))
+      return before - element.scrollTop
+    })
+
+    await touchScroll()
+    await expect.poll(() => railFade(rail), 'the initial touch lights the rail').toEqual(LIT_AND_SETTLED)
+    // The finger has lifted. Only the subsequent position changes can keep the rail visible.
+    for (let step = 1; step <= 9; step++) {
+      await page.clock.runFor(700)
+      expect(await coastStep(), `the transcript moves on coast step ${step}`).toBe(8)
+      expect(await railFade(rail), `the rail stays visible on coast step ${step}`).toEqual(LIT_AND_SETTLED)
+    }
+
+    await page.clock.runFor(PAST_RAIL_IDLE_MS)
+    await expect(rail).toHaveCSS('opacity', '0')
+    expect(await coastStep()).toBe(8)
+    expect((await railFade(rail)).opacity, 'a bare scroll cannot show a rail that already faded').toBe('0')
+    await touchScroll()
+    await expect.poll(() => railFade(rail), 'a new touch lights the rail again').toEqual(LIT_AND_SETTLED)
+  })
+
   test('keeps the rail lit while the cursor rests on it, and fades once it leaves', async ({ page, authenticatedWorkspace, modelScript }) => {
     // A parked cursor sends no pointermove, so nothing re-arms the host's activity window and
     // the rail used to fade out from under the reader sitting on it. Only a real browser

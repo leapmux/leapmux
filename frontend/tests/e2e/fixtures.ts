@@ -72,6 +72,8 @@ const ISOLATED_CONTEXT_SPECS = new Set([
   // recordRowHeightChangesFromNextLoad).
   'codex/chat-scroll-stability-file-image.spec.ts',
   'codex/chat-scroll-stability-older-request.spec.ts',
+  // An isolated context lets this regression run without the shared page's Chrome DevTools session.
+  'codex/chat-scroll-stability-stale-native.spec.ts',
 ])
 
 /**
@@ -232,7 +234,9 @@ export const test = base.extend<
         // Tests that require touch use a separate context through activePageState.
         hasTouch: false,
         isMobile: false,
-        permissions: DEFAULT_PERMISSIONS,
+        permissions: browser.browserType().name() === 'chromium'
+          ? DEFAULT_PERMISSIONS
+          : [],
       })
       const state = { context, page: await newSharedPage(context) }
       await use(state)
@@ -257,7 +261,9 @@ export const test = base.extend<
         hasTouch,
         isMobile,
         colorScheme: colorScheme ?? 'light',
-        permissions: DEFAULT_PERMISSIONS,
+        permissions: browser.browserType().name() === 'chromium'
+          ? DEFAULT_PERMISSIONS
+          : [],
       })
       try {
         await use({ context, page: await newSharedPage(context) })

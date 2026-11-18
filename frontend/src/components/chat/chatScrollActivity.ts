@@ -5,37 +5,15 @@ import { monotonicNow } from '~/lib/monotonicNow'
 // ---------------------------------------------------------------------------
 // Scroll-activity window
 //
-// "Is the reader actively scrolling right now?", as one reactive boolean that opens on a
-// qualifying event and closes after `idleMs` of quiet. ChatView instantiates it TWICE with
-// different windows AND different event sets, which is why it is a unit rather than two
-// near-identical setTimeout debounces inline:
-//   - the syntax-highlight pause (short window) takes EVERY scroll, our own programmatic
-//     writes included -- frequent stick-to-bottom writes are when the highlighter and the
-//     premeasure warm-up must stay out of the way.
-//   - the floating scroll rail (long window) takes USER INPUT only. A rail that lit up for
-//     our own scrollTop writes would stay lit for a whole streaming response, which defeats
-//     the auto-hide precisely when it matters most.
-//
-// A bare `scroll` event therefore has its own entry point, `noteScroll`, which opens the
-// window ONLY within `momentumGraceMs` of the last `noteInput`. That is the momentum latch:
-// after a touch flick no touch or pointer event fires while the content coasts -- only
-// `scroll` -- so without it the rail would fade mid-fling. Measuring the grace from the last
-// INPUT, and never letting `noteScroll` re-base it, stops an active turn's
-// continuous programmatic writes from holding the window open forever.
-//
-// `now` is injected for determinism (mirroring createScrollVelocity); the idle timer is a
-// bare setTimeout, driven in tests by vitest fake timers (mirroring createScrollRest).
+// Activity opens on input and closes after `idleMs` of quiet. ChatView uses a short window
+// to pause highlighting during any scroll and a longer window to show the scroll rail.
+// The rail opens on user input. Scroll movement can extend that window while it is open.
+// The scroll hook filters its own writes before it reports that movement.
 // ---------------------------------------------------------------------------
 
 export interface ScrollActivityDeps {
   /** Quiet period (ms) after the last qualifying event before the window closes. */
   idleMs: number
-  /**
-   * How long after a `noteInput` a bare `scroll` event still counts as that gesture's
-   * momentum. 0 (the default) disables the momentum extension, so only real input opens
-   * the window.
-   */
-  momentumGraceMs?: number
   /** Monotonic clock, injected for tests. Defaults to {@link monotonicNow}. */
   now?: () => number
 }
@@ -45,14 +23,11 @@ export interface ScrollActivity {
   active: Accessor<boolean>
   /**
    * A genuine user scroll input: wheel, touch, pointer, a scroll-relevant keydown, or a
-   * direct interaction with a scrollbar overlay. ALWAYS (re)opens the window and re-bases
-   * the momentum grace.
+   * direct interaction with a scrollbar overlay. Opens the window and restarts its idle timer.
    */
   noteInput: () => void
   /**
-   * A bare `scroll` event. Opens the window ONLY within `momentumGraceMs` of the last
-   * `noteInput`, so a post-flick coast keeps it open while our own programmatic writes
-   * (stick-to-bottom, rebase, seek) never do.
+   * Scroll movement reported by the scroll hook. Extends the window while it is open.
    */
   noteScroll: () => void
   /**
@@ -72,53 +47,46 @@ export interface ScrollActivity {
  */
 export function createScrollActivity(deps: ScrollActivityDeps): ScrollActivity {
   const now = deps.now ?? monotonicNow
-  const graceMs = deps.momentumGraceMs ?? 0
   const [active, setActive] = createSignal(false)
-  // NEGATIVE_INFINITY, not 0: monotonicNow() reads performance.now(), which starts near zero
-  // at page load, so a zero epoch would put the first programmatic scroll of a restored
-  // conversation INSIDE the grace and open the window with no user input at all. The scroll
-  // hook guards the same trap the same way (see lastNativeKeyScrollAt in useChatScroll).
-  let lastInputAt = Number.NEGATIVE_INFINITY
+  let activeUntil = Number.NEGATIVE_INFINITY
   let idleTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
 
-  const open = () => {
-    // A re-notify while already open is dropped by the signal's default `===` equality, so
-    // only the timer is re-armed. One clearTimeout + one setTimeout per event -- the same
-    // per-event cost as the inline debounce this replaces.
-    setActive(true)
+  const close = () => {
+    idleTimer = undefined
+    activeUntil = Number.NEGATIVE_INFINITY
+    setActive(false)
+  }
+
+  const open = (at: number) => {
+    activeUntil = at + deps.idleMs
     if (idleTimer !== undefined)
       clearTimeout(idleTimer)
-    idleTimer = setTimeout(() => {
-      idleTimer = undefined
-      setActive(false)
-    }, deps.idleMs)
+    idleTimer = setTimeout(close, deps.idleMs)
+    setActive(true)
   }
 
   const noteInput = () => {
     if (disposed)
       return
-    lastInputAt = now()
-    open()
+    open(now())
   }
 
   const noteScroll = () => {
     if (disposed)
       return
-    // Inclusive: a scroll dispatched in the same tick as the input that caused it is part of
-    // that gesture, and with a grace of 0 it is the only scroll that still qualifies.
-    if (now() - lastInputAt <= graceMs)
-      open()
+    // A delayed timer can leave the rail visible past the deadline. Only input can open
+    // a new window after that point.
+    const at = now()
+    if (at < activeUntil)
+      open(at)
   }
 
   const dispose = () => {
     disposed = true
-    if (idleTimer !== undefined) {
+    if (idleTimer !== undefined)
       clearTimeout(idleTimer)
-      idleTimer = undefined
-    }
-    lastInputAt = Number.NEGATIVE_INFINITY
-    setActive(false)
+    close()
   }
 
   onCleanup(dispose)

@@ -4,22 +4,18 @@ import { clampScrollTop, EDGE_INTENT_TOLERANCE_PX } from './chatScrollGeometry'
 // ---------------------------------------------------------------------------
 // Stale-native-scroll translator
 //
-// Browser momentum can deliver one or two native scroll events in the OLD coordinate
-// space after a rebase of the layout shift moved scrollTop during a scroll -- the rebase
-// that grows the scroll range near the reachable top for an older-page prepend. This
-// unit owns that whole state machine -- ARMING a shift record when a rebase moves the
-// viewport by more than a screen, EXTENDING or DISARMING it as further writes land, and
-// TRANSLATING a recognized old-coordinate momentum event into the current coordinate
-// space. Kept apart from useChatScroll so the two halves of one invariant live together
-// and the proximity/direction classification is unit-testable without the whole hook.
+// Browser momentum can keep delivering native scroll events in the old coordinate space
+// after a rebase moves scrollTop to make older rows reachable. This unit tracks the
+// rebase delta and translates old-coordinate momentum until the browser reports a
+// position in the current coordinates or the stream goes quiet.
 // ---------------------------------------------------------------------------
 
 /**
- * How long a shift record stays eligible to translate. Keep this window short: it is
- * only for compositor-delayed momentum echoes immediately after the coordinate-space
- * shift, not for later user navigation.
+ * How long the translator keeps a shift after a rebase or the last translated event.
+ * Safari can keep reporting old coordinates longer than this interval during a fling.
+ * Each translation renews the interval because the browser is still using those coordinates.
  */
-const STALE_NATIVE_SCROLL_TRANSLATE_MS = 300
+const STALE_NATIVE_SCROLL_QUIET_MS = 300
 /**
  * A stale old-coordinate momentum sample can land slightly on the "wrong" side of
  * beforeTop after event coalescing, rubber-band bounce-back, or a quick direction
@@ -40,7 +36,7 @@ interface RebaseShift {
   delta: number
   clientHeight: number
   dir: 'older' | 'newer'
-  at: number
+  lastActivityAt: number
 }
 
 export interface StaleNativeTranslatorDeps {
@@ -92,7 +88,7 @@ export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDep
     const at = now()
     const previous = recentRebaseShift
     const extendsRecentShift = previous !== undefined
-      && at - previous.at <= STALE_NATIVE_SCROLL_TRANSLATE_MS
+      && at - previous.lastActivityAt <= STALE_NATIVE_SCROLL_QUIET_MS
       && Math.abs(beforeTop - previous.afterTop) <= clientHeight
     const baseBeforeTop = extendsRecentShift ? previous.beforeTop : beforeTop
     const delta = afterTop - baseBeforeTop
@@ -103,7 +99,7 @@ export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDep
         delta,
         clientHeight,
         dir,
-        at,
+        lastActivityAt: at,
       }
     }
     else if (extendsRecentShift) {
@@ -136,8 +132,8 @@ export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDep
     const shift = recentRebaseShift
     if (!el || !shift)
       return undefined
-    const ageMs = now() - shift.at
-    if (ageMs > STALE_NATIVE_SCROLL_TRANSLATE_MS) {
+    const sampleAt = now()
+    if (sampleAt - shift.lastActivityAt > STALE_NATIVE_SCROLL_QUIET_MS) {
       recentRebaseShift = undefined
       return undefined
     }
@@ -181,6 +177,7 @@ export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDep
     if (Math.abs(translatedTop - staleTop) < MIN_TRANSLATION_PX)
       return undefined
 
+    shift.lastActivityAt = sampleAt
     // This event is still a USER momentum event and must flow through the normal
     // velocity/range path, so the write is not recorded as an own write here. The scroll
     // handler then records the translated position as the last seen one, so the browser's

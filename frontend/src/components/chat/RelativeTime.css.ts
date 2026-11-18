@@ -1,24 +1,27 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
+import { iconSize } from '~/styles/tokens'
 
 /**
- * The age text of a RelativeTime that keeps one width at every age (its `steadyWidth`
- * option). The text and a hidden copy of the widest age share the one cell of a grid, so
- * the cell is as wide as the widest age, and the text sits at its end. The copy is a
- * pseudo-element that holds the text of the `data-widest-age` attribute, so it adds
- * nothing to the text of the page. Tabular digits give every digit one width, so the
- * widest age covers every age of as many digits.
+ * The fixed-width timestamp reserves space for the clock, one space, and the widest age.
+ * The visible clock and age share a grid cell with the hidden measurement and align to
+ * its end. The pseudo-element measures the widest age without adding text to the page.
  */
-export const steadyAgeText = style({
+export const steadyTime = style({
   'display': 'inline-grid',
   'justifyItems': 'end',
   'fontVariantNumeric': 'tabular-nums',
   '::before': {
-    content: 'attr(data-widest-age)',
+    content: '" " attr(data-widest-age)',
+    whiteSpace: 'pre',
+    paddingInlineStart: `${iconSize.xs}px`,
     visibility: 'hidden',
     gridArea: '1 / 1',
   },
 })
 
-globalStyle(`${steadyAgeText} > *`, {
+export const steadyTimeContent = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  whiteSpace: 'pre',
   gridArea: '1 / 1',
 })

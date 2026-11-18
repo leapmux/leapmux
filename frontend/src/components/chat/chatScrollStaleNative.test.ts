@@ -92,6 +92,73 @@ describe('chatScrollStaleNative translator', () => {
     expect(t.translator.translate()).toBeUndefined()
   })
 
+  it('keeps translating an old-coordinate stream past the initial window', () => {
+    const t = setup({ clientHeight: 596 })
+    t.translator.noteRebase({
+      beforeTop: 262,
+      afterTop: 1646,
+      clientHeight: 596,
+      dir: 'older',
+    })
+
+    // The iOS capture still reported positions in the old coordinates 308ms after the rebase.
+    t.advance(275)
+    t.div.setScrollTop(82)
+    expect(t.translator.translate()).toBe(1646)
+    expect(t.div.getScrollTop()).toBe(1466)
+
+    t.advance(33)
+    t.div.setScrollTop(66)
+    expect(t.translator.translate()).toBe(1646)
+    expect(t.div.getScrollTop()).toBe(1450)
+
+    t.advance(16)
+    t.div.setScrollTop(1410)
+    expect(t.translator.translate()).toBeUndefined()
+    t.div.setScrollTop(50)
+    expect(t.translator.translate()).toBeUndefined()
+    expect(t.div.getScrollTop()).toBe(50)
+  })
+
+  it('expires after a quiet interval even when an own write echo arrived', () => {
+    const opts = { ownWrite: false }
+    const t = setup(opts)
+    armPrependShift(t)
+    t.advance(275)
+    t.div.setScrollTop(900)
+    expect(t.translator.translate()).toBe(4000)
+
+    t.advance(200)
+    opts.ownWrite = true
+    expect(t.translator.translate()).toBeUndefined()
+
+    t.advance(101)
+    opts.ownWrite = false
+    t.div.setScrollTop(800)
+    expect(t.translator.translate()).toBeUndefined()
+    expect(t.div.getScrollTop()).toBe(800)
+  })
+
+  it('combines a second rebase with an old-coordinate stream that is still active', () => {
+    const t = setup()
+    armPrependShift(t)
+    t.advance(275)
+    t.div.setScrollTop(900)
+    expect(t.translator.translate()).toBe(4000)
+    expect(t.div.getScrollTop()).toBe(3900)
+
+    t.advance(33)
+    t.translator.noteRebase({
+      beforeTop: 3900,
+      afterTop: 5000,
+      clientHeight: 500,
+      dir: 'older',
+    })
+    t.div.setScrollTop(850)
+    expect(t.translator.translate()).toBe(5000)
+    expect(t.div.getScrollTop()).toBe(4850)
+  })
+
   it('disarms once a genuine current-coordinate scroll arrives (no later mistranslation)', () => {
     const t = setup()
     armPrependShift(t)

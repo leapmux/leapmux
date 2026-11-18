@@ -35,29 +35,53 @@ const AGE_STEPS = [
   { advanceMs: 9 * 60_000, age: /^1\dm$/ },
 ] as const
 
-/**
- * The age that the toolbar of the row of `seq` shows (the text of the toolbar that has the form of an age, or '' for
- * none), the width of the toolbar, and the height of the row. Null while the row or its toolbar is not mounted.
- */
-function readRowAge(page: Page, seq: string): Promise<{ age: string, toolbarWidth: number, rowHeight: number } | null> {
+interface RowAgeLayout {
+  age: string
+  toolbarWidth: number
+  rowHeight: number
+  clockGap: number
+  clockCenterDelta: number
+}
+
+/** The age, the clock's position, and the toolbar and row dimensions. Null until the timestamp is mounted. */
+function readRowAge(page: Page, seq: string): Promise<RowAgeLayout | null> {
   return chatScrollContainer(page).evaluate((container, rowSeq) => {
     const row = container.querySelector(`[data-seq="${rowSeq}"]`)
     const toolbar = row?.querySelector('[data-testid="message-toolbar"]')
     if (row === null || row === undefined || toolbar === null || toolbar === undefined)
       return null
-    let age = ''
     const walker = document.createTreeWalker(toolbar, NodeFilter.SHOW_TEXT)
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      const text = node.textContent?.trim() ?? ''
-      if (/^\d+(?:[smhdy]|mo)$/.test(text))
-        age = text
+      const text = node.textContent ?? ''
+      const age = text.trim()
+      const label = node.parentElement
+      if (label === null || !/^\d+(?:[smhdy]|mo)$/.test(age))
+        continue
+      const clock = label.closest('[data-widest-age]')?.parentElement?.querySelector('svg')
+      if (clock === null || clock === undefined)
+        continue
+      const range = document.createRange()
+      const start = text.indexOf(age)
+      range.setStart(node, start)
+      range.setEnd(node, start + age.length)
+      const clockBox = clock.getBoundingClientRect()
+      const labelBox = label.getBoundingClientRect()
+      return {
+        age,
+        toolbarWidth: toolbar.getBoundingClientRect().width,
+        rowHeight: row.getBoundingClientRect().height,
+        clockGap: range.getBoundingClientRect().left - clockBox.right,
+        clockCenterDelta: clockBox.top + clockBox.height / 2 - (labelBox.top + labelBox.height / 2),
+      }
     }
-    return {
-      age,
-      toolbarWidth: toolbar.getBoundingClientRect().width,
-      rowHeight: row.getBoundingClientRect().height,
-    }
+    return null
   }, seq)
+}
+
+function expectClockPlacement(layout: RowAgeLayout): void {
+  expect.soft(layout.clockGap, `the clock precedes ${layout.age}`).toBeGreaterThanOrEqual(0)
+  expect.soft(layout.clockGap, `only one space separates the clock from ${layout.age}`).toBeLessThanOrEqual(5)
+  expect.soft(Math.abs(layout.clockCenterDelta), `the clock is centered on the ${layout.age} line`).toBeLessThanOrEqual(0.5)
 }
 
 test.describe('chat scroll stability while the age of a row ticks', () => {
@@ -75,6 +99,7 @@ test.describe('chat scroll stability while the age of a row ticks', () => {
     const start = await readRowAge(page, seq!)
     expect(start, 'the row of the prompt has a toolbar').not.toBeNull()
     expect(start!.age, 'the age of a new row is a few seconds').toMatch(/^\d{1,2}s$/)
+    expectClockPlacement(start!)
 
     for (const step of AGE_STEPS) {
       await page.clock.fastForward(step.advanceMs)
@@ -82,6 +107,7 @@ test.describe('chat scroll stability while the age of a row ticks', () => {
       // The row lays out the new age in the next frame.
       await framesPass(page, 2)
       const now = await readRowAge(page, seq!)
+      expectClockPlacement(now!)
       expect(Math.abs(now!.rowHeight - start!.rowHeight), `the row keeps its height at the age ${now!.age}, within half a pixel (${start!.rowHeight}px at ${start!.age}, ${now!.rowHeight}px at ${now!.age})`).toBeLessThanOrEqual(0.5)
       // The toolbar sits beside the bubble, so a toolbar of another width wraps the bubble again.
       expect(Math.abs(now!.toolbarWidth - start!.toolbarWidth), `the toolbar keeps its width at the age ${now!.age}, within half a pixel (${start!.toolbarWidth}px at ${start!.age}, ${now!.toolbarWidth}px at ${now!.age})`).toBeLessThanOrEqual(0.5)
