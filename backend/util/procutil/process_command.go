@@ -15,7 +15,6 @@ type processCommand interface {
 
 type execProcessCommand struct{ command *exec.Cmd }
 
-func (c execProcessCommand) start() error            { return c.command.Start() }
 func (c execProcessCommand) wait() error             { return c.command.Wait() }
 func (c execProcessCommand) process() *os.Process    { return c.command.Process }
 func (c execProcessCommand) state() *os.ProcessState { return c.command.ProcessState }

@@ -10,11 +10,15 @@ import (
 
 type processOwnerPlatform struct{}
 
+func (c execProcessCommand) start() error { return c.command.Start() }
+
 func identifyStartedProcess(process *os.Process) (ProcessIdentity, bool) {
 	return IdentifyProcess(process.Pid)
 }
 
 func (*processOwnerPlatform) attach(ProcessIdentity) error { return nil }
+
+func (*processOwnerPlatform) attachAndResume(ProcessIdentity) error { return nil }
 
 func (*processOwnerPlatform) signalRoot(root ProcessIdentity, signal syscall.Signal) error {
 	if root.IsZero() || !root.Runs() {

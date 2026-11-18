@@ -112,7 +112,7 @@ func (o *ProcessOwner) Start() error {
 		return err
 	}
 	o.root = identity
-	if err := o.platform.attach(o.root); err != nil {
+	if err := o.platform.attachAndResume(o.root); err != nil {
 		_, killErr := o.root.Kill()
 		err = errors.Join(err, killErr, o.waitLocked())
 		o.result = errors.Join(o.result, err)

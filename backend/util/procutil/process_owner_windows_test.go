@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -14,6 +15,92 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
+
+// suspendCountCommand measures the initial thread before the owner assigns its job.
+type suspendCountCommand struct {
+	execProcessCommand
+	keepExtraSuspension bool
+	previousCount       uint32
+	probeErr            error
+}
+
+func (c *suspendCountCommand) start() error {
+	if err := c.execProcessCommand.start(); err != nil {
+		return err
+	}
+	c.previousCount, c.probeErr = probeInitialThreadSuspendCount(uint32(c.process().Pid), c.keepExtraSuspension)
+	return nil
+}
+
+func probeInitialThreadSuspendCount(pid uint32, keepExtraSuspension bool) (count uint32, result error) {
+	threadID, err := initialThreadID(pid)
+	if err != nil {
+		return 0, err
+	}
+	thread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, threadID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(thread)) }()
+	suspendThread := windows.NewLazySystemDLL("kernel32.dll").NewProc("SuspendThread")
+	previous, _, suspendErr := suspendThread.Call(uintptr(thread))
+	if uint32(previous) == ^uint32(0) {
+		return 0, suspendErr
+	}
+	if !keepExtraSuspension {
+		// Restore the suspend count so the owner still controls the first instruction.
+		_, err = windows.ResumeThread(thread)
+	}
+	return uint32(previous), err
+}
+
+func TestWindowsProcessOwnerSuspendsTheChildUntilJobAssignment(t *testing.T) {
+	owner, probe, stdin, output := prepareSuspensionProbe(t, false)
+
+	require.NoError(t, owner.Start())
+	require.NoError(t, probe.probeErr)
+	require.EqualValues(t, 1, probe.previousCount, "the child must be suspended before the owner assigns its job")
+	require.NoError(t, stdin.Close())
+	require.NoError(t, owner.Wait())
+	require.Equal(t, "ready\n", output.String(), "the child must run after job assignment")
+	require.NoError(t, owner.Close())
+}
+
+func TestWindowsProcessOwnerReapsTheChildWhenResumeLeavesItSuspended(t *testing.T) {
+	owner, probe, _, output := prepareSuspensionProbe(t, true)
+
+	startErr := owner.Start()
+	require.NoError(t, probe.probeErr)
+	require.EqualValues(t, 1, probe.previousCount)
+	require.ErrorContains(t, startErr, "unexpected suspend count of 2")
+	require.NotNil(t, owner.ProcessState(), "failed start must reap the child")
+	require.False(t, owner.ProcessState().Success())
+	require.Empty(t, output.String(), "the child must never run")
+	require.Zero(t, owner.platform.job.handle.Load(), "failed start must release the job")
+	require.ErrorIs(t, owner.Close(), startErr)
+}
+
+func prepareSuspensionProbe(t *testing.T, keepExtraSuspension bool) (*ProcessOwner, *suspendCountCommand, io.WriteCloser, *bytes.Buffer) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHelperProcessWaitsForStdin$")
+	cmd.Env = append(os.Environ(), waitHelperEnv+"=1")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	owner := PrepareProcess(cmd)
+	probe := &suspendCountCommand{
+		execProcessCommand:  execProcessCommand{command: cmd},
+		keepExtraSuspension: keepExtraSuspension,
+	}
+	owner.cmd = probe
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = owner.Close()
+		_ = owner.Wait()
+	})
+	return owner, probe, stdin, &output
+}
 
 func TestHelperProcessOwnerExitsBeforeIdentity(t *testing.T) {
 	value, ok := os.LookupEnv("LEAPMUX_TEST_OWNER_EXIT_CODE")
@@ -29,11 +116,11 @@ func TestHelperProcessOwnerExitsBeforeIdentity(t *testing.T) {
 type exitedBeforeIdentityCommand struct{ execProcessCommand }
 
 func (c exitedBeforeIdentityCommand) start() error {
-	if err := c.execProcessCommand.start(); err != nil {
+	if err := c.command.Start(); err != nil {
 		return err
 	}
 	// Wait for native exit without reaping the command or releasing its handle.
-	// Start must accept a command that ends before it captures the identity.
+	// This test starts the helper directly so it can exit before identity capture.
 	var waitErr error
 	handleErr := c.command.Process.WithHandle(func(handle uintptr) {
 		status, err := windows.WaitForSingleObject(windows.Handle(handle), 30_000)
