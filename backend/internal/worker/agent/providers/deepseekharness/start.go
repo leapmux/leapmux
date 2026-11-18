@@ -44,9 +44,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, errors.Join(err, directory.Close())
 	}
 	pinnedEnv := []string{"TMPDIR=" + imageReceipts.Temporary, "TMP=" + imageReceipts.Temporary, "TEMP=" + imageReceipts.Temporary}
-	cmd, delimiter, meta := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: []string{"--profile", "web", "--patch", imageReceipts.Overlay, "--patch", autoReviewOverlay, "--host", "127.0.0.1", "--port", "0", "--no-open"}, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: []string{"--profile", "web", "--patch", imageReceipts.Overlay, "--patch", autoReviewOverlay, "--host", "127.0.0.1", "--port", "0", "--no-open"}, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, directory.Close())
+	}
+	delimiter, meta := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinnedEnv...)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, errors.Join(err, directory.Close())
 	}

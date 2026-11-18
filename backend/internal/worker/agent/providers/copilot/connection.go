@@ -53,13 +53,20 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		cancel()
 		return nil, err
 	}
-	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: launchSpec, WorkingDir: opts.WorkingDir,
 		BaseArgs: []string{"--server", "--stdio", "--sync-session=off"},
 		SetEnv:   []string{copilotAutoUpdateEnv},
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	delimiter, prefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}

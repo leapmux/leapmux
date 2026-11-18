@@ -67,7 +67,7 @@ LeapMux supports {{< agent-provider-count >}} agent providers. All of them are f
 
 {{< agent-logos >}}
 
-A provider only appears in the picker when LeapMux detects its CLI binary on the Worker. If `claude` or `codex` is not installed on the machine that runs the Worker, that provider does not appear. ZCode is the exception to the binary rule: it ships no command, so LeapMux looks for its desktop installation instead.
+The selected Worker's shell determines which providers appear in the picker. It can find an executable on PATH or a command defined in its profile. ZCode can also come from its desktop installation.
 
 For what each provider can do, see [Coding Agents](/docs/using/coding-agents/).
 

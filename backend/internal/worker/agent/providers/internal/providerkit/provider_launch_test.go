@@ -2,11 +2,14 @@ package providerkit
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -36,11 +39,22 @@ func TestResolveProviderLaunch(t *testing.T) {
 
 	t.Run("registered binary", func(t *testing.T) {
 		registration.Locator = launch.Binaries("first-program", "second-program")
-		// A missing shell makes each probe inconclusive. The locator then uses its first candidate.
-		shell := filepath.Join(t.TempDir(), "missing-shell")
-		spec, err := ResolveLaunch(context.Background(), agent.Options{Shell: shell}, registration)
+		dir := t.TempDir()
+		shell := testutil.TestShell()
+		name, script := "second-program", "#!/bin/sh\nprintf 'second-program\\n'\n"
+		if runtime.GOOS == "windows" {
+			name, script = name+".cmd", "@echo off\r\necho second-program\r\n"
+		}
+		testutil.WriteExecutable(t, filepath.Join(dir, name), script)
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		spec, err := ResolveLaunch(t.Context(), agent.Options{Shell: shell}, registration)
 		require.NoError(t, err)
-		assert.Equal(t, "first-program", spec.Program)
+		prepared, err := launch.Wrap(t.Context(), launch.WrapSpec{Shell: shell, Launch: spec})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+		output, err := prepared.Cmd.Output()
+		require.NoError(t, err)
+		assert.Contains(t, string(output), "second-program")
 		assert.Empty(t, spec.PrefixArgs)
 		assert.Empty(t, spec.Env)
 	})
@@ -48,7 +62,7 @@ func TestResolveProviderLaunch(t *testing.T) {
 	t.Run("empty locator", func(t *testing.T) {
 		registration.Locator = launch.Locator{}
 		_, err := ResolveLaunch(context.Background(), agent.Options{Shell: "/bin/sh"}, registration)
-		require.EqualError(t, err, "no binary candidates registered for ZCode")
+		require.EqualError(t, err, "no valid provider commands registered for ZCode")
 	})
 
 	for _, tc := range []struct {

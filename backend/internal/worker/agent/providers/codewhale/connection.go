@@ -119,16 +119,23 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 		return nil, err
 	}
 	processCtx, cancel := context.WithCancel(ctx)
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(processCtx, launch.WrapSpec{
+	prepared, err := launch.Wrap(processCtx, launch.WrapSpec{
 		Shell:      l.opts.Shell,
 		LoginShell: l.opts.LoginShell,
 		Launch:     l.spec,
 		BaseArgs:   []string{"app-server", "--http", "--host", "127.0.0.1", "--port", strconv.Itoa(port)},
 		WorkingDir: l.opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = runtimeEnv(cmd.Environ(), l.opts, l.store, l.token)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}

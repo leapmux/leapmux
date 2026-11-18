@@ -2,11 +2,15 @@ package launch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/internal/util/id"
 
@@ -15,35 +19,13 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-// WrapSpec describes how to wrap an agent binary launch inside the user's
-// login shell. Grouping the settings keeps provider call sites readable and
-// keeps shell-specific construction inside this package.
+// WrapSpec describes a provider invocation in the Worker's configured shell.
 type WrapSpec struct {
 	Shell      string // the user's shell path (terminal.ShellBaseName picks the dialect)
 	LoginShell bool   // invoke the shell with interactive+login flags so profile scripts are sourced
-	// Environment supplies the shell's environment before launch requirements and
-	// private pins are added. Nil inherits the process environment. An empty
-	// non-nil slice supplies an empty environment.
+	// Environment is the initial shell environment. Nil inherits the Worker environment.
 	Environment []string
-	// Launch is how to start the provider's program, as Locator.Resolve settled
-	// it. Every caller passes one, so a bundled provider's interpreter arguments and
-	// environment cannot be forgotten at a call site: this function applies both.
-	//
-	// Launch.Program is either a bare name the shell resolves through PATH ("claude",
-	// "codex") or an absolute path (ZCode's resolved Node interpreter). Each dialect
-	// builder QUOTES it, so a path that holds a space -- `C:\Program Files\nodejs\node.exe`
-	// is the common one -- reaches the program as one word.
-	//
-	// Quoting costs nothing for a bare name: every dialect still resolves it through
-	// PATH. What quoting does NOT settle is whether a user's own alias or shell
-	// function of the same name wins, and the answer differs per dialect. POSIX
-	// `exec 'claude'` runs an executable file, and a quoted word is never
-	// alias-expanded. Nushell `^"claude"` forces an external command, which `^` alone
-	// already did. PowerShell `& 'claude'` still resolves through the session command
-	// table -- alias, then function, then cmdlet, then the PATH executable -- and the
-	// profile IS sourced, because neither terminal.CommandArgs nor LoginShellArgs
-	// passes -NoProfile. So on PowerShell a profile-defined `claude` wrapper is what
-	// starts, exactly as before the quoting.
+	// Launch selects an ordered shell command or invokes an explicit program.
 	Launch Spec
 	// StripEnvKeys are removed by the shell wrapper before the binary is started.
 	StripEnvKeys []string
@@ -54,7 +36,7 @@ type WrapSpec struct {
 	// the private address of a daemon, for example. A value on cmd.Env instead
 	// reaches the shell first, and the profile can replace it. Wrap panics on a
 	// name that is not a plain identifier, because the wrapper writes the name
-	// into shell code unquoted. Values travel through temporary environment variables.
+	// into shell code unquoted. Values travel through private environment variables.
 	SetEnv []string
 	// BaseArgs are always passed to the program, after Launch.PrefixArgs.
 	BaseArgs []string
@@ -103,16 +85,30 @@ func checkEnvGate(gate *EnvGatedArgs) {
 	}
 }
 
-// Wrap constructs an exec.Cmd that launches spec.Launch.Program
-// inside the user's shell. When spec.LoginShell is true, the shell is invoked with
-// interactive+login flags (e.g. -i -l -c) so that profile scripts are sourced. When
-// false, only -c is used (no profile sourcing). When spec.EnvGated is nil, no
-// conditional logic is emitted.
-//
-// It returns the command, a unique delimiter string, and a metadata line prefix.
-// The caller should scan stdout for lines starting with metaPrefix to extract
-// key=value metadata, then for the delimiter to detect the end of preamble.
-func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
+// PreparedLaunch owns the optional files required by a wrapped process.
+type PreparedLaunch struct {
+	Cmd             *exec.Cmd
+	Delimiter       string
+	MetaPrefix      string
+	candidates      []string
+	exhaustedMarker string
+	closeFiles      func() error
+}
+
+// Close releases files after the native process finishes or preparation fails.
+func (p *PreparedLaunch) Close() error {
+	if p == nil || p.closeFiles == nil {
+		return nil
+	}
+	return p.closeFiles()
+}
+
+// Wrap prepares an invocation in the configured shell after its profile runs.
+func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
+	if spec.Launch.Program == "" && !validCandidates(spec.Launch.candidates) ||
+		spec.Launch.Program != "" && len(spec.Launch.candidates) != 0 {
+		return nil, errors.New("the provider launch requires one program or an ordered command list")
+	}
 	// The interpreter arguments come FIRST: `node zcode.cjs app-server --stdio`, never
 	// the reverse. Merging here rather than at each caller is what stops the next
 	// bundled provider from losing them silently.
@@ -127,37 +123,77 @@ func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
 	}
 	checkSetEnv(spec.SetEnv)
 	token := id.Short()
-	delimiter := "__LEAPMUX_READY_" + token + "__"
-	metaPrefix := ""
-	if spec.EnvGated != nil {
-		metaPrefix = "__LEAPMUX_META_" + token + "__ "
+	prepared := &PreparedLaunch{
+		Delimiter:       "__LEAPMUX_READY_" + token + "__",
+		exhaustedMarker: "__LEAPMUX_EXHAUSTED_" + token + "__",
+		candidates:      slices.Clone(spec.Launch.candidates),
 	}
+	if spec.EnvGated != nil {
+		prepared.MetaPrefix = "__LEAPMUX_META_" + token + "__ "
+	}
+	shell := terminal.ShellBaseName(spec.Shell)
+	if shell == "cmd" {
+		return nil, errors.New("cmd.exe cannot launch agents. Configure a PowerShell or Bash shell for the Worker")
+	}
+
 	cmd, _ := newShellCommandWithEnvironment(ctx, spec.Shell, spec.LoginShell, "", spec.WorkingDir, spec.Environment)
 	if len(spec.Launch.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), spec.Launch.Env...)
 	}
 	envutil.ScrubAppImageEnv(cmd)
-	environ := cmd.Environ()
-	prepared := prepareShellLaunch(spec, token, environ)
-	if len(prepared.pins) > 0 {
-		cmd.Env = prepared.pinEnvironment(environ)
+	environment := cmd.Environ()
+	shellSpec := prepareShellLaunch(spec, token, environment)
+	if len(shellSpec.pins) > 0 {
+		cmd.Env = shellSpec.pinEnvironment(environment)
 	}
-	shellName := terminal.ShellBaseName(spec.Shell)
-	var inner string
+
+	var script string
 	switch {
-	case terminal.IsPwsh(shellName):
-		inner = buildPwshCommand(prepared, delimiter, metaPrefix)
-	case shellName == "fish":
-		inner = buildFishCommand(prepared, delimiter, metaPrefix)
-	case shellName == "nu":
-		inner = buildNuCommand(prepared, delimiter, metaPrefix)
-	case shellName == "tcsh" || shellName == "csh":
-		inner = buildCshCommand(prepared, delimiter, metaPrefix)
+	case terminal.IsPwsh(shell):
+		script = buildPwshCommand(shellSpec, prepared)
+	case shell == "nu" && len(prepared.candidates) != 0:
+		scripts, err := prepared.writeNuInvocations()
+		if err != nil {
+			return nil, err
+		}
+		script = buildNuSelection(shellSpec, prepared, scripts)
+	case shell == "nu":
+		script = "print ''; " + buildNuCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+	case shell == "fish":
+		script = buildFishCommand(shellSpec, prepared)
+	case shell == "xonsh":
+		script = buildXonshCommand(shellSpec, prepared)
+	case isCsh(shell) && len(prepared.candidates) != 0:
+		script = buildCshSelection(shellSpec, prepared)
+	case isCsh(shell):
+		script = lookupSetup(shell) + "echo ''\n" + buildCshCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+	case len(prepared.candidates) != 0:
+		script = buildPosixSelection(shell, shellSpec, prepared)
 	default:
-		inner = buildPosixCommand(prepared, delimiter, metaPrefix)
+		script = posixBuiltin(shell, "printf") + " '\\n'\n" + buildPosixCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
 	}
-	cmd.Args[len(cmd.Args)-1] = inner
-	return cmd, delimiter, metaPrefix
+
+	cmd.Args[len(cmd.Args)-1] = script
+	prepared.Cmd = cmd
+	return prepared, nil
+}
+
+func (p *PreparedLaunch) writeNuInvocations() (map[string]string, error) {
+	dir, err := os.MkdirTemp("", "leapmux-nu-launch-")
+	if err != nil {
+		return nil, fmt.Errorf("create Nushell invocation directory: %w", err)
+	}
+	p.closeFiles = sync.OnceValue(func() error { return os.RemoveAll(dir) })
+	scripts := make(map[string]string, len(p.candidates))
+	for _, name := range p.candidates {
+		path := filepath.Join(dir, name+".nu")
+		script := "def main [arguments: list<string>] { " + name + " ...$arguments }\n"
+		if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+			return nil, errors.Join(fmt.Errorf("write Nushell invocation: %w", err), p.Close())
+		}
+		scripts[name] = path
+	}
+	return scripts, nil
 }
 
 // buildPosixCommand builds the inner command string for POSIX-like shells.
@@ -247,81 +283,6 @@ func buildNuCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
 	)
 }
 
-// buildPwshCommand builds the inner command string for PowerShell.
-func buildPwshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
-	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.pins)
-	baseCommand := pwshInvocation(spec.Launch.Program, spec.BaseArgs)
-
-	// Preserve native exit codes and report an absent command as 127, as the
-	// POSIX wrapper does. Native argument encoding belongs to the invocation.
-	gate := spec.EnvGated
-	if gate == nil {
-		return fmt.Sprintf("$ErrorActionPreference = 'Stop'; %stry { Write-Output '%s'; %s } catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
-			clearEnvPrefix, delimiter, baseCommand)
-	}
-
-	commandWithOptionalArgs := pwshInvocation(spec.Launch.Program, slices.Concat(spec.BaseArgs, gate.Args))
-	return fmt.Sprintf(
-		"$ErrorActionPreference = 'Stop'; %s"+
-			"try { "+
-			"if (%s) { "+
-			"Write-Output '%s%s=false'; "+
-			"Write-Output '%s'; %s "+
-			"} else { "+
-			"Write-Output '%s%s=true'; "+
-			"Write-Output '%s'; %s "+
-			"} "+
-			"} catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
-		clearEnvPrefix, pwshEnvCondition(gate.EnvVars),
-		metaPrefix, gate.MetaKey, delimiter, baseCommand,
-		metaPrefix, gate.MetaKey, delimiter, commandWithOptionalArgs,
-	)
-}
-
-// pwshInvocation preserves native arguments under every PowerShell argument
-// passing mode. Legacy passing concatenates argument values into a command
-// line without escaping embedded quotes, and drops an empty argument. Supply
-// complete native command-line tokens and select Legacy within this invocation
-// so its parser reverses that encoding on both Windows and Unix.
-//
-// A profile may supply a function or an alias instead of an executable. Resolve
-// aliases before deciding whether the target is native. Functions and scripts
-// receive the original arguments and keep the profile's argument passing mode.
-func pwshInvocation(program string, arguments []string) string {
-	original := make([]string, len(arguments))
-	native := make([]string, len(arguments))
-	for index, argument := range arguments {
-		original[index] = shellquote.PowerShell.Quote(argument)
-		native[index] = shellquote.PowerShell.Quote(legacyNativeArgument(argument))
-	}
-	command := shellquote.PowerShell.Quote(program)
-	// Metadata lookup parses filesystem paths as wildcard patterns. Read an
-	// existing literal file directly instead. Namespace-only GetCommands keeps
-	// loaded aliases, functions and cmdlets ahead of files without importing a
-	// module that would otherwise lose to a native executable. Full lookup for
-	// bare names retains module discovery and implicit .ps1 resolution on PATH.
-	return fmt.Sprintf(
-		"& { $leapmuxTarget = %s; "+
-			"$leapmuxAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); "+
-			"while ($true) { if (-not $leapmuxAliases.Add($leapmuxTarget)) { exit 127 }; "+
-			"$leapmuxCommands = @($ExecutionContext.InvokeCommand.GetCommands($leapmuxTarget, ([System.Management.Automation.CommandTypes]::Alias -bor [System.Management.Automation.CommandTypes]::Function -bor [System.Management.Automation.CommandTypes]::Filter -bor [System.Management.Automation.CommandTypes]::Cmdlet), $false)); "+
-			"if ($leapmuxCommands.Count -gt 0) { $leapmuxCommand = $leapmuxCommands[0] } else { "+
-			"$leapmuxPath = $null; "+
-			"if ([System.IO.Path]::IsPathRooted($leapmuxTarget)) { $leapmuxPath = $leapmuxTarget } "+
-			"elseif ($leapmuxTarget.Contains('/') -or $leapmuxTarget.IndexOf([char]0x5c) -ge 0) { $leapmuxPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($leapmuxTarget) }; "+
-			"if ($null -ne $leapmuxPath -and [System.IO.File]::Exists($leapmuxPath)) { $leapmuxNative = [System.IO.Path]::GetExtension($leapmuxPath) -ine '.ps1'; break }; "+
-			"if ($null -ne $leapmuxPath -and [System.IO.File]::Exists($leapmuxPath + '.ps1')) { $leapmuxNative = $false; break }; "+
-			"$leapmuxCommand = $ExecutionContext.InvokeCommand.GetCommand($leapmuxTarget, [System.Management.Automation.CommandTypes]::All); "+
-			"if ($null -eq $leapmuxCommand) { exit 127 } }; "+
-			"if ($leapmuxCommand -is [System.Management.Automation.AliasInfo]) { $leapmuxTarget = $leapmuxCommand.Definition; continue }; "+
-			"$leapmuxNative = $leapmuxCommand.CommandType -eq [System.Management.Automation.CommandTypes]::Application; break }; "+
-			"if ($leapmuxNative) { "+
-			"$PSNativeCommandArgumentPassing = 'Legacy'; & %s %s "+
-			"} else { & %s %s }; exit $LASTEXITCODE }",
-		command, command, strings.Join(native, " "), command, strings.Join(original, " "),
-	)
-}
-
 // legacyNativeArgument quotes one token for the Windows native command-line
 // parser, which .NET also uses for ProcessStartInfo.Arguments on Unix. A run of
 // backslashes doubles before a quote or the closing delimiter, and a literal
@@ -369,12 +330,12 @@ func legacyNativeArgument(argument string) string {
 func buildCshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = shellquote.POSIX.Quote(arg)
+		quotedBase[i] = cshQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
 	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins)
-	program := shellquote.POSIX.Quote(spec.Launch.Program)
+	program := cshQuote(spec.Launch.Program)
 
 	// Simple path: no env gate. See buildPosixCommand.
 	gate := spec.EnvGated
@@ -386,7 +347,7 @@ func buildCshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string 
 	// Conditional path: check env vars at runtime.
 	quotedGated := make([]string, len(gate.Args))
 	for i, arg := range gate.Args {
-		quotedGated[i] = shellquote.POSIX.Quote(arg)
+		quotedGated[i] = cshQuote(arg)
 	}
 	gatedArgsStr := strings.Join(quotedGated, " ")
 
@@ -417,8 +378,7 @@ func checkSetEnv(entries []string) {
 	}
 }
 
-// posixSetEnv exports each entry. One export for each entry, because fish
-// takes `export` as a function of one assignment at a time.
+// posixSetEnv exports each entry with its value quoted for the shell.
 func posixSetEnv(pins []environmentPin) string {
 	var b strings.Builder
 	for _, pin := range pins {
@@ -427,7 +387,8 @@ func posixSetEnv(pins []environmentPin) string {
 	return b.String()
 }
 
-// cshSetEnv exports the value and removes its private transport variable.
+// cshSetEnv sets each entry the csh way. `set` touches shell variables only, so
+// `setenv` is the one that reaches the launched program.
 func cshSetEnv(pins []environmentPin) string {
 	var b strings.Builder
 	for _, pin := range pins {
@@ -479,7 +440,7 @@ func nuClearEnv(keys []string) string {
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "hide-env " + key
+		parts[i] = "hide-env -i " + key
 	}
 	return strings.Join(parts, "; ") + "; "
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,9 +24,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 // Each record states the core of Cline 3.0.64, so each case checks the
@@ -734,4 +738,82 @@ func TestANewAgentDirectoryWaitsForTheDaemonThatACrashedWorkerLeft(t *testing.T)
 	t.Cleanup(func() { _ = dir.Close() })
 	assert.Equal(t, 1, d.hub.shutdownCount())
 	assert.True(t, d.proc.cmd.ProcessState.Success(), "the old daemon ended by itself after its shutdown")
+}
+
+func TestClineDoesNotRetryCandidateExhaustion(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX profile fixture")
+	}
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "attempts")
+	shell := filepath.Join(dir, "profile-shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nprintf 'attempt\\n' >> "+shellquote.POSIX.Quote(calls)+
+		"\nprintf 'Error: listen EADDRINUSE: address already in use 127.0.0.1\\n' >&2"+
+		"\nfor command do :; done\nexec /bin/sh -c \"$command\"\n")
+	_, err := startDaemonProcess(t.Context(), agent.Options{Shell: shell, WorkingDir: dir, StartupTimeout: 30 * time.Second},
+		launch.ShellCommands("cline-absent-first", "cline-absent-second"), dir, quartz.NewReal())
+	require.ErrorIs(t, err, launch.ErrNoCandidate)
+	assert.ErrorContains(t, err, "cline-absent-first, cline-absent-second")
+	data, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	assert.Equal(t, "attempt\n", string(data))
+}
+
+const failedBindWitnessEnv = "LEAPMUX_TEST_CLINE_FAILED_BIND"
+
+func TestClineBindFailureWitness(t *testing.T) {
+	address := os.Getenv(failedBindWitnessEnv)
+	if address == "" {
+		return
+	}
+	if _, err := fmt.Fprintln(os.Stderr, "Error: listen EADDRINUSE: address already in use 127.0.0.1"); err != nil {
+		os.Exit(41)
+	}
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		os.Exit(42)
+	}
+	_, _ = io.Copy(io.Discard, conn)
+	_ = conn.Close()
+	os.Exit(37)
+}
+
+func TestClineDoesNotRetryABindFailureAfterCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX command fixture")
+	}
+	dir := t.TempDir()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	require.NoError(t, listener.SetDeadline(time.Now().Add(15*time.Second)))
+	t.Setenv(failedBindWitnessEnv, listener.Addr().String())
+	count := filepath.Join(dir, "attempts")
+	daemon := filepath.Join(dir, "daemon")
+	testutil.WriteExecutable(t, daemon, "#!/bin/sh\nprintf 'attempt\\n' >> "+shellquote.POSIX.Quote(count)+
+		"\nexec "+shellquote.POSIX.Quote(executable)+" -test.run=^TestClineBindFailureWitness$\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	outcome := make(chan error, 1)
+	go func() {
+		_, err := startDaemonProcess(ctx, agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second},
+			launch.Spec{Program: daemon}, dir, quartz.NewReal())
+		outcome <- err
+	}()
+	conn, err := listener.Accept()
+	require.NoError(t, err, "the child emits its bind failure before connecting")
+	cancel()
+	require.NoError(t, conn.Close())
+	select {
+	case err := <-outcome:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the canceled start did not return")
+	}
+	data, err := os.ReadFile(count)
+	require.NoError(t, err)
+	assert.Equal(t, "attempt\n", string(data))
 }

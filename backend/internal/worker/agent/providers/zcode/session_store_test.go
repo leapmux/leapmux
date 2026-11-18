@@ -11,18 +11,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,8 +161,8 @@ func zcodeStoragePeerCommand(ctx context.Context, q agent.StoredSessionQuery, pa
 }
 
 func newZCodeTestStorageQuery(path, scenario, receipt string) zcodeNativeStorageQuery {
-	return zcodeNativeStorageQuery{command: func(ctx context.Context, q agent.StoredSessionQuery) (zcodeStorageCommand, error) {
-		return zcodeStorageCommand{command: zcodeStoragePeerCommand(ctx, q, path, scenario, receipt)}, nil
+	return zcodeNativeStorageQuery{command: func(ctx context.Context, q agent.StoredSessionQuery) (*launch.PreparedLaunch, error) {
+		return &launch.PreparedLaunch{Cmd: zcodeStoragePeerCommand(ctx, q, path, scenario, receipt)}, nil
 	}}
 }
 
@@ -263,10 +269,10 @@ func TestZCodeStorageQueryCancelsAnUnfinishedNativePeer(t *testing.T) {
 	defer cancel()
 	query := newZCodeTestStorageQuery(filepath.Join(t.TempDir(), "native.db"), "wait-for-cancel", "")
 	makeCommand := query.command
-	query.command = func(ctx context.Context, q agent.StoredSessionQuery) (zcodeStorageCommand, error) {
+	query.command = func(ctx context.Context, q agent.StoredSessionQuery) (*launch.PreparedLaunch, error) {
 		command, err := makeCommand(ctx, q)
 		if err == nil {
-			command.command.Env = append(command.command.Env, "LEAPMUX_ZCODE_STORAGE_PEER_READY="+listener.Addr().String())
+			command.Cmd.Env = append(command.Cmd.Env, "LEAPMUX_ZCODE_STORAGE_PEER_READY="+listener.Addr().String())
 		}
 		return command, err
 	}
@@ -303,10 +309,10 @@ func TestZCodeStorageQueryCancellationPreservesAnotherNativePeer(t *testing.T) {
 		home := t.TempDir()
 		query := newZCodeTestStorageQuery(path, "wait-for-cancel", "")
 		makeCommand := query.command
-		query.command = func(ctx context.Context, q agent.StoredSessionQuery) (zcodeStorageCommand, error) {
+		query.command = func(ctx context.Context, q agent.StoredSessionQuery) (*launch.PreparedLaunch, error) {
 			command, err := makeCommand(ctx, q)
 			if err == nil {
-				command.command.Env = append(command.command.Env, "LEAPMUX_ZCODE_STORAGE_PEER_READY="+listener.Addr().String())
+				command.Cmd.Env = append(command.Cmd.Env, "LEAPMUX_ZCODE_STORAGE_PEER_READY="+listener.Addr().String())
 			}
 			return command, err
 		}
@@ -409,15 +415,93 @@ func TestZCodeStorageQueryRejectsAbsentInputsAndStartupFailure(t *testing.T) {
 	require.Error(t, err)
 	_, err = (zcodeNativeStorageQuery{}).DatabasePath(t.Context(), agent.StoredSessionQuery{})
 	require.Error(t, err)
-	query := zcodeNativeStorageQuery{command: func(context.Context, agent.StoredSessionQuery) (zcodeStorageCommand, error) {
-		return zcodeStorageCommand{}, errors.New("controlled native command failure")
+	query := zcodeNativeStorageQuery{command: func(context.Context, agent.StoredSessionQuery) (*launch.PreparedLaunch, error) {
+		return nil, errors.New("controlled native command failure")
 	}}
 	_, err = query.DatabasePath(t.Context(), agent.StoredSessionQuery{})
 	require.EqualError(t, err, "controlled native command failure")
-	query.command = func(ctx context.Context, _ agent.StoredSessionQuery) (zcodeStorageCommand, error) {
-		return zcodeStorageCommand{command: exec.CommandContext(ctx, filepath.Join(t.TempDir(), "absent-native-command"))}, nil
+	query.command = func(ctx context.Context, _ agent.StoredSessionQuery) (*launch.PreparedLaunch, error) {
+		return &launch.PreparedLaunch{Cmd: exec.CommandContext(ctx, filepath.Join(t.TempDir(), "absent-native-command"))}, nil
 	}
 	_, err = query.DatabasePath(t.Context(), agent.StoredSessionQuery{})
 	require.Error(t, err)
 	assert.False(t, validZCodeStoragePath("/native/invalid\x00file"))
+}
+
+const inheritedStorageWriterEnv = "LEAPMUX_ZCODE_TEST_INHERITED_WRITER"
+
+func TestZCodeInheritedStorageWriter(t *testing.T) {
+	address := os.Getenv(inheritedStorageWriterEnv)
+	if address == "" {
+		return
+	}
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		os.Exit(2)
+	}
+	if _, err := fmt.Fprintln(conn, os.Getpid()); err != nil {
+		os.Exit(3)
+	}
+	_, _ = io.Copy(io.Discard, conn)
+	_ = conn.Close()
+	os.Exit(0)
+}
+
+func TestZCodeStorageReportsExhaustionWhileAProfileWriterHoldsStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell profile")
+	}
+	dir := t.TempDir()
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	require.NoError(t, listener.SetDeadline(time.Now().Add(10*time.Second)))
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	shell := filepath.Join(dir, "profile-shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\n"+
+		shellquote.POSIX.Quote(executable)+" -test.run=^TestZCodeInheritedStorageWriter$ &\n"+
+		"for command do :; done\nexec /bin/sh -c \"$command\"\n")
+	locator := launch.Binaries("zcode-absent-storage-first", "zcode-absent-storage-second")
+	query := agent.StoredSessionQuery{
+		Shell: shell, WorkingDir: dir, RuntimeLocator: &locator,
+		EnvEntries: append(os.Environ(), inheritedStorageWriterEnv+"="+listener.Addr().String()),
+	}
+	type outcome struct {
+		path string
+		err  error
+	}
+	result := make(chan outcome, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+	defer cancel()
+	go func() {
+		path, err := newZCodeStorageQuery(nil).DatabasePath(ctx, query)
+		result <- outcome{path, err}
+	}()
+	conn, err := listener.Accept()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(10*time.Second)))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(line))
+	require.NoError(t, err)
+	identity, present := procutil.IdentifyProcess(pid)
+	require.True(t, present)
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_, _ = identity.Kill()
+	})
+	select {
+	case got := <-result:
+		require.Empty(t, got.path)
+		require.ErrorIs(t, got.err, launch.ErrNoCandidate)
+		assert.ErrorContains(t, got.err, "zcode-absent-storage-first, zcode-absent-storage-second")
+		var exit *exec.ExitError
+		require.ErrorAs(t, got.err, &exit)
+		assert.Equal(t, 127, exit.ExitCode())
+	case <-ctx.Done():
+		t.Fatal("storage startup did not finish while the inherited writer was open")
+	}
+	assert.True(t, identity.Runs(), "the writer stays open until the test releases it")
 }

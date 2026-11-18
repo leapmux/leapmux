@@ -217,12 +217,16 @@ func TestClaudeModelEffortGate(t *testing.T) {
 	assert.Equal(t, "can_change_model_and_effort", gate.MetaKey)
 	assert.Equal(t, []string{"--model", "opus"}, gate.Args)
 
-	cmd, _, metaPrefix := launch.Wrap(context.Background(), launch.WrapSpec{
+	prepared, wrapErr := launch.Wrap(context.Background(), launch.WrapSpec{
 		Shell:      "/bin/bash",
 		Launch:     launch.Spec{Program: "claude"},
 		EnvGated:   gate,
 		WorkingDir: "/tmp",
 	})
+	require.NoError(t, wrapErr)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	cmd, metaPrefix := prepared.Cmd, prepared.MetaPrefix
+
 	for _, v := range gate.EnvVars {
 		assert.Contains(t, cmd.Args[2], `[ -n "$`+v+`" ]`)
 	}

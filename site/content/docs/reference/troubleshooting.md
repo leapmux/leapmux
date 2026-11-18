@@ -590,10 +590,12 @@ For how agents work, see [Coding Agents](/docs/using/coding-agents/).
 The **Agent Provider** selector shows **"No agents available"**, or the provider you want (e.g. Codex, Cursor, Pi) is missing from the list.
 
 **Cause**
-A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`, `codewhale`, `kimi`, `mimo`, `qwen`, `omp`, `grok`, `kiro-cli-chat`, `amp`, `cline`) and lists only the ones it finds on `PATH`. ZCode is the exception: it ships no command, so the Worker looks for its desktop installation instead — see the next entry.
+The selected Worker's shell must be able to find the provider's command. It can find an executable on PATH, a profile alias, or a profile function. Discovery starts in a neutral directory, so the picker covers the whole Worker. A relative PATH entry can make a command available only in the checkout where the agent launches.
 
 **Fix**
-Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog.
+Install the CLI on the Worker or define a forwarding alias or function in a profile the Worker's shell loads. Click **"Refresh available providers"** to scan again. A wrapper must run the provider in the foreground, forward the arguments and standard streams, and preserve the provider's exit status. Leave the agent's standard input for the provider when the profile runs.
+
+Agent launches use Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Xonsh, and PowerShell. Nushell 0.114 or newer supports profile wrappers through deferred parsing. Earlier Nushell versions can launch executable commands. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
 
 ### ZCode isn't in the picker
 
@@ -601,10 +603,10 @@ Install the agent's own CLI on the **Worker** machine (not where the browser run
 Every other installed provider appears, but **ZCode** does not.
 
 **Cause**
-ZCode ships no command, so the `PATH` probe cannot find it. LeapMux looks for a `zcode` command first, then for the desktop application's `zcode.cjs`, and it accepts that script only with an interpreter that provides `node:sqlite` — ZCode keeps its session store there. A Worker with an older `node` and no ZCode installation therefore reports nothing.
+LeapMux checks for a `zcode` command in the Worker's shell. It can also find the desktop application's `zcode.cjs` and run it with an interpreter that provides `node:sqlite`. ZCode uses that module for its session store.
 
 **Fix**
-Install the ZCode desktop application on the **Worker** machine, or install Node 24 or newer and put a `zcode` wrapper on the Worker's `PATH`. For an installation in a place LeapMux does not know, set `LEAPMUX_ZCODE_SCRIPT` to the `zcode.cjs` — and `LEAPMUX_ZCODE_NODE` to the interpreter as well, if the one on `PATH` cannot run it.
+Install the desktop application or make a `zcode` command available to the Worker's shell. For a custom installation, set `LEAPMUX_ZCODE_SCRIPT` to the path to `zcode.cjs`. Use `LEAPMUX_ZCODE_NODE` to specify the interpreter when needed. The Worker resolves relative path overrides from its working directory before it checks and launches the interpreter.
 
 ### A ZCode agent reports that ZCode is not configured
 

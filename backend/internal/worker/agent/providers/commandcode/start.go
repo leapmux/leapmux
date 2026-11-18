@@ -41,9 +41,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		"TMPDIR=" + directory, "TMP=" + directory, "TEMP=" + directory,
 		"COMMANDCODE_SCRATCHPAD_BASE=" + directory, "COMMANDCODE_DISABLE_CRON=1", "COMMANDCODE_DISABLE_DURABLE_CRON=1", bridgeSecretEnv + "=" + secret,
 	}
-	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, os.RemoveAll(directory))
+	}
+	delimiter, prefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinnedEnv...)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(directory))
 	}

@@ -61,7 +61,7 @@ const maxCLIStderr = 64 << 10
 
 // RunCLI runs one command and returns what it printed to stdout after the
 // shell wrapper's preamble.
-func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
+func RunCLI(ctx context.Context, run CLIRun) (output []byte, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, run.Timeout)
 	defer cancel()
 
@@ -84,7 +84,7 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 	if env == nil {
 		env = []string{}
 	}
-	cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        shell,
 		LoginShell:   run.LoginShell,
 		Launch:       spec,
@@ -94,11 +94,20 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 		WorkingDir:   workingDir,
 		Environment:  env,
 	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := prepared.Close(); err != nil {
+			output, resultErr = nil, errors.Join(resultErr, err)
+		}
+	}()
+	cmd, delimiter := prepared.Cmd, prepared.Delimiter
 	owner := procutil.PrepareProcess(cmd)
-	var stdout, stderr LimitedBuffer
-	stdout.Limit, stderr.Limit = run.MaxOutput, maxCLIStderr
+	stdout := LimitedBuffer{Limit: run.MaxOutput}
+	stderr := prepared.NewDiagnostics(maxCLIStderr)
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stderr = stderr
 	cmd.Stdin = nil
 	// A process that the CLI leaves behind, or that the login shell's profile
 	// started, inherits stdout and keeps the pipe open after the CLI exits. The
@@ -110,6 +119,9 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 		runErr = owner.Wait()
 	}
 	cleanupErr := owner.Close()
+	stderr.Finish()
+	body, ready := AfterPreamble(stdout.Bytes(), delimiter)
+	runErr = stderr.ExitError(runErr, ready)
 	if errors.Is(runErr, exec.ErrWaitDelay) {
 		runErr = nil
 	}
@@ -122,26 +134,29 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 	if stdout.Truncated {
 		return nil, fmt.Errorf("the output exceeds %d bytes", run.MaxOutput)
 	}
-	return AfterPreamble(stdout.Bytes(), delimiter), nil
+	if !ready {
+		return nil, fmt.Errorf("the shell exited before provider readiness: %s", strings.TrimSpace(stderr.String()))
+	}
+	return body, nil
 }
 
-// AfterPreamble returns the output after the shell wrapper's delimiter line. A
-// login shell's profile can print before it, and the program prints after it.
-// An output with no delimiter comes back whole.
-func AfterPreamble(output []byte, delimiter string) []byte {
+// AfterPreamble finds a complete delimiter line and returns the native output.
+func AfterPreamble(output []byte, delimiter string) ([]byte, bool) {
 	if delimiter == "" {
-		return output
+		return output, true
 	}
 	marker := []byte(delimiter)
-	index := bytes.Index(output, marker)
-	if index < 0 {
-		return output
+	for len(output) != 0 {
+		line, rest, complete := bytes.Cut(output, []byte{'\n'})
+		if !complete {
+			break
+		}
+		if bytes.Equal(bytes.TrimSuffix(line, []byte{'\r'}), marker) {
+			return rest, true
+		}
+		output = rest
 	}
-	rest := output[index+len(marker):]
-	if newline := bytes.IndexByte(rest, '\n'); newline >= 0 {
-		return rest[newline+1:]
-	}
-	return nil
+	return nil, false
 }
 
 // LimitedBuffer keeps at most Limit bytes and records whether it dropped any.

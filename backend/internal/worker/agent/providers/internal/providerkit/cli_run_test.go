@@ -18,11 +18,28 @@ import (
 
 func TestAfterPreamble(t *testing.T) {
 	t.Parallel()
-	const delimiter = "__LEAPMUX_DELIMITER__"
-	assert.Equal(t, "[]\n", string(AfterPreamble([]byte("motd\n"+delimiter+"\n[]\n"), delimiter)))
-	assert.Equal(t, "[]", string(AfterPreamble([]byte("[]"), delimiter)), "output with no delimiter stays whole")
-	assert.Empty(t, AfterPreamble([]byte("motd\n"+delimiter), delimiter), "a delimiter with no line after it leaves nothing")
-	assert.Equal(t, "x", string(AfterPreamble([]byte("x"), "")), "no delimiter to look for keeps the output")
+	const delimiter = "LEAPMUX_DELIMITER"
+	for _, test := range []struct {
+		name      string
+		input     string
+		delimiter string
+		output    string
+		ready     bool
+	}{
+		{"returns the provider output", "motd\n" + delimiter + "\n[]\n", delimiter, "[]\n", true},
+		{"accepts CRLF and empty output", "motd\r\n" + delimiter + "\r\n", delimiter, "", true},
+		{"rejects an absent delimiter", "[]", delimiter, "", false},
+		{"rejects an unterminated delimiter", "motd\n" + delimiter, delimiter, "", false},
+		{"rejects an embedded delimiter", "motd" + delimiter + "\n[]\n", delimiter, "", false},
+		{"accepts raw output without a preamble", "x", "", "x", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			output, ready := AfterPreamble([]byte(test.input), test.delimiter)
+			assert.Equal(t, test.output, string(output))
+			assert.Equal(t, test.ready, ready)
+		})
+	}
 }
 
 func TestLimitedBufferKeepsItsLimit(t *testing.T) {

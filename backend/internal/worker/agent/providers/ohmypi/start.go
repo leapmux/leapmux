@@ -138,7 +138,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, errors.Join(fmt.Errorf("write the Oh My Pi runtime configuration: %w", err), directory.Close())
 	}
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
@@ -146,9 +146,16 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		BaseArgs:     append(launchArgs(opts, resume), "--config", configPath),
 		WorkingDir:   opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, directory.Close())
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, errors.Join(err, directory.Close())
 	}

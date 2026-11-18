@@ -41,10 +41,14 @@ func ShellEnv(ctx context.Context, opts ShellEnvOptions) (envprobe.Snapshot, Pro
 	if workingDir == "" {
 		workingDir = os.TempDir()
 	}
-	cmd, _, _ := Wrap(ctx, WrapSpec{
+	prepared, err := Wrap(ctx, WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, WorkingDir: workingDir,
 		Launch: Spec{Program: executable}, BaseArgs: args,
 	})
+	if err != nil {
+		return envprobe.Snapshot{}, ProbeUnknown
+	}
+	cmd := prepared.Cmd
 	if opts.Env != nil {
 		cmd.Env = append([]string{}, opts.Env...)
 	}
@@ -57,7 +61,7 @@ func ShellEnv(ctx context.Context, opts ShellEnvOptions) (envprobe.Snapshot, Pro
 	if runErr == nil {
 		runErr = owner.Wait()
 	}
-	cleanupErr := owner.Close()
+	cleanupErr := errors.Join(owner.Close(), prepared.Close())
 	if errors.Is(runErr, exec.ErrWaitDelay) {
 		runErr = nil
 	}

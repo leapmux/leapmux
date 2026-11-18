@@ -3,9 +3,13 @@ package copilot
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/require"
 )
@@ -68,6 +72,31 @@ func TestCopilotFramingAcceptsHeaderCaseAndContentType(t *testing.T) {
 	scanner := newCopilotScanner(strings.NewReader("content-length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}"), "", 100)
 	require.True(t, scanner.Scan())
 	require.Equal(t, "{}", scanner.Text())
+	require.False(t, scanner.Scan())
+	require.NoError(t, scanner.Err())
+}
+
+func TestProfileCommandCopilotFramingAfterAnUnterminatedBanner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell profile")
+	}
+	shell := filepath.Join(t.TempDir(), "profile-shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nprintf 'profile message'\nexec /bin/sh \"$@\"\n")
+	payload := []byte(`{"text":"한글"}`)
+	prepared, wrapErr := launch.Wrap(t.Context(), launch.WrapSpec{
+		Shell: shell, Launch: launch.Spec{Program: "/usr/bin/printf"}, BaseArgs: []string{"%s", string(frameCopilotJSON(payload))},
+	})
+	require.NoError(t, wrapErr)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	cmd, delimiter := prepared.Cmd, prepared.Delimiter
+
+	output, err := cmd.Output()
+	require.NoError(t, err)
+	scanner := newCopilotScanner(bytes.NewReader(output), delimiter, 1024)
+	process := providerkit.NewProcessFrom(providerkit.ProcessConfig{PreambleDelimiter: delimiter})
+	process.SkipPreambleForTest(scanner)
+	require.True(t, scanner.Scan(), "%q", output)
+	require.Equal(t, payload, scanner.Bytes())
 	require.False(t, scanner.Scan())
 	require.NoError(t, scanner.Err())
 }

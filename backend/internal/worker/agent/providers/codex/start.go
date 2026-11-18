@@ -103,7 +103,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
@@ -113,6 +113,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		BaseArgs:   codexBaseArgs(),
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	if opts.LoginShell {
@@ -120,7 +126,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}

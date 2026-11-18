@@ -1072,7 +1072,7 @@ func TestAgent_LeapMuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
 
 	// With login shell - verify the env is set on the command.
-	shellCmd, _, _ := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, wrapErr := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        testutil.TestShell(),
 		LoginShell:   true,
 		Launch:       launch.Spec{Program: "claude"},
@@ -1081,6 +1081,10 @@ func TestAgent_LeapMuxWorkerEnvAlwaysSet(t *testing.T) {
 		EnvGated:     claudeModelEffortGate([]string{"--model", "test"}),
 		WorkingDir:   t.TempDir(),
 	})
+	require.NoError(t, wrapErr)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	shellCmd := prepared.Cmd
+
 	shellCmd.Env = envutil.FilterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
 

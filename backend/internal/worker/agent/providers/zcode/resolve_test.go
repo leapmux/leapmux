@@ -133,7 +133,7 @@ func TestResolveZCodeLaunch_PathLauncherWins(t *testing.T) {
 
 	spec, res := stub.resolve(t)
 	assert.Equal(t, launch.Found, res)
-	assert.Equal(t, "zcode", spec.Program)
+	assert.Equal(t, launch.ShellCommands("zcode"), spec)
 	assert.Empty(t, spec.PrefixArgs, "a launcher takes the app-server arguments directly")
 	assert.Empty(t, spec.Env)
 	assert.Empty(t, stub.calls, "a PATH launcher needs no interpreter probe at all")
@@ -362,22 +362,22 @@ func TestResolveZCodeLaunch_ScriptOverrideReplacesDiscovery(t *testing.T) {
 	t.Run("a script that exists is used", func(t *testing.T) {
 		t.Parallel()
 		stub := newZCodeStubDeps()
-		stub.env[zcodeScriptEnvOverride] = "  /custom/zcode.cjs  "
-		stub.files["/custom/zcode.cjs"] = true
-		for _, p := range bundledRuntimeCandidates("/custom/zcode.cjs") {
+		stub.env[zcodeScriptEnvOverride] = "  " + testutil.NativeAbsPath("/custom/zcode.cjs") + "  "
+		stub.files[testutil.NativeAbsPath("/custom/zcode.cjs")] = true
+		for _, p := range bundledRuntimeCandidates(testutil.NativeAbsPath("/custom/zcode.cjs")) {
 			stub.files[p] = true
 			stub.interpreters[p] = launch.ProbeYes
 		}
 
 		spec, res := stub.resolve(t)
 		assert.Equal(t, launch.Found, res)
-		assert.Equal(t, []string{"/custom/zcode.cjs"}, spec.PrefixArgs, "the value is trimmed")
+		assert.Equal(t, []string{testutil.NativeAbsPath("/custom/zcode.cjs")}, spec.PrefixArgs, "the value is trimmed")
 	})
 
 	t.Run("a script that does not exist is missing, not a fall-through", func(t *testing.T) {
 		t.Parallel()
 		stub := newZCodeStubDeps()
-		stub.env[zcodeScriptEnvOverride] = "/typo/zcode.cjs"
+		stub.env[zcodeScriptEnvOverride] = testutil.NativeAbsPath("/typo/zcode.cjs")
 		stub.nameProbe = launch.ProbeYes // a launcher that WOULD have been found
 		script, bundled := zcodeStubScript()
 		stub.files[script] = true
@@ -403,21 +403,21 @@ func TestResolveZCodeLaunch_NodeOverrideReplacesInterpreterDiscovery(t *testing.
 		t.Parallel()
 		stub := newZCodeStubDeps()
 		stub.files[script] = true
-		stub.env[zcodeNodeEnvOverride] = "  /custom/node  "
-		stub.interpreters["/custom/node"] = launch.ProbeYes
+		stub.env[zcodeNodeEnvOverride] = "  " + testutil.NativeAbsPath("/custom/node") + "  "
+		stub.interpreters[testutil.NativeAbsPath("/custom/node")] = launch.ProbeYes
 
 		spec, res := stub.resolve(t)
 		assert.Equal(t, launch.Found, res)
-		assert.Equal(t, "/custom/node", spec.Program)
-		assert.Equal(t, []string{"/custom/node"}, stub.calls)
+		assert.Equal(t, testutil.NativeAbsPath("/custom/node"), spec.Program)
+		assert.Equal(t, []string{testutil.NativeAbsPath("/custom/node")}, stub.calls)
 	})
 
 	t.Run("an override that cannot work fails resolution", func(t *testing.T) {
 		t.Parallel()
 		stub := newZCodeStubDeps()
 		stub.files[script] = true
-		stub.env[zcodeNodeEnvOverride] = "/custom/node"
-		stub.interpreters["/custom/node"] = launch.ProbeNo
+		stub.env[zcodeNodeEnvOverride] = testutil.NativeAbsPath("/custom/node")
+		stub.interpreters[testutil.NativeAbsPath("/custom/node")] = launch.ProbeNo
 		// A bundled runtime that WOULD have worked.
 		for _, p := range bundled {
 			stub.files[p] = true
@@ -428,7 +428,7 @@ func TestResolveZCodeLaunch_NodeOverrideReplacesInterpreterDiscovery(t *testing.
 		assert.Equal(t, launch.Missing, res,
 			"the specified interpreter is the answer; discovery must not run behind it")
 		assert.Empty(t, spec.Program)
-		assert.Equal(t, []string{"/custom/node"}, stub.calls)
+		assert.Equal(t, []string{testutil.NativeAbsPath("/custom/node")}, stub.calls)
 	})
 
 	// A specified interpreter that proves nothing is retryable, not missing.
@@ -436,8 +436,8 @@ func TestResolveZCodeLaunch_NodeOverrideReplacesInterpreterDiscovery(t *testing.
 		t.Parallel()
 		stub := newZCodeStubDeps()
 		stub.files[script] = true
-		stub.env[zcodeNodeEnvOverride] = "/custom/node"
-		stub.interpreters["/custom/node"] = launch.ProbeUnknown
+		stub.env[zcodeNodeEnvOverride] = testutil.NativeAbsPath("/custom/node")
+		stub.interpreters[testutil.NativeAbsPath("/custom/node")] = launch.ProbeUnknown
 
 		_, res := stub.resolve(t)
 		assert.Equal(t, launch.Unknown, res)
@@ -448,8 +448,8 @@ func TestResolveZCodeLaunch_NodeOverrideReplacesInterpreterDiscovery(t *testing.
 	t.Run("an override with no script anywhere is missing", func(t *testing.T) {
 		t.Parallel()
 		stub := newZCodeStubDeps()
-		stub.env[zcodeNodeEnvOverride] = "/custom/node"
-		stub.interpreters["/custom/node"] = launch.ProbeYes
+		stub.env[zcodeNodeEnvOverride] = testutil.NativeAbsPath("/custom/node")
+		stub.interpreters[testutil.NativeAbsPath("/custom/node")] = launch.ProbeYes
 
 		_, res := stub.resolve(t)
 		assert.Equal(t, launch.Missing, res)
@@ -1027,4 +1027,61 @@ func TestZCodeAppVersionCache_CoalescesConcurrentArchiveReads(t *testing.T) {
 		assert.Equal(t, "3.16.3", cache.load(key, reader))
 		assert.Equal(t, int32(2), reads.Load())
 	})
+}
+
+func TestZCodeProfileWrapperRemainsCallableAtLaunch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a Bash profile fixture")
+	}
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile")
+	const body = "zcode() { printf 'profile zcode %s\\n' \"$1\"; }\n"
+	require.NoError(t, os.WriteFile(profile, []byte(body), 0o600))
+	t.Setenv("BASH_ENV", profile)
+	t.Setenv(zcodeScriptEnvOverride, "")
+	t.Setenv(zcodeNodeEnvOverride, "")
+	t.Setenv("PATH", dir)
+
+	spec, status := resolveZCodeLaunch(t.Context(), shell, false)
+	require.Equal(t, launch.Found, status)
+	prepared, err := launch.Wrap(t.Context(), launch.WrapSpec{Shell: shell, Launch: spec, BaseArgs: []string{"app-server"}, WorkingDir: dir})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	output, err := prepared.Cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	assert.Contains(t, string(output), prepared.Delimiter+"\nprofile zcode app-server\n")
+}
+
+func TestZCodeRelativeOverridesResolveAgainstTheWorker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX interpreter fixture")
+	}
+	worker := t.TempDir()
+	t.Chdir(worker)
+	checkout := t.TempDir()
+	for _, dir := range []string{worker, checkout} {
+		require.NoError(t, os.Mkdir(filepath.Join(dir, "runtime"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "runtime", "server.cjs"), []byte(dir), 0o600))
+	}
+	testutil.WriteExecutable(t, filepath.Join(worker, "runtime", "node"),
+		"#!/bin/sh\nif [ \"$1\" = -e ]; then [ \"$2\" = \"require('node:sqlite')\" ]; exit $?; fi\nprintf 'worker interpreter: %s|%s\\n' \"$1\" \"$2\"\n")
+	testutil.WriteExecutable(t, filepath.Join(checkout, "runtime", "node"), "#!/bin/sh\nprintf 'wrong interpreter\\n'\nexit 47\n")
+	t.Setenv(zcodeScriptEnvOverride, "./runtime/server.cjs")
+	t.Setenv(zcodeNodeEnvOverride, "./runtime/node")
+	spec, status := resolveZCodeLaunch(t.Context(), "/bin/sh", false)
+	require.Equal(t, launch.Found, status)
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(cwd, "runtime", "node"), spec.Program)
+	require.Equal(t, []string{filepath.Join(cwd, "runtime", "server.cjs")}, spec.PrefixArgs)
+	prepared, err := launch.Wrap(t.Context(), launch.WrapSpec{
+		Shell: "/bin/sh", Launch: spec, BaseArgs: []string{"app-server"}, WorkingDir: checkout,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	output, err := prepared.Cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	assert.Contains(t, string(output), "worker interpreter: "+spec.PrefixArgs[0]+"|app-server\n")
 }

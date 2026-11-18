@@ -39,7 +39,7 @@ const lettaDisableAutoUpdaterEnv = "DISABLE_AUTOUPDATER=1"
 // startServer runs the App Server and completes the protocol_v2 handshake.
 func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec launch.Spec, shutdownGrace time.Duration) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     spec,
@@ -47,9 +47,16 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		SetEnv:     []string{lettaDisableAutoUpdaterEnv},
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 	taskLogRoot, taskLogDirect := lettaTaskLogRoot(cmd.Env)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		cancel()
 		return nil, err

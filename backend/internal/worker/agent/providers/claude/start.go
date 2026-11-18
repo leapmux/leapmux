@@ -165,7 +165,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if !thirdPartyFromSettings {
 		modelEffortGate = claudeModelEffortGate(modelEffortArgs)
 	}
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
@@ -175,13 +175,19 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		EnvGated:     modelEffortGate,
 		WorkingDir:   opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 
 	cmd.Env = claudeAgentEnv(cmd.Environ(), opts.LoginShell)
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
 
 	// providerkit.SetupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
 	// stdin/stdout/stderr pipes.
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +232,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// tear down the just-spawned process so no orphan process or goroutine survives.
 	if err := a.runStartupHandshake(ctx, opts); err != nil {
 		cleanup()
-		return nil, err
+		return nil, a.FormatStartupError("", err)
 	}
 	a.sink.UpdateSessionID(a.sessionID)
 
@@ -253,7 +259,7 @@ func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) err
 	agent.TraceStartupPhase(opts.AgentID, "before_initialize")
 	initResp, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout)
 	if err != nil {
-		return a.FormatStartupError("initialize", err)
+		return fmt.Errorf("initialize: %w", err)
 	}
 	agent.TraceStartupPhase(opts.AgentID, "after_initialize")
 
@@ -283,7 +289,7 @@ func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) err
 	// applyStartupPermissionMode records the acknowledged mode as the confirmed one, so
 	// this discards the response rather than writing the field a second time.
 	if _, err := a.applyStartupPermissionMode(ctx, cmp.Or(opts.PermissionMode(), contracts.ClaudeModeDefault), timeout); err != nil {
-		return a.FormatStartupError("set_permission_mode", err)
+		return fmt.Errorf("set_permission_mode: %w", err)
 	}
 	agent.TraceStartupPhase(opts.AgentID, "after_permission_mode")
 

@@ -1,11 +1,16 @@
 package qoder
 
 import (
+	"runtime"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestQoderPermissionFlagCoversEveryMode pins the launch word of each offered
@@ -40,4 +45,19 @@ func TestQoderAgentEnvDoesNotRestoreTheRemovedSDKWorkerMode(t *testing.T) {
 	})
 	assert.NotContains(t, env, "QODER_AGENT_SDK_ENTRYPOINT=1")
 	assert.Contains(t, env, `QODER_JOB_TOKEN={"token":"controlled-key"}`)
+}
+
+func TestQoderStartupReportsTheMissingCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses an isolated POSIX PATH")
+	}
+	t.Setenv("PATH", t.TempDir())
+	home := t.TempDir()
+	started, err := Start(t.Context(), agent.Options{
+		AgentID: "missing-qoder", HomeDir: home, WorkingDir: home, Shell: "/bin/sh",
+		StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.Nil(t, started)
+	require.ErrorIs(t, err, launch.ErrNoCandidate)
+	assert.ErrorContains(t, err, "(qodercli)")
 }

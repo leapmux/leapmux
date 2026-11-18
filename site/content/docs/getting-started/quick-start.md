@@ -13,7 +13,7 @@ Both paths run LeapMux in **solo mode** — a Hub and a Worker running together 
 
 ## Before you begin
 
-LeapMux launches agents by running the provider's own command-line tool on the Worker. A provider only appears in the picker if its CLI is already installed and on your `PATH`. For this quick start, install at least one supported agent CLI — for example **Claude Code** (the `claude` binary). The full list of supported providers and their binaries is in [Coding Agents](/docs/using/coding-agents/).
+LeapMux launches agents with the provider's command-line tool on the Worker. For this quick start, install a supported agent CLI and make it available to the Worker's shell. For example, install Claude Code and make `claude` available on PATH. A shell profile can also supply the command through an alias or function. See the list of provider commands in [Coding Agents](/docs/using/coding-agents/).
 
 ## Path A — Desktop app
 
@@ -105,7 +105,7 @@ A **workspace** is the top-level container that holds your tiling layout. To cre
 
 - **Title** — defaults to a random three-word name; click **"Generate random name"** to regenerate, or type your own.
 - **Worker** — which machine hosts the agent. In solo mode there is one local Worker, already selected.
-- **Agent Provider** — the agent backend (for example **Claude Code**).
+- **Agent Provider** — choose a provider from the selected Worker’s list. If the button reads **"No agents available"**, make a provider command available to that Worker and click **"Refresh available providers"**.
 - **Directory** — the working directory on the Worker.
 - **Resume an existing session** *(optional)* — pick an earlier session for that directory, or leave it on **"Start a new session"**.
 - **Git options** — appears once a Worker is chosen (see step 5).

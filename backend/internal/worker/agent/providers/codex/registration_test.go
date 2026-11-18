@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,26 +33,27 @@ func TestRegistrationLocatesEachContractExecutableInOrder(t *testing.T) {
 		{"both names", []string{hostTriple, preferred}, preferred},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The probe caches each answer by the shell path, so each case takes a
-			// shell path of its own. Another test's answer then cannot stand in for
-			// this probe.
 			shell := uniqueShell(t)
 			directory := t.TempDir()
 			for _, name := range tc.present {
 				filename := name
+				script := "#!/bin/sh\nprintf '%s\\n' '" + name + "'\n"
 				if runtime.GOOS == "windows" {
-					// PowerShell resolves through PATHEXT, so an executable on
-					// Windows carries a suffix the contract's neutral name does
-					// not state. Get-Command only resolves; it never runs it.
-					filename += ".exe"
+					filename += ".cmd"
+					script = "@echo off\r\necho " + name + "\r\n"
 				}
-				testutil.WriteExecutable(t, filepath.Join(directory, filename), "#!/bin/sh\nexit 0\n")
+				testutil.WriteExecutable(t, filepath.Join(directory, filename), script)
 			}
 			t.Setenv("PATH", directory)
 
-			spec, err := Registration().Locator.Resolve(context.Background(), shell, false, "Codex")
+			spec, err := Registration().Locator.Resolve(t.Context(), shell, false, "Codex")
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, spec.Program)
+			prepared, err := launch.Wrap(t.Context(), launch.WrapSpec{Shell: shell, Launch: spec})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+			output, err := prepared.Cmd.Output()
+			require.NoError(t, err)
+			assert.Contains(t, string(output), tc.want)
 		})
 	}
 }
@@ -61,14 +62,8 @@ func TestRegistrationLocatesEachContractExecutableInOrder(t *testing.T) {
 func uniqueShell(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		// Each case must probe through a shell path no other case used: the
-		// probe answer cache keys on the path, and the cases seed different
-		// PATHs for the same names. A case variant of the one system path
-		// names the same shell in its own directory -- NTFS preserves case but
-		// matches it insensitively -- so every variant launches exactly the
-		// shell the probe uses in production. Linking the shell into the test's
-		// temp directory instead would run it from a directory its engine
-		// assemblies do not live in.
+		// A case variant keeps the Windows shell in the directory where it
+		// loads its engine assemblies.
 		shell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 		return caseVariant(shell, windowsShellSerial.Add(1))
 	}

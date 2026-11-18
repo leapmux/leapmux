@@ -737,6 +737,20 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	}
 }
 
+func TestListAvailableProvidersReportsAnIncompleteScanToTheOwner(t *testing.T) {
+	t.Parallel()
+	_, dispatcher, _ := setupTestService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	writer := newTestWriter()
+	dispatchTestRequest(dispatcher, ctx, channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+		Method: leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure,
+	}, writer)
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.Unavailable), writer.errors[0].code)
+	assert.Empty(t, writer.responses)
+}
+
 // TestListAvailableShells_OwnerAllowed pins the ALLOW side of the owner gate
 // that registerOwnerGuarded puts the capability probes behind: the worker owner
 // (the identity the local-IPC remote CLI dispatches with) must still be able

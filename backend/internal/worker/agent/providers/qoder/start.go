@@ -88,7 +88,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	workerArgs = append(workerArgs, qoderOutputStyleArgs(outputStyle)...)
 	workerArgs = append(workerArgs, sessionArgs...)
 
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
@@ -97,16 +97,22 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		WorkingDir:   opts.WorkingDir,
 		SetEnv:       qoderLaunchEnvPins,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 
 	cmd.Env = qoderAgentEnv(cmd.Environ())
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
 	credentials, err := qoderCredentialsFromEnv(cmd.Env)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, errors.Join(err, prepared.Close())
 	}
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -137,9 +143,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	go a.readOutputLoop(scanner)
 
 	if err := a.startDaemon(workerArgs); err != nil {
-		cancel()
+		a.Process.Stop()
 		_ = a.Wait()
-		return nil, err
+		return nil, a.FinalizeStartupCause(err)
 	}
 	// The account quota arrives in the background, so it delays no startup.
 	go a.refreshUsageLoop()

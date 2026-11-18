@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +60,9 @@ func TestZCodeStartupProcess(t *testing.T) {
 	encoder := json.NewEncoder(os.Stdout)
 	decoder := json.NewDecoder(os.Stdin)
 	if slices.Contains(os.Args, "--prepare-storage") {
+		if os.Getenv("LEAPMUX_ZCODE_FIXTURE_STORAGE_FAILURE") == "1" {
+			os.Exit(47)
+		}
 		_ = encoder.Encode(map[string]any{"method": zcodeStoragePathMethod, "params": map[string]string{"path": os.Getenv("LEAPMUX_ZCODE_FIXTURE_DATABASE")}})
 		var acknowledgement any
 		if decoder.Decode(&acknowledgement) != nil {
@@ -281,4 +286,96 @@ func TestZCodeModelRepair_AnExplicitlyEmptyCatalogMarksTheModelUnresolved(t *tes
 		MethodSessionCreate, MethodSetMode, MethodSessionSubscribe,
 	}, "\n"), zcodeStartupCalls(t, calls),
 		"an explicitly empty catalog makes no setter call")
+}
+
+func TestZCodeNushellLaunchFilesFollowTheProcessOwnership(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses an isolated Unix Nushell configuration")
+	}
+	shell, err := exec.LookPath("nu")
+	if err != nil {
+		t.Skip("Nushell is unavailable")
+	}
+	for _, test := range []struct {
+		name, catalog, wantError       string
+		profileFailure, storageFailure bool
+	}{
+		{name: "account probe rolls back the main files", wantError: "shell did not report its account environment", profileFailure: true},
+		{name: "malformed catalog rolls back the main files", catalog: "{", wantError: "parse"},
+		{name: "storage failure releases both sets of files", wantError: "resolve the ZCode native store", storageFailure: true},
+		{name: "successful handoff transfers only the main files"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts, _ := zcodeStartupFixture(t, test.catalog)
+			original, err := zcodeLocator.Resolve(t.Context(), opts.Shell, false, "ZCode test peer")
+			require.NoError(t, err)
+			opts.Shell, opts.LoginShell = shell, true
+			root := t.TempDir()
+			configRoot := filepath.Join(root, "config")
+			require.NoError(t, os.MkdirAll(filepath.Join(configRoot, "nushell"), 0o700))
+			t.Setenv("TMPDIR", root)
+			opts.ExtraEnv = append(opts.ExtraEnv, "XDG_CONFIG_HOME="+configRoot)
+			witness := filepath.Join(root, "preparations.jsonl")
+			const candidate = "leapmux-zcode-test-peer"
+			pattern := filepath.Join(root, "leapmux-nu-launch-*")
+			profile := "let paths = (glob " + strconv.Quote(pattern) + " | sort | to json -r)\n" +
+				"$\"($paths)(char nl)\" | save --append " + strconv.Quote(witness) + "\n"
+			if test.profileFailure {
+				profile += "exit 41\n"
+			}
+			profile += "def --wrapped " + candidate + " [...arguments: string] { ^" + strconv.Quote(original.Program) +
+				" '-test.run=^TestZCodeStartupProcess$' '--' ...$arguments }\n"
+			require.NoError(t, os.WriteFile(filepath.Join(configRoot, "nushell", "config.nu"), []byte(profile), 0o600))
+			if test.storageFailure {
+				opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_STORAGE_FAILURE=1")
+			}
+			spec := launch.ShellCommands(candidate)
+			spec.Env = original.Env
+			zcodeLocator = launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+				return spec, launch.Found
+			})
+
+			started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+			if started != nil {
+				t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+			}
+			if test.wantError == "" {
+				require.NoError(t, err)
+				require.NotNil(t, started)
+			} else {
+				require.ErrorContains(t, err, test.wantError)
+				require.Nil(t, started)
+			}
+			data, err := os.ReadFile(witness)
+			require.NoError(t, err)
+			var observed [][]string
+			for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+				var paths []string
+				require.NoError(t, json.Unmarshal([]byte(line), &paths))
+				observed = append(observed, paths)
+			}
+			require.NotEmpty(t, observed)
+			require.Len(t, observed[0], 1, "the account probe must see the main preparation")
+			mainPath := observed[0][0]
+			if test.storageFailure || test.wantError == "" {
+				require.GreaterOrEqual(t, len(observed), 2)
+				require.Len(t, observed[1], 2, "the storage query must see two distinct preparations")
+				require.Contains(t, observed[1], mainPath)
+				for _, path := range observed[1] {
+					if path != mainPath {
+						assert.NoDirExists(t, path)
+					}
+				}
+			}
+			if started != nil {
+				assert.FileExists(t, filepath.Join(mainPath, candidate+".nu"))
+				started.Stop()
+				_ = started.Wait()
+			}
+			assert.NoDirExists(t, mainPath)
+			leftover, err := filepath.Glob(pattern)
+			require.NoError(t, err)
+			assert.Empty(t, leftover)
+		})
+	}
 }

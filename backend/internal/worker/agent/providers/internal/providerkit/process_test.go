@@ -1,11 +1,17 @@
 package providerkit
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,4 +89,41 @@ func TestProcessExitErrorReadsWhileStartupDiagnosticsChange(t *testing.T) {
 		process.recordProcessExit(diagnostic)
 	}
 	assert.True(t, <-read)
+}
+
+func TestProfileCommandPreambleAfterAnUnterminatedBanner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell profile")
+	}
+	shell := filepath.Join(t.TempDir(), "profile-shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nprintf 'profile message'\nexec /bin/sh \"$@\"\n")
+	const payload = "provider first line"
+	prepared, wrapErr := launch.Wrap(t.Context(), launch.WrapSpec{
+		Shell: shell, Launch: launch.Spec{Program: "/bin/echo"},
+		BaseArgs: []string{payload}, EnvGated: &launch.EnvGatedArgs{EnvVars: []string{"LEAPMUX_TEST_HIDE"}, MetaKey: "check"},
+		SetEnv: []string{"LEAPMUX_TEST_HIDE=1"},
+	})
+	require.NoError(t, wrapErr)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	cmd, delimiter, prefix := prepared.Cmd, prepared.Delimiter, prepared.MetaPrefix
+
+	output, err := cmd.Output()
+	require.NoError(t, err)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	process := NewProcessFrom(ProcessConfig{PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix})
+	process.SkipPreambleForTest(scanner)
+	assert.Equal(t, "profile message", process.PreambleOutput())
+	assert.Equal(t, "false", process.PreambleMetaValue("check"))
+	require.True(t, scanner.Scan(), "%q", output)
+	assert.Equal(t, payload, scanner.Text())
+}
+
+func TestFinalizeStartupCauseKeepsTheProtocolErrorUnlessSelectionFailed(t *testing.T) {
+	t.Parallel()
+	process := &Process{}
+	timeout := errors.New("test request timed out")
+	process.recordProcessExit(errors.New("cleanup terminated shell"))
+	assert.ErrorIs(t, process.FinalizeStartupCause(timeout), timeout)
+	process.recordProcessExit(fmt.Errorf("the shell did not find first or second: %w", launch.ErrNoCandidate))
+	assert.ErrorIs(t, process.FinalizeStartupCause(errors.New("broken pipe")), launch.ErrNoCandidate)
 }

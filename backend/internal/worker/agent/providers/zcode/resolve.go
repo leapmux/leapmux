@@ -131,17 +131,21 @@ func resolveZCodeLaunchWith(
 	// 1. Explicit override. It replaces discovery, so a wrong value is an error the user
 	// can see rather than a silent fall-through to a different installation.
 	if script := strings.TrimSpace(deps.getenv(zcodeScriptEnvOverride)); script != "" {
-		if !deps.fileExists(script) {
+		absoluteScript, err := absoluteOverridePath(script)
+		if err != nil {
+			return launch.Spec{}, launch.Unknown
+		}
+		if !deps.fileExists(absoluteScript) {
 			return launch.Spec{}, launch.Missing
 		}
 		// No PATH probe ran, so nothing about it is inconclusive.
-		return resolveZCodeInterpreter(ctx, shellPath, loginShell, script, deps, false)
+		return resolveZCodeInterpreter(ctx, shellPath, loginShell, absoluteScript, deps, false)
 	}
 
 	// 2. A `zcode` launcher on PATH.
 	onPath := deps.probeName(ctx, shellPath, loginShell, zcodeBinaryCandidates[0])
 	if onPath == launch.ProbeYes {
-		spec := launch.Spec{Program: zcodeBinaryCandidates[0]}
+		spec := launch.ShellCommands(zcodeBinaryCandidates...)
 		if script, found := findZCodeScript(deps.fileExists); found {
 			spec.Env = zcodeProviderConfigEnv(script, deps)
 		}
@@ -162,6 +166,15 @@ func resolveZCodeLaunchWith(
 	// Keep the result inconclusive if neither the launcher probe nor the
 	// interpreter search can establish whether ZCode is usable.
 	return resolveZCodeInterpreter(ctx, shellPath, loginShell, script, deps, !onPath.Settled())
+}
+
+// Resolve path overrides against the Worker before the probe and the
+// app-server start in their own directories.
+func absoluteOverridePath(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	return filepath.Abs(path)
 }
 
 // zcodeInterpreter is one candidate program that might be able to run zcode.cjs.
@@ -211,6 +224,12 @@ func resolveZCodeInterpreter(
 			}
 			if result == launch.ProbeNo {
 				return launch.Spec{}, search.result()
+			}
+			node = path
+		} else {
+			path, err := absoluteOverridePath(node)
+			if err != nil {
+				return launch.Spec{}, launch.Unknown
 			}
 			node = path
 		}

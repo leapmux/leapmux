@@ -5,6 +5,7 @@ package providerkit
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
@@ -27,7 +29,13 @@ func fakeProgram(t *testing.T, body string) launch.Locator {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "tool")
 	testutil.WriteExecutable(t, path, "#!/bin/sh\n"+body+"\n")
-	return launch.Binaries(path)
+	return directCommandLocator(path)
+}
+
+func directCommandLocator(path string) launch.Locator {
+	return launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		return launch.Spec{Program: path}, launch.Found
+	})
 }
 
 func TestRunCLIReturnsWhatTheProgramPrinted(t *testing.T) {
@@ -124,7 +132,7 @@ func TestRunCLIStopsAProgramThatDoesNotAnswer(t *testing.T) {
 func TestRunCLIReportsAProgramItCannotFind(t *testing.T) {
 	t.Parallel()
 	_, err := RunCLI(context.Background(), CLIRun{
-		Locator: launch.Binaries(filepath.Join(t.TempDir(), "absent")), Label: "Tool", Shell: "/bin/sh",
+		Locator: directCommandLocator(filepath.Join(t.TempDir(), "absent")), Label: "Tool", Shell: "/bin/sh",
 		Timeout: 30 * time.Second, MaxOutput: 1 << 10,
 	})
 	require.Error(t, err)
@@ -201,4 +209,36 @@ func TestRunCLIRunsWithTheScrubbedEnvironment(t *testing.T) {
 	assert.Equal(t, "unset|unset|1\n", string(output))
 	assert.False(t, envutil.HasKey(hookSaw, "GROK_SESSION_ID"), "the hook sees the scrubbed environment")
 	assert.False(t, envutil.HasKey(hookSaw, contracts.EnvAgentHelper))
+}
+
+func TestRunCLIRefusesAProfileThatExitsBeforeReadiness(t *testing.T) {
+	t.Parallel()
+	shell := filepath.Join(t.TempDir(), "early-exit-shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nprintf 'profile banner'\nexit 0\n")
+	result, err := RunCLI(t.Context(), CLIRun{
+		Locator: launch.Binaries("leapmux-tool"), Label: "Tool", Shell: shell,
+		Timeout: 30 * time.Second, MaxOutput: 1024,
+	})
+	require.ErrorContains(t, err, "before provider readiness")
+	require.Empty(t, result)
+}
+
+func TestRunCLISelectsAProfileCommandWithoutStartingAScan(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile")
+	calls := filepath.Join(dir, "calls")
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(profile, []byte("printf 'profile\\n' >> "+shellquote.POSIX.Quote(calls)+
+		"\nleapmux_cli_second() { printf 'found %s\\n' \"$1\"; }\n"), 0o600))
+	t.Setenv("BASH_ENV", profile)
+	out, err := RunCLI(t.Context(), CLIRun{
+		Locator: launch.Binaries("leapmux_cli_first", "leapmux_cli_second"), Label: "Tool", Shell: shell,
+		Args: []string{"history"}, Timeout: 30 * time.Second, MaxOutput: 1024,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "found history\n", string(out))
+	data, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	assert.Equal(t, "profile\n", string(data))
 }

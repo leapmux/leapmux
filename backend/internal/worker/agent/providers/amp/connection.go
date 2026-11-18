@@ -171,7 +171,7 @@ func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampP
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        a.launch.opts.Shell,
 		LoginShell:   a.launch.opts.LoginShell,
 		Launch:       a.launch.spec,
@@ -180,9 +180,16 @@ func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampP
 		BaseArgs:     launchArgs(threadID, config, settingsPath),
 		WorkingDir:   a.launch.opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = a.launch.processEnv(cmd.Environ())
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}

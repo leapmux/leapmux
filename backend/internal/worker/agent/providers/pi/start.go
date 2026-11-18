@@ -89,16 +89,23 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Pi has no --working-dir flag (it uses the process cwd). Wrap
 	// already sets cmd.Dir to opts.WorkingDir, so the agent picks up the right
 	// directory implicitly.
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launchSpec,
 		BaseArgs:   append([]string{"--mode", "rpc"}, resumeArgs...),
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}

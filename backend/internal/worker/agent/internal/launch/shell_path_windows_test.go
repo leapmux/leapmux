@@ -81,7 +81,6 @@ func TestWindowsScanAndLaunchUseUpdatedSavedPath(t *testing.T) {
 	assert.Equal(t, []Resolution{Unknown, Unknown}, ScanAvailability(t.Context(), powershell, false, list))
 	spec, err := Binaries(oldProvider, newProvider).Resolve(t.Context(), powershell, false, "Test provider")
 	require.NoError(t, err)
-	assert.Equal(t, newProvider, spec.Program)
 	custom := Custom(func(ctx context.Context, shell string, login bool) (Spec, Resolution) {
 		if CheckBinary(ctx, shell, login, newProvider) == ProbeYes {
 			return Spec{Program: newProvider}, Found
@@ -93,7 +92,7 @@ func TestWindowsScanAndLaunchUseUpdatedSavedPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, newProvider, customSpec.Program)
 
-	cmd, _, _ := Wrap(t.Context(), WrapSpec{Shell: powershell, Launch: spec})
+	cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: powershell, Launch: spec})
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", output)
 	assert.Contains(t, string(output), "new-provider")
@@ -114,4 +113,32 @@ func TestPreparedWindowsShellResolvesTheRefreshedPath(t *testing.T) {
 	cmd.Env = []string{"Path=" + t.TempDir()}
 	_, err = resolvePreparedShell(cmd, name)
 	require.ErrorIs(t, err, exec.ErrNotFound)
+}
+
+func TestProgramPathDoesNotStopAtAShellOnlyWindowsShim(t *testing.T) {
+	shell, err := exec.LookPath("powershell")
+	require.NoError(t, err)
+	shims, programs := t.TempDir(), t.TempDir()
+	original := workerWindowsPath
+	t.Cleanup(func() { workerWindowsPath = original })
+	const candidate = "leapmux-probe-native-interpreter"
+	testutil.WriteExecutable(t, filepath.Join(shims, candidate+".cmd"), "@exit /b 0\r\n")
+	testutil.WriteExecutable(t, filepath.Join(shims, candidate+".ps1"), "exit 0\r\n")
+	executable := filepath.Join(programs, candidate+".exe")
+	peer := profileCommandExecutable(t)
+	contents, err := os.ReadFile(peer)
+	require.NoError(t, err)
+	testutil.WriteExecutable(t, executable, string(contents))
+	saved := []string{shims, programs}
+	workerWindowsPath = newWindowsPathRefresh(func() ([]string, error) { return saved, nil })
+	t.Setenv("PATH", strings.Join(saved, ";"))
+	t.Setenv("PATHEXT", ".CMD;.EXE;.COM")
+	path, result := ProgramPath(t.Context(), shell, false, candidate)
+	require.Equal(t, ProbeYes, result)
+	assert.Equal(t, executable, path)
+	require.NoError(t, os.Remove(executable))
+	path, result = ProgramPath(t.Context(), shell, false, candidate)
+	require.Equal(t, ProbeNo, result)
+	assert.Empty(t, path)
+	assert.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, false, candidate), "batch files are shell commands")
 }

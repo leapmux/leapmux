@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,28 +13,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-// absentMuseHost reports whether a stored-session host failure means the Muse
-// command is not available on this machine. The locator states that as its own
-// error, and an unresolvable launch reaches process start as an empty command.
-// Neither sentinel is a defined error value, so the two message fragments are
-// matched alongside the exec and filesystem causes they can also surface as.
 func absentMuseHost(err error) bool {
-	var execErr *exec.Error
-	if errors.As(err, &execErr) {
-		return true
-	}
-	// The launcher starts the host through a shell.
-	// An unresolved command therefore returns the shell's exit 127 ("command not found") rather than an exec error.
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
-		return true
-	}
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-		return true
-	}
-	message := err.Error()
-	return strings.Contains(message, "is not installed on this machine") ||
-		strings.Contains(message, "exec: no command")
+	return errors.Is(err, launch.ErrNoCandidate) || errors.Is(err, launch.ErrProviderMissing)
 }
 
 func storedSessions(ctx context.Context, q agent.StoredSessionQuery, locator *launch.Locator) (sessions []agent.StoredSession, err error) {

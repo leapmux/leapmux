@@ -41,12 +41,18 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 	pins := []string{"OPENCODE_PASSWORD=" + secret, "OPENCODE_CLIENT=leapmux", openCodeDisableAutoUpdateEnv + "=1"}
-	cmd, delimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, WorkingDir: opts.WorkingDir,
 		BaseArgs: openCodeServeArgs, StripEnvKeys: openCodeServerEnvKeys, SetEnv: pins,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	delimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pins...)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		cancel()
 		return nil, err

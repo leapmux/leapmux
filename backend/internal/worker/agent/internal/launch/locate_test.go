@@ -44,9 +44,9 @@ func TestCheckBinariesUsesOneShellForPresentAndAbsentNames(t *testing.T) {
 
 	const absent = "leapmux-definitely-not-installed"
 	assert.Equal(t, map[string]ProbeResult{
-		"echo": ProbeYes,
+		"sh":   ProbeYes,
 		absent: ProbeNo,
-	}, checkBinaries(t.Context(), script, false, []string{"echo", absent}))
+	}, checkBinaries(t.Context(), script, false, []string{"sh", absent}))
 	launches, err := os.ReadFile(log)
 	require.NoError(t, err)
 	assert.Equal(t, "launch\n", string(launches))
@@ -115,58 +115,29 @@ func TestCheckBinaryInconclusiveUnderAnExpiredContext(t *testing.T) {
 	assert.Equal(t, ProbeUnknown, CheckBinary(ctx, shell, false, "leapmux-cancelled-probe"))
 }
 
-// A present marker with no path after it is INCONCLUSIVE, not absent: the shell said the
-// program resolves, so reporting absence would contradict the only evidence there is.
-func TestParseProgramPathProbe(t *testing.T) {
+func TestParseCommandProbe(t *testing.T) {
 	t.Parallel()
-
-	// The paths are built for the running OS, because the parser accepts only a
-	// path this OS can execute -- see testutil.NativeAbsPath.
-	resolved := testutil.NativeAbsPath("/usr/local/bin/node")
-	system := testutil.NativeAbsPath("/usr/bin/node")
-
-	cases := map[string]struct {
-		out  string
-		path string
-		want ProbeResult
+	path := testutil.NativeAbsPath("/usr/local/bin/node")
+	for _, test := range []struct {
+		name   string
+		output string
+		result ProbeResult
+		path   string
 	}{
-		"a resolved absolute path": {
-			probeReachedPresent + "\n" + resolved + "\n", resolved, ProbeYes,
-		},
-		"blank lines before the path are skipped": {
-			probeReachedPresent + "\n\n  " + system + "  \n", system, ProbeYes,
-		},
-		"profile noise before the marker is ignored": {
-			"welcome to your shell\n" + probeReachedPresent + "\n" + system + "\n", system, ProbeYes,
-		},
-		"a settled absence": {
-			probeReachedAbsent + "\n", "", ProbeNo,
-		},
-		"present with no path establishes nothing": {
-			probeReachedPresent + "\n", "", ProbeUnknown,
-		},
-		"a relative path establishes nothing": {
-			probeReachedPresent + "\nnode\n", "", ProbeUnknown,
-		},
-		"a shell builtin name establishes nothing": {
-			probeReachedPresent + "\nnode: shell built-in command\n", "", ProbeUnknown,
-		},
-		"no marker at all establishes nothing": {
-			"command not found\n", "", ProbeUnknown,
-		},
-		"empty output establishes nothing": {
-			"", "", ProbeUnknown,
-		},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
+		{"a completed absolute path", "banner\nprobe:start\nprobe:0:yes:" + path + "\nprobe:complete\n", ProbeYes, path},
+		{"completed absence", "probe:start\r\nprobe:0:no\r\nprobe:complete\r\n", ProbeNo, ""},
+		{"missing completion", "probe:start\nprobe:0:no\n", ProbeUnknown, ""},
+		{"duplicate result", "probe:start\nprobe:0:no\nprobe:0:no\nprobe:complete\n", ProbeUnknown, ""},
+		{"relative path", "probe:start\nprobe:0:yes:node\nprobe:complete\n", ProbeUnknown, ""},
+		{"malformed record", "probe:start\nprobe:0:yes\nprobe:complete\n", ProbeUnknown, ""},
+		{"no start", "probe:0:no\nprobe:complete\n", ProbeUnknown, ""},
+		{"empty output", "", ProbeUnknown, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			path, res := parseProgramPathProbe(tc.out)
-			assert.Equal(t, tc.path, path)
-			assert.Equal(t, tc.want, res)
-			// A path is only ever returned WITH ProbeYes, which is the pairing the
-			// boolean form could contradict.
-			assert.Equal(t, res == ProbeYes, path != "")
+			results, gotPath := parseCommandProbe(test.output, "probe", []string{"node"}, true)
+			assert.Equal(t, test.result, results["node"])
+			assert.Equal(t, test.path, gotPath)
 		})
 	}
 }
@@ -271,6 +242,6 @@ func TestLaunchLocatorResolve(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "no-such-shell")
 		got, err := Binaries("preferred", "other").Resolve(context.Background(), missing, false, "Tool")
 		require.NoError(t, err, "the shell reports a missing command; the locator does not")
-		assert.Equal(t, Spec{Program: "preferred"}, got)
+		assert.Equal(t, ShellCommands("preferred", "other"), got)
 	})
 }

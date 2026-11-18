@@ -2007,7 +2007,13 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	if spec.RCMarkerEnvKey != "" {
 		wrap.StripEnvKeys = []string{spec.RCMarkerEnvKey}
 	}
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, wrap)
+	prepared, err := launch.Wrap(ctx, wrap)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
 
 	// FilterEnv removes the provider rc marker from the inherited environment.
 	// Add it again only for a login shell, so the child detects a LeapMux launch without inheriting a stale parent value.
@@ -2028,7 +2034,7 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	}
 	cmd.Env = providerkit.FinalizeAgentEnv(env, opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}

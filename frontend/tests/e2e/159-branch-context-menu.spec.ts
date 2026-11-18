@@ -1,11 +1,13 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test } from './fixtures'
 import { deregisterWorkerViaAPI } from './helpers/api'
+import { requireBinary } from './helpers/binaryOnPath'
 import { finishCleanup, withCleanup } from './helpers/cleanup'
 import { spawnRegisteredWorker } from './helpers/nativeWorker'
 import { stopProcess } from './helpers/process'
@@ -201,6 +203,80 @@ test.describe('Branch context menu', () => {
     }, async () => {
       await withCleanup(
         () => testInfo.attach('provider-menu-worker.log', {
+          body: output.since(0),
+          contentType: 'text/plain',
+        }),
+        () => finishCleanup([
+          stopProcess(worker.proc),
+          deregisterWorkerViaAPI(hubUrl, adminToken, worker.workerId),
+        ]),
+      )
+    })
+  })
+
+  test('starts a profile-defined provider on the selected worker', async ({ page, leapmuxServer, modelScript }, testInfo) => {
+    test.skip(process.platform === 'win32', 'This fixture uses a private noninteractive Bash profile.')
+    const { hubUrl, adminToken, workerId, dataDir, agentEnv } = leapmuxServer
+    const repo = createGitRepo(dataDir, 'profile-provider-repo')
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(hubUrl, adminToken, workerId, 'Profile provider', repo, 'profile-provider-main')
+    const root = createTestDirectory('profile-provider-')
+    const profile = join(root, 'profile')
+    const bin = join(root, 'bin')
+    const shell = existsSync('/bin/bash')
+      ? '/bin/bash'
+      : requireBinary('bash', 'Bash is required for the profile provider test', agentEnv)
+    const claude = requireBinary('claude', 'Claude Code is required for the profile provider test', agentEnv)
+    const node = requireBinary('node', 'Node is required for the profile provider test', agentEnv)
+    mkdirSync(bin)
+    symlinkSync(node, join(bin, 'node'))
+    const searchPath = [bin, '/usr/bin', '/bin'].join(delimiter)
+    const quote = quotePosixShellArgument
+    writeFileSync(profile, `export PATH=${quote(searchPath)}\nclaude() { ${quote(claude)} "$@"; }\n`)
+    const env = {
+      ...agentEnv,
+      PATH: searchPath,
+      BASH_ENV: profile,
+      LEAPMUX_DEFAULT_SHELL: shell,
+    }
+    const preflight = execFileSync(shell, [
+      '-c',
+      '. "$1"; type -t claude; type -P claude || :',
+      'profile-check',
+      profile,
+    ], {
+      env: { HOME: root, PATH: searchPath },
+      encoding: 'utf8',
+    })
+    expect(preflight.trim()).toBe('function')
+    const output = createServerOutput()
+    const worker = await spawnRegisteredWorker(leapmuxServer, {
+      name: 'Bash Profile Worker',
+      dataDir: join(root, 'worker'),
+      extraArgs: ['--use-login-shell=false'],
+      env,
+      output,
+    })
+    await withCleanup(async () => {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+      await openNewAgentDialog(page)
+      const dialog = page.getByRole('dialog')
+      await pickMenuOption(dialog, 'worker-select-menu', worker.workerId)
+      const picker = dialog.getByTestId('agent-provider-selector-trigger')
+      await expect(picker).toHaveText('Claude Code')
+      await picker.click()
+      await page.locator('menu[popover]:visible').getByTestId(`agent-provider-option-${AgentProvider.CLAUDE_CODE}`).click()
+      await setWorkingDir(page, repo)
+      await dialog.getByRole('button', { name: 'Create' }).click()
+      await waitForAgentStartupViaAPI(hubUrl, adminToken, worker.workerId, workspaceId)
+      await waitForAgentStarted(page)
+      const reply = 'Claude replied through the Worker profile.'
+      await modelScript.queue({ text: reply })
+      await sendMessage(page, modelScript.prompt('Reply through the profile.'))
+      await expect(assistantBubbles(page).filter({ hasText: reply })).toHaveCount(1)
+    }, async () => {
+      await withCleanup(
+        () => testInfo.attach('profile-provider-worker.log', {
           body: output.since(0),
           contentType: 'text/plain',
         }),

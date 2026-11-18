@@ -62,7 +62,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		args = append(args, "--cwd", opts.WorkingDir)
 	}
 
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launchConfig.spec,
@@ -70,8 +70,16 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		SetEnv:     []string{droidDisableAutoUpdateEnv},
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		cleanupSettings()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		cancel()
 		cleanupSettings()

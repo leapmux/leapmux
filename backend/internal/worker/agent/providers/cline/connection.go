@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -232,6 +233,9 @@ var errAddressInUse = errors.New("the port of the Cline hub is in use")
 func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spec, dir string, clock quartz.Clock) (*daemonStart, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		port, err := freePort()
 		if err != nil {
 			return nil, err
@@ -254,7 +258,7 @@ func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spe
 func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec, dir string, port int, clock quartz.Clock) (*daemonStart, error) {
 	registration := Registration()
 	procCtx, cancel := context.WithCancel(context.Background())
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(procCtx, launch.WrapSpec{
+	prepared, err := launch.Wrap(procCtx, launch.WrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     spec,
@@ -262,13 +266,24 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 		BaseArgs:   daemonArgs(opts.WorkingDir, port),
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	process := providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "cline", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, procCtx, cancel)
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return nil, errors.Join(err, pipes.Close())
+	}
 	if err := process.StartCmd(); err != nil {
 		return nil, err
 	}
@@ -282,9 +297,14 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 	record, err := waitForDiscovery(ctx, filepath.Join(dir, discoveryFileName), process.ProcessDone(), opts.EffectiveStartupTimeout(), clock)
 	if err != nil {
 		process.Stop()
-		_ = process.Wait()
+		waitErr := process.Wait()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		stderrText := strings.TrimSpace(process.Stderr())
-		if strings.Contains(stderrText, "EADDRINUSE") {
+		var exit *exec.ExitError
+		if !errors.Is(waitErr, launch.ErrNoCandidate) && errors.Is(err, errDaemonExited) &&
+			process.Ready() && errors.As(waitErr, &exit) && exit.ExitCode() > 0 && strings.Contains(stderrText, "EADDRINUSE") {
 			return nil, fmt.Errorf("%w: %s", errAddressInUse, stderrText)
 		}
 		return nil, process.FormatStartupError("hub start", fmt.Errorf("%w; %s", err, protocolHint))

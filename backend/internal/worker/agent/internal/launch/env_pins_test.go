@@ -22,7 +22,7 @@ func TestPinnedEnvironmentNeverAppearsInCommandArguments(t *testing.T) {
 	for _, shell := range []string{"/bin/sh", "/bin/zsh", "fish", "nu", "pwsh", "csh"} {
 		t.Run(shell, func(t *testing.T) {
 			t.Parallel()
-			cmd, _, _ := Wrap(t.Context(), WrapSpec{Shell: shell, Launch: Spec{Program: "provider"}, SetEnv: []string{"PRIVATE_TOKEN=" + secret}})
+			cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: shell, Launch: Spec{Program: "provider"}, SetEnv: []string{"PRIVATE_TOKEN=" + secret}})
 			assert.NotContains(t, strings.Join(cmd.Args, " "), secret)
 		})
 	}
@@ -41,7 +41,7 @@ func TestPinnedEnvironmentSurvivesAProfileWithoutLeakingTransportVariables(t *te
 	const secret = "private-token-'quoted'\n$HOME $(printf injected)"
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	cmd, _, _ := Wrap(ctx, WrapSpec{Shell: shell, LoginShell: true, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + secret}, StripEnvKeys: []string{"PRIVATE_TOKEN"}, WorkingDir: home})
+	cmd, _, _ := wrapTestCommand(t, ctx, WrapSpec{Shell: shell, LoginShell: true, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + secret}, StripEnvKeys: []string{"PRIVATE_TOKEN"}, WorkingDir: home})
 	cmd.Env = envutil.PinEnv(cmd.Environ(), "HOME="+home, "ZDOTDIR="+home, "LEAPMUX_PIN_TEST_HELPER=1")
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", output)
@@ -108,7 +108,7 @@ func TestPinnedEnvironmentRunsInEveryInstalledShell(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			const value = "pin-value-'quoted'\n$HOME $(printf injected)"
-			cmd, _, _ := Wrap(ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + value}})
+			cmd, _, _ := wrapTestCommand(t, ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + value}})
 			home := t.TempDir()
 			cmd.Env = envutil.PinEnv(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"), "XDG_STATE_HOME="+filepath.Join(home, ".state"), "ZDOTDIR="+home, "LEAPMUX_PIN_TEST_HELPER=1", "POWERSHELL_TELEMETRY_OPTOUT=1", "DOTNET_CLI_TELEMETRY_OPTOUT=1")
 			output, err := cmd.CombinedOutput()
@@ -146,7 +146,7 @@ func TestFishPinnedEnvironmentAndConditionalArguments(t *testing.T) {
 			home := t.TempDir()
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			cmd, _, meta := Wrap(ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=protected", "LEAPMUX_TEST_EMPTY="}, StripEnvKeys: []string{"LEAPMUX_TEST_STRIPPED"}, EnvGated: &EnvGatedArgs{EnvVars: []string{"LEAPMUX_TEST_AUTH"}, MetaKey: "default_args", Args: []string{"gated-argument"}}})
+			cmd, _, meta := wrapTestCommand(t, ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=protected", "LEAPMUX_TEST_EMPTY="}, StripEnvKeys: []string{"LEAPMUX_TEST_STRIPPED"}, EnvGated: &EnvGatedArgs{EnvVars: []string{"LEAPMUX_TEST_AUTH"}, MetaKey: "default_args", Args: []string{"gated-argument"}}})
 			cmd.Env = envutil.PinEnv(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "LEAPMUX_PIN_TEST_HELPER=1", "LEAPMUX_TEST_STRIPPED=inherited", "LEAPMUX_TEST_AUTH="+token)
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, err, "%s", output)
@@ -169,7 +169,7 @@ func TestFishPinnedEnvironmentAndConditionalArguments(t *testing.T) {
 
 func TestWrapKeepsAnExplicitlyEmptyEnvironment(t *testing.T) {
 	t.Parallel()
-	cmd, _, _ := Wrap(t.Context(), WrapSpec{Shell: "/bin/sh", Launch: Spec{Program: "provider"}, Environment: []string{}})
+	cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: "/bin/sh", Launch: Spec{Program: "provider"}, Environment: []string{}})
 	require.NotNil(t, cmd.Env, "nil would inherit the host environment")
 	assert.Empty(t, cmd.Env)
 }

@@ -34,11 +34,18 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 	logPath := filepath.Join(directory.Path(), "acp.log")
-	cmd, delimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec,
 		BaseArgs: []string{"acp", "--log-file=" + logPath}, WorkingDir: opts.WorkingDir,
 	})
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	if err != nil {
+		providerkit.RemoveAgentDir("antigravity", opts.AgentID, directory)
+		cancel()
+		return nil, err
+	}
+	delimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
+
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		providerkit.RemoveAgentDir("antigravity", opts.AgentID, directory)
 		cancel()
@@ -78,6 +85,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		logTail := lastLogLines(logPath, 20)
 		a.Stop()
 		_ = a.Wait()
+		cause = a.FinalizeStartupCause(cause)
 		if opts.ResumeSessionID != "" && cause != errAntigravitySignIn {
 			return nil, cause
 		}

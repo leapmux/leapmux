@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -543,4 +544,31 @@ func TestListAvailableProvidersCompleteWhenTheShellAnswers(t *testing.T) {
 	providers, complete := r.ListAvailable(context.Background(), "/bin/sh", false)
 	assert.Empty(t, providers)
 	assert.True(t, complete, "every probe answered")
+}
+
+func TestListAvailableProvidersFindsProfileCommandsWithoutRunningThem(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a Bash profile fixture")
+	}
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "checkout")
+	require.NoError(t, os.MkdirAll(filepath.Join(checkout, "private-bin"), 0o700))
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	witness := filepath.Join(dir, "executed")
+	profile := filepath.Join(dir, "profile")
+	const callable = "leapmux_registry_profile"
+	const relative = "leapmux_registry_checkout"
+	require.NoError(t, os.WriteFile(profile, []byte("export PATH=./private-bin\n"+callable+"() { printf started > "+shellquote.POSIX.Quote(witness)+"; }\n"), 0o600))
+	t.Setenv("BASH_ENV", profile)
+	testutil.WriteExecutable(t, filepath.Join(checkout, "private-bin", relative), "#!/bin/sh\nexit 0\n")
+	first := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	first.Locator = launch.Binaries(callable)
+	second := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	second.Locator = launch.Binaries(relative)
+	registry := agenttest.MustNewRegistry(first, second)
+	providers, complete := registry.ListAvailable(t.Context(), shell, false)
+	require.True(t, complete)
+	assert.Equal(t, []leapmuxv1.AgentProvider{first.Provider}, providers)
+	assert.NoFileExists(t, witness)
 }

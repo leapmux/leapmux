@@ -97,7 +97,7 @@ func TestPowerShellPreservesNativeArguments(t *testing.T) {
 								spec.EnvGated = testEnvGate(arguments...)
 								want = append(want, arguments...)
 							}
-							cmd, delimiter, _ := Wrap(t.Context(), spec)
+							cmd, delimiter, _ := wrapTestCommand(t, t.Context(), spec)
 							cmd.Env = append(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home,
 								"PATH="+home+string(os.PathListSeparator)+os.Getenv("PATH"),
 								wrappedArgumentsHelperEnv+"=1", "LEAPMUX_TEST_GATE_A=", "LEAPMUX_TEST_GATE_B=")
@@ -127,7 +127,7 @@ func TestPowerShellResolvesLiteralProgramPaths(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					program := filepath.Join(home, name)
 					require.NoError(t, os.Symlink(executable, program))
-					cmd, delimiter, _ := Wrap(t.Context(), WrapSpec{
+					cmd, delimiter, _ := wrapTestCommand(t, t.Context(), WrapSpec{
 						Shell: shell, Launch: Spec{Program: program},
 						BaseArgs: []string{"-test.run=^TestWrappedArgumentsHelper$", "--", "literal path"}, WorkingDir: home,
 					})
@@ -168,7 +168,7 @@ func TestPowerShellPreservesNativeExitStatus(t *testing.T) {
 				t.Run(tc.name, func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 					defer cancel()
-					cmd, _, _ := Wrap(ctx, WrapSpec{
+					cmd, _, _ := wrapTestCommand(t, ctx, WrapSpec{
 						Shell: shell, Launch: Spec{Program: tc.program},
 						BaseArgs: []string{"-test.run=^TestWrappedArgumentsHelper$", "--"}, WorkingDir: home,
 					})

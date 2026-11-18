@@ -133,12 +133,15 @@ func AskedEvent(properties string) string {
 // replacement for it.
 func AssertRcMarkerNeverReachesTheDaemon(t *testing.T, binary, marker, flag string, baseArgs []string) {
 	t.Helper()
-	cmd, _, _ := launch.Wrap(context.Background(), launch.WrapSpec{
+	prepared, err := launch.Wrap(context.Background(), launch.WrapSpec{
 		Shell:        "/bin/sh",
 		Launch:       launch.Spec{Program: binary},
 		StripEnvKeys: []string{marker},
 		BaseArgs:     baseArgs,
 	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	cmd := prepared.Cmd
 	require.Len(t, cmd.Args, 3) // sh -c <inner>
 	inner := cmd.Args[2]
 

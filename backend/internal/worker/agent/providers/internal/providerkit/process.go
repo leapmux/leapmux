@@ -20,6 +20,7 @@ import (
 	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
@@ -58,9 +59,10 @@ type Process struct {
 	// clock supplies the timers for process waits, including AwaitResponse. See Clock.
 	clock quartz.Clock
 
-	stderrBuf  bytes.Buffer
-	stderrMu   sync.Mutex
-	stderrDone chan struct{}
+	stderrBuf   bytes.Buffer
+	diagnostics *launch.Diagnostics
+	stderrMu    sync.Mutex
+	stderrDone  chan struct{}
 	// stderrDraining reports that DrainStderr started, so stderrDone closes
 	// when the drain ends.
 	stderrDraining atomic.Bool
@@ -105,6 +107,7 @@ type Process struct {
 	discardOutput atomic.Bool
 
 	// The shell wrapper supplies the preamble.
+	ready              atomic.Bool
 	preambleDelimiter  string            // if set, skipPreamble skips lines until this delimiter
 	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
 	preambleMeta       map[string]string // parsed key=value metadata from preamble
@@ -484,7 +487,7 @@ func (p *Process) IsDiscardingOutput() bool {
 // Wait blocks until the process exits and returns its exit error.
 func (p *Process) Wait() error {
 	<-p.processDone
-	return errors.Join(p.waitErr, p.owner.Err())
+	return p.waitErr
 }
 
 // AgentID returns the unique identifier for this agent.
@@ -562,6 +565,9 @@ func (p *Process) Stderr() string {
 	p.waitForStderrDrain()
 	p.stderrMu.Lock()
 	defer p.stderrMu.Unlock()
+	if p.diagnostics != nil {
+		return p.diagnostics.String()
+	}
 	return p.stderrBuf.String()
 }
 
@@ -571,11 +577,29 @@ func (p *Process) ProcessExitError() error {
 	p.Mu.Lock()
 	waitErr := p.waitErr
 	p.Mu.Unlock()
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
-		return fmt.Errorf("agent process exited with code %d", exitErr.ExitCode())
+	if errors.Is(waitErr, launch.ErrNoCandidate) {
+		return waitErr
+	}
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		return &startupDiagnosticError{message: fmt.Sprintf("agent process exited with code %d", exitErr.ExitCode()), cause: waitErr}
 	}
 	return fmt.Errorf("agent process exited unexpectedly")
 }
+
+// FinalizeStartupCause preserves a confirmed selection failure if an early
+// exchange reported a transport error before the shell's exit was observed.
+func (p *Process) FinalizeStartupCause(cause error) error {
+	p.Mu.Lock()
+	defer p.Mu.Unlock()
+	if errors.Is(p.waitErr, launch.ErrNoCandidate) {
+		return p.waitErr
+	}
+	return cause
+}
+
+// Ready reports that the shell reached provider invocation.
+func (p *Process) Ready() bool { return p.ready.Load() }
 
 type startupDiagnosticError struct {
 	message string
@@ -587,6 +611,7 @@ func (e *startupDiagnosticError) Unwrap() error { return e.cause }
 
 // FormatStartupError preserves the cause and adds stderr and shell diagnostics.
 func (p *Process) FormatStartupError(phase string, err error) error {
+	err = p.FinalizeStartupCause(err)
 	details := "no error details"
 	if err != nil {
 		details = fmt.Sprintf("%s", err)
@@ -632,6 +657,7 @@ func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 		line := scanner.Bytes()
 		trimmed := bytes.TrimSpace(line)
 		if bytes.Equal(trimmed, delimBytes) {
+			p.ready.Store(true)
 			agent.TraceStartupPhase(p.agentID, "preamble_delimiter_seen")
 			break
 		}
@@ -785,9 +811,8 @@ func (p *Process) StartCmd() error {
 	if p.owner == nil {
 		startErr = errors.New("the process has no prepared owner")
 	} else {
-		startErr = p.owner.Start()
+		startErr = p.pipes.Start(p.Clock())
 	}
-	startErr = errors.Join(startErr, p.pipes.closeChildPipes())
 	if startErr == nil {
 		return nil
 	}
@@ -930,6 +955,11 @@ func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 			continue
 		}
 		if !firstLineTraced {
+			if p.pipes != nil && p.pipes.prepared.HasShellCommands() {
+				if err := p.owner.CaptureBeforeStop(); err != nil {
+					slog.Debug("capture launch descendants", "agent_id", p.agentID, "error", err)
+				}
+			}
 			agent.TraceStartupPhase(p.agentID, "first_agent_line")
 			firstLineTraced = true
 		}
@@ -967,12 +997,16 @@ func (p *Process) finishOutput(scanner *bufio.Scanner) {
 	p.recordProcessExit(waitErr)
 	p.closeStdin()
 	p.awaitStderrDrain()
-	if err := p.pipes.closeStderrReader(); err != nil {
-		slog.Warn("close agent stderr", "agent_id", p.agentID, "error", err)
+	p.stderrMu.Lock()
+	if p.diagnostics != nil {
+		waitErr = p.diagnostics.ExitError(waitErr, p.Ready())
 	}
-	if err := p.owner.Close(); err != nil {
-		slog.Warn("close owned agent processes", "agent_id", p.agentID, "error", err)
+	p.stderrMu.Unlock()
+	cleanupErr := p.pipes.Close()
+	if cleanupErr != nil {
+		slog.Warn("close owned agent processes", "agent_id", p.agentID, "error", cleanupErr)
 	}
+	p.recordProcessExit(errors.Join(waitErr, cleanupErr))
 	close(p.processDone)
 	// Work that a provider binds to the process context -- an event stream, a
 	// reconnect loop, a poller -- ends with the process, whether it exited by
@@ -1027,16 +1061,30 @@ func (p *Process) waitForStderrDrain() bool {
 // the reader is exhausted. The lock is only held for individual writes,
 // not the entire drain loop.
 func (p *Process) DrainStderr(r io.Reader) {
+	p.stderrMu.Lock()
+	if p.pipes != nil && p.pipes.prepared != nil {
+		p.diagnostics = p.pipes.prepared.NewDiagnostics(maxStderrSize)
+	}
+	p.stderrMu.Unlock()
 	p.stderrDraining.Store(true)
 	go func() {
-		defer close(p.stderrDone)
+		defer func() {
+			p.stderrMu.Lock()
+			if p.diagnostics != nil {
+				p.diagnostics.Finish()
+			}
+			p.stderrMu.Unlock()
+			close(p.stderrDone)
+		}()
 		buf := make([]byte, 32*1024)
 		var total int64
 		for {
 			n, readErr := r.Read(buf)
 			if n > 0 {
 				p.stderrMu.Lock()
-				if total < maxStderrSize {
+				if p.diagnostics != nil {
+					_, _ = p.diagnostics.Write(buf[:n])
+				} else if total < maxStderrSize {
 					limit := int64(n)
 					if total+limit > maxStderrSize {
 						limit = maxStderrSize - total
