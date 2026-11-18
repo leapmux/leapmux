@@ -252,7 +252,7 @@ The desktop app writes its Worker's line to standard error, prefixed with `deskt
 In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Its tunnels share that record; see [Tunnel key trust](#tunnel-key-trust). Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/).
 
 - Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove --target-worker-id=<id>`.
-- `leapmux control` CLI pins, cleared with `leapmux control worker pins remove --worker-id=<id>`.
+- `leapmux control` CLI pins, cleared with `leapmux control worker pins remove <worker>`.
 
 Both follow the same rule: first contact auto-pins, any later mismatch aborts the connection until you explicitly clear the pin.
 

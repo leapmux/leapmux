@@ -1,12 +1,12 @@
 package cmd
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -28,16 +28,12 @@ func busyCloseHub() *recordingHub {
 	}
 }
 
-func runBusyTabClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) []byte {
+func runBusyTabClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) cliOutcome {
 	t.Helper()
 	startSpawnIPC(t, hub, disp)
-	args := append([]string{
-		// term-2, not the caller's own agent-1: guardTabClose refuses a
-		// self-close without --force, which would mask the refusal under test.
-		"--tab-id", "term-2", "--tab-type", "terminal",
-		"--workspace-id", "ws-1", "--worker-id", "worker-A",
-	}, extraArgs...)
-	return withCapturedStdout(t, func() { _ = RunTabClose(fakeCmdCtx{}, args) })
+	// term-2, not the caller's own agent-1: guardTabClose refuses a
+	// self-close without --allow-self, which would mask the refusal under test.
+	return runControl(t, append([]string{"tab", "close", "term-2"}, extraArgs...)...)
 }
 
 // A close that would interrupt running work must be refused BEFORE the CRDT
@@ -50,12 +46,9 @@ func TestRunTabClose_BusyTabRefusedBeforeTheTombstone(t *testing.T) {
 	}
 	hub := busyCloseHub()
 
-	out := runBusyTabClose(t, disp, hub)
+	o := runBusyTabClose(t, disp, hub)
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := o.envelope(t)
 	require.NotNil(t, env.Error, "a busy tab must fail the command")
 	// A distinct code, so a script pattern-matches instead of grepping an
 	// invalid_request blob.
@@ -63,7 +56,7 @@ func TestRunTabClose_BusyTabRefusedBeforeTheTombstone(t *testing.T) {
 	assert.Contains(t, env.Error["message"], "term-2")
 	assert.Contains(t, env.Error["message"], "node pid 51234",
 		"the refusal must name what it is refusing to interrupt")
-	assert.Contains(t, env.Error["message"], "pass --allow-busy to close anyway")
+	assert.Equal(t, []any{"pass --allow-busy to close anyway"}, env.Error["hints"])
 
 	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land BEFORE the CRDT tombstone")
@@ -112,14 +105,11 @@ func TestRunTabClose_LastTabPromptWinsOverTheBusyGate(t *testing.T) {
 	}
 	hub := busyCloseHub()
 
-	out := runBusyTabClose(t, disp, hub)
+	o := runBusyTabClose(t, disp, hub)
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "pass --worktree=keep|push|discard")
+	env := o.envelope(t)
+	assert.Equal(t, "usage", env.Error["code"])
+	assert.Equal(t, []any{"pass --worktree=keep|push|discard to say what happens to it"}, env.Error["hints"])
 	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"the busy probe must not even run when the worktree gate fires")
 }
@@ -190,23 +180,17 @@ func TestTerminalBusyDetail(t *testing.T) {
 func TestErrTabBusyRefused_NamesEveryBusyTab(t *testing.T) {
 	t.Parallel()
 
-	out := withCapturedStdout(t, func() {
-		_ = errTabBusyRefused([]tabBusyReason{
-			{tabID: "agent-1", detail: "agent turn is in progress"},
-			{tabID: "term-2", detail: "1 process running (node pid 7)"},
-		})
-	})
+	e := cli.FromError(errTabBusyRefused([]tabBusyReason{
+		{tabID: "agent-1", detail: "agent turn is in progress"},
+		{tabID: "term-2", detail: "1 process running (node pid 7)"},
+	}))
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "tab_busy_refused", env.Error["code"])
-	msg, _ := env.Error["message"].(string)
-	assert.Contains(t, msg, "2 busy tabs")
-	assert.Contains(t, msg, "agent-1 (agent turn is in progress)")
-	assert.Contains(t, msg, "term-2 (1 process running (node pid 7))")
-	assert.Contains(t, msg, "pass --allow-busy to close anyway")
+	assert.Equal(t, cli.CodeTabBusyRefused, e.Code)
+	assert.Equal(t, cli.ExitRefused, e.ExitCode())
+	assert.Contains(t, e.Message, "2 busy tabs")
+	assert.Contains(t, e.Message, "agent-1 (agent turn is in progress)")
+	assert.Contains(t, e.Message, "term-2 (1 process running (node pid 7))")
+	assert.Equal(t, []string{"pass --allow-busy to close anyway"}, e.Hints)
 }
 
 // The agent half of the same guard. `tab close` on an AGENT reads AgentInfo.busy
@@ -230,18 +214,10 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 	startSpawnIPC(t, hub, disp)
 
 	// agent-2, not the caller's own agent-1: guardTabClose refuses a self-close
-	// without --force, which would mask the refusal under test.
-	out := withCapturedStdout(t, func() {
-		_ = RunTabClose(fakeCmdCtx{}, []string{
-			"--tab-id", "agent-2", "--tab-type", "agent",
-			"--workspace-id", "ws-1", "--worker-id", "worker-A",
-		})
-	})
+	// without --allow-self, which would mask the refusal under test.
+	o := runControl(t, "tab", "close", "agent-2")
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := o.envelope(t)
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "agent is working, 2 background tasks active")
@@ -324,13 +300,10 @@ func busyTileHub() *recordingHub {
 	}
 }
 
-func runBusyTileClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) []byte {
+func runBusyTileClose(t *testing.T, disp *closeDispatcher, hub *recordingHub, extraArgs ...string) cliOutcome {
 	t.Helper()
 	startSpawnIPC(t, hub, disp)
-	args := append([]string{
-		"--tile-id", "leaf-2", "--workspace-id", "ws-1", "--with-tabs", "close",
-	}, extraArgs...)
-	return withCapturedStdout(t, func() { _ = RunTileClose(fakeCmdCtx{}, args) })
+	return runControl(t, append([]string{"tile", "close", "leaf-2", "--with-tabs", "close"}, extraArgs...)...)
 }
 
 func TestRunTileClose_BusyTabRefusedBeforeAnyOp(t *testing.T) {
@@ -339,12 +312,9 @@ func TestRunTileClose_BusyTabRefusedBeforeAnyOp(t *testing.T) {
 	}
 	hub := busyTileHub()
 
-	out := runBusyTileClose(t, disp, hub)
+	o := runBusyTileClose(t, disp, hub)
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := o.envelope(t)
 	require.NotNil(t, env.Error, "a tile holding running work must fail the command")
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "term-2")
@@ -374,11 +344,7 @@ func TestRunTileClose_MoveSkipsTheBusyGate(t *testing.T) {
 	hub := busyTileHub()
 
 	startSpawnIPC(t, hub, disp)
-	_ = withCapturedStdout(t, func() {
-		_ = RunTileClose(fakeCmdCtx{}, []string{
-			"--tile-id", "leaf-2", "--workspace-id", "ws-1", "--with-tabs", "move",
-		})
-	})
+	_ = runControl(t, "tile", "close", "leaf-2", "--with-tabs", "move")
 
 	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"a move interrupts nothing, so the guard must not even ask")

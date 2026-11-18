@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"strings"
@@ -16,75 +16,75 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
-// RunAgentMessages prints messages for an agent. Without --follow it
+// runAgentMessages prints messages for an agent. Without --follow it
 // prints a single page; with --follow it streams new messages until
-// ctrl-C using the worker's `WatchEvents` RPC (Phase 1a of the
-// streaming-event migration). The streaming path replaces the
-// previous 2-second polling loop, so users see messages within
-// milliseconds of generation rather than every other second.
-func RunAgentMessages(rawCtx any, args []string) error {
-	var anchor string
-	var cursorSeq int64
-	var follow bool
-	var limit int
-	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		setup: func(fs *flag.FlagSet) {
-			// A single page anchor mirrors MessagePageAnchor: latest (default),
-			// oldest, before, or after. `before`/`after` page relative to
-			// --cursor-seq; `latest`/`oldest` ignore it. One selector instead of
-			// three mutually-exclusive flags -- you can't pick two pages at once.
-			fs.StringVar(&anchor, "anchor", "latest", "page to fetch: latest, oldest, before, or after")
-			fs.Int64Var(&cursorSeq, "cursor-seq", 0, "exclusive seq bound for --anchor before/after")
-			fs.IntVar(&limit, "limit", contracts.MessagePageLimit, fmt.Sprintf("max messages per page (worker caps at %d)", contracts.MessagePageLimit))
-			fs.BoolVar(&follow, "follow", false, "tail new messages indefinitely")
-		},
-		noDeadline: true,
-		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			req, err := listMessagesPageRequest(agentID, anchor, cursorSeq, limit)
-			if err != nil {
-				return err
-			}
-			if err := followSelectorError(follow, req.GetAnchor()); err != nil {
-				return err
-			}
+// ctrl-C using the worker's `WatchEvents` RPC, so a message prints within
+// milliseconds of its generation.
+func runAgentMessages(inv *cli.Invocation) (any, error) {
+	limit, err := inv.Command.Flags().GetInt("limit")
+	if err != nil {
+		return nil, err
+	}
+	cursorSeq, err := inv.Command.Flags().GetInt64("cursor-seq")
+	if err != nil {
+		return nil, err
+	}
+	follow := boolFlag(inv, "follow")
+	s, err := openStreamSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	bounded := s.bounded()
+	defer bounded.Close()
+	got, err := bounded.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
+	if err != nil {
+		return nil, err
+	}
+	req, err := listMessagesPageRequest(got.ID, stringFlag(inv, "anchor"), cursorSeq, limit)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	if err := followSelectorError(follow, req.GetAnchor()); err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
 
-			// Page 1: history pulled via ListAgentMessages so the user sees
-			// prior context before the live tail starts. WatchEvents can replay the
-			// LATEST page too, but ListAgentMessages is shaped for paginated
-			// history, capped by contracts.MessagePageLimit. Keep it for the single-page
-			// show-history-first behaviour.
-			var resp leapmuxv1.ListAgentMessagesResponse
-			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
-				return err
-			}
-			if !follow {
-				rendered := make([]map[string]any, 0, len(resp.GetMessages()))
-				for _, m := range resp.GetMessages() {
-					rendered = append(rendered, renderAgentMessage(m))
-				}
-				return control.EmitData(rendered)
-			}
+	// Page 1: history pulled via ListAgentMessages so the user sees
+	// prior context before the live tail starts. WatchEvents can replay the
+	// LATEST page too, but ListAgentMessages is shaped for paginated
+	// history, capped by contracts.MessagePageLimit. Keep it for the single-page
+	// show-history-first behaviour.
+	var resp leapmuxv1.ListAgentMessagesResponse
+	if err := callInnerRPC(bounded.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
+		return nil, err
+	}
+	if !follow {
+		rows := make([]agentMessage, 0, len(resp.GetMessages()))
+		for _, m := range resp.GetMessages() {
+			rows = append(rows, renderAgentMessage(m))
+		}
+		return agentMessageList{Messages: rows}, nil
+	}
 
-			// Follow mode: emit page-1 then stream live via WatchEvents. The
-			// lineEmitter serializes every JSON-line write under one mutex so the
-			// subscription callback and the reconnect-drain loop can't interleave.
-			em := &lineEmitter{enc: json.NewEncoder(control.Out)}
-			for _, m := range resp.GetMessages() {
-				if err := em.emit(renderAgentMessage(m)); err != nil {
-					return err
-				}
-			}
-			cursor := resumeCursorFor(req, resp.GetMessages(), resp.LatestSeq)
-
-			return tailAgentMessages(ctx, c, workerID, agentID, cursor, em)
-		},
-	})
+	// Follow mode: print page 1, then stream live via WatchEvents. The
+	// lineEmitter serializes every write under one mutex so the
+	// subscription callback and the reconnect-drain loop can't interleave.
+	em := &lineEmitter{printer: inv.Printer}
+	for _, m := range resp.GetMessages() {
+		if err := em.emit(renderAgentMessage(m)); err != nil {
+			return nil, err
+		}
+	}
+	cursor := resumeCursorFor(req, resp.GetMessages(), resp.LatestSeq)
+	return nil, tailAgentMessages(s.ctx, s.c, got.WorkerID, got.ID, cursor, em)
 }
 
 // resumeCursorFor picks the seq the live WatchEvents stream resumes after, given
@@ -201,77 +201,119 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 	return req, nil
 }
 
-// renderAgentMessage flattens an AgentChatMessage into a JSON-friendly
-// map: the zstd-compressed `content` payload is decompressed and
-// parsed as JSON (or surfaced as a string when the payload isn't JSON),
-// and the `span_lines` proto field — which on the wire is a
-// JSON-encoded string — is parsed into structured JSON. The
-// `content_compression` field is dropped because it no longer
-// describes what's in `content` after decompression.
-//
-// Non-string fields with proto3 zero values are omitted so the
-// rendered output matches what `json.Encode` would produce for the
-// proto struct, minus the encoded-blob fields the helper rewrites.
-func renderAgentMessage(m *leapmuxv1.AgentChatMessage) map[string]any {
-	out := map[string]any{
-		"id":         m.GetId(),
-		"seq":        m.GetSeq(),
-		"created_at": m.GetCreatedAt(),
+// agentMessage is one message of an agent's transcript.
+type agentMessage struct {
+	ID        string `json:"id"`
+	Seq       int64  `json:"seq"`
+	CreatedAt string `json:"created_at,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	// PreviousSeq marks a live reseq broadcast (notification-thread
+	// consolidation), which re-emits an already-seen id at a new higher
+	// seq. It is a MOVE from that older seq, so a --follow consumer can
+	// reconcile by id (update the row at previous_seq) instead of seeing an
+	// unexplained duplicate. Only the live broadcast sets it.
+	PreviousSeq  int64  `json:"previous_seq,omitempty"`
+	Depth        int32  `json:"depth,omitempty"`
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+	SpanID       string `json:"span_id,omitempty"`
+	SpanType     string `json:"span_type,omitempty"`
+	SpanColor    int32  `json:"span_color,omitempty"`
+	// Content is the provider's own payload: parsed JSON, or a string when
+	// the payload is not JSON.
+	Content any `json:"content,omitempty"`
+	// ContentError and ContentRaw report a payload that did not
+	// decompress, with its raw bytes, so a caller can still recover it.
+	ContentError string `json:"content_error,omitempty"`
+	ContentRaw   []byte `json:"content_raw,omitempty"`
+	SpanLines    any    `json:"span_lines,omitempty"`
+}
+
+// TextLine prints the message as "#<seq> <source>: <content>", with the
+// content compacted to one line.
+func (m agentMessage) TextLine() string {
+	return fmt.Sprintf("#%d %s: %s", m.Seq, m.Source, contentSummary(m.Content))
+}
+
+// maxSummaryRunes caps the content of a message in its text line.
+const maxSummaryRunes = 200
+
+// contentSummary compacts a message payload to one line.
+func contentSummary(content any) string {
+	var text string
+	if s, ok := content.(string); ok {
+		text = s
+	} else {
+		raw, err := json.Marshal(content)
+		if err != nil {
+			return ""
+		}
+		text = string(raw)
 	}
-	if name := messageSourceName(m.GetSource()); name != "" {
-		out["source"] = name
+	text = strings.Join(strings.Fields(text), " ")
+	if runes := []rune(text); len(runes) > maxSummaryRunes {
+		return string(runes[:maxSummaryRunes-1]) + "…"
 	}
-	if name := agentProviderName(m.GetAgentProvider()); name != "" {
-		out["agent_provider"] = name
+	return text
+}
+
+// agentMessageList is the result of `agent messages` without --follow.
+type agentMessageList struct {
+	Messages []agentMessage `json:"messages"`
+}
+
+// RenderText prints one TextLine per message.
+func (l agentMessageList) RenderText(w io.Writer) error {
+	for _, m := range l.Messages {
+		if _, err := fmt.Fprintln(w, m.TextLine()); err != nil {
+			return err
+		}
 	}
-	// A live reseq broadcast (notification-thread consolidation) re-emits an
-	// already-seen id at a new higher seq. previous_seq marks it as a MOVE from that
-	// older seq, so a --follow consumer can reconcile by id (update the row at
-	// previous_seq) instead of seeing an unexplained duplicate. Only set on the live
-	// broadcast; a single-page / replayed row carries 0 and the field is omitted.
-	if ps := m.GetPreviousSeq(); ps != 0 {
-		out["previous_seq"] = ps
-	}
-	if d := m.GetDepth(); d != 0 {
-		out["depth"] = d
-	}
-	if pid := m.GetParentSpanId(); pid != "" {
-		out["parent_span_id"] = pid
-	}
-	if sid := m.GetSpanId(); sid != "" {
-		out["span_id"] = sid
-	}
-	if st := m.GetSpanType(); st != "" {
-		out["span_type"] = st
-	}
-	if sc := m.GetSpanColor(); sc != 0 {
-		out["span_color"] = sc
+	return nil
+}
+
+// renderAgentMessage flattens an AgentChatMessage: the zstd-compressed
+// `content` payload is decompressed and parsed as JSON (or kept as a string
+// when the payload isn't JSON), and the `span_lines` proto field — which on
+// the wire is a JSON-encoded string — is parsed into structured JSON. The
+// `content_compression` field is dropped because it no longer describes
+// what's in `content` after decompression.
+func renderAgentMessage(m *leapmuxv1.AgentChatMessage) agentMessage {
+	out := agentMessage{
+		ID:           m.GetId(),
+		Seq:          m.GetSeq(),
+		CreatedAt:    m.GetCreatedAt(),
+		Source:       enumToken(m.GetSource()),
+		Provider:     agentProviderName(m.GetAgentProvider()),
+		PreviousSeq:  m.GetPreviousSeq(),
+		Depth:        m.GetDepth(),
+		ParentSpanID: m.GetParentSpanId(),
+		SpanID:       m.GetSpanId(),
+		SpanType:     m.GetSpanType(),
+		SpanColor:    m.GetSpanColor(),
 	}
 	if raw := m.GetContent(); len(raw) > 0 {
 		decoded, err := msgcodec.Decompress(raw, m.GetContentCompression())
 		if err != nil {
-			// Decompression failure surfaces as both an error
-			// indicator and the raw bytes so callers can still
-			// recover the payload manually.
-			out["content_error"] = err.Error()
-			out["content_raw"] = raw
+			out.ContentError = err.Error()
+			out.ContentRaw = raw
 		} else if parsed, ok := decodeJSON(decoded); ok {
-			out["content"] = parsed
+			out.Content = parsed
 		} else {
 			// Payload isn't JSON — fall back to a string so the
 			// caller still gets something legible. This covers
 			// providers that emit plain-text deltas or markers.
-			out["content"] = string(decoded)
+			out.Content = string(decoded)
 		}
 	}
 	if sl := m.GetSpanLines(); sl != "" {
 		if parsed, ok := decodeJSON([]byte(sl)); ok {
-			out["span_lines"] = parsed
+			out.SpanLines = parsed
 		} else {
 			// Worker shipped a non-JSON span_lines value (older
 			// snapshots, partial migration). Keep it as a string
 			// rather than dropping it on the floor.
-			out["span_lines"] = sl
+			out.SpanLines = sl
 		}
 	}
 	return out
@@ -394,7 +436,7 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 }
 
 // tailAgentMessages streams `WatchEvents` for a single agent and
-// emits each `AgentChatMessage` as a JSON line on stdout. On
+// prints each `AgentChatMessage` as one stream event. On
 // transport disconnect it reconnects with capped exponential backoff,
 // resuming from the latest `seq` it observed. Before each RECONNECT it
 // drains any backlog the capped replay would skip (see drainBacklog), so
@@ -415,7 +457,7 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 
 	transport, err := newAgentMessagesTransport(ctx, c, workerID)
 	if err != nil {
-		return control.EmitErrorWith("subscribe_failed", err)
+		return err
 	}
 	defer transport.close()
 
@@ -523,9 +565,9 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 			if errors.Is(err, streamevents.ErrSubscriptionClosed) {
 				return nil
 			}
-			if emitErr := em.emitError(agentID, "subscribe_failed", err); emitErr != nil {
-				return emitErr
-			}
+			// A failed subscribe is retried below, so it is a notice on
+			// stderr rather than the command's failure.
+			em.printer.Notice("subscribing to agent %s failed, retrying: %v", agentID, err)
 		} else {
 			// Block until the subscription's transport ends
 			// (channel closed, RPC error, ctx cancelled).
@@ -599,32 +641,33 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 	}, nil
 }
 
-// lineEmitter serializes JSON-line writes to one encoder under one mutex, so the
-// concurrent emitters in --follow mode (the subscription callback and the
-// reconnect-drain loop) can't interleave bytes mid-line. Bundling the encoder and
-// mutex together means a caller can't encode without holding the lock -- the locking
-// discipline stops being every call site's responsibility.
+// lineEmitter serializes stream writes under one mutex, so the concurrent
+// emitters in --follow mode (the subscription callback and the
+// reconnect-drain loop) can't interleave bytes mid-line. Bundling the
+// printer and the mutex together means a caller can't write without holding
+// the lock -- the locking discipline stops being every call site's
+// responsibility.
 type lineEmitter struct {
-	mu  sync.Mutex
-	enc *json.Encoder
-	err error
+	mu      sync.Mutex
+	printer *cli.Printer
+	err     error
 }
 
-// emit writes one JSON value as a line under the lock.
+// emit prints one stream event under the lock.
 func (e *lineEmitter) emit(v any) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.err != nil {
 		return e.err
 	}
-	if err := e.enc.Encode(v); err != nil {
+	if err := e.printer.Event(v); err != nil {
 		e.err = err
 		return err
 	}
 	return nil
 }
 
-// emitFollowEvent reports whether the event produces a JSON record.
+// emitFollowEvent reports whether the event produces a stream record.
 func (e *lineEmitter) emitFollowEvent(event *leapmuxv1.AgentEvent) (bool, error) {
 	if message := event.GetAgentMessage(); message != nil {
 		return true, e.emit(renderAgentMessage(message))
@@ -642,16 +685,4 @@ func (e *lineEmitter) Err() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.err
-}
-
-// emitError writes a `{"source":"error",...}` line under the lock so it doesn't
-// interleave with concurrent event encodes. Panics on a nil err (a programmer error
-// -- a nil message would be indistinguishable from a successful frame downstream).
-func (e *lineEmitter) emitError(contextID, code string, err error) error {
-	return e.emit(map[string]any{
-		"source":  "error",
-		"context": contextID,
-		"code":    code,
-		"message": err.Error(),
-	})
 }

@@ -2,89 +2,75 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
-	"os/signal"
 	"slices"
-	"syscall"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-// RunEvents subscribes to the user CRDT WatchUser stream and emits each
-// event as a single JSONL line on stdout. The first event is always
+// runLayoutWatch subscribes to the user CRDT WatchUser stream and prints
+// each event as one stream event. The first event is always
 // UserMaterialized (the bootstrap snapshot); subsequent events are
 // canonical-HLC-tagged ops, presence updates, lifecycle events, or
 // entity-visibility transitions.
 //
-// The command runs until SIGINT/SIGTERM or the stream closes. The
-// stream is scoped to the authenticated session's own user, so no
-// user id is resolved or sent; --workspace-id (directly, or derived
-// from --tab-id / --tile-id) only narrows which workspaces the
-// stream carries. Conflicts surface as invalid_request.
-//
-// It is the CLI surface that replaces the legacy
-// `WatchWorkspaceEvents` command from before the CRDT migration.
-func RunEvents(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	c, err := requireClient(hub)
+// The command runs until the process is interrupted or the stream closes.
+// The stream is scoped to the authenticated session's own user, so no user
+// id is resolved or sent; the workspace argument only narrows which
+// workspaces the stream carries.
+func runLayoutWatch(inv *cli.Invocation) (any, error) {
+	s, err := openStreamSession(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-	got, err := runResolve(ctx, c, resolve.Need{Want: resolve.Wants{WorkspaceID: true}}, in)
-	if err != nil {
-		return err
+	defer s.Close()
+	var workspaceIDs []string
+	if inv.HasArg("workspace") {
+		bounded := s.bounded()
+		ws, err := bounded.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+		bounded.Close()
+		if err != nil {
+			return nil, err
+		}
+		workspaceIDs = []string{ws.ID}
 	}
-	workspaceIDs := []string{}
-	if got.WorkspaceID != "" {
-		workspaceIDs = []string{got.WorkspaceID}
+	if s.c.IsWorkerIPC() {
+		return nil, runEventsLocal(s.ctx, s.c, workspaceIDs, inv.Printer)
 	}
-	if c.IsWorkerIPC() {
-		return runEventsLocal(ctx, c, workspaceIDs)
-	}
-	return runEventsHub(ctx, c, workspaceIDs)
+	return nil, runEventsHub(s.ctx, s.c, workspaceIDs, inv.Printer)
 }
 
-func runEventsHub(ctx context.Context, c *control.Client, workspaceIDs []string) error {
+func runEventsHub(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
 	stream, err := c.OpenUserEvents(ctx, workspaceIDs)
 	if err != nil {
-		return control.EmitErrorWith("rpc_failed", err)
+		return err
 	}
 	defer func() { _ = stream.Close() }()
-	enc := json.NewEncoder(control.Out)
 	for {
 		evt, err := stream.Recv()
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return nil
 			}
-			return control.EmitErrorWith("stream_error", err)
+			return err
 		}
-		_ = enc.Encode(eventToJSON(evt))
+		if err := p.Event(eventToJSON(evt)); err != nil {
+			return err
+		}
 	}
 }
 
-func runEventsLocal(ctx context.Context, c *control.Client, workspaceIDs []string) error {
-	enc := json.NewEncoder(control.Out)
+func runEventsLocal(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
 	err := streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
-		_ = enc.Encode(eventToJSON(evt))
-		return false, nil
+		return false, p.Event(eventToJSON(evt))
 	})
-	if err != nil && !errors.Is(err, context.Canceled) {
-		return control.EmitErrorWith("stream_error", err)
+	if err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		return err
 	}
 	return nil
 }
@@ -224,7 +210,7 @@ func opTargetSummary(op *leapmuxv1.CrdtOp) map[string]any {
 }
 
 // opKindName returns the snake-case proto-body discriminator emitted
-// alongside the entity identifiers in `events watch` JSON output.
+// alongside the entity identifiers in `layout watch` output.
 // Kept here (not on EntityRef) because the op shape, not the entity,
 // determines the label: a SetNodeRegister and a TombstoneNode target
 // the same EntityRef.

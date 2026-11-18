@@ -2,270 +2,380 @@ package cmd
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"math"
 	"os"
+	"strings"
+
+	"github.com/spf13/pflag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-// RunTabOpen creates a new tab on the given tile. Dispatches on --type:
+// The creation commands -- `agent open`, `terminal open` and `file open` --
+// share one placement: the scope flags --workspace, --tile and --worker, and
+// the position flags --first, --last, --before and --after.
 //
 // Each ordinary tab type uses Worker-owned creation and Hub publication. FILE
-// payloads travel through RegisterTabPayload over the encrypted channel.
-//
-// Required-flag defaults are read from LEAPMUX_CONTROL_* env vars when
-// the user runs from inside a remote-enabled agent/terminal, so the
-// common "spawn another tab in the same tile" case needs zero flags.
-//
-// The hub never sees file paths — only the opaque `tab_id` and the
+// payloads travel through RegisterTabPayload over the encrypted channel, so
+// the hub never sees a file path -- only the opaque tab id and the
 // presentation registers.
-func RunTabOpen(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, tabType, filePath string
-	var displayMode, fileViewMode int64
-	// Agent-only flags.
-	var provider, model, effort, title, permissionMode, workingDir, initialMessage string
-	// Terminal-only flags.
-	var shell, shellStartDir string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&tabType, "type", "", "type of the new tab to open: agent | terminal | file (required; distinct from --tab-type, which classifies the anchor --tab-id)")
-	pos := bindPositionFlags(fs, "place the new tab")
-	fs.StringVar(&filePath, "path", "", "absolute file path (--type=file only; registered worker-side over E2EE)")
-	fs.Int64Var(&displayMode, "display-mode", 0, "--type=file: initial display_mode register value")
-	fs.Int64Var(&fileViewMode, "file-view-mode", 0, "--type=file: initial file_view_mode register value")
-	// Agent-only flags.
-	fs.StringVar(&provider, "provider", os.Getenv("LEAPMUX_CONTROL_AGENT_PROVIDER"), "--type=agent: provider (defaults to $LEAPMUX_CONTROL_AGENT_PROVIDER; when unset, auto-picks the sole installed provider on the worker, or errors with the list if more than one is installed -- run 'leapmux control agent providers' to see options)")
-	fs.StringVar(&model, "model", "", "--type=agent: model")
-	fs.StringVar(&effort, "effort", "", "--type=agent: effort (low/medium/high/max)")
-	fs.StringVar(&title, "title", "", "--type=agent or --type=terminal: tab title (empty -> the worker picks one from the shared pool)")
-	fs.StringVar(&permissionMode, "permission-mode", "", "--type=agent: permission mode")
-	fs.StringVar(&workingDir, "working-dir", workingDirEnv(), "working directory, defaulting to $LEAPMUX_CONTROL_WORKING_DIR (all types); for --type=file this is the tab's git context, and the file's own directory is used only when neither the flag nor the env var is set")
-	fs.StringVar(&initialMessage, "initial-message", "", "--type=agent: user message sent right after spawn")
-	// Terminal-only flags.
-	fs.StringVar(&shell, "shell", "", "--type=terminal: shell path (empty -> worker default)")
-	fs.StringVar(&shellStartDir, "shell-start-dir", "", "--type=terminal: shell start directory (empty -> working-dir)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+
+// addPlacementFlags registers the placement of a new tab.
+func addPlacementFlags(fs *pflag.FlagSet) {
+	fs.String("workspace", "", `workspace of the new tab (default: the workspace of this tab); the tab lands on its first tile unless --tile says otherwise`)
+	fs.String("tile", "", "tile of the new tab (default: the tile of this tab)")
+	addWorkerFlag(fs)
+	addPositionFlags(fs, "put the new tab")
+}
+
+// addWorkingDirFlag registers --dir, the working directory of a new tab.
+func addWorkingDirFlag(fs *pflag.FlagSet, usage string) {
+	fs.String("dir", "", usage)
+	cli.SetEnvDefault(fs, "dir", "LEAPMUX_CONTROL_WORKING_DIR")
+}
+
+// workingDir returns --dir, or $LEAPMUX_CONTROL_WORKING_DIR when the
+// command line omits it.
+func workingDir(inv *cli.Invocation) string {
+	if inv.Changed("dir") {
+		return stringFlag(inv, "dir")
 	}
-	tt, ok := resolve.ParseTabType(tabType)
-	if !ok {
-		return control.EmitError("invalid_request", "--type must be agent|terminal|file")
-	}
-	// IMAGE parses (so `tab list --tab-type image` and `tab close` can name
-	// one) but cannot be OPENED here. An image tab addresses one image inside
-	// one chat message -- agent id, message seq, and which image of that
-	// message -- which is a selection a person makes by clicking the picture in
-	// a transcript. There is no flag spelling of it a caller could reasonably
-	// produce, and a tab opened without that reference resolves to nothing.
-	if tt == leapmuxv1.TabType_TAB_TYPE_IMAGE {
-		return control.EmitError("invalid_request", "--type=image is opened by clicking an image in a transcript, not from the CLI")
-	}
-	if tt == leapmuxv1.TabType_TAB_TYPE_FILE && filePath == "" {
-		return control.EmitError("invalid_request", "--path is required for --type=file")
-	}
-	if tt != leapmuxv1.TabType_TAB_TYPE_FILE && filePath != "" {
-		return control.EmitError("invalid_request", "--path is only valid for --type=file")
-	}
-	if tt == leapmuxv1.TabType_TAB_TYPE_FILE {
-		for _, mode := range []struct {
-			flag  string
-			value int64
-		}{{"display-mode", displayMode}, {"file-view-mode", fileViewMode}} {
-			if mode.value < math.MinInt32 || mode.value > math.MaxInt32 {
-				return control.EmitError("invalid_request", fmt.Sprintf("--%s must be between -2147483648 and 2147483647", mode.flag))
-			}
+	return workingDirEnv()
+}
+
+// placement is where a creation command puts the new tab.
+type placement struct {
+	WorkspaceID string
+	// TileID is empty when the tab lands on the first tile of the
+	// workspace.
+	TileID   string
+	WorkerID string
+	Position positionSpec
+}
+
+// placement resolves the placement flags of a creation command.
+//
+// Without --workspace and --tile, the new tab lands beside the tab that
+// runs the command: the resolver derives that tab's workspace and tile from
+// $LEAPMUX_CONTROL_TAB_ID. With either flag, the anchor is not used for the
+// tile, so `--workspace W` puts the tab on W's first tile instead of on a
+// tile of another workspace. The Worker is --worker, else the Worker of the
+// tab that runs the command.
+func (s *session) placement() (placement, error) {
+	in := resolve.Inputs{}
+	if s.inv.Changed("tile") {
+		t, err := s.resolveOne(resolve.KindTile, stringFlag(s.inv, "tile"))
+		if err != nil {
+			return placement{}, err
 		}
+		in.TileID, in.ExplicitTileID = t.ID, true
 	}
-	spec, err := pos.Resolve()
+	if s.inv.Changed("workspace") {
+		w, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
+		if err != nil {
+			return placement{}, err
+		}
+		in.WorkspaceID, in.ExplicitWorkspaceID = w.ID, true
+	}
+	if s.inv.Changed(workerFlag) {
+		k, err := s.workerScope()
+		if err != nil {
+			return placement{}, err
+		}
+		in.WorkerID, in.ExplicitWorkerID = k, true
+	} else {
+		in.WorkerID = strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_WORKER_ID"))
+	}
+	if in.TileID == "" && in.WorkspaceID == "" {
+		in.TabID = strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_TAB_ID"))
+	}
+	spec, err := s.positionSpec()
 	if err != nil {
-		return control.EmitError("invalid_request", err.Error())
+		return placement{}, err
 	}
-	c, err := requireClient(hub)
+	got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, Want: resolve.Wants{TileID: true, WorkerID: true}}, in)
 	if err != nil {
-		return err
+		return placement{}, err
 	}
-	ctx, cancel := rpcDeadline(context.Background())
-	defer cancel()
+	return placement{WorkspaceID: got.WorkspaceID, TileID: got.TileID, WorkerID: got.WorkerID, Position: spec}, nil
+}
 
-	// The resolver pulls workspace_id / tile_id / worker_id from any
-	// sufficient subset of {--tab-id (parent), --workspace-id, --tile-id,
-	// --worker-id} plus the LEAPMUX_CONTROL_TAB_ID env-var spawn anchor.
-	// LocateTile fills workspace_id when only --tile-id is given;
-	// LocateTab fills the spawning tab's full context (workspace,
-	// tile, worker) when only --tab-id is given.
-	got, err := runResolve(ctx, c, resolve.Need{WorkspaceID: true, Want: resolve.Wants{TileID: true, WorkerID: true}}, in)
-	if err != nil {
-		return err
+// requireWorker refuses a placement without a Worker, for a tab that runs
+// on one.
+func (p placement) requireWorker() error {
+	if p.WorkerID == "" {
+		return cli.Usagef("no worker selected").
+			WithHint("pass --worker <worker>, or run the command inside a LeapMux tab")
 	}
-	workspaceID := got.WorkspaceID
-	tileID := got.TileID
-	workerID := got.WorkerID
+	return nil
+}
 
-	switch tt {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		if workerID == "" {
-			return control.EmitError("invalid_request", "--worker-id is required for --type=agent (or set LEAPMUX_CONTROL_WORKER_ID)")
-		}
-		if err := maybePreflightWorker(ctx, c, workerID); err != nil {
-			return err
-		}
-		// Provider discovery, creation, and optional initial input share one channel.
-		var result *openAgentResult
-		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
-			resolvedProvider, err := resolveProvider(ctx, provider, w.Call)
-			if err != nil {
-				return err
-			}
-			result, err = openAgentAndAddTab(ctx, c, w, openAgentArgs{
-				WorkspaceID:    workspaceID,
-				WorkerID:       workerID,
-				TileID:         tileID,
-				Provider:       resolvedProvider,
-				Model:          model,
-				Effort:         effort,
-				Title:          title,
-				PermissionMode: permissionMode,
-				WorkingDir:     workingDir,
-				InitialMessage: initialMessage,
-				Position:       spec,
-			})
-			return err
-		}); err != nil {
-			// The body's errors are already JSON envelopes (resolveProvider and
-			// openAgentAndAddTab emit their own); only withWorkerChannel's own
-			// open/validation failures arrive raw and still need emitting.
-			var coded *codedRPCError
-			if errors.As(err, &coded) {
-				return control.EmitErrorWith(coded.Code, coded.Cause)
-			}
-			return err
-		}
-		out := tabOpenEnvelope(result.Agent.GetId(), resolve.TabTypeWireName(tt), workspaceID, workerID, result.TileID, result.Position)
-		if result.InitialMsgWarn != "" {
-			out["initial_message_warning"] = result.InitialMsgWarn
-		}
-		return control.EmitData(out)
+// addGitSetupFlags registers how a new agent or terminal prepares its
+// working directory. At most one of the four modes applies.
+func addGitSetupFlags(fs *pflag.FlagSet) {
+	fs.String("worktree", "", "create a git worktree on this new branch and start in it")
+	fs.String("use-worktree", "", "start in this existing git worktree")
+	fs.String("checkout", "", "check out this existing branch first")
+	fs.String("new-branch", "", "create this branch and check it out first")
+	fs.String("base", "", "the branch that --worktree or --new-branch starts from (default: the current branch)")
+}
 
-	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		if workerID == "" {
-			return control.EmitError("invalid_request", "--worker-id is required for --type=terminal (or set LEAPMUX_CONTROL_WORKER_ID)")
+// gitSetup reads the git flags of the invocation. It returns nil when none
+// is set.
+func gitSetup(inv *cli.Invocation) (*leapmuxv1.GitSetup, error) {
+	var set []string
+	for _, name := range []string{"worktree", "use-worktree", "checkout", "new-branch"} {
+		if inv.Changed(name) {
+			set = append(set, "--"+name)
 		}
-		if err := maybePreflightWorker(ctx, c, workerID); err != nil {
-			return err
-		}
-		// Use the same channel ownership as the agent creation path.
-		var result *openTerminalResult
-		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
-			var err error
-			result, err = openTerminalAndAddTab(ctx, c, w, openTerminalArgs{
-				WorkspaceID:   workspaceID,
-				WorkerID:      workerID,
-				TileID:        tileID,
-				WorkingDir:    workingDir,
-				Shell:         shell,
-				ShellStartDir: shellStartDir,
-				Title:         title,
-				Position:      spec,
-			})
-			return err
-		}); err != nil {
-			// The body's errors are already JSON envelopes; only
-			// withWorkerChannel's own open/validation failures arrive raw.
-			var coded *codedRPCError
-			if errors.As(err, &coded) {
-				return control.EmitErrorWith(coded.Code, coded.Cause)
-			}
-			return err
-		}
-		return control.EmitData(tabOpenEnvelope(result.TerminalID, resolve.TabTypeWireName(tt), workspaceID, workerID, result.TileID, result.Position))
-
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		// Preserve the file command's explicit destination requirement.
-		// Relative insertion derives the destination from the anchor tab.
-		if tileID == "" && (spec.kind == positionFirst || spec.kind == positionLast) {
-			return control.EmitError("invalid_request", "--tile-id is required for --type=file with --first/--last")
-		}
-		cc, err := openCRDTCall(hub, workspaceID)
-		if err != nil {
-			return err
-		}
-		defer cc.close()
-		resolvedTileID, _, err := resolvePositionSpec(cc.bs.State, tileID, "", spec)
-		if err != nil {
-			return err
-		}
-		if err := preflightTile(cc.bs.State, workspaceID, resolvedTileID); err != nil {
-			return err
-		}
-		if err := maybePreflightWorker(cc.ctx, cc.c, workerID); err != nil {
-			return err
-		}
-		if workerID == "" {
-			workerID = findWorkerForWorkspaceInState(cc.bs.State, workspaceID)
-			if workerID == "" {
-				return control.EmitErrorWith("worker_resolution_failed",
-					errors.New("no worker hosts this workspace yet; pass --worker-id explicitly"))
-			}
-		}
-		// workingDir defaults to $LEAPMUX_CONTROL_WORKING_DIR, so a `tab open`
-		// run from inside an agent or terminal forwards THAT tab's dir -- the
-		// same "the file tab inherits the context it was opened from" the UI
-		// path sends. Run from outside a LeapMux tab it is empty, and the
-		// worker falls back to the file's own directory.
-		creation, err := resolveTabCreation(cc.ctx, cc.c, workspaceID, resolvedTileID, spec)
-		if err != nil {
-			return err
-		}
-		presentation := &leapmuxv1.TabPresentation{}
-		if displayMode != 0 {
-			presentation.DisplayMode = leapmuxv1.TabDisplayMode(displayMode).Enum()
-		}
-		if fileViewMode != 0 {
-			presentation.FileViewMode = leapmuxv1.TabFileViewMode(fileViewMode).Enum()
-		}
-		creation.Presentation = presentation
-		publication, err := registerFileTabPayload(cc.ctx, cc.c, workerID, creation, filePath, workingDir)
-		if err != nil {
-			return control.EmitErrorWith("worker_register_failed", err)
-		}
-		out := tabOpenEnvelope(creation.GetTabId(), resolve.TabTypeWireName(tt), workspaceID, workerID, publication.GetTileId(), publication.GetPosition())
-		out["path"] = filePath
-		return control.EmitData(out)
+	}
+	base := stringFlag(inv, "base")
+	switch {
+	case len(set) > 1:
+		return nil, cli.Usagef("%s exclude each other", strings.Join(set, " and "))
+	case len(set) == 0 && inv.Changed("base"):
+		return nil, cli.Usagef("--base needs --worktree or --new-branch")
+	case len(set) == 0:
+		return nil, nil
+	}
+	value := strings.TrimSpace(stringFlag(inv, strings.TrimPrefix(set[0], "--")))
+	if value == "" {
+		return nil, cli.Usagef("%s is empty", set[0])
+	}
+	if base != "" && set[0] != "--worktree" && set[0] != "--new-branch" {
+		return nil, cli.Usagef("--base applies only to --worktree and --new-branch")
+	}
+	switch set[0] {
+	case "--worktree":
+		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateWorktree{CreateWorktree: &leapmuxv1.GitCreateWorktree{Branch: value, BaseBranch: base}}}, nil
+	case "--use-worktree":
+		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktreePath{UseWorktreePath: value}}, nil
+	case "--checkout":
+		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CheckoutBranch{CheckoutBranch: value}}, nil
 	default:
-		return control.EmitError("invalid_request", "--type must be agent|terminal|file")
+		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateBranch{CreateBranch: &leapmuxv1.GitCreateBranch{Name: value, BaseBranch: base}}}, nil
 	}
 }
 
-// tabOpenEnvelope is the shared shape every `tab open` response emits:
-// (tab_id, tab_type, workspace_id, worker_id, tile_id, position).
-// Each per-type branch then layers on its own warnings / extras
-// (the agent branch's initial_message_warning, the file branch's path)
-// instead of repeating the struct-literal in three places.
-// tabOpenEnvelope builds the success envelope every `tab open` arm emits.
-//
-// tabType is the CANONICAL wire name, not the string the user typed.
-// `ParseTabType` accepts "TAB_TYPE_FILE" as well as "file", so echoing the flag
-// would make this command answer "TAB_TYPE_FILE" for a tab that `tab list` and
-// `tab get` both call "file" -- and a script that compares the two fields across
-// commands would silently stop matching. See enums.go, which states that the
-// envelope strings and the flag values are one vocabulary.
-func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position string) map[string]any {
-	return map[string]any{
-		"tab_id":       tabID,
-		"tab_type":     tabType,
-		"workspace_id": workspaceID,
-		"worker_id":    workerID,
-		"tile_id":      tileID,
-		"position":     position,
+// openedTab is the result of a creation command.
+type openedTab struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Title       string `json:"title,omitempty"`
+	WorkspaceID string `json:"workspace_id"`
+	WorkerID    string `json:"worker_id"`
+	TileID      string `json:"tile_id"`
+	Position    string `json:"position"`
+	Path        string `json:"path,omitempty"`
+	// InitialMessageWarning reports an initial message that the agent did
+	// not accept. The agent itself opened.
+	InitialMessageWarning string `json:"initial_message_warning,omitempty"`
+}
+
+// runAgentOpen starts a new agent in a new tab. Provider discovery,
+// creation, and the optional first message share one channel.
+func runAgentOpen(inv *cli.Invocation) (any, error) {
+	setup, err := gitSetup(inv)
+	if err != nil {
+		return nil, err
 	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	p, err := s.placement()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.requireWorker(); err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, p.WorkerID); err != nil {
+		return nil, err
+	}
+	provider := stringFlag(inv, "provider")
+	if !inv.Changed("provider") {
+		provider = os.Getenv("LEAPMUX_CONTROL_AGENT_PROVIDER")
+	}
+	var result *openAgentResult
+	err = withWorkerChannel(s.ctx, s.c, p.WorkerID, func(w workerCall) error {
+		resolvedProvider, err := resolveProvider(s.ctx, provider, w.Call)
+		if err != nil {
+			return err
+		}
+		result, err = openAgentAndAddTab(s.ctx, s.c, w, openAgentArgs{
+			WorkspaceID:    p.WorkspaceID,
+			WorkerID:       p.WorkerID,
+			TileID:         p.TileID,
+			Provider:       resolvedProvider,
+			Model:          stringFlag(inv, "model"),
+			Effort:         stringFlag(inv, "effort"),
+			Title:          stringFlag(inv, "title"),
+			PermissionMode: stringFlag(inv, "permission-mode"),
+			WorkingDir:     workingDir(inv),
+			InitialMessage: stringFlag(inv, "message"),
+			SessionID:      stringFlag(inv, "resume"),
+			GitSetup:       setup,
+			Position:       p.Position,
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return openedTab{
+		ID:                    result.Agent.GetId(),
+		Type:                  tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT),
+		Title:                 result.Agent.GetTitle(),
+		WorkspaceID:           p.WorkspaceID,
+		WorkerID:              p.WorkerID,
+		TileID:                result.TileID,
+		Position:              result.Position,
+		InitialMessageWarning: result.InitialMsgWarn,
+	}, nil
+}
+
+// runTerminalOpen starts a new shell in a new tab, with the same channel
+// ownership as `agent open`.
+func runTerminalOpen(inv *cli.Invocation) (any, error) {
+	setup, err := gitSetup(inv)
+	if err != nil {
+		return nil, err
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	p, err := s.placement()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.requireWorker(); err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, p.WorkerID); err != nil {
+		return nil, err
+	}
+	var result *openTerminalResult
+	err = withWorkerChannel(s.ctx, s.c, p.WorkerID, func(w workerCall) error {
+		var err error
+		result, err = openTerminalAndAddTab(s.ctx, s.c, w, openTerminalArgs{
+			WorkspaceID:   p.WorkspaceID,
+			WorkerID:      p.WorkerID,
+			TileID:        p.TileID,
+			WorkingDir:    workingDir(inv),
+			Shell:         stringFlag(inv, "shell"),
+			ShellStartDir: stringFlag(inv, "start-dir"),
+			Title:         stringFlag(inv, "title"),
+			GitSetup:      setup,
+			Position:      p.Position,
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return openedTab{
+		ID:          result.TerminalID,
+		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_TERMINAL),
+		Title:       result.Title,
+		WorkspaceID: p.WorkspaceID,
+		WorkerID:    p.WorkerID,
+		TileID:      result.TileID,
+		Position:    result.Position,
+	}, nil
+}
+
+// runFileOpen opens a file in a new viewer tab. The path travels to the
+// Worker over the encrypted channel; the hub stores only the tab.
+func runFileOpen(inv *cli.Invocation) (any, error) {
+	filePath := inv.Arg("path")
+	presentation := &leapmuxv1.TabPresentation{}
+	if raw := stringFlag(inv, "display-mode"); raw != "" {
+		n, ok := parseEnumToken(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED, raw)
+		if !ok {
+			return nil, cli.Usagef("--display-mode must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED), ", "), raw)
+		}
+		presentation.DisplayMode = leapmuxv1.TabDisplayMode(n).Enum()
+	}
+	if raw := stringFlag(inv, "view-mode"); raw != "" {
+		n, ok := parseEnumToken(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED, raw)
+		if !ok {
+			return nil, cli.Usagef("--view-mode must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED), ", "), raw)
+		}
+		presentation.FileViewMode = leapmuxv1.TabFileViewMode(n).Enum()
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	p, err := s.placement()
+	if err != nil {
+		return nil, err
+	}
+	cc, err := s.openCRDT(p.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	// --first and --last need a tile to be first or last on: the placement's
+	// tile, else the first tile of the workspace. Relative insertion derives
+	// the tile from the reference tab instead.
+	tileID := p.TileID
+	if tileID == "" && (p.Position.kind == positionFirst || p.Position.kind == positionLast) {
+		ws, ok := cc.bs.State.GetWorkspaces()[p.WorkspaceID]
+		if !ok || ws == nil {
+			return nil, cli.Newf(cli.CodeNotFound, "no such workspace: %s", p.WorkspaceID)
+		}
+		tileID = firstLiveLeaf(cc.bs.State, ws.GetRootNodeId())
+	}
+	resolvedTileID, _, err := resolvePositionSpec(cc.bs.State, tileID, "", p.Position)
+	if err != nil {
+		return nil, err
+	}
+	if err := preflightTile(cc.bs.State, p.WorkspaceID, resolvedTileID); err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(cc.ctx, cc.c, p.WorkerID); err != nil {
+		return nil, err
+	}
+	workerID := p.WorkerID
+	if workerID == "" {
+		workerID = findWorkerForWorkspaceInState(cc.bs.State, p.WorkspaceID)
+		if workerID == "" {
+			return nil, cli.Usagef("no worker hosts a tab of this workspace yet").
+				WithHint("pass --worker <worker>")
+		}
+	}
+	// --dir defaults to $LEAPMUX_CONTROL_WORKING_DIR, so a `file open` run
+	// from inside an agent or terminal forwards THAT tab's dir -- the same
+	// "the file tab inherits the context it was opened from" the UI path
+	// sends. Run from outside a LeapMux tab it is empty, and the worker
+	// falls back to the file's own directory.
+	creation, err := resolveTabCreation(cc.ctx, cc.c, p.WorkspaceID, resolvedTileID, p.Position)
+	if err != nil {
+		return nil, err
+	}
+	creation.Presentation = presentation
+	publication, err := registerFileTabPayload(cc.ctx, cc.c, workerID, creation, filePath, workingDir(inv))
+	if err != nil {
+		return nil, err
+	}
+	return openedTab{
+		ID:          creation.GetTabId(),
+		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_FILE),
+		WorkspaceID: p.WorkspaceID,
+		WorkerID:    workerID,
+		TileID:      publication.GetTileId(),
+		Position:    publication.GetPosition(),
+		Path:        filePath,
+	}, nil
 }
 
 // registerFileTabPayload keeps the path encrypted and returns the committed tab.
@@ -283,8 +393,8 @@ func registerFileTabPayload(ctx context.Context, c *control.Client, workerID str
 
 // findWorkerForWorkspaceInState returns the first worker_id hosting a
 // live tab in the given workspace, reading from the already-bootstrapped
-// UserMaterialized state. Used by `tab open --type=file` when the caller
-// doesn't pass --worker-id explicitly — a workspace that has at least
+// UserMaterialized state. Used by `file open` when neither --worker nor the
+// tab that runs the command selects a worker — a workspace that has at least
 // one live tab tells us which worker owns its filesystem context.
 // Returns "" when no live worker is on file.
 func findWorkerForWorkspaceInState(state *leapmuxv1.UserMaterialized, workspaceID string) string {

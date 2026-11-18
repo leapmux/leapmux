@@ -5,31 +5,35 @@ type: docs
 weight: 10
 ---
 
-This chapter is the `leapmux control admin ...` command tree: the online, authenticated face of hub administration. It uses the same transport, authentication, JSON output envelope, and entity-ID flags as the rest of `leapmux control` — see [Control CLI](/docs/using/control-cli/) for those mechanics. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).
+This chapter is the `leapmux control admin ...` command tree: the online, authenticated face of hub administration. It selects the Hub, signs in, prints its output and reports its errors as the rest of `leapmux control` does — see [Control CLI](/docs/using/control-cli/) for those mechanics. The [Control Command Reference](/docs/reference/control-commands/#leapmux-control-admin) lists every admin command with its arguments, flags and examples. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).
 
 The CLI uses your normal control credential. The Hub requires administrator privileges and a current step-up window for every procedure on an `Admin*` service, including reads. The `admin app` commands call `AppService`. This service checks ownership and requires the `admin:apps` permission from bearer credentials. Registering, updating, vouching for an app, and changing its elevation setting require a current window. Listing apps, retiring an app, and deleting an empty registration work without one. See [Session elevation](/docs/admin/security/#session-elevation).
 
 ```text
-leapmux control admin settings     list | get KEY | set KEY VALUE | set-secret KEY JSON | reset KEY
-leapmux control admin user         list | get | create | update | delete | grant-admin | revoke-admin | reset-password | list-sessions
-leapmux control admin session      list | revoke | revoke-user | purge-expired
-leapmux control admin worker       list | get | deregister
-leapmux control admin worker reg-key  list | revoke | purge-expired
-leapmux control admin app         list | register | update | verify | unverify | allow-elevation | deny-elevation | revoke | delete
-leapmux control admin idp  add | list | remove | enable | disable
-leapmux control admin captcha      show | set | enable | disable | reset
-leapmux control admin rate-limit   list | set | enable | disable | reset
-leapmux control admin api-token    list | issue | revoke
-leapmux control admin delegation-token  list | revoke
+leapmux control admin settings          list | get <key> | set <key> <value> | set-secret <key> <json> | reset <key>
+leapmux control admin user              list | get <user> | create <username> | update <user> | delete <user>
+                                        grant-admin <user> | revoke-admin <user> | reset-password <user> | list-sessions <user>
+leapmux control admin session           list | revoke <session> | revoke-user <user> | purge-expired
+leapmux control admin worker            list | get <worker> | deregister <worker>
+leapmux control admin worker reg-key    list | revoke <reg-key> | purge-expired
+leapmux control admin app               list | register <name> | update <app> | verify <app> | unverify <app>
+                                        allow-elevation <app> | deny-elevation <app> | revoke <app> | delete <app>
+leapmux control admin idp               add | list | remove <idp> | enable <idp> | disable <idp>
+leapmux control admin captcha           get | set | enable | disable | reset
+leapmux control admin rate-limit        list | set <operation> | enable <operation> | disable <operation> | reset <operation>
+leapmux control admin api-token         list | issue <user> | revoke <token>
+leapmux control admin delegation-token  list | revoke <token>
 ```
 
-These verbs are RPC calls, so there is no `--data-dir` and no `--config`; neither flag exists on any admin leaf. `--hub` behaves like every other control group. Output uses the control JSON envelope (`{"data": ...}`) — pipe it through `jq`.
+`<user>` is a username, or `id:<id>` for a user id. Every other argument is the id that the `list` command of its group prints; an admin command takes no prefix and no `self`, because it acts on the objects of every user.
+
+These commands are RPC calls, so there is no `--data-dir` and no `--config`; neither flag exists on any admin command. `--hub` selects the Hub as it does for every other control command. The output is text; `--json` prints the JSON envelope (`{"data": ...}`) for `jq`.
 
 > **Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/admin/recover/). Everything else is here.
 
-## The admin gate and the worker-IPC transport
+## Admin commands stay out of a LeapMux tab
 
-Admin commands **never** use the worker-IPC transport: they refuse when `LEAPMUX_CONTROL_SOCK` is set, because the worker's IPC bridge is a typing device, not a security boundary. From inside a spawned agent there is no way to reach the admin surface; run these from your own machine with an admin login.
+Admin commands **never** run inside a LeapMux tab. They refuse when `LEAPMUX_CONTROL_SOCK` is set, even with an explicit `--hub`, because that flag would carry your stored credential and an agent could act as an administrator through it. The Worker's socket is a convenience for the tab, not a security boundary. Run these commands from your own shell, outside LeapMux, with an admin login.
 
 ## Hub settings
 
@@ -58,7 +62,7 @@ You do not run a separate command. The default ceremony opens a browser on the C
 The `captcha` group is client-side sugar over the `captcha.*` settings keys: each verb composes the partial JSON documents for you and sends them in one atomic write.
 
 ```bash
-leapmux control admin captcha show
+leapmux control admin captcha get
 leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
 leapmux control admin captcha set --cost 20000            # tune the active provider in place
 leapmux control admin captcha enable
@@ -66,7 +70,7 @@ leapmux control admin captcha disable
 leapmux control admin captcha reset [--provider altcha|recaptcha_v3|turnstile]
 ```
 
-`show` reports every captcha settings key (`captcha.enabled`, `captcha.selected`, `captcha.altcha`, `captcha.recaptcha_v3`, `captcha.turnstile`). `enable` and `disable` take no flags, and `disable` leaves the honeypot check active.
+`get` reports every captcha settings key (`captcha.enabled`, `captcha.selected`, `captcha.altcha`, `captcha.recaptcha_v3`, `captcha.turnstile`). `enable` and `disable` take no flags, and `disable` leaves the honeypot check active.
 
 `set` flags, and the provider that owns each one:
 
@@ -108,15 +112,15 @@ The two address-keyed budgets use the verified client IP. By default, this is th
 
 ```bash
 leapmux control admin rate-limit list
-leapmux control admin rate-limit set --operation elevation --max-attempts 5 --window 900
-leapmux control admin rate-limit enable  --operation elevation
-leapmux control admin rate-limit disable --operation elevation
-leapmux control admin rate-limit reset   --operation elevation
+leapmux control admin rate-limit set elevation --max-attempts 5 --window 900
+leapmux control admin rate-limit enable elevation
+leapmux control admin rate-limit disable elevation
+leapmux control admin rate-limit reset elevation
 ```
 
-| Flag | Applies to | Meaning |
+| Argument or flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known values: `elevation`, `email_change`, `login_anonymous`, `oauth_anonymous`. |
+| `<operation>` | `set`, `enable`, `disable`, `reset` | The operation to limit: `elevation`, `email_change`, `login_anonymous` or `oauth_anonymous`. |
 | `--max-attempts` | `set` | Failed attempts allowed per window (1–1000). |
 | `--window` | `set` | Window length in seconds (60–86400). |
 
@@ -128,16 +132,16 @@ The Hub retains at least one live administrator after setup. It refuses to delet
 
 The Hub serializes administrator removal with a shared in-memory mutex. Deletion and signup rollback for ordinary users do not acquire that mutex. The Hub checks the current role while holding the user lock.
 
-`--force` confirms deletion of an administrator or removal of your own administrator access. It cannot override the last-administrator rule. Create or promote another administrator before deleting or demoting the current one.
+`user delete --force` confirms the deletion of an administrator, and `user revoke-admin --force` the removal of your own administrator access. Neither overrides the last-administrator rule. Create or promote another administrator before deleting or demoting the current one.
 
 ## User passwords
 
 ```bash
-leapmux control admin user reset-password --username alice
+leapmux control admin user reset-password alice
 # New password: (no echo)
 ```
 
-Address the user with `--id` or `--username`. The CLI prompts for the password when `--password` is omitted, so the secret stays out of the shell history and out of the process table.
+`<user>` is a username, or `id:<id>`. The CLI prompts for the password when `--password` is omitted, so the secret stays out of the shell history and out of the process table.
 
 This verb needs a **browser session that verified recently**, and an API token cannot run it — see [Headless service accounts](#headless-service-accounts). With the Hub stopped, `leapmux recover` resets a password offline.
 
@@ -148,10 +152,10 @@ The offline twin is [`leapmux recover password reset`](/docs/admin/recover/#pass
 ## API tokens
 
 ```bash
-leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" --ttl 3600
+leapmux control admin api-token issue ci-bot --installation-name "ci-runner-3" --ttl 3600
 ```
 
-Address the owner with `--user-id` or `--username`; the `user` verbs spell the first flag `--id`. The envelope carries the secrets exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
+The owner, `<user>`, takes the same forms as in every `user` command: a username, or `id:<id>`. The result carries the secrets exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
 
 `--ttl` picks **which kind of credential** this is, and the two kinds are exclusive:
 
@@ -171,7 +175,7 @@ The hub emails the owner whenever this verb issues a credential for them, on the
 The interactive `leapmux control auth login` flows ([Control CLI](/docs/using/control-cli/#authentication)) are for humans. For unattended scripts and integrations, mint a durable bearer token with `leapmux control admin` instead:
 
 ```bash
-leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot"
+leapmux control admin api-token issue ci-bot --installation-name "ci-runner-3"
 ```
 
 This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Write it into a credential file under `LEAPMUX_CONTROL_CONFIG_DIR` — see [Credential file location](/docs/using/control-cli/#credential-file-location) — or send it yourself as the `Authorization: Bearer` header. Issuing, listing, and revoking these tokens is covered under [API tokens](#api-tokens) below.
@@ -181,7 +185,7 @@ A credential issued this way belongs to the built-in **service account** registr
 A service account that must run `leapmux control admin ...` needs the admin permissions too. Name them, and only for an owner who is already an administrator:
 
 ```bash
-leapmux control admin api-token issue --user-id usr_... --installation-name "ci-bot" \
+leapmux control admin api-token issue ci-bot --installation-name "ci-runner-3" \
   --scope "admin:read admin:users"
 ```
 
@@ -202,7 +206,8 @@ The remaining `Admin*` procedures accept a **command-line credential that holds 
 
 ## See also
 
-- [Control CLI](/docs/using/control-cli/) — authentication, the JSON envelope, entity-ID resolution, and the user-facing command groups.
+- [Control CLI](/docs/using/control-cli/) — authentication, the output, the errors, targets, and the user-facing command groups.
+- [Control Command Reference](/docs/reference/control-commands/) — every command with its arguments, flags and examples.
 - [Configuration](/docs/admin/configuration/) — what each hub instance setting does.
 - [Recovery](/docs/admin/recover/) — the offline break-glass tree, for when the hub cannot serve.
 - [Sign-in Providers](/docs/admin/sign-in-providers/) — the `idp` verbs in their administrator context.

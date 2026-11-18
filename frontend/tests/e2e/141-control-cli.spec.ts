@@ -8,7 +8,7 @@
  * CLI agent creation reaches the authenticated Worker. The Worker publishes
  * the canonical tab through the Hub, which broadcasts its operations on
  * `/ws/userevents`. The pending manager and projection produce the rendered
- * tab with the agent's `tab_id` as `data-tab-id`. Process startup can finish
+ * tab with the agent's id as `data-tab-id`. Process startup can finish
  * after publication.
  *
  * Active-tab selection stays local in browser storage.

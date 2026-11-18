@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -11,42 +13,27 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
-// TestEmitErrorLine_WritesValidJSON pins the on-wire shape so
-// downstream `jq` filters can branch on `.source == "error"`.
-func TestEmitErrorLine_WritesValidJSON(t *testing.T) {
+// TestLineEmitter_ConcurrentEmissionStaysWellFormed exercises the mutex
+// contract: two goroutines emitting concurrently must not interleave bytes
+// mid-line. Without the mutex, a multi-byte JSON line from goroutine A could
+// be shredded by goroutine B's write and the consumer would see invalid
+// JSON.
+func TestLineEmitter_ConcurrentEmissionStaysWellFormed(t *testing.T) {
 	var buf bytes.Buffer
-	em := &lineEmitter{enc: json.NewEncoder(&buf)}
-
-	require.NoError(t, em.emitError("agent-XYZ", "subscribe_failed", errors.New("boom")))
-
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
-	assert.Equal(t, "error", got["source"])
-	assert.Equal(t, "agent-XYZ", got["context"])
-	assert.Equal(t, "subscribe_failed", got["code"])
-	assert.Equal(t, "boom", got["message"])
-}
-
-// TestEmitErrorLine_ConcurrentEmissionStaysWellFormed exercises the
-// mutex contract: two goroutines emitting concurrently must not
-// interleave bytes mid-line. Without the mutex, a multi-byte JSON
-// line from goroutine A could be shredded by goroutine B's encoder
-// state and the consumer would see invalid JSON.
-func TestEmitErrorLine_ConcurrentEmissionStaysWellFormed(t *testing.T) {
-	var buf bytes.Buffer
-	em := &lineEmitter{enc: json.NewEncoder(&buf)}
+	em := &lineEmitter{printer: &cli.Printer{Out: &buf, Err: &bytes.Buffer{}, Format: cli.FormatJSON}}
 
 	const n = 32
 	wg := &sync.WaitGroup{}
 	wg.Add(n)
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func() {
 			defer wg.Done()
-			errs <- em.emitError("ctx", "code", errors.New("err"))
+			errs <- em.emit(map[string]any{"seq": i, "text": strings.Repeat("x", 512)})
 		}()
 	}
 	wg.Wait()
@@ -55,29 +42,15 @@ func TestEmitErrorLine_ConcurrentEmissionStaysWellFormed(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	dec := json.NewDecoder(&buf)
-	count := 0
-	for dec.More() {
-		var raw map[string]any
-		require.NoError(t, dec.Decode(&raw), "concurrent emission produced malformed JSON")
-		count++
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	require.Len(t, lines, n, "every emit must produce exactly one line")
+	for _, line := range lines {
+		var env struct {
+			Data map[string]any `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &env), "concurrent emission produced malformed JSON")
+		require.NotNil(t, env.Data, "each line is a data envelope")
 	}
-	assert.Equal(t, n, count, "every emit must produce exactly one line")
-}
-
-// TestEmitErrorLine_EmitsErrorMessageNotNil pins the nil-handling:
-// callers may pass a nil error in theory, and the helper should
-// crash loudly rather than emit `{"message": null}` that downstream
-// consumers can't distinguish from a successful frame.
-//
-// We intentionally do NOT silently substitute a default — propagating
-// nil is a programmer error and panicking surfaces it in tests.
-func TestEmitErrorLine_PanicsOnNilError(t *testing.T) {
-	var buf bytes.Buffer
-	em := &lineEmitter{enc: json.NewEncoder(&buf)}
-	assert.Panics(t, func() {
-		_ = em.emitError("ctx", "code", nil)
-	})
 }
 
 type failingJSONLineWriter struct{ err error }
@@ -88,7 +61,7 @@ func (w failingJSONLineWriter) Write([]byte) (int, error) {
 
 func TestLineEmitter_EmitReturnsAndLatchesWriteError(t *testing.T) {
 	errWrite := errors.New("disk full")
-	em := &lineEmitter{enc: json.NewEncoder(failingJSONLineWriter{err: errWrite})}
+	em := &lineEmitter{printer: &cli.Printer{Out: failingJSONLineWriter{err: errWrite}, Format: cli.FormatJSON}}
 
 	require.ErrorIs(t, em.emit(map[string]any{"seq": 1}), errWrite)
 	require.ErrorIs(t, em.emit(map[string]any{"seq": 2}), errWrite)
@@ -97,7 +70,7 @@ func TestLineEmitter_EmitReturnsAndLatchesWriteError(t *testing.T) {
 
 func TestLineEmitter_EmitFollowEventWritesRetractionThenMessage(t *testing.T) {
 	var buf bytes.Buffer
-	em := &lineEmitter{enc: json.NewEncoder(&buf)}
+	em := &lineEmitter{printer: &cli.Printer{Out: &buf, Format: cli.FormatJSON}}
 
 	emitted, err := em.emitFollowEvent(&leapmuxv1.AgentEvent{
 		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
@@ -117,20 +90,22 @@ func TestLineEmitter_EmitFollowEventWritesRetractionThenMessage(t *testing.T) {
 	dec := json.NewDecoder(&buf)
 	var retraction json.RawMessage
 	require.NoError(t, dec.Decode(&retraction))
-	assert.JSONEq(t, `{"type":"messages_retracted","seqs":[19]}`, string(retraction))
+	assert.JSONEq(t, `{"data":{"type":"messages_retracted","seqs":[19]}}`, string(retraction))
 	var message struct {
-		ID  string `json:"id"`
-		Seq int64  `json:"seq"`
+		Data struct {
+			ID  string `json:"id"`
+			Seq int64  `json:"seq"`
+		} `json:"data"`
 	}
 	require.NoError(t, dec.Decode(&message))
-	assert.Equal(t, "m-17", message.ID)
-	assert.Equal(t, int64(17), message.Seq)
+	assert.Equal(t, "m-17", message.Data.ID)
+	assert.Equal(t, int64(17), message.Data.Seq)
 	assert.False(t, dec.More(), "each event produces one record")
 }
 
 func TestLineEmitter_EmitFollowEventIgnoresEmptyRetraction(t *testing.T) {
 	var buf bytes.Buffer
-	em := &lineEmitter{enc: json.NewEncoder(&buf)}
+	em := &lineEmitter{printer: &cli.Printer{Out: &buf, Format: cli.FormatJSON}}
 
 	emitted, err := em.emitFollowEvent(&leapmuxv1.AgentEvent{
 		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
@@ -144,7 +119,7 @@ func TestLineEmitter_EmitFollowEventIgnoresEmptyRetraction(t *testing.T) {
 
 func TestLineEmitter_EmitFollowEventReturnsRetractionWriteError(t *testing.T) {
 	errWrite := errors.New("disk full")
-	em := &lineEmitter{enc: json.NewEncoder(failingJSONLineWriter{err: errWrite})}
+	em := &lineEmitter{printer: &cli.Printer{Out: failingJSONLineWriter{err: errWrite}, Format: cli.FormatJSON}}
 
 	_, err := em.emitFollowEvent(&leapmuxv1.AgentEvent{
 		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
@@ -155,6 +130,26 @@ func TestLineEmitter_EmitFollowEventReturnsRetractionWriteError(t *testing.T) {
 	require.ErrorIs(t, em.Err(), errWrite)
 }
 
+// renderedMessage renders m as `agent messages --json` prints it.
+func renderedMessage(t *testing.T, m *leapmuxv1.AgentChatMessage) map[string]any {
+	t.Helper()
+	return jsonMap(t, renderAgentMessage(m))
+}
+
+// A message prints as one text line: its seq, its source, and its content
+// on one line.
+func TestAgentMessage_TextLine(t *testing.T) {
+	m := renderAgentMessage(&leapmuxv1.AgentChatMessage{
+		Seq:                7,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:            []byte("{\"text\":\n\"hi\"}"),
+		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+	})
+	assert.Equal(t, `#7 agent: {"text":"hi"}`, m.TextLine())
+	long := renderAgentMessage(&leapmuxv1.AgentChatMessage{Seq: 1, Content: []byte(strings.Repeat("a", maxSummaryRunes*2)), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE})
+	assert.Equal(t, maxSummaryRunes, len([]rune(strings.TrimPrefix(long.TextLine(), "#1 : "))), "a long content is cut to one screen line")
+}
+
 // TestRenderAgentMessage_DecompressesContentToJSON pins the core UX
 // fix for `agent messages`: the zstd-compressed `content` blob must
 // surface as parsed JSON, not a base64 string. Otherwise users
@@ -163,7 +158,7 @@ func TestLineEmitter_EmitFollowEventReturnsRetractionWriteError(t *testing.T) {
 func TestRenderAgentMessage_DecompressesContentToJSON(t *testing.T) {
 	payload := []byte(`{"type":"text","text":"hello"}`)
 	compressed, kind := msgcodec.Compress(payload)
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{
 		Id:                 "m-1",
 		Seq:                1,
 		CreatedAt:          "2026-05-13T00:00:00Z",
@@ -185,7 +180,7 @@ func TestRenderAgentMessage_DecompressesContentToJSON(t *testing.T) {
 // the renderer must still parse the JSON instead of treating raw
 // bytes as base64.
 func TestRenderAgentMessage_UncompressedContentParsedAsJSON(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{
 		Id:                 "m-1",
 		Seq:                1,
 		Content:            []byte(`["a","b"]`),
@@ -201,7 +196,7 @@ func TestRenderAgentMessage_UncompressedContentParsedAsJSON(t *testing.T) {
 // providers, marker frames), the renderer keeps it visible as a
 // string rather than dropping it on a Unmarshal error.
 func TestRenderAgentMessage_NonJSONContentFallsBackToString(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{
 		Id:                 "m-1",
 		Seq:                1,
 		Content:            []byte("hello plain text"),
@@ -215,7 +210,7 @@ func TestRenderAgentMessage_NonJSONContentFallsBackToString(t *testing.T) {
 // without parsing the caller would see a literal escaped string
 // instead of the structured array the field describes.
 func TestRenderAgentMessage_ParsesSpanLines(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{
 		Id:        "m-1",
 		Seq:       1,
 		SpanLines: `[{"span_id":"toolu_1","color":5,"type":"connector_end"}]`,
@@ -234,7 +229,7 @@ func TestRenderAgentMessage_ParsesSpanLines(t *testing.T) {
 // zero-value contract: an empty span_lines must not show up at all,
 // so callers don't have to special-case `"span_lines": ""`.
 func TestRenderAgentMessage_EmptySpanLinesOmitted(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1})
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1})
 	_, has := rendered["span_lines"]
 	assert.False(t, has)
 }
@@ -243,15 +238,15 @@ func TestRenderAgentMessage_EmptySpanLinesOmitted(t *testing.T) {
 // reseq broadcast (previous_seq > 0) surfaces `previous_seq` so a --follow consumer can
 // reconcile the moved row by id instead of seeing an unexplained duplicate.
 func TestRenderAgentMessage_PreviousSeqMarksAReseq(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 55, PreviousSeq: 20})
-	assert.Equal(t, int64(20), rendered["previous_seq"])
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 55, PreviousSeq: 20})
+	assert.EqualValues(t, 20, rendered["previous_seq"])
 }
 
 // TestRenderAgentMessage_ZeroPreviousSeqOmitted pins the proto3 zero-value contract:
 // a normal (non-reseq) row, a single-page read, or a replay carries previous_seq 0 and
 // the field must not appear, so consumers don't special-case `"previous_seq": 0`.
 func TestRenderAgentMessage_ZeroPreviousSeqOmitted(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1})
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1})
 	_, has := rendered["previous_seq"]
 	assert.False(t, has)
 }
@@ -261,7 +256,7 @@ func TestRenderAgentMessage_ZeroPreviousSeqOmitted(t *testing.T) {
 // raw bytes must remain accessible so the caller can salvage the
 // blob with an external tool.
 func TestRenderAgentMessage_DecompressFailureSurfacesError(t *testing.T) {
-	rendered := renderAgentMessage(&leapmuxv1.AgentChatMessage{
+	rendered := renderedMessage(t, &leapmuxv1.AgentChatMessage{
 		Id:                 "m-1",
 		Seq:                1,
 		Content:            []byte("not zstd"),
@@ -269,7 +264,9 @@ func TestRenderAgentMessage_DecompressFailureSurfacesError(t *testing.T) {
 	})
 	_, ok := rendered["content_error"].(string)
 	assert.True(t, ok, "content_error must be a string describing the failure")
-	raw, ok := rendered["content_raw"].([]byte)
-	require.True(t, ok)
+	encoded, ok := rendered["content_raw"].(string)
+	require.True(t, ok, "JSON carries the raw bytes as base64")
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	require.NoError(t, err)
 	assert.Equal(t, []byte("not zstd"), raw)
 }

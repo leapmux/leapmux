@@ -75,18 +75,16 @@ func TestRejectIfSelfWorkspace(t *testing.T) {
 		assert.NoError(t, rejectIfSelfWorkspace("ws-1", ""))
 	})
 	t.Run("anchor in target workspace -> refuse", func(t *testing.T) {
-		code, msg := captureEmit(t, func() error {
-			return rejectIfSelfWorkspace("ws-1", "ws-1")
-		})
-		assert.Equal(t, "self_target_refused", code)
-		assert.Contains(t, msg, "ws-1")
-		assert.Contains(t, msg, "--force")
+		env := failureOf(t, rejectIfSelfWorkspace("ws-1", "ws-1"))
+		assert.Equal(t, "self_target_refused", env.Error["code"])
+		assert.Contains(t, env.Error["message"], "ws-1")
+		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
 	})
 }
 
 // TestGuardTabClose covers the four cases for `tab close`: no anchor,
-// anchor on a different tab, anchor on the target tab without --force
-// (refuse), and anchor on the target tab with --force (proceed).
+// anchor on a different tab, anchor on the target tab without --allow-self
+// (refuse), and anchor on the target tab with --allow-self (proceed).
 func TestGuardTabClose(t *testing.T) {
 	t.Run("no anchor -> proceed", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "")
@@ -96,16 +94,14 @@ func TestGuardTabClose(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
 		assert.NoError(t, guardTabClose("tab-other", false))
 	})
-	t.Run("self target without force -> refuse", func(t *testing.T) {
+	t.Run("self target without --allow-self -> refuse", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		code, msg := captureEmit(t, func() error {
-			return guardTabClose("tab-self", false)
-		})
-		assert.Equal(t, "self_target_refused", code)
-		assert.Contains(t, msg, "tab-self")
-		assert.Contains(t, msg, "--force")
+		env := failureOf(t, guardTabClose("tab-self", false))
+		assert.Equal(t, "self_target_refused", env.Error["code"])
+		assert.Contains(t, env.Error["message"], "tab-self")
+		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
 	})
-	t.Run("self target with force -> proceed", func(t *testing.T) {
+	t.Run("self target with --allow-self -> proceed", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
 		assert.NoError(t, guardTabClose("tab-self", true))
 	})
@@ -134,16 +130,14 @@ func TestGuardTileClose(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
 		assert.NoError(t, guardTileClose(state, "tile-B", false))
 	})
-	t.Run("anchor on target tile without force -> refuse", func(t *testing.T) {
+	t.Run("anchor on target tile without --allow-self -> refuse", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		code, msg := captureEmit(t, func() error {
-			return guardTileClose(state, "tile-A", false)
-		})
-		assert.Equal(t, "self_target_refused", code)
-		assert.Contains(t, msg, "tile-A")
-		assert.Contains(t, msg, "--force")
+		env := failureOf(t, guardTileClose(state, "tile-A", false))
+		assert.Equal(t, "self_target_refused", env.Error["code"])
+		assert.Contains(t, env.Error["message"], "tile-A")
+		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
 	})
-	t.Run("anchor on target tile with force -> proceed", func(t *testing.T) {
+	t.Run("anchor on target tile with --allow-self -> proceed", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
 		assert.NoError(t, guardTileClose(state, "tile-A", true))
 	})
@@ -151,7 +145,7 @@ func TestGuardTileClose(t *testing.T) {
 
 // TestGuardTileRemoveGrid covers the grid-subtree case: refuse when
 // the calling tab is on any tile in the doomed set (grid + every
-// descendant), proceed otherwise, --force overrides.
+// descendant), proceed otherwise, --allow-self overrides.
 func TestGuardTileRemoveGrid(t *testing.T) {
 	// grid-1 has two child leaves; tab-self sits on the second child.
 	state := newStateBuilder().
@@ -178,14 +172,12 @@ func TestGuardTileRemoveGrid(t *testing.T) {
 	})
 	t.Run("anchor inside the doomed subtree -> refuse", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		code, msg := captureEmit(t, func() error {
-			return guardTileRemoveGrid(state, gridDoomed, false)
-		})
-		assert.Equal(t, "self_target_refused", code)
-		assert.Contains(t, msg, "cell-B")
-		assert.Contains(t, msg, "--force")
+		env := failureOf(t, guardTileRemoveGrid(state, gridDoomed, false))
+		assert.Equal(t, "self_target_refused", env.Error["code"])
+		assert.Contains(t, env.Error["message"], "cell-B")
+		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
 	})
-	t.Run("anchor inside doomed subtree with force -> proceed", func(t *testing.T) {
+	t.Run("anchor inside doomed subtree with --allow-self -> proceed", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
 		assert.NoError(t, guardTileRemoveGrid(state, gridDoomed, true))
 	})

@@ -104,7 +104,7 @@ OAuth sign-in **requires** a verified email from the provider — LeapMux refuse
 2. For OIDC-based types (`google`, `apple`, `oidc`), the Hub validates the issuer over the network first. It fetches the issuer's OpenID Connect discovery document; if that fetch fails, the Hub refuses the request and stores nothing. GitHub providers skip this step.
 3. The client secret is encrypted with the Hub's **active encryption key** and stored. (For key rotation and re-encryption, see [Encryption & Data](/docs/admin/encryption-and-data/).)
 4. The provider is created **enabled** and assigned a generated ID.
-5. The command prints the control JSON envelope: `data` holds the created provider, including its generated `id` and its `type`.
+5. The command prints the created provider, including its generated `id` and its `type`.
 
 {{< callout type="important" >}}
 Note the `id` in the reply. You need it to build the exact callback URL to register with your provider, and to `enable`/`disable`/`remove` the provider later.
@@ -209,21 +209,21 @@ Set `--trust-email=true` only for providers you control or fully trust to assert
 leapmux control admin idp list
 ```
 
-The command prints the control JSON envelope: `data` holds one object per provider, with the fields `id`, `type`, `name`, `issuer_url`, `client_id`, `scopes`, `trust_email`, `enabled`, and `created_at`. An unconfigured Hub returns an empty `data` list. Only providers whose `enabled` is `true` appear as sign-in buttons. Pipe the output through `jq` to select the fields you want.
+The command prints one row per provider. With `--json`, `data.providers` holds one object per provider, with the fields `id`, `type`, `name`, `issuer_url`, `client_id`, `scopes`, `trust_email`, `enabled`, and `created_at`. An unconfigured Hub returns an empty list. Only providers whose `enabled` is `true` appear as sign-in buttons. Pipe the `--json` output through `jq` to select the fields you want.
 
 ### Enable / disable
 
 Disabling a provider hides its button and rejects new sign-ins through it without deleting the configuration, so you can re-enable it later without re-registering the OAuth app.
 
 ```bash
-leapmux control admin idp disable --id <providerID>
-leapmux control admin idp enable  --id <providerID>
+leapmux control admin idp disable <providerID>
+leapmux control admin idp enable <providerID>
 ```
 
 ### Remove
 
 ```bash
-leapmux control admin idp remove --id <providerID>
+leapmux control admin idp remove <providerID>
 ```
 
 This deletes the provider configuration (including the stored client secret) permanently. It also deletes every account link to that provider. A user with no password, whose only link was that provider, therefore loses their last login method.
@@ -239,7 +239,7 @@ A user whose email address is verified can still recover the account alone with 
 {{< /callout >}}
 
 ```bash
-leapmux control admin idp remove --id <providerID> --force
+leapmux control admin idp remove <providerID> --force
 ```
 
 The reply reports `locked_out_users`: how many accounts lost their last login method. Without `--force` it is zero, because the Hub refuses the removal in that case. A non-zero count is the report of how many accounts a forced removal locked out.
@@ -273,7 +273,7 @@ All of this UI is covered in detail in [Accounts & Authentication](/docs/using/a
 | `remove` fails and counts the users who keep no other login method | Removing the provider would delete the last login method of those accounts. | Give each of those users a password or a link to another enabled provider, then remove the provider again. Pass `--force` to remove it anyway and lock them out — see [Remove](#remove). |
 | Sign-in fails because the provider returned no email address | The provider returned no email, usually because the email scope is missing. | Include an email scope (`user:email` for GitHub; `email`/`openid` for OIDC) and grant it in the provider's app settings. |
 | OAuth login is rejected because sign-up is disabled | `signup_enabled=false` and no account is linked to that identity. | Enable sign-up (`leapmux control admin settings set signup_enabled true`), or have the user link the identity under **Preferences → Account → Linked accounts** after a password login. |
-| Button doesn't appear | Provider is disabled, or not created. | `leapmux control admin idp list`; if `enabled` is `false`, run `enable --id <id>`. |
+| Button doesn't appear | Provider is disabled, or not created. | `leapmux control admin idp list`; if `enabled` is `false`, run `leapmux control admin idp enable <id>`. |
 | Changed scopes/secret but behavior is unchanged | The Hub caches provider config as immutable. | `remove` and re-`add` the provider, then update the registered callback URL to the new id, and restart the Hub if needed. |
 
 {{< callout >}}

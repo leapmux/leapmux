@@ -64,18 +64,9 @@ func TestRunTerminalShells_InsideWorkerSpawn(t *testing.T) {
 	startSpawnIPC(t, hub, disp)
 	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunTerminalShells(fakeCmdCtx{}, nil))
-	})
-
-	var env struct {
-		Data  map[string]any `json:"data"`
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.Nil(t, env.Error, "terminal shells must succeed inside a worker spawn")
-	assert.Equal(t, "/bin/zsh", env.Data["default_shell"])
-	assert.Equal(t, []any{"/bin/zsh", "/bin/bash"}, env.Data["shells"])
+	data := runControl(t, "terminal", "shells").Data(t)
+	assert.Equal(t, "/bin/zsh", data["default_shell"])
+	assert.Equal(t, []any{"/bin/zsh", "/bin/bash"}, data["shells"])
 
 	assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure}, disp.called(),
 		"the command must reach the worker instead of dying on a denied hub round-trip")
@@ -83,7 +74,7 @@ func TestRunTerminalShells_InsideWorkerSpawn(t *testing.T) {
 	// "no such worker id" check for laptop users); only its failure
 	// handling changed. The resolver must add none of its own.
 	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called(),
-		"no hub call may be made on the --worker-id axis beyond the tolerated preflight")
+		"no hub call may be made on the worker axis beyond the tolerated preflight")
 }
 
 // TestRunTerminalShells_PreflightStillRejectsUnknownWorker is the
@@ -96,31 +87,21 @@ func TestRunTerminalShells_PreflightStillRejectsUnknownWorker(t *testing.T) {
 	hub := &recordingHub{workers: workerRows("worker-A")}
 	startSpawnIPC(t, hub, disp)
 
-	out := withCapturedStdout(t, func() {
-		// The handler returns the same envelope it printed, so a
-		// non-nil error here is the expected outcome, not a failure.
-		require.Error(t, RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", "worker-ghost"}))
-	})
-
-	// Unmarshalling the WHOLE buffer also pins that exactly one
-	// envelope was written: a second concatenated object would make
-	// this fail with "invalid character '{' after top-level value".
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.NotNil(t, env.Error)
-	assert.Equal(t, "not_found", env.Error["code"])
-	assert.Equal(t, "no such worker: worker-ghost", env.Error["message"])
+	// A full id costs no list call, so the preflight is what refuses it.
+	ghost := fullTestID("worker-ghost")
+	o := runControl(t, "terminal", "shells", "--worker", ghost)
+	require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
+	f := o.requireFailure(t, "not_found")
+	assert.Equal(t, "no such worker: "+ghost, f.Message)
 	assert.Empty(t, disp.called(), "a rejected worker id must not reach the worker")
 }
 
-// TestTerminalInfoToMap_StatusIsTheOnlyLifecycleKey pins that `status` alone
+// TestTerminalRowOf_StatusIsTheOnlyLifecycleKey pins that `status` alone
 // states the lifecycle of a terminal. A second key derived from it says less
 // than `status` does: a STARTUP_FAILED terminal runs no process, and such a key
-// read false for it. The status prints as its name, and an unset status prints
-// the empty name.
-func TestTerminalInfoToMap_StatusIsTheOnlyLifecycleKey(t *testing.T) {
+// read false for it. The status prints as its token, and an unset status prints
+// the empty token.
+func TestTerminalRowOf_StatusIsTheOnlyLifecycleKey(t *testing.T) {
 	for status, name := range map[leapmuxv1.TerminalStatus]string{
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:         "exited",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:          "ready",
@@ -128,7 +109,10 @@ func TestTerminalInfoToMap_StatusIsTheOnlyLifecycleKey(t *testing.T) {
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED: "startup_failed",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED:    "",
 	} {
-		got := terminalInfoToMap(&leapmuxv1.TerminalInfo{TerminalId: "term-1", Status: status})
+		raw, err := json.Marshal(terminalRowOf(&leapmuxv1.TerminalInfo{TerminalId: "term-1", Status: status}))
+		require.NoError(t, err)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(raw, &got))
 		assert.NotContainsf(t, got, "exited", "status %s", status)
 		assert.Equalf(t, name, got["status"], "status %s", status)
 	}

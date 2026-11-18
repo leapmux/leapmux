@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -42,21 +41,15 @@ func TestResolveProvider_UnknownAliasReturnsInvalidRequest(t *testing.T) {
 		called = true
 		return nil
 	}
-	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), "not-a-provider", list)
-		require.Error(t, err)
-	})
+	_, err := resolveProvider(context.Background(), "not-a-provider", list)
 	assert.False(t, called, "unknown alias must not fire the worker RPC")
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
+	env := failureOf(t, err)
+	assert.Equal(t, "usage", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "not-a-provider")
-	// The error message must surface canonical aliases so the user can
-	// recover without an extra round-trip.
-	assert.Contains(t, env.Error["message"], "Claude Code")
-	assert.Contains(t, env.Error["message"], "Codex")
+	// The hint must list the accepted values so the user can recover
+	// without an extra round-trip.
+	assert.Contains(t, env.Error["hints"], "claude-code")
+	assert.Contains(t, env.Error["hints"], "codex")
 }
 
 // TestResolveProvider_EmptyAutoPicksWhenWorkerHasOne pins the silent
@@ -90,15 +83,9 @@ func TestResolveProvider_EmptyAmbiguousReturnsTypedError(t *testing.T) {
 		}
 		return nil
 	}
-	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), "", list)
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "ambiguous_provider", env.Error["code"])
+	_, err := resolveProvider(context.Background(), "", list)
+	env := failureOf(t, err)
+	assert.Equal(t, "usage", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "Claude Code")
 	assert.Contains(t, env.Error["message"], "Codex")
 }
@@ -114,15 +101,9 @@ func TestResolveProvider_EmptyEmptyWorkerReturnsTypedError(t *testing.T) {
 		resp.Providers = nil
 		return nil
 	}
-	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), "", list)
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "no_providers_installed", env.Error["code"])
+	_, err := resolveProvider(context.Background(), "", list)
+	env := failureOf(t, err)
+	assert.Equal(t, "conflict", env.Error["code"])
 }
 
 // TestResolveProvider_EmptyPropagatesCodedRPCError pins that an RPC
@@ -134,87 +115,58 @@ func TestResolveProvider_EmptyPropagatesCodedRPCError(t *testing.T) {
 	list := func(context.Context, string, proto.Message, proto.Message) error {
 		return &codedRPCError{Code: "channel_open_failed", Cause: errors.New("noise handshake failed")}
 	}
-	out := withCapturedStdout(t, func() {
-		_, err := resolveProvider(context.Background(), "", list)
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "channel_open_failed", env.Error["code"])
+	_, err := resolveProvider(context.Background(), "", list)
+	env := failureOf(t, err)
+	assert.Equal(t, "worker_offline", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "noise handshake failed")
 }
 
-// TestRunAgentInterrupt_RequiresAgentID pins the early-validation
-// path: missing --agent-id surfaces invalid_request without spinning
-// up a transport. Without this, scripts that forget the flag would
-// see a network error rather than a clear hint.
-func TestRunAgentInterrupt_RequiresAgentID(t *testing.T) {
+// A command that acts on an agent requires the agent: a bare one must never
+// act on the agent that runs it. The refusal is a usage error, before any
+// transport exists.
+func TestAgentInterrupt_RequiresTheAgent(t *testing.T) {
 	clearRemoteEnv(t)
-	out := withCapturedStdout(t, func() {
-		err := RunAgentInterrupt(fakeCmdCtx{}, []string{"--hub", "https://stub"})
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
+	o := runControl(t, "agent", "interrupt", "--hub", "https://stub.invalid")
+	f := o.requireFailure(t, "usage")
+	assert.Contains(t, f.Message, "<agent>")
 }
 
-// TestRunAgentSend_RequiresMessageOrStdin pins the second invalid-
-// args branch: --tab-id is set, but no --message and --stdin not
-// provided. The CLI must surface this clearly so scripts don't send
-// empty turns to the agent by accident.
-func TestRunAgentSend_RequiresMessageOrStdin(t *testing.T) {
+// `agent send` refuses an empty message, so a script cannot send an empty
+// turn by accident.
+func TestAgentSend_RequiresTheText(t *testing.T) {
 	clearRemoteEnv(t)
-	out := withCapturedStdout(t, func() {
-		err := RunAgentSend(fakeCmdCtx{}, []string{"--hub", "https://stub", "--tab-id", "ag-1"})
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
+	for name, args := range map[string][]string{
+		"no text":    {"agent", "send", fullTestID("ag-1")},
+		"empty text": {"agent", "send", fullTestID("ag-1"), "   "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := runControl(t, append(args, "--hub", "https://stub.invalid")...)
+			o.requireFailure(t, "usage")
+		})
 	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "message")
-	assert.Contains(t, env.Error["message"], "stdin")
 }
 
-// TestRunTabRename_RequiresTitle pins the early-validation path on
-// the new universal `tab rename` command. Missing --title surfaces
-// invalid_request without any RPC traffic.
-func TestRunTabRename_RequiresTitle(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "")
-	t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-1")
-	t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", "agent")
-	out := withCapturedStdout(t, func() {
-		err := RunTabRename(fakeCmdCtx{}, []string{"--hub", "https://stub"})
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "--title")
+// The text is an argument or --file, never both.
+func TestAgentSend_RefusesTextAndFileTogether(t *testing.T) {
+	clearRemoteEnv(t)
+	o := runControl(t, "agent", "send", fullTestID("ag-1"), "hi", "--file", "prompt.md", "--hub", "https://stub.invalid")
+	f := o.requireFailure(t, "usage")
+	assert.Contains(t, f.Message, "not both")
 }
 
-// TestRunAgentSendControlResponse_RequiresAgentAndContent pins the
-// invalid-args path. The control_response payload has no safe default
-// (the agent treats absent content as "no decision provided"), so
-// missing --content must hard-fail rather than silently send "{}".
-func TestRunAgentSendControlResponse_RequiresAgentAndContent(t *testing.T) {
+// A word that starts with a dash is a flag, and an unknown flag fails: a
+// misspelled flag never reaches the agent as text.
+func TestAgentSend_AnUnknownFlagNeverBecomesText(t *testing.T) {
 	clearRemoteEnv(t)
-	out := withCapturedStdout(t, func() {
-		err := RunAgentSendControlResponse(fakeCmdCtx{}, []string{"--hub", "https://stub", "--tab-id", "ag-1"})
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "content")
+	o := runControl(t, "agent", "send", fullTestID("ag-1"), "--wiat", "--hub", "https://stub.invalid")
+	f := o.requireFailure(t, "usage")
+	assert.Contains(t, f.Message, "--wiat")
+}
+
+// `tab rename` requires the title.
+func TestTabRename_RequiresTheTitle(t *testing.T) {
+	clearRemoteEnv(t)
+	o := runControl(t, "tab", "rename", "self", "--hub", "https://stub.invalid")
+	f := o.requireFailure(t, "usage")
+	assert.Contains(t, f.Message, "<title>")
 }

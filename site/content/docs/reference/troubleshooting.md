@@ -144,7 +144,7 @@ The data directory holds no Worker credentials. Only `leapmux worker register` c
 Registration keys are **consumed atomically** on first use and live only 5 minutes. This error means the key was already used by another Worker, was revoked, or expired. These are permanent errors — the command does **not** retry them (unlike a transient network failure, which it does retry with backoff).
 
 **Fix**
-Generate a new key in the **Register worker** dialog. The refused attempt stays in `pending-registration.json` and blocks a new key, so [abandon it](/docs/admin/managing-workers/#abandon-an-attempt) first. Then run `worker register` with the new key. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Control CLI](/docs/using/control-cli/)).
+Generate a new key in the **Register worker** dialog. The refused attempt stays in `pending-registration.json` and blocks a new key, so [abandon it](/docs/admin/managing-workers/#abandon-an-attempt) first. Then run `worker register` with the new key. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke <reg-key>` (see [Control CLI](/docs/using/control-cli/)).
 
 ### `worker register` reports a pending registration
 
@@ -307,7 +307,7 @@ For the control CLI:
 
 ```bash
 leapmux control worker pins list                       # see all pinned workers
-leapmux control worker pins remove --worker-id <id>    # clear one pin
+leapmux control worker pins remove <worker>           # clear one pin
 ```
 
 For a Worker's cross-worker pins (runs entirely against local files — no Worker process needs to run):
@@ -546,7 +546,7 @@ The app reports that verification is required, and running the step-up ceremony 
 An app is refused the step-up ceremony unless its owner allowed it. An administrator turns it on per app:
 
 ```bash
-leapmux control admin app allow-elevation --client-id <client_id>
+leapmux control admin app allow-elevation <client_id>
 ```
 
 Turning it off closes every open window on the next request, so a credential that worked a moment ago stops immediately. That is the intended behavior, not a stale cache.
@@ -755,10 +755,10 @@ For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see
 ### `leapmux control` inside a terminal/agent says it can't find the Hub
 
 **Symptom**
-Running `leapmux control ...` from inside a LeapMux terminal or agent fails. The error says that it found no `--hub` flag and no `LEAPMUX_HUB` or `LEAPMUX_CONTROL_SOCK` environment variable.
+Running `leapmux control ...` from inside a LeapMux terminal or agent fails with `error: not_logged_in: no hub selected`.
 
 **Cause**
-`leapmux control` resolves its target from `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when spawned inside a LeapMux terminal/agent, or from `--hub`/`LEAPMUX_HUB` plus saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub. The Worker may have failed to start the control endpoint. On Unix, the socket lives in `<data-dir>/run/control` when its full path fits the platform limit. A deeper data directory uses a private namespace under the canonical system `/tmp` directory. The namespace derives from the account and the canonical Worker data directory. The Worker refuses an insecure directory, a conflicting namespace identity, a namespace held by another process, or a fallback path that still exceeds the platform limit. It never changes an insecure directory's permissions or switches locations to hide an ownership refusal. On Windows, the endpoint is a named pipe whose name does not depend on the Worker data directory. The Worker log states the actual error.
+`leapmux control` reaches the Hub through `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when it runs inside a LeapMux terminal or agent, and through `--hub`, `LEAPMUX_HUB` or the default Hub of the saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub. The Worker may have failed to start the control endpoint. On Unix, the socket lives in `<data-dir>/run/control` when its full path fits the platform limit. A deeper data directory uses a private namespace under the canonical system `/tmp` directory. The namespace derives from the account and the canonical Worker data directory. The Worker refuses an insecure directory, a conflicting namespace identity, a namespace held by another process, or a fallback path that still exceeds the platform limit. It never changes an insecure directory's permissions or switches locations to hide an ownership refusal. On Windows, the endpoint is a named pipe whose name does not depend on the Worker data directory. The Worker log states the actual error.
 
 **Fix**
 - **Inside a LeapMux terminal/agent:** read the Worker log for a control-endpoint error. On Unix, correct the directory ownership and permissions, or choose a shorter Worker data directory. On Windows, inspect the named-pipe startup error in the Worker log. The `LEAPMUX_CONTROL_*` vars should already be present. Confirm with `env | grep LEAPMUX_CONTROL`. If they're absent, you likely spawned a sub-shell that stripped the environment, or the remote-IPC server wasn't available at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it's wired up automatically.)

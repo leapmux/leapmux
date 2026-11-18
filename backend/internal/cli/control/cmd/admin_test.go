@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -24,59 +24,27 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
-// TestAdminCommandsRefuseWorkerIPC pins the transport rule every admin
-// leaf inherits through requireAdminClient: admin commands talk to the
-// hub directly and never use the worker-IPC bridge. The hubrpc table
-// the bridge dispatches through is a typing device, not a security
-// boundary — anything registered there is callable by any spawned agent
-// — so no admin procedure is registered there and the client refuses the
-// transport outright.
-func TestAdminCommandsRefuseWorkerIPC(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/agent.sock")
-
-	_, err := requireAdminClient("")
-	require.Error(t, err)
-	assert.True(t, control.IsEmitted(err), "the refusal uses the JSON envelope, like every control error")
-}
-
-// TestAdminCommandUsageStrings pins the usage/validation messages that
-// carried over verbatim from the old offline verbs. The CLI checks them
-// before it builds any client (so no hub or credentials are needed).
-func TestAdminCommandUsageStrings(t *testing.T) {
-	cases := []struct {
-		name string
-		run  func(any, []string) error
-		want string
-	}{
-		{"settings get needs KEY", RunAdminSettingsGet, "usage: leapmux control admin settings get KEY"},
-		{"settings set needs KEY VALUE", RunAdminSettingsSet, "usage: leapmux control admin settings set KEY VALUE"},
-		{"settings set-secret needs KEY JSON", RunAdminSettingsSetSecret, "usage: leapmux control admin settings set-secret KEY JSON"},
-		{"settings reset needs KEY", RunAdminSettingsReset, "usage: leapmux control admin settings reset KEY"},
-		{"api-token issue needs a user selector", RunAdminAPITokenIssue, "--user-id or --username is required"},
-		{"api-token revoke needs id", RunAdminAPITokenRevoke, "--id is required"},
-		{"delegation-token revoke needs id", RunAdminDelegationTokenRevoke, "--id is required"},
-		{"rate-limit set needs operation", RunAdminRateLimitSet, "--operation is required"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.run(nil, nil)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.want)
-		})
-	}
+// adminRun runs `leapmux control admin <args...> --json` against a hub that
+// nobody listens on. A verb that passes its own checks then fails at the
+// dial with unavailable, so a test reads which check refused it.
+func adminRun(t *testing.T, args ...string) cliOutcome {
+	t.Helper()
+	isolateCLIEnv(t)
+	return runControl(t, append(append([]string{"admin"}, args...), "--hub", unreachableHub)...)
 }
 
 // TestAdminUserUpdateNoFields pins the no-op refusal verbatim.
 func TestAdminUserUpdateNoFields(t *testing.T) {
-	err := RunAdminUserUpdate(nil, nil)
-	require.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "no fields to update (use --display-name, --email, --email-verified, or --clear-pending-email)"))
+	f := adminRun(t, "user", "update", "amy").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "no fields to update (use --display-name, --email, --email-verified, or --clear-pending-email)", f.Message)
 }
 
 // TestParseSettingValue pins the scalar coercion the old offline verb
@@ -103,7 +71,7 @@ func TestParseSettingValue(t *testing.T) {
 	_, err = parseSettingValue("")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `pass '""' to store the empty string`)
-	assert.Contains(t, err.Error(), "settings reset KEY")
+	assert.Contains(t, err.Error(), "settings reset <key>")
 
 	v, err = parseSettingValue("[1,2]")
 	require.NoError(t, err)
@@ -131,9 +99,8 @@ func TestParseSettingValue(t *testing.T) {
 }
 
 func TestAdminRateLimitSet_RequiresAtLeastOneTuningFlag(t *testing.T) {
-	err := RunAdminRateLimitSet(nil, []string{"--operation", "elevation"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pass --max-attempts, --window, or both")
+	f := adminRun(t, "rate-limit", "set", "elevation").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "pass --max-attempts, --window, or both", f.Message)
 }
 
 // Tuning one field must not disturb the other, and must not touch the
@@ -141,21 +108,21 @@ func TestAdminRateLimitSet_RequiresAtLeastOneTuningFlag(t *testing.T) {
 // window cannot silently re-arm a limiter an operator turned off.
 func TestAdminRateLimitSet_AcceptsOneFlagAndNeverWritesEnabled(t *testing.T) {
 	for _, args := range [][]string{
-		{"--operation", "elevation", "--max-attempts", "5"},
-		{"--operation", "elevation", "--window", "900"},
+		{"elevation", "--max-attempts", "5"},
+		{"elevation", "--window", "900"},
 	} {
-		err := RunAdminRateLimitSet(nil, args)
-		require.Error(t, err, "no hub is reachable in a unit test")
-		assert.NotContains(t, err.Error(), "pass --max-attempts, --window, or both",
-			"%v must pass flag validation and fail only at the transport", args)
+		adminRun(t, append([]string{"rate-limit", "set"}, args...)...).requireFailure(t, cli.CodeUnavailable)
 	}
 }
 
 func TestAdminRateLimitSet_RefusesUnknownOperation(t *testing.T) {
-	err := RunAdminRateLimitSet(nil, []string{"--operation", "chnage-password", "--max-attempts", "5"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `unknown operation "chnage-password"`)
-	assert.Contains(t, err.Error(), "elevation", "the message must list the known operations")
+	f := adminRun(t, "rate-limit", "set", "chnage-password", "--max-attempts", "5").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, `unknown operation "chnage-password"`, f.Message)
+	require.Len(t, f.Hints, 1)
+	assert.Contains(t, f.Hints[0], "elevation", "the hint must list the known operations")
+
+	f = adminRun(t, "rate-limit", "reset", " ").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "<operation> is empty", f.Message)
 }
 
 // The hub decodes the value as JSON, so a bare `T`/`TRUE`/`False` must be
@@ -303,59 +270,53 @@ func TestAdminSessionJSON_CarriesEveryKeyAScriptReads(t *testing.T) {
 func TestValidateListLimit_RefusesNonPositiveAndOversized(t *testing.T) {
 	// A non-positive limit reads as "return no rows" in the store, which an
 	// operator cannot tell apart from a genuinely empty result.
-	for _, limit := range []int64{0, -1, -50, 501} {
+	for _, limit := range []int64{0, -1, -50, contracts.MaxPageLimit + 1} {
 		require.Error(t, validateListLimit(limit), "limit %d must be refused", limit)
 	}
-	for _, limit := range []int64{1, 50, 500} {
+	for _, limit := range []int64{1, contracts.DefaultPageLimit, contracts.MaxPageLimit} {
 		require.NoError(t, validateListLimit(limit), "limit %d must be accepted", limit)
 	}
 }
 
 // Every paginated admin verb must hold the limit, not just `user list`.
 func TestAdminListVerbs_RefuseANonPositiveLimit(t *testing.T) {
-	verbs := map[string]func(any, []string) error{
-		"user list":             RunAdminUserList,
-		"user list-sessions":    RunAdminUserListSessions,
-		"session list":          RunAdminSessionList,
-		"api-token list":        RunAdminAPITokenList,
-		"delegation-token list": RunAdminDelegationTokenList,
-		"worker list":           RunAdminWorkerList,
-		"worker reg-key list":   RunAdminWorkerRegKeyList,
+	leaves := adminLeaves(t)
+	want := fmt.Sprintf("limit must be between %d and %d", minListLimit, contracts.MaxPageLimit)
+	paged := 0
+	for _, c := range adminCases() {
+		if leaves[c.name()].Flags().Lookup("limit") == nil {
+			continue
+		}
+		paged++
+		args := append(append(append([]string{}, c.path...), c.args...), "--limit", "0")
+		f := adminRun(t, args...).requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, want, f.Message, "%s must refuse --limit 0", c.name())
 	}
-	for name, run := range verbs {
-		err := run(nil, []string{"--limit", "0"})
-		require.Error(t, err, "%s must refuse --limit 0", name)
-		assert.Contains(t, err.Error(), "limit must be between 1 and 500", "%s", name)
-	}
+	assert.GreaterOrEqual(t, paged, 7, "the scan must find the paginated verbs")
 }
 
 // `--secret` with no `--provider` used to fall through to the ALTCHA branch
 // and overwrite the signing key, invalidating every live challenge.
 func TestAdminCaptchaSet_RefusesAProviderForeignFlag(t *testing.T) {
-	err := RunAdminCaptchaSet(nil, []string{"--provider", "altcha", "--site-key", "abc"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--site-key applies only to")
-	assert.Contains(t, err.Error(), "the target provider is altcha")
+	f := adminRun(t, "captcha", "set", "--provider", "altcha", "--site-key", "abc").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "--site-key applies only to")
+	assert.Contains(t, f.Message, "the target provider is altcha")
 
-	err = RunAdminCaptchaSet(nil, []string{"--provider", "turnstile", "--cost", "5"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--cost applies only to altcha")
+	f = adminRun(t, "captcha", "set", "--provider", "turnstile", "--cost", "5").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "--cost applies only to altcha")
 }
 
 func TestAdminCaptchaSet_RefusesAnEmptySecretAndAnEmptyInvocation(t *testing.T) {
-	err := RunAdminCaptchaSet(nil, []string{"--provider", "turnstile", "--secret", ""})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--secret must not be empty")
+	f := adminRun(t, "captcha", "set", "--provider", "turnstile", "--secret", "").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "--secret must not be empty")
 
-	err = RunAdminCaptchaSet(nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "nothing to set")
+	f = adminRun(t, "captcha", "set").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "nothing to set")
 }
 
 func TestAdminCaptchaSet_RefusesAnUnknownProvider(t *testing.T) {
-	err := RunAdminCaptchaSet(nil, []string{"--provider", "hcaptcha"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid_request")
+	f := adminRun(t, "captcha", "set", "--provider", "hcaptcha").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "hcaptcha")
 }
 
 // TestSettingShapeFromDescriptor_ScalarKindMatchesTheGoSpelling pins the
@@ -474,65 +435,59 @@ func TestTokenRowsCarryTheOwnerDeletedFlag(t *testing.T) {
 
 // TestCaptchaSetRefusesAnAlgorithmBeforeTheDial pins that a bad
 // --algorithm answers with the algorithm, not with a connection error.
-// The check has to sit in BeforeDial, because the hub is unreachable in a
-// unit test and an operator's typo must not need one either.
+// The check has to sit in BeforeDial, because an operator's typo must not
+// need a hub.
 func TestCaptchaSetRefusesAnAlgorithmBeforeTheDial(t *testing.T) {
-	err := RunAdminCaptchaSet(nil, []string{"--algorithm", "SHA-999"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported captcha algorithm")
-	assert.Contains(t, err.Error(), "SCRYPT", "the refusal lists what IS supported")
+	f := adminRun(t, "captcha", "set", "--algorithm", "SHA-999").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "unsupported captcha algorithm")
+	assert.Contains(t, f.Message, "SCRYPT", "the refusal lists what IS supported")
 
 	// A supported one passes the local check and fails only at the
 	// transport.
-	err = RunAdminCaptchaSet(nil, []string{"--algorithm", "SCRYPT"})
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "unsupported captcha algorithm")
+	adminRun(t, "captcha", "set", "--algorithm", "SCRYPT").requireFailure(t, cli.CodeUnavailable)
 }
 
-// TestUserSelectorRefusalsHappenBeforeTheDial pins the gap the shared
-// selector closes.
+// TestUserArgumentRefusalsHappenBeforeTheDial pins the gap that userTarget
+// closes.
 //
-// Seven verbs address exactly ONE user, and the hub holds the same rule —
-// but it can only answer over a connection the operator did not need. A
-// missing or ambiguous selector must state the flag, not the transport.
-func TestUserSelectorRefusalsHappenBeforeTheDial(t *testing.T) {
+// Nine verbs address exactly ONE user, and the hub holds the same rule --
+// but it can only answer over a connection the operator did not need. An
+// empty <user> must state the argument, not the transport.
+func TestUserArgumentRefusalsHappenBeforeTheDial(t *testing.T) {
 	cases := []struct {
-		name   string
-		run    func(any, []string) error
-		idFlag string
+		path []string
 		// rest carries the other REQUIRED flags of the verb, so the last
 		// case reaches the transport instead of a second local refusal.
 		// `reset-password` prompts for a password it was not given, and a
-		// non-terminal stdin turns that prompt into its own refusal.
+		// stdin that is not a terminal turns that prompt into its own
+		// refusal.
 		rest []string
 	}{
-		{"user get", RunAdminUserGet, "id", nil},
-		{"user delete", RunAdminUserDelete, "id", nil},
-		{"user grant-admin", func(c any, a []string) error { return RunAdminUserSetAdmin(c, a, true) }, "id", nil},
-		{"user revoke-admin", func(c any, a []string) error { return RunAdminUserSetAdmin(c, a, false) }, "id", nil},
-		{"user reset-password", RunAdminUserResetPassword, "id", []string{"--password", "s3cret12"}},
-		{"user list-sessions", RunAdminUserListSessions, "id", nil},
-		{"session revoke-user", RunAdminSessionRevokeUser, "user-id", nil},
+		{[]string{"user", "get"}, nil},
+		{[]string{"user", "update"}, []string{"--display-name", "Amy"}},
+		{[]string{"user", "delete"}, nil},
+		{[]string{"user", "grant-admin"}, nil},
+		{[]string{"user", "revoke-admin"}, nil},
+		{[]string{"user", "reset-password"}, []string{"--password", "s3cret12"}},
+		{[]string{"user", "list-sessions"}, nil},
+		{[]string{"session", "revoke-user"}, nil},
+		{[]string{"api-token", "issue"}, []string{"--installation-name", "ci"}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// No `rest` on the two refusal cases, on purpose: the selector
-			// must answer first even when a later required flag is also
-			// missing.
-			err := tc.run(nil, nil)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "--"+tc.idFlag+" or --username is required")
+		t.Run(strings.Join(tc.path, " "), func(t *testing.T) {
+			run := func(user string) cliOutcome {
+				return adminRun(t, append(append(append([]string{}, tc.path...), user), tc.rest...)...)
+			}
+			f := run(" ").requireFailure(t, cli.CodeUsage)
+			assert.Equal(t, "<user> is empty", f.Message)
 
-			err = tc.run(nil, []string{"--" + tc.idFlag, "usr_1", "--username", "amy"})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "--"+tc.idFlag+" and --username are mutually exclusive")
+			f = run("id:").requireFailure(t, cli.CodeUsage)
+			assert.Equal(t, `<user> "id:" has no id after the "id:" prefix`, f.Message)
 
-			// One selector alone passes the local check and fails only at
-			// the transport.
-			err = tc.run(nil, append([]string{"--username", "amy"}, tc.rest...))
-			require.Error(t, err, "no hub is reachable in a unit test")
-			assert.NotContains(t, err.Error(), "is required")
-			assert.NotContains(t, err.Error(), "mutually exclusive")
+			// A user given either way passes the local check and fails only
+			// at the transport.
+			run("amy").requireFailure(t, cli.CodeUnavailable)
+			run("id:usr_1").requireFailure(t, cli.CodeUnavailable)
 		})
 	}
 }
@@ -542,24 +497,18 @@ func TestUserSelectorRefusalsHappenBeforeTheDial(t *testing.T) {
 // the CLI must refuse it, before the dial, stating the flags. Neither flag is
 // "every user" and passes, as does either flag alone.
 func TestUserFilterRefusesBothFlagsBeforeTheDial(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		run  func(any, []string) error
-	}{
-		{"api-token list", RunAdminAPITokenList},
-		{"delegation-token list", RunAdminDelegationTokenList},
-		{"worker list", RunAdminWorkerList},
+	for _, path := range [][]string{
+		{"api-token", "list"},
+		{"delegation-token", "list"},
+		{"worker", "list"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.run(nil, []string{"--user-id", "usr_1", "--username", "amy"})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "--user-id and --username are mutually exclusive")
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
+			f := adminRun(t, append(append([]string{}, path...), "--user-id", "usr_1", "--username", "amy")...).
+				requireFailure(t, cli.CodeUsage)
+			assert.Equal(t, "--user-id and --username are mutually exclusive", f.Message)
 
 			for _, args := range [][]string{nil, {"--user-id", "usr_1"}, {"--username", "amy"}} {
-				err = tc.run(nil, args)
-				require.Error(t, err, "no hub is reachable in a unit test")
-				assert.NotContains(t, err.Error(), "mutually exclusive",
-					"a filter of at most one flag passes the local check")
+				adminRun(t, append(append([]string{}, path...), args...)...).requireFailure(t, cli.CodeUnavailable)
 			}
 		})
 	}
@@ -569,7 +518,7 @@ func TestUserFilterRefusesBothFlagsBeforeTheDial(t *testing.T) {
 // listings that take the filter share its help text, so bind states it once.
 func TestUserFilterFlagsBind(t *testing.T) {
 	var f userFilterFlags
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("list", pflag.ContinueOnError)
 	f.bind(fs)
 
 	require.NoError(t, fs.Parse([]string{"--user-id", "usr_1", "--username", "amy"}))
@@ -607,39 +556,38 @@ func TestUserFilterFlagsSelectorPanicsBeforeResolve(t *testing.T) {
 	assert.Panics(t, func() { (&userFilterFlags{ID: "usr_1"}).Selector() })
 }
 
-// TestUserSelectorFlagsSelector pins the selector that a verb addressing ONE
-// user sends. resolve refuses an empty or ambiguous pair, so exactly one handle
-// is set, and the selector carries that handle alone.
-func TestUserSelectorFlagsSelector(t *testing.T) {
-	byID := &userSelectorFlags{ID: "usr_1", idFlag: "id"}
-	require.NoError(t, byID.resolve(adminArgs{}))
-	require.NotNil(t, byID.Selector)
-	assert.Equal(t, "usr_1", byID.Selector.GetId())
-	assert.Empty(t, byID.Selector.GetUsername())
+// TestUserTarget_ReadsAUsernameOrAnID pins the selector that a verb
+// addressing ONE user sends: exactly one handle, and the selector carries
+// that handle alone.
+func TestUserTarget_ReadsAUsernameOrAnID(t *testing.T) {
+	isolateCLIEnv(t)
+	// The socket stops every run at the dial, after BeforeDial read <user>.
+	t.Setenv("LEAPMUX_CONTROL_SOCK", workerIPCSock)
 
-	byName := &userSelectorFlags{Username: "amy", idFlag: "id"}
-	require.NoError(t, byName.resolve(adminArgs{}))
-	require.NotNil(t, byName.Selector)
-	assert.Equal(t, "amy", byName.Selector.GetUsername())
-	assert.Empty(t, byName.Selector.GetId())
+	for _, tc := range []struct {
+		arg  string
+		want *leapmuxv1.UserSelector
+	}{
+		{"amy", service.SelectUserByUsername("amy")},
+		{"id:usr_1", service.SelectUserByID("usr_1")},
+		{" id: usr_1 ", service.SelectUserByID("usr_1")},
+		// A username cannot hold a colon, so only the exact "id:" prefix
+		// selects by id.
+		{"ID:usr_1", service.SelectUserByUsername("ID:usr_1")},
+	} {
+		var user userTarget
+		runAdminProbe(t, adminVerbSpec{Use: "probe <user>", BeforeDial: user.read}, tc.arg).
+			requireFailure(t, cli.CodeUsage)
+		assert.True(t, proto.Equal(tc.want, user.Selector), "%q selected %v", tc.arg, user.Selector)
+	}
 }
 
-// A refused pair builds no selector for either type, so no verb can send one
-// half of an ambiguous pair.
-func TestUserFlagsBuildNoSelectorForARefusedPair(t *testing.T) {
-	withCapturedStdout(t, func() {
-		required := &userSelectorFlags{ID: "usr_1", Username: "amy", idFlag: "id"}
-		require.Error(t, required.resolve(adminArgs{}))
-		assert.Nil(t, required.Selector)
-
-		empty := &userSelectorFlags{idFlag: "id"}
-		require.Error(t, empty.resolve(adminArgs{}))
-		assert.Nil(t, empty.Selector)
-
-		filter := &userFilterFlags{ID: "usr_1", Username: "amy"}
-		require.Error(t, filter.resolve(adminArgs{}))
-		assert.Panics(t, func() { filter.Selector() }, "a refused pair resolves nothing")
-	})
+// A refused pair builds no selector, so no listing can send one half of an
+// ambiguous pair.
+func TestUserFilterFlags_BuildNoSelectorForARefusedPair(t *testing.T) {
+	filter := &userFilterFlags{ID: "usr_1", Username: "amy"}
+	require.Error(t, filter.resolve(adminArgs{}))
+	assert.Panics(t, func() { filter.Selector() }, "a refused pair resolves nothing")
 }
 
 // TestOnlySettingValue pins the count check on a single-key reply. The hub
@@ -676,106 +624,84 @@ func TestAdminPageFlagsRequest(t *testing.T) {
 	assert.Empty(t, page.GetCursor(), "no cursor reads the first page")
 }
 
-// A missing selector must answer BEFORE the password prompt, for the same
-// reason `user create` checks --username first: an operator must not type a
-// secret into a request that cannot succeed, and with a non-terminal stdin
-// the prompt's own refusal states --password, which is not the missing flag.
-func TestAdminUserResetPassword_RefusesAMissingSelectorBeforeItPrompts(t *testing.T) {
-	err := RunAdminUserResetPassword(nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--id or --username is required")
-	assert.NotContains(t, err.Error(), "stdin is not a terminal",
-		"the selector check must run before the prompt")
+// An empty <user> must answer BEFORE the password prompt, for the same
+// reason `user create` checks <username> first: an operator must not type a
+// secret into a request that cannot succeed, and with a stdin that is not a
+// terminal the prompt's own refusal states --password, which is not the
+// missing argument.
+func TestAdminUserResetPassword_RefusesAnEmptyUserBeforeItPrompts(t *testing.T) {
+	f := adminRun(t, "user", "reset-password", " ").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "<user> is empty", f.Message, "the <user> check must run before the prompt")
 
 	// A supplied password reaches the same refusal, so the order does not
 	// depend on whether a prompt would have happened.
-	err = RunAdminUserResetPassword(nil, []string{"--password", "s3cret12"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--id or --username is required")
+	f = adminRun(t, "user", "reset-password", " ", "--password", "s3cret12").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "<user> is empty", f.Message)
 
-	// With a selector but no password and no terminal, the prompt refusal
-	// takes over -- so the verb really does prompt rather than send a blank
+	// With a user but no password and no terminal, the prompt refusal takes
+	// over -- so the verb really does prompt rather than send a blank
 	// password to the hub.
-	err = RunAdminUserResetPassword(nil, []string{"--username", "amy"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--password is required (stdin is not a terminal)")
+	f = adminRun(t, "user", "reset-password", "amy").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "--password is required (stdin is not a terminal)")
 }
 
 // TestAdminUserUpdateReportsTheMoreSpecificRefusalFirst pins the ordering:
 // an operator who typed no flags at all is better served by "nothing to
-// update" than by a missing-selector notice.
+// update" than by a notice about the <user> argument.
 func TestAdminUserUpdateReportsTheMoreSpecificRefusalFirst(t *testing.T) {
-	err := RunAdminUserUpdate(nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no fields to update")
+	f := adminRun(t, "user", "update", " ").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "no fields to update")
 
-	// With a field but no selector, the selector refusal takes over.
-	err = RunAdminUserUpdate(nil, []string{"--display-name", "Amy"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--id or --username is required")
+	// With a field but an empty <user>, the <user> refusal takes over.
+	f = adminRun(t, "user", "update", " ", "--display-name", "Amy").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "<user> is empty", f.Message)
 }
 
-// The token LISTINGS are FILTERS, not selectors: an empty pair means
-// "every user". They must never inherit the selector refusal.
+// The token LISTINGS are FILTERS, not selectors: no filter means "every
+// user". They must never inherit the selector refusal.
 func TestTokenListingsAcceptAnEmptySelector(t *testing.T) {
-	for name, run := range map[string]func(any, []string) error{
-		"api-token list":        RunAdminAPITokenList,
-		"delegation-token list": RunAdminDelegationTokenList,
-	} {
-		err := run(nil, nil)
-		require.Errorf(t, err, "%s: no hub is reachable in a unit test", name)
-		assert.NotContainsf(t, err.Error(), "is required",
-			"%s lists every user when no filter is given", name)
-	}
+	adminRun(t, "api-token", "list").requireFailure(t, cli.CodeUnavailable)
+	adminRun(t, "delegation-token", "list").requireFailure(t, cli.CodeUnavailable)
 }
 
-// A missing --username must answer BEFORE the password prompt. The prompt
+// An empty <username> must answer BEFORE the password prompt. The prompt
 // ran first, so an operator typed a secret into a request that could not
-// succeed -- and with a non-terminal stdin the refusal stated --password,
-// which is not the flag that was missing.
-func TestAdminUserCreate_RefusesAMissingUsernameBeforeItPrompts(t *testing.T) {
-	err := RunAdminUserCreate(nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--username is required")
-	assert.NotContains(t, err.Error(), "stdin is not a terminal",
-		"the username check must run before the prompt")
+// succeed -- and with a stdin that is not a terminal the refusal stated
+// --password, which is not what was missing.
+func TestAdminUserCreate_RefusesAnEmptyUsernameBeforeItPrompts(t *testing.T) {
+	f := adminRun(t, "user", "create", " ").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "<username> is empty", f.Message, "the username check must run before the prompt")
 
 	// A supplied password reaches the same refusal, so the order does not
 	// depend on whether a prompt would have happened.
-	err = RunAdminUserCreate(nil, []string{"--password", "s3cret"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--username is required")
+	f = adminRun(t, "user", "create", " ", "--password", "s3cret").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "<username> is empty", f.Message)
 
-	// And a username alone gets past the check, so the guard did not
-	// swallow the working invocation.
-	err = RunAdminUserCreate(nil, []string{"--username", "amy", "--password", "s3cret"})
-	require.Error(t, err, "no hub is reachable in a unit test")
-	assert.NotContains(t, err.Error(), "--username is required")
+	// And a username gets past the check, so the guard did not swallow the
+	// working invocation.
+	adminRun(t, "user", "create", "amy", "--password", "s3cret").requireFailure(t, cli.CodeUnavailable)
 }
 
-// `settings set-secret KEY VALUE` merges NAMED fields, so only a JSON
-// DOCUMENT can be a legal partial. A validity test alone let every other
-// JSON value dial the hub and come back as a decode error that specifies a Go type.
+// `settings set-secret <key> <json>` merges NAMED fields, so only a JSON
+// OBJECT can be a legal partial. A validity test alone let every other JSON
+// value dial the hub and come back as a decode error that specifies a Go
+// type.
 func TestAdminSettingsSetSecret_RefusesAnyValueThatIsNotADocument(t *testing.T) {
 	for _, value := range []string{`"hunter2"`, "5", "null", "[1,2]", "true", `"{}"`} {
-		err := RunAdminSettingsSetSecret(nil, []string{"smtp", value})
-		require.Errorf(t, err, "%s must be refused", value)
-		assert.Containsf(t, err.Error(), "VALUE must be a JSON document that specifies the secret fields", "%s", value)
-		assert.Containsf(t, err.Error(), `{"password":"..."}`, "the refusal shows the shape: %s", value)
+		f := adminRun(t, "settings", "set-secret", "smtp", value).requireFailure(t, cli.CodeUsage)
+		assert.Containsf(t, f.Message, "<json> must be a JSON object of the secret fields", "%s", value)
+		assert.Containsf(t, f.Message, `{"password":"..."}`, "the refusal shows the shape: %s", value)
 	}
 
 	// A document passes the local check and fails only at the transport,
 	// and surrounding whitespace does not change that.
 	for _, value := range []string{`{"password":"x"}`, "  {\"password\":\"x\"}  "} {
-		err := RunAdminSettingsSetSecret(nil, []string{"smtp", value})
-		require.Errorf(t, err, "no hub is reachable in a unit test: %s", value)
-		assert.NotContainsf(t, err.Error(), "VALUE must be a JSON document", "%s", value)
+		adminRun(t, "settings", "set-secret", "smtp", value).requireFailure(t, cli.CodeUnavailable)
 	}
 
 	// A malformed document is still refused here, not sent.
-	err := RunAdminSettingsSetSecret(nil, []string{"smtp", `{"password":`})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "VALUE must be a JSON document")
+	f := adminRun(t, "settings", "set-secret", "smtp", `{"password":`).requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "<json> must be a JSON object")
 }
 
 // An admin verb with no hub address must identify the flag and the
@@ -783,24 +709,21 @@ func TestAdminSettingsSetSecret_RefusesAnyValueThatIsNotADocument(t *testing.T) 
 // credential lookup answered `hub url missing hostname` under the
 // not_logged_in code -- a message that states neither.
 func TestRequireAdminClient_RefusesAnEmptyHubAddress(t *testing.T) {
-	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
-	t.Setenv("LEAPMUX_HUB", "")
+	isolateCLIEnv(t)
 
-	_, err := requireAdminClient("")
-	require.Error(t, err)
-	assert.True(t, control.IsEmitted(err))
-	assert.Contains(t, err.Error(), "invalid_request")
-	assert.Contains(t, err.Error(), "--hub")
-	assert.Contains(t, err.Error(), "LEAPMUX_HUB")
-	assert.Contains(t, err.Error(), "auth login", "the message states the verb that stores a credential")
-	assert.NotContains(t, err.Error(), "missing hostname")
+	f := runControl(t, "admin", "settings", "list").requireFailure(t, cli.CodeNotLoggedIn)
+	assert.Equal(t, "no hub selected", f.Message)
+	hints := strings.Join(f.Hints, "\n")
+	assert.Contains(t, hints, "--hub")
+	assert.Contains(t, hints, "LEAPMUX_HUB")
+	assert.Contains(t, hints, "auth login", "the hint states the command that stores a credential")
+	assert.NotContains(t, f.Message+hints, "missing hostname")
 
-	// The worker-IPC refusal still wins, because that operator has an
+	// The refusal inside a tab still wins, because that operator has an
 	// address and a different problem.
 	t.Setenv("LEAPMUX_CONTROL_SOCK", workerIPCSock)
-	_, err = requireAdminClient("")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "LEAPMUX_CONTROL_SOCK")
+	f = runControl(t, "admin", "settings", "list").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "admin commands do not run inside a LeapMux tab", f.Message)
 }
 
 // rowMapper is one row mapper under test: the proto message it renders, the
@@ -1115,11 +1038,6 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 		"the credential carries no scope":     "this app was not granted the admin:read permission",
 	} {
 		t.Run(name, func(t *testing.T) {
-			clearRemoteEnv(t)
-			// requireAdminClient refuses the worker-IPC transport on the
-			// presence of the variable alone, and a suite run from inside
-			// an agent inherits it.
-			t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 			mux := http.NewServeMux()
 			connectServer := connect.NewServer()
 			leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer,
@@ -1135,20 +1053,13 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 				HubURL: srv.URL, AccessToken: "lmx_a_at_1",
 				ExpiresAt: time.Now().Add(time.Hour)}))
 
-			out := withCapturedStdout(t, func() {
-				require.Error(t, RunAdminUserList(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-			})
+			out := runControl(t, "admin", "user", "list", "--hub", srv.URL).failed(t)
 
-			var env struct {
-				Error map[string]string `json:"error"`
-			}
-			require.NoError(t, json.Unmarshal(out, &env))
-			assert.Equal(t, "rpc_failed", env.Error["code"])
-			assert.Contains(t, env.Error["message"], message)
-			assert.Equal(t,
-				strings.Count(message, "admin:read"),
-				strings.Count(env.Error["message"], "admin:read"),
+			envErr := envelopeError(t, out)
+			assert.Equal(t, "permission_denied", envErr["code"])
+			assert.Equal(t, message, envErr["message"],
 				"the hub's wording reaches the operator once and unchanged; the CLI adds nothing")
+			assert.NotContains(t, envErr, "hints", "the CLI appends no remedy of its own")
 		})
 	}
 }

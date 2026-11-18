@@ -320,24 +320,25 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 Everything in this chapter has a programmatic counterpart in the `leapmux control` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
 ```bash
-# Send a message to an agent tab
-leapmux control agent send --tab-id <id> --message "Refactor the auth module"
+# List your agents with their states (idle, working, waiting_for_user)
+leapmux control agent list
+
+# Send a message to an agent, then follow its reply as it arrives
+leapmux control agent send <agent> "Refactor the auth module"
+leapmux control agent messages <agent> --follow
 
 # Interrupt the current turn
-leapmux control agent interrupt --tab-id <id> --reason "wrong file"
+leapmux control agent interrupt <agent> --reason "wrong file"
 
 # Change model / effort / permission mode mid-session
-leapmux control agent set --tab-id <id> --model gpt-5.4 --effort high
+leapmux control agent set <agent> --model gpt-5.4 --effort high
 
 # Open a new agent in a tab (provider, model, working dir, worktree, etc.)
-leapmux control tab open --type agent --worker-id <id> --provider "Claude Code" \
-  --working-dir /repo --initial-message "Start on the bug fix"
-
-# Answer a Claude-Code-style control request
-leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
+leapmux control agent open --worker <worker> --provider claude \
+  --dir /repo --message "Start on the bug fix"
 ```
 
-See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+`<agent>` is an id, a unique id prefix, `title:<title>`, or `self` for the agent that runs the command. See [Control CLI](/docs/using/control-cli/) for targets, output and errors, and the [Control Command Reference](/docs/reference/control-commands/#leapmux-control-agent) for every agent command.
 
 ## Feature matrix
 

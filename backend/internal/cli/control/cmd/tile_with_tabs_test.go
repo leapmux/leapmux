@@ -36,19 +36,20 @@ func TestParseWithTabsPolicy(t *testing.T) {
 		_, err := parseWithTabsPolicy("delete")
 		return err
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "close")
 	assert.Contains(t, msg, "move")
 }
 
 // TestKindLabel covers the user-facing strings used in error
-// messages. UNSPECIFIED falls back to the proto's enum string so an
-// unknown future kind doesn't print as "" and erase context.
+// messages. UNSPECIFIED and a kind this build does not know print as
+// "unknown", so a message never loses the kind to an empty string.
 func TestKindLabel(t *testing.T) {
-	assert.Equal(t, "LEAF", kindLabel(leapmuxv1.NodeKind_NODE_KIND_LEAF))
-	assert.Equal(t, "SPLIT", kindLabel(leapmuxv1.NodeKind_NODE_KIND_SPLIT))
-	assert.Equal(t, "GRID", kindLabel(leapmuxv1.NodeKind_NODE_KIND_GRID))
-	assert.NotEmpty(t, kindLabel(leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED))
+	assert.Equal(t, "leaf", kindLabel(leapmuxv1.NodeKind_NODE_KIND_LEAF))
+	assert.Equal(t, "split", kindLabel(leapmuxv1.NodeKind_NODE_KIND_SPLIT))
+	assert.Equal(t, "grid", kindLabel(leapmuxv1.NodeKind_NODE_KIND_GRID))
+	assert.Equal(t, "unknown", kindLabel(leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED))
+	assert.Equal(t, "unknown", kindLabel(leapmuxv1.NodeKind(99)))
 }
 
 // TestFindHeirTileID_TwoLeafSplit covers the canonical case: a SPLIT

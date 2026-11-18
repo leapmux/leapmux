@@ -26,9 +26,8 @@ A private app is invisible in every sense. Another account does not see it in a 
 A user registers an app from **Preferences → Apps**. An administrator can register from **Preferences → Hub-wide Apps**, or from the CLI:
 
 ```bash
-leapmux control admin app register \
+leapmux control admin app register "Deployment bot" \
   --hub https://leapmux.example.com \
-  --name "Deployment bot" \
   --redirect-uri https://bot.example.com/callback \
   --scope "workspace:read agent:read agent:write" \
   --type confidential \
@@ -86,7 +85,7 @@ A new registration is **unverified**, and its consent screen says so: the headin
 An administrator vouches for an app once they know what it is:
 
 ```bash
-leapmux control admin app verify --client-id <client_id>
+leapmux control admin app verify <client_id>
 ```
 
 The warning disappears, and the app's row under **Preferences → Apps** names the administrator who vouched. `unverify` withdraws it.
@@ -100,7 +99,7 @@ A credential from a browser login verifies through a browser on its own machine.
 Both the loopback and device-code step-up ceremonies require the app registration to allow elevation. New registrations have this setting disabled by default. The Hub enables it when it creates the built-in registrations. To allow elevation for an app, run the following command.
 
 ```bash
-leapmux control admin app allow-elevation --client-id <client_id>
+leapmux control admin app allow-elevation <client_id>
 ```
 
 Disabling this setting blocks new step-up requests for the app. For the app’s bearer credentials, the Hub also stops honoring open elevation windows when it next validates the credential.
@@ -122,7 +121,7 @@ While it is off, `registration_endpoint` is absent from the Hub's metadata docum
 **Retire** revokes the registration and every credential it holds, for every account, in one transaction:
 
 ```bash
-leapmux control admin app revoke --client-id <client_id>
+leapmux control admin app revoke <client_id>
 ```
 
 **Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: the Hub keeps it as history that an administrator can list with `leapmux control admin api-token list --include-revoked`, and deleting the app it belonged to would leave that history pointing at nothing.

@@ -11,26 +11,36 @@ For task-oriented walkthroughs rather than reference tables, see [Running LeapMu
 
 ## Top-level usage
 
-`leapmux` is a single binary with seven commands:
+`leapmux` is a single binary. `leapmux --help` prints:
 
 ```text
-Usage: leapmux <command> [flags]
+LeapMux runs coding agents and terminals on your machines and shows them in
+your browser.
+
+Start with "leapmux solo start" on one machine. "leapmux control" drives a
+running LeapMux from a script or from an agent.
+
+Usage:
+  leapmux <command>
 
 Commands:
-  solo      Run Hub + Worker locally for single-user use
-  hub       Run the Hub service
-  worker    Run a Worker connected to a Hub
-  dev       Run Hub + Worker for development
-  recover   Offline break-glass recovery (opens the database directly)
-  control   Remotely control LeapMux from a script or another LeapMux agent
-  version   Print version and exit
+  solo        Run Hub + Worker locally for single-user use
+  hub         Run the Hub service
+  worker      Run a Worker connected to a Hub
+  dev         Run Hub + Worker for development
+  recover     Offline break-glass recovery (opens the database directly)
+  control     Control LeapMux from a script or from an agent
+  version     Print the version of this binary
+  commands    List every command; with --json, with its arguments, flags and examples
+  completion  Print the shell completion script
+  help        Print the help of a command
 
-Common options:
-  -h, --help     Print help and exit
-  -version       Print version and exit
-  --version      Print version and exit
+Flags:
+  -v, --version  print the version of this binary
 
-Any command name can be shortened as far as it stays unambiguous.
+Run "leapmux <command> --help" for the help of a command.
+Any command name can be shortened as far as it stays unambiguous. A later
+release can make a short form ambiguous, so a script uses full names.
 ```
 
 | Command | What it does | Reference |
@@ -42,17 +52,19 @@ Any command name can be shortened as far as it stays unambiguous.
 | `recover` | Offline break-glass: first-admin bootstrap, password reset, keys, db | [Recovery](/docs/admin/recover/) |
 | `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Control CLI](/docs/using/control-cli/) |
 | `version` | Print the build version and exit | [below](#version) |
+| `commands` | Print every command; with `--json`, its arguments, flags, accepted values and examples | [Control CLI](/docs/using/control-cli/) |
+| `completion` | Print the completion script for bash, zsh, fish or powershell | [Control CLI](/docs/using/control-cli/) |
 
 Notes on dispatch:
 
 - The default TCP port for every mode is **4327**.
-- `-h`, `-help`, and `--help` are recognized at every level (help prints to stdout, exit 0). The bare `help` token works only at the top level.
-- `-version`, `--version`, and the `version` command all print the same version string. `--version` works at the top level and after a mode command (`leapmux hub <command> --version`).
-- A mode needs a command, and flags follow the command: `leapmux solo start -listen ...`. `leapmux solo -listen ...` fails, and the error shows the corrected command. LeapMux also rejects an unknown leading `-flag` such as `leapmux -listen ...`, because it is not a top-level flag.
+- `-h` and `--help` are recognized at every level (help prints to stdout, exit 0), and `leapmux help <command>` prints the help of a command.
+- `-v`, `--version`, and the `version` command all print the same version string. `--version` also works after a mode command (`leapmux hub <command> --version`).
+- A mode needs a command, and flags follow the command: `leapmux solo start -listen ...`. `leapmux solo -listen ...` fails, and the error shows the corrected command. LeapMux also rejects an unknown leading flag such as `leapmux -listen ...`, because it is not a top-level flag; a long flag at the top level takes two dashes.
 - LeapMux rejects an unexpected positional argument and points you at `--help`.
 
 {{< callout >}}
-Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). The daemon-mode flag tables below use the single-hyphen form, matching the binary's help output; the `control` and `recover` sections keep the double-hyphen form used by their chapters.
+The flags of a daemon mode and of `recover` accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). The daemon-mode flag tables below use the single-hyphen form, matching the binary's help output. `control` takes a long flag only with two hyphens (`--json`), and a single hyphen only before a one-letter flag (`-q`).
 {{< /callout >}}
 
 > **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/admin/configuration/#duration-values).
@@ -348,32 +360,29 @@ Commands that take `--password` prompt interactively when you omit the flag. Eve
 
 ## control (command-group outline)
 
-`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_CONTROL_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Control CLI](/docs/using/control-cli/).
+`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents and terminals that LeapMux starts (which inherit `LEAPMUX_CONTROL_*` env vars). It prints text by default and one JSON envelope per line with `--json`, and its exit status states the class of a failure. [Control CLI](/docs/using/control-cli/) explains targets, output and errors; the [Control Command Reference](/docs/reference/control-commands/) lists every command with its arguments, flags and examples.
 
 ```bash
-leapmux control <group> <command> [flags]
+leapmux control <group> <command> [target] [flags]
 leapmux control auth login --hub https://hub.example.com   # authorize first
 ```
 
 | Group | Commands |
 |-------|----------|
-| *(top level)* | `whoami`, `version` |
-| `auth` | `login` (add `--scope` to ask for particular permissions), `logout`, `list`, `status`, `credentials` — `list` reads this machine's credential files, `credentials` asks the Hub what the whole account holds |
-| `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `app`, `idp`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never available over the worker-IPC transport), covered in [Admin CLI](/docs/admin/admin-cli/). `app` registers the apps a consent screen authorizes; `idp` configures the providers users sign in *with*. |
+| *(top level)* | `whoami`, `version`, `guide` |
+| `auth` | `login` (add `--scope` to ask for particular permissions), `logout`, `list`, `use`, `status`, `credentials` — `list` reads this machine's credential files, `credentials` asks the Hub what the whole account holds |
 | `workspace` | `list`, `get`, `create`, `rename`, `delete` |
-| `tab` | `list`, `get`, `open`, `close`, `rename`, `move` |
-| `worker` | `list`, `get`; subgroup `pins`: `list`, `show`, `remove` |
-| `agent` | `send`, `interrupt`, `get`, `providers`, `messages`, `set`, `send-control-response` |
+| `tab` | `list`, `get`, `close`, `rename`, `move` |
+| `agent` | `list`, `get`, `open`, `send`, `interrupt`, `set`, `messages`, `providers` |
+| `terminal` | `list`, `get`, `open`, `send`, `read`, `resize`, `restart`, `shells`; subgroup `quake`: `open`, `close`, `toggle` |
+| `file` | `list`, `read`, `stat`, `roots`, `open` |
+| `git` | `status`, `branches`, `worktrees`, `read`, `checkout`, `push`; subgroup `branch`: `create`, `delete` |
 | `tile` | `list`, `split`, `close`, `make-grid`, `remove-grid`, `set-ratios`, `set-grid-ratios` |
-| `layout` | `get`, `set` |
-| `file` | `list`, `read`, `stat` |
-| `git` | `status`, `branches`, `worktrees`, `read` |
-| `terminal` | `send`, `get`, `shells`; subgroup `quake`: `open`, `close`, `toggle` |
-| `events` | `watch` |
+| `layout` | `get`, `set`, `watch` |
+| `worker` | `list`, `get`, `info`; subgroups `key`: `create`, and `pins`: `list`, `get`, `remove` |
+| `admin` | subgroups `settings`, `user`, `session`, `worker` (with `reg-key`), `app`, `idp`, `captcha`, `rate-limit`, `api-token`, `delegation-token` — the online hub administration surface (requires an admin login; never runs inside a LeapMux tab), covered in [Admin CLI](/docs/admin/admin-cli/). `app` registers the apps a consent screen authorizes; `idp` configures the providers users sign in *with*. |
 
-{{< callout type="info" >}}
-Agents are opened, closed, listed, and renamed through the `tab` group (`tab open --type agent`, `tab close`, …) — there is no `agent open`/`agent close`/`agent list`. The `agent` group is for agent-specific operations only.
-{{< /callout >}}
+Each tab type opens through its own group (`agent open`, `terminal open`, `file open`). The `tab` group lists, closes, renames and moves tabs of every type.
 
 ## Environment variables
 
@@ -406,19 +415,19 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 
 | Variable | Used by | Meaning |
 |----------|---------|---------|
-| `LEAPMUX_HUB` | `control` (and `auth login --hub` fallback) | Hub URL when `--hub` is not passed |
+| `LEAPMUX_HUB` | `control` | Hub URL when neither `--hub` nor the socket of a LeapMux tab selects one |
 | `LEAPMUX_CONTROL_CONFIG_DIR` | `control` | Override the credential/pin directory (default `~/.config/leapmux/control`) |
-| `LEAPMUX_CONTROL_SOCK` | spawned agents | Local IPC socket URL (selects the worker-IPC transport; `control admin` refuses it) |
+| `LEAPMUX_CONTROL_SOCK` | spawned agents | Local IPC socket URL (selects the Worker's socket; `control admin` refuses to run where it is set) |
 | `LEAPMUX_CONTROL_TOKEN` | spawned agents | Per-process bearer token for the local IPC socket |
 | `LEAPMUX_CONTROL_USER_ID` | spawned agents | Authenticated user ID (informational; no flag defaults from it) |
-| `LEAPMUX_CONTROL_WORKER_ID` | spawned agents | Host worker ID (default for `--worker-id`) |
-| `LEAPMUX_CONTROL_TAB_ID` | spawned agents | Spawning tab's ID (default for `--tab-id`) |
+| `LEAPMUX_CONTROL_WORKER_ID` | spawned agents | Host worker ID (`self` for a worker, and the default of `--worker`) |
+| `LEAPMUX_CONTROL_TAB_ID` | spawned agents | Spawning tab's ID (`self` for a tab, an agent or a terminal) |
 | `LEAPMUX_CONTROL_TAB_TYPE` | spawned agents | `agent` or `terminal` |
-| `LEAPMUX_CONTROL_TERMINAL_ID` | spawned terminals | The terminal you are inside (default for `--tab-id` on `terminal ...`). In a Quake panel it is the only id set — a panel gets no `_TAB_ID` / `_TAB_TYPE`. |
-| `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
-| `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
+| `LEAPMUX_CONTROL_TERMINAL_ID` | spawned terminals | The terminal you are inside (`self` on `terminal ...` commands). In a Quake panel it is the only id set — a panel gets no `_TAB_ID` / `_TAB_TYPE`. |
+| `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn (the default of `--dir`) |
+| `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only; the default of `--provider`) |
 
-The `LEAPMUX_CONTROL_*` variables other than `_CONFIG_DIR` are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/using/control-cli/) for how they drive entity-ID resolution.
+The `LEAPMUX_CONTROL_*` variables other than `_CONFIG_DIR` are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Control CLI](/docs/using/control-cli/#inside-a-leapmux-tab) for how they select `self` and the defaults of the placement flags.
 
 ## Config and data locations
 

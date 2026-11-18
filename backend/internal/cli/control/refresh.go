@@ -53,7 +53,7 @@ const (
 // ErrCredentialRejected reports a credential the hub refused permanently:
 // revoked, reused, or past its absolute lifetime. doRefresh deletes the
 // stored file before this reaches a caller, so the next command reports
-// ErrNotLoggedIn, whose message already specifies the remedy.
+// ErrNotLoggedIn, whose envelope states the remedy.
 var ErrCredentialRejected = errors.New("this hub credential is no longer valid")
 
 // ErrCredentialsNotSaved reports a rotation that the hub COMMITTED and this
@@ -354,7 +354,7 @@ type TokenResponseBody = refreshBody
 // or the credential reached its absolute lifetime. It reports
 // ErrCredentialRejected and touches NO local state; doRefresh deletes the
 // stored file, under the same lock that owns every other write to it, so the
-// next command answers ErrNotLoggedIn -- whose message specifies
+// next command answers ErrNotLoggedIn -- whose envelope states
 // `leapmux control auth login` -- instead of retrying a credential that can
 // never work again.
 //

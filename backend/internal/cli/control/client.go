@@ -219,22 +219,26 @@ func NewClientOrAnonymous(hubURL string) (*Client, error) {
 	return newHubClient(hubURL, creds)
 }
 
-// NewClientFromEnv chooses the right transport based on env vars.
-// In worker-spawned mode (LEAPMUX_CONTROL_SOCK set) it returns a client
-// targeting the local socket. Otherwise it falls back to NewClient
-// using the --hub flag (or LEAPMUX_HUB env var).
-func NewClientFromEnv(hubFlag string) (*Client, error) {
+// NewClientFromEnv chooses the transport of a command. The order of
+// precedence is:
+//
+//  1. An explicit --hub flag. The caller passes it only when the user typed
+//     it, so a tab's own socket cannot override a hub the user asked for.
+//  2. The tab's own socket, LEAPMUX_CONTROL_SOCK, inside a LeapMux tab.
+//  3. LEAPMUX_HUB.
+//  4. The default hub of the stored credentials (see DefaultHub).
+func NewClientFromEnv(explicitHub string) (*Client, error) {
+	if explicitHub != "" {
+		return NewClient(explicitHub)
+	}
 	if sock := os.Getenv("LEAPMUX_CONTROL_SOCK"); sock != "" {
 		return NewLocalClient(sock, os.Getenv("LEAPMUX_CONTROL_TOKEN"))
 	}
-	url := hubFlag
-	if url == "" {
-		url = os.Getenv("LEAPMUX_HUB")
+	hub, err := DefaultHub()
+	if err != nil {
+		return nil, err
 	}
-	if url == "" {
-		return nil, errors.New("no --hub flag or LEAPMUX_HUB / LEAPMUX_CONTROL_SOCK env var; run `leapmux control auth login --hub <url>` or invoke from inside an agent")
-	}
-	return NewClient(url)
+	return NewClient(hub)
 }
 
 // NewLocalClient targets a per-agent local IPC socket. The token is

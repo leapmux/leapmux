@@ -327,7 +327,7 @@ Email verification is not a separate setting. Once the `smtp` block is fully con
 Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime with `leapmux control admin`:
 
 ```bash
-leapmux control admin captcha show
+leapmux control admin captcha get
 leapmux control admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
 leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
 leapmux control admin rate-limit list

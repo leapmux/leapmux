@@ -7,7 +7,7 @@ import (
 	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -49,33 +49,30 @@ import (
 //	  "rows": 2, "cols": 2,
 //	  "row_ratios": [0.5, 0.5], "col_ratios": [0.5, 0.5],
 //	  "children": [ {…}, {…} ] }
-func RunLayoutSet(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, file string
-	var stdinFlag bool
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&file, "file", "", "path to a JSON file describing the target tree (exactly one of --file / --stdin required)")
-	fs.BoolVar(&stdinFlag, "stdin", false, "read the target tree JSON from stdin (exactly one of --file / --stdin required)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	switch {
-	case file == "" && !stdinFlag:
-		return control.EmitError("invalid_request", "exactly one of --file or --stdin is required")
-	case file != "" && stdinFlag:
-		return control.EmitError("invalid_request", "--file and --stdin are mutually exclusive")
-	}
-	target, err := readTargetTree(file, stdinFlag)
+func runLayoutSet(inv *cli.Invocation) (any, error) {
+	target, err := readTargetTree(inv.Arg("file"), inv.Stdin)
 	if err != nil {
-		return control.EmitErrorWith("invalid_request", err)
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
-	got, err := resolveWorkspaceForLayout(hub, resolve.Need{}, in)
+	s, err := openSession(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return submitLayoutSetWithRetry(hub, got.WorkspaceID, target)
+	defer s.Close()
+	ws, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+	if err != nil {
+		return nil, err
+	}
+	return s.submitLayoutSetWithRetry(ws.ID, target)
+}
+
+// layoutSetResult is the result of `layout set`.
+type layoutSetResult struct {
+	WorkspaceID    string `json:"workspace_id"`
+	RootNodeID     string `json:"root_node_id"`
+	NewFirstLeafID string `json:"new_first_leaf_id"`
+	OpsEmitted     int    `json:"ops_emitted"`
+	Attempts       int    `json:"attempts"`
 }
 
 // layoutSetMaxAttempts caps the rebuild-and-retry loop on
@@ -91,53 +88,50 @@ const layoutSetMaxAttempts = 2
 // that raced in between bootstrap and submit appears in the next
 // snapshot, so the rebuilt batch includes a tile_id update for it.
 // Every other error is fatal on the first attempt.
-func submitLayoutSetWithRetry(hub, workspaceID string, target *targetNode) error {
+func (s *session) submitLayoutSetWithRetry(workspaceID string, target *targetNode) (*layoutSetResult, error) {
 	var lastErr error
 	for attempt := 0; attempt < layoutSetMaxAttempts; attempt++ {
-		cc, err := openCRDTCall(hub, workspaceID)
+		cc, err := s.openCRDT(workspaceID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		ops, rootID, firstLeaf, berr := buildLayoutSetOps(cc.bs, workspaceID, target)
 		if berr != nil {
-			cc.close()
-			return berr
+			return nil, berr
 		}
 		committed, reason, submitErr := cc.trySubmitOps(ops)
-		cc.close()
 		if committed {
-			return control.EmitData(map[string]any{
-				"workspace_id":      workspaceID,
-				"root_node_id":      rootID,
-				"new_first_leaf_id": firstLeaf,
-				"ops_emitted":       len(ops),
-				"attempts":          attempt + 1,
-			})
+			return &layoutSetResult{
+				WorkspaceID:    workspaceID,
+				RootNodeID:     rootID,
+				NewFirstLeafID: firstLeaf,
+				OpsEmitted:     len(ops),
+				Attempts:       attempt + 1,
+			}, nil
 		}
 		lastErr = submitErr
 		if reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID {
 			// Not a race -- a malformed batch / value-domain / auth
 			// failure won't fix itself on retry. Surface immediately.
-			return control.EmitErrorWith("batch_rejected", submitErr)
+			return nil, cli.Wrap(cli.CodeConflict, submitErr, "")
 		}
 		// TAB_PLACEMENT_INVALID under a layout-set batch means another
 		// client added a tab between our snapshot and the commit. Loop
 		// and re-bootstrap.
 	}
-	return control.EmitError("concurrent_modification",
-		fmt.Sprintf("layout was modified concurrently by another client after %d attempt(s); rerun `layout set` to merge in the new state (last hub error: %v)",
-			layoutSetMaxAttempts, lastErr))
+	return nil, cli.Newf(cli.CodeConflict, "another client changed the layout during each of %d attempts (last hub error: %v)", layoutSetMaxAttempts, lastErr).
+		WithHint("run the same layout set again")
 }
 
 // buildLayoutSetOps assembles the full 4-step rewrite batch against
 // `bs`. Returns the ops, the (unchanged) workspace root id, the first
 // leaf of the new tree (where every live tab lands), and an error.
-// Extracted from RunLayoutSet so the retry loop can rebuild the batch
+// Extracted from runLayoutSet so the retry loop can rebuild the batch
 // against a fresh snapshot without duplicating the step logic.
 func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode) ([]*leapmuxv1.CrdtOp, string, string, error) {
 	rec := bs.State.GetWorkspaces()[workspaceID]
 	if rec == nil || rec.GetRootNodeId() == "" {
-		return nil, "", "", control.EmitError("invalid_state", "workspace has no root node yet")
+		return nil, "", "", cli.Newf(cli.CodeConflict, "workspace has no root node yet")
 	}
 	rootID := rec.GetRootNodeId()
 
@@ -183,7 +177,7 @@ func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode
 	return ops, rootID, firstLeaf, nil
 }
 
-// targetNode is the parsed `--file` JSON shape.
+// targetNode is the parsed shape of a tree that `layout set` reads.
 type targetNode struct {
 	Kind      string        `json:"kind"`
 	Direction string        `json:"direction,omitempty"`
@@ -224,14 +218,11 @@ func (t *targetNode) parsedDirection() leapmuxv1.SplitDirection {
 	return leapmuxv1.SplitDirection_SPLIT_DIRECTION_UNSPECIFIED
 }
 
-// readTargetTree reads JSON from --file or stdin, parses it into a
-// targetNode, then validates + normalizes the tree in place. Exactly
-// one of `path` / `useStdin` must be set (the caller enforces that).
-func readTargetTree(path string, useStdin bool) (*targetNode, error) {
-	var reader io.Reader
-	if useStdin {
-		reader = os.Stdin
-	} else {
+// readTargetTree reads the tree from path, or from stdin when path is "" or
+// "-", then validates and normalizes it.
+func readTargetTree(path string, stdin io.Reader) (*targetNode, error) {
+	reader := stdin
+	if path != "" && path != "-" {
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("read tree file: %w", err)
@@ -246,6 +237,11 @@ func readTargetTree(path string, useStdin bool) (*targetNode, error) {
 // the structural + ratio validator. Kept separate from readTargetTree
 // so unit tests can feed bytes directly without touching the
 // filesystem.
+//
+// It accepts what `layout get` prints, at every level a caller might keep:
+// the whole --json envelope ({"data": {"tree": ...}}), its data
+// ({"tree": ...}), or the tree alone. A saved layout therefore restores
+// without an extraction step.
 func decodeTargetTree(r io.Reader) (*targetNode, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -253,6 +249,10 @@ func decodeTargetTree(r io.Reader) (*targetNode, error) {
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("tree input is empty")
+	}
+	data, err = unwrapLayoutTree(data)
+	if err != nil {
+		return nil, err
 	}
 	var t targetNode
 	if err := json.Unmarshal(data, &t); err != nil {
@@ -262,6 +262,32 @@ func decodeTargetTree(r io.Reader) (*targetNode, error) {
 		return nil, err
 	}
 	return &t, nil
+}
+
+// unwrapLayoutTree returns the tree inside an envelope or a `layout get`
+// result, and the input itself when it is a tree.
+func unwrapLayoutTree(data []byte) ([]byte, error) {
+	for range 2 {
+		var probe struct {
+			Kind *string         `json:"kind"`
+			Data json.RawMessage `json:"data"`
+			Tree json.RawMessage `json:"tree"`
+		}
+		if err := json.Unmarshal(data, &probe); err != nil {
+			return nil, fmt.Errorf("decode tree JSON: %w", err)
+		}
+		switch {
+		case probe.Kind != nil:
+			return data, nil
+		case len(probe.Tree) > 0:
+			return probe.Tree, nil
+		case len(probe.Data) > 0:
+			data = probe.Data
+		default:
+			return data, nil
+		}
+	}
+	return data, nil
 }
 
 // validateAndNormalizeTree walks the parsed tree and rejects anything

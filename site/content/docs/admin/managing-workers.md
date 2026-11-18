@@ -194,7 +194,7 @@ Key behaviors:
 
 Worker details are cached for about a minute, so reopening a dialog doesn't re-fetch worker details; click **Refresh workers** to force a re-list (for example, right after a new Worker comes online).
 
-To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Control CLI](/docs/using/control-cli/).
+To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control agent open --worker <worker> ...` or `leapmux control terminal open --worker <worker> ...` — see [Control CLI](/docs/using/control-cli/).
 
 ## Auto-reconnect
 
@@ -231,7 +231,7 @@ Deregistering tells the Hub to forget a Worker and tear down everything running 
 **From the control CLI** (administrators):
 
 ```bash
-leapmux control admin worker deregister --id <worker-id>
+leapmux control admin worker deregister <worker-id>
 ```
 
 On deregistration a standalone Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. The Hub refuses this command for an auto-registered Worker while it is connected. An offline one leaves the Worker list at once. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
@@ -333,7 +333,7 @@ browser pin workers independently, and neither sees the other's pins.
 | --- | --- | --- |
 | **Your browser** (Frontend) | IndexedDB (strict database `leapmux-trust`, key `leapmux:u:<your-user-id>:key-pins`, kept about one year and refreshed on use) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
 | **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove --target-worker-id=<id>` |
-| **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove --worker-id=<id>` |
+| **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove <worker>` |
 
 ### What a mismatch looks like in the browser
 
@@ -351,13 +351,13 @@ For non-browser clients there is no dialog — agents and scripts can't answer i
 
 ```bash
 # A leapmux control agent or script hit a pin mismatch:
-leapmux control worker pins remove --worker-id=<id>
+leapmux control worker pins remove <worker>
 
 # One Worker connecting to a sibling Worker hit a pin mismatch:
 leapmux worker cross-worker-pins remove --target-worker-id=<id>
 ```
 
-Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Control CLI](/docs/using/control-cli/).
+Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|get|remove` reference, see [Control CLI](/docs/using/control-cli/#worker-key-pins).
 
 {{< callout type="info" >}}
 Browser pins are managed under **Preferences → Advanced → Trusted worker keys**, which lists and removes pinned keys. For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/admin/security/).
@@ -370,10 +370,10 @@ Administrators manage all Workers on a Hub (not just their own) with `leapmux co
 | Command | Purpose |
 | --- | --- |
 | `leapmux control admin worker list` | List Workers. Filters: `--user-id`, `--username`, `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
-| `leapmux control admin worker get --id <id>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
-| `leapmux control admin worker deregister --id <id>` | Force-deregister a Worker. |
+| `leapmux control admin worker get <worker>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
+| `leapmux control admin worker deregister <worker>` | Force-deregister a Worker. |
 | `leapmux control admin worker reg-key list` | List live registration keys (`--include-expired` to include revoked/expired). |
-| `leapmux control admin worker reg-key revoke --id <id>` | Revoke a registration key. |
+| `leapmux control admin worker reg-key revoke <reg-key>` | Revoke a registration key. |
 | `leapmux control admin worker reg-key purge-expired` | Hard-delete all expired or revoked keys. |
 
 {{< callout type="info" >}}

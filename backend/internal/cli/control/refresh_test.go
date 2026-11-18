@@ -332,7 +332,7 @@ func TestRefresh_KeepsTheStoredScopeWhenTheHubAnswersNone(t *testing.T) {
 // TestRefresh_InvalidGrantDeletesTheCredential pins the permanent case. A
 // revoked, reused, or lifetime-expired credential can never work again, so
 // retrying it achieves nothing; deleting it makes the next command answer
-// ErrNotLoggedIn, whose message already specifies the remedy.
+// ErrNotLoggedIn, whose envelope states the remedy.
 func TestRefresh_InvalidGrantDeletesTheCredential(t *testing.T) {
 	rs := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
 		w.Header().Set("Content-Type", "application/json")
@@ -719,7 +719,7 @@ func TestAuthInterceptor_RepairsBothRefusalsInOneCall(t *testing.T) {
 		elevationRequired(),
 	)
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -738,7 +738,7 @@ func TestAuthInterceptor_RepairsBothRefusalsInOneCall(t *testing.T) {
 func TestAuthInterceptor_RunsEachRepairAtMostOnce(t *testing.T) {
 	hub := newRepairHub(t, 3600, elevationRequired(), elevationRequired(), elevationRequired())
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -765,7 +765,7 @@ func TestAuthInterceptor_ReplaysWithATokenRenewedAfterThePrompt(t *testing.T) {
 	// presents is inside the renewal window again by the replay.
 	hub := newRepairHub(t, 1, elevationRequired())
 	seedCredentials(t, hub.server.URL, time.Now().Add(refreshSkew/2))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -787,7 +787,7 @@ func TestAuthInterceptor_ReplaysWithATokenRenewedAfterThePrompt(t *testing.T) {
 func TestAuthInterceptor_ReportsTheHubsRefusalWhenNobodyCanVerify(t *testing.T) {
 	hub := newRepairHub(t, 3600, elevationRequired())
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	out, errOut := captureStreams(t)
+	errOut := captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -800,7 +800,6 @@ func TestAuthInterceptor_ReportsTheHubsRefusalWhenNobodyCanVerify(t *testing.T) 
 	assert.Len(t, hub.rpc.presented(), 1, "no replay, because nothing repaired the refusal")
 	starts, _ := hub.elevation.counts()
 	assert.Zero(t, starts, "a ceremony nobody can finish must never be opened")
-	assert.Empty(t, out.String())
 	assert.Empty(t, errOut.String())
 }
 
@@ -810,7 +809,7 @@ func TestAuthInterceptor_LeavesAnUnrepairableRefusalAlone(t *testing.T) {
 	hub := newRepairHub(t, 3600,
 		connect.NewError(connect.CodePermissionDenied, "administrator privileges are required"))
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -831,7 +830,7 @@ func TestAuthInterceptor_LeavesAnUnmarkedFailedPreconditionAlone(t *testing.T) {
 	hub := newRepairHub(t, 3600,
 		connect.NewError(connect.CodeFailedPrecondition, "this account has no password"))
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -859,7 +858,7 @@ func TestAuthInterceptor_RepairsAnExpiredTokenAfterTheStepUp(t *testing.T) {
 		connect.NewError(connect.CodeUnauthenticated, "token expired"),
 	)
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	out, errOut := captureStreams(t)
+	errOut := captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -876,9 +875,8 @@ func TestAuthInterceptor_RepairsAnExpiredTokenAfterTheStepUp(t *testing.T) {
 	assert.Equal(t, int64(1), hub.rotations.Load(), "the refusal after the ceremony must rotate the credential")
 
 	// The JSON contract, under the interceptor that interrupts an ordinary
-	// verb: the prose reaches Err alone, so the verb's own envelope is the
-	// whole of Out and `... | jq` still parses it.
-	assert.Empty(t, out.String())
+	// verb: the prose reaches Err, so the verb's own envelope is the whole of
+	// stdout and `... --json | jq` still parses it.
 	assert.Contains(t, errOut.String(), "verify your identity")
 }
 
@@ -894,7 +892,7 @@ func TestAuthInterceptor_StopsWhenEveryRepairIsUsed(t *testing.T) {
 		connect.NewError(connect.CodeUnauthenticated, "token expired"),
 	)
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -988,7 +986,7 @@ func TestAuthInterceptor_ReportsALocalDiskFailureAsSuchNotAsASignIn(t *testing.T
 		// Inside the skew, so the call renews before it dials.
 		ExpiresAt: time.Now().Add(refreshSkew / 2),
 	}))
-	captureStreams(t)
+	captureErr(t)
 
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
@@ -1244,7 +1242,7 @@ func TestUnaryReplayStream_ReportsAnOpeningFailureAfterRepair(t *testing.T) {
 func TestAuthInterceptor_ReportsAReactiveRefreshPersistenceFailure(t *testing.T) {
 	hub := newRepairHub(t, 3600, connect.NewError(connect.CodeUnauthenticated, "token expired"))
 	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	captureStreams(t)
+	captureErr(t)
 	c, err := NewClient(hub.server.URL)
 	require.NoError(t, err)
 	blockCredentialSaves(t, hub.server.URL)
@@ -1274,7 +1272,7 @@ func TestAuthInterceptor_ReplayReportsOnlyTheFinalAttemptsMetadata(t *testing.T)
 			}
 			hub := newRepairHub(t, 3600, answers...)
 			seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-			captureStreams(t)
+			captureErr(t)
 			c, err := NewClient(hub.server.URL)
 			require.NoError(t, err)
 			c.promptAllowed = true

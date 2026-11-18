@@ -7,6 +7,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
@@ -20,8 +21,9 @@ import (
 // guards therefore key off the tab anchor and look up its current
 // workspace / tile at call time.
 //
-// Each guard pairs with a per-command `--force` flag that bypasses the
-// check, mirroring the existing `layout set --force` ergonomics.
+// Each guard pairs with the command's --allow-self flag, which states the
+// hazard it overrides. The refusal names the flag, as tab_busy_refused names
+// --allow-busy.
 
 // callingTabID returns the LEAPMUX_CONTROL_TAB_ID spawn anchor, or ""
 // when the CLI was not invoked from inside a remote tab. Trimming
@@ -70,22 +72,22 @@ func callingTileFromState(state *leapmuxv1.UserMaterialized) string {
 	return rec.GetTileId().GetValue()
 }
 
-// errSelfTargetRefused builds the canonical error envelope returned
-// when a guard fires. `self_target_refused` is a distinct code so
-// scripts can pattern-match and decide whether to re-run with
-// --force, instead of having to grep an `invalid_request` blob.
+// allowSelfFlag overrides every self-target guard.
+const allowSelfFlag = "allow-self"
+
+// errSelfTargetRefused builds the error that a guard returns.
+// `self_target_refused` is a distinct code, so a script can decide whether
+// to run again with --allow-self.
 func errSelfTargetRefused(detail string) error {
-	return control.EmitError(
-		"self_target_refused",
-		detail+"; pass --force to override",
-	)
+	return cli.Newf(cli.CodeSelfTargetRefused, "%s", detail).
+		WithHint("pass --%s to do it anyway", allowSelfFlag)
 }
 
 // guardWorkspaceDelete blocks `workspace delete` when the calling
-// tab lives inside the target workspace and --force was not passed.
+// tab lives inside the target workspace and --allow-self was not passed.
 // Returns nil to proceed, or an emitted error envelope to abort.
-func guardWorkspaceDelete(ctx context.Context, c *control.Client, targetWorkspaceID string, force bool) error {
-	if force || targetWorkspaceID == "" {
+func guardWorkspaceDelete(ctx context.Context, c *control.Client, targetWorkspaceID string, allowSelf bool) error {
+	if allowSelf || targetWorkspaceID == "" {
 		return nil
 	}
 	selfWS, _ := locateCallingTab(ctx, c)
@@ -108,10 +110,10 @@ func rejectIfSelfWorkspace(selfWS, targetWS string) error {
 }
 
 // guardTabClose blocks `tab close` when the target tab is the calling
-// tab itself and --force was not passed. Pure env-var comparison —
+// tab itself and --allow-self was not passed. Pure env-var comparison —
 // no RPC.
-func guardTabClose(targetTabID string, force bool) error {
-	if force || targetTabID == "" {
+func guardTabClose(targetTabID string, allowSelf bool) error {
+	if allowSelf || targetTabID == "" {
 		return nil
 	}
 	if callingTabID() != targetTabID {
@@ -123,10 +125,10 @@ func guardTabClose(targetTabID string, force bool) error {
 }
 
 // guardTileClose blocks `tile close` when the calling tab sits on
-// the target tile and --force was not passed. Uses CRDT state the
+// the target tile and --allow-self was not passed. Uses CRDT state the
 // handler has already loaded.
-func guardTileClose(state *leapmuxv1.UserMaterialized, targetTileID string, force bool) error {
-	if force || targetTileID == "" {
+func guardTileClose(state *leapmuxv1.UserMaterialized, targetTileID string, allowSelf bool) error {
+	if allowSelf || targetTileID == "" {
 		return nil
 	}
 	selfTile := callingTileFromState(state)
@@ -144,8 +146,8 @@ func guardTileClose(state *leapmuxv1.UserMaterialized, targetTileID string, forc
 // caller passes the already-computed descendants list (which
 // `descendantsLeavesFirst` includes the grid node in) so the guard
 // doesn't redo the walk.
-func guardTileRemoveGrid(state *leapmuxv1.UserMaterialized, doomedTileIDs []string, force bool) error {
-	if force || len(doomedTileIDs) == 0 {
+func guardTileRemoveGrid(state *leapmuxv1.UserMaterialized, doomedTileIDs []string, allowSelf bool) error {
+	if allowSelf || len(doomedTileIDs) == 0 {
 		return nil
 	}
 	selfTile := callingTileFromState(state)

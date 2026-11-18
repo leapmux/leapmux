@@ -627,18 +627,18 @@ export class ProxyEnvironment {
       'control',
       'file',
       'read',
+      path,
       '--hub',
       HUB_URL,
-      '--worker-id',
+      '--worker',
       this.workerId,
-      '--path',
-      path,
       '--limit',
       String(2 * TRANSFER_BYTES),
+      '--json',
     ])
     assert.equal(result.status, 0, `file read failed:\n${result.stdout}${result.stderr}`)
     const output = JSON.parse(result.stdout)
-    // `leapmux control` prints a success as {"data": ...}.
+    // With --json, `leapmux control` prints a success as {"data": ...}.
     const content = output.data?.content
     assert.equal(typeof content, 'string', `file read returned no content: ${result.stdout.slice(0, 500)}`)
     assert.equal(createHash('sha256').update(content).digest('hex'), digest.split(' ')[0], 'the content changed in transit')

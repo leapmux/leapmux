@@ -197,7 +197,7 @@ func TestHelperProcessLifecycleCLI(t *testing.T) {
 	}
 	for index, arg := range os.Args {
 		if arg == "--" && index+2 < len(os.Args) {
-			os.Exit(runCLI(os.Args[index+1:], os.Stdout, os.Stderr, cliRunners{runMode: runModeCommand}))
+			os.Exit(runCLI(context.Background(), os.Args[index+1:], os.Stdin, os.Stdout, os.Stderr, defaultCLIRunners()))
 		}
 	}
 	os.Exit(2)

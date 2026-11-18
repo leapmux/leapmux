@@ -91,21 +91,6 @@ func opSetNodeColRatios(bs *CRDTBootstrap, nodeID string, values []float64) *lea
 	return op
 }
 
-// kindLabel returns the short user-facing label for a NodeKind so
-// error messages read "SPLIT" / "GRID" instead of the proto constant.
-func kindLabel(k leapmuxv1.NodeKind) string {
-	switch k {
-	case leapmuxv1.NodeKind_NODE_KIND_LEAF:
-		return "LEAF"
-	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
-		return "SPLIT"
-	case leapmuxv1.NodeKind_NODE_KIND_GRID:
-		return "GRID"
-	default:
-		return k.String()
-	}
-}
-
 // buildTreeJSON projects the live subtree rooted at nodeID into a
 // nested JSON shape suitable for `tile list` / `layout get`.
 func buildTreeJSON(state *leapmuxv1.UserMaterialized, nodeID string) any {
@@ -123,11 +108,11 @@ func buildTreeJSONWith(state *leapmuxv1.UserMaterialized, children map[string][]
 	kind := rec.GetKind().GetValue()
 	out := map[string]any{
 		"node_id": nodeID,
-		"kind":    kind.String(),
+		"kind":    enumToken(kind),
 	}
 	switch kind {
 	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
-		out["direction"] = rec.GetDirection().GetValue().String()
+		out["direction"] = enumToken(rec.GetDirection().GetValue())
 		out["ratios"] = rec.GetRatios().GetValue().GetValues()
 	case leapmuxv1.NodeKind_NODE_KIND_GRID:
 		out["rows"] = rec.GetRows().GetValue()

@@ -130,7 +130,7 @@ Solo mode and the desktop app reissue their own Worker's token. For each standal
 3. Delete its `state.json`.
 4. Register it with a new registration key. It receives a new Worker ID.
 
-Re-issue API tokens online with `leapmux control admin api-token issue --hub <url>`.
+Re-issue API tokens online with `leapmux control admin api-token issue <user> --hub <url>`.
 
 The rotation runbook:
 

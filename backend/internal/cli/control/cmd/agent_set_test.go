@@ -100,37 +100,6 @@ func TestAppliedFromSettlements_EmptyRequestReportsNothing(t *testing.T) {
 	assert.Empty(t, unresolved)
 }
 
-// TestStringSliceFlag_AccumulatesValues is the multi-pass `flag.Value`
-// contract: each `Set` appends so `--option a=1 --option b=2`
-// produces ["a=1", "b=2"].
-func TestStringSliceFlag_AccumulatesValues(t *testing.T) {
-	s := stringSliceFlag{}
-	require.NoError(t, s.Set("a=1"))
-	require.NoError(t, s.Set("b=2"))
-	require.NoError(t, s.Set("c=3"))
-	assert.Equal(t, []string{"a=1", "b=2", "c=3"}, s.values)
-}
-
-// TestStringSliceFlag_StringIsHumanReadable covers the small
-// `String()` implementation. flag.PrintDefaults uses this for help
-// text; an unreadable representation would confuse users running
-// `leapmux control agent set --help`.
-func TestStringSliceFlag_StringIsHumanReadable(t *testing.T) {
-	s := stringSliceFlag{values: []string{"a=1", "b=2"}}
-	got := s.String()
-	assert.Contains(t, got, "a=1")
-	assert.Contains(t, got, "b=2")
-}
-
-// TestStringSliceFlag_EmptyStartsAsNilNotEmptySlice pins the
-// initial state so callers can branch on `len(extras.values) == 0`
-// without worrying about a non-nil-but-empty distinction.
-func TestStringSliceFlag_EmptyStartsAsNilNotEmptySlice(t *testing.T) {
-	s := stringSliceFlag{}
-	assert.Empty(t, s.values)
-	assert.Nil(t, s.values)
-}
-
 // TestBuildAgentSetOptions_MergesFlagsAndOptions verifies the dedicated --model/--effort/
 // --permission-mode flags and the repeatable --option key=value merge into one map keyed by
 // option-group id.

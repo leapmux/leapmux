@@ -287,6 +287,20 @@ func (h *hubChannelHarness) GetWorker(ctx context.Context, req *leapmuxv1.GetWor
 	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure, req, &leapmuxv1.GetWorkerResponse{})
 }
 
+// The list calls that resolve a short target, answered by the same stub.
+
+func (h *hubChannelHarness) ListWorkspaces(ctx context.Context, req *leapmuxv1.ListWorkspacesRequest) (*leapmuxv1.ListWorkspacesResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, req, &leapmuxv1.ListWorkspacesResponse{})
+}
+
+func (h *hubChannelHarness) ListTabs(ctx context.Context, req *leapmuxv1.ListTabsRequest) (*leapmuxv1.ListTabsResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkspaceServiceListTabsProcedure, req, &leapmuxv1.ListTabsResponse{})
+}
+
+func (h *hubChannelHarness) ListWorkers(ctx context.Context, req *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, req, &leapmuxv1.ListWorkersResponse{})
+}
+
 // answerFromRecordingHub answers one typed hub RPC through hub, the stub that
 // the local-IPC harness asks, so a test states one hub for both transports.
 func answerFromRecordingHub[Out proto.Message](ctx context.Context, hub *recordingHub, procedure string, in proto.Message, out Out) (Out, error) {

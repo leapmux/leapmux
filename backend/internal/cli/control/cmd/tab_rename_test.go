@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -94,33 +92,19 @@ func (d *renameDispatcher) sentTitles() []string {
 	return append([]string(nil), d.requested...)
 }
 
-// runTabRename drives the whole `tab rename` leaf against a worker that
+// renameTabThrough drives the whole `tab rename` leaf against a worker that
 // stores `stored` for whatever title it receives, and returns the data
 // half of the envelope the leaf printed.
 //
 // tab declares what the hub's LocateTab answers with, which is what
 // selects the branch: the agent branch dispatches RenameAgent and the
 // terminal branch dispatches RenameTerminal.
-func runTabRename(t *testing.T, tab *leapmuxv1.WorkspaceTab, stored, title string) (map[string]any, *renameDispatcher) {
+func renameTabThrough(t *testing.T, tab *leapmuxv1.WorkspaceTab, stored, title string) (map[string]any, *renameDispatcher) {
 	t.Helper()
 	disp := &renameDispatcher{stored: stored}
 	startSpawnIPC(t, &recordingHub{locateTab: tab}, disp)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunTabRename(fakeCmdCtx{}, []string{
-			"--tab-id", tab.GetTab().GetTabId(),
-			"--tab-type", resolve.TabTypeWireName(tab.GetTab().GetTabType()),
-			"--title", title,
-		}))
-	})
-
-	var env struct {
-		Data  map[string]any `json:"data"`
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
-	require.Nil(t, env.Error, "tab rename must succeed: %s", out)
-	return env.Data, disp
+	return runControl(t, "tab", "rename", tab.GetTab().GetTabId(), title).Data(t), disp
 }
 
 // agentTab and terminalTab are the two tabs LocateTab answers with. Both
@@ -147,7 +131,7 @@ func terminalTab() *leapmuxv1.WorkspaceTab {
 
 // The agent arm must print the title the WORKER stored, not the one the
 // operator typed. The worker cleans a title with the rule that
-// validate.CleanName documents, so echoing --title back reports a name no tab
+// validate.CleanName documents, so echoing the title back reports a name no tab
 // carries -- and the operator's next command, which addresses the tab by that
 // name, finds nothing.
 //
@@ -159,12 +143,12 @@ func terminalTab() *leapmuxv1.WorkspaceTab {
 // longer produce at all -- the worker now stores `release $100%` unchanged, so
 // the stub was reporting a transformation that exists nowhere.
 func TestRunTabRename_AgentPrintsTheWorkersStoredTitle(t *testing.T) {
-	data, disp := runTabRename(t, agentTab(), `release $100%`, "release\t$100%")
+	data, disp := renameTabThrough(t, agentTab(), `release $100%`, "release\t$100%")
 
 	assert.Equal(t, `release $100%`, data["title"],
 		"the envelope must carry the worker's cleaned title, not the requested one")
-	assert.Equal(t, "agent-2", data["tab_id"])
-	assert.Equal(t, "agent", data["tab_type"])
+	assert.Equal(t, "agent-2", data["id"])
+	assert.Equal(t, "agent", data["type"])
 
 	assert.Equal(t, []string{leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure}, disp.called(),
 		"the agent arm dispatches RenameAgent and nothing else")
@@ -175,12 +159,12 @@ func TestRunTabRename_AgentPrintsTheWorkersStoredTitle(t *testing.T) {
 // The terminal arm holds the same contract over its own RPC. The two arms
 // print from separate statements, so one of them can regress alone.
 func TestRunTabRename_TerminalPrintsTheWorkersStoredTitle(t *testing.T) {
-	data, disp := runTabRename(t, terminalTab(), "build logs", "build\tlogs")
+	data, disp := renameTabThrough(t, terminalTab(), "build logs", "build\tlogs")
 
 	assert.Equal(t, "build logs", data["title"],
 		"the envelope must carry the worker's cleaned title, not the requested one")
-	assert.Equal(t, "term-2", data["tab_id"])
-	assert.Equal(t, "terminal", data["tab_type"])
+	assert.Equal(t, "term-2", data["id"])
+	assert.Equal(t, "terminal", data["type"])
 
 	assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure}, disp.called(),
 		"the terminal branch dispatches RenameTerminal and nothing else")
@@ -201,15 +185,16 @@ func TestRunTabRename_ReportsTheUnchangedTitleWhenTheRequestCleansToNothing(t *t
 	require.Empty(t, validate.CleanName(emptyingTitle),
 		"this case only tests the fallback branch while the rule empties the requested title")
 
-	data, disp := runTabRename(t, agentTab(), "nightly build", emptyingTitle)
+	data, disp := renameTabThrough(t, agentTab(), "nightly build", emptyingTitle)
 
 	assert.Equal(t, "nightly build", data["title"],
 		"a request that cleans to nothing leaves the old title, and the envelope must say so")
 	assert.Equal(t, []string{emptyingTitle}, disp.sentTitles())
 }
 
-// A tab type that neither arm renames is refused, and the refusal must
-// reach the worker with nothing. `tab rename` binds no FixedTabType, so
+// A tab type that neither arm renames is refused as a usage error, and the
+// refusal must reach the worker with nothing. `tab rename` binds no
+// FixedTabType, so
 // LocateTab can answer with any type the tab namespace holds -- a file tab
 // today, another kind later -- and the default arm is the only thing that
 // keeps such a tab from falling through to a silent success.
@@ -222,19 +207,7 @@ func TestRunTabRename_RefusesATabTypeNeitherArmRenames(t *testing.T) {
 		WorkspaceId: "ws-1",
 	}}, disp)
 
-	out := withCapturedStdout(t, func() {
-		// The handler returns the envelope it printed, so an error here is
-		// the expected outcome.
-		require.Error(t, RunTabRename(fakeCmdCtx{}, []string{
-			"--tab-id", "file-2", "--tab-type", "file", "--title", "notes",
-		}))
-	})
-
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
-	assert.Equal(t, "not_found", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "file-2")
+	f := runControl(t, "tab", "rename", "file-2", "notes").requireFailure(t, "usage")
+	assert.Contains(t, f.Message, "a file tab has no title")
 	assert.Empty(t, disp.called(), "a tab neither arm renames must reach the worker with nothing")
 }

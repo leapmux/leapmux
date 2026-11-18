@@ -1,19 +1,13 @@
-// Package cmd implements the leaf commands of `leapmux control ...`.
-// Each entry is a func compatible with the dispatcher's signature (the
-// cmdCtx shape) so these entries reuse the same flag-parsing scaffolding
-// that the command trees use.
 package cmd
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -22,128 +16,94 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
-	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/loopbackauth"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
-// Ctx is the dispatcher-supplied context. The cmd package keeps its
-// own minimal shape so it doesn't pull in cmd/leapmux's cmdCtx
-// (avoids an import cycle).
-type Ctx interface {
-	Path() string
-	Description() string
-}
-
-// adminCmdLike adapts cmdCtx (any struct with Path / Description
-// fields).
-type adminCmdLike struct {
-	PathStr        string
-	DescriptionStr string
-}
-
-func (c adminCmdLike) Path() string        { return c.PathStr }
-func (c adminCmdLike) Description() string { return c.DescriptionStr }
-
-// asCtx accepts the dispatcher's cmdCtx (declared in main package)
-// via reflection-free duck typing: callers convert with adminCmdLike.
-func asCtx(v any) Ctx {
-	if c, ok := v.(Ctx); ok {
-		return c
-	}
-	return adminCmdLike{PathStr: "control", DescriptionStr: ""}
-}
-
-// flagSet returns a flag.FlagSet pre-configured with --hub.
-func flagSet(cmd Ctx, hubPtr *string) *flag.FlagSet {
-	fs := flag.NewFlagSet("leapmux "+cmd.Path(), flag.ContinueOnError)
-	fs.StringVar(hubPtr, "hub", os.Getenv("LEAPMUX_HUB"), "hub URL (or LEAPMUX_HUB env var)")
-	return fs
-}
-
-// parseFlags consolidates the boilerplate around ConfigureAndParse.
-func parseFlags(fs *flag.FlagSet, args []string, description string) error {
-	return internalconfig.ConfigureAndParse(fs, args, description, nil, nil)
-}
-
-// parseFlagsWithPositionals is parseFlags for leaves that take positional
-// arguments after the flags (settings get KEY, settings set KEY VALUE):
-// ConfigureAndParse's RejectPositionalArgs would refuse them.
-//
-// usage states the positional form, and --help prints it. PrintFlagUsage
-// knows only the flags, so it writes `Usage: <cmd> [flags]`; without this
-// line the help of a leaf that REQUIRES two positionals never states them,
-// and only a wrong count answered with the form.
-func parseFlagsWithPositionals(fs *flag.FlagSet, args []string, description, usage string) error {
-	if internalconfig.HasHelpArg(args) {
-		fs.SetOutput(os.Stdout)
-	}
-	fs.Usage = func() {
-		internalconfig.PrintFlagUsage(fs, description, nil, nil)
-		if usage != "" {
-			_, _ = fmt.Fprintf(fs.Output(), "\n%s\n", usage)
-		}
-	}
-	return fs.Parse(args)
-}
-
-// pathCmdFlags carries the standard flags every worker-bound path
-// command takes: --hub, the entity-resolver flag set (--workspace-id /
-// --tab-id / --tile-id / --worker-id), and --path. Returned unparsed
-// so callers can bind command-specific flags before calling parseFlags.
-type pathCmdFlags struct {
-	Hub  string
-	Path string
-	In   resolve.Inputs
-	FS   *flag.FlagSet
-}
-
-// bindPathCmd binds the common --hub + entity + --path flags onto a
-// fresh FlagSet. When defaultFromEnv is true the --path default is
-// workingDirEnv(); otherwise the flag has no default and the caller
-// must enforce non-empty after parseFlags. Callers add per-command
-// extra flags on the returned FlagSet, then call parseFlags themselves.
-func bindPathCmd(cmd Ctx, defaultFromEnv bool, usage string) *pathCmdFlags {
-	out := &pathCmdFlags{}
-	out.FS = flagSet(cmd, &out.Hub)
-	resolve.BindEntityFlags(out.FS, &out.In, resolve.FlagOptions{})
-	def := ""
-	if defaultFromEnv {
-		def = workingDirEnv()
-	}
-	out.FS.StringVar(&out.Path, "path", def, usage)
-	return out
-}
-
-// Require returns an invalid_request envelope when Path is empty.
-// hint is appended after the canonical "--path is required" so commands
-// can document path semantics ("must be a file path; …").
-func (f *pathCmdFlags) Require(hint string) error {
-	if f.Path != "" {
-		return nil
-	}
-	msg := "--path is required"
-	if hint != "" {
-		msg = msg + " " + hint
-	}
-	return control.EmitError("invalid_request", msg)
-}
-
-// requireClient builds a control.Client from --hub or the LEAPMUX_CONTROL_*
-// env vars. Returns a clear error envelope on failure.
-func requireClient(hubFlag string) (*control.Client, error) {
-	c, err := control.NewClientFromEnv(hubFlag)
-	if err != nil {
-		return nil, control.EmitErrorWith("not_logged_in", err)
-	}
-	return c, nil
+func newAuthCommand() *cobra.Command {
+	return cli.Group("auth", "Sign this CLI in to a hub, and manage its credentials",
+		cli.NewLeaf(cli.Leaf{
+			Use:     "login",
+			Mutates: true,
+			Short:   "Sign this CLI in to a hub through a browser",
+			Examples: []cli.Example{
+				{Command: "leapmux control auth login --hub https://hub.example.com"},
+				{Comment: "Sign in from a machine without a browser.", Command: "leapmux control auth login --hub https://hub.example.com --device-code"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				// The label is recorded on the grant and surfaces in the
+				// account's own records (Connected apps lists each credential
+				// by it), but the consent pages deliberately show only the
+				// app's verified identity: the label is requester-chosen, so
+				// rendering it on a decision screen would let a phisher
+				// manufacture "your own laptop" reassurance out of nothing.
+				// The default is computed when the login runs, never declared:
+				// a declared default prints in the help, in `leapmux commands`
+				// and in the generated docs, with the name of this machine.
+				fs.String("device-name", "", "a label for this credential; the account's list of connected apps shows it (default: <user>@<host> of this machine)")
+				fs.Bool("device-code", false, "sign in with a code that you enter on any device with a browser (for SSH and containers)")
+				// The grant. EMPTY asks for everything except the admin
+				// scopes, which is what an ordinary login has always meant --
+				// so the credential file this leaves on disk for months can
+				// do everything its owner can do EXCEPT administer the hub,
+				// and an administering credential exists only when somebody
+				// asked for one.
+				fs.String("scope", "", `permissions to ask for, separated by spaces or commas, such as "file:read git:read" (default: everything except admin:*)`)
+			},
+			Run: runAuthLogin,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "logout",
+			Short:   "Revoke this CLI's credential for a hub and delete it",
+			Mutates: true,
+			Examples: []cli.Example{
+				{Command: "leapmux control auth logout --hub https://hub.example.com"},
+			},
+			Run: runAuthLogout,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "list",
+			Short: "List the hubs that this machine holds a credential for",
+			Examples: []cli.Example{
+				{Command: "leapmux control auth list"},
+			},
+			Run: runAuthList,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "use <hub>",
+			Mutates: true,
+			Short:   "Choose the hub that a command uses without --hub",
+			Examples: []cli.Example{
+				{Command: "leapmux control auth use https://hub.example.com"},
+			},
+			Run: runAuthUse,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "status",
+			Short: "Show the user, the expiry and the permissions of the hub's credential",
+			Examples: []cli.Example{
+				{Command: "leapmux control auth status"},
+			},
+			Run: runAuthStatus,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "credentials",
+			Short: "List every credential that can reach your account on the hub",
+			Examples: []cli.Example{
+				{Command: "leapmux control auth credentials"},
+			},
+			Run: runAuthCredentials,
+		}),
+	)
 }
 
 // --- auth login -------------------------------------------------------
 
-// RunAuthLogin implements `leapmux control auth login`. Tries the
+// runAuthLogin implements `leapmux control auth login`. Tries the
 // local-redirect (PKCE) flow by default; falls back to (or honors
 // --device-code) when the local listener can't be reached from a
 // browser.
@@ -152,38 +112,28 @@ func requireClient(hubFlag string) (*control.Client, error) {
 // sessions after first-password setup. Solo still authorizes apps: the solo
 // rung yields to a presented lmx_ bearer, so a credential minted here binds
 // its scope there.
-func RunAuthLogin(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, deviceName, scopeFlag string
-	var deviceCode bool
-	fs := flagSet(cmd, &hub)
-	// The label is recorded on the grant and surfaces in the account's own
-	// records (Connected apps names each credential by it), but the consent
-	// pages deliberately show only the app's verified identity: the label is
-	// requester-chosen, so rendering it on a decision screen would let a
-	// phisher manufacture "your own laptop" reassurance out of nothing.
-	fs.StringVar(&deviceName, "device-name", control.DefaultDeviceName(), "label recorded on the grant; the account's Connected-apps list names the credential by it")
-	fs.BoolVar(&deviceCode, "device-code", false, "force RFC 8628 device-code flow (headless / SSH / container)")
-	// The grant. EMPTY asks for everything except the admin scopes,
-	// which is what an ordinary login has always meant -- so the credential
-	// file this leaves on disk for months can do everything its owner can do
-	// EXCEPT administer the hub, and an administering credential exists only
-	// when somebody asked for one.
-	fs.StringVar(&scopeFlag, "scope", "",
-		"space- or comma-separated permissions, e.g. \"file:read git:read\" (empty = everything except admin:*)")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+func runAuthLogin(inv *cli.Invocation) (any, error) {
+	hub, err := hubURLFor(inv)
+	if noHub := (*control.NoHubError)(nil); errors.As(err, &noHub) {
+		// The no-hub hint suggests a login, which is this command.
+		return nil, cli.Usagef("no hub selected").WithHint("pass --hub <url> to choose the hub to sign in to")
 	}
-	if hub == "" {
-		return control.EmitError("invalid_request", "--hub is required")
+	if err != nil {
+		return nil, err
 	}
-	ctx := context.Background()
+	deviceName := strings.TrimSpace(stringFlag(inv, "device-name"))
+	if deviceName == "" {
+		deviceName = control.DefaultDeviceName()
+	}
+	deviceCode := boolFlag(inv, "device-code")
+	scopeFlag := stringFlag(inv, "scope")
+	ctx := inv.Context
 
 	// Every input is validated BEFORE the destructive cleanup below: a
 	// refused flag must not cost the machine its working credential.
 	scope, scopeErr := requestedScope(scopeFlag)
 	if scopeErr != nil {
-		return scopeErr
+		return nil, scopeErr
 	}
 	if !deviceCode && locallisten.IsLocal(hub) {
 		// The local-redirect flow needs a browser to reach BOTH the hub (to
@@ -192,8 +142,8 @@ func RunAuthLogin(rawCtx any, args []string) error {
 		// deployments need no login at all, and a socket-reached multi-user
 		// hub has an http(s) origin derived from its settings. State the
 		// working alternative instead of failing mysteriously.
-		return control.EmitError("invalid_request",
-			"--hub unix:/npipe: URLs cannot use the local-redirect flow (no browser-reachable hub origin); pass --device-code to authenticate in a browser against the hub's public origin")
+		return nil, cli.Usagef("a unix: or npipe: hub URL gives the browser no hub origin to visit").
+			WithHint("pass --device-code to sign in through the hub's public origin")
 	}
 
 	// A login REPLACES whatever this machine already holds for the hub: the
@@ -212,34 +162,34 @@ func RunAuthLogin(rawCtx any, args []string) error {
 	// identifies the grant that may still live on the hub.
 	switch creds, loadErr := control.LoadCredentials(hub); {
 	case loadErr == nil:
-		_, _ = fmt.Fprintln(control.Out, "This CLI revokes the existing login for this hub before it signs in again:")
-		_, _ = fmt.Fprintf(control.Out, "  %s on %s\n", creds.Username, creds.HubURL)
+		inv.Printer.Notice("This CLI revokes the existing login for this hub before it signs in again:")
+		inv.Printer.Notice("  %s on %s", creds.Username, creds.HubURL)
 		if revokeErr := revokeBearer(hub, creds.AccessToken, creds.ClientIDOrBuiltIn()); revokeErr != nil {
-			_, _ = fmt.Fprintln(control.Out, "  warning: this CLI could not revoke it on the hub ("+revokeErr.Error()+
-				"); "+disconnectInPreferences)
+			inv.Printer.Notice("  warning: this CLI could not revoke it on the hub (%v); %s", revokeErr, disconnectInPreferences)
 		}
 		if delErr := control.DeleteCredentials(hub); delErr != nil {
-			return control.EmitErrorWith("delete_failed", delErr)
+			return nil, delErr
 		}
 	case errors.Is(loadErr, control.ErrNotLoggedIn):
 		// No credential file: nothing to clean up.
 	default:
-		_, _ = fmt.Fprintln(control.Out, "The existing credential file for this hub does not parse ("+loadErr.Error()+
-			"); this CLI deletes it and cannot revoke its grant on the hub, so "+
-			disconnectInPreferences+" if the hub still lists it")
+		inv.Printer.Notice("The existing credential file for this hub does not parse (%v); this CLI deletes it and cannot revoke its grant on the hub, so %s if the hub still lists it", loadErr, disconnectInPreferences)
 		if delErr := control.DeleteCredentials(hub); delErr != nil {
-			return control.EmitErrorWith("delete_failed", delErr)
+			return nil, delErr
 		}
 	}
 
 	if deviceCode {
-		return runDeviceCodeLogin(ctx, hub, deviceName, scope)
+		return runDeviceCodeLogin(ctx, inv.Printer, hub, deviceName, scope)
 	}
-	return runLocalRedirectLogin(ctx, hub, deviceName, scope)
+	return runLocalRedirectLogin(ctx, inv.Printer, hub, deviceName, scope)
 }
 
-func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName, scope string) error {
-	// The socket-hub refusal this flow needs already ran in RunAuthLogin,
+// The login prompts are prose for a person, so they go to stderr. stdout
+// holds only the result, and `auth login --json | jq` parses it.
+
+func runLocalRedirectLogin(ctx context.Context, p *cli.Printer, hubURL, deviceName, scope string) (*loginResult, error) {
+	// The socket-hub refusal this flow needs already ran in runAuthLogin,
 	// before the destructive cleanup: a refused flag must not cost the
 	// machine its working credential.
 	flow, err := loopbackauth.Start(loopbackauth.Request{
@@ -249,32 +199,32 @@ func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName, scope string
 		InstallationName: deviceName,
 	})
 	if err != nil {
-		return control.EmitErrorWith("listen_failed", err)
+		return nil, err
 	}
 	defer flow.Close()
 
 	startURL := flow.AuthorizeURL()
-	_, _ = fmt.Fprintln(control.Out, "Open this URL in your browser to authorize the CLI:")
-	_, _ = fmt.Fprintln(control.Out, " ", startURL)
+	p.Notice("Open this URL in your browser to authorize the CLI:")
+	p.Notice("  %s", startURL)
 	_ = control.OpenBrowser(startURL)
 
 	code, err := flow.Wait(ctx)
 	switch {
 	case err == nil:
 	case errors.Is(err, loopbackauth.ErrTimeout):
-		return control.EmitError("timeout", "timed out waiting for browser authorization")
+		return nil, cli.Newf(cli.CodeTimeout, "the browser did not authorize the CLI within 10 minutes")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return err
+		return nil, err
 	default:
-		return control.EmitErrorWith("callback_error", err)
+		return nil, cli.Wrap(cli.CodeInternal, err, "the browser authorization callback failed")
 	}
 	return exchangeAuthorizationCode(ctx, hubURL, flow.TokenForm(code), scope)
 }
 
-func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName, scope string) error {
+func runDeviceCodeLogin(ctx context.Context, p *cli.Printer, hubURL, deviceName, scope string) (*loginResult, error) {
 	hc, baseURL, err := cliHTTPClient(hubURL)
 	if err != nil {
-		return control.EmitErrorWith("invalid_hub_url", err)
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
 	// Only an ASK. The activation page decides, and the token response below
 	// reports what was actually granted -- which is not always what was asked
@@ -288,34 +238,35 @@ func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName, scope string) e
 	resp, err := loopbackauth.PostForm(ctx, hc,
 		locallisten.JoinPath(baseURL, "/oauth/device-authorization"), form)
 	if err != nil {
-		return control.EmitErrorWith("device_authorization_failed", err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return control.EmitError("device_authorization_failed", resp.Status)
+		return nil, cli.Newf(cli.CodeInternal, "the hub refused the device authorization: %s", resp.Status)
 	}
 	var auth control.DeviceGrant
 	if err := json.NewDecoder(resp.Body).Decode(&auth); err != nil {
-		return control.EmitErrorWith("device_authorization_failed", err)
+		return nil, err
 	}
-	_, _ = fmt.Fprintln(control.Out, "To authorize this CLI, on any device with a browser:")
-	_, _ = fmt.Fprintln(control.Out, "  1. Visit", auth.VerificationURI)
-	_, _ = fmt.Fprintln(control.Out, "  2. Enter the code:", auth.UserCode)
+	p.Notice("To authorize this CLI, on any device with a browser:")
+	p.Notice("  1. Visit %s", auth.VerificationURI)
+	p.Notice("  2. Enter the code: %s", auth.UserCode)
 	if auth.VerificationURIComplete != "" {
-		_, _ = fmt.Fprintln(control.Out, "Or open:", auth.VerificationURIComplete)
+		p.Notice("Or open: %s", auth.VerificationURIComplete)
 	}
+	var result *loginResult
 	err = auth.Poll(ctx, func(ctx context.Context) error {
-		return tryExchangeDeviceCode(ctx, hc, baseURL, hubURL, auth.DeviceCode, scope)
+		var err error
+		result, err = tryExchangeDeviceCode(ctx, hc, baseURL, hubURL, auth.DeviceCode, scope)
+		return err
 	})
 	switch {
 	case err == nil:
-		return nil
+		return result, nil
 	case errors.Is(err, control.ErrDeviceGrantExpired):
-		return control.EmitError("expired_token", "device code expired")
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return err
+		return nil, cli.Newf(cli.CodeTimeout, "the device code expired before anybody entered it")
 	default:
-		return control.EmitErrorWith("device_grant_failed", err)
+		return nil, err
 	}
 }
 
@@ -330,7 +281,7 @@ func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName, scope string) e
 // every poll for a `unix:`/`npipe:` hub: nothing closes it and its
 // IdleConnTimeout is zero, so each poll left one idle socket connection
 // and its read goroutine alive for the life of the process.
-func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL, deviceCode, requestedScope string) error {
+func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL, deviceCode, requestedScope string) (*loginResult, error) {
 	form := url.Values{
 		"grant_type":  {control.GrantTypeDeviceCode},
 		"client_id":   {control.ControlCLIClientID},
@@ -338,13 +289,13 @@ func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL
 	}
 	resp, err := loopbackauth.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusOK {
 		return persistTokenResponse(hubURL, resp.Body, control.ControlCLIClientID, requestedScope)
 	}
-	return control.DeviceFlowError(resp)
+	return nil, control.DeviceFlowError(resp)
 }
 
 // exchangeAuthorizationCode redeems the local-redirect login's code. The form
@@ -352,38 +303,49 @@ func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL
 // (RFC 6749 section 4.1.3 makes redirect_uri REQUIRED and identical to the one
 // the authorization used), so the hub can refuse a code intercepted at one
 // registered address and redeemed as though it came from another.
-func exchangeAuthorizationCode(ctx context.Context, hubURL string, form url.Values, requestedScope string) error {
+func exchangeAuthorizationCode(ctx context.Context, hubURL string, form url.Values, requestedScope string) (*loginResult, error) {
 	hc, baseURL, err := cliHTTPClient(hubURL)
 	if err != nil {
-		return control.EmitErrorWith("invalid_hub_url", err)
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
 	resp, err := loopbackauth.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
 	if err != nil {
-		return control.EmitErrorWith("token_exchange_failed", err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return control.EmitError("token_exchange_failed", resp.Status)
+		return nil, cli.Newf(cli.CodeInternal, "the hub refused the authorization code: %s", resp.Status)
 	}
 	return persistTokenResponse(hubURL, resp.Body, form.Get("client_id"), requestedScope)
 }
 
-// persistTokenResponse writes the freshly minted credential and retires the
-// one it replaces.
+// loginResult is the result of `auth login`.
+type loginResult struct {
+	HubURL   string `json:"hub_url"`
+	Username string `json:"username"`
+	UserID   string `json:"user_id"`
+	Scope    string `json:"scope"`
+	// Warning lists the permissions that the login asked for and the hub
+	// did not grant.
+	Warning string `json:"warning,omitempty"`
+}
+
+// persistTokenResponse writes the freshly minted credential and returns the
+// result of the login.
 //
 // The credential this login REPLACED never reaches this function: both
-// flows run behind RunAuthLogin's up-front cleanup, which revokes the
+// flows run behind runAuthLogin's up-front cleanup, which revokes the
 // outgoing credential and deletes its file before the flow starts (see
 // there). Retirement has ONE owner, so a second revoke here would be dead
 // code that only a direct unit test exercises.
-func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScope string) error {
+func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScope string) (*loginResult, error) {
 	var out struct {
 		control.TokenResponseBody
 		UserID   string `json:"user_id"`
 		Username string `json:"username"`
 	}
 	if err := json.NewDecoder(body).Decode(&out); err != nil {
-		return control.EmitErrorWith("token_exchange_failed", err)
+		return nil, err
 	}
 
 	now := time.Now()
@@ -402,29 +364,30 @@ func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScop
 		creds.RefreshExpiresAt = now.Add(time.Duration(out.RefreshExpiresIn) * time.Second)
 	}
 	if err := control.SaveCredentials(hubURL, creds); err != nil {
-		return control.EmitErrorWith("save_credentials_failed", err)
+		return nil, err
 	}
 
-	result := map[string]any{
-		"hub_url":  hubURL,
-		"username": out.Username,
-		"user_id":  out.UserID,
-		"scope":    out.Scope,
-	}
+	result := &loginResult{HubURL: hubURL, Username: out.Username, UserID: out.UserID, Scope: out.Scope}
 	if missing := control.MissingScopes(requestedScope, out.Scope); len(missing) > 0 {
 		// Say so HERE rather than letting the first call that needs one fail
 		// with a permission error that specifies nothing the user did.
-		result["warning"] = "these permissions were requested but not granted: " + strings.Join(missing, ", ")
+		result.Warning = "these permissions were requested but not granted: " + strings.Join(missing, ", ")
 	}
-	return control.EmitData(result)
+	return result, nil
 }
 
 // --- auth logout / list / status -------------------------------------
 
-func RunAuthLogout(rawCtx any, args []string) error {
-	hub, err := parseHubOnly(rawCtx, args, nil)
+// authResult is the result of `auth logout` and `auth use`.
+type authResult struct {
+	HubURL  string `json:"hub_url"`
+	Warning string `json:"warning,omitempty"`
+}
+
+func runAuthLogout(inv *cli.Invocation) (any, error) {
+	hub, err := hubURLFor(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The revoke's answer is REPORTED, not discarded. revokeBearer reads the
 	// status precisely so a refusal stops reading as success, and the local
@@ -432,49 +395,68 @@ func RunAuthLogout(rawCtx any, args []string) error {
 	// swallowing the error here left the row live with its ninety-day
 	// refresh secret, printed a clean result, and took away the bearer the
 	// user needed to retry.
-	warning := ""
+	out := authResult{HubURL: hub}
 	creds, err := control.LoadCredentials(hub)
 	if err == nil {
 		if revokeErr := revokeBearer(hub, creds.AccessToken, creds.ClientIDOrBuiltIn()); revokeErr != nil {
-			warning = "this CLI could not revoke the credential on the hub (" + revokeErr.Error() +
+			out.Warning = "this CLI could not revoke the credential on the hub (" + revokeErr.Error() +
 				"); it is gone from this machine, so " + disconnectInPreferences
 		}
 	}
 	if err := control.DeleteCredentials(hub); err != nil {
-		return control.EmitErrorWith("delete_failed", err)
+		return nil, err
 	}
-	result := map[string]any{"hub_url": hub}
-	if warning != "" {
-		result["warning"] = warning
-	}
-	return control.EmitData(result)
+	return out, nil
 }
 
-func RunAuthList(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	fs := flag.NewFlagSet("leapmux "+cmd.Path(), flag.ContinueOnError)
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
+// credentialRow is one hub that this machine holds a credential for.
+type credentialRow struct {
+	HubURL   string `json:"hub_url" table:"HUB"`
+	Username string `json:"username" table:"USER"`
+	UserID   string `json:"user_id"`
+	Scope    string `json:"scope,omitempty"`
+	Expires  string `json:"expires,omitempty" table:"EXPIRES"`
+	// Default marks the hub that a command uses without --hub.
+	Default bool `json:"default" table:"DEFAULT"`
+}
+
+func runAuthList(*cli.Invocation) (any, error) {
 	files, err := control.ListCredentialFiles()
 	if err != nil {
-		return control.EmitErrorWith("list_failed", err)
+		return nil, err
 	}
-	out := make([]map[string]any, 0, len(files))
+	defaultHub, _ := control.DefaultHub()
+	rows := make([]credentialRow, 0, len(files))
 	for _, c := range files {
-		row := map[string]any{
-			"hub_url":  c.HubURL,
-			"username": c.Username,
-			"user_id":  c.UserID,
-			"scope":    c.Scope,
-		}
-		putWallTime(row, "expires", c.ExpiresAt)
-		out = append(out, row)
+		rows = append(rows, credentialRow{
+			HubURL:   c.HubURL,
+			Username: c.Username,
+			UserID:   c.UserID,
+			Scope:    c.Scope,
+			Expires:  formatWallTime(c.ExpiresAt),
+			Default:  c.HubURL == defaultHub,
+		})
 	}
-	return control.EmitData(out)
+	return struct {
+		Credentials []credentialRow `json:"credentials"`
+	}{rows}, nil
 }
 
-// RunAuthCredentials lists the ACCOUNT's command-line credentials, as the
+// runAuthUse records the hub that a command uses when nothing else selects
+// one. It refuses a hub that this machine holds no credential for, so a
+// typo cannot become the default.
+func runAuthUse(inv *cli.Invocation) (any, error) {
+	hub := inv.Arg("hub")
+	if _, err := control.LoadCredentials(hub); err != nil {
+		return nil, err
+	}
+	if err := control.SetDefaultHub(hub); err != nil {
+		return nil, err
+	}
+	return authResult{HubURL: hub}, nil
+}
+
+// runAuthCredentials lists the ACCOUNT's command-line credentials, as the
 // hub holds them -- which is a different question from `auth list`, and the
 // reason both exist. `auth list` reads this machine's credential files and
 // answers "which hubs am I signed in to from here". This asks the hub
@@ -486,14 +468,14 @@ func RunAuthList(rawCtx any, args []string) error {
 // the row the request itself authenticated with, and the hub derives it from
 // the caller's own credential -- so a browser session, which is what every
 // other caller is, always reads false.
-func RunAuthCredentials(rawCtx any, args []string) error {
-	hub, err := parseHubOnly(rawCtx, args, nil)
+func runAuthCredentials(inv *cli.Invocation) (any, error) {
+	hub, err := hubURLFor(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	c, err := control.NewClient(hub)
 	if err != nil {
-		return control.EmitErrorWith("not_logged_in", err)
+		return nil, err
 	}
 	// Every page, not the first: an omitted limit resolves to a default on
 	// the hub, and a credential the listing never printed is one the operator
@@ -501,76 +483,100 @@ func RunAuthCredentials(rawCtx any, args []string) error {
 	// boundary never prints the same credential as two live ones to somebody
 	// auditing what can reach their account.
 	tokens, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.MyAPIToken, *leapmuxv1.PageResponse, error) {
-		resp, err := c.UserService().ListMyAPITokens(context.Background(), &leapmuxv1.ListMyAPITokensRequest{Page: page})
+		resp, err := c.UserService().ListMyAPITokens(inv.Context, &leapmuxv1.ListMyAPITokensRequest{Page: page})
 		return resp.GetTokens(), resp.GetPage(), err
 	}, (*leapmuxv1.MyAPIToken).GetId)
 	if err != nil {
-		return control.EmitErrorWith("rpc_failed", err)
+		return nil, err
 	}
-	out := make([]map[string]any, 0, len(tokens))
+	rows := make([]accountCredential, 0, len(tokens))
 	for _, tok := range tokens {
-		row := map[string]any{
-			"id":                tok.GetId(),
-			"client_id":         tok.GetClientId(),
-			"client_name":       tok.GetClientName(),
-			"client_verified":   tok.GetClientVerified(),
-			"installation_name": tok.GetInstallationName(),
-			"granted_scopes":    tok.GetGrantedScopes(),
-			// True for the credential THIS command uses, so an operator
-			// does not revoke the device they work from.
-			"current": tok.GetCurrent(),
-		}
-		// putTime, like every other listing verb in this package: it
-		// omits an unset instant and renders the rest in the one layout
-		// the CLI's JSON uses, so `auth credentials` does not print
-		// timestamps in a shape of its own.
-		putTime(row, "created_at", tok.GetCreatedAt())
-		putTime(row, "last_used_at", tok.GetLastUsedAt())
-		putTime(row, "refresh_expires", tok.GetRefreshExpiresAt())
-		// The fixed-lifetime kind carries no refresh deadline, so its
-		// whole life is reported here instead. Exactly one of the two is
-		// ever set, and putTime omits the absent one -- so a credential
-		// with no deadline in this listing is one that never expires,
-		// rather than one whose deadline the CLI cannot state.
-		putTime(row, "expires", tok.GetExpiresAt())
-		out = append(out, row)
+		rows = append(rows, accountCredential{
+			ID:               tok.GetId(),
+			ClientID:         tok.GetClientId(),
+			ClientName:       tok.GetClientName(),
+			ClientVerified:   tok.GetClientVerified(),
+			InstallationName: tok.GetInstallationName(),
+			GrantedScopes:    tok.GetGrantedScopes(),
+			Current:          tok.GetCurrent(),
+			CreatedAt:        formatTime(tok.GetCreatedAt()),
+			LastUsedAt:       formatTime(tok.GetLastUsedAt()),
+			RefreshExpires:   formatTime(tok.GetRefreshExpiresAt()),
+			Expires:          formatTime(tok.GetExpiresAt()),
+		})
 	}
-	return control.EmitData(out)
+	return struct {
+		Credentials []accountCredential `json:"credentials"`
+	}{rows}, nil
 }
 
-// RunAuthStatus answers "can this machine still reach my account" -- a
+// accountCredential is one credential that can reach the account.
+type accountCredential struct {
+	ID               string   `json:"id" table:"ID,short"`
+	ClientID         string   `json:"client_id"`
+	ClientName       string   `json:"client_name" table:"APP"`
+	ClientVerified   bool     `json:"client_verified"`
+	InstallationName string   `json:"installation_name" table:"DEVICE"`
+	GrantedScopes    []string `json:"granted_scopes"`
+	// Current is true for the credential THIS command uses, so an operator
+	// does not revoke the device they work from.
+	Current    bool   `json:"current" table:"CURRENT"`
+	CreatedAt  string `json:"created_at,omitempty"`
+	LastUsedAt string `json:"last_used_at,omitempty" table:"LAST USED"`
+	// RefreshExpires and Expires: the fixed-lifetime kind carries no
+	// refresh deadline, so its whole life is reported in Expires instead.
+	// Exactly one of the two is ever set, so a credential with neither is
+	// one that never expires.
+	RefreshExpires string `json:"refresh_expires,omitempty"`
+	Expires        string `json:"expires,omitempty"`
+}
+
+// authStatus is the result of `auth status`.
+type authStatus struct {
+	HubURL   string `json:"hub_url"`
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	IsAdmin  *bool  `json:"is_admin,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	TokenID  string `json:"token_id,omitempty"`
+	// Expired reports the access token, which renews itself.
+	Expired bool   `json:"expired"`
+	Expires string `json:"expires,omitempty"`
+	// RefreshExpires is the deadline that actually sends the user back to
+	// a browser. It is empty on a credential written before the hub
+	// reported it.
+	RefreshExpires string `json:"refresh_expires,omitempty"`
+	// HubChecked is false when the hub could not confirm the credential;
+	// Warning then states what was not verified.
+	HubChecked bool   `json:"hub_checked"`
+	Warning    string `json:"warning,omitempty"`
+}
+
+// runAuthStatus answers "can this machine still reach my account" -- a
 // question about the HUB's truth, not the credential file's. The file's own
 // fields print either way, and one authenticated GetCurrentUser confirms
 // them: confirmed answers carry the hub's username and admin flag, a refusal
 // is a signed-out state (the rotation the interceptor attempts has already
 // deleted the file), and an unreachable hub keeps the local answer useful
 // with a warning that states exactly what was not verified.
-func RunAuthStatus(rawCtx any, args []string) error {
-	hub, err := parseHubOnly(rawCtx, args, nil)
+func runAuthStatus(inv *cli.Invocation) (any, error) {
+	hub, err := hubURLFor(inv)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	creds, err := control.LoadCredentials(hub)
 	if err != nil {
-		return control.EmitErrorWith("not_logged_in", err)
+		return nil, err
 	}
-	status := map[string]any{
-		"hub_url": creds.HubURL,
-		"user_id": creds.UserID,
-		// The file's zone is wherever it was written; printed UTC so every
-		// timestamp in a CLI envelope ends in Z (see putWallTime).
-		"expired": time.Now().After(creds.ExpiresAt),
-		// The access token above renews itself; this is the deadline that
-		// actually sends the user back to a browser.
-		"scope":    creds.Scope,
-		"token_id": creds.TokenID,
+	status := authStatus{
+		HubURL:         creds.HubURL,
+		UserID:         creds.UserID,
+		Scope:          creds.Scope,
+		TokenID:        creds.TokenID,
+		Expired:        time.Now().After(creds.ExpiresAt),
+		Expires:        formatWallTime(creds.ExpiresAt),
+		RefreshExpires: formatWallTime(creds.RefreshExpiresAt),
 	}
-	putWallTime(status, "expires", creds.ExpiresAt)
-	// Included only when the credential carries one: the field is zero on a
-	// credential written before the hub reported it, and putWallTime's own
-	// zero guard keeps "0001-01-01T00:00:00.000Z" -- a nonsense date on the
-	// one deadline a reader acts on -- out of the JSON envelope.
-	putWallTime(status, "refresh_expires", creds.RefreshExpiresAt)
 
 	/*
 		THE HUB CHECK. The fields above are this machine's credential file,
@@ -584,31 +590,29 @@ func RunAuthStatus(rawCtx any, args []string) error {
 		  - refused: the credential opens nothing. The interceptor's refresh
 		    already deleted the file on an invalid_grant, so not_logged_in is
 		    the honest code, with the hub's reason attached;
-			  - unreachable: the hub could not be asked, so the local file is
-			    stated with a warning rather than failing -- status must stay
-			    useful offline, and the warning states exactly what was not
-			    verified.
+		  - unreachable: the hub could not be asked, so the local file is
+		    stated with a warning rather than failing -- status must stay
+		    useful offline, and the warning states exactly what was not
+		    verified.
 	*/
 	c, err := control.NewClient(hub)
 	if err != nil {
-		return control.EmitErrorWith("not_logged_in", err)
+		return nil, err
 	}
 	user, warning, outcome, err := hubCheck(c)
 	switch outcome {
-	case hubCheckRefused:
-		return control.EmitErrorWith("not_logged_in", err)
-	case hubCheckFailed:
-		return control.EmitErrorWith("rpc_failed", err)
+	case hubCheckRefused, hubCheckFailed:
+		return nil, err
 	case hubCheckLocalFallback:
-		status["hub_checked"] = false
-		status["username"] = creds.Username
-		status["warning"] = warning
+		status.Username = creds.Username
+		status.Warning = warning
 	default:
-		status["hub_checked"] = true
-		status["username"] = user.GetUsername()
-		status["is_admin"] = user.GetIsAdmin()
+		isAdmin := user.GetIsAdmin()
+		status.HubChecked = true
+		status.Username = user.GetUsername()
+		status.IsAdmin = &isAdmin
 	}
-	return control.EmitData(status)
+	return status, nil
 }
 
 // disconnectInPreferences identifies the one place a user revokes a credential
@@ -705,7 +709,8 @@ func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome 
 		return me.GetSessionReport().GetUser(), "", hubCheckConfirmed, nil
 	case hubRefusedCredential(callErr):
 		return nil, "", hubCheckRefused,
-			fmt.Errorf("the hub refused this credential: %w", callErr)
+			cli.Wrap(cli.CodeNotLoggedIn, callErr, "the hub refused this credential").
+				WithHint(`run "leapmux control auth login --hub %s" to sign in again`, c.HubURL)
 	case connect.CodeOf(callErr) == connect.CodePermissionDenied:
 		return nil, "this credential lacks the account:read permission, so the hub could not confirm it; " +
 			hubUnconfirmedTail, hubCheckLocalFallback, nil

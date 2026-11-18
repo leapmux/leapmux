@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
@@ -179,9 +180,45 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 		return h.answerGetWorker(payload)
 	case procedure == leapmuxv1connect.WorkerManagementServiceListWorkersProcedure && h.listWorkerPages != nil:
 		return h.answerWorkerPage(payload)
+	// The list calls that resolve a short target. They answer from the same
+	// rows that the lookups above serve, so a test that gives a short id
+	// resolves it the way the CLI resolves a prefix.
+	case procedure == leapmuxv1connect.WorkerManagementServiceListWorkersProcedure && h.workers != nil:
+		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: h.workers, Page: &leapmuxv1.PageResponse{}})
+	case procedure == leapmuxv1connect.WorkspaceServiceListTabsProcedure && (h.locateTab != nil || h.materialized != nil):
+		return proto.Marshal(&leapmuxv1.ListTabsResponse{Tabs: h.listedTabs()})
 	default:
 		return nil, connect.NewError(connect.CodePermissionDenied, "delegation token cannot call this procedure: "+procedure)
 	}
+}
+
+// listedTabs is what ListTabs answers: the tab that LocateTab serves, and
+// every live tab of the snapshot, in workspace ws-1.
+func (h *recordingHub) listedTabs() []*leapmuxv1.WorkspaceTab {
+	var out []*leapmuxv1.WorkspaceTab
+	seen := map[string]bool{}
+	if h.locateTab != nil {
+		out = append(out, h.locateTab)
+		seen[h.locateTab.GetTab().GetTabId()] = true
+	}
+	for id, rec := range h.materialized.GetTabs() {
+		if seen[id] || rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
+			continue
+		}
+		workerID := rec.GetWorkerId().GetValue()
+		if workerID == "" {
+			// The hub places every tab on a worker. A snapshot that leaves the
+			// register unset means the spawn's own worker.
+			workerID = "worker-A"
+		}
+		out = append(out, &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: rec.GetTabType(), TabId: id},
+			TileId:      rec.GetTileId().GetValue(),
+			WorkerId:    workerID,
+			WorkspaceId: "ws-1",
+		})
+	}
+	return out
 }
 
 // answerGetWorker serves the row of workers whose id the request carries, and

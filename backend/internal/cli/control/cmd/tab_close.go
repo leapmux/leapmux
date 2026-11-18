@@ -9,16 +9,15 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
-// RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
+// runTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
 // worker-side teardown (CloseTab).
 // The hub's remove-wins semantics mean the tab id is dead afterward;
-// recreating at the UI level mints a fresh id. The resolver derives
-// workspace + tab-type from --tab-id when only the id is given.
+// recreating at the UI level mints a fresh id.
 //
 // --worktree governs what happens to a tab's git worktree when this
 // is the last tab on that worktree (mirrors the frontend's last-tab
@@ -31,8 +30,8 @@ import (
 //
 // When `tab close` would be a last-tab close for a worktree, OR the
 // last tab on a non-worktree branch that still has uncommitted /
-// unpushed changes, --worktree is REQUIRED — omitting it fails with
-// invalid_request. This mirrors the frontend's forced-choice dialog:
+// unpushed changes, --worktree is REQUIRED — omitting it fails as a
+// usage error. This mirrors the frontend's forced-choice dialog:
 // the worker doesn't pick a default, so neither does the CLI. It
 // applies to file tabs too: a file tab holds a worktree open and sits
 // on a branch exactly like the other two types do.
@@ -43,70 +42,85 @@ import (
 // worktree_removal_blocked_reason handling below.
 //
 // Closing the calling tab itself kills its PTY mid-response, so
-// `guardTabClose` rejects that case unless --force is supplied.
-func RunTabClose(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, worktree string
-	var force, allowBusy bool
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.BoolVar(&force, "force", false, "close even if the target is the calling tab (would kill the caller's own PTY)")
-	fs.StringVar(&worktree, "worktree", "", `worktree disposition: "keep" / "push" / "discard". Required when this is the last tab for a worktree, or the last tab on a non-worktree branch with uncommitted / unpushed changes.`)
-	fs.BoolVar(&allowBusy, "allow-busy", false, allowBusyFlagHelp)
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	wt, err := parseTabCloseWorktree(worktree)
+// `guardTabClose` rejects that case unless --allow-self is supplied.
+func runTabClose(inv *cli.Invocation) (any, error) {
+	wt, err := parseTabCloseWorktree(stringFlag(inv, "worktree"))
 	if err != nil {
-		return control.EmitError("invalid_request", err.Error())
+		return nil, err
 	}
-	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, WorkerID: true, Want: resolve.Wants{TabType: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		if err := guardTabClose(got.TabID, force); err != nil {
-			return err
-		}
-		tt := got.TabType
-		if tt == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-			return control.EmitError("invalid_request", "could not determine tab type for "+got.TabID+"; pass --tab-type explicitly")
-		}
-		cc, err := openCRDTCall(hub, got.WorkspaceID)
-		if err != nil {
-			return err
-		}
-		defer cc.close()
-		if err := preflightTab(cc.bs.State, got.WorkspaceID, got.TabID, tt); err != nil {
-			return err
-		}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	got, err := s.resolveTab(resolve.KindTab, inv.Arg("tab"), resolve.Need{WorkspaceID: true, WorkerID: true, Want: resolve.Wants{TabType: true}})
+	if err != nil {
+		return nil, err
+	}
+	if err := guardTabClose(got.ID, boolFlag(inv, allowSelfFlag)); err != nil {
+		return nil, err
+	}
+	if got.Type == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+		return nil, cli.Newf(cli.CodeNotFound, "the hub reports no type for tab %s", got.ID)
+	}
+	cc, err := s.openCRDT(got.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := preflightTab(cc.bs.State, got.WorkspaceID, got.ID, got.Type); err != nil {
+		return nil, err
+	}
 
-		// `tab close` issues up to three inner-RPCs against the SAME worker --
-		// InspectLastTabClose, an optional PushBranch, and the
-		// CloseTab teardown -- with the CRDT
-		// tombstone in between. Hoisting one Noise_NK channel over the sequence
-		// pays the handshake once rather than per call.
-		//
-		// Opening is best-effort on purpose: a failure must not abort the
-		// close, because a tab whose worker is gone still has to be
-		// tombstoneable. withBestEffortWorkerChannel falls back to opening per
-		// call, which reproduces the exact channel_open_failed code this
-		// command's unreachable-worker fallback keys on.
-		//
-		// The whole close runs inside the body, because the channel closes when
-		// the body returns. Each error of the close is already an envelope.
-		return withBestEffortWorkerChannel(ctx, c, got.WorkerID, func(w workerCall) error {
-			return closeTabOnWorker(ctx, w, cc, got, wt, allowBusy)
-		})
+	// `tab close` issues up to three inner-RPCs against the SAME worker --
+	// InspectLastTabClose, an optional PushBranch, and the
+	// CloseTab teardown -- with the CRDT
+	// tombstone in between. Hoisting one Noise_NK channel over the sequence
+	// pays the handshake once rather than per call.
+	//
+	// Opening is best-effort on purpose: a failure must not abort the
+	// close, because a tab whose worker is gone still has to be
+	// tombstoneable. withBestEffortWorkerChannel falls back to opening per
+	// call, which reproduces the exact channel_open_failed code this
+	// command's unreachable-worker fallback keys on.
+	//
+	// The whole close runs inside the body, because the channel closes when
+	// the body returns.
+	var result *tabCloseResult
+	err = withBestEffortWorkerChannel(s.ctx, s.c, got.WorkerID, func(w workerCall) error {
+		var err error
+		result, err = closeTabOnWorker(s.ctx, w, cc, got, wt, boolFlag(inv, "allow-busy"))
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
-// closeTabOnWorker runs the close from the inspect to the final envelope, and
-// it makes every worker call on w. Every error that it returns is an envelope
-// that it already printed.
+// tabCloseResult is the result of `tab close`.
+type tabCloseResult struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Tombstoned bool   `json:"tombstoned"`
+	Worktree   string `json:"worktree,omitempty"`
+	// BusyOverride is true when --allow-busy suppressed a refusal, so a
+	// script can tell "closed an idle tab" from "closed over running
+	// work".
+	BusyOverride       bool     `json:"busy_override,omitempty"`
+	InspectHint        string   `json:"inspect_hint,omitempty"`
+	WorkerCloseError   string   `json:"worker_close_error,omitempty"`
+	ClosedSubagentIDs  []string `json:"closed_subagent_ids,omitempty"`
+	SubagentCloseError string   `json:"subagent_close_error,omitempty"`
+}
+
+// closeTabOnWorker runs the close from the inspect to the result, and it
+// makes every worker call on w.
 //
 // w is valid only inside the body of withBestEffortWorkerChannel, which closes
 // the shared channel when it returns. A parameter keeps each use inside that
 // body, where a variable outside the body would allow a call after the close.
-func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resolve.Resolved, wt tabCloseWorktree, allowBusy bool) error {
-	tt := got.TabType
+func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got tabTarget, wt tabCloseWorktree, allowBusy bool) (*tabCloseResult, error) {
+	tt := got.Type
 	callWorker := func(method string, in, out proto.Message) error {
 		return w.Call(ctx, method, in, out)
 	}
@@ -119,20 +133,20 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resol
 	// forced --worktree choice the UI puts in front of the same close.
 	worktreeAction := wt.worktreeAction()
 	var inspectHint string
-	inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.TabID)
+	inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.ID)
 	if ierr != nil {
 		// Worker unreachable / not found is the same fallback the
 		// frontend uses: skip the dialog, proceed with implicit
 		// KEEP. The CRDT tombstone still runs and the worker's
 		// reconciler eventually catches up.
 		if !isWorkerUnreachable(ierr) {
-			return control.EmitErrorWith("inspect_failed", ierr)
+			return nil, ierr
 		}
 	}
 
 	// Refuse an ineligible discard before the tombstone, even when no dialog applies.
 	if msg := discardRefusalMessage(wt, inspected); msg != "" {
-		return control.EmitError("invalid_request", msg)
+		return nil, cli.Usagef("%s", msg)
 	}
 
 	// Busy-tab gate, BEFORE the tombstone for the same reason the discard
@@ -148,9 +162,9 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resol
 	// the busy probe would only spend two more round trips to learn the same
 	// thing, and it fails open regardless.
 	if ierr == nil && !inspected.GetShouldPrompt() {
-		if busy := inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.TabID}}); len(busy) > 0 {
+		if busy := inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.ID}}); len(busy) > 0 {
 			if !allowBusy {
-				return errTabBusyRefused(busy)
+				return nil, errTabBusyRefused(busy)
 			}
 			busyOverridden = true
 		}
@@ -158,14 +172,14 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resol
 
 	if inspected.GetShouldPrompt() {
 		if wt == closeWorktreeUnspecified {
-			return control.EmitError("invalid_request", lastTabPromptMessage(inspected))
+			return nil, lastTabPromptError(inspected)
 		}
 		if wt == closeWorktreePush {
 			if !inspected.GetGitState().GetCanPush() {
-				return control.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
+				return nil, cli.Usagef("cannot push: %s", pushBlockedReason(inspected))
 			}
 			if err := callWorker(leapmuxv1connect.WorkerGitServicePushBranchProcedure, &leapmuxv1.PushBranchRequest{WorkingDir: inspected.GetWorkingDir()}, &leapmuxv1.PushBranchResponse{}); err != nil {
-				return emitInnerRPCError(err)
+				return nil, err
 			}
 		}
 	}
@@ -176,8 +190,8 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resol
 	// generated getter on a nil message answers the zero value.
 	inspectHint = inspected.GetErrorHint()
 
-	if err := cc.submitOps(closeBatchOps(cc.bs, tt, got.TabID, inspected.GetDescendantAgentIds())); err != nil {
-		return err
+	if err := cc.submitOps(closeBatchOps(cc.bs, tt, got.ID, inspected.GetDescendantAgentIds())); err != nil {
+		return nil, err
 	}
 
 	// Worker-side teardown. Mirrors useTabOperations.handleTabClose:
@@ -186,7 +200,7 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resol
 	// worktree removal). callInnerRPC failures are demoted to envelope
 	// fields so the user sees both the close success and the cleanup
 	// outcome.
-	subagents, closeErr := dispatchWorkerClose(callWorker, got, tt, worktreeAction)
+	subagents, closeErr := dispatchWorkerClose(callWorker, got.WorkerID, got.ID, tt, worktreeAction)
 
 	// Anything the inspect did not already cover. The worker reads the tree
 	// again AFTER its teardown, so this catches a subagent the provider
@@ -202,40 +216,30 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resol
 	// completed close into a command failure. It is reported instead.
 	var subagentErr error
 	if ops := subagentTombstoneOps(cc.bs, exceptAlreadySubmitted(subagents, inspected.GetDescendantAgentIds())); len(ops) > 0 {
-		// trySubmitOps, not submitOps: the emitting variant would print an
-		// error envelope over the success this command already earned.
-		// It reports a rejection as an error too, so one branch covers both.
+		// The close already succeeded, so a failure here is a field of the
+		// result, not the command's error. trySubmitOps reports a rejection
+		// as an error too, so one branch covers both.
 		if _, _, err := cc.trySubmitOps(ops); err != nil {
 			subagentErr = err
 		}
 	}
 
-	out := map[string]any{
-		"tab_id":     got.TabID,
-		"tab_type":   tabTypeName(got.TabType),
-		"tombstoned": true,
-	}
-	if wt != closeWorktreeUnspecified {
-		out["worktree"] = string(wt)
-	}
-	// Reported only when the flag actually suppressed a refusal, so a script
-	// can tell "closed an idle tab" from "closed over running work".
-	if busyOverridden {
-		out["busy_override"] = true
-	}
-	if inspectHint != "" {
-		out["inspect_hint"] = inspectHint
+	out := &tabCloseResult{
+		ID:                got.ID,
+		Type:              tabTypeName(got.Type),
+		Tombstoned:        true,
+		Worktree:          string(wt),
+		BusyOverride:      busyOverridden,
+		InspectHint:       inspectHint,
+		ClosedSubagentIDs: subagents,
 	}
 	if closeErr != nil {
-		out["worker_close_error"] = closeErr.Error()
-	}
-	if len(subagents) > 0 {
-		out["closed_subagent_tab_ids"] = subagents
+		out.WorkerCloseError = closeErr.Error()
 	}
 	if subagentErr != nil {
-		out["subagent_close_error"] = subagentErr.Error()
+		out.SubagentCloseError = subagentErr.Error()
 	}
-	return control.EmitData(out)
+	return out, nil
 }
 
 // tabCloseWorktree is the parsed --worktree flag. Unspecified is
@@ -261,9 +265,9 @@ func parseTabCloseWorktree(s string) (tabCloseWorktree, error) {
 	if s == "" {
 		return closeWorktreeUnspecified, nil
 	}
-	v, ok := parseEnumFlag(s, tabCloseWorktreeMap)
+	v, ok := tabCloseWorktreeMap[s]
 	if !ok {
-		return closeWorktreeUnspecified, fmt.Errorf(`--worktree must be one of "keep", "push", "discard"; got %q`, s)
+		return closeWorktreeUnspecified, cli.Usagef(`--worktree must be one of "keep", "push", "discard"; got %q`, s)
 	}
 	return v, nil
 }
@@ -295,8 +299,18 @@ func inspectLastTabCloseBest(call workerCaller, tabType leapmuxv1.TabType, tabID
 	return resp, nil
 }
 
-// lastTabPromptMessage builds the "must pass --worktree" error so the
-// user sees exactly what state the close would lose. Mirrors the
+// lastTabPromptError builds the "must pass --worktree" error so the user
+// sees exactly what state the close would lose.
+func lastTabPromptError(r *leapmuxv1.InspectLastTabCloseResponse) error {
+	choices := "keep|push"
+	if r.GetTarget() == leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE {
+		choices += "|discard"
+	}
+	return cli.Usagef("%s", lastTabPromptMessage(r)).
+		WithHint("pass --worktree=%s to say what happens to it", choices)
+}
+
+// lastTabPromptMessage describes what the close would lose. Mirrors the
 // frontend dialog body: worktree path / branch name / diff stats /
 // unpushed commit count, in plain text.
 func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
@@ -330,10 +344,6 @@ func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
 		b.WriteString(" (")
 		b.WriteString(strings.Join(details, ", "))
 		b.WriteString(")")
-	}
-	b.WriteString(`; pass --worktree=keep|push`)
-	if r.GetTarget() == leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE {
-		b.WriteString(`|discard`)
 	}
 	return b.String()
 }
@@ -450,8 +460,8 @@ func subagentTombstoneOps(bs *CRDTBootstrap, subagentIDs []string) []*leapmuxv1.
 
 // Returns the subagent tabs the close retired underneath an AGENT tab, so the
 // caller can tombstone them in the same command. Empty for every other type.
-func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.TabType, action leapmuxv1.WorktreeAction) ([]string, error) {
-	if got.WorkerID == "" {
+func dispatchWorkerClose(call workerCaller, workerID, tabID string, tt leapmuxv1.TabType, action leapmuxv1.WorktreeAction) ([]string, error) {
+	if workerID == "" {
 		return nil, nil
 	}
 	// One RPC for every tab type. A FILE or IMAGE tab DOES have a worker-side
@@ -464,7 +474,7 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 	resp := &leapmuxv1.CloseTabResponse{}
 	if err := call(leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
 		&leapmuxv1.CloseTabRequest{
-			Tab:            &leapmuxv1.TabIdent{TabType: tt, TabId: got.TabID},
+			Tab:            &leapmuxv1.TabIdent{TabType: tt, TabId: tabID},
 			WorktreeAction: action,
 		},
 		resp); err != nil {

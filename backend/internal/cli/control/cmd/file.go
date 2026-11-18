@@ -1,161 +1,194 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/cli"
 )
 
 // readLimitUsage is the help text of the --limit flag of `file read` and
 // `git read`. scripts/generate-contracts.mjs keeps the default a whole number
 // of KiB, so the division drops nothing.
-var readLimitUsage = fmt.Sprintf("max bytes (0 = default %d KiB)", contracts.FileReadLimitBytes/1024)
+var readLimitUsage = fmt.Sprintf("the most bytes to read (0 reads the default of %d KiB)", contracts.FileReadLimitBytes/1024)
 
-// resolveWorker is shared by file / git handlers: bind the universal
-// entity flag set and run the resolver to derive the worker id from
-// whichever subset of --tab-id / --worker-id / --workspace-id /
-// --tile-id the caller supplied. Returns the resolved worker plus the
-// client so the call sites can dispatch the worker-bound inner RPC.
-//
-// Scripts can pass --tab-id <agent> on `file list` to scan the
-// directory of the worker hosting that agent — no manual worker
-// lookup required.
-func resolveWorker(hub string, in resolve.Inputs) (*control.Client, string, error) {
-	c, err := requireClient(hub)
-	if err != nil {
-		return nil, "", err
-	}
-	ctx, cancel := rpcDeadline(context.Background())
-	defer cancel()
-	got, err := runResolve(ctx, c, resolve.Need{WorkerID: true}, in)
-	if err != nil {
-		return nil, "", err
-	}
-	return c, got.WorkerID, nil
+func newFileCommand() *cobra.Command {
+	return cli.Group("file", "Read the files of a worker, and open them in tabs",
+		cli.NewLeaf(cli.Leaf{
+			Use:   "list <path>",
+			Short: "List a directory",
+			Examples: []cli.Example{
+				{Command: "leapmux control file list ~/src/app"},
+				{Comment: "List only the directories, and every directory from the home directory down.", Command: "leapmux control file list ~/src/app --dirs-only --from-root ~"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Int("max-depth", 0, "merge a chain of directories that each hold one directory, up to this depth")
+				fs.Bool("dirs-only", false, "list only directories")
+				fs.String("from-root", "", "also list every directory from this ancestor down to <path>")
+				addWorkerFlag(fs)
+			},
+			Run: runFileList,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "read <path>",
+			Short: "Print a file",
+			Examples: []cli.Example{
+				{Command: "leapmux control file read ~/src/app/go.mod"},
+				{Comment: "Read 4 KiB from byte 1024.", Command: "leapmux control file read ~/src/app/log.txt --offset 1024 --limit 4096"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Int64("offset", 0, "the byte to start at")
+				fs.Int64("limit", 0, readLimitUsage)
+				addWorkerFlag(fs)
+			},
+			Run: runFileRead,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "stat <path>",
+			Short: "Show a file's size, time and permissions",
+			Examples: []cli.Example{
+				{Command: "leapmux control file stat ~/src/app/go.mod"},
+			},
+			Flags: addWorkerFlag,
+			Run:   runFileStat,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "roots",
+			Short: "List the filesystem roots of a worker",
+			Examples: []cli.Example{
+				{Command: "leapmux control file roots"},
+			},
+			Flags: addWorkerFlag,
+			Run:   runFileRoots,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "open <path>",
+			Mutates: true,
+			Short:   "Open a file in a new tab",
+			Examples: []cli.Example{
+				{Command: "leapmux control file open ~/src/app/README.md"},
+				{Comment: "Open a file as its staged diff.", Command: "leapmux control file open ~/src/app/main.go --view-mode unified_diff"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("display-mode", "", "how a document shows at first")
+				cli.SetEnum(fs, "display-mode", enumTokens(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED)...)
+				fs.String("view-mode", "", "which version of the file shows at first")
+				cli.SetEnum(fs, "view-mode", enumTokens(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED)...)
+				addWorkingDirFlag(fs, "the git context of the tab; outside a LeapMux tab, the directory of the file")
+				addPlacementFlags(fs)
+			},
+			Run: runFileOpen,
+		}),
+	)
 }
 
-func RunFileList(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	f := bindPathCmd(cmd, false, "path to list (required)")
-	var maxDepth int
-	var dirsOnly bool
-	var fromRoot string
-	f.FS.IntVar(&maxDepth, "max-depth", 0, "merge single-child directories up to depth")
-	f.FS.BoolVar(&dirsOnly, "dirs-only", false, "directories only")
-	f.FS.StringVar(&fromRoot, "from-root", "", "also list every directory from this ancestor down to --path")
-	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
-		return err
+// fileInfo is one file or directory in a result.
+type fileInfo struct {
+	Name        string `json:"name" table:"NAME"`
+	Path        string `json:"path"`
+	IsDir       bool   `json:"is_dir" table:"DIR"`
+	Size        int64  `json:"size" table:"SIZE"`
+	ModTime     string `json:"mod_time,omitempty" table:"MODIFIED"`
+	Permissions string `json:"permissions,omitempty" table:"MODE"`
+	Hidden      bool   `json:"hidden,omitempty"`
+}
+
+func fileInfoOf(f *leapmuxv1.FileInfo) fileInfo {
+	return fileInfo{
+		Name:        f.GetName(),
+		Path:        f.GetPath(),
+		IsDir:       f.GetIsDir(),
+		Size:        f.GetSize(),
+		ModTime:     f.GetModTime(),
+		Permissions: f.GetPermissions(),
+		Hidden:      f.GetHidden(),
 	}
-	if err := f.Require(""); err != nil {
-		return err
-	}
-	c, workerID, err := resolveWorker(f.Hub, f.In)
+}
+
+// directoryListing is one listed directory. A list result holds one
+// listing per directory, even without --from-root, so a script does not
+// branch on which flags it passed.
+type directoryListing struct {
+	Path string `json:"path"`
+	// Truncated and TotalEntries print even when false and zero, so a
+	// script that reads them gets a value, never null.
+	Truncated    bool       `json:"truncated"`
+	TotalEntries int32      `json:"total_entries"`
+	Entries      []fileInfo `json:"entries"`
+}
+
+// fileListResult is the result of `file list`.
+type fileListResult struct {
+	Listings []directoryListing `json:"listings"`
+}
+
+func runFileList(inv *cli.Invocation) (any, error) {
+	maxDepth, err := inv.Command.Flags().GetInt("max-depth")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var resp leapmuxv1.ListDirectoryResponse
-	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure,
-		&leapmuxv1.ListDirectoryRequest{
-			Path:     f.Path,
-			MaxDepth: int32(maxDepth),
-			DirsOnly: dirsOnly,
-			FromRoot: fromRoot,
-		}, &resp,
-		// A list, even without --from-root, where it holds one entry. One
-		// output shape means a script does not branch on which flags it
-		// passed.
-		//
-		// Shaped by hand rather than emitted as the proto: the generated
-		// struct tags carry `omitempty`, and `encoding/json` then drops
-		// `truncated` for every listing that is not truncated and
-		// `total_entries` for every empty directory. A script reading
-		// `.truncated` would get null where false belongs.
-		func() any {
-			listings := make([]map[string]any, 0, len(resp.GetListings()))
-			for _, l := range resp.GetListings() {
-				listings = append(listings, map[string]any{
-					"path":          l.GetPath(),
-					"entries":       l.GetEntries(),
-					"truncated":     l.GetTruncated(),
-					"total_entries": l.GetTotalEntries(),
-				})
-			}
-			return map[string]any{"listings": listings}
-		})
+	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
+		Path:     inv.Arg("path"),
+		MaxDepth: clampInt32(maxDepth),
+		DirsOnly: boolFlag(inv, "dirs-only"),
+		FromRoot: stringFlag(inv, "from-root"),
+	}, &resp); err != nil {
+		return nil, err
+	}
+	out := fileListResult{Listings: make([]directoryListing, 0, len(resp.GetListings()))}
+	for _, l := range resp.GetListings() {
+		entries := make([]fileInfo, 0, len(l.GetEntries()))
+		for _, e := range l.GetEntries() {
+			entries = append(entries, fileInfoOf(e))
+		}
+		out.Listings = append(out.Listings, directoryListing{Path: l.GetPath(), Truncated: l.GetTruncated(), TotalEntries: l.GetTotalEntries(), Entries: entries})
+	}
+	return out, nil
 }
 
-// RunFileRoots prints the worker's filesystem roots: ["/"] on POSIX, the drive
-// roots on Windows.
-//
-// It cannot use bindPathCmd, which requires --path. This command asks about
-// the machine, not about a path.
-func RunFileRoots(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
-	}
-	c, workerID, err := resolveWorker(hub, in)
-	if err != nil {
-		return err
-	}
+// rootList is the result of `file roots`: ["/"] on POSIX, the drive roots
+// on Windows.
+type rootList struct {
+	Roots []string `json:"roots"`
+}
+
+func runFileRoots(inv *cli.Invocation) (any, error) {
 	var resp leapmuxv1.ListFilesystemRootsResponse
-	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure,
-		&leapmuxv1.ListFilesystemRootsRequest{}, &resp,
-		func() any { return map[string]any{"roots": resp.GetRoots()} })
+	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure, &leapmuxv1.ListFilesystemRootsRequest{}, &resp); err != nil {
+		return nil, err
+	}
+	return rootList{Roots: resp.GetRoots()}, nil
 }
 
-func RunFileRead(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	f := bindPathCmd(cmd, false, "path to read (required)")
-	var offset, limit int64
-	f.FS.Int64Var(&offset, "offset", 0, "byte offset")
-	f.FS.Int64Var(&limit, "limit", 0, readLimitUsage)
-	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
-		return err
-	}
-	if err := f.Require(""); err != nil {
-		return err
-	}
-	c, workerID, err := resolveWorker(f.Hub, f.In)
+func runFileRead(inv *cli.Invocation) (any, error) {
+	offset, err := inv.Command.Flags().GetInt64("offset")
 	if err != nil {
-		return err
+		return nil, err
+	}
+	limit, err := inv.Command.Flags().GetInt64("limit")
+	if err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, cli.Usagef("--offset must not be negative")
 	}
 	var resp leapmuxv1.ReadFileResponse
-	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceReadFileProcedure,
-		&leapmuxv1.ReadFileRequest{Path: f.Path, Offset: offset, Limit: limit}, &resp,
-		func() any {
-			return map[string]any{
-				"path":       resp.GetPath(),
-				"total_size": resp.GetTotalSize(),
-				"content":    string(resp.GetContent()),
-			}
-		})
+	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{Path: inv.Arg("path"), Offset: offset, Limit: limit}, &resp); err != nil {
+		return nil, err
+	}
+	return fileContent{Path: resp.GetPath(), TotalSize: resp.GetTotalSize(), ModTime: resp.GetModTime(), Content: string(resp.GetContent())}, nil
 }
 
-func RunFileStat(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	f := bindPathCmd(cmd, false, "path to stat (required)")
-	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
-		return err
-	}
-	if err := f.Require(""); err != nil {
-		return err
-	}
-	c, workerID, err := resolveWorker(f.Hub, f.In)
-	if err != nil {
-		return err
-	}
+func runFileStat(inv *cli.Invocation) (any, error) {
 	var resp leapmuxv1.StatFileResponse
-	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceStatFileProcedure,
-		&leapmuxv1.StatFileRequest{Path: f.Path}, &resp,
-		func() any { return resp.GetInfo() })
+	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: inv.Arg("path")}, &resp); err != nil {
+		return nil, err
+	}
+	return fileInfoOf(resp.GetInfo()), nil
 }

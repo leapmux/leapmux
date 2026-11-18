@@ -12,9 +12,11 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/spf13/cobra"
 )
 
 // An admin call reports the hub's refusal VERBATIM, through
@@ -36,46 +38,50 @@ import (
 // CLI's own credential is the login flow's --scope flag, whose help states
 // it; a refusal is not the place to repeat it.
 
-// requireAdminClient is requireClient plus the admin exclusions: admin
+// requireAdminClient is newClient plus the admin exclusions: admin
 // commands NEVER use the worker-IPC transport. They talk to the hub
 // directly, because the worker's IPC bridge is a typing device, not a
 // security boundary — anything registered there is callable by any
 // worker-spawned agent, so no admin procedure is. Refusing the transport
 // here (and again on the client, in case the env var leaked in some other
 // way) keeps `control admin ...` out of agent reach entirely.
-func requireAdminClient(hubFlag string) (*control.Client, error) {
+//
+// The refusal holds even with an explicit --hub. That flag would send the
+// call with the user's stored credential for that hub, so an agent could
+// still act as an administrator.
+func requireAdminClient(inv *cli.Invocation) (*control.Client, error) {
 	if os.Getenv("LEAPMUX_CONTROL_SOCK") != "" {
-		return nil, control.EmitError("invalid_request",
-			"admin commands talk to the hub directly; unset LEAPMUX_CONTROL_SOCK (or pass --hub) to run them")
+		return nil, cli.Usagef("admin commands do not run inside a LeapMux tab").
+			WithHint("run the command in a shell outside LeapMux, or unset LEAPMUX_CONTROL_SOCK in this shell first")
 	}
-	// An empty address is not a hub. Without this the credential lookup
-	// answers `hub url missing hostname` under the not_logged_in code,
-	// which states neither the flag nor the variable that supplies one.
-	if hubFlag == "" {
-		return nil, control.EmitError("invalid_request",
-			"no hub address; pass --hub <url> or set LEAPMUX_HUB. For a hub that needs a credential, run `leapmux control auth login --hub <url>` first.")
+	// An empty address is not a hub. hubURLFor reports a *NoHubError, whose
+	// hints state the flag and the variable that supply one; building a
+	// client for the empty URL answered `hub url missing hostname` instead.
+	hub, err := hubURLFor(inv)
+	if err != nil {
+		return nil, err
 	}
 	// Anonymous fallback supports a solo hub's local IPC socket. A TCP address
 	// needs a session. The hub enforces the admin gate, so a credential-less
 	// call against any other connection answers unauthenticated.
-	c, err := control.NewClientOrAnonymous(hubFlag)
+	c, err := control.NewClientOrAnonymous(hub)
 	if err != nil {
-		return nil, control.EmitErrorWith("not_logged_in", err)
+		return nil, cli.Wrap(cli.CodeNotLoggedIn, err, "")
 	}
 	if c.IsWorkerIPC() {
-		return nil, control.EmitError("invalid_request",
-			"admin commands talk to the hub directly and cannot run over the worker IPC transport")
+		return nil, cli.Usagef("admin commands talk to the hub directly and cannot run over the worker IPC transport")
 	}
 	return c, nil
 }
 
-// requireFlag builds an adminVerbSpec.BeforeDial that refuses an empty
-// required flag, in one wording for every verb. It takes the address of
-// the flag variable, because the value arrives only at parse time.
-func requireFlag(value *string, name string) func(adminArgs) error {
-	return func(adminArgs) error {
+// argInto builds an adminVerbSpec.BeforeDial that copies the positional
+// argument name into value, and refuses an empty one. A verb body reads the
+// variable, as it reads a flag value.
+func argInto(value *string, name string) func(adminArgs) error {
+	return func(a adminArgs) error {
+		*value = strings.TrimSpace(a.Arg(name))
 		if *value == "" {
-			return control.EmitError("invalid_request", "--"+name+" is required")
+			return cli.Usagef("<%s> is empty", name)
 		}
 		return nil
 	}
@@ -96,8 +102,7 @@ const minListLimit = 1
 // for.
 func validateListLimit(limit int64) error {
 	if limit < minListLimit || limit > contracts.MaxPageLimit {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("limit must be between %d and %d", minListLimit, contracts.MaxPageLimit))
+		return cli.Usagef("limit must be between %d and %d", minListLimit, contracts.MaxPageLimit)
 	}
 	return nil
 }
@@ -176,13 +181,18 @@ func settingDescriptionText(key, summary string) string {
 	return summary
 }
 
-// RunAdminSettingsList implements `control admin settings list`.
-func RunAdminSettingsList(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
+// newAdminSettingsList builds `control admin settings list`.
+func newAdminSettingsList() *cobra.Command {
+	return adminLeaf(adminVerbSpec{
+		Use:   "list",
+		Short: "List every setting with its effective value",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin settings list"},
+		},
+		Run: func(c *control.Client, a adminArgs) error {
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return err
 			}
 			rows := make([]map[string]any, 0, len(resp.GetValues()))
 			byDescr := map[string]*leapmuxv1.SettingDescriptor{}
@@ -197,7 +207,7 @@ func RunAdminSettingsList(rawCtx any, args []string) error {
 				}
 				rows = append(rows, row)
 			}
-			return control.EmitData(rows)
+			return a.Result(map[string]any{"settings": rows})
 		},
 	})
 }
@@ -220,7 +230,7 @@ func parseSettingValue(raw string) (json.RawMessage, error) {
 		// accepts it), so the refusal states the two ways to reach it
 		// rather than reading as "this key takes no empty value".
 		return nil, errors.New(
-			"value is required; pass '\"\"' to store the empty string, or run `settings reset KEY` to restore the default")
+			`<value> is empty; pass '""' to store the empty string, or run "leapmux control admin settings reset <key>" to restore the default`)
 	}
 	// A value that OPENS a document is a document. Falling through a
 	// malformed one quoted it as a string, and the hub then answered with
@@ -252,16 +262,19 @@ func parseSettingValue(raw string) (json.RawMessage, error) {
 	return b, nil
 }
 
-// RunAdminSettingsGet implements `control admin settings get KEY`.
-func RunAdminSettingsGet(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Positionals: 1,
-		Usage:       "usage: leapmux control admin settings get KEY",
+// newAdminSettingsGet builds `control admin settings get KEY`.
+func newAdminSettingsGet() *cobra.Command {
+	return adminLeaf(adminVerbSpec{
+		Use:   "get <key>",
+		Short: "Show one setting, its value and its shape",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin settings get session_duration_seconds"},
+		},
 		Run: func(c *control.Client, a adminArgs) error {
 			key := a.Rest[0]
 			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return err
 			}
 			for _, v := range resp.GetValues() {
 				if v.GetKey() != key {
@@ -275,9 +288,9 @@ func RunAdminSettingsGet(rawCtx any, args []string) error {
 						out["value_schema"] = settingShapeFromDescriptor(d)
 					}
 				}
-				return control.EmitData(out)
+				return a.Result(out)
 			}
-			return control.EmitError("invalid_request", fmt.Sprintf("unknown setting key %q (see `leapmux control admin settings list`)", key))
+			return cli.Usagef("unknown setting key %q (see `leapmux control admin settings list`)", key)
 		},
 	})
 }
@@ -326,18 +339,23 @@ func settingShapeFromDescriptor(d *leapmuxv1.SettingDescriptor) string {
 	return shape
 }
 
-// RunAdminSettingsSet implements `control admin settings set KEY VALUE`.
-func RunAdminSettingsSet(rawCtx any, args []string) error {
+// newAdminSettingsSet builds `control admin settings set KEY VALUE`.
+func newAdminSettingsSet() *cobra.Command {
 	var value json.RawMessage
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Positionals: 2,
-		Usage:       "usage: leapmux control admin settings set KEY VALUE",
+	return adminLeaf(adminVerbSpec{
+		Use:   "set <key> <value>",
+		Short: "Set the public value of a setting from JSON or a bare value",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin settings set signup_enabled false"},
+			{Comment: "Set two fields of a setting that holds a document.", Command: `leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587}'`},
+		},
+		Mutates: true,
 		BeforeDial: func(a adminArgs) error {
 			// A malformed VALUE must answer with the value, not with a
 			// connection error, so the coercion runs before the dial.
 			parsed, err := parseSettingValue(a.Rest[1])
 			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
+				return cli.Wrap(cli.CodeUsage, err, "")
 			}
 			value = parsed
 			return nil
@@ -347,7 +365,7 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 				Key: a.Rest[0], PartialJson: string(value),
 			})
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return err
 			}
 			out := settingValueJSON(updated)
 			if updated.GetEffectiveJson() != updated.GetValueJson() {
@@ -358,16 +376,20 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 			// Reading it back through a second ListSettings serialized
 			// every registered key to learn one boolean.
 			addPropagation(out, restart)
-			return control.EmitData(out)
+			return a.Result(out)
 		},
 	})
 }
 
-// RunAdminSettingsSetSecret implements `control admin settings set-secret KEY JSON`.
-func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Positionals: 2,
-		Usage:       "usage: leapmux control admin settings set-secret KEY JSON",
+// newAdminSettingsSetSecret builds `control admin settings set-secret KEY JSON`.
+func newAdminSettingsSetSecret() *cobra.Command {
+	return adminLeaf(adminVerbSpec{
+		Use:   "set-secret <key> <json>",
+		Short: "Set the secret fields of a setting; the hub stores them encrypted",
+		Examples: []cli.Example{
+			{Command: `leapmux control admin settings set-secret smtp '{"password":"..."}'`},
+		},
+		Mutates: true,
 		BeforeDial: func(a adminArgs) error {
 			// A DOCUMENT test BEFORE the validity test. The secret half
 			// merges NAMED fields, so a bare scalar, an array, or a lone
@@ -378,8 +400,7 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 			// an array for an array-valued key.
 			raw := strings.TrimSpace(a.Rest[1])
 			if !strings.HasPrefix(raw, "{") || !json.Valid([]byte(raw)) {
-				return control.EmitError("invalid_request",
-					`VALUE must be a JSON document that specifies the secret fields, for example {"password":"..."}`)
+				return cli.Usagef(`<json> must be a JSON object of the secret fields, for example {"password":"..."}`)
 			}
 			return nil
 		},
@@ -388,28 +409,167 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 				Key: a.Rest[0], SecretPartialJson: a.Rest[1],
 			})
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return err
 			}
 			out := settingValueJSON(updated)
 			addPropagation(out, restart)
-			return control.EmitData(out)
+			return a.Result(out)
 		},
 	})
 }
 
-// RunAdminSettingsReset implements `control admin settings reset KEY`.
-func RunAdminSettingsReset(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Positionals: 1,
-		Usage:       "usage: leapmux control admin settings reset KEY",
+// newAdminSettingsReset builds `control admin settings reset KEY`.
+func newAdminSettingsReset() *cobra.Command {
+	return adminLeaf(adminVerbSpec{
+		Use:   "reset <key>",
+		Short: "Restore the default value of a setting",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin settings reset session_duration_seconds"},
+		},
+		Mutates: true,
 		Run: func(c *control.Client, a adminArgs) error {
 			value, restart, err := resetOneSetting(c, a.Rest[0])
 			if err != nil {
-				return control.EmitErrorWith("reset_failed", err)
+				return err
 			}
 			out := settingValueJSON(value)
 			addPropagation(out, restart)
-			return control.EmitData(out)
+			return a.Result(out)
 		},
 	})
+}
+
+// newAdminCommand builds `control admin`, the online, authenticated surface
+// of hub administration. These leaves call the Admin*Service RPCs directly
+// (never the worker-IPC bridge); the break-glass offline subset lives in
+// `leapmux recover`.
+func newAdminCommand() *cobra.Command {
+	admin := cli.Group("admin", "Administer the hub; needs an administrator's login (offline repair: \"leapmux recover\")",
+		cli.Group("settings", "Read and change the hub's settings: sign-in policy, SMTP, timeouts, limits",
+			newAdminSettingsList(),
+			newAdminSettingsGet(),
+			newAdminSettingsSet(),
+			newAdminSettingsSetSecret(),
+			newAdminSettingsReset(),
+		),
+		cli.Group("user", "Manage users",
+			newAdminUserList(),
+			newAdminUserGet(),
+			newAdminUserCreate(),
+			newAdminUserUpdate(),
+			newAdminUserDelete(),
+			newAdminUserSetAdmin(true, "grant-admin <user>", "Make a user an administrator",
+				[]cli.Example{{Command: "leapmux control admin user grant-admin alice"}}),
+			newAdminUserSetAdmin(false, "revoke-admin <user>", "Take a user's administrator access away",
+				[]cli.Example{{Command: "leapmux control admin user revoke-admin alice"}}),
+			newAdminUserResetPassword(),
+			newAdminUserListSessions(),
+		),
+		cli.Group("session", "List and revoke sign-in sessions",
+			newAdminSessionList(),
+			newAdminSessionRevoke(),
+			newAdminSessionRevokeUser(),
+			newAdminSessionPurgeExpired(),
+		),
+		cli.Group("worker", "Manage the workers of every user",
+			newAdminWorkerList(),
+			newAdminWorkerGet(),
+			newAdminWorkerDeregister(),
+			cli.Group("reg-key", "Manage worker registration keys",
+				newAdminWorkerRegKeyList(),
+				newAdminWorkerRegKeyRevoke(),
+				newAdminWorkerRegKeyPurgeExpired(),
+			),
+		),
+		// "app" is the OUTBOUND direction: a program this hub grants
+		// access to. The inbound direction -- an identity provider the
+		// hub signs users in WITH -- is `control admin idp`.
+		//
+		// The RPCs behind these verbs are NOT admin-only: an ordinary
+		// user registers an app for themself through the same ones in
+		// the preferences dialog, and ownership rather than a role
+		// decides what each caller sees. They live here because
+		// registering an app is an operator's job on a shared hub.
+		cli.Group("app", "Manage app registrations: what a consent screen authorizes",
+			newAdminAppList(),
+			newAdminAppRegister(),
+			newAdminAppUpdate(),
+			newAdminAppSetVerified(true, "verify <app>", "Vouch for an app, so that its consent screen stops warning",
+				[]cli.Example{{Command: "leapmux control admin app verify lmx_app_x1y2"}}),
+			newAdminAppSetVerified(false, "unverify <app>", "Withdraw a vouch for an app",
+				[]cli.Example{{Command: "leapmux control admin app unverify lmx_app_x1y2"}}),
+			newAdminAppSetElevation(true, "allow-elevation <app>", "Let an app ask a user to prove a factor again",
+				[]cli.Example{{Command: "leapmux control admin app allow-elevation lmx_app_x1y2"}}),
+			newAdminAppSetElevation(false, "deny-elevation <app>", "Take that permission away; every open elevation ends at the next call",
+				[]cli.Example{{Command: "leapmux control admin app deny-elevation lmx_app_x1y2"}}),
+			newAdminAppRevoke(),
+			newAdminAppDelete(),
+		),
+		// "idp" is the INBOUND direction: an identity provider the hub
+		// signs users in with. The outbound direction -- an app the hub
+		// grants access to -- is `control admin app`.
+		cli.Group("idp", "Manage the OAuth and OIDC providers that users sign in with",
+			newAdminOAuthProviderAdd(),
+			newAdminOAuthProviderList(),
+			newAdminOAuthProviderRemove(),
+			newAdminOAuthProviderSetEnabled(true, "enable <idp>", "Enable a sign-in provider",
+				[]cli.Example{{Command: "leapmux control admin idp enable 3hKd9s"}}),
+			newAdminOAuthProviderSetEnabled(false, "disable <idp>", "Disable a sign-in provider",
+				[]cli.Example{{Command: "leapmux control admin idp disable 3hKd9s"}}),
+		),
+		cli.Group("captcha", "Manage the bot protection: ALTCHA, reCAPTCHA v3 or Turnstile (a solo hub never asks)",
+			newAdminCaptchaShow(),
+			newAdminCaptchaSet(),
+			newAdminCaptchaSetEnabled(true, "enable", "Turn captcha verification on",
+				[]cli.Example{{Command: "leapmux control admin captcha enable"}}),
+			newAdminCaptchaSetEnabled(false, "disable", "Turn captcha verification off; the honeypot check stays",
+				[]cli.Example{{Command: "leapmux control admin captcha disable"}}),
+			newAdminCaptchaReset(),
+		),
+		cli.Group("rate-limit", "Manage the rate limit of each user operation",
+			newAdminRateLimitList(),
+			newAdminRateLimitSet(),
+			newAdminRateLimitSetEnabled(true, "enable <operation>", "Turn on the rate limit of an operation",
+				[]cli.Example{{Command: "leapmux control admin rate-limit enable elevation"}}),
+			newAdminRateLimitSetEnabled(false, "disable <operation>", "Turn off the rate limit of an operation",
+				[]cli.Example{{Command: "leapmux control admin rate-limit disable elevation"}}),
+			newAdminRateLimitReset(),
+		),
+		cli.Group("api-token", "Manage durable API tokens for scripts and integrations",
+			newAdminAPITokenList(),
+			newAdminAPITokenIssue(),
+			newAdminAPITokenRevoke(),
+		),
+		cli.Group("delegation-token", "Manage the delegation tokens that workers mint",
+			newAdminDelegationTokenList(),
+			newAdminDelegationTokenRevoke(),
+		),
+	)
+	cli.DescribeArgs(admin, adminArgHelp())
+	return admin
+}
+
+// adminArgHelp describes the arguments of the admin verbs. An admin verb
+// takes a full id, never a prefix or "self": it acts on the objects of every
+// user, so a short form could select an object that the operator did not
+// mean. The control tree describes its own targets after this, and a
+// description given here wins over that one.
+func adminArgHelp() map[string]string {
+	operations := make([]string, 0, len(ratelimit.KnownOperations()))
+	for _, op := range ratelimit.KnownOperations() {
+		operations = append(operations, string(op))
+	}
+	return map[string]string{
+		"user":      userArgHelp,
+		"worker":    `A worker id, as "leapmux control admin worker list" prints it.`,
+		"reg-key":   `A registration key id, as "leapmux control admin worker reg-key list" prints it.`,
+		"app":       `An app's client id, as "leapmux control admin app list" prints it.`,
+		"idp":       `A sign-in provider id, as "leapmux control admin idp list" prints it.`,
+		"session":   `A session id, as "leapmux control admin session list" prints it.`,
+		"token":     `A token id, as the list command of this group prints it.`,
+		"operation": "One of: " + strings.Join(operations, ", ") + ".",
+		"key":       `A setting key, as "leapmux control admin settings list" prints it.`,
+		"value":     `A JSON value. A word that is not JSON is stored as a string.`,
+		"json":      `A JSON object of the secret fields, such as {"password":"..."}.`,
+	}
 }

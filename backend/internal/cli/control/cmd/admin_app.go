@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"context"
-	"flag"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // `leapmux control admin app ...` -- the app REGISTRATION surface.
@@ -27,26 +29,31 @@ import (
 var appScopeFlagUsage = "space-separated permissions this app may ask for, from: " +
 	strings.Join(authscope.EveryGrantableScope().SortedTokens(), ", ")
 
-func RunAdminAppList(rawCtx any, args []string) error {
+func newAdminAppList() *cobra.Command {
 	var page adminPageFlags
 	var includeRevoked bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
+	return adminLeaf(adminVerbSpec{
+		Use:   "list",
+		Short: "List app registrations",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin app list"},
+		},
 		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
+		Flags: func(fs *pflag.FlagSet) {
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include retired apps")
 		},
-		Run: func(c *control.Client, _ adminArgs) error {
+		Run: func(c *control.Client, a adminArgs) error {
 			resp, err := c.AppService().ListApps(context.Background(), &leapmuxv1.ListAppsRequest{
 				Page: page.request(), IncludeRevoked: includeRevoked,
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return err
 			}
 			rows := make([]map[string]any, 0, len(resp.GetApps()))
 			for _, app := range resp.GetApps() {
 				rows = append(rows, adminAppJSON(app))
 			}
-			return control.EmitData(map[string]any{
+			return a.Result(map[string]any{
 				"apps":                      rows,
 				"next_cursor":               resp.GetPage().GetNextCursor(),
 				"open_registration_enabled": resp.GetOpenRegistrationEnabled(),
@@ -97,12 +104,17 @@ func scopeTokensOf(wire []leapmuxv1.Scope) []string {
 	return set.SortedTokens()
 }
 
-func RunAdminAppRegister(rawCtx any, args []string) error {
+func newAdminAppRegister() *cobra.Command {
 	var name, uri, redirect, scope, grants, kind, visibility string
 	var elevation bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&name, "name", "", "app name shown on the consent screen (required)")
+	return adminLeaf(adminVerbSpec{
+		Use:   "register <name>",
+		Short: "Register an app; the hub shows its secret once",
+		Examples: []cli.Example{
+			{Command: `leapmux control admin app register "Release bot" --scope "workspace:read" --redirect-uri http://127.0.0.1/callback`},
+		},
+		Mutates: true,
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&uri, "uri", "", "the app's home page")
 			fs.StringVar(&redirect, "redirect-uri", "",
 				"comma-separated addresses the authorization may return to (required for the authorization_code grant)")
@@ -116,8 +128,8 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 			fs.BoolVar(&elevation, "allow-elevation", false,
 				"let this app run the step-up stage, which is what a sensitive change needs")
 		},
-		BeforeDial: requireFlag(&name, "name"),
-		Run: func(c *control.Client, _ adminArgs) error {
+		BeforeDial: argInto(&name, "name"),
+		Run: func(c *control.Client, a adminArgs) error {
 			scopes, err := parseAppScopes(scope)
 			if err != nil {
 				return err
@@ -141,7 +153,7 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 				ElevationAllowed: elevation,
 			})
 			if err != nil {
-				return control.EmitErrorWith("register_failed", err)
+				return err
 			}
 			out := adminAppJSON(resp.GetApp())
 			// The ONLY time the hub emits this, so the envelope carries it and
@@ -150,23 +162,28 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 				out["client_secret"] = secret
 				out["client_secret_note"] = "copy this now; the hub stores only its hash and cannot show it again"
 			}
-			return control.EmitData(out)
+			return a.Result(out)
 		},
 	})
 }
 
-func RunAdminAppUpdate(rawCtx any, args []string) error {
+func newAdminAppUpdate() *cobra.Command {
 	var clientID, name, uri, redirect, scope, grants string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to change (required)")
+	return adminLeaf(adminVerbSpec{
+		Use:   "update <app>",
+		Short: "Change the editable fields of an app",
+		Examples: []cli.Example{
+			{Command: `leapmux control admin app update lmx_app_x1y2 --name "Release bot 2"`},
+		},
+		Mutates: true,
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&name, "name", "", "new app name")
 			fs.StringVar(&uri, "uri", "", "new home page")
 			fs.StringVar(&redirect, "redirect-uri", "", "replace the redirect list (comma-separated)")
 			fs.StringVar(&scope, "scope", "", "replace the permission ceiling; "+appScopeFlagUsage)
 			fs.StringVar(&grants, "grant-type", "", "replace the grant-type list (comma-separated)")
 		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
+		BeforeDial: argInto(&clientID, "app"),
 		Run: func(c *control.Client, a adminArgs) error {
 			msg := &leapmuxv1.UpdateAppRequest{ClientId: clientID}
 			// An UNSET flag leaves the field alone, so a caller that changes a
@@ -200,68 +217,73 @@ func RunAdminAppUpdate(rawCtx any, args []string) error {
 			}
 			resp, err := c.AppService().UpdateApp(context.Background(), msg)
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return err
 			}
-			return control.EmitData(adminAppJSON(resp.GetApp()))
+			return a.Result(adminAppJSON(resp.GetApp()))
 		},
 	})
 }
 
-// RunAdminAppSetElevation toggles the step-up stage.
+// newAdminAppSetElevation toggles the step-up stage.
 //
 // It is its own verb because it is the ONE field a built-in registration may
 // still change: an operator who does not want `leapmux control admin` to
 // elevate must be able to say so.
-func RunAdminAppSetElevation(rawCtx any, args []string, allowed bool) error {
+func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Example) *cobra.Command {
 	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to change (required)")
-		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
+	return adminLeaf(adminVerbSpec{
+		Use:        use,
+		Short:      short,
+		Examples:   examples,
+		Mutates:    true,
+		BeforeDial: argInto(&clientID, "app"),
+		Run: func(c *control.Client, a adminArgs) error {
 			resp, err := c.AppService().SetAppElevationAllowed(context.Background(),
 				&leapmuxv1.SetAppElevationAllowedRequest{ClientId: clientID, Allowed: allowed})
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return err
 			}
-			return control.EmitData(adminAppJSON(resp.GetApp()))
+			return a.Result(adminAppJSON(resp.GetApp()))
 		},
 	})
 }
 
-func RunAdminAppSetVerified(rawCtx any, args []string, verified bool) error {
+func newAdminAppSetVerified(verified bool, use, short string, examples []cli.Example) *cobra.Command {
 	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to vouch for (required)")
-		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
+	return adminLeaf(adminVerbSpec{
+		Use:        use,
+		Short:      short,
+		Examples:   examples,
+		Mutates:    true,
+		BeforeDial: argInto(&clientID, "app"),
+		Run: func(c *control.Client, a adminArgs) error {
 			resp, err := c.AppService().VerifyApp(context.Background(),
 				&leapmuxv1.VerifyAppRequest{ClientId: clientID, Verified: verified})
 			if err != nil {
-				return control.EmitErrorWith("verify_failed", err)
+				return err
 			}
-			return control.EmitData(adminAppJSON(resp.GetApp()))
+			return a.Result(adminAppJSON(resp.GetApp()))
 		},
 	})
 }
 
-func RunAdminAppRevoke(rawCtx any, args []string) error {
+func newAdminAppRevoke() *cobra.Command {
 	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to retire (required)")
+	return adminLeaf(adminVerbSpec{
+		Use:   "revoke <app>",
+		Short: "Retire an app and revoke every credential it holds",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin app revoke lmx_app_x1y2"},
 		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
+		Mutates:    true,
+		BeforeDial: argInto(&clientID, "app"),
+		Run: func(c *control.Client, a adminArgs) error {
 			resp, err := c.AppService().RevokeApp(context.Background(),
 				&leapmuxv1.RevokeAppRequest{ClientId: clientID})
 			if err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
+				return err
 			}
-			return control.EmitData(map[string]any{
+			return a.Result(map[string]any{
 				"revoked":                  clientID,
 				"revoked_credential_count": resp.GetRevokedCredentialCount(),
 			})
@@ -269,19 +291,22 @@ func RunAdminAppRevoke(rawCtx any, args []string) error {
 	})
 }
 
-func RunAdminAppDelete(rawCtx any, args []string) error {
+func newAdminAppDelete() *cobra.Command {
 	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to delete (required)")
+	return adminLeaf(adminVerbSpec{
+		Use:   "delete <app>",
+		Short: "Delete an app that never held a credential",
+		Examples: []cli.Example{
+			{Command: "leapmux control admin app delete lmx_app_x1y2"},
 		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
+		Mutates:    true,
+		BeforeDial: argInto(&clientID, "app"),
+		Run: func(c *control.Client, a adminArgs) error {
 			if _, err := c.AppService().DeleteApp(context.Background(),
 				&leapmuxv1.DeleteAppRequest{ClientId: clientID}); err != nil {
-				return control.EmitErrorWith("delete_failed", err)
+				return err
 			}
-			return control.EmitData(map[string]any{"deleted": clientID})
+			return a.Result(map[string]any{"deleted": clientID})
 		},
 	})
 }
@@ -296,8 +321,7 @@ func RunAdminAppDelete(rawCtx any, args []string) error {
 // cannot fix it.
 func parseAppScopes(raw string) ([]leapmuxv1.Scope, error) {
 	if strings.TrimSpace(raw) == "" {
-		return nil, control.EmitError("invalid_request",
-			"--scope is required: an app must specify the permissions it may ask for")
+		return nil, cli.Usagef("--scope is required: an app must specify the permissions it may ask for")
 	}
 	// splitScopeFlag, the one splitter every --scope flag in this package
 	// uses: `file:read,git:read` succeeds here exactly as it does one verb
@@ -309,7 +333,7 @@ func parseAppScopes(raw string) ([]leapmuxv1.Scope, error) {
 	}
 	set, err := authscope.Parse(strings.Join(tokens, " "))
 	if err != nil {
-		return nil, control.EmitErrorWith("invalid_request", err)
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
 	return authscope.ScopesToWire(set), nil
 }
@@ -321,7 +345,7 @@ func parseAppClientType(raw string) (leapmuxv1.AppClientType, error) {
 	case "confidential":
 		return leapmuxv1.AppClientType_APP_CLIENT_TYPE_CONFIDENTIAL, nil
 	}
-	return 0, control.EmitError("invalid_request", "unknown app type: "+raw+" (use: public, confidential)")
+	return 0, cli.Usagef("unknown app type %q", raw).WithHint("use public or confidential")
 }
 
 func parseAppVisibility(raw string) (leapmuxv1.AppVisibility, error) {
@@ -331,7 +355,7 @@ func parseAppVisibility(raw string) (leapmuxv1.AppVisibility, error) {
 	case "private":
 		return leapmuxv1.AppVisibility_APP_VISIBILITY_PRIVATE, nil
 	}
-	return 0, control.EmitError("invalid_request", "unknown visibility: "+raw+" (use: hub-wide, private)")
+	return 0, cli.Usagef("unknown visibility %q", raw).WithHint("use hub-wide or private")
 }
 
 // splitCommaList splits a comma-separated flag value, dropping empties so a

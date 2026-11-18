@@ -588,7 +588,7 @@ func TestValidateSplitRatiosLength_RejectsMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return validateSplitRatiosLength(state, "T", []float64{0.5, 0.5})
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "length 2")
 	assert.Contains(t, msg, "child count 3")
 }
@@ -641,7 +641,7 @@ func TestValidateGridRatiosShape_RejectsRowMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return validateGridRatiosShape(state, "G", []float64{0.5}, nil)
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "--row-ratios length 1")
 	assert.Contains(t, msg, "rows 2")
 }
@@ -658,7 +658,7 @@ func TestValidateGridRatiosShape_RejectsColMismatch(t *testing.T) {
 	code, msg := captureEmit(t, func() error {
 		return validateGridRatiosShape(state, "G", nil, []float64{0.5, 0.5})
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "--col-ratios length 2")
 	assert.Contains(t, msg, "cols 3")
 }
@@ -744,7 +744,7 @@ func TestBuildLayoutSetOps_RejectsMissingRoot(t *testing.T) {
 		_, _, _, err := buildLayoutSetOps(bs, "ws-1", &targetNode{Kind: "leaf"})
 		return err
 	})
-	assert.Equal(t, "invalid_state", code)
+	assert.Equal(t, "conflict", code)
 	assert.Contains(t, msg, "no root node")
 }
 

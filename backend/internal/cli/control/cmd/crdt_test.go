@@ -269,7 +269,7 @@ func TestCRDTBootstrap_LocalIPCKeepsTheCodeOfAnInBandError(t *testing.T) {
 func TestCRDTBootstrap_LocalIPCKeepsTheCodeOfARelayedFailure(t *testing.T) {
 	hub := &recordingHub{}
 	startSpawnIPC(t, hub, nil)
-	c, err := requireClient("")
+	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
 
 	bs, err := crdtBootstrap(t.Context(), c, []string{"ws-1"})

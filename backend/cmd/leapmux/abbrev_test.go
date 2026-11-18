@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -127,95 +126,6 @@ func TestDispatchGroup_Abbreviation(t *testing.T) {
 	})
 }
 
-// TestRunCLI_TopLevelAbbreviation verifies the top-level command dispatch
-// resolves unambiguous prefixes.
-func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
-	t.Run("abbreviated solo dispatches its run verb", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		var calls []cliCall
-		code := runCLI([]string{"sol", "run"}, &stdout, &stderr, testCLIRunners(&calls))
-		assert.Equal(t, 0, code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "solo", calls[0].command)
-		assert.Equal(t, []string{"run"}, calls[0].args)
-	})
-
-	t.Run("abbreviated version dispatches", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := runCLI([]string{"ver"}, &stdout, &stderr, testCLIRunners(&[]cliCall{}))
-		assert.Equal(t, 0, code)
-		assert.Equal(t, "test-version\n", stdout.String())
-	})
-
-	t.Run("abbreviated recover dispatches", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		var calls []cliCall
-		code := runCLI([]string{"rec", "db", "path"}, &stdout, &stderr, testCLIRunners(&calls))
-		assert.Equal(t, 0, code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "recover", calls[0].command)
-	})
-
-	t.Run("abbreviated control dispatches", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		var calls []cliCall
-		// "c" is a unique prefix of "control" among top-level commands.
-		code := runCLI([]string{"c", "whoami"}, &stdout, &stderr, testCLIRunners(&calls))
-		assert.Equal(t, 0, code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "control", calls[0].command)
-	})
-
-	t.Run("abbreviated dev dispatches its run verb", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		var calls []cliCall
-		code := runCLI([]string{"d", "run"}, &stdout, &stderr, testCLIRunners(&calls))
-		assert.Equal(t, 0, code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "dev", calls[0].command)
-		assert.Equal(t, []string{"run"}, calls[0].args)
-	})
-
-	t.Run("full command names still work", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		var calls []cliCall
-		code := runCLI([]string{"hub", "status"}, &stdout, &stderr, testCLIRunners(&calls))
-		assert.Equal(t, 0, code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "hub", calls[0].command)
-	})
-}
-
-// TestRunCLI_TopLevelAmbiguity verifies that an ambiguous top-level prefix
-// is rejected with an error listing the candidates, and that an unknown
-// command (no prefix match at all) reports "unknown command".
-func TestRunCLI_TopLevelAmbiguity(t *testing.T) {
-	// Among {solo, hub, worker, dev, recover, control, version}, "s" is unique
-	// (only "solo"), so there are no genuine ambiguous top-level prefixes.
-	// Test the ambiguity path via the matchCommandToken unit test instead,
-	// and exercise the unknown-command path end-to-end here.
-	t.Run("unknown command reports error", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := runCLI([]string{"xyz"}, &stdout, &stderr, testCLIRunners(&[]cliCall{}))
-		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr.String(), "unknown command: xyz")
-	})
-
-	t.Run("help flag still works before prefix matching", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := runCLI([]string{"--help"}, &stdout, &stderr, testCLIRunners(&[]cliCall{}))
-		assert.Equal(t, 0, code)
-		assert.Equal(t, usageText, stdout.String())
-	})
-
-	t.Run("flag-like arg is rejected before prefix matching", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code := runCLI([]string{"-x"}, &stdout, &stderr, testCLIRunners(&[]cliCall{}))
-		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr.String(), "not a top-level flag")
-	})
-}
-
 // TestWalkGroupArgs_Abbreviation verifies the help/validation walk also
 // resolves abbreviated names, so `leapmux recover pass --help` shows the
 // "password" group's help (not "unknown group").
@@ -252,11 +162,4 @@ func TestWalkGroupArgs_Abbreviation(t *testing.T) {
 func TestFormatGroupUsage_AbbreviationNote(t *testing.T) {
 	usage := formatGroupUsage(recoverTree, "recover")
 	assert.Contains(t, usage, "Any command name can be shortened as far as it stays unambiguous.")
-}
-
-// TestUsageText_AbbreviationNote verifies the top-level usage tells users
-// they can abbreviate.
-func TestUsageText_AbbreviationNote(t *testing.T) {
-	assert.True(t, strings.Contains(usageText,
-		"Any command name can be shortened as far as it stays unambiguous."))
 }

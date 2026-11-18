@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,10 +95,12 @@ func TestWorkerPinListAndShowDistinguishReadErrorsFromMissingPins(t *testing.T) 
 func TestMissingModeVerbDiagnosticEndsWithANewline(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
 		var stdout, stderr bytes.Buffer
-		code := runCLI([]string{mode, "--listen", ":4327"}, &stdout, &stderr, cliRunners{runMode: func(string, []string) error {
+		runners := defaultCLIRunners()
+		runners.runMode = func(string, []string) error {
 			t.Fatal("missing lifecycle verbs must not dispatch")
 			return nil
-		}})
+		}
+		code := runCLI(context.Background(), []string{mode, "--listen", ":4327"}, strings.NewReader(""), &stdout, &stderr, runners)
 		assert.Equal(t, 1, code)
 		assert.Empty(t, stdout.String())
 		assert.Equal(t, fmt.Sprintf("error: the %s command is required before any flags, as in `leapmux %s start [flags]`\n", mode, mode), stderr.String())

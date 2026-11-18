@@ -5,7 +5,6 @@ package control
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
@@ -211,5 +211,101 @@ func ListCredentialFiles() ([]CredentialFile, error) {
 }
 
 // LoadCredentials returns ErrNotLoggedIn when no credential file exists for
-// the requested hub.
-var ErrNotLoggedIn = errors.New("not logged in to this hub; run `leapmux control auth login`")
+// the requested hub. It wraps cli.ErrNotLoggedIn, so the error envelope
+// reports not_logged_in, with the login command as its hint, wherever the
+// error surfaces.
+var ErrNotLoggedIn = fmt.Errorf("%w to this hub", cli.ErrNotLoggedIn)
+
+// NoHubError reports that nothing selects a hub: no --hub flag, no tab
+// socket, no LEAPMUX_HUB, and no single or chosen default among the stored
+// credentials.
+type NoHubError struct {
+	// Stored is the number of stored credentials. With none, the user is
+	// signed in nowhere; with several, the user must choose one.
+	Stored int
+}
+
+func (e *NoHubError) Error() string {
+	if e.Stored > 1 {
+		return fmt.Sprintf("no hub selected; this machine stores credentials for %d hubs and none is the default", e.Stored)
+	}
+	return "no hub selected"
+}
+
+// CLIError classifies the error for the envelope.
+func (e *NoHubError) CLIError() *cli.Error {
+	if e.Stored > 1 {
+		return cli.Wrap(cli.CodeUsage, e, "").
+			WithHint("pass --hub <url>").
+			WithHint(`run "leapmux control auth use <hub>" to choose the default hub`)
+	}
+	return cli.Wrap(cli.CodeNotLoggedIn, e, "").
+		WithHint("pass --hub <url> or set LEAPMUX_HUB").
+		WithHint(`run "leapmux control auth login --hub <url>" to store a credential`)
+}
+
+// defaultHubFile is the file in ConfigDir that holds the hub `auth use`
+// chose. It is not a ".json" file, so ListCredentialFiles never reads it as
+// a credential.
+const defaultHubFile = "default-hub"
+
+// DefaultHub returns the hub that a command addresses when neither --hub
+// nor a tab's socket selects one: LEAPMUX_HUB, else the hub of the only
+// stored credential, else the hub that `auth use` chose. It returns a
+// *NoHubError when none of them selects a hub.
+func DefaultHub() (string, error) {
+	if hub := strings.TrimSpace(os.Getenv("LEAPMUX_HUB")); hub != "" {
+		return hub, nil
+	}
+	files, err := ListCredentialFiles()
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 1 {
+		return files[0].HubURL, nil
+	}
+	chosen, err := readDefaultHub()
+	if err != nil {
+		return "", err
+	}
+	if chosen == "" {
+		return "", &NoHubError{Stored: len(files)}
+	}
+	return chosen, nil
+}
+
+// SetDefaultHub records hub as the default hub. An empty hub removes the
+// record.
+func SetDefaultHub(hub string) error {
+	dir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, defaultHubFile)
+	if hub == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return atomicfile.WriteFile(path, []byte(hub+"\n"), 0o600)
+}
+
+// readDefaultHub returns the hub that SetDefaultHub recorded, or "".
+func readDefaultHub() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, defaultHubFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}

@@ -6,7 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"google.golang.org/protobuf/proto"
 )
@@ -20,8 +20,8 @@ import (
 //
 // These operations do not use this guard.
 //
-//   - `workspace delete` is destructive by name, carries its own --force, and
-//     its fan-out never inspects an individual tab.
+//   - `workspace delete` is destructive by name, carries its own --allow-self,
+//     and its fan-out never inspects an individual tab.
 //   - `agent interrupt` aborts a turn without closing anything. Interrupting IS
 //     the intent, and a guard would ask the user to confirm what they asked for.
 
@@ -41,9 +41,9 @@ type tabBusyReason struct {
 //
 // `tab_busy_refused` is a distinct code for the same reason
 // `self_target_refused` is: a script can pattern-match it and decide whether to
-// re-run with the override, instead of grepping an `invalid_request` blob. It is
-// deliberately NOT `--force`, which already means something else here -- "close
-// even if the target is the calling tab" -- and widening that flag would let one
+// re-run with the override, instead of grepping a message. It is deliberately
+// NOT --allow-self, which already means something else here -- "close even if
+// the target is the calling tab" -- and widening that flag would let one
 // hazard's override silently answer for another's.
 func errTabBusyRefused(reasons []tabBusyReason) error {
 	var b strings.Builder
@@ -61,8 +61,8 @@ func errTabBusyRefused(reasons []tabBusyReason) error {
 		}
 		b.WriteString(strings.Join(parts, ", "))
 	}
-	b.WriteString("; pass --allow-busy to close anyway")
-	return control.EmitError("tab_busy_refused", b.String())
+	return cli.Newf(cli.CodeTabBusyRefused, "%s", b.String()).
+		WithHint("pass --allow-busy to close anyway")
 }
 
 // agentBusyDetail renders a working agent's reason, or "" when it is idle.
@@ -195,7 +195,7 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) []tabBusyReason {
 	return out
 }
 
-// tabRef is one tab to ask about.
+// tabRef is one tab to ask the busy probe about.
 type tabRef struct {
 	tabType leapmuxv1.TabType
 	tabID   string

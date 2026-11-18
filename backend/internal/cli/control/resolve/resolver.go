@@ -1,12 +1,13 @@
-// Package resolve owns the `leapmux control` CLI's universal entity-ID
-// resolver. Every handler that consumes any of {workspace_id, tile_id,
-// worker_id, tab_id} accepts any sufficient combination of --tab-id /
-// --tile-id / --workspace-id / --worker-id (with matching
-// LEAPMUX_CONTROL_*_ID env-var fallbacks). Resolve walks the supplied
-// inputs, derives the missing fields via the hub's LocateTab / LocateTile
-// RPCs, cross-checks every multi-source field for agreement, and returns
-// either a populated Resolved struct or a structured invalid_request
-// describing the conflict / missing requirement.
+// Package resolve owns the `leapmux control` CLI's target resolution.
+//
+// A command names its object with a positional target (see Canonical in
+// target.go), and the placement of a new object with the scope flags
+// --workspace, --tile and --worker. Canonical turns each of those into a full
+// id. Resolve then derives what the command still lacks -- the Worker of a
+// tab, the workspace of a tile -- through the hub's LocateTab and LocateTile
+// RPCs, cross-checks every field that two sources supply, and returns either
+// the agreed values or a usage error that states the conflict or the missing
+// input.
 //
 // `working_dir` is deliberately NOT one of them. A command that needs a
 // directory binds its own flag with a $LEAPMUX_CONTROL_WORKING_DIR default --
@@ -18,7 +19,7 @@
 // authenticated session, so no hub RPC takes one and the CLI has no
 // --user-id flag.
 //
-// --worker-id likewise gets no confirmation RPC. Every worker-spawned
+// The Worker likewise gets no confirmation RPC. Every worker-spawned
 // agent inherits $LEAPMUX_CONTROL_WORKER_ID, so such a call would fire
 // on essentially every agent-issued command, over a delegation bearer
 // the hub limits with auth.CeilingFor(BearerKindDelegation). The RPCs
@@ -29,16 +30,15 @@
 // package's maybePreflightWorker keeps a best-effort check that
 // tolerates a denial instead of failing on it.
 //
-// The resolver does NOT read environment variables directly. The
-// caller is expected to bind flag defaults to the LEAPMUX_CONTROL_*_ID
-// env vars via BindEntityFlags (see flags.go); empty flag values are
-// treated as "input not supplied" by the resolver.
+// The resolver does NOT read environment variables directly, except through
+// Listing.Getenv for "self". The caller fills Inputs from the command line
+// and from the LEAPMUX_CONTROL_* defaults, and marks which values the user
+// typed.
 package resolve
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"sort"
 	"strings"
@@ -46,6 +46,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -121,13 +122,13 @@ type Wants struct {
 //
 // It is the whole skip condition, and it answers TRUE in three cases:
 //
-//   - The user TYPED --tab-id. They typed it to act on that tab, so the hub's
+//   - The user TYPED the tab. They typed it to act on that tab, so the hub's
 //     refusal of it is the answer to the command rather than a detail of a
 //     derivation -- see ErrTabNotLocatable.
 //   - A field the caller reads is still EMPTY, so only the hub can fill it.
 //   - A field the caller reads was supplied by an EXPLICIT flag, so the
 //     derivation is what cross-checks the two and reports `conflicting inputs`.
-//     Skipping here would let a typed --worker-id that contradicts the tab win
+//     Skipping here would let a typed --worker that contradicts the tab win
 //     silently.
 //
 // What is left is the case worth skipping: every field the caller reads is
@@ -157,45 +158,30 @@ func wantsTabPlacement(need Need, in Inputs) bool {
 	return false
 }
 
-// Inputs carries the raw flag values + env-var-default-backed input
-// for a single command invocation. Empty strings mean "not supplied"
-// (the resolver doesn't distinguish between flag-omitted and
-// env-empty). FixedTabType, if set, overrides any --tab-type flag
-// and short-circuits the discriminator inference — used by handlers
-// under the `agent ...` and `terminal ...` subgroups where the
-// command path implies the type.
+// Inputs carries the ids of one command line: the target, the scope flags,
+// and the LEAPMUX_CONTROL_* defaults. Each id is a full id; Canonical
+// resolves a short form first. Empty strings mean "not supplied".
+// FixedTabType is the tab type that the command's group implies (`agent
+// ...`, `terminal ...`), or UNSPECIFIED for `tab ...`, where LocateTab
+// matches any type.
 type Inputs struct {
 	TabID        string
-	TabType      string // "agent" | "terminal" (raw flag / env value)
 	TileID       string
 	WorkspaceID  string
 	WorkerID     string
-	FixedTabType leapmuxv1.TabType // set when the command path pins the type (agent / terminal subgroups)
+	FixedTabType leapmuxv1.TabType
 
-	// Explicit* mark which input came from a user-typed CLI flag as
-	// opposed to a default sourced from the LEAPMUX_CONTROL_*_ID env
-	// vars. When a derived value clashes with an explicit input for
-	// the same field, the explicit input wins and the env-derived
-	// value is silently dropped (the "I'm in a terminal spawn but I
-	// passed --tile-id elsewhere" case must not trip a conflict
-	// error). Two explicit inputs that disagree on the same field
-	// still produce a hard conflict — that's a genuine user error.
-	//
-	// Populated automatically by BindEntityFlags via the FlagSet it
-	// records in flagSet below; tests that construct Inputs directly
-	// can set these fields explicitly.
+	// Explicit* mark which input the user typed on the command line, as
+	// opposed to a default from the LEAPMUX_CONTROL_* environment. When a
+	// derived value clashes with an explicit input for the same field, the
+	// explicit input wins and the derived value is dropped: "I run inside a
+	// terminal tab, but I passed --tile for another tile" must not fail as a
+	// conflict. Two explicit inputs that disagree on the same field still
+	// fail, because that is a real mistake.
 	ExplicitTabID       bool
 	ExplicitTileID      bool
 	ExplicitWorkspaceID bool
 	ExplicitWorkerID    bool
-	ExplicitTabType     bool
-
-	// flagSet is the FlagSet BindEntityFlags registered the entity
-	// flags on. Resolve walks fs.Visit at entry to mark Explicit*
-	// without forcing every handler to add a post-parse line. Nil
-	// when Inputs was constructed without going through
-	// BindEntityFlags (e.g. unit tests).
-	flagSet *flag.FlagSet
 }
 
 // ParseTabType converts a user-facing flag / env value to the wire enum.
@@ -279,82 +265,23 @@ type Deps struct {
 // Resolve walks the supplied Inputs, runs every derivation whose
 // input is non-empty (in parallel), validates cross-source
 // agreement, and returns the consolidated Resolved struct. Conflict
-// errors and missing-required errors both surface as invalid_request
-// with the structured fields listed in the message so scripts can
-// grep for the conflicting flag.
+// errors and missing-required errors both fail as usage errors whose
+// message lists the inputs, so the user sees which one to change.
 //
-// Tab-type handling:
-//   - Inputs.FixedTabType wins when set (agent/terminal subgroups
-//     pin it via the command path).
-//   - Otherwise Inputs.TabType is parsed; "" + tab id supplied is
-//     rejected unless FixedTabType is set, because LocateTab needs
-//     a tab_type to disambiguate the (tab_id) namespace.
+// The tab type is Inputs.FixedTabType. An `agent ...` or `terminal ...`
+// command pins it, and LocateTab then refuses a tab of another type. A
+// `tab ...` command leaves it UNSPECIFIED, and LocateTab reports the type
+// of the tab it finds.
 func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, error) {
 	// Trim inputs to normalise leading/trailing whitespace from
 	// shell substitutions; an unset env var defaulting to "" already
 	// passes through, but a quoted "$LEAPMUX_CONTROL_TAB_ID" with a
 	// trailing newline shouldn't bypass conflict detection.
 	in.TabID = strings.TrimSpace(in.TabID)
-	in.TabType = strings.TrimSpace(in.TabType)
 	in.TileID = strings.TrimSpace(in.TileID)
 	in.WorkspaceID = strings.TrimSpace(in.WorkspaceID)
 	in.WorkerID = strings.TrimSpace(in.WorkerID)
-
-	// Mark which inputs the user typed on the command line (vs which
-	// inherited their value from $LEAPMUX_CONTROL_*_ID env defaults).
-	// fs.Visit only fires for flags whose value the user actually set,
-	// so a bare invocation inside a worker spawn (where every entity
-	// flag still defaults from env) leaves every Explicit* false. The
-	// aggregator uses these to break "explicit flag vs. env-derived"
-	// conflicts in favour of the explicit flag.
-	if in.flagSet != nil {
-		in.flagSet.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "tab-id":
-				in.ExplicitTabID = true
-			case "tile-id":
-				in.ExplicitTileID = true
-			case "workspace-id":
-				in.ExplicitWorkspaceID = true
-			case "worker-id":
-				in.ExplicitWorkerID = true
-			case "tab-type":
-				in.ExplicitTabType = true
-			}
-		})
-	}
-
-	// Determine the effective tab type.
 	tabType := in.FixedTabType
-	if tabType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-		parsed, ok := ParseTabType(in.TabType)
-		if !ok {
-			return Resolved{}, invalidArg(
-				"unknown --tab-type value %q; want one of %s",
-				in.TabType, contracts.TabTypeAcceptedTokens,
-			)
-		}
-		tabType = parsed
-	} else if in.TabType != "" {
-		// FixedTabType is set by the command path; if the user also
-		// passed --tab-type, the two must agree.
-		parsed, ok := ParseTabType(in.TabType)
-		if !ok {
-			return Resolved{}, invalidArg(
-				"unknown --tab-type value %q; want one of %s",
-				in.TabType, contracts.TabTypeAcceptedTokens,
-			)
-		}
-		if parsed != tabType {
-			return Resolved{}, invalidArg(
-				"--tab-type %q contradicts this command's implicit type %q",
-				TabTypeWireName(parsed), TabTypeWireName(tabType),
-			)
-		}
-	}
-	// A bare --tab-id with no tab type is OK — LocateTab on the
-	// server treats TAB_TYPE_UNSPECIFIED as "match any type" and
-	// returns the matched type, which the resolver records below.
 
 	// agg accumulates derivations from every source. A field with
 	// more than one source must have consistent values across all
@@ -420,7 +347,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 			}
 			locatedTab = tab
 			// Each derivation inherits the priority of its source
-			// input: when the user typed --tab-id, downstream
+			// input: when the user typed the tab, downstream
 			// workspace_id / tile_id / worker_id share that priority
 			// and win over env-derived values; otherwise the whole
 			// chain is env-derived and yields to any explicit flag.
@@ -432,12 +359,12 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	}
 
 	// GetWorkspace derives nothing -- it exists so a bogus
-	// --workspace-id fails here with a clear "get workspace X:
+	// --workspace fails here with a clear "get workspace X:
 	// not_found" instead of surfacing later as an opaque CRDT no-op.
 	// It is the ONLY workspace-existence check the resolver-driven
 	// CRDT commands get: GetMaterialized returns an empty projection
 	// rather than an error for a workspace the caller can't see.
-	// There is no --worker-id counterpart; see the package doc.
+	// There is no --worker counterpart; see the package doc.
 	if in.WorkspaceID != "" && deps.GetWorkspace != nil {
 		g.Go(func() error {
 			if err := deps.GetWorkspace(gctx, in.WorkspaceID); err != nil {
@@ -467,7 +394,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	// the hub's state is genuinely inconsistent across RPCs, in
 	// which case surfacing the conflict is still the right move).
 	if conflicts := agg.conflicts(); len(conflicts) > 0 {
-		return Resolved{}, invalidArg("conflicting inputs: %s", strings.Join(conflicts, "; "))
+		return Resolved{}, cli.Usagef("conflicting inputs: %s", strings.Join(conflicts, "; "))
 	}
 
 	// If LocateTab matched a tab_id-only lookup, the response's
@@ -494,46 +421,34 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		// reporting the miss explains the gap that "missing required ID(s):
 		// workspace_id" only describes. See ErrTabNotLocatable.
 		if unlocatableTabErr != nil {
-			return Resolved{}, invalidArgWrapping(unlocatableTabErr,
-				"%s (needed for: %s)", unlocatableTabErr.Error(), strings.Join(missing, "; "))
+			return Resolved{}, &MissingInputError{
+				Message: fmt.Sprintf("%s (needed for: %s)", unlocatableTabErr.Error(), strings.Join(missing, "; ")),
+				cause:   unlocatableTabErr,
+			}
 		}
-		return Resolved{}, invalidArg("missing required ID(s): %s", strings.Join(missing, "; "))
+		return Resolved{}, &MissingInputError{Message: "missing " + strings.Join(missing, "; ")}
 	}
 
 	return out, nil
 }
 
-// invalidArg wraps an error message in a stable shape; the cmd
-// package's EmitErrorWith will surface it as
-// `{"error":{"code":"invalid_request",...}}`.
-func invalidArg(format string, args ...any) error {
-	return &ResolveError{Code: "invalid_request", Message: fmt.Sprintf(format, args...)}
-}
-
-// invalidArgWrapping is invalidArg that keeps `cause` reachable through
-// errors.Is, so a caller (and a test) can ask WHICH failure produced the
-// envelope rather than matching on its message text.
-func invalidArgWrapping(cause error, format string, args ...any) error {
-	return &ResolveError{Code: "invalid_request", Message: fmt.Sprintf(format, args...), cause: cause}
-}
-
-// ResolveError is the structured error every resolver failure
-// surfaces. The Code is a stable identifier the cmd package emits
-// in the JSON envelope; Message is the human-facing detail.
-type ResolveError struct {
-	Code    string
+// MissingInputError reports an input that the command needs and that
+// neither the command line nor a derivation supplied. It is a usage error.
+type MissingInputError struct {
 	Message string
-	// cause, when set, is the underlying failure this envelope reports. It is
-	// unexported because it is NOT part of the envelope -- the CLI emits Code
-	// and Message and nothing else -- but it keeps errors.Is working, so a
-	// caller can ask whether a resolve failed because a tab had no hub
-	// placement without matching on the message text.
+	// cause, when set, is the failure that left the input missing: a tab
+	// that the hub could not place. errors.Is still matches it.
 	cause error
 }
 
-func (e *ResolveError) Error() string { return e.Message }
+func (e *MissingInputError) Error() string { return e.Message }
 
-func (e *ResolveError) Unwrap() error { return e.cause }
+func (e *MissingInputError) Unwrap() error { return e.cause }
+
+// CLIError reports the failure as a usage error.
+func (e *MissingInputError) CLIError() *cli.Error {
+	return cli.Usagef("%s", e.Message)
+}
 
 // --- internals: aggregation and conflict detection ---
 
@@ -568,12 +483,12 @@ func (f field) String() string {
 type source string
 
 const (
-	sourceFlagTab       source = "--tab-id"
-	sourceFlagTile      source = "--tile-id"
-	sourceFlagWorkspace source = "--workspace-id"
-	sourceFlagWorker    source = "--worker-id"
-	sourceTabID         source = "derived from --tab-id"
-	sourceTileID        source = "derived from --tile-id"
+	sourceFlagTab       source = "the tab"
+	sourceFlagTile      source = "--tile"
+	sourceFlagWorkspace source = "--workspace"
+	sourceFlagWorker    source = "--worker"
+	sourceTabID         source = "the tab's placement"
+	sourceTileID        source = "the tile's workspace"
 )
 
 // sourceEntry pairs a (value, source) record with the priority it
@@ -694,16 +609,16 @@ func (a *aggregator) conflicts() []string {
 func missingRequired(need Need, r Resolved) []string {
 	var out []string
 	if need.WorkspaceID && r.WorkspaceID == "" {
-		out = append(out, "--workspace-id (or pass --tab-id / --tile-id to derive it)")
+		out = append(out, "--workspace (or a tab or --tile to derive it)")
 	}
 	if need.TileID && r.TileID == "" {
-		out = append(out, "--tile-id (or pass --tab-id to derive it)")
+		out = append(out, "--tile (or a tab to derive it)")
 	}
 	if need.WorkerID && r.WorkerID == "" {
-		out = append(out, "--worker-id (or pass --tab-id to derive it)")
+		out = append(out, "--worker (or a tab to derive it)")
 	}
 	if need.TabID && r.TabID == "" {
-		out = append(out, "--tab-id (with --tab-type, or via LEAPMUX_CONTROL_TAB_ID + LEAPMUX_CONTROL_TAB_TYPE)")
+		out = append(out, "the tab (give its id, or \"self\" inside a LeapMux tab)")
 	}
 	return out
 }

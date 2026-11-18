@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/locallisten"
@@ -39,23 +38,28 @@ import (
 // isolateCLIEnv gives one test its own credential store AND cuts it off from the
 // worker-spawned environment.
 //
-// The config dir alone is not isolation. `NewClientFromEnv` -- which every verb that
-// calls requireClient goes through -- prefers LEAPMUX_CONTROL_SOCK over the --hub flag
-// and over the stored credential, because a CLI invoked inside an agent must reach its
-// own worker. A developer who runs this suite from inside a LeapMux agent inherits that
-// socket, so the client under test talks to a real worker instead of the test's httptest
-// server: the verb then emits the worker-IPC envelope, and the assertions read empty
-// fields and absent keys rather than a wrong value. CI has none of these set, so the
-// failure appears only on the machine the product itself is used on.
+// The config dir alone is not isolation. `NewClientFromEnv` prefers
+// LEAPMUX_CONTROL_SOCK over the stored credential, because a CLI invoked inside an
+// agent must reach its own worker. A developer who runs this suite from inside a
+// LeapMux agent inherits that socket, so the client under test talks to a real worker
+// instead of the test's httptest server: the verb then prints the worker's answer, and
+// the assertions read empty fields and absent keys rather than a wrong value. CI has
+// none of these set, so the failure appears only on the machine the product itself is
+// used on.
 //
-// LEAPMUX_HUB is cleared for the same reason one step down: it is the fallback when no
-// --hub is passed, and a test that means "no hub configured" must not inherit one.
+// The other inherited variables steer the command the same way one step down.
+// LEAPMUX_HUB is the fallback when no --hub is passed, and the tab, tile, workspace and
+// worker ids are what "self" and every omitted target resolve to. The helper therefore
+// clears every LEAPMUX_ variable, so a variable that the CLI learns to read later is
+// cleared too.
 func isolateCLIEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
-	for _, key := range []string{"LEAPMUX_CONTROL_SOCK", "LEAPMUX_CONTROL_TOKEN", "LEAPMUX_HUB"} {
-		t.Setenv(key, "")
+	for _, kv := range os.Environ() {
+		if key, _, _ := strings.Cut(kv, "="); strings.HasPrefix(key, "LEAPMUX_") {
+			t.Setenv(key, "")
+		}
 	}
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 }
 
 // isolateCLIEnv is what keeps every verb in this package pointed at the test's own
@@ -64,13 +68,17 @@ func isolateCLIEnv(t *testing.T) {
 func TestIsolateCLIEnv_CutsTheWorkerSpawnedEnvironment(t *testing.T) {
 	// The environment a LeapMux-spawned agent inherits, which is where this suite runs
 	// when a developer uses the product to work on it.
-	t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/real-worker.sock")
-	t.Setenv("LEAPMUX_CONTROL_TOKEN", "real-token")
-	t.Setenv("LEAPMUX_HUB", "https://real-hub.example")
+	inherited := []string{
+		"LEAPMUX_CONTROL_SOCK", "LEAPMUX_CONTROL_TOKEN", "LEAPMUX_HUB",
+		"LEAPMUX_CONTROL_TAB_ID", "LEAPMUX_CONTROL_WORKER_ID", "LEAPMUX_CONTROL_A_VARIABLE_OF_A_LATER_RELEASE",
+	}
+	for _, key := range inherited {
+		t.Setenv(key, "inherited")
+	}
 
 	t.Run("isolated", func(t *testing.T) {
 		isolateCLIEnv(t)
-		for _, key := range []string{"LEAPMUX_CONTROL_SOCK", "LEAPMUX_CONTROL_TOKEN", "LEAPMUX_HUB"} {
+		for _, key := range inherited {
 			assert.Emptyf(t, os.Getenv(key), "%s must not reach a test", key)
 		}
 		assert.NotEmpty(t, os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR"), "the credential store is still isolated")
@@ -115,20 +123,20 @@ func TestPKCEChallenge_DifferentVerifiersDiffer(t *testing.T) {
 func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
-	withCapturedStdout(t, func() {
-		body := strings.NewReader(`{
-			"access_token": "lmx_a_at_xyz",
-			"refresh_token": "lmx_a_rt_xyz",
-			"expires_in": 3600,
-			"refresh_expires_in": 7776000,
-			"token_id": "tok-1",
-			"scope": "admin:read",
-			"user_id": "user-1",
-			"username": "alice"
-		}`)
-		err := persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read")
-		require.NoError(t, err)
-	})
+	body := strings.NewReader(`{
+		"access_token": "lmx_a_at_xyz",
+		"refresh_token": "lmx_a_rt_xyz",
+		"expires_in": 3600,
+		"refresh_expires_in": 7776000,
+		"token_id": "tok-1",
+		"scope": "admin:read",
+		"user_id": "user-1",
+		"username": "alice"
+	}`)
+	result, err := persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read")
+	require.NoError(t, err)
+	assert.Equal(t, &loginResult{HubURL: "https://hub.example", Username: "alice", UserID: "user-1", Scope: "admin:read"}, result,
+		"a login that got every permission it asked for carries no warning")
 
 	loaded, err := control.LoadCredentials("https://hub.example")
 	require.NoError(t, err)
@@ -152,21 +160,19 @@ func TestPersistTokenResponse_WritesCredentials(t *testing.T) {
 func TestPersistTokenResponse_WarnsWhenAScopeWasNotGranted(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
-	out := withCapturedStdout(t, func() {
-		body := strings.NewReader(`{
-			"access_token": "lmx_a_at_xyz",
-			"refresh_token": "lmx_a_rt_xyz",
-			"expires_in": 3600,
-			"scope": "workspace:read",
-			"user_id": "user-1",
-			"username": "alice"
-		}`)
-		require.NoError(t, persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read"))
-	})
+	body := strings.NewReader(`{
+		"access_token": "lmx_a_at_xyz",
+		"refresh_token": "lmx_a_rt_xyz",
+		"expires_in": 3600,
+		"scope": "workspace:read",
+		"user_id": "user-1",
+		"username": "alice"
+	}`)
+	result, err := persistTokenResponse("https://hub.example", body, oauthapp.ControlCLIClientID, "admin:read")
+	require.NoError(t, err)
 
-	data := envelopeData(t, out)
-	assert.Equal(t, "workspace:read", data["scope"])
-	assert.Contains(t, data["warning"], "admin:read",
+	assert.Equal(t, "workspace:read", result.Scope)
+	assert.Contains(t, result.Warning, "admin:read",
 		"the warning must NAME the permission that was refused")
 
 	loaded, err := control.LoadCredentials("https://hub.example")
@@ -196,16 +202,15 @@ func TestRunAuthLogin_WarnsWhenTheRevokeFails(t *testing.T) {
 	t.Cleanup(srv.Close)
 	liveCredentialFor(t, srv.URL)
 
-	var runErr error
-	out := withCapturedStdout(t, func() {
-		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
-	})
-	require.Error(t, runErr, "the failed authorization is the login's own error")
+	o := runControl(t, "auth", "login", "--hub", srv.URL, "--device-code")
+	o.requireFailure(t, cli.CodeInternal)
 
-	assert.Contains(t, string(out), "could not revoke",
+	// The warning is prose for a person, so it reaches stderr; stdout holds
+	// the envelope alone.
+	assert.Contains(t, o.Stderr, "could not revoke",
 		"a revoke that did not happen must say so")
-	assert.Contains(t, string(out), "Preferences › Apps › Connected apps",
-		"the warning must name the group that holds the row, not the one a reorg removed")
+	assert.Contains(t, o.Stderr, "Preferences › Apps › Connected apps",
+		"the warning must state the group that holds the row, not the one a reorg removed")
 	_, err := control.LoadCredentials(srv.URL)
 	assert.ErrorIs(t, err, control.ErrNotLoggedIn,
 		"the local file goes either way: the cleanup stays locally idempotent")
@@ -227,15 +232,12 @@ func TestRunAuthLogin_CleansUpAnUnreadableCredentialFile(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, []byte("{not credential json"), 0o600))
 
-	var runErr error
-	out := withCapturedStdout(t, func() {
-		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
-	})
-	require.Error(t, runErr, "the failed authorization is the login's own error")
+	o := runControl(t, "auth", "login", "--hub", srv.URL, "--device-code")
+	o.requireFailure(t, cli.CodeInternal)
 
-	assert.Contains(t, string(out), "does not parse",
+	assert.Contains(t, o.Stderr, "does not parse",
 		"an unreadable file must be reported, not silently overwritten")
-	assert.Contains(t, string(out), "cannot revoke",
+	assert.Contains(t, o.Stderr, "cannot revoke",
 		"the warning must state what the CLI could not do about the grant")
 	_, err = control.LoadCredentials(srv.URL)
 	assert.ErrorIs(t, err, control.ErrNotLoggedIn,
@@ -248,25 +250,18 @@ func TestRunAuthLogin_CleansUpAnUnreadableCredentialFile(t *testing.T) {
 func TestPersistTokenResponse_RejectsMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
-	out := withCapturedStdout(t, func() {
-		err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), oauthapp.ControlCLIClientID, "")
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
-
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "token_exchange_failed", env.Error["code"])
+	result, err := persistTokenResponse("https://hub.example", strings.NewReader(`{not json`), oauthapp.ControlCLIClientID, "")
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Equal(t, "internal", failureOf(t, err).Error["code"])
 
 	// No credential file should have been written on the failure path.
-	_, err := control.LoadCredentials("https://hub.example")
+	_, err = control.LoadCredentials("https://hub.example")
 	assert.ErrorIs(t, err, control.ErrNotLoggedIn)
 }
 
 // TestRunAuthLogout_RevokesAndRemovesCreds exercises the full logout
-// path: with credentials on disk, RunAuthLogout posts to the hub's
+// path: with credentials on disk, `auth logout` posts to the hub's
 // /oauth/revoke endpoint with the bearer in both the form body and
 // the Authorization header, then removes the local credential file.
 func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
@@ -293,10 +288,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}))
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL})
-		require.NoError(t, err)
-	})
+	out := runControl(t, "auth", "logout", "--hub", srv.URL).ok(t)
 
 	assert.True(t, revoked, "logout must hit /oauth/revoke")
 	assert.Equal(t, "Bearer lmx_a_at_logout", gotAuth)
@@ -312,14 +304,6 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 	assert.Equal(t, srv.URL, env.Data["hub_url"])
 }
 
-// TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone is the credential that
-// nobody used for months.
-//
-// The hub hard-deletes an api_tokens row once both of its deadlines close,
-// and it answers a bearer whose row it cannot find with 401. Reporting that
-// as a failed revoke told the user to finish the job under
-// Preferences › Apps › Connected apps -- where the row is already gone, so
-// there is nothing to act on and the warning can only worry them.
 // TestRunAuthLogout_WarnsWhereToFinishTheJob pins the REFUSAL warning's
 // destination. The warning once named "Command-line credentials", a
 // Preferences row that no longer exists -- so the one user who needed it was
@@ -340,9 +324,7 @@ func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}))
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "logout", "--hub", srv.URL).ok(t)
 
 	var env struct {
 		Data map[string]string `json:"data"`
@@ -360,6 +342,14 @@ func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
 	assert.ErrorIs(t, err, control.ErrNotLoggedIn)
 }
 
+// TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone is the credential that
+// nobody used for months.
+//
+// The hub hard-deletes an api_tokens row once both of its deadlines close,
+// and it answers a bearer whose row it cannot find with 401. Reporting that
+// as a failed revoke told the user to finish the job under
+// Preferences › Apps › Connected apps -- where the row is already gone, so
+// there is nothing to act on and the warning can only worry them.
 func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 	for name, status := range map[string]int{
 		"the hub hard-deleted the row": http.StatusUnauthorized,
@@ -379,9 +369,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 				ExpiresAt:   time.Now().Add(-time.Hour),
 			}))
 
-			out := withCapturedStdout(t, func() {
-				require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-			})
+			out := runControl(t, "auth", "logout", "--hub", srv.URL).ok(t)
 
 			var env struct {
 				Data map[string]string `json:"data"`
@@ -410,9 +398,7 @@ func TestRunAuthLogout_WarnsWhenTheHubRefusesTheRevoke(t *testing.T) {
 		HubURL: srv.URL, AccessToken: "lmx_a_at_live", ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthLogout(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "logout", "--hub", srv.URL).ok(t)
 	assert.Contains(t, string(out), "could not revoke")
 	assert.Contains(t, string(out), "Preferences")
 }
@@ -428,10 +414,7 @@ func TestRunAuthLogout_ToleratesMissingCreds(t *testing.T) {
 	// No revoke endpoint hit when there are no creds; an unreachable
 	// hub URL is fine because revokeBearer swallows transport errors
 	// (logout is best-effort on the server side).
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogout(fakeCmdCtx{}, []string{"--hub", "http://127.0.0.1:1"})
-		require.NoError(t, err)
-	})
+	out := runControl(t, "auth", "logout", "--hub", "http://127.0.0.1:1").ok(t)
 	var env struct {
 		Data map[string]string `json:"data"`
 	}
@@ -439,20 +422,14 @@ func TestRunAuthLogout_ToleratesMissingCreds(t *testing.T) {
 	assert.Equal(t, "http://127.0.0.1:1", env.Data["hub_url"])
 }
 
-// TestRunAuthLogout_RequiresHub guards the early-validation path: no
-// --hub means no server-side revoke is even possible, so the CLI surfaces
-// invalid_request instead of silently doing nothing.
+// TestRunAuthLogout_RequiresHub guards the early-validation path: no hub
+// selected means no server-side revoke is even possible, so the CLI refuses
+// instead of silently doing nothing, and states how to select one.
 func TestRunAuthLogout_RequiresHub(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "") // Block env-var fallback so the flag is actually missing.
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogout(fakeCmdCtx{}, nil)
-		require.Error(t, err)
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
+	isolateCLIEnv(t)
+	f := runControl(t, "auth", "logout").requireFailure(t, cli.CodeNotLoggedIn)
+	assert.Equal(t, "no hub selected", f.Message)
+	assert.Contains(t, strings.Join(f.Hints, "\n"), "--hub")
 }
 
 // TestRunAuthStatus_ReportsExpiry exercises the user-facing health
@@ -470,10 +447,7 @@ func TestRunAuthStatus_ReportsExpiry(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthStatus(fakeCmdCtx{}, []string{"--hub", "https://hub.example"})
-		require.NoError(t, err)
-	})
+	out := runControl(t, "auth", "status", "--hub", "https://hub.example").ok(t)
 	data := envelopeData(t, out)
 	assert.Equal(t, "alice", data["username"])
 	assert.Equal(t, "u1", data["user_id"])
@@ -493,10 +467,7 @@ func TestRunAuthStatus_ReportsExpired(t *testing.T) {
 		ExpiresAt: time.Now().Add(-time.Hour),
 	}))
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthStatus(fakeCmdCtx{}, []string{"--hub", "https://hub.example"})
-		require.NoError(t, err)
-	})
+	out := runControl(t, "auth", "status", "--hub", "https://hub.example").ok(t)
 	data := envelopeData(t, out)
 	assert.Equal(t, true, data["expired"])
 }
@@ -508,16 +479,9 @@ func TestRunAuthStatus_NotLoggedInWhenMissing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthStatus(fakeCmdCtx{}, []string{"--hub", "https://never-logged-in.example"})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "not_logged_in", env.Error["code"])
+	f := runControl(t, "auth", "status", "--hub", "https://never-logged-in.example").requireFailure(t, cli.CodeNotLoggedIn)
+	require.NotEmpty(t, f.Hints)
+	assert.Contains(t, f.Hints[0], "auth login", "the hint states the command that signs in")
 }
 
 // TestRunAuthList_PrintsAllConfiguredHubs is the multi-hub case:
@@ -530,20 +494,14 @@ func TestRunAuthList_PrintsAllConfiguredHubs(t *testing.T) {
 	require.NoError(t, control.SaveCredentials("https://a.example", control.CredentialFile{HubURL: "https://a.example", Username: "alice", ExpiresAt: time.Now().Add(time.Hour)}))
 	require.NoError(t, control.SaveCredentials("https://b.example", control.CredentialFile{HubURL: "https://b.example", Username: "bob", ExpiresAt: time.Now().Add(time.Hour)}))
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthList(fakeCmdCtx{}, nil)
-		require.NoError(t, err)
-	})
-	var env struct {
-		Data []map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.Len(t, env.Data, 2)
+	rows := credentialRows(t, runControl(t, "auth", "list").ok(t))
+	require.Len(t, rows, 2)
 
 	// Order is filesystem-dependent; index by hub_url to stay stable.
 	byHub := map[string]map[string]any{}
-	for _, e := range env.Data {
+	for _, e := range rows {
 		byHub[e["hub_url"].(string)] = e
+		assert.Equal(t, false, e["default"], "with two credentials and no `auth use`, neither is the default")
 	}
 	assert.Equal(t, "alice", byHub["https://a.example"]["username"])
 	assert.Equal(t, "bob", byHub["https://b.example"]["username"])
@@ -557,15 +515,22 @@ func TestRunAuthList_PrintsAllConfiguredHubs(t *testing.T) {
 func TestRunAuthList_ToleratesMissingConfigDir(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir()+"/never-created")
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthList(fakeCmdCtx{}, nil)
-		require.NoError(t, err)
-	})
+	out := runControl(t, "auth", "list").ok(t)
+	assert.JSONEq(t, `{"data":{"credentials":[]}}`, string(out),
+		"an empty list prints as an empty array, not as null")
+}
+
+// credentialRows decodes the credentials of an `auth list` or an
+// `auth credentials` envelope.
+func credentialRows(t *testing.T, out []byte) []map[string]any {
+	t.Helper()
 	var env struct {
-		Data []map[string]any `json:"data"`
+		Data struct {
+			Credentials []map[string]any `json:"credentials"`
+		} `json:"data"`
 	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Empty(t, env.Data)
+	require.NoError(t, json.Unmarshal(out, &env), "stdout: %s", out)
+	return env.Data.Credentials
 }
 
 // TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll exercises
@@ -611,10 +576,11 @@ func TestRunAuthLogin_DeviceCodeFlowFinishesOnAuthorizedPoll(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	withCapturedStdout(t, func() {
-		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code", "--device-name", "ci-runner"})
-		require.NoError(t, err)
-	})
+	o := runControl(t, "auth", "login", "--hub", srv.URL, "--device-code", "--device-name", "ci-runner")
+	data := o.Data(t)
+	assert.Equal(t, "devuser", data["username"])
+	assert.Contains(t, o.Stderr, "WDJB-MJHT", "the code that the person types reaches stderr")
+	assert.NotContains(t, o.Stdout, "WDJB-MJHT", "stdout holds the result alone")
 
 	creds, err := control.LoadCredentials(srv.URL)
 	require.NoError(t, err)
@@ -653,20 +619,12 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
-		require.Error(t, err)
-	})
-	// runDeviceCodeLogin prints the verification URI / user code to
-	// stdout as plain prose before the JSON envelope; isolate the
-	// envelope by scanning for the first '{' the way `jq` would.
-	envBytes := jsonTail(t, out)
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(envBytes, &env))
-	assert.Equal(t, "device_grant_failed", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "access_denied")
+	// The verification URI and the user code go to stderr, so stdout is the
+	// envelope alone and decodes whole.
+	out := runControl(t, "auth", "login", "--hub", srv.URL, "--device-code").failed(t)
+	envErr := envelopeError(t, out)
+	assert.Equal(t, "internal", envErr["code"])
+	assert.Contains(t, envErr["message"], "access_denied")
 }
 
 // TestRunAuthLogin_DeviceCodeFlowDialsSocketHub pins the socket-login
@@ -726,10 +684,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 	go func() { _ = srv.Serve(ln) }()
 	require.NoError(t, locallisten.WaitReady(context.Background(), sockURL))
 
-	withCapturedStdout(t, func() {
-		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", sockURL, "--device-code", "--device-name", "ci-runner"})
-		require.NoError(t, err)
-	})
+	runControl(t, "auth", "login", "--hub", sockURL, "--device-code", "--device-name", "ci-runner").ok(t)
 
 	creds, err := control.LoadCredentials(sockURL)
 	require.NoError(t, err)
@@ -749,18 +704,10 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 // --hub without --device-code must refuse by stating the working flag
 // rather than failing later with a scheme error.
 func TestRunAuthLogin_LocalRedirectRefusesSocketURL(t *testing.T) {
+	isolateCLIEnv(t)
 	sockURL := locallistentest.UniqueListenURL(t, "cli-pkce")
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", sockURL})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "invalid_request", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "--device-code")
+	f := runControl(t, "auth", "login", "--hub", sockURL).requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, strings.Join(f.Hints, "\n"), "--device-code")
 }
 
 // TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced drives the whole
@@ -849,23 +796,16 @@ func TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced(t *testing.T) {
 // TestRunAuthLogin_DeviceCodeFlowSocketUnreachable pins the error
 // path of the same socket dial: when the unix:/npipe: path has no
 // listener, the CLI must still use cliHTTPClient (so the failure is a
-// dial error wrapped as device_authorization_failed) rather than
+// dial error that reports the hub as unavailable) rather than
 // http.DefaultClient's "unsupported protocol scheme" rejection, which
 // is what a missing socket client looks like.
 func TestRunAuthLogin_DeviceCodeFlowSocketUnreachable(t *testing.T) {
+	isolateCLIEnv(t)
 	sockURL := locallistentest.UniqueListenURL(t, "cli-auth-down")
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", sockURL, "--device-code"})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "device_authorization_failed", env.Error["code"])
-	assert.NotContains(t, env.Error["message"], "unsupported protocol scheme",
+	f := runControl(t, "auth", "login", "--hub", sockURL, "--device-code").requireFailure(t, cli.CodeUnavailable)
+	assert.NotContains(t, f.Message, "unsupported protocol scheme",
 		"a scheme error means DefaultClient saw the unix:/npipe: URL; cliHTTPClient must dial it")
+	assert.True(t, f.Retryable, "a hub that is down now may be up on the next try")
 }
 
 // TestRunAuthLogin_UnsupportedHubSchemeIsReportedAtTheFlag covers a --hub value
@@ -873,31 +813,14 @@ func TestRunAuthLogin_DeviceCodeFlowSocketUnreachable(t *testing.T) {
 //
 // The transport factory could not fail before: a socket client that would not
 // build fell through to a plain client, and the request then failed later with
-// "unsupported protocol scheme" -- a message from net/http that names neither
-// the flag nor the schemes that ARE accepted. Reporting it where the URL is
-// read gives the user both.
+// "unsupported protocol scheme" -- a message from net/http that specifies
+// neither the flag nor the schemes that ARE accepted. Reporting it where the
+// URL is read gives the user both.
 func TestRunAuthLogin_UnsupportedHubSchemeIsReportedAtTheFlag(t *testing.T) {
-	out := withCapturedStdout(t, func() {
-		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", "ftp://hub.example", "--device-code"})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
-	var env struct {
-		Error map[string]string `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(jsonTail(t, out), &env))
-	assert.Equal(t, "invalid_hub_url", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "ftp://hub.example", "the message must name the URL that was refused")
-	assert.Contains(t, env.Error["message"], "http://", "and the schemes that are accepted")
-}
-
-// jsonTail returns the JSON envelope at the end of out, skipping the
-// device-code flow's plain-prose preamble.
-func jsonTail(t *testing.T, out []byte) []byte {
-	t.Helper()
-	idx := bytes.IndexByte(out, '{')
-	require.GreaterOrEqual(t, idx, 0, "expected a JSON envelope somewhere in stdout")
-	return out[idx:]
+	isolateCLIEnv(t)
+	f := runControl(t, "auth", "login", "--hub", "ftp://hub.example", "--device-code").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "ftp://hub.example", "the message must identify the URL that was refused")
+	assert.Contains(t, f.Message, "http://", "and the schemes that are accepted")
 }
 
 // TestRevokeBearer_NoOpOnEmptyBearer covers the safe-rerun path of
@@ -938,27 +861,6 @@ func TestRevokeBearer_PropagatesNetworkError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestEmittedError_IsEmittedTrueOnEmitErrorReturn closes the loop on
-// the EmittedError marker: the error returned from EmitError must be
-// recognised by IsEmitted so main.handleRunError can suppress its
-// plain-text fallback.
-func TestEmittedError_IsEmittedTrueOnEmitErrorReturn(t *testing.T) {
-	var buf bytes.Buffer
-	prev := control.Out
-	control.Out = &buf
-	t.Cleanup(func() { control.Out = prev })
-
-	err := control.EmitError("some_code", "some message")
-	require.Error(t, err)
-	assert.True(t, control.IsEmitted(err))
-	assert.Contains(t, err.Error(), "some_code")
-
-	// Plain Go errors must NOT be flagged as emitted, otherwise the
-	// CLI would silently swallow legitimate non-emitted failures.
-	assert.False(t, control.IsEmitted(fmt.Errorf("plain error")))
-	assert.False(t, control.IsEmitted(nil))
-}
-
 // TestRunAuthCredentials_ListsTheAccountCredentials pins the verb that makes
 // MyAPIToken.current reachable at all.
 //
@@ -969,23 +871,16 @@ func TestEmittedError_IsEmittedTrueOnEmitErrorReturn(t *testing.T) {
 func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 	hubURL := startMyTokensHub(t, &stubMyTokensService{})
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL}))
-	})
-
-	var env struct {
-		Data []map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.Len(t, env.Data, 2)
-	assert.Equal(t, "alice@laptop", env.Data[0]["installation_name"])
-	assert.Equal(t, oauthapp.ControlCLIClientID, env.Data[0]["client_id"])
-	assert.Contains(t, env.Data[0]["granted_scopes"], "workspace:read",
+	rows := credentialRows(t, runControl(t, "auth", "credentials", "--hub", hubURL).ok(t))
+	require.Len(t, rows, 2)
+	assert.Equal(t, "alice@laptop", rows[0]["installation_name"])
+	assert.Equal(t, oauthapp.ControlCLIClientID, rows[0]["client_id"])
+	assert.Contains(t, rows[0]["granted_scopes"], "workspace:read",
 		"the listing prints the GRANT, so a reader can see what each app can do")
-	assert.Equal(t, true, env.Data[0]["current"], "the credential making the request must be marked")
-	assert.Equal(t, false, env.Data[1]["current"])
-	// An unset timestamp reads as null, not as the Unix epoch.
-	assert.Nil(t, env.Data[0]["last_used_at"])
+	assert.Equal(t, true, rows[0]["current"], "the credential making the request must be marked")
+	assert.Equal(t, false, rows[1]["current"])
+	// An unset timestamp leaves the key out, never prints the Unix epoch.
+	assert.NotContains(t, rows[0], "last_used_at")
 }
 
 // stubMyTokensService answers ListMyAPITokens and nothing else, recording
@@ -1027,9 +922,7 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	stub := &stubMyTokensService{}
 	hubURL := startMyTokensHub(t, stub)
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL}))
-	})
+	runControl(t, "auth", "credentials", "--hub", hubURL).ok(t)
 
 	limits := stub.requestedLimits()
 	require.NotEmpty(t, limits)
@@ -1111,16 +1004,9 @@ func TestRunAuthCredentials_ReadsEveryPage(t *testing.T) {
 	}}
 	hubURL := startMyTokensHub(t, stub)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL}))
-	})
-
-	var env struct {
-		Data []map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	ids := make([]any, 0, len(env.Data))
-	for _, row := range env.Data {
+	rows := credentialRows(t, runControl(t, "auth", "credentials", "--hub", hubURL).ok(t))
+	ids := make([]any, 0, len(rows))
+	for _, row := range rows {
 		ids = append(ids, row["id"])
 	}
 	assert.Equal(t, []any{"tok-1", "tok-2", "tok-3"}, ids, "every page, and the repeated row once")
@@ -1143,18 +1029,14 @@ func TestRunAuthCredentials_AFailedLaterPageFailsTheListing(t *testing.T) {
 	}
 	hubURL := startMyTokensHub(t, stub)
 
-	out := withCapturedStdout(t, func() {
-		err := RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL})
-		require.Error(t, err)
-		assert.True(t, control.IsEmitted(err))
-	})
+	out := runControl(t, "auth", "credentials", "--hub", hubURL).failed(t)
 
 	var env struct {
-		Data  json.RawMessage   `json:"data"`
-		Error map[string]string `json:"error"`
+		Data  json.RawMessage `json:"data"`
+		Error map[string]any  `json:"error"`
 	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	assert.Equal(t, "rpc_failed", env.Error["code"])
+	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+	assert.Equal(t, "unavailable", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "hub is restarting")
 	assert.Empty(t, env.Data, "a failed listing prints no partial data")
 	assert.NotContains(t, string(out), "tok-1", "the rows of the first page must not print")
@@ -1233,9 +1115,7 @@ func TestRunAuthStatus_ConfirmsWithTheHub(t *testing.T) {
 	srv := currentUserServer(t, "renamed-on-the-hub", true)
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "status", "--hub", srv.URL).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, true, data["hub_checked"])
@@ -1259,17 +1139,11 @@ func TestRunAuthList_PrintsUTC(t *testing.T) {
 	srv := currentUserServer(t, "unused", false)
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthList(fakeCmdCtx{}, nil))
-	})
-
-	var env struct {
-		Data []map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.Len(t, env.Data, 1)
-	assert.True(t, strings.HasSuffix(env.Data[0]["expires"].(string), "Z"),
+	rows := credentialRows(t, runControl(t, "auth", "list").ok(t))
+	require.Len(t, rows, 1)
+	assert.True(t, strings.HasSuffix(rows[0]["expires"].(string), "Z"),
 		"auth list must print the file's deadline in UTC")
+	assert.Equal(t, true, rows[0]["default"], "the only stored credential is the default")
 }
 
 func TestRunAuthStatus_WarnsWhenTheHubCannotBeAsked(t *testing.T) {
@@ -1279,9 +1153,7 @@ func TestRunAuthStatus_WarnsWhenTheHubCannotBeAsked(t *testing.T) {
 	srv.Close()
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "status", "--hub", srv.URL).ok(t)
 
 	data := envelopeData(t, out)
 	// Offline stays USEFUL: the local answer prints, and the warning names
@@ -1313,14 +1185,7 @@ func TestRunAuthStatus_RefusedMeansSignedOut(t *testing.T) {
 	t.Cleanup(srv.Close)
 	liveCredentialFor(t, srv.URL)
 
-	// An emitted error returns non-nil (it is what sets the exit code), so
-	// the assertion is on the envelope it wrote, not on NoError.
-	var runErr error
-	out := withCapturedStdout(t, func() {
-		runErr = RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL})
-	})
-	require.Error(t, runErr)
-	assert.True(t, control.IsEmitted(runErr), "the refusal reached the user as an envelope")
+	out := runControl(t, "auth", "status", "--hub", srv.URL).failed(t)
 
 	env := envelopeError(t, out)
 	assert.Equal(t, "not_logged_in", env["code"],
@@ -1336,9 +1201,7 @@ func TestRunWhoami_ConfirmsWithTheHub(t *testing.T) {
 	srv := currentUserServer(t, "hub-name", false)
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWhoami(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "whoami", "--hub", srv.URL).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "hub-name", data["username"])
@@ -1349,7 +1212,7 @@ func TestRunWhoami_ConfirmsWithTheHub(t *testing.T) {
 // TestRunAuthStatus_FallsBackWhenTheCredentialLacksAccountRead and the
 // whoami twin below pin the PermissionDenied classification: a valid
 // credential that merely lacks account:read is NOT a signed-out state and
-// NOT an rpc failure. The local answer stands with a warning that states
+// NOT a failed call. The local answer stands with a warning that states
 // the permission the confirmation could not cross -- and whoami keeps
 // is_admin present (null, the honest unknown), so its direct endings carry
 // one shape.
@@ -1358,9 +1221,7 @@ func TestRunAuthStatus_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) 
 	srv := currentUserPermissionDeniedServer(t)
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "status", "--hub", srv.URL).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, false, data["hub_checked"])
@@ -1375,9 +1236,7 @@ func TestRunWhoami_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
 	srv := currentUserPermissionDeniedServer(t)
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWhoami(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "whoami", "--hub", srv.URL).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "local-name", data["username"])
@@ -1410,18 +1269,15 @@ func TestRunAuthLogin_CleansUpTheExistingLoginFirst(t *testing.T) {
 	t.Cleanup(srv.Close)
 	liveCredentialFor(t, srv.URL)
 
-	var runErr error
-	out := withCapturedStdout(t, func() {
-		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-code"})
-	})
-	require.Error(t, runErr, "the failed authorization is the login's own error")
+	o := runControl(t, "auth", "login", "--hub", srv.URL, "--device-code")
+	o.requireFailure(t, cli.CodeInternal)
 
 	assert.True(t, revoked, "the existing login must be revoked before the flow starts")
 	_, err := control.LoadCredentials(srv.URL)
 	assert.ErrorIs(t, err, control.ErrNotLoggedIn,
 		"a login that never completed must not leave the old credential on disk")
-	assert.Contains(t, string(out), "existing login", "the cleanup warns before it cleans")
-	assert.Contains(t, string(out), "local-name", "the warning identifies the login it removes")
+	assert.Contains(t, o.Stderr, "existing login", "the cleanup warns before it cleans")
+	assert.Contains(t, o.Stderr, "local-name", "the warning identifies the login it removes")
 }
 
 // TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin pins the ORDER around
@@ -1443,14 +1299,7 @@ func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
 	t.Cleanup(srv.Close)
 	liveCredentialFor(t, srv.URL)
 
-	var runErr error
-	out := withCapturedStdout(t, func() {
-		runErr = RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--scope", ","})
-	})
-	require.Error(t, runErr)
-	assert.True(t, control.IsEmitted(runErr))
-	assert.Equal(t, "invalid_request", envelopeError(t, out)["code"],
-		"the refused flag is the login's own error")
+	runControl(t, "auth", "login", "--hub", srv.URL, "--scope", ",").requireFailure(t, cli.CodeUsage)
 	assert.False(t, revoked, "a refused flag must not revoke the working credential")
 	_, err := control.LoadCredentials(srv.URL)
 	require.NoError(t, err, "a refused flag must not delete the working credential either")
@@ -1459,7 +1308,7 @@ func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
 // TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute pins the transport
 // ending a status command meets behind a reverse proxy: a 404 -- which
 // connect maps to Unimplemented -- is a hub that could not be ASKED, so the
-// local answer stands with a warning, not an rpc_failed exit that hides the
+// local answer stands with a warning, not a failed exit that hides the
 // fields the file still answers.
 func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
 	isolateCLIEnv(t)
@@ -1469,9 +1318,7 @@ func TestRunAuthStatus_FallsBackWhenTheProxyDropsTheRoute(t *testing.T) {
 	t.Cleanup(srv.Close)
 	liveCredentialFor(t, srv.URL)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "status", "--hub", srv.URL).ok(t)
 
 	data := envelopeData(t, out)
 	assert.Equal(t, false, data["hub_checked"])
@@ -1509,9 +1356,7 @@ func TestRunAuthStatus_HungHubCannotHoldTheCommand(t *testing.T) {
 	}))
 
 	started := time.Now()
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthStatus(fakeCmdCtx{}, []string{"--hub", srv.URL}))
-	})
+	out := runControl(t, "auth", "status", "--hub", srv.URL).ok(t)
 	assert.Less(t, time.Since(started).Seconds(), 15.0,
 		"a hung hub must not hold the command past the check's own budget")
 
@@ -1519,4 +1364,46 @@ func TestRunAuthStatus_HungHubCannotHoldTheCommand(t *testing.T) {
 	assert.Equal(t, false, data["hub_checked"])
 	assert.Equal(t, "local-name", data["username"],
 		"a rotation that could not run leaves the local identity, not a refusal")
+}
+
+// `auth login` with no hub selected states the flag that selects one. The
+// generic no-hub hint would point at `auth login` itself.
+func TestRunAuthLogin_RefusesWithoutAHub(t *testing.T) {
+	isolateCLIEnv(t)
+	f := runControl(t, "auth", "login").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "no hub selected", f.Message)
+	assert.Equal(t, []string{"pass --hub <url> to choose the hub to sign in to"}, f.Hints)
+}
+
+// The device name defaults to <user>@<host> of this machine, computed when
+// the login runs: a declared default would print this machine's name in the
+// help, in `leapmux commands` and in the generated docs. A blank value takes
+// the default too.
+func TestRunAuthLogin_ComputesTheDefaultDeviceNameWhenItRuns(t *testing.T) {
+	for _, args := range [][]string{nil, {"--device-name", "  "}} {
+		isolateCLIEnv(t)
+		var mu sync.Mutex
+		var sent string
+		srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/device-authorization" {
+				require.NoError(t, r.ParseForm())
+				mu.Lock()
+				sent = r.PostForm.Get("installation_name")
+				mu.Unlock()
+			}
+			http.Error(w, "refused", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		runControl(t, append([]string{"auth", "login", "--hub", srv.URL, "--device-code"}, args...)...).failed(t)
+
+		mu.Lock()
+		assert.Equal(t, control.DefaultDeviceName(), sent, "args %v", args)
+		mu.Unlock()
+	}
+
+	tree := NewCommand()
+	login, _, err := tree.Find([]string{"auth", "login"})
+	require.NoError(t, err)
+	assert.Empty(t, login.Flags().Lookup("device-name").DefValue, "the declared default must not read this machine")
 }

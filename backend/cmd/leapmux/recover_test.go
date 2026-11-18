@@ -999,7 +999,7 @@ func TestResolveGroupTokenTreatsSubgroupsAndCommandsAsOneNamespace(t *testing.T)
 func TestRecoverRefusalWordingIsTheOneAnOperatorSees(t *testing.T) {
 	run := func(args ...string) (int, bool, string) {
 		var stdout, stderr strings.Builder
-		code, handled := handleRecoverArgs(args, &stdout, &stderr)
+		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, args, &stdout, &stderr)
 		return code, handled, stderr.String()
 	}
 
