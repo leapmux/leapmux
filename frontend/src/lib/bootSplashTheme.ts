@@ -357,6 +357,8 @@ export function bootSplashDocumentCss(): string {
   const darkLo = darkFg
   const darkHi = `color-mix(in srgb, ${darkFg} 45%, #ffffff)`
   return `
+/* Prevent mobile browsers from enlarging text when the viewport changes. */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 html,body,#app{margin:0;height:100%;width:100%;overflow:hidden}
 html,body{background:${lightBg}}
 @media (prefers-color-scheme: dark){
