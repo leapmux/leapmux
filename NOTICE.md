@@ -423,17 +423,17 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [potential_utf 0.1.6 (Unicode-3.0)](#potential_utf-016-unicode-30)
 - [powerfmt 0.2.1 (MIT OR Apache-2.0)](#powerfmt-021-mit-or-apache-20)
 - [precomputed-hash 0.1.1 (MIT)](#precomputed-hash-011-mit)
-- [prettyplease 0.2.37 (MIT OR Apache-2.0)](#prettyplease-0237-mit-or-apache-20)
+- [prettyplease 0.3.0 (MIT OR Apache-2.0)](#prettyplease-030-mit-or-apache-20)
 - [proc-macro-crate 1.3.1 (MIT OR Apache-2.0)](#proc-macro-crate-131-mit-or-apache-20)
 - [proc-macro-crate 2.0.2 (MIT OR Apache-2.0)](#proc-macro-crate-202-mit-or-apache-20)
 - [proc-macro-crate 3.5.0 (MIT OR Apache-2.0)](#proc-macro-crate-350-mit-or-apache-20)
 - [proc-macro-error 1.0.4 (MIT OR Apache-2.0)](#proc-macro-error-104-mit-or-apache-20)
 - [proc-macro-error-attr 1.0.4 (MIT OR Apache-2.0)](#proc-macro-error-attr-104-mit-or-apache-20)
 - [proc-macro2 1.0.107 (MIT OR Apache-2.0)](#proc-macro2-10107-mit-or-apache-20)
-- [prost 0.14.4 (Apache-2.0)](#prost-0144-apache-20)
-- [prost-build 0.14.4 (Apache-2.0)](#prost-build-0144-apache-20)
-- [prost-derive 0.14.4 (Apache-2.0)](#prost-derive-0144-apache-20)
-- [prost-types 0.14.4 (Apache-2.0)](#prost-types-0144-apache-20)
+- [prost 0.14.6 (Apache-2.0)](#prost-0146-apache-20)
+- [prost-build 0.14.6 (Apache-2.0)](#prost-build-0146-apache-20)
+- [prost-derive 0.14.6 (Apache-2.0)](#prost-derive-0146-apache-20)
+- [prost-types 0.14.6 (Apache-2.0)](#prost-types-0146-apache-20)
 - [pxfm 0.1.30 (BSD-3-Clause OR Apache-2.0)](#pxfm-0130-bsd-3-clause-or-apache-20)
 - [quick-error 2.0.1 (MIT/Apache-2.0)](#quick-error-201-mitapache-20)
 - [quick-xml 0.41.0 (MIT)](#quick-xml-0410-mit)
@@ -59220,7 +59220,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### prettyplease 0.2.37 (MIT OR Apache-2.0)
+### prettyplease 0.3.0 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -60790,7 +60790,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### prost 0.14.4 (Apache-2.0)
+### prost 0.14.6 (Apache-2.0)
 
 ```
                               Apache License
@@ -60996,7 +60996,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### prost-build 0.14.4 (Apache-2.0)
+### prost-build 0.14.6 (Apache-2.0)
 
 ```
                               Apache License
@@ -61202,7 +61202,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### prost-derive 0.14.4 (Apache-2.0)
+### prost-derive 0.14.6 (Apache-2.0)
 
 ```
                               Apache License
@@ -61408,7 +61408,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### prost-types 0.14.4 (Apache-2.0)
+### prost-types 0.14.6 (Apache-2.0)
 
 ```
                               Apache License
