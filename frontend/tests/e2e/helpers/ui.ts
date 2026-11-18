@@ -320,7 +320,7 @@ export function messageContents(page: Page) {
  * pending row that follows the call while it runs, which draws its preview and its live
  * output.
  */
-export type ToolCallRowRole = ToolSpanRowPosition['role'] | 'pending'
+type ToolCallRowRole = ToolSpanRowPosition['role'] | 'pending'
 
 /** Locate the visible row of one tool call in one role. The result row by default. */
 export function toolCallRow(page: Page, callId: string, role: ToolCallRowRole = 'result'): Locator {

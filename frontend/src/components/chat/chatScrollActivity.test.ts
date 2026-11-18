@@ -4,15 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createScrollActivity } from './chatScrollActivity'
 
 const IDLE_MS = 400
-const GRACE_MS = 750
 
 let disposeRoot: (() => void) | undefined
 
 /**
  * Fake BOTH `performance` and the timers, not just the timers. `createScrollActivity`
  * defaults its clock to `monotonicNow`, which reads `performance.now()`, so a plain
- * `vi.useFakeTimers()` would leave the momentum-grace comparison on the wall clock while
- * the idle timer ran on the fake one -- every grace assertion would then pass or fail on
+ * `vi.useFakeTimers()` would leave the idle deadline comparison on the wall clock while
+ * the idle timer ran on the fake one -- every deadline assertion would then pass or fail on
  * machine speed. Faking both moves them together under one `advanceTimersByTime`, and
  * starts the clock at exactly 0, which is the epoch the zero-epoch test below needs.
  * (`useChatScroll.diagnostics.test.ts` uses the same form.)
@@ -23,7 +22,7 @@ function setup(deps: Partial<ScrollActivityDeps> = {}): ScrollActivity {
   })
   return createRoot((dispose) => {
     disposeRoot = dispose
-    return createScrollActivity({ idleMs: IDLE_MS, momentumGraceMs: GRACE_MS, ...deps })
+    return createScrollActivity({ idleMs: IDLE_MS, ...deps })
   })
 }
 
@@ -86,11 +85,7 @@ describe('createScrollActivity', () => {
   })
 
   it('never opens the window on a scroll event before any input, on a zero-epoch clock', () => {
-    // performance.now() is exactly 0 here, which is what page load looks like. If the
-    // last-input timestamp were seeded to 0 instead of NEGATIVE_INFINITY, this scroll would
-    // measure as 0ms since "the last input" -- inside any grace -- and a restored
-    // conversation's first programmatic stick-to-bottom would light the rail with no user
-    // input at all.
+    // A tab can receive a scroll in its first tick while it restores its position.
     const activity = setup()
     expect(performance.now()).toBe(0)
 
@@ -100,7 +95,7 @@ describe('createScrollActivity', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('extends the window from a scroll event inside the momentum grace', () => {
+  it('extends the window from scroll movement while the window is open', () => {
     const activity = setup()
 
     activity.noteInput()
@@ -115,11 +110,25 @@ describe('createScrollActivity', () => {
     expect(activity.active()).toBe(false)
   })
 
-  it('never extends the window from scroll events past the momentum grace', () => {
+  it('keeps the window open throughout continuous momentum', () => {
+    const activity = setup()
+    activity.noteInput()
+
+    for (let step = 0; step < 8; step++) {
+      vi.advanceTimersByTime(IDLE_MS - 100)
+      activity.noteScroll()
+      expect(activity.active()).toBe(true)
+    }
+
+    vi.advanceTimersByTime(IDLE_MS)
+    expect(activity.active()).toBe(false)
+  })
+
+  it('keeps the window closed during scroll events after it fades', () => {
     const activity = setup()
 
     activity.noteInput()
-    vi.advanceTimersByTime(GRACE_MS + IDLE_MS + 1)
+    vi.advanceTimersByTime(IDLE_MS)
     expect(activity.active()).toBe(false)
 
     // A streaming turn's stick-to-bottom writes: a long burst of scroll events with no user
@@ -133,44 +142,18 @@ describe('createScrollActivity', () => {
     }
   })
 
-  it('measures the grace from the last input, so momentum cannot chain itself open', () => {
-    const activity = setup()
-
+  it('ignores movement past the deadline while the idle callback waits', () => {
+    let now = 0
+    const activity = setup({
+      now: () => now,
+    })
     activity.noteInput()
-    // Inside the grace: this scroll reopens the window, arming a fresh idle timer.
-    vi.advanceTimersByTime(GRACE_MS - 50)
+    vi.advanceTimersByTime(IDLE_MS - 1)
+
+    now = IDLE_MS
     activity.noteScroll()
-    expect(activity.active()).toBe(true)
-
-    // Past the grace measured from the INPUT. If the prior scroll had re-based the grace,
-    // this one (and every later one) would keep extending and the window would never close.
-    vi.advanceTimersByTime(100)
-    activity.noteScroll()
-
-    vi.advanceTimersByTime(IDLE_MS)
-    expect(activity.active()).toBe(false)
-
-    activity.noteScroll()
-    expect(activity.active()).toBe(false)
-  })
-
-  it('accepts only a same-tick scroll when no momentum grace is configured', () => {
-    // Grace 0, not an explicit undefined: `createScrollActivity` reads the field as
-    // `?? 0`, so the two are one configuration, and 0 states it without overriding
-    // the spread's GRACE_MS default with a value the prop type rejects.
-    const activity = setup({ momentumGraceMs: 0 })
-
-    // A scroll dispatched in the same tick as its input is part of that gesture.
-    activity.noteInput()
-    activity.noteScroll()
-    expect(activity.active()).toBe(true)
-
-    vi.advanceTimersByTime(IDLE_MS)
-    expect(activity.active()).toBe(false)
-
-    // One millisecond later it is no longer that gesture's, and nothing reopens.
     vi.advanceTimersByTime(1)
-    activity.noteScroll()
+
     expect(activity.active()).toBe(false)
   })
 
@@ -225,7 +208,7 @@ describe('createScrollActivity', () => {
       disposeRoot = dispose
       return {
         short: createScrollActivity({ idleMs: 160 }),
-        long: createScrollActivity({ idleMs: IDLE_MS, momentumGraceMs: GRACE_MS }),
+        long: createScrollActivity({ idleMs: IDLE_MS }),
       }
     })
 

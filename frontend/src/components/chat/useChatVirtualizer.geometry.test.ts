@@ -458,7 +458,7 @@ describe('useChatVirtualizer geometry', () => {
       // reads this).
       expect(cache.lastMeasurement()).toMatchObject({
         id: 'a',
-        source: 'premeasure',
+        source: 'storage',
         previousHeight: undefined,
         newHeight: 200,
       })

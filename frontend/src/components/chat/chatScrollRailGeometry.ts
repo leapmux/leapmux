@@ -107,6 +107,7 @@ export function rowStartSeqs(items: readonly ChatRowItem[]): number[] | null {
     return null
   const out = Array.from<number>({ length: n + 1 })
   let lastSeq = 0
+  let lastStart = 0
   let start = 0
   while (start < n) {
     const s = items[start]?.seq
@@ -119,8 +120,14 @@ export function rowStartSeqs(items: readonly ChatRowItem[]): number[] | null {
     while (end < n && items[end]?.seq === s)
       end++
     const share = end - start
-    for (let i = start; i < end; i++)
-      out[i] = safe + (i - start) / share
+    for (let i = start; i < end; i++) {
+      const rowStart = safe + (i - start) / share
+      // A fractional boundary at a large absolute sequence can round to either end.
+      if (rowStart <= lastStart || rowStart >= safe + 1)
+        return null
+      out[i] = rowStart
+      lastStart = rowStart
+    }
     lastSeq = safe
     start = end
   }

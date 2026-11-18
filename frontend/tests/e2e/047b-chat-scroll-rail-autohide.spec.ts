@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { RAIL, RAIL_FILLER_MESSAGE, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
-import { CHAT_SCROLL_CONTAINER, chatScrollContainer, chatScrollTop, readAttached, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { CHAT_SCROLL_CONTAINER, chatScrollContainer, chatScrollTop, readAttached, sendMessage, visibleOnly, waitForAgentIdle } from './helpers/ui'
 
 /**
  * The scroll rail's floating auto-hide, which is E2E-only by construction. Everything that
@@ -67,6 +67,94 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '1')
 
     // ...and it fades again once that gesture goes quiet.
+    await expect(rail).toHaveCSS('opacity', '0')
+  })
+
+  test('keeps the rail visible through a long touch coast', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await page.setViewportSize({ width: 390, height: 450 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.clock.install()
+    await page.reload()
+    await seedOverflowingConversation(page, modelScript, 2)
+
+    const rail = visibleOnly(page.locator(RAIL))
+    const scroller = chatScrollContainer(page)
+    await expect(rail).toHaveCSS('opacity', '0')
+    const touchScroll = () => scroller.evaluate((element) => {
+      const dispatchTouch = (type: string, touches: { clientX: number, clientY: number }[]) => {
+        const event = new Event(type, { bubbles: true })
+        Object.defineProperty(event, 'touches', { value: touches })
+        element.dispatchEvent(event)
+      }
+      dispatchTouch('touchstart', [
+        { clientX: 90, clientY: 100 },
+      ])
+      dispatchTouch('touchmove', [
+        { clientX: 90, clientY: 124 },
+      ])
+      dispatchTouch('touchend', [])
+    })
+    const coastStep = () => scroller.evaluate((element) => {
+      const before = element.scrollTop
+      element.scrollTop = before - 8
+      element.dispatchEvent(new Event('scroll'))
+      return before - element.scrollTop
+    })
+
+    await touchScroll()
+    await expect.poll(() => railFade(rail), 'the initial touch lights the rail').toEqual(LIT_AND_SETTLED)
+    // The finger has lifted. Only the subsequent position changes can keep the rail visible.
+    for (let step = 1; step <= 9; step++) {
+      await page.clock.runFor(700)
+      expect(await coastStep(), `the transcript moves on coast step ${step}`).toBe(8)
+      expect(await railFade(rail), `the rail stays visible on coast step ${step}`).toEqual(LIT_AND_SETTLED)
+    }
+
+    await page.clock.runFor(PAST_RAIL_IDLE_MS)
+    await expect(rail).toHaveCSS('opacity', '0')
+    expect(await coastStep()).toBe(8)
+    expect((await railFade(rail)).opacity, 'a bare scroll cannot show a rail that already faded').toBe('0')
+    await touchScroll()
+    await expect.poll(() => railFade(rail), 'a new touch lights the rail again').toEqual(LIT_AND_SETTLED)
+  })
+
+  test('fades on the original deadline when focus reveals a transcript control', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await page.setViewportSize({ width: 1024, height: 480 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.clock.install()
+    await page.reload()
+    await seedOverflowingConversation(page, modelScript, 2)
+    const rail = visibleOnly(page.locator(RAIL))
+    const list = chatScrollContainer(page)
+    await page.mouse.move(0, 0)
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100))
+    // The seeded turns can leave a prior activity window. Begin the deadline check from idle.
+    await page.clock.runFor(PAST_RAIL_IDLE_MS)
+    await expect(rail).toHaveCSS('opacity', '0')
+
+    // Page Down opens the rail at the bottom and prevents a native key scroll.
+    // A wheel can start its own animation in WebKit, before the control receives focus.
+    const beforeInput = await chatScrollTop(page)
+    await list.dispatchEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true })
+    await expect(rail).toHaveCSS('opacity', '1')
+    await page.clock.runFor(1000)
+    expect(await chatScrollTop(page), 'the opening key did not scroll').toBeCloseTo(beforeInput, 0)
+
+    const focus = await list.evaluate((element) => {
+      const viewTop = element.getBoundingClientRect().top
+      const control = Array.from(element.querySelectorAll<HTMLButtonElement>('[data-chat-row-id] button'))
+        .find(button => !button.disabled && button.getBoundingClientRect().bottom < viewTop
+          && button.getBoundingClientRect().height > 0 && getComputedStyle(button).visibility !== 'hidden')
+      if (control === undefined)
+        throw new Error('No mounted transcript control lies above the view.')
+      const top = element.scrollTop
+      control.focus()
+      return { before: top, receivedFocus: document.activeElement === control }
+    })
+    await page.clock.runFor(32)
+    expect(focus.receivedFocus).toBe(true)
+    await expect.poll(() => chatScrollTop(page)).toBeLessThan(focus.before)
+    await page.clock.runFor(300)
     await expect(rail).toHaveCSS('opacity', '0')
   })
 

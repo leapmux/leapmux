@@ -5,7 +5,7 @@ import { ROW_ALIGN_OFFSET_PX } from '~/components/chat/chatLayoutShift'
 import { MESSAGE_PAGE_LIMIT } from '../../src/generated/contracts/chat-history'
 import { test } from './fixtures'
 import { RAIL, RAIL_DOT } from './helpers/chatScrollRail'
-import { clearStoredRenders, clearStoredRowHeights, expectNoVisibleHeightChange, expectRowMoved, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { clearStoredChatHeightsAndRenders, expectNoVisibleHeightChange, expectRowMoved, expectStoredRowHeight, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, waitForAgentStarted } from './helpers/ui'
 
@@ -137,9 +137,7 @@ test.describe('chat scroll stability while the history above the reader changes'
     // Open the chat again as a browser does that never showed it. No row has a stored height then, so the rows of the
     // page of the seek measure for the first time.
     const chatUrl = page.url()
-    await clearStoredRowHeights(page)
-    // The helper above left the browser on an empty page of the app's origin.
-    await clearStoredRenders(page)
+    await clearStoredChatHeightsAndRenders(page)
     await page.goto(chatUrl)
     await expect(assistantBubbles(page).filter({ hasText: `Answer ${turns}.` }), 'the last answer shows when the chat opens again').toHaveCount(1)
     await waitForScrollRest(page)
@@ -177,7 +175,10 @@ test.describe('chat scroll stability while the history above the reader changes'
     }
     const lastLongSeq = await readRowSeqWithText(page, `Long${LONG_TURNS}P0:`)
     expect(lastLongSeq, 'the row of the last long answer is mounted').not.toBeNull()
+    const lastLongId = await chatScrollContainer(page).locator(`[data-seq="${lastLongSeq}"]`).getAttribute('data-chat-row-id')
+    expect(lastLongId).not.toBeNull()
     const turns = await sendTurnsUntilPastOnePage(page, modelScript, Number(lastLongSeq), 0)
+    await expectStoredRowHeight(page, lastLongId!)
 
     // The reload keeps the row heights that the app stored. The chat opens with the newest page alone, so the page of the
     // long answers arrives later with the stored heights of its rows, and all of its rows join the list in one step.
@@ -186,6 +187,7 @@ test.describe('chat scroll stability while the history above the reader changes'
     await waitForScrollRest(page)
     const lastLongAnswer = assistantBubbles(page).filter({ hasText: `Long${LONG_TURNS}P0:` })
     await expect(lastLongAnswer, 'the page of the long answers is not loaded').toHaveCount(0)
+    const heights = await recordRowHeightChanges(page)
     // The app loads the stored heights of an arriving page in an effect, and a later effect of that batch renders the
     // rows at the viewport. That effect must read the layout shift of the new rows: with the shift of the old ones, it
     // renders rows a page above the view, and every row in view unmounts and mounts again. The frames show such a row
@@ -194,6 +196,10 @@ test.describe('chat scroll stability while the history above the reader changes'
 
     await wheelUpUntilMounted(page, lastLongAnswer, 'the last long answer')
 
+    expect(await heights.all()).toContainEqual(expect.objectContaining({
+      seq: lastLongSeq,
+      source: 'storage',
+    }))
     await frames.expectNoJump('while the page of the long answers arrives above the reader')
   })
 })

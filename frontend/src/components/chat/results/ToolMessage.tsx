@@ -13,8 +13,6 @@ import { isToolFailureResult, isUnparsedToolResult } from '../model/toolCall'
 import { toolCallStatusOutcome } from '../model/toolCallStatus'
 import { isDisplayHeld } from '../renderContext'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
-import { toolInputSummary } from '../toolStyles.css'
-import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { ToolMessageLayout } from '../widgets/ToolMessageLayout'
 import { McpContentList } from './genericToolCall'
 import { ImageResultList } from './imageResult'
@@ -28,6 +26,7 @@ import { dispatchParts } from './tools/index'
 import { toolCallMeta } from './tools/meta'
 import { PlainTextResult } from './tools/plainTextResult'
 import { ToolOutcomeHeader } from './ToolStatusHeader'
+import { ToolTruncationNotice } from './ToolTruncationNotice'
 
 /**
  * Draw one tool row from its call: one kind, one request, one result slot.
@@ -68,7 +67,11 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
   })
   const meta = createMemo(() => toolCallMeta(props.row))
   // Expand opens whatever the row clips: a body, a summary, or a header title.
+  const previewClips = () => drawsRequest() && !drawsResult()
+    && (props.context?.hasPendingPreview === true || props.context?.loneCall === true)
+    && parts().renderer.pendingCollapsible?.(parts().parsed) === true
   const expandable = () => meta().collapsible || summaryOverflows() || titleOverflows()
+    || props.context?.pendingPreviewExpandable === true || previewClips()
   // The outer toolbar and the context menu offer Expand exactly when this row does: only
   // the drawn row knows what its header clips.
   createEffect(() => props.context?.onExpandableChange?.(expandable()))
@@ -197,7 +200,7 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
               The correlated renderer and call require no assertion here. */}
           <Match when={parts().resolved}>{c => parts().renderer.result(c(), view())}</Match>
         </Switch>
-        <Show when={call().truncated === true}><div class={toolInputSummary}>{TRUNCATION_NOTICE}</div></Show>
+        <ToolTruncationNotice when={call().truncated} />
         {/* Extra content follows the result body, including its image indices.
             An offset of zero gives two images the same index.
             An image tab can then show the wrong image. */}

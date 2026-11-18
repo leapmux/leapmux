@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import * as platform from '~/lib/shortcuts/platform'
 import { SCROLL_REST_QUIET_MS } from './chatScrollRest'
 import { installScrollTestEnv, mountScrollHarness } from './useChatScroll.testkit'
 
@@ -32,6 +33,18 @@ function scrolledNearTheTop() {
   const h = scrolledUpWithChange(5000)
   expect(h.rebaseCount()).toBe(0)
   h.scrollTo(450)
+  return h
+}
+
+/** A rebase from 400 to 1000 followed by a confirmed old-coordinate sample. */
+function scrolledThroughARebase() {
+  const h = mountScrollHarness()
+  h.scrollTo(600)
+  h.scrollTo(400)
+  h.changeAbove(600)
+  vi.advanceTimersByTime(220)
+  h.scrollTo(390)
+  expect(h.div.getScrollTop()).toBe(990)
   return h
 }
 
@@ -391,6 +404,69 @@ describe('useChatScroll rebase', () => {
     h.hook.handlers.onScroll()
 
     expect(h.div.getScrollTop()).toBe(5440)
+    h.dispose()
+  })
+
+  it('measures each corrected sample from the preceding position', () => {
+    const h = scrolledNearTheTop()
+    h.scrollTo(440)
+    expect(h.div.getScrollTop()).toBe(5440)
+    h.onMomentumScroll.mockClear()
+
+    h.scrollTo(440)
+    expect(h.div.getScrollTop()).toBe(5440)
+    expect.soft(h.onMomentumScroll).not.toHaveBeenCalled()
+
+    h.onMomentumScroll.mockClear()
+    h.scrollTo(445)
+    expect(h.div.getScrollTop()).toBe(5445)
+    expect(h.updateViewport).toHaveBeenLastCalledWith(5445, 500, expect.objectContaining({ dir: 'newer' }))
+    expect(h.onMomentumScroll).toHaveBeenCalledOnce()
+    h.dispose()
+  })
+
+  it('leaves a new touch coast in the current coordinates', () => {
+    const h = scrolledThroughARebase()
+    vi.advanceTimersByTime(80)
+    h.hook.handlers.onTouchStart({
+      touches: [
+        { clientX: 30, clientY: 50 },
+      ],
+    } as unknown as TouchEvent)
+    h.scrollTo(425)
+    h.hook.handlers.onTouchEnd({ touches: [] } as unknown as TouchEvent)
+
+    h.scrollTo(380)
+    expect(h.div.getScrollTop()).toBe(380)
+    h.dispose()
+  })
+
+  it('keeps the native landing of a new keyboard jump', () => {
+    const mac = vi.spyOn(platform, 'isMac').mockReturnValue(true)
+    const h = scrolledThroughARebase()
+    try {
+      vi.advanceTimersByTime(90)
+      const event = new KeyboardEvent('keydown', { key: 'ArrowUp', metaKey: true, cancelable: true })
+      h.hook.handlers.onKeyDown(event)
+      expect(event.defaultPrevented).toBe(false)
+
+      h.scrollTo(0)
+      expect(h.div.getScrollTop()).toBe(0)
+    }
+    finally {
+      mac.mockRestore()
+      h.dispose()
+    }
+  })
+
+  it('translates a late sample across a settling rebase during the same fling', async () => {
+    const h = scrolledThroughARebase()
+    h.changeAbove(60)
+    await h.rest()
+    expect(h.div.getScrollTop()).toBe(1050)
+
+    h.scrollTo(380)
+    expect(h.div.getScrollTop()).toBe(1040)
     h.dispose()
   })
 

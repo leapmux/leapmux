@@ -107,13 +107,17 @@ describe('RelativeTime', () => {
     const tenSecondsAgo = iso(10)
     const { container } = render(() => <RelativeTime timestamp={tenSecondsAgo} steadyWidth />)
     const cell = container.querySelector('[data-widest-age]')
+    const clock = container.querySelector('svg')
     expect(cell?.getAttribute('data-widest-age')).toBe(WIDEST_COMPACT_AGE)
-    expect(cell?.textContent).toBe('10s')
+    expect(cell?.contains(clock)).toBe(true)
+    expect(clock?.nextElementSibling).toBe(screen.getByText('10s'))
+    expect(cell?.textContent?.trim()).toBe('10s')
     expect(container.textContent?.trim()).toBe('10s')
 
     vi.advanceTimersByTime(15_000)
 
-    expect(container.querySelector('[data-widest-age]')?.textContent).toBe('25s')
+    expect(cell?.textContent?.trim()).toBe('25s')
+    expect(clock?.nextElementSibling).toBe(screen.getByText('25s'))
   })
 
   it('draws no cell of the widest age without steadyWidth', () => {

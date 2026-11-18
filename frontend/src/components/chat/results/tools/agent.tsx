@@ -42,6 +42,13 @@ export function renderAgentTitle(description: string, subagentType?: string): JS
   return <span class={toolInputText}>{title}</span>
 }
 
+/** The registry can supply the description independently of the message revision. */
+export function agentRegistryTitle(request: AgentRequest, titleOf: (key: string) => string | undefined): string | undefined {
+  return request.registryKey
+    ? titleOf(request.registryKey)?.trim() || undefined
+    : undefined
+}
+
 /**
  * The prompt half of an agent launch: its metadata and the prompt it sent.
  *
@@ -105,9 +112,7 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
   title(call, context) {
     // The registry title wins when the launch created one task: it says what the
     // subagent does, where `description` may hold the tool's own name alone.
-    const registryTitle = call.request.registryKey
-      ? context?.subagents?.row(call.request.registryKey)?.title?.trim()
-      : undefined
+    const registryTitle = agentRegistryTitle(call.request, key => context?.subagents?.row(key)?.title)
     // The REQUEST, then the call's own title, then the last resort -- the precedence
     // `renderer.ts` states. A `|| 'Task'` spelled INSIDE the first step made the
     // second one dead, so a launch that described nothing drew that word rather than

@@ -92,4 +92,17 @@ describe('web_search queries', () => {
     }), 'request')
     expect(toolCallMeta(row).collapsible).toBe(false)
   })
+
+  it('lists a first keyword that differs from the objective in the header', () => {
+    const row = toolRow(toolCallFixture('web_search', {
+      status: 'in_progress',
+      request: {
+        query: 'Find project documentation',
+        queries: ['leapmux'],
+      },
+    }), 'request')
+
+    expect(toolCallMeta(row).collapsible).toBe(true)
+    expect(draw(row).textContent).toContain('leapmux')
+  })
 })

@@ -4,7 +4,7 @@ import type { ScriptedTurn } from './scriptedTurn'
 import { expect } from '@playwright/test'
 import { parseStoredKey, PREFIX_CHAT_ROW_HEIGHTS } from '../../../src/lib/browserStorage'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { deleteEntries, storageKeys } from './storage'
+import { deleteEntries, readEntry, storageKeys } from './storage'
 import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatScrollContainer, sendMessage, waitForAgentIdle } from './ui'
 
 /**
@@ -394,7 +394,8 @@ export async function watchRow(page: Page, seq: string): Promise<RowWatch> {
 
 /** A row of the chat in one animation frame, as the frame watch samples it. */
 export interface WatchedRow {
-  seq: string
+  rowId: string
+  seq?: string
   /** The distance from the top edge of the scroll container to the top edge of the row. */
   top: number
   height: number
@@ -405,6 +406,8 @@ export interface WatchedRow {
   element: number
   /** Whether the row shows. A row that waits for its content (`visibility: hidden`) shows nothing. */
   shown: boolean
+  /** A visible skeleton covers this row's slot. */
+  covered?: boolean
 }
 
 /** The rows that one animation frame held in the view: each mounted row that reaches into it. */
@@ -421,7 +424,7 @@ export interface FrameJump {
    * - `shear`: two rows that show in both frames moved by distances that differ, so a part of the view moved against
    *   the rest of it.
    */
-  kind: 'remount' | 'height' | 'shear'
+  kind: 'remount' | 'height' | 'shear' | 'blank' | 'visibility'
   /** The rows and the distances, for the failure message. */
   detail: string
 }
@@ -455,25 +458,42 @@ export function frameJumps(frames: readonly WatchedFrame[], tolerancePx = 1): Fr
   const jumps: FrameJump[] = []
   // The last sample of each row: the index of its frame, and its element.
   const lastSample = new Map<string, { frame: number, element: number }>()
+  const label = (row: WatchedRow): string => row.seq === undefined
+    ? `row ${row.rowId}`
+    : `row of seq ${row.seq}`
+  const occupiesSlot = (row: WatchedRow): boolean => row.shown || row.covered === true
+  let wasPopulated = false
+  let wasBlank = false
   for (let frame = 0; frame < frames.length; frame++) {
     const rows = frames[frame]!
+    const blank = !rows.some(occupiesSlot)
+    if (blank && wasPopulated && !wasBlank)
+      jumps.push({ frame, kind: 'blank', detail: 'the viewport lost all rows and skeletons' })
+    wasPopulated ||= !blank
+    wasBlank = blank
     for (const row of rows) {
-      const last = lastSample.get(row.seq)
+      if (row.element === 0)
+        continue
+      const last = lastSample.get(row.rowId)
       if (last !== undefined && last.element !== row.element && frame - last.frame <= REMOUNT_WINDOW_FRAMES)
-        jumps.push({ frame, kind: 'remount', detail: `the row of seq ${row.seq} mounted again ${frame - last.frame} frame(s) after its last sample` })
-      lastSample.set(row.seq, { frame, element: row.element })
+        jumps.push({ frame, kind: 'remount', detail: `the ${label(row)} mounted again ${frame - last.frame} frame(s) after its last sample` })
+      lastSample.set(row.rowId, { frame, element: row.element })
     }
     if (frame === 0)
       continue
-    const before = new Map(frames[frame - 1]!.filter(row => row.shown).map(row => [row.seq, row]))
-    const moves: { seq: string, distance: number }[] = []
+    const before = new Map(frames[frame - 1]!.map(row => [row.rowId, row]))
+    const moves: { row: WatchedRow, distance: number }[] = []
     for (const row of rows) {
-      const earlier = before.get(row.seq)
-      if (earlier === undefined || !row.shown)
+      const earlier = before.get(row.rowId)
+      if (earlier === undefined)
+        continue
+      if (!blank && earlier.element === row.element && occupiesSlot(earlier) && !occupiesSlot(row))
+        jumps.push({ frame, kind: 'visibility', detail: `the ${label(row)} lost its visible content and skeleton` })
+      if (!earlier.shown || !row.shown)
         continue
       if (Math.abs(row.height - earlier.height) > tolerancePx)
-        jumps.push({ frame, kind: 'height', detail: `the row of seq ${row.seq} changed its height from ${px(earlier.height)} to ${px(row.height)}` })
-      moves.push({ seq: row.seq, distance: row.top - earlier.top })
+        jumps.push({ frame, kind: 'height', detail: `the ${label(row)} changed its height from ${px(earlier.height)} to ${px(row.height)}` })
+      moves.push({ row, distance: row.top - earlier.top })
     }
     if (moves.length < 2)
       continue
@@ -484,7 +504,7 @@ export function frameJumps(frames: readonly WatchedFrame[], tolerancePx = 1): Fr
       ? b
       : a))
     if (most.distance - least.distance > tolerancePx)
-      jumps.push({ frame, kind: 'shear', detail: `the row of seq ${least.seq} moved ${px(least.distance)} and the row of seq ${most.seq} moved ${px(most.distance)}` })
+      jumps.push({ frame, kind: 'shear', detail: `the ${label(least.row)} moved ${px(least.distance)} and the ${label(most.row)} moved ${px(most.distance)}` })
   }
   return jumps
 }
@@ -515,10 +535,23 @@ export function startFrameWatchIn(container: Element, key: string): void {
     const top = container.getBoundingClientRect().top
     const bottom = top + container.clientHeight
     const rows: WatchedRow[] = []
-    for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
+    const overlays = new Map<string, DOMRect>()
+    for (const skeleton of container.querySelectorAll<HTMLElement>('[data-chat-skeleton-for]')) {
+      const rowId = skeleton.dataset.chatSkeletonFor
+      const rect = skeleton.getBoundingClientRect()
+      const style = getComputedStyle(skeleton)
+      if (rowId !== undefined && rect.bottom > top && rect.top < bottom && style.visibility !== 'hidden' && style.opacity !== '0')
+        overlays.set(rowId, rect)
+    }
+    for (const row of container.querySelectorAll<HTMLElement>('[data-chat-row-id]')) {
       const rect = row.getBoundingClientRect()
+      const rowId = row.dataset.chatRowId
       const seq = row.dataset.seq
-      if (seq === undefined || rect.bottom <= top || rect.top >= bottom)
+      if (rowId === undefined)
+        continue
+      const intersects = rect.bottom > top && rect.top < bottom
+      const covered = overlays.delete(rowId)
+      if (!intersects && !covered)
         continue
       let element = elementIds.get(row)
       if (element === undefined) {
@@ -526,11 +559,27 @@ export function startFrameWatchIn(container: Element, key: string): void {
         elementIds.set(row, element)
       }
       rows.push({
-        seq,
+        rowId,
+        ...(seq === undefined
+          ? {}
+          : { seq }),
         top: rect.top - top,
         height: rect.height,
         element,
-        shown: row.style.visibility !== 'hidden',
+        shown: intersects && row.style.visibility !== 'hidden',
+        ...(covered
+          ? { covered }
+          : {}),
+      })
+    }
+    for (const [rowId, rect] of overlays) {
+      rows.push({
+        rowId,
+        top: rect.top - top,
+        height: rect.height,
+        element: 0,
+        shown: false,
+        covered: true,
       })
     }
     state.frames.push(rows)
@@ -691,8 +740,8 @@ export async function recordPremeasureCommitsFromNextLoad(page: Page): Promise<P
 export interface RowHeightChange {
   /** The sequence number of the row, or null for a row with none. */
   seq: string | null
-  /** What read the height: the row in the list (`visible`), or a hidden copy or the storage (`premeasure`). */
-  source: 'visible' | 'premeasure'
+  /** The height source is a mounted row, a hidden copy, or stored measurements. */
+  source: 'visible' | 'premeasure' | 'storage'
   /** Whether the row was mounted at the commit. */
   mounted: boolean
   /** The height that the app held for the row before the commit, or null for a row with none. */
@@ -710,18 +759,26 @@ const ROW_HEIGHT_CHANGES_KEY = '__chatScrollStabilityRowHeightChanges'
  * Collect, on `window` under `key`, each `leapmux:chat-row-height` event of the page, in the order of its arrival.
  * Runs in the browser.
  */
-export function startRowHeightRecordIn(key: string): void {
+export function startRowHeightRecordIn(options: string | { premeasureSeqs: readonly string[] }) {
   const changes: RowHeightChange[] = []
-  Reflect.set(window, key, changes)
-  window.addEventListener('leapmux:chat-row-height', (event) => {
+  const heights = new Map<string, number>()
+  const targetSeqs = typeof options === 'string'
+    ? undefined
+    : new Set(options.premeasureSeqs)
+  const report = (event: Event) => {
     const detail: unknown = event instanceof CustomEvent
       ? event.detail
       : undefined
     if (typeof detail !== 'object' || detail === null)
       return
     const { seq, source, mounted, previousHeight, height, previousKey, heightKey } = detail as Record<string, unknown>
-    if ((source !== 'visible' && source !== 'premeasure') || typeof height !== 'number')
+    if ((source !== 'visible' && source !== 'premeasure' && source !== 'storage') || typeof height !== 'number')
       return
+    if (targetSeqs !== undefined) {
+      if (source === 'premeasure' && typeof seq === 'string' && targetSeqs.has(seq))
+        heights.set(seq, height)
+      return
+    }
     changes.push({
       seq: typeof seq === 'string'
         ? seq
@@ -739,7 +796,14 @@ export function startRowHeightRecordIn(key: string): void {
         ? heightKey
         : null,
     })
-  })
+  }
+  const start = () => window.addEventListener('leapmux:chat-row-height', report)
+  const stop = () => window.removeEventListener('leapmux:chat-row-height', report)
+  if (typeof options === 'string') {
+    Reflect.set(window, options, changes)
+    start()
+  }
+  return { start, stop, heights }
 }
 
 /** The changes that the record under `key` collected, or an empty list when no record runs. Runs in the browser. */
@@ -1041,6 +1105,18 @@ async function rowHeightKeys(page: Page): Promise<string[]> {
   return (await storageKeys(page)).filter(holdsRowHeights)
 }
 
+/** Wait until the application has persisted a usable height for this row. */
+export async function expectStoredRowHeight(page: Page, rowId: string): Promise<void> {
+  await expect.poll(async () => {
+    for (const key of await rowHeightKeys(page)) {
+      const stored = (await readEntry(page, key))?.v as { rows?: unknown } | undefined
+      if (Array.isArray(stored?.rows) && stored.rows.some(row => Array.isArray(row) && row[0] === rowId && typeof row[2] === 'number' && row[2] > 0))
+        return true
+    }
+    return false
+  }, { message: `the app stores the height of row ${rowId}` }).toBe(true)
+}
+
 /**
  * Delete the row heights that the app stores for each chat, and leave the browser on an empty page. The caller
  * opens the chat again. No row then has a stored height, as in a browser that shows the chat for the first time.
@@ -1067,4 +1143,10 @@ export async function clearStoredRowHeights(page: Page): Promise<void> {
     await page.unroute(blank)
   }
   expect(await deleteEntries(page, await rowHeightKeys(page)), 'the helper deletes the stored row heights').toBeGreaterThan(0)
+}
+
+/** Leave the chat on a blank page with its saved heights and renders removed. */
+export async function clearStoredChatHeightsAndRenders(page: Page): Promise<void> {
+  await clearStoredRowHeights(page)
+  await clearStoredRenders(page)
 }

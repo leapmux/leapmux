@@ -984,7 +984,14 @@ describe('frameJumps', () => {
    * member gives its element and a fifth whether it shows.
    */
   const frame = (...rows: ([string, number, number] | [string, number, number, number, boolean?])[]): WatchedFrame =>
-    rows.map(([seq, top, height, element = Number(seq), shown = true]) => ({ seq, top, height, element, shown }))
+    rows.map(([seq, top, height, element = Number(seq), shown = true]) => ({
+      rowId: seq,
+      seq,
+      top,
+      height,
+      element,
+      shown,
+    }))
 
   it('finds no jump when every row moves by one distance and keeps its height', () => {
     expect(frameJumps([
@@ -1048,6 +1055,25 @@ describe('frameJumps', () => {
     ])).toEqual([])
   })
 
+  it('reports a blank viewport after a populated frame even when the remount window expires', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100, 1]),
+      frame(),
+      frame(),
+      frame(),
+      frame(),
+      frame(['1', 0, 100, 2]),
+    ])).toContainEqual(expect.objectContaining({ frame: 1, kind: 'blank' }))
+  })
+
+  it('reports an in-view slot that becomes hidden while neighboring rows stay visible', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100], ['2', 100, 100], ['3', 200, 100]),
+      frame(['1', 0, 100], ['2', 100, 100, 2, false], ['3', 200, 100]),
+      frame(['1', 0, 100], ['2', 100, 100], ['3', 200, 100]),
+    ])).toContainEqual(expect.objectContaining({ frame: 1, kind: 'visibility' }))
+  })
+
   // The defect that the element check exists for: an older page arrived during a fling, and every row in the view
   // unmounted and mounted again in one task, as a skeleton, at the same place.
   it('reports each row in the view that has a new element in the next frame', () => {
@@ -1061,11 +1087,11 @@ describe('frameJumps', () => {
   })
 
   it('reports a row that mounts again after frames with no row, up to REMOUNT_WINDOW_FRAMES frames apart', () => {
-    const gap = (frames: number) => Array.from({ length: frames }, () => frame())
+    const gap = (frames: number) => Array.from({ length: frames }, () => frame(['2', 120, 100]))
     expect(frameJumps([
-      frame(['1', 0, 100, 1]),
+      frame(['1', 0, 100, 1], ['2', 120, 100]),
       ...gap(REMOUNT_WINDOW_FRAMES - 1),
-      frame(['1', 0, 100, 2]),
+      frame(['1', 0, 100, 3], ['2', 120, 100]),
     ])).toEqual([
       { frame: REMOUNT_WINDOW_FRAMES, kind: 'remount', detail: `the row of seq 1 mounted again ${REMOUNT_WINDOW_FRAMES} frame(s) after its last sample` },
     ])
@@ -1074,9 +1100,9 @@ describe('frameJumps', () => {
   it('counts a new element for nothing when the row left the view for longer than REMOUNT_WINDOW_FRAMES frames', () => {
     // A row that scrolls out of the rendered rows and back unmounts on the way, and comes back as another element.
     expect(frameJumps([
-      frame(['1', 0, 100, 1]),
-      ...Array.from({ length: REMOUNT_WINDOW_FRAMES }, () => frame()),
-      frame(['1', 0, 100, 2]),
+      frame(['1', 0, 100, 1], ['2', 120, 100]),
+      ...Array.from({ length: REMOUNT_WINDOW_FRAMES }, () => frame(['2', 120, 100])),
+      frame(['1', 0, 100, 3], ['2', 120, 100]),
     ])).toEqual([])
   })
 
@@ -1095,7 +1121,12 @@ describe('frameJumps', () => {
     expect(frameJumps([
       frame(['1', 0, 100, 1, false]),
       frame(['1', 10, 100, 1, true]),
-      frame(['1', 20, 100, 1, false]),
+      [
+        {
+          ...frame(['1', 20, 100, 1, false])[0]!,
+          covered: true,
+        },
+      ],
     ])).toEqual([])
   })
 })
@@ -1118,6 +1149,8 @@ describe('startFrameWatchIn', () => {
   /** The container of `containerWith`, with the client height of its box: jsdom lays nothing out. */
   function viewWith(rows: { seq: string, top: number, height: number }[]): HTMLElement {
     const container = containerWith(rows)
+    for (const row of container.querySelectorAll<HTMLElement>('[data-seq]'))
+      row.dataset.chatRowId = row.dataset.seq
     Object.defineProperty(container, 'clientHeight', { value: 500 })
     return container
   }
@@ -1144,6 +1177,7 @@ describe('startFrameWatchIn', () => {
     expect(watched).toEqual([
       [
         {
+          rowId: '2',
           seq: '2',
           top: -10,
           height: 40,
@@ -1151,6 +1185,7 @@ describe('startFrameWatchIn', () => {
           shown: true,
         },
         {
+          rowId: '3',
           seq: '3',
           top: 200,
           height: 60,
@@ -1160,6 +1195,7 @@ describe('startFrameWatchIn', () => {
       ],
       [
         {
+          rowId: '2',
           seq: '2',
           top: -10,
           height: 40,
@@ -1167,6 +1203,7 @@ describe('startFrameWatchIn', () => {
           shown: true,
         },
         {
+          rowId: '3',
           seq: '3',
           top: 200,
           height: 60,
@@ -1191,6 +1228,7 @@ describe('startFrameWatchIn', () => {
     frames.runFrames()
     const replacement = placeAt(document.createElement('div'), 220, 40)
     replacement.dataset.seq = '2'
+    replacement.dataset.chatRowId = '2'
     remounted.replaceWith(replacement)
     frames.runFrames()
     const watched = stopFrameWatchIn(KEY)
@@ -1212,10 +1250,11 @@ describe('startFrameWatchIn', () => {
 describe('startRowHeightRecordIn', () => {
   const KEY = 'testRowHeightChanges'
 
-  /** Start a record under KEY, and remove its state after the test. Its listener stays, and writes to no state then. */
+  /** Start a record under KEY, and release its listener and state after the test. */
   function startRecord(): void {
-    startRowHeightRecordIn(KEY)
+    const record = startRowHeightRecordIn(KEY)
     onTestFinished(() => {
+      record.stop()
       Reflect.deleteProperty(window, KEY)
     })
   }
@@ -1224,6 +1263,28 @@ describe('startRowHeightRecordIn', () => {
   function dispatchHeight(detail: unknown): void {
     window.dispatchEvent(new CustomEvent('leapmux:chat-row-height', { detail }))
   }
+
+  it('starts a filtered recorder on request and stops recording on cleanup', () => {
+    const record = startRowHeightRecordIn({
+      premeasureSeqs: ['12'],
+    })
+    onTestFinished(record.stop)
+    dispatchHeight({ seq: '12', source: 'premeasure', height: 100 })
+    expect(record.heights.size).toBe(0)
+
+    record.start()
+    dispatchHeight({ seq: '12', source: 'storage', height: 800 })
+    dispatchHeight({ seq: '12', source: 'visible', height: 800 })
+    dispatchHeight({ seq: '13', source: 'premeasure', height: 800 })
+    dispatchHeight({ seq: '12', source: 'premeasure', height: 900 })
+    dispatchHeight({ seq: '12', source: 'premeasure', height: 950 })
+    record.stop()
+    dispatchHeight({ seq: '12', source: 'premeasure', height: 1000 })
+
+    expect(record.heights).toEqual(new Map([
+      ['12', 950],
+    ]))
+  })
 
   it('records each change in the order of its arrival, with the fields that the app states', () => {
     startRecord()
@@ -1297,7 +1358,7 @@ describe('startRowHeightRecordIn', () => {
     startRecord()
     window.dispatchEvent(new Event('leapmux:chat-row-height'))
     dispatchHeight(null)
-    dispatchHeight({ source: 'storage', height: 10 })
+    dispatchHeight({ source: 'unknown', height: 10 })
     dispatchHeight({ source: 'visible', height: '10' })
 
     expect(rowHeightChangesIn(KEY)).toEqual([])

@@ -41,8 +41,7 @@ describe('chatScrollStaleNative translator', () => {
     // user's upward (older) intent past the pre-rebase position.
     t.div.setScrollTop(900)
     t.advance(50)
-    // The baseline of the move: the position where the rebase landed.
-    expect(t.translator.translate()).toBe(4000)
+    expect(t.translator.translate()).toBe(true)
     expect(t.div.getScrollTop()).toBe(3900) // 900 + 3000, in the current space
   })
 
@@ -57,28 +56,28 @@ describe('chatScrollStaleNative translator', () => {
       armPrependShift(t)
       t.div.setScrollTop(staleTop)
       t.advance(50)
-      const baseline = t.translator.translate()
+      const translated = t.translator.translate()
       return {
-        baseline,
+        translated,
         scrollTop: t.div.getScrollTop(),
       }
     }
-    expect(afterTranslate(1150)).toEqual({ baseline: 4000, scrollTop: 4150 })
-    expect(afterTranslate(1200)).toEqual({ baseline: 4000, scrollTop: 4200 })
+    expect(afterTranslate(1150)).toEqual({ translated: true, scrollTop: 4150 })
+    expect(afterTranslate(1200)).toEqual({ translated: true, scrollTop: 4200 })
     // 250px is past the 200px limit, although it is under the 450px of the delta ratio.
-    expect(afterTranslate(1250)).toEqual({ baseline: undefined, scrollTop: 1250 })
+    expect(afterTranslate(1250)).toEqual({ translated: false, scrollTop: 1250 })
   })
 
   it('does not translate a direct drag or the event of an own write (already current-coordinate)', () => {
     const dragging = setup({ inputActive: true })
     armPrependShift(dragging)
     dragging.div.setScrollTop(900)
-    expect(dragging.translator.translate()).toBeUndefined()
+    expect(dragging.translator.translate()).toBe(false)
 
     const ownWrite = setup({ ownWrite: true })
     armPrependShift(ownWrite)
     ownWrite.div.setScrollTop(900)
-    expect(ownWrite.translator.translate()).toBeUndefined()
+    expect(ownWrite.translator.translate()).toBe(false)
   })
 
   it('expires the shift after the translate window', () => {
@@ -86,10 +85,138 @@ describe('chatScrollStaleNative translator', () => {
     armPrependShift(t)
     t.div.setScrollTop(900)
     t.advance(301)
-    expect(t.translator.translate()).toBeUndefined()
+    expect(t.translator.translate()).toBe(false)
     // And the record is gone: an in-window retry no longer translates either.
     t.advance(-300)
-    expect(t.translator.translate()).toBeUndefined()
+    expect(t.translator.translate()).toBe(false)
+  })
+
+  it('keeps translating an old-coordinate stream past the initial window', () => {
+    const t = setup({ clientHeight: 596 })
+    t.translator.noteRebase({
+      beforeTop: 262,
+      afterTop: 1646,
+      clientHeight: 596,
+      dir: 'older',
+    })
+
+    // The iOS capture still reported positions in the old coordinates 308ms after the rebase.
+    t.advance(275)
+    t.div.setScrollTop(82)
+    expect(t.translator.translate()).toBe(true)
+    expect(t.div.getScrollTop()).toBe(1466)
+
+    t.advance(33)
+    t.div.setScrollTop(66)
+    expect(t.translator.translate()).toBe(true)
+    expect(t.div.getScrollTop()).toBe(1450)
+
+    t.advance(16)
+    t.div.setScrollTop(1410)
+    expect(t.translator.translate()).toBe(false)
+    t.div.setScrollTop(50)
+    expect(t.translator.translate()).toBe(false)
+    expect(t.div.getScrollTop()).toBe(50)
+  })
+
+  it('expires after a quiet interval even when an own write echo arrived', () => {
+    const opts = { ownWrite: false }
+    const t = setup(opts)
+    armPrependShift(t)
+    t.advance(275)
+    t.div.setScrollTop(900)
+    expect(t.translator.translate()).toBe(true)
+
+    t.advance(200)
+    opts.ownWrite = true
+    expect(t.translator.translate()).toBe(false)
+
+    t.advance(101)
+    opts.ownWrite = false
+    t.div.setScrollTop(800)
+    expect(t.translator.translate()).toBe(false)
+    expect(t.div.getScrollTop()).toBe(800)
+  })
+
+  it('combines a second rebase with an old-coordinate stream that is still active', () => {
+    const t = setup()
+    armPrependShift(t)
+    t.advance(275)
+    t.div.setScrollTop(900)
+    expect(t.translator.translate()).toBe(true)
+    expect(t.div.getScrollTop()).toBe(3900)
+
+    t.advance(33)
+    t.translator.noteRebase({
+      beforeTop: 3900,
+      afterTop: 5000,
+      clientHeight: 500,
+      dir: 'older',
+    })
+    t.div.setScrollTop(850)
+    expect(t.translator.translate()).toBe(true)
+    expect(t.div.getScrollTop()).toBe(4950)
+  })
+
+  it('combines rebases after the reader moves more than one viewport', () => {
+    const t = setup()
+    armPrependShift(t)
+    t.advance(275)
+    t.div.setScrollTop(200)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(3200)
+
+    t.advance(33)
+    t.translator.noteRebase({
+      beforeTop: 3200,
+      afterTop: 5000,
+      clientHeight: 500,
+      dir: 'older',
+    })
+    t.div.setScrollTop(150)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(4950)
+  })
+
+  it('tracks old-coordinate travel across consecutive corrected samples', () => {
+    const t = setup()
+    t.translator.noteRebase({
+      beforeTop: 3000,
+      afterTop: 7000,
+      clientHeight: 500,
+      dir: 'older',
+    })
+    t.advance(275)
+    t.div.setScrollTop(2200)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(6200)
+
+    t.advance(33)
+    t.div.setScrollTop(1400)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(5400)
+
+    t.div.setScrollTop(5350)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(5350)
+    t.div.setScrollTop(1350)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(1350)
+  })
+
+  it('preserves the coordinate offset when a translated position clamps', () => {
+    const t = setup()
+    t.div.setScrollHeight(4500)
+    armPrependShift(t)
+    t.advance(250)
+    t.div.setScrollTop(1150)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(4000)
+
+    t.advance(33)
+    t.div.setScrollTop(950)
+    t.translator.translate()
+    expect(t.div.getScrollTop()).toBe(3950)
   })
 
   it('disarms once a genuine current-coordinate scroll arrives (no later mistranslation)', () => {
@@ -99,9 +226,9 @@ describe('chatScrollStaleNative translator', () => {
     // and the shift is dropped so a LATER scroll that merely crosses the old midpoint
     // cannot be yanked by the obsolete delta.
     t.div.setScrollTop(3800)
-    expect(t.translator.translate()).toBeUndefined()
+    expect(t.translator.translate()).toBe(false)
     t.div.setScrollTop(900)
-    expect(t.translator.translate()).toBeUndefined()
+    expect(t.translator.translate()).toBe(false)
   })
 
   it('disarms when a compensating second rebase brings the cumulative shift back under a screen', () => {
@@ -116,7 +243,7 @@ describe('chatScrollStaleNative translator', () => {
       dir: 'older',
     })
     t.div.setScrollTop(900)
-    expect(t.translator.translate()).toBeUndefined()
+    expect(t.translator.translate()).toBe(false)
   })
 
   it('keeps the shift through a rebase of a hidden pane', () => {
@@ -131,7 +258,7 @@ describe('chatScrollStaleNative translator', () => {
     })
     t.div.setScrollTop(900)
     t.advance(50)
-    expect(t.translator.translate()).toBe(4000)
+    expect(t.translator.translate()).toBe(true)
     expect(t.div.getScrollTop()).toBe(3900)
   })
 
@@ -155,7 +282,7 @@ describe('chatScrollStaleNative translator', () => {
     // 2500px render-ahead but BEYOND the old 2000px (clientHeight*2) window.
     t.div.setScrollTop(800)
     t.advance(50)
-    expect(t.translator.translate()).toBe(8000)
+    expect(t.translator.translate()).toBe(true)
     expect(t.div.getScrollTop()).toBe(5800) // 800 + 5000 delta, into the current space
   })
 
@@ -164,6 +291,6 @@ describe('chatScrollStaleNative translator', () => {
     armPrependShift(t)
     t.translator.invalidate()
     t.div.setScrollTop(900)
-    expect(t.translator.translate()).toBeUndefined()
+    expect(t.translator.translate()).toBe(false)
   })
 })

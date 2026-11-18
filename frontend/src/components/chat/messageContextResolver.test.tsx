@@ -3,8 +3,9 @@ import type { MessageContextSources } from './messageContextResolver'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
+import type { ChatWindowChange } from '~/stores/chat.store'
 import { create } from '@bufbuild/protobuf'
-import { createEffect, createRoot, createSignal } from 'solid-js'
+import { batch, createEffect, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
@@ -76,6 +77,7 @@ function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {})
     const index = createSpanIndex()
     index.reindex('agent', initial)
     const observers = new Set<(message: AgentChatMessage) => void>()
+    const windowObservers = new Set<(change: ChatWindowChange) => void>()
     const fetchSpan = vi.fn(async (_identity: MessageSpanIdentity, _signal: AbortSignal): Promise<AgentChatMessage[]> => [])
     const fetchMessage = vi.fn(async (_seq: bigint, _signal: AbortSignal): Promise<AgentChatMessage | undefined> => undefined)
     const resolver = createMessageContextResolver({
@@ -95,6 +97,10 @@ function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {})
         observers.add(observer)
         return () => observers.delete(observer)
       },
+      subscribeWindowChanges: (observer) => {
+        windowObservers.add(observer)
+        return () => windowObservers.delete(observer)
+      },
       backgroundTask: () => undefined,
       progress: () => undefined,
       // The window holds the whole transcript unless a case states another edge.
@@ -109,14 +115,162 @@ function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {})
       fetchMessage,
       dispose,
       emit: (message: AgentChatMessage) => observers.forEach(observer => observer(message)),
-      replaceMessages: (next: AgentChatMessage[]) => {
+      replaceMessages: (next: AgentChatMessage[]) => batch(() => {
+        const ids = new Set(next.map(message => message.id))
+        const dropped = messages().filter(message => !ids.has(message.id))
+        if (dropped.length > 0)
+          windowObservers.forEach(observer => observer({ kind: 'eviction', dropped, kept: next }))
         index.reindex('agent', next)
         setMessages(next)
         setVersion(value => value + 1)
-      },
+      }),
     }
   })
 }
+
+function storeFixture(initial: AgentChatMessage[], fetchSpan: MessageContextSources['fetchSpan'] = async () => []) {
+  const store = createChatStore()
+  const agentId = 'agent'
+  store.setMessages(agentId, initial)
+  return createRoot((dispose) => {
+    cleanups.push(dispose)
+    const messages = () => store.getMessages(agentId)
+    const resolver = createMessageContextResolver({
+      scopeKey: 'worker/agent',
+      messages,
+      messageVersion: () => store.getMessageVersion(agentId),
+      contentVersion: store.getMessageContentVersion,
+      spanMessage: (identity, side) => store.getSpanMessage(agentId, identity, side),
+      messageBySeq: seq => store.getLoadedMessageBySeq(agentId, seq),
+      fetchSpan,
+      fetchMessage: async () => undefined,
+      fetchFileImage: async () => { throw new Error('The image source is unavailable') },
+      fetchFileImageSize: async () => undefined,
+      subscribe: observer => store.subscribeMessages(agentId, observer),
+      subscribeWindowChanges: observer => store.subscribeWindowChanges(agentId, observer),
+      retainContentVersion: id => store.retainMessageContentVersion(agentId, id),
+      backgroundTask: () => undefined,
+      progress: () => undefined,
+      holdsOldest: () => !store.hasOlderMessages(agentId),
+      holdsNewest: () => !store.hasNewerMessages(agentId),
+    })
+    const observe = <T,>(read: () => T): T[] => createRoot((disposeObserver) => {
+      cleanups.push(disposeObserver)
+      const observations: T[] = []
+      createRenderEffect(() => {
+        observations.push(read())
+      })
+      return observations
+    })
+    return {
+      store,
+      agentId,
+      messages,
+      resolver,
+      observe,
+    }
+  })
+}
+
+describe('message context during history mutations', () => {
+  const identity = { spanId: 'span', agentSessionId: '' }
+  const request = toolMessage('request', 1n, 'request')
+  const result = toolMessage('result', 2n, 'result')
+
+  it('retains a request before reactive readers see its result alone after a trim', () => {
+    const { store, agentId, messages, resolver, observe } = storeFixture([request, result])
+    const seen = observe(() => {
+      messages()
+      return resolver.request(identity)?.revision
+    })
+
+    batch(() => store.trimOldestEnd(agentId, 1))
+
+    expect(seen).not.toContain(undefined)
+    for (const revision of seen)
+      expect(revision).toEqual(seen[0])
+    expect(store.getLoadedMessageBySeq(agentId, request.seq)).toBeUndefined()
+  })
+
+  it('discards a result retracted by the authoritative tail', () => {
+    const { store, agentId, resolver } = storeFixture([request, result])
+    expect(resolver.result(identity)?.message.id).toBe(result.id)
+
+    store.reconcileAuthoritativeTail(agentId, request.seq)
+
+    expect(store.getLoadedMessageBySeq(agentId, result.seq)).toBeUndefined()
+    expect(resolver.result(identity)).toBeUndefined()
+  })
+
+  it('discards a result replaced at the same sequence by a different span', () => {
+    const { store, agentId, resolver } = storeFixture([request, result])
+    const replacement = toolMessage('replacement', result.seq, 'result', { spanId: 'other-span' })
+
+    store.setMessages(agentId, [request, replacement])
+
+    expect(store.getLoadedMessageBySeq(agentId, result.seq)?.id).toBe(replacement.id)
+    expect(resolver.result(identity)).toBeUndefined()
+  })
+
+  it('keeps a late span response from restoring a retracted result', async () => {
+    let respond!: (messages: AgentChatMessage[]) => void
+    const { store, agentId, resolver } = storeFixture([result], () => new Promise(resolve => respond = resolve))
+    const release = resolver.retainSpan(identity)
+    try {
+      const lookup = resolver.loadRequest(result)
+      expect(lookup).toBeDefined()
+      store.reconcileAuthoritativeTail(agentId, request.seq)
+      respond([request, result])
+      await lookup
+
+      expect(resolver.result(identity)).toBeUndefined()
+    }
+    finally {
+      release()
+    }
+  })
+
+  it('preserves a revision on trim and re-admission before a later edit', () => {
+    const { store, agentId, resolver } = storeFixture([request, result])
+    const editedResult = toolMessage(result.id, result.seq, 'result', { spanLines: '[]' })
+    store.addMessage(agentId, editedResult)
+    const editedRevision = resolver.result(identity)?.revision
+    expect(editedRevision?.contentVersion).toBe(1)
+
+    store.trimNewestEnd(agentId, 1)
+    expect.soft(resolver.result(identity)?.revision).toEqual(editedRevision)
+    store.setMessages(agentId, [request, editedResult])
+    expect.soft(resolver.result(identity)?.revision).toEqual(editedRevision)
+    store.addMessage(agentId, toolMessage(result.id, result.seq, 'result', { spanLines: '[null]' }))
+    expect(resolver.result(identity)?.revision.contentVersion).toBeGreaterThan(editedRevision!.contentVersion)
+  })
+
+  it('updates a mounted span lookup when a page supplies the missing side', () => {
+    const { store, agentId, resolver, observe } = storeFixture([request])
+    const seen = observe(() => resolver.result(identity)?.message.id)
+    expect(seen).toEqual([undefined])
+
+    store.setMessages(agentId, [request, result])
+
+    expect(seen.at(-1)).toBe(result.id)
+  })
+
+  it('keeps a live completion for a rendered request when the store refuses the new row', () => {
+    const filler = toolMessage('filler', 2n, 'request', { spanId: 'unrelated' })
+    const completion = toolMessage('completion', 3n, 'result')
+    const { store, agentId, resolver } = storeFixture([request, filler])
+    const release = resolver.retainRenderSpan(identity)
+    try {
+      store.trimNewestEnd(agentId, 1)
+      expect(store.addMessage(agentId, completion)).toBe(false)
+
+      expect(resolver.result(identity)?.message.id).toBe(completion.id)
+    }
+    finally {
+      release()
+    }
+  })
+})
 
 describe('message context resolver', () => {
   it('separates identical tool IDs in loaded provider sessions', () => {
@@ -675,6 +829,8 @@ describe('message context resolver', () => {
         fetchFileImage: async () => { throw new Error('The image source is unavailable') },
         fetchFileImageSize: async () => undefined,
         subscribe: observer => store.subscribeMessages(agentId, observer),
+        subscribeWindowChanges: observer => store.subscribeWindowChanges(agentId, observer),
+        retainContentVersion: id => store.retainMessageContentVersion(agentId, id),
         backgroundTask: () => undefined,
         progress: () => undefined,
         holdsOldest: () => !store.hasOlderMessages(agentId),
@@ -810,6 +966,19 @@ describe('visibleRows of a hidden request message', () => {
     const { resolver, visibleRows } = fixture([start, done])
     expect(resolver.role(start)).toBe('request')
     expect(visibleRows(identity)).toEqual({ request: false })
+  })
+
+  it.each(['older', 'newer'] as const)('preserves positional roles when trimming the %s half of a span', (side) => {
+    const { store, agentId, resolver } = storeFixture([start, done])
+
+    if (side === 'older')
+      store.trimOldestEnd(agentId, 1)
+    else
+      store.trimNewestEnd(agentId, 1)
+
+    expect(resolver.request(identity)?.message.id).toBe(start.id)
+    expect(resolver.result(identity)?.message.id).toBe(done.id)
+    expect(resolver.role(done)).toBe('result')
   })
 
   it('counts the request row of a request message that draws one', () => {

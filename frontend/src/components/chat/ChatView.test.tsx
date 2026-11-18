@@ -34,7 +34,7 @@ import { LOOKAHEAD_PREMEASURE_ROWS } from './chatPremeasureBands'
 import { WARMUP_IDLE_DELAY_MS } from './chatPremeasureWarmup'
 import { STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
 import { railIdle } from './ChatScrollRail.css'
-import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, STAGING_WIDTH_SETTLE_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
+import { ChatView, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, STAGING_WIDTH_SETTLE_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
 import { messageListRailActive, railedRowContent, rowSkeletonClosing, virtualLayer, virtualSpacer } from './ChatView.css'
 import { computeOverscanPx } from './chatViewportGeometry'
 import { bandRow, bleedRow } from './messageStyles.css'
@@ -719,6 +719,20 @@ async function renderChatWithRows(messages: AgentChatMessage[]): Promise<ReturnT
 // matching the historical behavior of these tests), not a `role` field —
 // AgentChatMessage has no `role`, so it is intentionally not placed on the
 // returned proto.
+/** Build a Claude tool frame with the original protobuf field defaults. */
+function claudeSpanMessage(spanId: string, spanType: string) {
+  return (id: string, seq: bigint, payload: Record<string, unknown>): AgentChatMessage => create(AgentChatMessageSchema, {
+    id,
+    seq,
+    source: MessageSource.AGENT,
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    contentCompression: ContentCompression.NONE,
+    content: new TextEncoder().encode(JSON.stringify(payload)),
+    spanId,
+    spanType,
+  })
+}
+
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
   const content = JSON.stringify({
     message: {
@@ -1295,16 +1309,7 @@ describe('ChatView', () => {
   // result row is measured, so no row changes its height.
   describe('the pending row of a running call', () => {
     const SPAN = 'pending-todo'
-    const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
-      id,
-      seq,
-      source: MessageSource.AGENT,
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      contentCompression: ContentCompression.NONE,
-      content: new TextEncoder().encode(JSON.stringify(payload)),
-      spanId: SPAN,
-      spanType: 'TodoWrite',
-    })
+    const claudeMessage = claudeSpanMessage(SPAN, 'TodoWrite')
     const todos = [
       { content: 'Carried task', status: 'pending', activeForm: 'Carrying the task' },
     ]
@@ -1369,21 +1374,43 @@ describe('ChatView', () => {
       expect(wiringState.persistenceDeps!.loadedItems().map(item => item.id)).toEqual(['todo-request', 'todo-result'])
     })
 
+    it('keeps the preview until an intervening unmeasured row lets the result join', async () => {
+      const blocker = {
+        ...makeMessage('assistant', 'Still measuring', 'blocker'),
+        seq: 2n,
+      }
+      const closing = { ...result, seq: 3n }
+      const [messages, setMessages] = createSignal([request])
+      const messageContext = testMessageContext({ messages })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      const pending = () => listed(view.container, '[data-tool-row-role="pending"]')
+      expect(pending()).toHaveLength(1)
+
+      setMessages([
+        request,
+        blocker,
+        closing,
+      ])
+      const loaded = wiringState.persistenceDeps!.loadedItems()
+      const resultItem = loaded.find(item => item.id === closing.id)!
+      const blockerItem = loaded.find(item => item.id === blocker.id)!
+      const heights = viewHeightCache()
+      heights.commit(resultItem, 40, resultItem.heightKey, 'premeasure')
+      expect(view.container.querySelector('[data-seq="3"]')).toBeNull()
+      expect(pending()).toHaveLength(1)
+
+      heights.commit(blockerItem, 30, blockerItem.heightKey, 'premeasure')
+      expect(pending()).toHaveLength(0)
+      expect(view.container.querySelector('[data-seq="3"]')).toHaveTextContent('Carried task')
+    })
+
     // The store drops the live output the moment the result message arrives, and the
     // result row joins the list only once a hidden copy measured it. The pending row keeps
     // the output that it drew in between, so the swap moves no text.
     it('keeps its live output until the result row replaces it', async () => {
       const BASH_SPAN = 'pending-bash'
-      const bashMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
-        id,
-        seq,
-        source: MessageSource.AGENT,
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        contentCompression: ContentCompression.NONE,
-        content: new TextEncoder().encode(JSON.stringify(payload)),
-        spanId: BASH_SPAN,
-        spanType: 'Bash',
-      })
+      const bashMessage = claudeSpanMessage(BASH_SPAN, 'Bash')
       const bashRequest = bashMessage('bash-request', 1n, {
         type: 'assistant',
         message: {
@@ -1424,6 +1451,12 @@ describe('ChatView', () => {
       const pending = () => listed(view.container, '[data-tool-row-role="pending"]')
       expect(pending()).toHaveLength(1)
       expect(pending()[0]).toHaveTextContent('compiling main.c')
+      const previewKey = () => wiringState.bandsDeps!.loadedItems().find(item => item.id === pendingRowId(bashRequest.id))?.heightKey
+      const initialKey = previewKey()
+      expect(initialKey).toBeDefined()
+      setOutputTail('compiling main.c\ncompiling render.c\nlinking the executable')
+      expect(previewKey()).not.toBe(initialKey)
+      const finalPreviewKey = previewKey()
 
       batch(() => {
         setMessages([bashRequest, bashResult])
@@ -1433,6 +1466,7 @@ describe('ChatView', () => {
       expect(view.container.querySelector('[data-seq="2"]')).toBeNull()
       expect(pending()).toHaveLength(1)
       expect(pending()[0]).toHaveTextContent('compiling main.c')
+      expect(previewKey()).toBe(finalPreviewKey)
 
       await measureHiddenCopies(view.container)
       expect(pending()).toHaveLength(0)
@@ -1444,16 +1478,7 @@ describe('ChatView', () => {
     // row, no row of the call draws them on that request row.
     it('offers the diff toggle of a request row only while its pending row is listed', async () => {
       const WRITE_SPAN = 'pending-write'
-      const writeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
-        id,
-        seq,
-        source: MessageSource.AGENT,
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        contentCompression: ContentCompression.NONE,
-        content: new TextEncoder().encode(JSON.stringify(payload)),
-        spanId: WRITE_SPAN,
-        spanType: 'Write',
-      })
+      const writeMessage = claudeSpanMessage(WRITE_SPAN, 'Write')
       const writeRequest = writeMessage('write-request', 1n, {
         type: 'assistant',
         message: {
@@ -1546,16 +1571,7 @@ describe('ChatView', () => {
   // result row in view by its header and its request side.
   describe('the height key of a result row whose request lies in an older page', () => {
     const SPAN = 'window-presence'
-    const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
-      id,
-      seq,
-      source: MessageSource.AGENT,
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      contentCompression: ContentCompression.NONE,
-      content: new TextEncoder().encode(JSON.stringify(payload)),
-      spanId: SPAN,
-      spanType: 'Bash',
-    })
+    const claudeMessage = claudeSpanMessage(SPAN, 'Bash')
     const request = claudeMessage('presence-request', 1n, {
       type: 'assistant',
       message: {
@@ -1631,16 +1647,7 @@ describe('ChatView', () => {
   // expanded request row must follow the words of the result.
   describe('the height key of a request row when its result lands', () => {
     const SPAN = 'header-agent'
-    const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
-      id,
-      seq,
-      source: MessageSource.AGENT,
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      contentCompression: ContentCompression.NONE,
-      content: new TextEncoder().encode(JSON.stringify(payload)),
-      spanId: SPAN,
-      spanType: 'Bash',
-    })
+    const claudeMessage = claudeSpanMessage(SPAN, 'Bash')
     const request = claudeMessage('bash-request', 1n, {
       type: 'assistant',
       // A command of many lines, so the request row offers Expand.
@@ -1698,6 +1705,54 @@ describe('ChatView', () => {
       expect(after).not.toBe(before)
     })
 
+    it('updates the key of an expanded header when its subagent title changes', async () => {
+      const launch = create(AgentChatMessageSchema, {
+        id: 'launch',
+        seq: 1n,
+        source: MessageSource.AGENT,
+        agentProvider: AgentProvider.CODEX,
+        contentCompression: ContentCompression.NONE,
+        spanId: 'launch',
+        spanType: 'collabAgentToolCall',
+        content: new TextEncoder().encode(JSON.stringify({
+          item: {
+            id: 'launch',
+            type: 'collabAgentToolCall',
+            tool: 'spawnAgent',
+            status: 'inProgress',
+            receiverThreadIds: ['child-1'],
+            prompt: 'Read the source and report what you find.',
+          },
+        })),
+      })
+      const [title, setTitle] = createSignal('Read the source')
+      const messageContext = testMessageContext({
+        messages: () => [launch],
+        backgroundTask: rowKey => rowKey === 'child-1'
+          ? {
+              rowKey,
+              kind: 'subagent',
+              title: title(),
+              activity: '',
+              status: 'running',
+            }
+          : undefined,
+      })
+      const view = render(() => <PreferencesProvider><ChatView messages={[launch]} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      const row = view.container.querySelector<HTMLElement>('[data-seq="1"]')!
+      const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === launch.id)?.heightKey
+      const collapsed = keyOf()
+      setTitle('Review the scroll code')
+      expect(keyOf()).toBe(collapsed)
+
+      fireEvent.click(within(row).getByRole('button', { name: 'Show prompt' }))
+      const expanded = keyOf()
+      setTitle('Review the scroll code and write a detailed explanation for each finding')
+      expect(row).toHaveTextContent('write a detailed explanation')
+      expect(keyOf()).not.toBe(expanded)
+    })
+
     // The window does not hold the newest messages, as after a jump to the top: the result
     // lies in a newer page. The expanded row loads it before it shows, so the page that
     // brings the result later changes neither the words of its header nor its height.
@@ -1745,16 +1800,7 @@ describe('ChatView', () => {
     // its expanded header wraps as any other does.
     it.each([false, true])('re-keys an agent launch only while its prompt is expanded: expanded %s', async (expanded) => {
       const TASK_SPAN = 'header-task'
-      const taskMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
-        id,
-        seq,
-        source: MessageSource.AGENT,
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        contentCompression: ContentCompression.NONE,
-        content: new TextEncoder().encode(JSON.stringify(payload)),
-        spanId: TASK_SPAN,
-        spanType: 'Task',
-      })
+      const taskMessage = claudeSpanMessage(TASK_SPAN, 'Task')
       const taskRequest = taskMessage('task-request', 1n, {
         type: 'assistant',
         message: {
@@ -5841,9 +5887,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // closed it. Fired through the hook's callback because the stub here
       // never runs the real scroll handler (see mockState.scrollOpts).
       const COAST_TICK_MS = RAIL_VISIBLE_IDLE_MS - 100
-      const COAST_TICKS = 3
-      // The whole coast stays inside the cap; outrunning it is the next test.
-      expect(COAST_TICK_MS * COAST_TICKS).toBeLessThan(RAIL_COAST_MAX_MS)
+      const COAST_TICKS = 8
       for (let tick = 0; tick < COAST_TICKS; tick++) {
         vi.advanceTimersByTime(COAST_TICK_MS)
         mockState.scrollOpts?.onMomentumScroll?.()
@@ -5857,12 +5901,28 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(rail(container).className).toContain(railIdle)
     })
 
-    // The cap on that relight. The hook also reports a scroll that the browser makes
-    // by itself, such as one that brings a focused element into view, and an uncapped
-    // relight would then light the rail again for each such scroll, however long after
-    // the last input. The cap is measured from the last INPUT and never re-based by a
-    // scroll.
-    it('stops relighting the rail once a coast outruns its bound', () => {
+    it('does not extend the rail for movement caused by a focus transfer', () => {
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
+      const { container } = renderWithRail()
+      const list = scroller(container)
+      const button = document.createElement('button')
+      list.append(button)
+      fireEvent.wheel(list, { deltaY: -40 })
+      expect(rail(container).className).not.toContain(railIdle)
+
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS - 1)
+      fireEvent.focus(button)
+      mockState.scrollOpts?.onMomentumScroll?.()
+      vi.advanceTimersByTime(1)
+      expect(rail(container).className).toContain(railIdle)
+
+      fireEvent.wheel(list, { deltaY: -40 })
+      expect(rail(container).className).not.toContain(railIdle)
+    })
+
+    it('does not relight the rail on a bare scroll after the idle window closes', () => {
       vi.useFakeTimers({
         toFake: ['performance', 'setTimeout', 'clearTimeout'],
       })
@@ -5872,11 +5932,13 @@ describe('chat view virtualized with stubbed deps', () => {
       fireEvent.touchMove(scroller(container))
       fireEvent.touchEnd(scroller(container))
 
-      vi.advanceTimersByTime(RAIL_COAST_MAX_MS + 1)
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS)
+      expect(rail(container).className).toContain(railIdle)
       mockState.scrollOpts?.onMomentumScroll?.()
 
-      // The window closed on its own idle timer, and that scroll did not reopen it.
       expect(rail(container).className).toContain(railIdle)
+      fireEvent.touchMove(scroller(container))
+      expect(rail(container).className).not.toContain(railIdle)
     })
 
     // A finger landing on the transcript scrolls nothing. Lighting the rail for it put

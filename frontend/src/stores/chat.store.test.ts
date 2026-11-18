@@ -248,6 +248,8 @@ function storeContext(store: ReturnType<typeof createChatStore>, agentId: string
       spanMessage: (spanId, side) => store.getSpanMessage(agentId, spanId, side),
       messageBySeq: seq => store.getLoadedMessageBySeq(agentId, seq),
       subscribe: observer => store.subscribeMessages(agentId, observer),
+      subscribeWindowChanges: observer => store.subscribeWindowChanges(agentId, observer),
+      retainContentVersion: id => store.retainMessageContentVersion(agentId, id),
     })
     contexts.set(agentId, resolver)
   }

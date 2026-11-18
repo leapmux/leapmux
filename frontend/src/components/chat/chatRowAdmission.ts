@@ -109,6 +109,8 @@ export interface AdmittedRangeInput {
   target: AdmissionTarget | undefined
   /** The height of the viewport in pixels. 0 for a pane with no layout box. */
   viewHeight: number
+  /** Pending row IDs paired with their eventual replacements. */
+  replacements?: ReadonlyMap<string, string> | undefined
 }
 
 export interface WantedRowsInput {
@@ -214,11 +216,30 @@ function measuredHeight(input: AdmittedRangeInput, index: number): number {
 }
 
 /** Whether the heights of the rows from `start` to `end` (excluded) sum to `need` or more. */
-function heightReaches(input: AdmittedRangeInput, start: number, end: number, need: number): boolean {
+function heightReaches(input: AdmittedRangeInput, start: number, end: number, need: number, retired: ReadonlySet<string> | undefined): boolean {
   let sum = 0
-  for (let index = start; index < end && sum < need; index++)
-    sum += measuredHeight(input, index)
+  for (let index = start; index < end && sum < need; index++) {
+    if (!retired?.has(input.rows[index]!.id))
+      sum += measuredHeight(input, index)
+  }
   return sum >= need
+}
+
+/** Only results in the selected run can replace a preview. */
+function replacedRows(rows: readonly ChatRowItem[], range: AdmittedRange, replacements: ReadonlyMap<string, string> | undefined): Set<string> | undefined {
+  if (replacements === undefined || replacements.size === 0)
+    return undefined
+  const admitted = admittedIdsOf(rows, range)
+  if (admitted === undefined)
+    return undefined
+  const retiring = new Set<string>()
+  for (const [preview, result] of replacements) {
+    if (admitted.has(result))
+      retiring.add(preview)
+  }
+  return retiring.size > 0
+    ? retiring
+    : undefined
 }
 
 /**
@@ -239,8 +260,11 @@ function targetFills(input: AdmittedRangeInput, target: AdmissionTarget, t: numb
     return false
   const atFirstRow = run.start === 0
   const atLastRow = run.end === input.rows.length
+  // The placement sees the replacement, so a preview that disappears cannot
+  // contribute height to the fill test.
+  const retired = replacedRows(input.rows, run, input.replacements)
   // A function, so that a run at the first or the last row sums nothing.
-  const runFillsView = (): boolean => heightReaches(input, run.start, run.end, viewHeight)
+  const runFillsView = (): boolean => heightReaches(input, run.start, run.end, viewHeight, retired)
   switch (target.kind) {
     case 'tail':
       // The view shows the rows up from the tail.
@@ -253,7 +277,7 @@ function targetFills(input: AdmittedRangeInput, target: AdmissionTarget, t: numb
       // inside it. The placement resolves that place against the measured height of the
       // row, so this rule does the same.
       const need = viewHeight + anchorOffsetInRow(target.anchor, measuredHeight(input, t))
-      if (heightReaches(input, t, run.end, need))
+      if (heightReaches(input, t, run.end, need, retired))
         return true
       // The rows below the target end before the view is full: the browser then shows
       // the bottom of the content, and the rows above the target fill the view.
@@ -340,6 +364,7 @@ export function rowsWantedForTarget(input: WantedRowsInput): number[] {
 interface AdmissionComputation {
   /** The loaded rows of the run. */
   rows: readonly ChatRowItem[]
+  retired: readonly string[]
   start: number
   end: number
   targetState: AdmissionTargetState
@@ -365,7 +390,7 @@ function admittedIdsOf(rows: readonly ChatRowItem[], range: AdmittedRange): Read
  * The row that the unit keeps for the admitted rows of `range`, which hold the tail (see
  * RowAdmission.holdsTail): their last row, or the row that it continues
  * (ChatRowItem.continuesPrevious). A continuing row can leave the loaded rows while the
- * row above it stays -- a pending row leaves when the result row of its call is measured
+ * row above it stays. A pending row leaves when its result is admitted
  * (see chatPendingRows), and a newer message can still be staged then. A kept row that
  * left counts for nothing, so keeping the continuing row would end the hold.
  */
@@ -406,6 +431,10 @@ export interface AdmissionRequest {
 }
 
 export interface RowAdmission {
+  /** The loaded rows after results replace their previews. */
+  rows: Accessor<readonly ChatRowItem[]>
+  /** The previews replaced by this admission update. */
+  retiredRows: Accessor<readonly string[]>
   /** The admitted rows, as indexes into the loaded rows. */
   range: Accessor<AdmittedRange>
   /**
@@ -451,6 +480,7 @@ export interface RowAdmission {
 export function createRowAdmission(deps: {
   /** The loaded rows. */
   rows: Accessor<readonly ChatRowItem[]>
+  replacements?: Accessor<ReadonlyMap<string, string>>
   heights: Pick<RowHeightCache, 'heightOf' | 'isMeasured' | 'isMounted' | 'version'>
   /** The height of the viewport in pixels. */
   viewHeight: Accessor<number>
@@ -478,14 +508,16 @@ export function createRowAdmission(deps: {
   // The memo must take no `equals` option: a skipped commit would keep the carried state
   // of the run before.
   const computation = createMemo<AdmissionComputation>((before) => {
-    const rows = deps.rows()
+    const candidates = deps.rows()
+    const replacements = deps.replacements?.()
     // The mounted set is a plain Set, so the cache changes its version when the unmount of
     // a row changes an answer of `heightOf`.
     deps.heights.version()
     const tailLoaded = deps.tailLoaded()
     const target = currentRequest()?.target
     const result = nextAdmittedRange({
-      rows,
+      rows: candidates,
+      replacements,
       heightOf: deps.heights.heightOf,
       previous: before?.admittedIds,
       viewAnchor: untrack(deps.viewAnchor),
@@ -493,6 +525,26 @@ export function createRowAdmission(deps: {
       target,
       viewHeight: deps.viewHeight(),
     })
+    const retired = replacedRows(candidates, result, replacements)
+    let rows = candidates
+    if (retired !== undefined) {
+      // Translate indexes from candidate rows to the list the virtualizer reads.
+      let start = result.start
+      let end = result.end
+      rows = candidates.filter((row, index) => {
+        if (!retired.has(row.id))
+          return true
+        if (index < result.start)
+          start--
+        if (index < result.end)
+          end--
+        return false
+      })
+      result.start = start
+      result.end = end
+      if (result.targetState === 'waiting' && target?.kind === 'row' && retired.has(target.anchor.id))
+        result.targetState = 'gone'
+    }
     const admitsRows = result.end > result.start
     // The unit forgets the kept row while the loaded window does not hold the live tail.
     const kept = tailLoaded
@@ -506,6 +558,9 @@ export function createRowAdmission(deps: {
       && before.end === result.end
     return {
       rows,
+      retired: retired === undefined
+        ? []
+        : Array.from(retired),
       start: result.start,
       end: result.end,
       targetState: result.targetState,
@@ -536,6 +591,8 @@ export function createRowAdmission(deps: {
     },
   )
   const targetState = createMemo(() => computation().targetState)
+  const rows = createMemo(() => computation().rows, [], { equals: shallowEqualArrays })
+  const retiredRows = createMemo(() => computation().retired, [], { equals: shallowEqualArrays })
   const holdsTail = createMemo(() => computation().holdsTail)
   const wantedRows = createMemo<readonly number[]>(() => computation().wanted, [], { equals: shallowEqualArrays })
   const isEmpty = (): boolean => {
@@ -546,6 +603,8 @@ export function createRowAdmission(deps: {
   const awaitingFirstView = createMemo(() => rowCount() > 0 && isEmpty())
 
   return {
+    rows,
+    retiredRows,
     range,
     stagedOlder: createMemo(() => awaitingFirstView() || range().start > 0),
     stagedNewer: createMemo(() => awaitingFirstView() || range().end < rowCount()),

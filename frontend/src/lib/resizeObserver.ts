@@ -1,22 +1,9 @@
-import { monotonicNow } from './monotonicNow'
+import { scheduleDeferredFrame } from './animationFrame'
 
 export interface RafResizeObserver {
   observe: (target: Element, options?: ResizeObserverOptions) => void
   unobserve: (target: Element) => void
   disconnect: () => void
-}
-
-function requestFrame(cb: FrameRequestCallback): number {
-  if (typeof requestAnimationFrame === 'function')
-    return requestAnimationFrame(cb)
-  return setTimeout(() => cb(monotonicNow()), 0) as unknown as number
-}
-
-function cancelFrame(id: number): void {
-  if (typeof cancelAnimationFrame === 'function')
-    cancelAnimationFrame(id)
-  else
-    clearTimeout(id)
 }
 
 /**
@@ -36,13 +23,13 @@ export function createRafResizeObserver(
     return undefined
 
   const pendingEntries = new Map<Element, ResizeObserverEntry>()
-  let frameId: number | null = null
+  let cancelFrame: (() => void) | undefined
   let scheduled = false
   let disconnected = false
   let observer: ResizeObserver
 
   const flush = () => {
-    frameId = null
+    cancelFrame = undefined
     scheduled = false
     if (disconnected || pendingEntries.size === 0)
       return
@@ -60,7 +47,7 @@ export function createRafResizeObserver(
     scheduled = true
 
     let firedSynchronously = false
-    const id = requestFrame(() => {
+    const cancel = scheduleDeferredFrame(() => {
       firedSynchronously = true
       flush()
     })
@@ -68,16 +55,16 @@ export function createRafResizeObserver(
     // Some tests intentionally stub rAF as synchronous. Avoid recording a stale
     // handle after `flush` already ran.
     if (scheduled && !firedSynchronously)
-      frameId = id
+      cancelFrame = cancel
   }
 
   const cancelPendingFrame = () => {
     if (!scheduled)
       return
     scheduled = false
-    if (frameId !== null)
-      cancelFrame(frameId)
-    frameId = null
+    const cancel = cancelFrame
+    cancelFrame = undefined
+    cancel?.()
   }
 
   observer = new ResizeObserver((entries) => {

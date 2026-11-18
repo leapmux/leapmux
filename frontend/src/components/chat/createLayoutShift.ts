@@ -185,21 +185,13 @@ export function placementScrollTop(
     : scrollTopOf(contentTop)
 }
 
-/** A rebase: the shift that it kept, and the snapshot that it applied to. */
-interface RebaseRecord {
+/** A shift and the geometry snapshot it applies to. */
+interface ShiftAtGeometry {
   snapshot: LayoutSnapshot | undefined
   shift: number
 }
 
-/** The layout shift, with the snapshot and the last rebase that it applies to. */
-interface ShiftState {
-  snapshot: LayoutSnapshot | undefined
-  shift: number
-  /** The last rebase that the state applied, or `undefined` before the first one. */
-  rebase: RebaseRecord | undefined
-}
-
-const INITIAL_SHIFT_STATE: ShiftState = { snapshot: undefined, shift: 0, rebase: undefined }
+const INITIAL_SHIFT_STATE: ShiftAtGeometry = { snapshot: undefined, shift: 0 }
 
 /** Create the layout shift of the virtualized chat list (see the module comment). */
 export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController {
@@ -207,8 +199,9 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
   // one. It is created below, because it reads the conversions, which read the shift. The
   // shift rule calls it only for a geometry change, after the setup.
   let pivot: LayoutPivot | undefined
-  // The last rebase. Each rebase records a new object, and the shift continues from it.
-  const [lastRebase, setLastRebase] = createSignal<RebaseRecord>()
+  // Keep the rebase snapshot only until the shift memo has consumed it.
+  const [rebaseVersion, bumpRebaseVersion] = createSignal(0)
+  let pendingRebase: ShiftAtGeometry | undefined
   // The layout shift: `scroll = content + layoutShift + inset`, with the snapshot that it
   // applies to. It is a memo of the geometry, so a reader gets the shift of the geometry
   // that it reads, also in a batch whose computations have not run yet. A signal that a
@@ -220,19 +213,19 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
   //
   // Solid runs the memo before the render effects of an update, so the rows and the layer
   // reach the DOM in the same flush. It tracks only the geometry and the last rebase.
-  const shiftState = createMemo<ShiftState>((before) => {
+  const shiftState = createMemo<ShiftAtGeometry>((before) => {
     const next = deps.geometry()
-    const rebase = lastRebase()
-    return untrack((): ShiftState => {
-      // A rebase that the state did not apply yet: the shift continues from what it kept.
-      const from = rebase !== undefined && rebase !== before.rebase
-        ? rebase
-        : before
+    rebaseVersion()
+    return untrack((): ShiftAtGeometry => {
+      const from = pendingRebase ?? before
+      pendingRebase = undefined
+      if (from.snapshot === next && from.shift === 0)
+        return from
       const el = deps.scrollElement?.()
       if (el === undefined || el.clientHeight === 0)
-        return { snapshot: next, shift: 0, rebase }
+        return { snapshot: next, shift: 0 }
       if (from.snapshot === next)
-        return { snapshot: next, shift: from.shift, rebase }
+        return from
       return {
         snapshot: next,
         shift: nextLayoutShift({
@@ -246,7 +239,6 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
           sawHeight: deps.sawHeight,
           enteredFromAbove: deps.enteredFromAbove,
         }),
-        rebase,
       }
     })
   }, INITIAL_SHIFT_STATE)
@@ -331,8 +323,10 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
     const kept = applyRebaseWrite(el, shift, writeLayout)
     // A shift that stays as it is needs no record. The style bindings write the same two
     // values again on the next flush.
-    if (kept !== shift)
-      setLastRebase({ snapshot, shift: kept })
+    if (kept !== shift) {
+      pendingRebase = { snapshot, shift: kept }
+      bumpRebaseVersion(version => version + 1)
+    }
     return shift - kept
   }
 

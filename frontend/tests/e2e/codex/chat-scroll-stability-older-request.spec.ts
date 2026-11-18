@@ -6,8 +6,7 @@ import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-histor
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
 import {
-  clearStoredRenders,
-  clearStoredRowHeights,
+  clearStoredChatHeightsAndRenders,
   dragChatUp,
   expectAtBottom,
   expectNoVisibleHeightChange,
@@ -17,7 +16,7 @@ import {
   waitForScrollRest,
   watchFrames,
 } from '../helpers/chatScrollStability'
-import { fillerTurn, fillRows } from '../helpers/historyFill'
+import { fillerTurn, fillRows, spanRowSequences } from '../helpers/historyFill'
 import { readAllAgentMessages } from '../helpers/nativeMessages'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -86,18 +85,7 @@ async function runCall(native: ManagedNativeScenarioContext, agentId: string): P
     prompt: 'Run the boundary command.',
     answer: 'The boundary command ran.',
   })
-  const spans = new Map<string, bigint[]>()
-  for (const message of await readAllAgentMessages(native, agentId)) {
-    if (message.spanType === 'commandExecution') {
-      spans.set(message.spanId, [
-        ...(spans.get(message.spanId) ?? []),
-        message.seq,
-      ])
-    }
-  }
-  const seqs = [
-    ...spans.values(),
-  ]
+  const seqs = spanRowSequences(await readAllAgentMessages(native, agentId), 'commandExecution')
   expect(seqs.map(span => span.length), 'the turn holds one command span of two rows').toEqual([2])
   const [request, result] = seqs[0]!
   return { request: request!, result: result! }
@@ -163,9 +151,7 @@ codexTest.describe('chat scroll stability while the page of a request row arrive
     // Open the chat again as a browser does that never showed it, with no stored row height and no stored render.
     const chatUrl = page.url()
     const heights = await recordRowHeightChangesFromNextLoad(page)
-    await clearStoredRowHeights(page)
-    // The helper above left the browser on an empty page of the app's origin.
-    await clearStoredRenders(page)
+    await clearStoredChatHeightsAndRenders(page)
     await page.goto(chatUrl)
     await expect(assistantBubbles(page).filter({ hasText: lastAnswer }), 'the last answer shows after the chat opened again').toHaveCount(1)
     await expectAtBottom(page, 'after the chat opened again')

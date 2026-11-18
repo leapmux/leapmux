@@ -7,7 +7,7 @@ import type { ResolvedMessageContent, ToolSpanContext } from './rowExtractionTyp
 import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { fixedCacheKey } from './messageRenderCache'
 import { extractChatRow, extractedRow } from './rowExtraction'
-import { prepareChatRow } from './rowPreparation'
+import { prepareMessage } from './rowPreparation'
 
 /**
  * The sources one row extraction reads. No member gives the row a LATER message of its
@@ -18,6 +18,7 @@ export type RowExtractionSources = Pick<MessageRenderSources, 'request' | 'role'
 export interface RowExtractionContext extends Pick<MarkdownRenderContext, 'renderCache'> {
   sources?: RowExtractionSources
   spanType?: string | undefined
+  spanId?: string | undefined
 }
 
 function rowSpanContext(context: RowExtractionContext | undefined): ToolSpanContext {
@@ -37,6 +38,8 @@ interface RowModelDependencies {
   resolved: ResolvedMessageContent
   categoryKind: MessageCategory['kind']
   completion: MessageCompletion | undefined
+  provider: AgentProvider | undefined
+  spanId: string | undefined
   spanType: string | undefined
   span: ToolSpanContext
 }
@@ -45,6 +48,8 @@ function sameDependencies(left: RowModelDependencies, right: RowModelDependencie
   return left.resolved === right.resolved
     && left.categoryKind === right.categoryKind
     && left.completion === right.completion
+    && left.provider === right.provider
+    && left.spanId === right.spanId
     && left.spanType === right.spanType
     && left.span.request === right.span.request
     && left.span.role === right.span.role
@@ -52,6 +57,24 @@ function sameDependencies(left: RowModelDependencies, right: RowModelDependencie
 }
 
 const ROW_CACHE_KEY = fixedCacheKey<CachedRowEntry>('model.row')
+const noRequest = {}
+const resultExtractions = new WeakMap<ResolvedMessageContent, WeakMap<object, Map<string, ChatRowExtraction>>>()
+
+/** A request header and a result body can consume exactly the same extracted tool. */
+function resultCache(deps: RowModelDependencies): Map<string, ChatRowExtraction> {
+  let byRequest = resultExtractions.get(deps.resolved)
+  if (byRequest === undefined) {
+    byRequest = new WeakMap()
+    resultExtractions.set(deps.resolved, byRequest)
+  }
+  const request = deps.span.request ?? noRequest
+  let entries = byRequest.get(request)
+  if (entries === undefined) {
+    entries = new Map()
+    byRequest.set(request, entries)
+  }
+  return entries
+}
 
 export function cachedChatRow(
   context: RowExtractionContext | undefined,
@@ -66,13 +89,28 @@ export function cachedChatRow(
     resolved,
     categoryKind: category.kind,
     completion,
+    provider: agentProvider,
+    spanId: context?.spanId,
     spanType: context?.spanType,
     span,
   }
   const cached = cache?.get(ROW_CACHE_KEY)
   if (cached && sameDependencies(cached.dependencies, dependencies))
     return cached.extraction
-  const extraction = extractChatRow(agentProvider, resolved, category, {
+  const shared = span.role === 'result' && (category.kind === 'tool_use' || category.kind === 'tool_result')
+    ? resultCache(dependencies)
+    : undefined
+  const sharedKey = shared === undefined
+    ? ''
+    : JSON.stringify([
+        agentProvider,
+        category.kind,
+        completion,
+        dependencies.spanId,
+        dependencies.spanType,
+        span.visibleRows.request,
+      ])
+  const extraction = shared?.get(sharedKey) ?? extractChatRow(agentProvider, resolved, category, {
     span,
     ...(completion !== undefined
       ? { completion }
@@ -80,7 +118,11 @@ export function cachedChatRow(
     ...(context?.spanType !== undefined
       ? { spanType: context.spanType }
       : {}),
+    ...(context?.spanId !== undefined
+      ? { spanId: context.spanId }
+      : {}),
   })
+  shared?.set(sharedKey, extraction)
   cache?.set(ROW_CACHE_KEY, { extraction, dependencies })
   return extraction
 }
@@ -109,15 +151,19 @@ export function cachedSpanHeaderCall(result: ResolvedMessage, request: ResolvedM
   const cached = byRequest.get(request)
   if (cached !== undefined)
     return cached.call
-  const header = extractedRow(prepareChatRow(result.message, {
+  const prepared = prepareMessage(result.message, {
     original: result.original,
     resolved: result.resolved,
-    span: {
-      request,
-      role: 'result',
-      visibleRows: { request: true },
+  })
+  const header = extractedRow(cachedChatRow({
+    spanId: result.message.spanId,
+    spanType: result.message.spanType,
+    sources: {
+      request: () => request,
+      role: () => 'result',
+      visibleRows: () => ({ request: true }),
     },
-  }).extraction)
+  }, result.message.agentProvider, prepared.resolved, prepared.category, result.message.completion))
   const call = header?.kind === 'tool' && header.role === 'result'
     ? header.call
     : undefined

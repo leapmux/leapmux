@@ -159,6 +159,8 @@ export interface ToolKindRenderer<K extends ToolKind> {
    * Absent for a kind whose running call shows nothing beyond its request row.
    */
   pending?: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null
+  /** Whether the pending preview clips content its request can expand. */
+  pendingCollapsible?: (call: RequestSideCall<K>) => boolean
   /** The result body. Composes shared `results/*` components. */
   result: (call: ResolvedCall<K>, view: ToolRowView) => JSX.Element | null
   /**

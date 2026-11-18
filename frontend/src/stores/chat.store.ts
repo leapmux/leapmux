@@ -38,6 +38,12 @@ import { createTurnRetryOfferStore } from './chatTurnRetryOffer'
  * This value also sets the eight-times ceiling, so a catch-up limit change changes the maximum memory for each tab.
  */
 export const MAX_LOADED_CHAT_MESSAGES = Number(CATCH_UP_GAP_LIMIT)
+
+/** What happened to messages that a resolver may hold outside the loaded window. */
+export type ChatWindowChange
+  = | { kind: 'eviction', dropped: readonly AgentChatMessage[], kept: readonly AgentChatMessage[] }
+    | { kind: 'retraction', includes: (message: Pick<AgentChatMessage, 'id' | 'seq'>) => boolean }
+
 /**
  * Limit the loaded window while the reader scrolls above the live tail or the scroll hook fetches visible content.
  * loadOlderMessages and loadNewerPage use this ceiling instead of the base limit.
@@ -136,14 +142,34 @@ export function createChatStore() {
   // The window uses those stores only for shared window changes.
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
   const messageObservers = new Map<string, Set<(message: AgentChatMessage) => void>>()
-  const notifyMessageObservers = (agentId: string, message: AgentChatMessage) => {
-    for (const observer of messageObservers.get(agentId) ?? []) {
+  const windowObservers = new Map<string, Set<(change: ChatWindowChange) => void>>()
+  function notifyObservers<Value>(observers: Set<(value: Value) => void> | undefined, agentId: string, value: Value): void {
+    for (const observer of observers ?? []) {
       try {
-        observer(message)
+        observer(value)
       }
       catch (error) {
         console.warn('Message context observer failed', { agentId, error })
       }
+    }
+  }
+  const notifyMessageObservers = (agentId: string, message: AgentChatMessage) =>
+    notifyObservers(messageObservers.get(agentId), agentId, message)
+  const notifyWindowObservers = (agentId: string, change: ChatWindowChange) =>
+    notifyObservers(windowObservers.get(agentId), agentId, change)
+
+  function subscribeTo<Value>(registry: Map<string, Set<(value: Value) => void>>, agentId: string, observer: (value: Value) => void): () => void {
+    let observers = registry.get(agentId)
+    if (observers === undefined) {
+      observers = new Set()
+      registry.set(agentId, observers)
+    }
+    const set = observers
+    set.add(observer)
+    return () => {
+      set.delete(observer)
+      if (set.size === 0 && registry.get(agentId) === set)
+        registry.delete(agentId)
     }
   }
   // A tool-progress update changes a badge in an existing header without increasing the message version.
@@ -214,10 +240,11 @@ export function createChatStore() {
   // An increased version makes both readers calculate their values from the new content.
   // The revision key of the classified-entry cache is also part of the height key of the row, so the list measures the row again.
   const contentVersions = createContentVersionStore()
+  const contentVersionLeases = new Map<string, number>()
 
   /** Remove content versions for rows that left the window. */
   function forgetContentVersions(droppedIds: Iterable<string>) {
-    const ids = [...droppedIds]
+    const ids = [...droppedIds].filter(id => !contentVersionLeases.has(id))
     contentVersions.forget(ids)
   }
 
@@ -239,6 +266,7 @@ export function createChatStore() {
    */
   function forgetAgent(agentId: string) {
     messageObservers.delete(agentId)
+    windowObservers.delete(agentId)
     // Abort history fetches and background catch-up, then remove their controllers.
     // A delayed response must not change the removed window.
     historyFetches.forget(agentId)
@@ -342,8 +370,15 @@ export function createChatStore() {
       }
       return
     }
-    liveTail.setAuthoritative(agentId, latestSeq, reapCeilingSeq)
-    reapPhantomRows(agentId, latestSeq, reapCeilingSeq)
+    batch(() => {
+      liveTail.setAuthoritative(agentId, latestSeq, reapCeilingSeq)
+      // A resolver can hold a row that already left the loaded window.
+      notifyWindowObservers(agentId, {
+        kind: 'retraction',
+        includes: message => isReapablePhantom(message.seq, latestSeq, reapCeilingSeq),
+      })
+      reapPhantomRows(agentId, latestSeq, reapCeilingSeq)
+    })
   }
 
   /**
@@ -426,11 +461,35 @@ export function createChatStore() {
   function commitTrim(
     agentId: string,
     survivors: AgentChatMessage[],
+    dropped: AgentChatMessage[],
     hasMoreField: 'hasMoreOlder' | 'hasMoreNewer',
   ) {
-    setState('messagesByAgent', agentId, survivors)
-    setState(hasMoreField, agentId, true)
-    reindexSpans(agentId)
+    batch(() => {
+      // Publish before retiring the old index and its revisions. A resolver can then
+      // retain both sides of a span before render effects observe the new window.
+      notifyWindowObservers(agentId, { kind: 'eviction', dropped, kept: survivors })
+      forgetContentVersions(dropped.map(message => message.id))
+      setState('messagesByAgent', agentId, survivors)
+      setState(hasMoreField, agentId, true)
+      reindexSpans(agentId)
+    })
+  }
+
+  /** A page can replace a sequence occupant as well as move the loaded window. */
+  function publishWindowReplacement(agentId: string, before: AgentChatMessage[], after: AgentChatMessage[]): void {
+    if (!windowObservers.has(agentId))
+      return
+    const idBySeq = new Map(after.map(message => [message.seq, message.id]))
+    const seqById = new Map(after.map(message => [message.id, message.seq]))
+    const includes = (message: Pick<AgentChatMessage, 'id' | 'seq'>): boolean => {
+      const id = idBySeq.get(message.seq)
+      const seq = seqById.get(message.id)
+      return (id !== undefined && id !== message.id) || (seq !== undefined && seq !== message.seq)
+    }
+    notifyWindowObservers(agentId, { kind: 'retraction', includes })
+    const dropped = before.filter(message => !seqById.has(message.id) && !includes(message))
+    if (dropped.length > 0)
+      notifyWindowObservers(agentId, { kind: 'eviction', dropped, kept: after })
   }
 
   /**
@@ -447,6 +506,7 @@ export function createChatStore() {
       // chatMessageOrder.mergeWindow owns the pure ordering rules for plain arrays.
       // This store applies the reactive effects after that merge.
       const next = mergeWindow(prevWindow, fetched, side)
+      publishWindowReplacement(agentId, prevWindow, next)
       invalidateNewSupplements(prevWindow, next)
       setState('messagesByAgent', agentId, next)
       // Rebuild the span index from the entire merged window in sequence order.
@@ -477,6 +537,7 @@ export function createChatStore() {
           ? preferNewerSupplement(previous, message)
           : message
       })
+      publishWindowReplacement(agentId, prevRows, finalMessages)
       invalidateNewSupplements(prevRows, finalMessages)
       // Reclaim content versions for rows that leave the window.
       reclaimDroppedRows(prevRows, finalMessages)
@@ -501,20 +562,16 @@ export function createChatStore() {
     state,
 
     subscribeMessages(agentId: string, observer: (message: AgentChatMessage) => void): () => void {
-      let observers = messageObservers.get(agentId)
-      if (!observers) {
-        observers = new Set()
-        messageObservers.set(agentId, observers)
-      }
-      observers.add(observer)
-      return () => {
-        observers.delete(observer)
-        if (observers.size === 0 && messageObservers.get(agentId) === observers)
-          messageObservers.delete(agentId)
-      }
+      return subscribeTo(messageObservers, agentId, observer)
+    },
+
+    subscribeWindowChanges(agentId: string, observer: (change: ChatWindowChange) => void): () => void {
+      return subscribeTo(windowObservers, agentId, observer)
     },
 
     getSpanMessage(agentId: string, identity: MessageSpanIdentity, side: ToolSpanSide): AgentChatMessage | undefined {
+      // History changes rebuild the index without increasing the live-message counter.
+      void state.messagesByAgent[agentId]
       void state.messageVersion[agentId]
       return side === 'request'
         ? spanIdx.getRequestMessage(agentId, identity)
@@ -588,6 +645,14 @@ export function createChatStore() {
      * An identical same-sequence delivery leaves changed false.
      */
     applyExistingMessage(agentId: string, messages: AgentChatMessage[], existingIdx: number, message: AgentChatMessage, recordedLiveTail: bigint): { inWindow: boolean, changed: boolean } {
+      const previous = messages[existingIdx]
+      if (previous !== undefined && previous.seq !== message.seq) {
+        const { id, seq } = previous
+        notifyWindowObservers(agentId, {
+          kind: 'retraction',
+          includes: candidate => candidate.id === id && candidate.seq === seq,
+        })
+      }
       const reseqMovedBeyondWindow = this.isReseqMovedBeyondWindow(agentId, message, recordedLiveTail)
       let inWindow: boolean
       let changed = true
@@ -682,6 +747,25 @@ export function createChatStore() {
       return contentVersions.get(id)
     },
 
+    /** Keep the content version while a resolver can still render the same payload. */
+    retainMessageContentVersion(agentId: string, id: string): () => void {
+      contentVersionLeases.set(id, (contentVersionLeases.get(id) ?? 0) + 1)
+      let released = false
+      return () => {
+        if (released)
+          return
+        released = true
+        const remaining = (contentVersionLeases.get(id) ?? 1) - 1
+        if (remaining > 0) {
+          contentVersionLeases.set(id, remaining)
+          return
+        }
+        contentVersionLeases.delete(id)
+        if (!untrack(() => state.messagesByAgent[agentId]?.some(message => message.id === id)))
+          contentVersions.forget([id])
+      }
+    },
+
     /** Merge one `running_tool` broadcast into its span's live progress. */
     applyToolProgress(agentId: string, update: ToolProgressUpdate) {
       toolProgress.apply(agentId, update)
@@ -767,9 +851,7 @@ export function createChatStore() {
         return
       const survivors = prev.slice(0, maxCount)
       const dropped = prev.slice(maxCount)
-      // Reclaim the content versions of the dropped rows.
-      forgetContentVersions(dropped.map(m => m.id))
-      commitTrim(agentId, survivors, 'hasMoreNewer')
+      commitTrim(agentId, survivors, dropped, 'hasMoreNewer')
     },
 
     /**
@@ -783,9 +865,7 @@ export function createChatStore() {
       // The slice start is positive because the window length exceeds maxCount.
       const survivors = prev.slice(prev.length - maxCount)
       const droppedOldest = prev.slice(0, prev.length - maxCount)
-      // Reclaim the content versions of the dropped oldest rows.
-      forgetContentVersions(droppedOldest.map(m => m.id))
-      commitTrim(agentId, survivors, 'hasMoreOlder')
+      commitTrim(agentId, survivors, droppedOldest, 'hasMoreOlder')
     },
 
     /**

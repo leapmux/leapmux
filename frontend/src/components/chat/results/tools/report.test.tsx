@@ -7,6 +7,7 @@ import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { failedResult, unparsedResult } from '../../model/toolCall'
 import { ToolMessage } from '../ToolMessage'
 import { ToolPendingMessage } from '../ToolPendingMessage'
+import { toolCallMeta } from './meta'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
 beforeAll(() => {
@@ -75,6 +76,16 @@ describe('report renderer', () => {
       const { container } = render(() => <ToolMessage row={ended({ status: 'incomplete' })} />)
       await settleWorkerReplies()
       expect(container.textContent).toContain('PLANMARKER-8')
+    })
+
+    it('offers Expand for a clipped fallback proposal on a paired result row', () => {
+      const proposal = Array.from({ length: 12 }, (_, index) => `Proposal paragraph ${index}`).join('\n\n')
+      const row = toolRow(toolCallFixture('report', {
+        status: 'incomplete',
+        request: { proposal },
+      }), 'result', { request: true })
+
+      expect(toolCallMeta(row).collapsible).toBe(true)
     })
 
     it('draws the words alone when the result states words of its own', async () => {

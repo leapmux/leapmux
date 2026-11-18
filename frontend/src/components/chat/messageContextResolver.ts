@@ -7,6 +7,7 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ImageDimensions } from '~/lib/imageDimensions'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { MessageRevision, MessageSpanIdentity, ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
+import type { ChatWindowChange } from '~/stores/chat.store'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
@@ -53,6 +54,10 @@ export interface MessageContextSources {
   /** Read the size of an image file from its first bytes (see FileImageSizeReader). */
   fetchFileImageSize: FileImageSizeReader
   subscribe: (observer: (message: AgentChatMessage) => void) => () => void
+  /** A mutable window reports eviction and authoritative retraction inside its update batch. */
+  subscribeWindowChanges?: (observer: (change: ChatWindowChange) => void) => () => void
+  /** Hold a source content version for as long as this resolver holds its payload. */
+  retainContentVersion?: (id: string) => () => void
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
   /**
@@ -190,6 +195,14 @@ interface ResolvedCacheEntry {
   supplementalRevision: bigint
 }
 
+type RetractedMessage = Extract<ChatWindowChange, { kind: 'retraction' }>['includes']
+
+interface InflightLookup {
+  controller: AbortController
+  promise: Promise<unknown>
+  retractions: RetractedMessage[]
+}
+
 function newestRelatedMessage(first: AgentChatMessage | undefined, second: AgentChatMessage | undefined): AgentChatMessage | undefined {
   if (!first)
     return second
@@ -205,14 +218,17 @@ function newestRelatedMessage(first: AgentChatMessage | undefined, second: Agent
 export function createMessageContextResolver(source: MessageContextSources): MessageContextResolver {
   const fileImages = createFileImageResolver(source.fetchFileImage, source.fetchFileImageSize)
   const fetched = new Map<string, AgentChatMessage>()
+  const contentVersionReleases = new Map<string, () => void>()
   const resolved = new Map<string, ResolvedCacheEntry>()
   // The spans that need no fetch: a fetch of the span settled. `subscribe` keeps each later
   // message of these spans, also one that the window does not take.
   const loadedSpans = new Set<string>()
+  // These pairs coexisted in the window before one side was evicted.
+  const retainedPairs = new Set<string>()
   const leases = new Map<string, number>()
   const renderGraceSpans = new Set<string>()
   const messageLeases = new Map<bigint, number>()
-  const inflight = new Map<string, { controller: AbortController, promise: Promise<unknown> }>()
+  const inflight = new Map<string, InflightLookup>()
   const spans = createSpanIndex()
   const [cacheVersion, setCacheVersion] = createSignal(0)
   let disposed = false
@@ -226,9 +242,13 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     for (const request of inflight.values())
       request.controller.abort()
     inflight.clear()
+    for (const release of contentVersionReleases.values())
+      release()
+    contentVersionReleases.clear()
     fetched.clear()
     resolved.clear()
     loadedSpans.clear()
+    retainedPairs.clear()
     leases.clear()
     renderGraceSpans.clear()
     messageLeases.clear()
@@ -290,6 +310,29 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     return providerRole
   }
 
+  function removeFetched(id: string): boolean {
+    if (!fetched.delete(id))
+      return false
+    contentVersionReleases.get(id)?.()
+    contentVersionReleases.delete(id)
+    resolved.delete(id)
+    return true
+  }
+
+  function publishCacheChange(rebuild: boolean): void {
+    if (rebuild) {
+      const sorted = [
+        ...fetched.values(),
+      ].sort((a, b) => a.seq < b.seq
+        ? -1
+        : a.seq > b.seq
+          ? 1
+          : 0)
+      spans.reindex(source.scopeKey, sorted)
+    }
+    setCacheVersion(value => value + 1)
+  }
+
   function remember(messages: AgentChatMessage[]): void {
     let changed = false
     let reindex = false
@@ -297,8 +340,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     for (const [id, cached] of fetched) {
       const replacement = replacements.get(cached.seq)
       if (replacement !== undefined && replacement !== id) {
-        fetched.delete(id)
-        resolved.delete(id)
+        removeFetched(id)
         changed = true
         reindex = true
       }
@@ -311,24 +353,19 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       const previous = fetched.get(message.id)
       if (previous && preferNewerSupplement(previous, message) === previous)
         continue
+      if (!previous) {
+        const release = source.retainContentVersion?.(message.id)
+        if (release !== undefined)
+          contentVersionReleases.set(message.id, release)
+      }
       fetched.set(message.id, message)
       resolved.delete(message.id)
       if (spans.index(source.scopeKey, message))
         reindex = true
       changed = true
     }
-    if (changed) {
-      if (reindex) {
-        spans.reindex(source.scopeKey, [
-          ...fetched.values(),
-        ].sort((a, b) => a.seq < b.seq
-          ? -1
-          : a.seq > b.seq
-            ? 1
-            : 0))
-      }
-      setCacheVersion(value => value + 1)
-    }
+    if (changed)
+      publishCacheChange(reindex)
   }
 
   function related(identity: MessageSpanIdentity, side: ToolSpanSide): ResolvedMessage | undefined {
@@ -364,12 +401,15 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
 
   /**
    * Whether the window took `resident` as the request of the span of `identity` by its
-   * place alone, while the whole span that a fetch brought pairs `cached`, another
-   * message, as the request.
+   * place alone, while a complete fetch or a retained pair identifies a different
+   * request in the resolver.
    */
   function pairedByPlace(resident: AgentChatMessage | undefined, cached: AgentChatMessage | undefined, identity: MessageSpanIdentity): boolean {
-    if (resident === undefined || cached === undefined || resident.id === cached.id || !loadedSpans.has(messageSpanKey(identity)))
+    const key = messageSpanKey(identity)
+    if (resident === undefined || cached === undefined || resident.id === cached.id
+      || (!loadedSpans.has(key) && !retainedPairs.has(key))) {
       return false
+    }
     const selected = current(resident)
     return resolvedSpanRole(selected.resolved, selected.message.agentProvider) === 'other'
   }
@@ -397,7 +437,8 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   }
 
   function prune(messages: AgentChatMessage[]): void {
-    remember(messages.filter(message => messageLeases.has(message.seq)))
+    if (messageLeases.size > 0)
+      remember(messages.filter(message => messageLeases.has(message.seq)))
     const retainedSpans = new Set(messages.filter(message => message.spanId).map(messageSpanKey))
     for (const spanId of leases.keys())
       retainedSpans.add(spanId)
@@ -407,7 +448,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     let changed = false
     for (const [id, message] of fetched) {
       if (!retainedSpans.has(messageSpanKey(message)) && !messageLeases.has(message.seq)) {
-        fetched.delete(id)
+        removeFetched(id)
         changed = true
       }
       else {
@@ -422,22 +463,18 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (!retainedSpans.has(spanId))
         loadedSpans.delete(spanId)
     }
+    for (const spanId of retainedPairs) {
+      if (!retainedSpans.has(spanId))
+        retainedPairs.delete(spanId)
+    }
     for (const [key, request] of inflight) {
       if (key.startsWith('span:') && !retainedSpans.has(key.slice(5))) {
         request.controller.abort()
         inflight.delete(key)
       }
     }
-    if (changed) {
-      spans.reindex(source.scopeKey, [
-        ...fetched.values(),
-      ].sort((a, b) => a.seq < b.seq
-        ? -1
-        : a.seq > b.seq
-          ? 1
-          : 0))
-      setCacheVersion(value => value + 1)
-    }
+    if (changed)
+      publishCacheChange(true)
   }
 
   // The array read stays tracked, and the walk does not.
@@ -451,44 +488,79 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   // store's updateExistingMessage) moves no membership, so it must wake nothing
   // here -- and a tracked walk wakes for each field of that merge which it reads.
   //
-  // It keeps the window of its last run, so that the next run finds the messages that left
-  // the window (see keepDepartedSpanMessages).
-  let windowBefore: readonly AgentChatMessage[] = []
   createEffect(() => {
     const messages = source.messages()
-    untrack(() => {
-      keepDepartedSpanMessages(windowBefore, messages)
-      prune(messages)
-    })
-    windowBefore = messages
+    untrack(() => prune(messages))
   })
 
   /**
-   * Keep each message that left the window while a message of its span stays in it, as a
-   * fetch of the span would have brought it. A trim of the window then changes no row of
-   * the span: a result row whose request left still draws beside a request row (see
-   * createRequestRowPresence in chatEntryCache), and an expanded request row whose result
-   * left still heads itself with the words of the result. `prune` drops such a message once
-   * its whole span left the window.
+   * Retain selected sides together before a trim replaces the source index.
+   * A role inferred by position still refers to the original pair after one side leaves.
    */
-  function keepDepartedSpanMessages(before: readonly AgentChatMessage[], after: readonly AgentChatMessage[]): void {
-    if (before.length === 0)
-      return
-    const present = new Set(after.map(message => message.id))
-    const spansInWindow = new Set(after.filter(message => message.spanId).map(messageSpanKey))
-    const departed = before.filter(message => message.spanId && !present.has(message.id) && spansInWindow.has(messageSpanKey(message)))
-    if (departed.length > 0)
-      remember(departed)
+  function retainEvictedPairs(dropped: readonly AgentChatMessage[], kept: readonly AgentChatMessage[]): void {
+    const keptSpans = new Set(kept.filter(message => message.spanId).map(messageSpanKey))
+    const affected = new Map<string, AgentChatMessage>()
+    for (const message of dropped) {
+      const key = messageSpanKey(message)
+      if (message.spanId && keptSpans.has(key))
+        affected.set(key, message)
+    }
+    const retained: AgentChatMessage[] = []
+    for (const [key, identity] of affected) {
+      const request = related(identity, 'request')?.message
+      const result = related(identity, 'result')?.message
+      if (request !== undefined)
+        retained.push(request)
+      if (result !== undefined && result.id !== request?.id)
+        retained.push(result)
+      if (request !== undefined && result !== undefined && request.id !== result.id)
+        retainedPairs.add(key)
+    }
+    if (retained.length > 0)
+      remember(retained)
   }
-  const unsubscribe = source.subscribe((message) => {
-    if (!disposed && (messageLeases.has(message.seq)
-      || (message.spanId && (loadedSpans.has(messageSpanKey(message)) || inflight.has(`span:${messageSpanKey(message)}`))))) {
+
+  function retract(includes: RetractedMessage): void {
+    for (const lookup of inflight.values())
+      lookup.retractions.push(includes)
+    let changed = false
+    for (const [id, message] of fetched) {
+      if (!includes(message))
+        continue
+      const key = messageSpanKey(message)
+      loadedSpans.delete(key)
+      retainedPairs.delete(key)
+      changed = removeFetched(id) || changed
+    }
+    if (changed)
+      publishCacheChange(true)
+  }
+
+  const unsubscribeWindow = source.subscribeWindowChanges?.(change => untrack(() => {
+    if (disposed)
+      return
+    if (change.kind === 'eviction')
+      retainEvictedPairs(change.dropped, change.kept)
+    else
+      retract(change.includes)
+  }))
+  const unsubscribe = source.subscribe(message => untrack(() => {
+    if (disposed)
+      return
+    const resident = source.messageBySeq(message.seq)
+    if (resident !== undefined && resident.id !== message.id)
+      return
+    const key = messageSpanKey(message)
+    if (messageLeases.has(message.seq)
+      || (message.spanId && (loadedSpans.has(key) || inflight.has(`span:${key}`)
+        || (leases.has(key) && related(message, 'request') !== undefined)))) {
       remember([message])
     }
-  })
+  }))
   onCleanup(() => {
     disposed = true
     unsubscribe()
+    unsubscribeWindow?.()
     clear()
   })
 
@@ -532,20 +604,30 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (running)
         return running.promise as Promise<void>
       const controller = new AbortController()
+      const retractions: RetractedMessage[] = []
       const promise = source.fetchSpan(identity, controller.signal).then((messages) => {
         if (disposed || controller.signal.aborted)
           return
         if (messages.some(message => messageSpanKey(message) !== spanId))
           throw new Error('The related-message response contains a different span or provider session')
         batch(() => {
-          remember(messages.map(selectRecoveredMessage))
-          loadedSpans.add(spanId)
+          const accepted = messages
+            .filter(message => !retractions.some(includes => includes(message)))
+            .map(selectRecoveredMessage)
+            .filter(message => messageSpanKey(message) === spanId)
+          // Marking a pair settled changes how positional roles are resolved, even
+          // if every accepted message was already cached.
+          if (!loadedSpans.has(spanId)) {
+            loadedSpans.add(spanId)
+            publishCacheChange(false)
+          }
+          remember(accepted)
         })
       }).finally(() => {
         if (inflight.get(key)?.controller === controller)
           inflight.delete(key)
       })
-      inflight.set(key, { controller, promise })
+      inflight.set(key, { controller, promise, retractions })
       return promise
     })
   }
@@ -564,6 +646,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (running)
         return running.promise as Promise<ResolvedMessage | undefined>
       const controller = new AbortController()
+      const retractions: RetractedMessage[] = []
       const promise = source.fetchMessage(seq, controller.signal).then((fetchedMessage) => {
         if (disposed || controller.signal.aborted)
           throw new DOMException('The message resolver is no longer active', 'AbortError')
@@ -571,6 +654,12 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
           return undefined
         if (fetchedMessage.seq !== seq)
           throw new Error('The message response contains a different sequence')
+        if (retractions.some(includes => includes(fetchedMessage))) {
+          const current = messageBySeq(seq)
+          return current === undefined
+            ? undefined
+            : reference(current, undefined, false)
+        }
         const selected = selectRecoveredMessage(fetchedMessage)
         if (messageLeases.has(seq))
           remember([selected])
@@ -579,7 +668,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         if (inflight.get(key)?.controller === controller)
           inflight.delete(key)
       })
-      inflight.set(key, { controller, promise })
+      inflight.set(key, { controller, promise, retractions })
       return promise
     })
   }

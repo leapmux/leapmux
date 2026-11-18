@@ -4,7 +4,7 @@ import type { RenderReadinessScope } from '~/components/chat/renderReadiness'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent } from '~/api/workerRpc'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
@@ -29,22 +29,7 @@ import { toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { expectReleasedAtRequestLimit } from '~/test-support/renderReadiness'
 
-// jsdom does not provide ResizeObserver. The stand-in Worker of the jsdom setup
-// renders each Markdown body, so a test waits for the replies
-// (settleWorkerReplies) before it reads one.
-beforeAll(() => {
-  if (!globalThis.ResizeObserver) {
-    Object.defineProperty(globalThis, 'ResizeObserver', {
-      configurable: true,
-      writable: true,
-      value: class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    })
-  }
-})
+// The jsdom Worker fixture renders Markdown. Wait for its replies before reading it.
 
 // Track clipboard writes for assertions.
 let clipboardContent: string | null = null
@@ -2806,7 +2791,10 @@ describe('the request of a tool call in a hidden copy', () => {
    * Mount the copy of the request row `request` with the expand state `expanded`, over a
    * resolver whose lookup of the result the test controls.
    */
-  function mountRequestCopy(request: AgentChatMessage, expanded: boolean, loadResult: MessageContextResolver['loadResult']) {
+  function mountRequestCopy(request: AgentChatMessage, expanded: boolean | (() => boolean), loadResult: MessageContextResolver['loadResult'], premeasureMode = true) {
+    const readExpanded = typeof expanded === 'function'
+      ? expanded
+      : () => expanded
     const resolver: MessageContextResolver = {
       ...testMessageContext({
         messages: () => [
@@ -2825,10 +2813,10 @@ describe('the request of a tool call in a hidden copy', () => {
             host={{
               messages: resolver,
               getMessageUiState: key => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
-                ? expanded
+                ? readExpanded()
                 : undefined,
             }}
-            premeasureMode
+            premeasureMode={premeasureMode}
             readiness={scope}
           />
         </PreferencesProvider>
@@ -2847,6 +2835,24 @@ describe('the request of a tool call in a hidden copy', () => {
     await waitFor(() => expect(loadResult).toHaveBeenCalledOnce())
     expect(loadResult).toHaveBeenCalledWith({ spanId: 'toolu_b', agentSessionId: '' })
     expect(scope.measurable()).toBe(false)
+
+    lookup.resolve()
+    await waitFor(() => expect(scope.measurable()).toBe(true))
+  })
+
+  it('keeps an established request visible while expanding fetches its result', async () => {
+    const lookup = deferred<void>()
+    const loadResult = vi.fn(() => lookup.promise)
+    const [expanded, setExpanded] = createSignal(false)
+    // eslint-disable-next-line solid/reactivity -- The helper reads this accessor in the mounted bubble.
+    const scope = mountRequestCopy(toolRequest('toolu_b'), () => expanded(), loadResult, false)
+    expect(scope.measurable()).toBe(true)
+
+    setExpanded(true)
+    await waitFor(() => expect(loadResult).toHaveBeenCalledOnce())
+    expect(scope.measurable()).toBe(false)
+    expect(scope.pending()).toBe(false)
+    expect(scope.replacing()).toBe(true)
 
     lookup.resolve()
     await waitFor(() => expect(scope.measurable()).toBe(true))

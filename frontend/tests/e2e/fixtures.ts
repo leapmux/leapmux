@@ -72,6 +72,8 @@ const ISOLATED_CONTEXT_SPECS = new Set([
   // recordRowHeightChangesFromNextLoad).
   'codex/chat-scroll-stability-file-image.spec.ts',
   'codex/chat-scroll-stability-older-request.spec.ts',
+  // An isolated context lets this regression run without the shared page's Chrome DevTools session.
+  'codex/chat-scroll-stability-stale-native.spec.ts',
 ])
 
 /**
@@ -194,7 +196,7 @@ export const test = base.extend<
     authenticatedWorkspace: AgentWorkspaceFixture
   },
   {
-    sharedPageState: SharedPageState
+    sharedPageState: () => Promise<SharedPageState>
     leapmuxServer: ServerInfo
   }
 >({
@@ -223,20 +225,34 @@ export const test = base.extend<
 
   sharedPageState: [
     async ({ browser, leapmuxServer }, use) => {
-      const context = await browser.newContext({
-        baseURL: leapmuxServer.hubUrl,
-        viewport: DEFAULT_VIEWPORT,
-        screen: DEFAULT_VIEWPORT,
-        deviceScaleFactor: 1,
-        // Touch changes hover controls and selection behavior for every shared test.
-        // Tests that require touch use a separate context through activePageState.
-        hasTouch: false,
-        isMobile: false,
-        permissions: DEFAULT_PERMISSIONS,
-      })
-      const state = { context, page: await newSharedPage(context) }
-      await use(state)
-      await context.close()
+      let shared: Promise<SharedPageState> | undefined
+      async function open(): Promise<SharedPageState> {
+        const context = await browser.newContext({
+          baseURL: leapmuxServer.hubUrl,
+          viewport: DEFAULT_VIEWPORT,
+          screen: DEFAULT_VIEWPORT,
+          deviceScaleFactor: 1,
+          // Touch changes hover and selection. Touch tests use their own context.
+          hasTouch: false,
+          isMobile: false,
+          permissions: browser.browserType().name() === 'chromium'
+            ? DEFAULT_PERMISSIONS
+            : [],
+        })
+        try {
+          return { context, page: await newSharedPage(context) }
+        }
+        catch (error) {
+          await context.close()
+          throw error
+        }
+      }
+      try {
+        await use(() => shared ??= open())
+      }
+      finally {
+        await shared?.then(state => state.context.close(), () => undefined)
+      }
     },
     { scope: 'worker' },
   ],
@@ -257,7 +273,9 @@ export const test = base.extend<
         hasTouch,
         isMobile,
         colorScheme: colorScheme ?? 'light',
-        permissions: DEFAULT_PERMISSIONS,
+        permissions: browser.browserType().name() === 'chromium'
+          ? DEFAULT_PERMISSIONS
+          : [],
       })
       try {
         await use({ context, page: await newSharedPage(context) })
@@ -268,7 +286,8 @@ export const test = base.extend<
       return
     }
 
-    const page = await resetSharedPage(sharedPageState, {
+    const shared = await sharedPageState()
+    const page = await resetSharedPage(shared, {
       hubUrl: leapmuxServer.hubUrl,
       viewport,
       colorScheme,
@@ -276,7 +295,7 @@ export const test = base.extend<
       hasTouch,
       isMobile,
     })
-    await use({ context: sharedPageState.context, page })
+    await use({ context: shared.context, page })
   },
 
   context: async ({ activePageState }, use) => {

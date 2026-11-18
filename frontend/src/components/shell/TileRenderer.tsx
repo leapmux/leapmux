@@ -672,6 +672,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
       fetchFileImage: (path, signal) => readWorkerImage(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
       fetchFileImageSize: (path, signal) => readWorkerImageSize(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
+      subscribeWindowChanges: observer => chatStore.subscribeWindowChanges(agentId, observer),
+      retainContentVersion: id => chatStore.retainMessageContentVersion(agentId, id),
       backgroundTask: rowKey => backgroundRows().get(rowKey),
       progress: identity => chatStore.getToolProgress(agentId, identity),
       holdsOldest: () => !chatStore.hasOlderMessages(agentId),

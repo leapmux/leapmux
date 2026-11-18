@@ -92,6 +92,7 @@ export const READINESS_REQUEST_LIMIT_MS = 10_000
  */
 export function useRequestReadiness(
   context: () => { readiness?: RenderReadiness | undefined } | undefined,
+  phase: 'pending' | 'replacing' = 'pending',
 ): { pending: Accessor<boolean>, begin: () => () => void } {
   const [pendingCount, setPendingCount] = createSignal(0)
   const limitTimers = createOwnedTimers()
@@ -112,7 +113,10 @@ export function useRequestReadiness(
     return end
   }
   const pending = (): boolean => pendingCount() > 0
-  useRenderReadiness(context, pending)
+  if (phase === 'replacing')
+    useReplacingReadiness(context, pending)
+  else
+    useRenderReadiness(context, pending)
   return { pending, begin }
 }
 

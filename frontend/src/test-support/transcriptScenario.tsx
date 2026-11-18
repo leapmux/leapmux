@@ -8,7 +8,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { render } from '@solidjs/testing-library'
 import { createRoot, createSignal, For } from 'solid-js'
-import { createClassifiedEntryCache, createRequestRowPresence, renderKeyForEntry } from '~/components/chat/chatEntryCache'
+import { renderKeyForEntry } from '~/components/chat/chatEntryCache'
 import { createPendingRows, pendingRowId } from '~/components/chat/chatPendingRows'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { createMessageRenderSources } from '~/components/chat/messageContextResolver'
@@ -16,7 +16,7 @@ import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCa
 import { cachedChatRow } from '~/components/chat/rowModelCache'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { messageSpanIdentity } from '~/lib/messageSpan'
-import { cleanups, testTranscriptContext } from '~/test-support/messageContext'
+import { cleanups, createTestTranscriptEntries, testTranscriptContext } from '~/test-support/messageContext'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 // Every provider plugin registers at import time; the scenario reads them all.
 import '~/components/chat/providers'
@@ -88,6 +88,9 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
   const { transcript, resolver } = testTranscriptContext(
     options.archive,
     {
+      ...(options.windowIds !== undefined
+        ? { initialWindowIds: options.windowIds }
+        : {}),
       ...(options.fetchSpan !== undefined
         ? { fetchSpan: options.fetchSpan }
         : {}),
@@ -96,27 +99,9 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
         : {}),
     },
   )
-  if (options.windowIds !== undefined)
-    transcript.replaceWindow(options.windowIds)
-
   const renderCacheStore = createMessageRenderCacheStore()
   const [messageUiState, setMessageUiState] = createSignal<ReadonlyMap<string, Partial<Record<MessageUiKey, boolean>>>>(new Map())
-  const entries = createClassifiedEntryCache({
-    messages: () => transcript.sources.messages(),
-    requestRevision: identity => resolver.request(identity)?.revision,
-    contentVersionById: id => resolver.contentVersion(id),
-    resolvedMessage: message => resolver.resolvedMessage(message),
-    role: message => resolver.role(message),
-    showHiddenMessages: () => false,
-  })
-  // The request rows the transcript draws, by the list's own decision (see
-  // createRequestRowPresence).
-  const requestRowDrawn = createRequestRowPresence({
-    entries: entries.visibleEntries,
-    windowEntry: entries.getEntry,
-    request: identity => resolver.request(identity),
-    role: message => resolver.role(message),
-  })
+  const { entries, requestRowDrawn } = createTestTranscriptEntries(resolver, transcript.sources.messages)
 
   // The pending rows the list adds to the scenario's rows, by the list's own decision.
   const listed = createPendingRows({
@@ -127,8 +112,8 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     })),
     tailLoaded: () => true,
     resultOf: identity => resolver.result(identity)?.message,
-    role: candidate => resolver.role(candidate.message),
-    isMeasured: () => true,
+    progressOf: resolver.progress,
+    showsResult: () => true,
   })
 
   let nextSeq = options.archive.reduce((max, message) => (message.seq > max
@@ -156,6 +141,7 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
         renderCache: renderCacheStore.forRow(renderKeyForEntry(prepared)),
         sources,
         spanType: message.spanType,
+        spanId: message.spanId,
       },
       message.agentProvider,
       prepared.resolved,

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cancelFrame, requestFrame } from './animationFrame'
+import { cancelFrame, requestFrame, scheduleDeferredFrame } from './animationFrame'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('requestFrame', () => {
@@ -45,5 +46,42 @@ describe('cancelFrame', () => {
     vi.stubGlobal('cancelAnimationFrame', undefined)
 
     expect(() => cancelFrame(7)).not.toThrow()
+  })
+})
+
+describe('scheduleDeferredFrame', () => {
+  it('cancels through the frame API that scheduled the work', () => {
+    const request = vi.fn(() => 71)
+    const cancel = vi.fn()
+    const otherCancel = vi.fn()
+    vi.stubGlobal('requestAnimationFrame', request)
+    vi.stubGlobal('cancelAnimationFrame', cancel)
+    const callback = vi.fn()
+
+    const stop = scheduleDeferredFrame(callback)
+    vi.stubGlobal('cancelAnimationFrame', otherCancel)
+    stop()
+
+    expect(request).toHaveBeenCalledOnce()
+    expect(callback).not.toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(71)
+    expect(otherCancel).not.toHaveBeenCalled()
+  })
+
+  it('defers to a cancellable timer if the frame APIs are incomplete', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', vi.fn())
+    vi.stubGlobal('cancelAnimationFrame', undefined)
+    const delivered = vi.fn()
+    const discarded = vi.fn()
+    scheduleDeferredFrame(delivered)
+    const stop = scheduleDeferredFrame(discarded)
+
+    expect(delivered).not.toHaveBeenCalled()
+    stop()
+    vi.runAllTimers()
+
+    expect(delivered).toHaveBeenCalledExactlyOnceWith()
+    expect(discarded).not.toHaveBeenCalled()
   })
 })
