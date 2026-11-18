@@ -214,9 +214,6 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         agentOps: {
           providerStore: {
             providers: () => [AgentProvider.CLAUDE_CODE],
-            loading: () => false,
-            load: async () => {},
-            refresh: async () => {},
           },
           handleOpenAgent: options.onNewAgent ?? (() => {}),
           handleRetryMessage: () => {},

@@ -159,11 +159,8 @@ func resolveZCodeLaunchWith(
 		}
 		return launch.Spec{}, launch.Missing
 	}
-	// The PATH probe's verdict travels WITH the interpreter search. An inconclusive probe
-	// is not settled by finding a script: if no interpreter works either, the answer is
-	// Unknown, because a working `zcode` on PATH was never ruled out -- and
-	// resolveZCodeLaunch CACHES a Missing for the worker's life, so freezing one
-	// here reports ZCode as not installed until the worker restarts.
+	// Keep the result inconclusive if neither the launcher probe nor the
+	// interpreter search can establish whether ZCode is usable.
 	return resolveZCodeInterpreter(ctx, shellPath, loginShell, script, deps, !onPath.Settled())
 }
 
@@ -189,7 +186,7 @@ type zcodeInterpreter struct {
 //
 // A candidate that proves nothing -- a subprocess the context killed, a shell that would
 // not start -- makes the whole answer Unknown even when a later candidate answered
-// "no" conclusively. Otherwise one timeout would be cached as "ZCode is not installed".
+// "no" conclusively. The caller can retry an inconclusive result.
 func resolveZCodeInterpreter(
 	ctx context.Context,
 	shellPath string,
@@ -207,6 +204,16 @@ func resolveZCodeInterpreter(
 	}
 
 	if node := strings.TrimSpace(deps.getenv(zcodeNodeEnvOverride)); node != "" {
+		if !strings.ContainsAny(node, "/\\") && filepath.VolumeName(node) == "" {
+			path, result := deps.resolveProgramPath(ctx, shellPath, loginShell, node)
+			if result == launch.ProbeUnknown {
+				return launch.Spec{}, launch.Unknown
+			}
+			if result == launch.ProbeNo {
+				return launch.Spec{}, search.result()
+			}
+			node = path
+		}
 		if spec, ok := search.try(zcodeInterpreter{program: node}); ok {
 			return spec, launch.Found
 		}
@@ -223,19 +230,27 @@ func resolveZCodeInterpreter(
 	// the interpreter probe below runs the same program the launch will run (and the
 	// program word reaching the shell needs no PATH lookup, which is why
 	// Wrap quotes it).
-	var fromPath []zcodeInterpreter
+	checkedPaths := make(map[string]struct{})
 	for _, name := range nodeInterpreterNames() {
 		path, res := deps.resolveProgramPath(ctx, shellPath, loginShell, name)
 		if !res.Settled() {
 			search.sawInconclusive = true
 			continue
 		}
-		if res == launch.ProbeYes && path != "" {
-			fromPath = append(fromPath, zcodeInterpreter{program: path})
+		if res != launch.ProbeYes || path == "" {
+			continue
 		}
-	}
-	if spec, ok := search.try(fromPath...); ok {
-		return spec, launch.Found
+		key := path
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(filepath.Clean(path))
+		}
+		if _, checked := checkedPaths[key]; checked {
+			continue
+		}
+		checkedPaths[key] = struct{}{}
+		if spec, ok := search.try(zcodeInterpreter{program: path}); ok {
+			return spec, launch.Found
+		}
 	}
 	return launch.Spec{}, search.result()
 }
@@ -658,7 +673,10 @@ func darwinHelperExecutable(helperApp string) string {
 func probeNodeSQLite(ctx context.Context, program string, env []string) launch.ProbeResult {
 	cmd := exec.CommandContext(ctx, program, "-e", zcodeNodeSQLiteProbeScript)
 	cmd.Dir = os.TempDir()
-	cmd.Env = append(os.Environ(), env...)
+	if launch.RefreshProbeCommandPath(ctx, cmd) != nil {
+		return launch.ProbeUnknown
+	}
+	cmd.Env = append(cmd.Environ(), env...)
 	procutil.HideConsoleWindow(cmd)
 	procutil.DetachFromTerminal(cmd)
 	// Both streams are discarded: a working interpreter still writes an ExperimentalWarning

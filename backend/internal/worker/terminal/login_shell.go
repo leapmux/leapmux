@@ -75,10 +75,14 @@ func LoginShellArgs(shellPath string) []string {
 //
 // A caller that starts this argv through a plain exec.Cmd (no pty) must
 // call procutil.DetachFromTerminal on that command.
-func CommandArgs(shellPath string, loginShell bool, commandFlag, command string) []string {
+func CommandArgs(shellPath string, loginShell bool, command string) []string {
 	name := ShellBaseName(shellPath)
 	if loginShell && (name == "tcsh" || name == "csh") {
 		return []string{"-ic", command}
+	}
+	commandFlag := "-c"
+	if IsPwsh(name) {
+		commandFlag = "-Command"
 	}
 	if loginShell {
 		return append(LoginShellArgs(shellPath), commandFlag, command)

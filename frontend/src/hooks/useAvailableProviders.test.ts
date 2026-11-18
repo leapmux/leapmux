@@ -27,6 +27,44 @@ beforeEach(() => {
 })
 
 describe('useAvailableProviders', () => {
+  it('cancels when the last consumer leaves and revalidates when the worker is selected again', async () => {
+    const pending = deferred<ListAvailableProvidersResponse>()
+    listAvailableProviders
+      .mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(providersResp([AgentProvider.CODEX]))
+    await createRoot(async (dispose) => {
+      try {
+        const store = createAvailableProvidersStore()
+        const [enabled, setEnabled] = createSignal(true)
+        const [menuOpen, setMenuOpen] = createSignal(true)
+        const selection = useAvailableProviders(() => 'A', enabled, store)
+        useAvailableProviders(() => 'A', menuOpen, store)
+        await flush()
+        expect(selection.providers()).toEqual([AgentProvider.CLAUDE_CODE])
+        expect(listAvailableProviders).toHaveBeenCalledOnce()
+
+        const refresh = selection.refresh()
+        const signal = listAvailableProviders.mock.calls[1]?.[2].signal
+        setEnabled(false)
+        expect(signal?.aborted).toBe(false)
+        setMenuOpen(false)
+        expect(signal?.aborted).toBe(true)
+        expect(selection.loading()).toBe(false)
+
+        setEnabled(true)
+        await flush()
+        expect(selection.providers()).toEqual([AgentProvider.CODEX])
+        pending.resolve(providersResp([]))
+        await refresh
+        expect(selection.providers()).toEqual([AgentProvider.CODEX])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('shares one scan per worker and keeps out-of-order replies with their worker', async () => {
     const first = deferred<ListAvailableProvidersResponse>()
     const second = deferred<ListAvailableProvidersResponse>()
@@ -122,8 +160,10 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('latches: the gate closing and re-opening does not re-fetch and keeps the list', async () => {
-    listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
+  it('keeps the result while closed and scans again when the worker is observed', async () => {
+    listAvailableProviders
+      .mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
+      .mockResolvedValueOnce(providersResp([AgentProvider.CODEX]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const [open, setOpen] = createSignal(true)
@@ -131,16 +171,16 @@ describe('useAvailableProviders', () => {
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
 
-        // The branch menu closes: the gate drops but the answer stays, so
-        // re-opening the same row costs no round trip.
         setOpen(false)
         await flush()
         expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE])
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
 
         setOpen(true)
+        expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE])
         await flush()
-        expect(listAvailableProviders).toHaveBeenCalledTimes(1)
+        expect(hook.providers()).toEqual([AgentProvider.CODEX])
+        expect(listAvailableProviders).toHaveBeenCalledTimes(2)
         dispose()
         done()
       })
@@ -150,7 +190,7 @@ describe('useAvailableProviders', () => {
   // The defect the workerId/gate split exists to remove. A gate keyed on a
   // property OF the worker closes on the same tick the worker changes, so a
   // source that folded the two together had no transition left to clear on.
-  it('clears on a worker change even when the gate shuts at the same moment', async () => {
+  it('hides the previous result when switching to a worker with fetching disabled', async () => {
     listAvailableProviders.mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -169,7 +209,7 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('re-fetches on a workerId change and clears the previous worker\'s list first', async () => {
+  it('fetches on a worker change without showing the previous worker\'s list', async () => {
     const second = deferred<ListAvailableProvidersResponse>()
     listAvailableProviders
       .mockResolvedValueOnce(providersResp([AgentProvider.CLAUDE_CODE]))
@@ -233,8 +273,6 @@ describe('useAvailableProviders', () => {
         expect(hook.providers()).toBeUndefined()
         expect(hook.loading()).toBe(false)
 
-        // The failure left `lastLoadedWorkerId` alone, so a manual retry
-        // against the SAME worker still reaches the RPC.
         await hook.refresh()
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(2)

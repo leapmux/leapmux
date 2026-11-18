@@ -64,6 +64,46 @@ func TestCheckBinariesThroughTcsh(t *testing.T) {
 	}, checkBinaries(t.Context(), tcsh, false, []string{"sh", absent}))
 }
 
+func TestCheckBinariesThroughTcshWithAliasedEcho(t *testing.T) {
+	tcsh, err := exec.LookPath("tcsh")
+	if err != nil || runtime.GOOS == "windows" {
+		t.Skip("tcsh with a POSIX profile is unavailable")
+	}
+	home := t.TempDir()
+	const installed = "test-provider"
+	testutil.WriteExecutable(t, filepath.Join(home, installed), "#!/bin/sh\nexit 0\n")
+	profile := "alias echo '/bin/echo -n'\nset path = (" + shellquote.POSIX.Quote(home) + ")\n"
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".tcshrc"), []byte(profile), 0o600))
+	t.Setenv("HOME", home)
+
+	const absent = "leapmux-definitely-not-installed"
+	assert.Equal(t, map[string]ProbeResult{
+		installed: ProbeYes,
+		absent:    ProbeNo,
+	}, checkBinaries(t.Context(), tcsh, true, []string{installed, absent}))
+}
+
+func TestProgramPathAfterProfileOutputWithoutNewline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX profile")
+	}
+	shell := filepath.Join(t.TempDir(), "shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nprintf 'profile banner'\nexec /bin/sh \"$@\"\n")
+	path, result := ProgramPath(t.Context(), shell, false, "sh")
+	require.Equal(t, ProbeYes, result)
+	assert.True(t, filepath.IsAbs(path))
+}
+
+func TestProgramPathThroughFish(t *testing.T) {
+	fish, err := exec.LookPath("fish")
+	if err != nil {
+		t.Skip("fish is unavailable")
+	}
+	path, result := ProgramPath(t.Context(), fish, false, "sh")
+	require.Equal(t, ProbeYes, result)
+	assert.True(t, filepath.IsAbs(path))
+}
+
 func TestCheckBinaryInconclusiveUnderAnExpiredContext(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if err != nil {
@@ -156,17 +196,17 @@ func TestLaunchLocatorBinariesCopiesTheNames(t *testing.T) {
 }
 
 // A resolver's three states reach the availability answer unchanged.
-func TestLaunchLocatorAvailableForwardsTheResolverAnswer(t *testing.T) {
+func TestScanAvailabilityForwardsTheResolverAnswer(t *testing.T) {
 	t.Parallel()
 
 	for _, res := range []Resolution{Found, Missing, Unknown} {
 		l := Custom(func(context.Context, string, bool) (Spec, Resolution) { return Spec{}, res })
-		assert.Equal(t, res, l.Available(context.Background(), "/bin/sh", false))
+		assert.Equal(t, res, ScanAvailability(t.Context(), "/bin/sh", false, []Locator{l})[0])
 	}
 }
 
 // A shell that runs and answers "absent" for every name is a conclusive absence.
-func TestLaunchLocatorAvailableIsMissingWhenTheShellAnswers(t *testing.T) {
+func TestScanAvailabilityIsMissingWhenTheShellAnswers(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no POSIX shell on this machine")
@@ -174,27 +214,27 @@ func TestLaunchLocatorAvailableIsMissingWhenTheShellAnswers(t *testing.T) {
 	// A PATH with no executables makes every probe report absence.
 	t.Setenv("PATH", t.TempDir())
 	l := Binaries("leapmux-locator-absent-a", "leapmux-locator-absent-b")
-	assert.Equal(t, Missing, l.Available(context.Background(), shell, false))
+	assert.Equal(t, Missing, ScanAvailability(t.Context(), shell, false, []Locator{l})[0])
 }
 
 // A shell that never ran establishes nothing, so the answer is retryable.
-func TestLaunchLocatorAvailableIsUnknownWhenTheShellCannotStart(t *testing.T) {
+func TestScanAvailabilityIsUnknownWhenTheShellCannotStart(t *testing.T) {
 	t.Parallel()
 
 	missing := filepath.Join(t.TempDir(), "no-such-shell")
 	l := Binaries("leapmux-locator-unreached")
-	assert.Equal(t, Unknown, l.Available(context.Background(), missing, false))
+	assert.Equal(t, Unknown, ScanAvailability(t.Context(), missing, false, []Locator{l})[0])
 }
 
 // Any one name that probes present is enough, whatever the names before it say.
-func TestLaunchLocatorAvailableIsFoundWhenAnyNameIsPresent(t *testing.T) {
+func TestScanAvailabilityIsFoundWhenAnyNameIsPresent(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no POSIX shell on this machine")
 	}
 	// echo is a POSIX builtin, so `command -v echo` finds it with any PATH.
 	l := Binaries("leapmux-locator-absent-c", "echo")
-	assert.Equal(t, Found, l.Available(context.Background(), shell, false))
+	assert.Equal(t, Found, ScanAvailability(t.Context(), shell, false, []Locator{l})[0])
 }
 
 func TestLaunchLocatorResolve(t *testing.T) {

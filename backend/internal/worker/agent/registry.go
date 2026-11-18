@@ -7,7 +7,6 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -34,8 +33,7 @@ type Registration struct {
 	Plugin Provider
 	// Start starts one agent of the provider.
 	Start StartFunc
-	// Locator finds the provider's program, for both the availability scan and the
-	// launch, so the two never disagree about which program runs.
+	// Locator supplies a shared candidate list or resolver for availability and launch.
 	Locator launch.Locator
 	// DefaultModels is the static model catalog served before a running agent
 	// reports its own. nil for a provider whose catalog is always discovered.
@@ -507,6 +505,5 @@ func (r *Registry) ListAvailable(ctx context.Context, shellPath string, useLogin
 			continue
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result, true
 }

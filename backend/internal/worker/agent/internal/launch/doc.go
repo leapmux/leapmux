@@ -3,8 +3,7 @@
 // It answers three questions for every provider, and it knows no provider:
 //
 //   - Where is the program? A Locator probes bare names through the user's
-//     login shell, or runs a resolver the provider supplies. CheckBinary caches
-//     each conclusive probe for the worker's lifetime.
+//     login shell or calls the resolver supplied by the provider.
 //   - How is it started? Wrap builds the shell command in the user's own
 //     dialect (POSIX, csh, Nushell or PowerShell), with the preamble delimiter
 //     and metadata lines the caller reads back from stdout.

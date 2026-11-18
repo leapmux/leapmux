@@ -54,7 +54,11 @@ func storedSessions(ctx context.Context, q agent.StoredSessionQuery, locator *la
 		// Use the same default shell as providerkit.RunCLI.
 		opts.Shell = terminal.ResolveDefaultShell()
 	}
-	c, err := openConnection(ctx, opts, registration, q.Environ(), nil)
+	var environment []string
+	if q.EnvEntries != nil {
+		environment = q.Environ()
+	}
+	c, err := openConnection(ctx, opts, registration, environment, nil)
 	if err != nil {
 		if absentMuseHost(err) {
 			// An unavailable Muse command means an empty store.

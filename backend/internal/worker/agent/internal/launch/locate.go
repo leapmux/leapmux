@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,22 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 )
+
+type launchResolutionKey struct{}
+
+func pathFallbackAllowed(ctx context.Context) bool {
+	return ctx.Value(launchResolutionKey{}) != nil
+}
+
+// RefreshProbeCommandPath prepares a direct executable probe. Discovery needs
+// a fresh PATH. A launch can use the last successful read if a refresh fails.
+func RefreshProbeCommandPath(ctx context.Context, cmd *exec.Cmd) error {
+	err := RefreshCommandPath(cmd)
+	if pathFallbackAllowed(ctx) {
+		return nil
+	}
+	return err
+}
 
 // Spec says how to invoke a provider's agent program.
 //
@@ -57,14 +74,9 @@ const (
 	Missing
 )
 
-// ResolverFunc discovers how to launch a provider. The shell path and
-// login-shell flag are the same values probeBinary uses, so a resolver that wants
-// the PATH answer can delegate to CheckBinary.
-//
-// A resolver MUST return Unknown whenever it could not establish an answer --
-// a probe killed by the context, a shell that would not start, an interpreter it
-// could not run. Reporting Missing there would freeze a transient failure as
-// "not installed" for the worker's lifetime.
+// ResolverFunc discovers how to launch a provider in the configured shell.
+// A resolver can use CheckBinary for a command lookup. Return Unknown when a
+// probe fails to establish an answer so a caller can retry.
 type ResolverFunc func(ctx context.Context, shellPath string, loginShell bool) (Spec, Resolution)
 
 // resolveBinaryName returns the first binary from candidates that is
@@ -115,10 +127,7 @@ const (
 // authoritative absence from a probe that never ran.
 func (r ProbeResult) Settled() bool { return r != ProbeUnknown }
 
-// probeReachedPresent / probeReachedAbsent are printed by the inner
-// command so a login profile that exits before the probe cannot be
-// cached as "binary absent". Exit status alone cannot tell those apart:
-// both are ExitError.
+// A result marker confirms that the shell reached the lookup.
 const (
 	probeReachedPresent = "__LEAPMUX_PROBE_REACHED__present"
 	probeReachedAbsent  = "__LEAPMUX_PROBE_REACHED__absent"
@@ -132,10 +141,6 @@ func checkBinaries(ctx context.Context, shellPath string, loginShell bool, names
 		return nil
 	}
 	shellName := terminal.ShellBaseName(shellPath)
-	flag := "-c"
-	if terminal.IsPwsh(shellName) {
-		flag = "-Command"
-	}
 	type answer struct {
 		name   string
 		result ProbeResult
@@ -151,7 +156,7 @@ func checkBinaries(ctx context.Context, shellPath string, loginShell bool, names
 		script.WriteByte('\n')
 	}
 
-	output := runShellProbe(ctx, shellPath, loginShell, flag, script.String())
+	output := runShellProbe(ctx, shellPath, loginShell, script.String())
 	results := make(map[string]ProbeResult, len(names))
 	for line := range strings.SplitSeq(output, "\n") {
 		if marker, ok := markers[strings.TrimSpace(line)]; ok {
@@ -192,59 +197,68 @@ func binaryCheckCommand(shellName, name, present, absent string) string {
 	}
 }
 
-// ProgramPath asks the user's shell for the ABSOLUTE path of a bare program name, and
-// reports whether the answer establishes anything.
-//
-// It is the path-returning sibling of probeBinary and uses the same reached-markers for the
-// same reason: a login profile that exits before the inner command must not be read as "the
-// program is absent". ZCode needs the path (rather than probeBinary's boolean) so a resolved
-// interpreter can be probed for node:sqlite directly, without a second shell.
+// ProgramPath returns the absolute path of a command in the configured shell.
 func ProgramPath(ctx context.Context, shellPath string, loginShell bool, name string) (string, ProbeResult) {
 	shellName := terminal.ShellBaseName(shellPath)
 	quoted := shellquote.POSIX.Quote(name)
 
-	var inner, flag string
+	var lookup string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner = fmt.Sprintf(
-			"$c = Get-Command %s -ErrorAction SilentlyContinue; if ($c) { Write-Output '%s'; Write-Output $c.Source } else { Write-Output '%s' }",
+		lookup = fmt.Sprintf(
+			"Write-Output ''; $c = Get-Command %s -ErrorAction SilentlyContinue; if ($c) { Write-Output '%s'; Write-Output $c.Source } else { Write-Output '%s' }",
 			shellquote.PowerShell.Quote(name), probeReachedPresent, probeReachedAbsent,
 		)
-		flag = "-Command"
 	case shellName == "nu":
-		inner = fmt.Sprintf(
-			"let p = (which %s); if ($p | is-not-empty) { echo '%s'; echo ($p | get 0.path) } else { echo '%s' }",
+		lookup = fmt.Sprintf(
+			"print ''; let p = (which %s); if ($p | is-not-empty) { print '%s'; print ($p | get 0.path) } else { print '%s' }",
 			nuQuote(name), probeReachedPresent, probeReachedAbsent,
 		)
-		flag = "-c"
 	case shellName == "tcsh" || shellName == "csh":
-		inner = fmt.Sprintf(
-			"which %s >& /dev/null && printf '%%s\\n' '%s' && which %s || printf '%%s\\n' '%s'",
+		lookup = fmt.Sprintf(
+			"echo ''; which %s >& /dev/null && echo '%s' && which %s || echo '%s'",
 			quoted, probeReachedPresent, quoted, probeReachedAbsent,
 		)
-		flag = "-c"
-	default:
-		inner = fmt.Sprintf(
-			"if p=$(command -v %s 2>/dev/null); then printf '%%s\\n%%s\\n' '%s' \"$p\"; else printf '%%s\\n' '%s'; fi",
-			quoted, probeReachedPresent, probeReachedAbsent,
+	case shellName == "fish":
+		lookup = fmt.Sprintf(
+			"if command -q %s; printf '\\n%%s\\n' '%s'; command -s %s; else; printf '\\n%%s\\n' '%s'; end",
+			quoted, probeReachedPresent, quoted, probeReachedAbsent,
 		)
-		flag = "-c"
+	default:
+		nativePath := ""
+		if runtime.GOOS == "windows" {
+			// Git Bash can return /c/Tools/node.exe for a native executable.
+			nativePath = "case \"$p\" in /*) if [ -x /usr/bin/cygpath ]; then p=$(/usr/bin/cygpath -w -- \"$p\") || exit 1; fi;; esac; "
+		}
+		lookup = fmt.Sprintf(
+			"if p=$(command -v %s 2>/dev/null); then %sprintf '\\n%%s\\n%%s\\n' '%s' \"$p\"; else printf '\\n%%s\\n' '%s'; fi",
+			quoted, nativePath, probeReachedPresent, probeReachedAbsent,
+		)
 	}
 
-	return parseProgramPathProbe(runShellProbe(ctx, shellPath, loginShell, flag, inner))
+	return parseProgramPathProbe(runShellProbe(ctx, shellPath, loginShell, lookup))
 }
 
-func runShellProbe(ctx context.Context, shellPath string, loginShell bool, flag, script string) string {
-	args := terminal.CommandArgs(shellPath, loginShell, flag, script)
-	cmd := exec.CommandContext(ctx, shellPath, args...)
-	cmd.Dir = os.TempDir()
-	procutil.HideConsoleWindow(cmd)
-	procutil.DetachFromTerminal(cmd)
+func runShellProbe(ctx context.Context, shellPath string, loginShell bool, script string) string {
+	if name := terminal.ShellBaseName(shellPath); name == "tcsh" || name == "csh" {
+		// The builtins still work when the PATH being checked is empty.
+		script = "unalias echo\nunalias which\n" + script
+	}
+	cmd, err := newShellCommand(ctx, shellPath, loginShell, script, os.TempDir())
+	if err != nil && !pathFallbackAllowed(ctx) {
+		return ""
+	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	// A shell profile can leave a subprocess holding stdout open.
+	owner := procutil.PrepareProcess(cmd)
 	cmd.WaitDelay = time.Second
-	_ = cmd.Run()
+	if startErr := owner.Start(); startErr != nil {
+		_ = owner.Close()
+		return ""
+	}
+	_ = owner.Wait()
+	_ = owner.Close()
 	if ctx.Err() != nil {
 		return ""
 	}
@@ -285,8 +299,7 @@ func parseProgramPathProbe(out string) (string, ProbeResult) {
 // of the two; Binaries and Custom are its only constructors, so a
 // locator that states both, or neither, cannot be built outside this file.
 //
-// Both the availability scan and the launch read ONE locator, so the two can
-// never disagree about which program a provider runs.
+// Discovery and launch share the registered candidate list or resolver.
 type Locator struct {
 	// binaries lists the executable names to probe, the preferred one first.
 	binaries []string
@@ -319,6 +332,7 @@ func (l Locator) Valid() bool {
 // that reports Missing or Unknown is an error, because neither can
 // start a process; the two differ for the availability scan, not here.
 func (l Locator) Resolve(ctx context.Context, shellPath string, loginShell bool, displayName string) (Spec, error) {
+	ctx = context.WithValue(ctx, launchResolutionKey{}, struct{}{})
 	if l.resolver != nil {
 		spec, res := l.resolver(ctx, shellPath, loginShell)
 		switch res {
@@ -334,19 +348,6 @@ func (l Locator) Resolve(ctx context.Context, shellPath string, loginShell bool,
 		return Spec{}, fmt.Errorf("no binary candidates registered for %s", displayName)
 	}
 	return Spec{Program: resolveBinaryName(ctx, shellPath, loginShell, l.binaries)}, nil
-}
-
-// Available answers whether the program is present, in the same three states a
-// resolver gives. A binaries locator is Found when any name probes present,
-// Missing when every probe ran and answered absent, and Unknown when a
-// probe established nothing and no name was found. A locator that states no way
-// to find the program is Missing: nothing can start it.
-func (l Locator) Available(ctx context.Context, shellPath string, loginShell bool) Resolution {
-	if l.resolver != nil {
-		_, res := l.resolver(ctx, shellPath, loginShell)
-		return res
-	}
-	return l.binaryAvailability(checkBinaries(ctx, shellPath, loginShell, l.binaries))
 }
 
 func (l Locator) binaryAvailability(results map[string]ProbeResult) Resolution {

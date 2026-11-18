@@ -53,7 +53,6 @@ import { pageScrollFocusedTerminal, TerminalView } from '~/components/terminal/T
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode, TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import { useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
@@ -735,12 +734,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
    * reactive. The optional fields are omitted while their loads answer
    * undefined: TabBar's prop types take no explicit undefined.
    */
-  const buildNewTabProps = (tileId: string, workerId: string, providers: AgentProvider[] | undefined) => {
+  const buildNewTabProps = (tileId: string, workerId: string) => {
+    const providers = agentOps.providerStore.providers(workerId)
     const shells = termOps.availableShells()
     const defaultShell = termOps.defaultShell()
     const loadingProvider = newAgentLoadingProvider()
     return {
       showAddButton: isActiveWorkspaceMutatable(),
+      onOpenMenu: () => activateTile(tileId),
       onNewAgent: (provider?: AgentProvider) => {
         activateTile(tileId)
         return agentOps.handleOpenAgent(provider)
@@ -788,7 +789,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // so it re-fires when `mainPredicates` updates without tileId
     // changing.
     const workerId = () => selection.activeTabForTile(tileId)?.workerId ?? ''
-    const { providers } = useAvailableProviders(workerId, () => true, agentOps.providerStore)
     const fallbackActions = createMemo(() => buildTileActions(tileId))
     const liveActions = actions ?? fallbackActions
     return (
@@ -806,7 +806,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         onClose={handleTabClose}
         onRename={(tab, title) => renameTab({ view, metadata }, tab, title)}
-        newTab={buildNewTabProps(tileId, workerId(), providers())}
+        newTab={buildNewTabProps(tileId, workerId())}
         {...(isMobileLayout()
           ? {
               mobile: {

@@ -94,7 +94,9 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   // until the worker's list lands, and the spread keeps the prop absent then
   // -- a second `providers()` call beside the first could not be narrowed.
   const providerProps = () => {
-    const list = providers()
+    const list = menuOpen()
+      ? providers()
+      : undefined
     return list !== undefined
       ? { availableProviders: list }
       : {}

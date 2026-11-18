@@ -127,3 +127,20 @@ func TestShellEnvUsesNativeUnicodeValuesThroughAvailableShells(t *testing.T) {
 		})
 	}
 }
+
+func TestShellEnvPreservesExplicitAppImageSnapshot(t *testing.T) {
+	shell := profileShell(t, "")
+	appDir := t.TempDir()
+	t.Setenv("APPDIR", appDir)
+	t.Setenv("APPIMAGE", filepath.Join(appDir, "worker.AppImage"))
+	path := filepath.Join(appDir, "usr", "bin") + string(os.PathListSeparator) + "/usr/bin"
+	image := filepath.Join(appDir, "snapshot.AppImage")
+	snapshot, result := ShellEnv(t.Context(), ShellEnvOptions{
+		Shell:     shell,
+		Env:       []string{"PATH=" + path, "APPIMAGE=" + image},
+		Variables: []string{"PATH", "APPIMAGE"},
+	})
+	require.Equal(t, ProbeYes, result)
+	assert.Equal(t, path, snapshot.Values["PATH"])
+	assert.Equal(t, image, snapshot.Values["APPIMAGE"])
+}

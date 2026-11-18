@@ -21,8 +21,7 @@ import '~/components/chat/providers'
 // suite (the AppShellDialogs stub replaces the component entirely).
 vi.mock('~/api/clients', () => ({
   workerClient: {
-    // The dialog context filters the fleet to ONLINE workers before it
-    // applies the preselection, so the one mock worker must be online.
+    // The picker only shows online workers.
     listWorkers: vi.fn(async () => ({
       workers: [
         create(WorkerSchema, { id: 'w-1', online: true }),

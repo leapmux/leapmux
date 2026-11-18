@@ -19,8 +19,7 @@ import { resolveStampedBranch } from '~/components/workspace/branchStamp'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createTitleState } from '~/hooks/createTitleState'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
-import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
-import { useAvailableProviders } from '~/hooks/useAvailableProviders'
+import { useWorkerAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { useChangeBranchInspect } from '~/hooks/useChangeBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
@@ -147,11 +146,10 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   // mount, which would only re-roll the title the constructor just generated.
   createEffect(on(worktreeTabType, () => title.regenerateIfPristine(), { defer: true }))
 
-  const providerState = useAvailableProviders(
+  const { agentProvider, recordProviderUse, noProviders, picker } = useWorkerAgentProviderSelection(
     worker.workerId,
     () => gitMode.gitMode() === GitMode.CreateWorktree && worktreeTabType() === TabType.AGENT,
   )
-  const { agentProvider, setAgentProvider, recordProviderUse, noProviders } = useAgentProviderSelection(providerState.providers)
 
   const shellState = useAvailableShells(
     () => props.workerId,
@@ -365,13 +363,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
               </div>
               <Switch>
                 <Match when={worktreeTabType() === TabType.AGENT}>
-                  <AgentProviderSelector
-                    value={agentProvider}
-                    onChange={setAgentProvider}
-                    availableProviders={providerState.providers()}
-                    loading={providerState.loading()}
-                    onRefresh={providerState.refresh}
-                  />
+                  <AgentProviderSelector {...picker} />
                 </Match>
                 <Match when={worktreeTabType() === TabType.TERMINAL}>
                   <ShellSelector state={shellState} />

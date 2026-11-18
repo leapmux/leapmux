@@ -28,7 +28,7 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
     const current = props.value()
     return current !== undefined && providers().includes(current)
       ? current
-      : providers()[0]
+      : undefined
   })
   const emptyLabel = () => {
     if (props.loading)

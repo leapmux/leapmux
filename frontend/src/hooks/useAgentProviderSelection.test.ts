@@ -46,6 +46,30 @@ describe('useAgentProviderSelection', () => {
     })
   })
 
+  it('keeps the current provider when discovery adds a higher-priority option', async () => {
+    mockStored = [CODEX]
+    await createRoot(async (dispose) => {
+      try {
+        const [available, setAvailable] = createSignal<AgentProvider[]>([CC])
+        const selection = useAgentProviderSelection(available)
+        expect(selection.agentProvider()).toBe(CC)
+        await flush()
+
+        setAvailable([CC, CODEX])
+        expect(selection.agentProvider()).toBe(CC)
+
+        selection.setAgentProvider(CODEX)
+        setAvailable([CC])
+        expect(selection.agentProvider()).toBe(CC)
+        setAvailable([CC, CODEX])
+        expect(selection.agentProvider()).toBe(CC)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('re-seeds when the current choice drops out of availability', async () => {
     mockStored = [CC]
     await new Promise<void>((resolve) => {
@@ -118,11 +142,6 @@ describe('useAgentProviderSelection', () => {
   })
 
   it('available() is memoized: same source array → same reference across reads', () => {
-    // Reference stability matters because `useMruProviders`'s memoized
-    // `mruProviders` and the auto-re-seed effect both call `available()`
-    // every reactive run; if it allocated a fresh array each time, the
-    // downstream `.includes()` and ordering comparisons would force
-    // unnecessary recomputations.
     mockStored = []
     createRoot((dispose) => {
       const stable: AgentProvider[] = [CC, CODEX]
@@ -172,12 +191,6 @@ describe('useAgentProviderSelection', () => {
   })
 
   it('leaves agentProvider() undefined when available is empty (type matches runtime)', () => {
-    // Regression: the signal used to be typed `AgentProvider` but seeded
-    // from `mruProviders()[0]` which is undefined for an empty
-    // availability list — the runtime value violated the declared type
-    // and let consumers ship `undefined` as a non-nullable proto enum.
-    // The signal is now typed `| undefined` so a forgetful caller hits
-    // a TS error at the proto field assignment.
     mockStored = []
     createRoot((dispose) => {
       const sel = useAgentProviderSelection(() => [])

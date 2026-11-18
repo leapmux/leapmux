@@ -3,7 +3,6 @@ package launch
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -14,7 +13,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // WrapSpec describes how to wrap an agent binary launch inside the user's
@@ -134,45 +132,31 @@ func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
 	if spec.EnvGated != nil {
 		metaPrefix = "__LEAPMUX_META_" + token + "__ "
 	}
-	environ := spec.Environment
-	if environ == nil {
-		environ = os.Environ()
+	cmd, _ := newShellCommandWithEnvironment(ctx, spec.Shell, spec.LoginShell, "", spec.WorkingDir, spec.Environment)
+	if len(spec.Launch.Env) > 0 {
+		cmd.Env = append(cmd.Environ(), spec.Launch.Env...)
 	}
-	environ = append(append([]string{}, environ...), spec.Launch.Env...)
+	envutil.ScrubAppImageEnv(cmd)
+	environ := cmd.Environ()
 	prepared := prepareShellLaunch(spec, token, environ)
+	if len(prepared.pins) > 0 {
+		cmd.Env = prepared.pinEnvironment(environ)
+	}
 	shellName := terminal.ShellBaseName(spec.Shell)
-
-	var inner, flag string
+	var inner string
 	switch {
 	case terminal.IsPwsh(shellName):
 		inner = buildPwshCommand(prepared, delimiter, metaPrefix)
-		flag = "-Command"
 	case shellName == "fish":
 		inner = buildFishCommand(prepared, delimiter, metaPrefix)
-		flag = "-c"
 	case shellName == "nu":
 		inner = buildNuCommand(prepared, delimiter, metaPrefix)
-		flag = "-c"
 	case shellName == "tcsh" || shellName == "csh":
 		inner = buildCshCommand(prepared, delimiter, metaPrefix)
-		flag = "-c"
 	default:
-		// bash, zsh, sh, ash, dash, ksh, xonsh, and unknown shells
 		inner = buildPosixCommand(prepared, delimiter, metaPrefix)
-		flag = "-c"
 	}
-	cmdArgs := terminal.CommandArgs(spec.Shell, spec.LoginShell, flag, inner)
-
-	cmd := exec.CommandContext(ctx, spec.Shell, cmdArgs...)
-	cmd.Dir = spec.WorkingDir
-	// Launch requirements and private pins apply after the caller's environment.
-	// Callers can finalize cmd.Environ(), but replacing it would discard the pins.
-	if spec.Environment != nil || len(spec.Launch.Env) > 0 || len(prepared.pins) > 0 {
-		cmd.Env = prepared.pinEnvironment(environ)
-	}
-	envutil.ScrubAppImageEnv(cmd)
-	procutil.HideConsoleWindow(cmd)
-	procutil.DetachFromTerminal(cmd)
+	cmd.Args[len(cmd.Args)-1] = inner
 	return cmd, delimiter, metaPrefix
 }
 

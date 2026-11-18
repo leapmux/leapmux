@@ -305,6 +305,26 @@ describe('DropdownMenu', () => {
     expect(popover).toBeInTheDocument()
     expect(screen.getByText('Content')).toBeInTheDocument()
   })
+
+  it('dismisses a menu at a caller-supplied fixed point when its pane scrolls', () => {
+    const anchor = new DOMRect(30, 40, 0, 0)
+    render(() => (
+      <>
+        <div data-testid="scrolling-pane" />
+        <DropdownMenu
+          anchorRef={() => anchor}
+          open={() => true}
+          data-testid="fixed-point-menu"
+        >
+          <button role="menuitem">Copy</button>
+        </DropdownMenu>
+      </>
+    ))
+    const popover = screen.getByTestId('fixed-point-menu')
+    expect(popover.matches(':popover-open')).toBe(true)
+    screen.getByTestId('scrolling-pane').dispatchEvent(new Event('scroll'))
+    expect(popover.matches(':popover-open')).toBe(false)
+  })
 })
 
 describe('DropdownMenu nested-submenu dismiss', () => {

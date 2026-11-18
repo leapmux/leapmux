@@ -95,11 +95,8 @@ func (s *zcodeStubDeps) resolve(t *testing.T) (launch.Spec, launch.Resolution) {
 
 // forceZCodeUnavailable makes ZCode resolve conclusively missing for the rest of the test.
 //
-// ZCode resolves through the FILESYSTEM, not the shell, so a developer machine with the
-// desktop application installed answers for it whatever a test does to PATH or to $SHELL.
-// The script override is the narrowest lever: it replaces discovery entirely, and an
-// absent path is a conclusive absence -- which is what a shell-focused test needs ZCode to
-// be, without stubbing the resolver it is not testing.
+// A missing script override bypasses launcher and bundled-script discovery,
+// so the host's own ZCode installation cannot affect the test.
 func forceZCodeUnavailable(t *testing.T) {
 	t.Helper()
 	t.Setenv(zcodeScriptEnvOverride, filepath.Join(t.TempDir(), "no-such-zcode.cjs"))
@@ -278,7 +275,7 @@ func TestResolveZCodeLaunch_AnInconclusivePathProbeWithAWorkingBundleIsFound(t *
 
 // One inconclusive interpreter probe makes the WHOLE answer retryable, even when a later
 // candidate answered no conclusively. Otherwise a single fork failure under load is
-// cached as "ZCode is not installed".
+// reported as "ZCode is not installed".
 func TestResolveZCodeLaunch_OneInconclusiveInterpreterMakesTheAnswerUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -707,7 +704,7 @@ func TestZCodeLaunchResolverIsRegistered(t *testing.T) {
 	// resolver, pointed at an absent script, answers from the filesystem alone.
 	forceZCodeUnavailable(t)
 	missingShell := filepath.Join(t.TempDir(), "no-such-shell")
-	assert.Equal(t, launch.Missing, entry.Locator.Available(context.Background(), missingShell, false),
+	assert.Equal(t, launch.Missing, launch.ScanAvailability(t.Context(), missingShell, false, []launch.Locator{entry.Locator})[0],
 		"ZCode ships no PATH binary, so its locator must be its launch resolver")
 }
 
@@ -757,8 +754,36 @@ func TestResolveZCodeLaunch_AConclusivePathProbeWithNoInterpreterIsMissing(t *te
 	assert.Equal(t, launch.Missing, res)
 }
 
-// A provider with a launch resolver is answered by that resolver, not by a PATH probe --
-// and the resolver's three states must reach Registry.ListAvailable unchanged.
+// The registered resolver must recheck the absolute interpreter path on each scan.
+func TestResolveZCodeLaunchReadsTheCurrentShellPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX profile")
+	}
+	root := t.TempDir()
+	script := filepath.Join(root, "zcode.cjs")
+	require.NoError(t, os.WriteFile(script, nil, 0o600))
+	t.Setenv(zcodeScriptEnvOverride, script)
+	t.Setenv(zcodeNodeEnvOverride, "node")
+	t.Setenv("PATH", t.TempDir())
+	registration := Registration()
+	locators := []launch.Locator{registration.Locator}
+	shell := "/bin/sh"
+	assert.Equal(t, []launch.Resolution{launch.Missing}, launch.ScanAvailability(t.Context(), shell, false, locators))
+
+	dir := t.TempDir()
+	node := filepath.Join(dir, "node")
+	testutil.WriteExecutable(t, node, "#!/bin/sh\n[ \"$1\" = -e ] && [ \"$2\" = \"require('node:sqlite')\" ]\n")
+	t.Setenv("PATH", dir)
+	assert.Equal(t, []launch.Resolution{launch.Found}, launch.ScanAvailability(t.Context(), shell, false, locators))
+	spec, err := registration.Locator.Resolve(t.Context(), shell, false, "ZCode")
+	require.NoError(t, err)
+	assert.Equal(t, node, spec.Program)
+
+	t.Setenv("PATH", t.TempDir())
+	assert.Equal(t, []launch.Resolution{launch.Missing}, launch.ScanAvailability(t.Context(), shell, false, locators))
+}
+
+// Custom resolvers' three states reach the registry unchanged.
 func TestListAvailableProvidersUsesTheLaunchResolver(t *testing.T) {
 	shell, err := exec.LookPath("sh")
 	if err != nil {

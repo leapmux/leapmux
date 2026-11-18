@@ -578,6 +578,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
         popoverEl?.hidePopover()
       return
     }
+    // A caller-supplied point has no element to reposition against.
+    if (!(getAnchor() instanceof Element)) {
+      popoverEl?.hidePopover()
+      return
+    }
     reposition()
   }
 

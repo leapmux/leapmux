@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { batch, createEffect, createMemo, on, onCleanup, untrack, useContext } from 'solid-js'
+import { createEffect, createMemo, on, onCleanup, untrack, useContext } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { workerAgent } from '~/api/workerRpc'
 import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
@@ -8,63 +8,84 @@ import { createStableContext } from '~/lib/createStableContext'
 
 interface WorkerProviders {
   providers: AgentProvider[] | undefined
-  loading: boolean
+  request: AbortController | undefined
 }
 
 /** Share the latest successful answer and the current request for each worker. */
 export function createAvailableProvidersStore() {
   const [workers, setWorkers] = createStore<Record<string, WorkerProviders | undefined>>({})
-  const requests = new Map<string, AbortController>()
+  const observers = new Map<string, number>()
   let disposed = false
 
   onCleanup(() => {
     disposed = true
-    for (const request of requests.values())
-      request.abort()
-    requests.clear()
+    for (const worker of Object.values(workers))
+      worker?.request?.abort()
+    observers.clear()
   })
 
   const scan = async (workerId: string, refresh: boolean): Promise<void> => {
     if (!workerId || disposed)
       return
 
-    const previous = untrack(() => workers[workerId]?.providers)
-    const inFlight = requests.get(workerId)
-    if (!refresh && (inFlight || previous !== undefined))
-      return
-
-    inFlight?.abort()
+    const previous = untrack(() => workers[workerId])
+    const providers = previous?.providers
+    if (previous?.request) {
+      if (!refresh)
+        return
+      previous.request.abort()
+    }
     const request = new AbortController()
-    requests.set(workerId, request)
-    setWorkers(workerId, { providers: previous, loading: true })
+    setWorkers(workerId, { providers, request })
 
+    let discovered: AgentProvider[]
     try {
       const response = await workerAgent.listAvailableProviders(workerId, {}, { signal: request.signal })
-      if (!request.signal.aborted) {
-        setWorkers(workerId, {
-          providers: [...response.providers],
-          loading: false,
-        })
-      }
+      discovered = [...response.providers]
     }
     catch (error) {
-      if (request.signal.aborted)
-        return
-      batch(() => {
-        setWorkers(workerId, { providers: previous, loading: false })
+      if (!request.signal.aborted) {
+        setWorkers(workerId, { providers, request: undefined })
         showWarnToastUnlessDisconnected('Failed to load available agent providers', error)
-      })
+      }
+      return
     }
-    finally {
-      if (requests.get(workerId) === request)
-        requests.delete(workerId)
+
+    if (!request.signal.aborted)
+      setWorkers(workerId, { providers: discovered, request: undefined })
+  }
+
+  const observe = (workerId: string): (() => void) => {
+    if (!workerId || disposed)
+      return () => {}
+    const count = observers.get(workerId) ?? 0
+    observers.set(workerId, count + 1)
+    // Revalidate when a worker gains its first consumer. Every other
+    // consumer shares the request and keeps the last successful list visible.
+    if (count === 0)
+      void scan(workerId, false)
+
+    return () => {
+      if (disposed)
+        return
+      const remaining = (observers.get(workerId) ?? 1) - 1
+      if (remaining > 0) {
+        observers.set(workerId, remaining)
+        return
+      }
+      observers.delete(workerId)
+      const entry = untrack(() => workers[workerId])
+      if (entry?.request) {
+        entry.request.abort()
+        setWorkers(workerId, { providers: entry.providers, request: undefined })
+      }
     }
   }
 
   return {
     providers: (workerId: string) => workers[workerId]?.providers,
-    loading: (workerId: string) => workers[workerId]?.loading ?? false,
-    load: (workerId: string) => scan(workerId, false),
+    loading: (workerId: string) => workers[workerId]?.request !== undefined,
+    observe,
     refresh: (workerId: string) => scan(workerId, true),
   }
 }
@@ -81,13 +102,13 @@ export function useAvailableProviders(
   const selectedWorkerId = createMemo(workerId)
   const shouldLoad = createMemo(enabled)
   createEffect(on([selectedWorkerId, shouldLoad], ([id, open]) => {
-    if (open)
-      void store.load(id)
+    if (open && id)
+      onCleanup(store.observe(id))
   }))
 
   return {
-    providers: () => store.providers(workerId()),
-    loading: () => store.loading(workerId()),
-    refresh: () => store.refresh(workerId()),
+    providers: () => store.providers(selectedWorkerId()),
+    loading: () => store.loading(selectedWorkerId()),
+    refresh: () => store.refresh(selectedWorkerId()),
   }
 }

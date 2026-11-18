@@ -1,12 +1,12 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { deregisterWorkerViaAPI } from './helpers/api'
-import { finishCleanup } from './helpers/cleanup'
+import { finishCleanup, withCleanup } from './helpers/cleanup'
 import { spawnRegisteredWorker } from './helpers/nativeWorker'
 import { stopProcess } from './helpers/process'
 import { createTestDirectory } from './helpers/runDirectory'
@@ -98,6 +98,7 @@ test.describe('Branch context menu', () => {
     const root = createTestDirectory('provider-menu-')
     const profile = join(root, 'profile')
     const shell = join(root, 'provider-shell')
+    const lookups = join(root, 'lookups')
     const initialBin = join(root, 'initial-bin')
     const refreshedBin = join(root, 'refreshed-bin')
     for (const directory of [initialBin, refreshedBin])
@@ -123,7 +124,9 @@ test.describe('Branch context menu', () => {
       createExecutable(refreshedBin, command)
     const setProfilePath = (path: string) => writeFileSync(profile, `export PATH=${quotePosixShellArgument(path)}\n`)
     setProfilePath(initialBin)
-    writeFileSync(shell, `#!/bin/sh\n. ${quotePosixShellArgument(profile)}\nfor command do :; done\nexec /bin/sh -c "$command"\n`, { mode: 0o755 })
+    writeFileSync(lookups, '')
+    const scanCount = () => readFileSync(lookups, 'utf8').split('\n').length - 1
+    writeFileSync(shell, `#!/bin/sh\n. ${quotePosixShellArgument(profile)}\nprintf 'scan\\n' >> ${quotePosixShellArgument(lookups)}\nfor command do :; done\nexec /bin/sh -c "$command"\n`, { mode: 0o755 })
     const output = createServerOutput()
     const worker = await spawnRegisteredWorker(leapmuxServer, {
       name: 'Provider Menu Worker',
@@ -135,7 +138,7 @@ test.describe('Branch context menu', () => {
       },
       output,
     })
-    try {
+    await withCleanup(async () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
       await openNewAgentDialog(page)
@@ -161,12 +164,18 @@ test.describe('Branch context menu', () => {
       await pickMenuOption(dialog, 'worker-select-menu', worker.workerId)
       await setWorkingDir(page, otherRepo)
       await pickMenuOption(dialog, 'shell-select-menu', '/bin/sh')
+      const beforeTerminal = scanCount()
       await dialog.getByRole('button', { name: 'Create' }).click()
       await expect(terminalTabs(page)).toHaveCount(1)
+      await expect.poll(scanCount).toBeGreaterThan(beforeTerminal)
+      // The active tab keeps observing this worker. A private branch cache
+      // would scan again and see only the original provider.
+      setProfilePath(initialBin)
 
       const repoHeader = workspaceChildren(page, workspaceId)
-        .getByTestId('tab-tree-repo-group')
+        .locator('[data-testid="tab-tree-repo-group"]:visible')
         .filter({ hasText: 'provider-menu-other-repo' })
+        .first()
       const branch = branchGroupRow(repoHeader.locator('xpath=following-sibling::*[1]'))
       const icons = page.locator('menu[popover]:visible [data-testid^="menu-new-agent-"]')
       const rowSizes = () => icons.evaluateAll((buttons) => {
@@ -189,17 +198,18 @@ test.describe('Branch context menu', () => {
       await openBranchMenu(page, branch)
       await expect(icons).toHaveCount(refreshedCommands.length)
       await expect.poll(async () => Math.max(...await rowSizes())).toBeLessThan(10)
-    }
-    finally {
-      await testInfo.attach('provider-menu-worker.log', {
-        body: output.since(0),
-        contentType: 'text/plain',
-      })
-      await finishCleanup([
-        stopProcess(worker.proc),
-        deregisterWorkerViaAPI(hubUrl, adminToken, worker.workerId),
-      ])
-    }
+    }, async () => {
+      await withCleanup(
+        () => testInfo.attach('provider-menu-worker.log', {
+          body: output.since(0),
+          contentType: 'text/plain',
+        }),
+        () => finishCleanup([
+          stopProcess(worker.proc),
+          deregisterWorkerViaAPI(hubUrl, adminToken, worker.workerId),
+        ]),
+      )
+    })
   })
 
   test('three-dot menu opens with the git items, the delete item and the new-tab sections', async ({

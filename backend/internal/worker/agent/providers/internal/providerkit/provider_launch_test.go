@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -22,7 +23,9 @@ func TestResolveProviderLaunch(t *testing.T) {
 	defer cancel()
 	registration.Locator = launch.Custom(func(received context.Context, shell string, loginShell bool) (launch.Spec, launch.Resolution) {
 		called = true
-		assert.Same(t, ctx, received)
+		_, hasDeadline := received.Deadline()
+		assert.True(t, hasDeadline)
+		assert.NoError(t, received.Err())
 		assert.Equal(t, "/bin/sh", shell)
 		assert.True(t, loginShell)
 		return resolved, launch.Found
@@ -63,4 +66,22 @@ func TestResolveProviderLaunch(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.message)
 		})
 	}
+}
+
+func TestResolveLaunchHonorsStartupDeadline(t *testing.T) {
+	registration := agent.Registration{
+		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		Locator: launch.Custom(func(ctx context.Context, _ string, _ bool) (launch.Spec, launch.Resolution) {
+			if _, present := ctx.Deadline(); assert.True(t, present, "resolution needs a deadline") {
+				<-ctx.Done()
+			}
+			return launch.Spec{Program: "fallback"}, launch.Found
+		}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	spec, err := ResolveLaunch(ctx, agent.Options{StartupTimeout: time.Nanosecond}, registration)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Empty(t, spec.Program)
+	assert.NoError(t, ctx.Err(), "the running agent still needs its parent context")
 }
