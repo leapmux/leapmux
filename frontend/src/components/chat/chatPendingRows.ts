@@ -3,18 +3,19 @@ import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatRowItem } from './chatRowItem'
 import type { SpanLine } from './widgets/SpanLines'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { MessageSpanIdentity, ToolSpanRole } from '~/lib/messageSpan'
-import { createMemo } from 'solid-js'
+import type { MessageSpanIdentity } from '~/lib/messageSpan'
+import type { ToolProgressEntry } from '~/stores/chatToolProgress'
+import { createMemo, createSignal } from 'solid-js'
 import { messageSpanIdentity } from '~/lib/messageSpan'
-import { shallowEqualSets } from '~/lib/shallowEqual'
+import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
+import { shallowEqualArrays, shallowEqualSets } from '~/lib/shallowEqual'
 import { sameChatRowItems } from './chatRowItem'
 
 // ---------------------------------------------------------------------------
 // Pending rows
 //
-// A tool call is drawn as two rows: its REQUEST row and its RESULT row. A request row
-// never reads its result, so it shows, and reports its height, before the result
-// exists, and it never changes when the result lands.
+// A tool call is drawn as two rows: its REQUEST row and its RESULT row. The request
+// body depends on the opening message. Its header can read the result after it arrives.
 //
 // While the call runs, the reader still needs to see what it asked -- the requested
 // diff, the to-do list it carries, the agent prompt -- and the output it prints. A
@@ -36,9 +37,9 @@ import { sameChatRowItems } from './chatRowItem'
 //
 //  - A pending row OPENS for a request row while the loaded window holds the live tail
 //    and the browser holds no result message of the span: the call runs.
-//  - An open pending row STAYS while no result is held, and while the result row is
-//    loaded and not measured yet, so the swap happens in one update.
-//  - It CLOSES when the result row is measured, when the result draws no row of its own,
+//  - An open pending row STAYS until admission can show its result, so the swap
+//    happens in one update.
+//  - It CLOSES when the result row is admitted, when the result draws no row of its own,
 //    or when the window stops holding the live tail. A closed pending row never opens
 //    again for a span whose result the browser holds: a finished call draws no preview,
 //    also when its result row loses its height to a new width or a first fill.
@@ -115,20 +116,22 @@ export interface PendingRowsDeps {
   /** The rows of the loaded messages, in order. */
   entries: Accessor<readonly ClassifiedEntry[]>
   /** The items of those rows, index-aligned with `entries`. */
-  items: Accessor<readonly ChatRowItem[]>
+  items: Accessor<ChatRowItem[]>
   /** Whether the loaded window holds the live tail. */
   tailLoaded: () => boolean
-  /**
-   * The span role of the row of `entry` (MessageContextResolver.role). Only a request
-   * row gets a pending row: a row that both opens and closes its call, such as a
-   * finished ACP `tool_call` or the closing copy of a request that a turn's end
-   * stores, is the result of its span.
-   */
-  role: (entry: ClassifiedEntry) => ToolSpanRole
   /** The result message of a span that the browser holds, or undefined. */
   resultOf: (identity: MessageSpanIdentity) => AgentChatMessage | undefined
-  /** Whether the height cache answers a height for a row (RowHeightCache.isMeasured). */
-  isMeasured: (item: ChatRowItem) => boolean
+  /** The preview's own layout inputs. The request header's revision is excluded. */
+  previewHeightKey?: (entry: ClassifiedEntry) => string
+  progressOf?: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
+  /** Non-virtualized transcripts show each result as soon as it is listed. */
+  showsResult?: (item: ChatRowItem) => boolean
+}
+
+export interface PendingPreview {
+  outputTail: string
+  outputTruncated: boolean
+  revision: number
 }
 
 export interface PendingRows {
@@ -136,6 +139,10 @@ export interface PendingRows {
   entries: Accessor<readonly ClassifiedEntry[]>
   /** The items of those rows, index-aligned with `entries`. */
   items: Accessor<ChatRowItem[]>
+  /** Pending row ID to the result row that replaces it on admission. */
+  replacements: Accessor<ReadonlyMap<string, string>>
+  retire: (rowIds: readonly string[]) => void
+  preview: (requestId: string) => PendingPreview | undefined
   /** Whether the call that the message with `messageId` opens has a pending row in the list. */
   isOpen: (messageId: string) => boolean
 }
@@ -165,45 +172,72 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
 
   // The ids of the messages whose call has an open pending row. The memo reads its own
   // previous answer, which is the latch: see the rules at the top of this file.
-  const pendingIds = createMemo((open: ReadonlySet<string>): ReadonlySet<string> => {
+  const [retired, setRetired] = createSignal<readonly string[]>([])
+  const requestResults = createMemo(() => {
+    const requests = new Map<ClassifiedEntry, AgentChatMessage | undefined>()
     if (!deps.tailLoaded())
-      return new Set()
-    const entries = deps.entries()
-    let items: readonly ChatRowItem[] | undefined
-    let indexById: Map<string, number> | undefined
-    // Whether the result row of the message with `resultId` is in the list and not
-    // measured yet. The lookups are built once, and only for a held result.
-    const resultRowWaits = (resultId: string): boolean => {
-      if (indexById === undefined) {
-        items = deps.items()
-        indexById = new Map()
-        entries.forEach((entry, index) => indexById!.set(entry.message.id, index))
+      return requests
+    for (const entry of deps.entries()) {
+      if (entry.category.kind === 'tool_use' && entry.message.spanId !== '' && entry.freshness.role === 'request') {
+        const result = deps.resultOf(messageSpanIdentity(entry.message))
+        requests.set(entry, result?.id === entry.message.id
+          ? undefined
+          : result)
       }
-      const index = indexById.get(resultId)
-      const item = index === undefined
-        ? undefined
-        : items?.[index]
-      return item !== undefined && !deps.isMeasured(item)
     }
+    return requests
+  })
+  const listedIds = createMemo(() => new Set(deps.entries().map(entry => entry.rowId)))
+  const pendingIds = createMemo((open: ReadonlySet<string>): ReadonlySet<string> => {
     const ids = new Set<string>()
-    for (const entry of entries) {
-      if (entry.category.kind !== 'tool_use' || entry.message.spanId === '')
-        continue
+    const retiredRows = retired()
+    for (const [entry, result] of requestResults()) {
       const id = entry.message.id
-      const result = deps.resultOf(messageSpanIdentity(entry.message))
-      const held = result !== undefined && result.id !== id
-      // A call whose result the browser holds keeps only a pending row that is already
-      // open. Almost every call of the window has ended, so the cheaper test comes first,
-      // and the span role is read only for a row that can have a pending row.
-      if (held && !open.has(id))
-        continue
-      if (deps.role(entry) !== 'request')
-        continue
-      if (!held || resultRowWaits(result.id))
+      if (result === undefined) {
         ids.add(id)
+        continue
+      }
+      if (!open.has(id) || !listedIds().has(result.id) || retiredRows.includes(pendingRowId(id)))
+        continue
+      if (deps.showsResult !== undefined && deps.items().some(item => item.id === result.id && deps.showsResult?.(item)))
+        continue
+      ids.add(id)
     }
     return ids
   }, new Set<string>(), { equals: shallowEqualSets })
+  const replacements = createMemo(() => {
+    const pairs = new Map<string, string>()
+    const pending = pendingIds()
+    for (const [entry, result] of requestResults()) {
+      if (result !== undefined && pending.has(entry.message.id))
+        pairs.set(pendingRowId(entry.message.id), result.id)
+    }
+    return pairs
+  })
+
+  let nextPreviewRevision = 0
+  const previews = createMemo((previous: ReadonlyMap<string, PendingPreview>): ReadonlyMap<string, PendingPreview> => {
+    const shown = new Map<string, PendingPreview>()
+    const pending = pendingIds()
+    for (const [entry, result] of requestResults()) {
+      const id = entry.message.id
+      if (!pending.has(id))
+        continue
+      const before = previous.get(id)
+      const progress = deps.progressOf?.(messageSpanIdentity(entry.message))
+      const outputTail = progress === undefined && result !== undefined
+        ? before?.outputTail ?? ''
+        : stripLeadingBlankLines(progress?.outputTail ?? '')
+      const outputTruncated = progress === undefined && result !== undefined
+        ? before?.outputTruncated ?? false
+        : progress?.outputTruncated === true
+      if (before?.outputTail === outputTail && before.outputTruncated === outputTruncated)
+        shown.set(id, before)
+      else if (outputTail !== '' || outputTruncated || before !== undefined)
+        shown.set(id, { outputTail, outputTruncated, revision: ++nextPreviewRevision })
+    }
+    return shown
+  }, new Map())
 
   const listed = createMemo((): { entries: readonly ClassifiedEntry[], items: ChatRowItem[] } => {
     const entries = deps.entries()
@@ -212,7 +246,7 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
     if (pending.size === 0) {
       return {
         entries,
-        items: [...items],
+        items,
       }
     }
     const listedEntries: ClassifiedEntry[] = []
@@ -226,6 +260,8 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
       if (!pending.has(entry.message.id))
         return
       const pendingEntry = pendingEntryOf(entry)
+      const previewRevision = previews().get(entry.message.id)?.revision
+      const heightKey = deps.previewHeightKey?.(entry) ?? item.heightKey ?? ''
       listedItems.push({
         id: pendingEntry.rowId,
         // The sequence of the request row, which the pending row continues. Every
@@ -239,7 +275,9 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
         hasSpanLines: pendingEntry.parsedSpanLines.length > 0,
         // The pending row draws the request's preview: its own key, so it never answers
         // with the height of the request row.
-        heightKey: `pending|${item.heightKey ?? ''}`,
+        heightKey: previewRevision === undefined
+          ? `pending|${heightKey}`
+          : `pending|${heightKey}|progress:${previewRevision}`,
         ...(item.kind !== undefined
           ? { kind: item.kind }
           : {}),
@@ -251,8 +289,11 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
   })
 
   return {
-    entries: () => listed().entries,
+    entries: createMemo(() => listed().entries, [], { equals: shallowEqualArrays }),
     items: createMemo(() => listed().items, [], { equals: sameChatRowItems }),
+    replacements,
+    retire: rowIds => setRetired(rowIds),
+    preview: requestId => previews().get(requestId),
     isOpen: messageId => pendingIds().has(messageId),
   }
 }

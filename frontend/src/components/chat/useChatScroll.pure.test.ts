@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
 
+import { pendingRowId } from './chatPendingRows'
 import { inferScrollDirection } from './chatScrollGeometry'
 import { computeBufferAwareKeepNewest, computeKeepNewest } from './useChatScroll'
 import { installScrollTestEnv } from './useChatScroll.testkit'
@@ -85,5 +86,9 @@ describe('computeBufferAwareKeepNewest', () => {
 
   it('keeps the whole window when the buffer top is unresolvable (anchorAt null)', () => {
     expect(computeBufferAwareKeepNewest(msgs, 1000, 500, 200, () => null)).toBe(msgs.length)
+  })
+
+  it('keeps the request and newer rows when the buffer top is in a pending preview', () => {
+    expect(computeBufferAwareKeepNewest(msgs, 1000, 500, 200, () => anchor(pendingRowId('m2')))).toBe(3)
   })
 })

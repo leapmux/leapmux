@@ -188,9 +188,11 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
   //     alone left those rows stating the bare word "Expand" over the request.
   const expandLabel = result?.collapsible
     ? result.expandLabel
-    : fallback?.collapsible ? fallback.expandLabel : request.expandLabel
+    : fallback?.collapsible
+      ? fallback.expandLabel
+      : untyped?.expandLabel ?? request.expandLabel
   return {
-    collapsible: (primary?.collapsible ?? false) || (drawsRequest && (request.collapsible ?? false)),
+    collapsible: (primary?.collapsible ?? false) || untyped?.collapsible === true || (drawsRequest && (request.collapsible ?? false)),
     // A row that draws the result takes the diff toggle from what it draws: the result,
     // or the requested changes that it shows for a call that ended with no typed result.
     // The request side's diff is the preview that the pending row draws while the call

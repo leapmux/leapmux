@@ -11,10 +11,11 @@ import { monotonicNow } from '~/lib/monotonicNow'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
+import { messageIdOfRow } from './chatPendingRows'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
 import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createHmrSettleWindow } from './chatScrollHmrSettleWindow'
-import { createScrollInput } from './chatScrollInput'
+import { createScrollInput, isListScrollKey } from './chatScrollInput'
 import { createScrollInputActivity } from './chatScrollInputActivity'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
@@ -462,9 +463,10 @@ export function computeBufferAwareKeepNewest(
   // returned null) keeps the whole window too -- never reap when we can't locate the
   // buffer's top edge.
   const bufTopAnchor = anchorAt(bufTop)
-  return bufTopAnchor
-    ? computeKeepNewest(msgs, bufTopAnchor, msgs.findIndex(m => m.id === bufTopAnchor.id))
-    : msgs.length
+  if (bufTopAnchor === null)
+    return msgs.length
+  const bufferMessageId = messageIdOfRow(bufTopAnchor.id)
+  return computeKeepNewest(msgs, bufTopAnchor, msgs.findIndex(message => message.id === bufferMessageId))
 }
 
 /**
@@ -1080,10 +1082,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   /**
    * Remove the layout shift (see LayoutShiftSurface.rebase) and record the write.
-   * A rebase while the scroller moves reports its move to the stale-native translator,
-   * which can then translate a `scroll` event in the old coordinates; a rebase at rest
-   * clears its record. It must not call notePosition: that clear removes the record that
-   * the translator joins a second rebase to.
+   * Report the write to the stale-native translator. While the scroller moves, a
+   * rebase can start a translation record. At rest it can only update an active
+   * record. Calling notePosition here would erase the offset a second rebase needs.
    */
   function rebase(): void {
     const el = visibleListEl()
@@ -1094,16 +1095,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (virt.rebase() === 0)
       return
     recordOwnWrite()
-    if (wasResting) {
-      staleNativeTranslator.invalidate()
-      return
-    }
     staleNativeTranslator.noteRebase({
       beforeTop,
       afterTop: el.scrollTop,
       clientHeight: el.clientHeight,
       dir: lastScrollDir,
-    })
+    }, wasResting)
   }
 
   /**
@@ -1504,6 +1501,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // pre-fetch page.
   const cancelPendingScroll = () => {
     cancelScrollAnimation()
+    staleNativeTranslator.invalidate()
     bufferFillPaused = true
   }
 
@@ -1690,9 +1688,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (!el)
       return
     // 1. A compositor-delayed event in the coordinates before a rebase. The translator
-    //    writes the translated position, so the reads below see it, and returns the
-    //    position after the rebase: the move of the event counts from there.
-    let baseline = staleNativeTranslator.translate() ?? seen.seenTop()
+    //    corrects the reported position. Compare it with the position the hook
+    //    recorded after its last event or write.
+    staleNativeTranslator.translate()
+    let baseline = seen.seenTop()
     // 2. What moved since the last event or own write. A scroll range that shrinks clamps
     //    scrollTop to its new maximum with no move of the reader: the content shrank, or
     //    the viewport grew taller, as when a send shrinks the composer. The content can
@@ -2311,7 +2310,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     handlers: {
       onScroll: handleScroll,
       onWheel: handleWheel,
-      onKeyDown: handleKeyDown,
+      onKeyDown: (event) => {
+        if (isListScrollKey(event))
+          staleNativeTranslator.invalidate()
+        handleKeyDown(event)
+      },
       onTouchStart: (event) => {
         // The user grabbed the surface -- stop any coasting programmatic scroll now.
         cancelPendingScroll()

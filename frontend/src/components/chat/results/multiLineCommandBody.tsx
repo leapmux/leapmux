@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import type { CommandLanguage } from '../model/tools/execute'
 import type { ToolResultRenderContext } from '../renderContext'
 import { createMemo, onCleanup } from 'solid-js'
+import { scheduleDeferredFrame } from '~/lib/animationFrame'
 import { joinClassNames } from '~/lib/classNames'
 import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } from '../chatHeightShared'
 import { CommandHighlightHtml } from '../syntaxHighlight'
@@ -14,15 +15,6 @@ function commandInputOverflowsCollapsedRows(el: HTMLElement): boolean {
 
 function collapsedCommandSummaryText(command: string): string {
   return command.replace(/^(?:[ \t]*\r?\n)+/, '')
-}
-
-function scheduleOverflowMeasure(measure: () => void): () => void {
-  if (typeof requestAnimationFrame === 'function') {
-    const frame = requestAnimationFrame(measure)
-    return () => cancelAnimationFrame(frame)
-  }
-  const timeout = setTimeout(measure, 0)
-  return () => clearTimeout(timeout)
 }
 
 /**
@@ -48,7 +40,7 @@ export function useCollapsedSummaryOverflow(props: {
     watch: (_element, measure) => {
       props.content()
       props.forcedOverflow?.()
-      onCleanup(scheduleOverflowMeasure(measure))
+      onCleanup(scheduleDeferredFrame(measure))
     },
     onOverflowChange: next => props.onOverflowChange?.(next),
   })

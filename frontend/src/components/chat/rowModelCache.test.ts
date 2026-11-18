@@ -22,6 +22,36 @@ function parsed(parentObject: Record<string, unknown>): ParsedMessageContent {
 }
 
 describe('rowModelCache', () => {
+  it('selects the tool block addressed by the stored span', () => {
+    const content = resolveMessageForRendering(parsed({
+      type: 'assistant',
+      session_id: 'qoder-session',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'first',
+            name: 'Bash',
+            input: { command: 'first command' },
+          },
+          {
+            type: 'tool_use',
+            id: 'second',
+            name: 'Bash',
+            input: { command: 'second command' },
+          },
+        ],
+      },
+    }), AgentProvider.QODER)
+    const context = { spanId: 'second', spanType: 'Bash' }
+
+    expect(extractedRow(cachedChatRow(context, AgentProvider.QODER, content, { kind: 'tool_use' }, undefined))).toMatchObject({
+      kind: 'tool',
+      call: { id: 'second' },
+    })
+  })
+
   it('rebuilds a row when its resolved sibling becomes visible', () => {
     const request = resolveMessageForRendering(parsed({
       sessionUpdate: 'tool_call',
@@ -131,6 +161,24 @@ describe('cachedSpanHeaderCall', () => {
   it('extracts the result once for one revision of each side', () => {
     const { request, result } = bashSpan()
     expect(cachedSpanHeaderCall(result, request.resolved)).toBe(cachedSpanHeaderCall(result, request.resolved))
+  })
+
+  it('shares extraction with the result row when their inputs match', () => {
+    const { request, result } = bashSpan()
+    const header = cachedSpanHeaderCall(result, request.resolved)
+    const context = {
+      spanId: result.message.spanId,
+      spanType: result.message.spanType,
+      sources: {
+        request: () => request.resolved,
+        role: () => 'result' as const,
+        visibleRows: () => ({ request: true }),
+      },
+    }
+    const body = extractedRow(cachedChatRow(context, result.message.agentProvider, result.resolved, prepareMessage(result.message).category, result.message.completion))
+    expect(body?.kind).toBe('tool')
+    if (body?.kind === 'tool')
+      expect(body.call).toBe(header)
   })
 
   it('extracts again for a new revision of a side', () => {

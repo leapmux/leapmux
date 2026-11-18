@@ -13,12 +13,12 @@ import { commandExit, commandIsError } from '../model/commandResult'
 import { isFinishedToolCallStatus } from '../model/toolCallStatus'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
-import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { COLLAPSED_RESULT_ROWS } from './collapse'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
 import { toolOutcomeLabel } from './toolOutcomeLabel'
 import { drawsOwnOutcome, ToolHeaderRow, ToolStatusHeader } from './ToolStatusHeader'
+import { ToolTruncationNotice } from './ToolTruncationNotice'
 import { textNeedsCollapse, useCollapsedLines } from './useCollapsedLines'
 
 const normalizedByCommand = new WeakMap<CommandResult, ReturnType<typeof normalizedCommandBody>>()
@@ -147,9 +147,7 @@ export function CommandResultBody(props: {
             : {})}
         />
       </Show>
-      <Show when={props.source.truncated}>
-        <div class={toolInputSummary}>{TRUNCATION_NOTICE}</div>
-      </Show>
+      <ToolTruncationNotice when={props.source.truncated} />
     </>
   )
 

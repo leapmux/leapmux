@@ -1,8 +1,8 @@
 import type { MessageUiKey } from '../messageUiKeys'
 import type { ToolResultRenderContext } from '../renderContext'
 import { render } from '@solidjs/testing-library'
-import { batch, createSignal } from 'solid-js'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { createSignal } from 'solid-js'
+import { describe, expect, it } from 'vitest'
 import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
@@ -11,15 +11,6 @@ import { toolPending } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { ToolMessage } from './ToolMessage'
 import { pendingRowRequest, ToolPendingMessage } from './ToolPendingMessage'
-
-// jsdom does not provide ResizeObserver, which the shared layouts observe with.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver
-})
 
 /** A running command, whose kind previews nothing of its own while it runs. */
 const runningCommand = toolCallFixture('execute', {
@@ -129,41 +120,19 @@ describe('ToolPendingMessage', () => {
     expect(root.innerHTML).toBe('')
   })
 
-  // The store drops the live output the moment the result message arrives, but the row
-  // stays until the result row is measured and replaces it in one update. Keeping the last
-  // output keeps the row's height, so the swap moves nothing.
-  it('keeps the output it drew while the result of its call is held', () => {
-    const [outputTail, setOutputTail] = createSignal<string | undefined>('compiling')
-    const [resultHeld, setResultHeld] = createSignal(false)
+  it('draws the retained preview when a new copy mounts after live output clears', () => {
+    const [preview, setPreview] = createSignal<{ outputTail: string } | undefined>({ outputTail: 'compiling' })
     const { container } = render(() => (
       <ToolPendingMessage
         row={toolRow(runningCommand, 'request')}
-        resultHeld={resultHeld}
-        context={{
-          toolProgress: {
-            liveTail: () => {
-              const tail = outputTail()
-              return tail === undefined
-                ? undefined
-                : { outputTail: tail }
-            },
-          },
-        }}
+        preview={preview}
       />
     ))
     const root = () => container.querySelector('[data-testid="tool-pending"]')!
     expect(root().textContent).toBe('compiling')
 
-    batch(() => {
-      setResultHeld(true)
-      setOutputTail(undefined)
-    })
-    expect(root().textContent).toBe('compiling')
     expect(root().matches(':empty')).toBe(false)
-
-    // The browser can release the held result, as when the window moves off the tail.
-    // The output that the row kept for it goes with it.
-    setResultHeld(false)
+    setPreview(undefined)
     expect(root().textContent).toBe('')
     expect(root().matches(':empty')).toBe(true)
   })
@@ -175,7 +144,6 @@ describe('ToolPendingMessage', () => {
     const { container } = render(() => (
       <ToolPendingMessage
         row={toolRow(runningCommand, 'request')}
-        resultHeld={() => false}
         context={{
           toolProgress: {
             liveTail: () => {

@@ -30,6 +30,8 @@ export interface ScrollActivity {
    * Scroll movement reported by the scroll hook. Extends the window while it is open.
    */
   noteScroll: () => void
+  /** A focus transfer can scroll the browser independently of the current gesture. */
+  stopCoasting: () => void
   /**
    * Cancel the pending timer and close the window for good. Registered on `onCleanup`;
    * ONE-WAY, so both note functions are inert afterwards and a late passive `touchend`
@@ -51,6 +53,7 @@ export function createScrollActivity(deps: ScrollActivityDeps): ScrollActivity {
   let activeUntil = Number.NEGATIVE_INFINITY
   let idleTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  let canCoast = false
 
   const close = () => {
     idleTimer = undefined
@@ -69,11 +72,12 @@ export function createScrollActivity(deps: ScrollActivityDeps): ScrollActivity {
   const noteInput = () => {
     if (disposed)
       return
+    canCoast = true
     open(now())
   }
 
   const noteScroll = () => {
-    if (disposed)
+    if (disposed || !canCoast)
       return
     // A delayed timer can leave the rail visible past the deadline. Only input can open
     // a new window after that point.
@@ -95,6 +99,7 @@ export function createScrollActivity(deps: ScrollActivityDeps): ScrollActivity {
     active,
     noteInput,
     noteScroll,
+    stopCoasting: () => { canCoast = false },
     dispose,
   }
 }

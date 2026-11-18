@@ -23,12 +23,14 @@ import { renderQueryTitle } from './tools/titleParts'
 import { useCollapsedItems } from './useCollapsedLines'
 
 /**
- * The queries a search ran BEYOND the first.
- *
- * The request states the first one, so listing it again in the body would repeat it.
+ * The queries the header does not already show. Some calls use a separate
+ * objective as the header and list all of their keywords in the body.
  */
-export function extraQueries(request: Pick<WebSearchRequest, 'queries'>): string[] {
-  return request.queries?.slice(1) ?? []
+export function extraQueries(request: Pick<WebSearchRequest, 'query' | 'queries'>): string[] {
+  const queries = request.queries ?? []
+  return queries[0] === request.query
+    ? queries.slice(1)
+    : queries
 }
 
 /**

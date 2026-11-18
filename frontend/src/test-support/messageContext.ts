@@ -2,7 +2,8 @@ import type { MessageContextResolver, MessageContextSources } from '~/components
 import type { ToolSpanRowPresence } from '~/components/chat/model/row'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
-import { createMemo, createRoot, createSignal } from 'solid-js'
+import type { ChatWindowChange } from '~/stores/chat.store'
+import { batch, createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach } from 'vitest'
 import { createClassifiedEntryCache, createRequestRowPresence } from '~/components/chat/chatEntryCache'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
@@ -58,6 +59,8 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
  * the version counters and the observer list — the transcript owns.
  */
 export interface MutableTranscriptOptions {
+  /** The initial page, before the resolver has seen any rows. */
+  initialWindowIds?: readonly string[]
   /** Replaces the default archive-backed span fetch (stubbing a transport fault). */
   fetchSpan?: MessageContextSources['fetchSpan']
   /** Replaces the default archive-backed sequence fetch. */
@@ -100,10 +103,13 @@ export interface MutableTranscript {
 
 export function createMutableTranscript(archive: readonly AgentChatMessage[], options: MutableTranscriptOptions = {}): MutableTranscript {
   const archiveById = new Map(archive.map(message => [message.id, message]))
-  const [windowIds, setWindowIds] = createSignal<string[]>(archive.map(message => message.id))
+  const [windowIds, setWindowIds] = createSignal<string[]>([
+    ...(options.initialWindowIds ?? archive.map(message => message.id)),
+  ])
   const [version, setVersion] = createSignal(0)
   const contentVersions = new Map<string, number>()
   const observers = new Set<(message: AgentChatMessage) => void>()
+  const windowObservers = new Set<(change: ChatWindowChange) => void>()
 
   const messages = createMemo(() => {
     // A same-ID replacement changes the archive map, not the window's id list.
@@ -185,6 +191,10 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
         observers.add(observer)
         return () => observers.delete(observer)
       },
+      subscribeWindowChanges: (observer) => {
+        windowObservers.add(observer)
+        return () => windowObservers.delete(observer)
+      },
       backgroundTask: options.backgroundTask ?? (() => undefined),
       progress: options.progress ?? (() => undefined),
       // The window holds an edge of the transcript when it holds the message of the
@@ -196,10 +206,15 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
     append: message => store(message, false),
     replace: message => store(message, false),
     broadcast: message => store(message, true),
-    replaceWindow: (ids) => {
+    replaceWindow: ids => batch(() => {
+      const keptIds = new Set(ids)
+      const dropped = messages().filter(message => !keptIds.has(message.id))
+      const kept = ids.flatMap(id => archiveById.get(id) ?? [])
+      if (dropped.length > 0)
+        windowObservers.forEach(observer => observer({ kind: 'eviction', dropped, kept }))
       setWindowIds([...ids])
       setVersion(value => value + 1)
-    },
+    }),
   }
 }
 
@@ -220,10 +235,10 @@ export function testTranscriptContext(archive: readonly AgentChatMessage[], opti
  * `resolver` holds outside them (see createRequestRowPresence). It answers for a span as
  * a row reads it, as `visibleRows`. Call it within a reactive owner.
  */
-export function createDrawnRequestRows(
+export function createTestTranscriptEntries(
   resolver: MessageContextResolver,
   messages: () => readonly AgentChatMessage[],
-): (identity: MessageSpanIdentity) => ToolSpanRowPresence {
+) {
   const entries = createClassifiedEntryCache({
     messages,
     requestRevision: identity => resolver.request(identity)?.revision,
@@ -232,13 +247,21 @@ export function createDrawnRequestRows(
     role: message => resolver.role(message),
     showHiddenMessages: () => false,
   })
-  const drawn = createRequestRowPresence({
+  const requestRowDrawn = createRequestRowPresence({
     entries: entries.visibleEntries,
     windowEntry: entries.getEntry,
     request: identity => resolver.request(identity),
     role: message => resolver.role(message),
   })
+  return { entries, requestRowDrawn }
+}
+
+export function createDrawnRequestRows(
+  resolver: MessageContextResolver,
+  messages: () => readonly AgentChatMessage[],
+): (identity: MessageSpanIdentity) => ToolSpanRowPresence {
+  const { requestRowDrawn } = createTestTranscriptEntries(resolver, messages)
   return identity => ({
-    request: drawn(identity),
+    request: requestRowDrawn(identity),
   })
 }

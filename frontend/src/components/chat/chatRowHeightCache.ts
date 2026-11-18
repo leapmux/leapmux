@@ -111,7 +111,7 @@ export interface RowHeightCommitEntry {
 export type HeightCommitResult = 'moved' | 'confirmed' | 'none'
 
 /** What read a height: the mounted row itself, or a hidden copy (also a stored height). */
-export type RowHeightSource = 'visible' | 'premeasure'
+export type RowHeightSource = 'visible' | 'premeasure' | 'storage'
 
 export interface RowHeightCache {
   /**
@@ -427,7 +427,7 @@ export function createRowHeightCache(options: RowHeightCacheOptions): RowHeightC
     for (const entry of entries) {
       if (refusesPremeasure(entry.row))
         continue
-      const result = applyHeightCommit(entry.row, entry.height, entry.row.heightKey, 'premeasure')
+      const result = applyHeightCommit(entry.row, entry.height, entry.row.heightKey, 'storage')
       if (result === 'moved')
         adopted += 1
       if (result !== 'none')

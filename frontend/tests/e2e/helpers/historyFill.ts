@@ -1,8 +1,24 @@
 import type { Page } from '@playwright/test'
+import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ModelScript } from './modelScriptFixture'
 import type { ScriptedTurn } from './scriptedTurn'
 import { expect } from '@playwright/test'
 import { sendScriptedTurn } from './scriptedTurn'
+
+/** The message sequences of each span of this type, in transcript order. */
+export function spanRowSequences(messages: readonly Pick<AgentChatMessage, 'spanType' | 'spanId' | 'seq'>[], spanType: string): bigint[][] {
+  const spans = new Map<string, bigint[]>()
+  for (const message of messages) {
+    if (message.spanType !== spanType)
+      continue
+    const rows = spans.get(message.spanId)
+    if (rows === undefined)
+      spans.set(message.spanId, [message.seq])
+    else
+      rows.push(message.seq)
+  }
+  return Array.from(spans.values())
+}
 
 /**
  * Filler turns that put a row at an exact place in the pages of the history.
@@ -70,16 +86,16 @@ export interface RowFill {
 export async function fillRows(fill: RowFill): Promise<number> {
   let turn = fill.firstTurn - 1
   const send = (reasoning: boolean) => sendScriptedTurn(fill.page, fill.modelScript, fillerTurn(++turn, reasoning))
-  const measure = async (reasoning: boolean): Promise<number> => {
-    const before = await fill.count()
-    await send(reasoning)
-    return await fill.count() - before
-  }
-  if (await fill.count() === fill.target)
+  const initial = await fill.count()
+  if (initial === fill.target)
     return turn
-  const plainRows = await measure(false)
-  const reasoningRows = await measure(true)
-  const remaining = fill.target - await fill.count()
+  await send(false)
+  const afterPlain = await fill.count()
+  await send(true)
+  const afterReasoning = await fill.count()
+  const plainRows = afterPlain - initial
+  const reasoningRows = afterReasoning - afterPlain
+  const remaining = fill.target - afterReasoning
   const split = splitRowsIntoTurns(remaining, plainRows, reasoningRows)
   expect(split, `the ${remaining} rows still to fill split into turns of ${plainRows} and ${reasoningRows} rows`).not.toBeNull()
   for (let i = 0; i < split!.reasoning; i++)

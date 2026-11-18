@@ -3,7 +3,7 @@ import type { RowHeightCache, RowHeightCommitEntry } from './chatRowHeightCache'
 import type { ChatRowItem } from './chatRowItem'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, onCleanup, untrack } from 'solid-js'
-import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, onStorageAccountChange, PREFIX_CHAT_ROW_HEIGHTS, storageAccountId } from '~/lib/browserStorage'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
@@ -63,8 +63,10 @@ type StoredRow = [id: string, digest: string, height: number]
  *    loaded. Its key is unchanged while the browser does not hold the request, so a
  *    stored height of version 6 could match it and admit the row at the height of the
  *    old drawing.
+ * 8: tool extraction selects the block addressed by the stored span. A height
+ *    measured from the wrong block can have the same row key as the corrected body.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 7
+export const STORED_ROW_HEIGHTS_VERSION = 8
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION
@@ -129,6 +131,10 @@ function parseStoredRows(raw: unknown): Map<string, { digest: string, height: nu
   return pending
 }
 
+// A move between panes can leave one save waiting for the outgoing pane's initial
+// read. The incoming pane waits for that save to reach the gateway's write queue.
+const heightSavesInProgress = new Map<string, Promise<void>>()
+
 /**
  * Wire height persistence to a height cache. Must be called inside a
  * reactive root (it creates effects and an onCleanup). Loading, hydration
@@ -140,13 +146,32 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   // mismatch keeps it pending, because the layout epoch it was measured
   // under may still arrive (width settling, pagination).
   const pending = new Map<string, { digest: string, height: number }>()
-  let loaded = false
+  const account = storageAccountId()
+  let accountActive = true
+  let disposed = false
+  let baselineReady = false
+  let saveDue = false
+  let initialLoad: Promise<StoredRowHeights | undefined> | undefined
+  let lastSave: Promise<void> | undefined
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
   const storageKey = (id: string): AsyncLocalKey => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
+  const saveIdentity = (id: string): string => JSON.stringify([account, id])
+
+  function clearSaveTimer(): void {
+    if (saveTimer !== undefined)
+      clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
+
+  const unsubscribeAccount = onStorageAccountChange(() => {
+    accountActive = false
+    pending.clear()
+    clearSaveTimer()
+  })
 
   const tryAdopt = (items: readonly ChatRowItem[]): void => {
-    if (pending.size === 0)
+    if (!accountActive || pending.size === 0)
       return
     const adoptable: RowHeightCommitEntry[] = []
     for (const item of items) {
@@ -180,27 +205,35 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     }
   }
 
-  const saveNow = (id: string): void => {
+  function snapshot(): StoredRow[] {
+    const rows: StoredRow[] = []
+    for (const row of deps.heights.snapshot()) {
+      if (deps.storesRow(row.id)) {
+        rows.push([
+          row.id,
+          fnv1a32Hex(row.heightKey ?? ''),
+          Math.round(row.height * 100) / 100,
+        ])
+      }
+    }
+    return rows
+  }
+
+  function saveNow(id: string, rows: readonly StoredRow[], baseline: typeof pending): void {
     // Merge the fresh snapshot OVER the still-pending entries: rows whose
     // layout epoch hasn't matched yet (unpaginated history, unsettled
     // width) must survive the save, or the first post-reload write would
     // clobber everything the reload hadn't re-measured yet.
     const merged = new Map<string, StoredRow>()
-    for (const [rowId, entry] of pending)
+    for (const [rowId, entry] of baseline)
       merged.set(rowId, [rowId, entry.digest, entry.height])
-    for (const row of deps.heights.snapshot()) {
-      if (!deps.storesRow(row.id))
-        continue
+    for (const row of rows) {
       // delete+set (not a bare set) so a row that is ALSO still pending moves to
       // the freshly-measured end: a bare set on an existing key keeps its early
       // pending insertion position, which the over-cap slice below would shed
       // BEFORE older measurements -- dropping the newest real geometry.
-      merged.delete(row.id)
-      merged.set(row.id, [
-        row.id,
-        fnv1a32Hex(row.heightKey ?? ''),
-        Math.round(row.height * 100) / 100,
-      ])
+      merged.delete(row[0])
+      merged.set(row[0], row)
     }
     if (merged.size === 0)
       return // never replace stored data with nothing
@@ -215,6 +248,39 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
         ...merged.values(),
       ],
     } satisfies StoredRowHeights)
+  }
+
+  function save(id: string, rows: readonly StoredRow[]): void {
+    if (!accountActive || rows.length === 0)
+      return
+    const identity = saveIdentity(id)
+    const previous = heightSavesInProgress.get(identity)
+    if (baselineReady && previous === undefined) {
+      saveNow(id, rows, pending)
+      return
+    }
+    const write = (async () => {
+      try {
+        if (previous !== undefined)
+          await previous
+        if (!accountActive)
+          return
+        const stored = previous === undefined
+          ? await initialLoad
+          : await localStorageLoad<StoredRowHeights>(storageKey(id))
+        if (accountActive)
+          saveNow(id, rows, parseStoredRows(stored))
+      }
+      catch (error) {
+        console.warn('Cannot save chat row heights', error)
+      }
+    })()
+    lastSave = write
+    heightSavesInProgress.set(identity, write)
+    void write.then(() => {
+      if (heightSavesInProgress.get(identity) === write)
+        heightSavesInProgress.delete(identity)
+    })
   }
 
   // Load once, as soon as the storage identity is available.
@@ -233,10 +299,21 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   // move with it.
   createEffect(() => {
     const id = deps.storageId()
-    if (id === undefined || loaded)
+    if (id === undefined || initialLoad !== undefined || !accountActive)
       return
-    loaded = true
-    void localStorageLoad<StoredRowHeights>(storageKey(id)).then((stored) => {
+    initialLoad = Promise.resolve().then(async () => {
+      // A cross-pane move may construct the incoming owner before disposing its
+      // predecessor in the same batch. Look for the predecessor after that batch.
+      if (!disposed)
+        await heightSavesInProgress.get(saveIdentity(id))
+      return accountActive
+        ? localStorageLoad<StoredRowHeights>(storageKey(id))
+        : undefined
+    })
+    void initialLoad.then((stored) => {
+      if (disposed || !accountActive)
+        return
+      baselineReady = true
       if (stored !== undefined) {
         const rows = parseStoredRows(stored)
         // A payload from an older version parses to nothing. Drop it now rather
@@ -249,6 +326,12 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
           pending.set(rowId, entry)
       }
       tryAdopt(untrack(deps.loadedItems))
+      if (saveDue && saveTimer === undefined) {
+        saveDue = false
+        save(id, snapshot())
+      }
+    }).catch((error: unknown) => {
+      console.warn('Cannot load chat row heights', error)
     })
   })
 
@@ -265,25 +348,33 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   createEffect(() => {
     deps.heights.version()
     const id = untrack(deps.storageId)
-    if (id === undefined)
+    if (id === undefined || !accountActive)
       return
-    if (saveTimer !== undefined)
-      clearTimeout(saveTimer)
+    clearSaveTimer()
     saveTimer = setTimeout(() => {
       saveTimer = undefined
-      saveNow(id)
+      if (!baselineReady) {
+        saveDue = true
+        return
+      }
+      saveDue = false
+      save(id, snapshot())
     }, ROW_HEIGHT_SAVE_DEBOUNCE_MS)
   })
 
   onCleanup(() => {
-    if (saveTimer !== undefined) {
-      clearTimeout(saveTimer)
-      saveTimer = undefined
+    disposed = true
+    if (saveTimer !== undefined || saveDue) {
+      clearSaveTimer()
       // A save was owed — flush it so a tab switch right after a measurement
       // burst doesn't lose the freshest heights.
       const id = untrack(deps.storageId)
-      if (id !== undefined)
-        saveNow(id)
+      if (id !== undefined && accountActive)
+        save(id, snapshot())
     }
+    if (lastSave === undefined)
+      unsubscribeAccount()
+    else
+      void lastSave.then(unsubscribeAccount)
   })
 }

@@ -10,7 +10,7 @@ import { humanizeWireWord } from '../../rendererUtils'
 import { toolInputCode, toolInputSummary, toolInputText } from '../../toolStyles.css'
 import { CollapsibleContent } from '../CollapsibleContent'
 import { genericResultCollapsible, genericResultCopyable, GenericToolBody } from '../genericToolCall'
-import { useCollapsedLines } from '../useCollapsedLines'
+import { textNeedsCollapse, useCollapsedLines } from '../useCollapsedLines'
 import { previewWithoutResult } from './renderer'
 
 /** The two kinds one renderer serves: a tool no vocabulary lists, with no protocol shape of its own. */
@@ -131,6 +131,14 @@ export function genericResultMeta(call: ResolvedCall<GenericToolKind>): ToolKind
   }
 }
 
+export function genericPreviewCollapsible(call: RequestSideCall<GenericToolKind>): boolean {
+  return textNeedsCollapse(genericArgsText(call.request))
+}
+
+export function genericFallbackMeta(call: ParsedCall<GenericToolKind>): Partial<ToolKindMeta> {
+  return { collapsible: call.result === undefined && genericPreviewCollapsible(call) }
+}
+
 /**
  * The renderer the plain generic duo shares: a tool no vocabulary lists, drawn from
  * its arguments and its content blocks alone.
@@ -149,7 +157,9 @@ export function genericRenderer(options: { icon: LucideIcon, label: string }): T
         : options.label), call.request.args)
     },
     pending: genericPendingBody,
+    pendingCollapsible: genericPreviewCollapsible,
     withoutTypedResult: previewWithoutResult(genericPendingBody),
+    withoutTypedResultMeta: genericFallbackMeta,
     result(call: ResolvedCall<PlainGenericKind>, view: ToolRowView): JSX.Element | null {
       return genericResultBody(call, view, plainImageTabName(call))
     },

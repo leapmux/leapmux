@@ -1,5 +1,4 @@
 import type { JSX } from 'solid-js'
-import type { ToolRequestByKind } from '../../model/tools'
 import type { RequestSideCall, ToolKindRenderer, ToolRowView } from './renderer'
 import type { TodoItem } from '~/models/todo'
 import ListTodo from 'lucide-solid/icons/list-todo'
@@ -32,20 +31,12 @@ function todoCopyable(items: TodoItem[], note: string | undefined): string | nul
 }
 
 /**
- * Whether a call carries a list or a note to preview while it runs. An empty list
- * previews nothing: only the result can say that the call cleared the list.
- */
-function todoHasPending(request: ToolRequestByKind['todo']): boolean {
-  return request.items.length > 0 || !!request.note
-}
-
-/**
  * The list and the note that a call CARRIED. An empty carried list draws nothing:
  * "cleared" is what only a result can say.
  */
 function todoPreview(call: RequestSideCall<'todo'>, view: ToolRowView): JSX.Element | null {
   return (
-    <Show when={todoHasPending(call.request)}>
+    <>
       <Show when={call.request.items.length > 0}>
         <TodoListBody todos={call.request.items} />
       </Show>
@@ -61,7 +52,7 @@ function todoPreview(call: RequestSideCall<'todo'>, view: ToolRowView): JSX.Elem
           />
         )}
       </Show>
-    </Show>
+    </>
   )
 }
 

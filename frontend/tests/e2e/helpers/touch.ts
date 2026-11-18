@@ -1,4 +1,4 @@
-import type { Locator, Page } from '@playwright/test'
+import type { CDPSession, Locator, Page } from '@playwright/test'
 import { devices, expect } from '@playwright/test'
 import { settleFrames } from './frames'
 import { uniqueMarker } from './shellArguments'
@@ -92,10 +92,7 @@ export interface TouchPoint {
  */
 export async function touchTap(page: Page, point: TouchPoint, opts: { taps?: number } = {}): Promise<void> {
   const taps = opts.taps ?? 1
-  const cdp = await page.context().newCDPSession(page)
-  // `finally`, for the reason {@link touchSwipe} states: a protocol error mid-sequence would
-  // otherwise leave Blink believing a finger is still down.
-  try {
+  await withTouchSession(page, async (cdp) => {
     for (let tap = 0; tap < taps; tap++) {
       await cdp.send('Input.dispatchTouchEvent', {
         type: 'touchStart',
@@ -105,9 +102,17 @@ export async function touchTap(page: Page, point: TouchPoint, opts: { taps?: num
       })
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     }
+  })
+}
+
+/** Keep the session only for the lifetime of a complete gesture. */
+async function withTouchSession(page: Page, gesture: (session: CDPSession) => Promise<void>): Promise<void> {
+  const session = await page.context().newCDPSession(page)
+  try {
+    await gesture(session)
   }
   finally {
-    await cdp.detach()
+    await session.detach()
   }
 }
 
@@ -186,9 +191,7 @@ export async function touchFling(page: Page, fling: TouchFling): Promise<void> {
     throw new Error('A touch fling needs a finite distance other than 0.')
   if (!(fling.speed > 0) || !Number.isFinite(fling.speed))
     throw new Error('A touch fling needs a finite speed above 0.')
-  const cdp = await page.context().newCDPSession(page)
-  // `finally`, for the reason {@link touchSwipe} states.
-  try {
+  await withTouchSession(page, async (cdp) => {
     // A positive `yDistance` scrolls up, as a finger that travels down the screen does.
     await cdp.send('Input.synthesizeScrollGesture', {
       x: fling.from.x,
@@ -199,10 +202,7 @@ export async function touchFling(page: Page, fling: TouchFling): Promise<void> {
       gestureSourceType: 'touch',
       preventFling: false,
     })
-  }
-  finally {
-    await cdp.detach()
-  }
+  })
 }
 
 /** The `click` events that a page received after {@link recordClicks}, oldest first. */

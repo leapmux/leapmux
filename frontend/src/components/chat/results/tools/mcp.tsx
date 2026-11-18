@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import type { ParsedCall, ResolvedCall, ToolKindRenderer, ToolRowView } from './renderer'
 import Blocks from 'lucide-solid/icons/blocks'
 import { mcpToolCallDisplayName } from '../../model/mcpToolCall'
-import { genericPendingBody, genericResultBody, genericResultMeta, genericTitle } from './generic'
+import { genericFallbackMeta, genericPendingBody, genericPreviewCollapsible, genericResultBody, genericResultMeta, genericTitle } from './generic'
 import { previewWithoutResult } from './renderer'
 
 /**
@@ -18,7 +18,9 @@ export const mcpRenderer: ToolKindRenderer<'mcp'> = {
     return genericTitle(mcpToolCallDisplayName(call.request), call.request.args)
   },
   pending: genericPendingBody,
+  pendingCollapsible: genericPreviewCollapsible,
   withoutTypedResult: previewWithoutResult(genericPendingBody),
+  withoutTypedResultMeta: genericFallbackMeta,
   result(call: ResolvedCall<'mcp'>, view: ToolRowView) {
     return genericResultBody(call, view, mcpToolCallDisplayName(call.request))
   },

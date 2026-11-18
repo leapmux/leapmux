@@ -201,6 +201,11 @@ export interface ToolResultRenderContext extends ToolLayoutContext, MessageUiRen
    * the preview of its call itself (see ToolKindRenderer.pending).
    */
   loneCall?: boolean
+  /** The companion preview has output that this row's Expand control can reveal. */
+  pendingPreviewExpandable?: boolean
+  hasPendingPreview?: boolean
+  /** Keep the painted tool row collapsed while its expanded header is being resolved. */
+  headerExpansionPending?: boolean
   /**
    * Reports whether the row offers Expand: its meta states a collapsible body, or its
    * header clips words that only Expand shows (its title or its summary line). A row

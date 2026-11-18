@@ -59,6 +59,10 @@ describe('chatScrollRailGeometry', () => {
       expect(seqAtContentY(prep, 300)).toBe(3)
     })
 
+    it.each([2n ** 52n, 2n ** 52n + 1n])('rejects a shared sequence whose fractional boundary rounds to an integer (%s)', (seq) => {
+      expect(prepOf([seq, seq, seq + 2n]).rowSeqs).toBeNull()
+    })
+
     // The pending row of a running call is the last row of a live window.
     it('ends the map one unit after rows that share the last sequence', () => {
       const prep = prepOf([1n, 2n, 2n])

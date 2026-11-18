@@ -2,8 +2,9 @@ import type { PersistableRowHeight, RowHeightCache } from './chatRowHeightCache'
 import type { ChatRowItem } from './chatRowItem'
 import { batch, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import * as storage from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
+import { deferred } from '~/test-support/async'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { createRowHeightCache } from './chatRowHeightCache'
 import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_DEBOUNCE_MS, STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
@@ -15,6 +16,7 @@ import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_
 // The fake timers below drive fake-indexeddb's request queue as well as the
 // save debounce, so `settle()` advances them rather than awaiting real time.
 useTestStorage()
+const { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } = storage
 
 /**
  * Let the storage queue and the IndexedDB requests behind it run to completion.
@@ -394,6 +396,122 @@ describe('chatRowHeightPersistence', () => {
     h.measure('a', 'k-a', 100)
     h.dispose() // debounce still pending — cleanup must write
     expect((await readStored())?.rows).toHaveLength(1)
+  })
+
+  it('keeps older stored heights when the pane closes before its first load returns', async () => {
+    const older = storedRow('older', 'older-key', 40)
+    const write = localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: STORED_ROW_HEIGHTS_VERSION,
+      rows: [older],
+    })
+    await vi.advanceTimersByTimeAsync(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+    expect(await write.durable).toBe(true)
+
+    const h = makeHarness({ storageId: 'agent-1' })
+    h.measure('fresh', 'fresh-key', 95)
+    h.dispose()
+    await settle()
+
+    expect((await readStored())?.rows).toEqual([
+      older,
+      storedRow('fresh', 'fresh-key', 95),
+    ])
+  })
+
+  it('discards a saved height from before tool rows selected their span block', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: 7,
+      rows: [
+        storedRow('second-tool', 'same-row-key', 450),
+      ],
+    })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('second-tool', 'same-row-key'),
+      ],
+    })
+    try {
+      await settle()
+      expect(h.primed).toEqual([])
+      expect(await readStored()).toBeUndefined()
+    }
+    finally {
+      h.dispose()
+    }
+  })
+
+  it('ignores a load that returns after the pane is disposed', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: STORED_ROW_HEIGHTS_VERSION,
+      rows: [
+        storedRow('a', 'k-a', 88),
+      ],
+    })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a'),
+      ],
+    })
+    h.dispose()
+    await settle()
+
+    expect(h.primed).toEqual([])
+  })
+
+  it('keeps the incoming account cache when an outgoing read returns an obsolete version', async () => {
+    const oldRead = deferred<{ v: number }>()
+    const load = vi.spyOn(storage, 'localStorageLoad').mockReturnValueOnce(oldRead.promise)
+    const h = makeHarness({ storageId: 'agent-1' })
+    try {
+      await settle()
+      expect(load).toHaveBeenCalledOnce()
+      storage.setStorageAccountForTests('incoming-account')
+      const incoming = storedRow('incoming', 'incoming-key', 70)
+      localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+        v: STORED_ROW_HEIGHTS_VERSION,
+        rows: [incoming],
+      })
+
+      oldRead.resolve({ v: STORED_ROW_HEIGHTS_VERSION - 1 })
+      await settle()
+
+      expect((await readStored())?.rows).toEqual([incoming])
+      expect(h.primed).toEqual([])
+    }
+    finally {
+      h.dispose()
+      load.mockRestore()
+    }
+  })
+
+  it('preserves the outgoing pane snapshot when a replacement mounts before its cleanup', async () => {
+    const older = storedRow('older', 'older-key', 40)
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: STORED_ROW_HEIGHTS_VERSION,
+      rows: [older],
+    })
+    const outgoing = makeHarness({ storageId: 'agent-1' })
+    outgoing.measure('outgoing', 'outgoing-key', 60)
+    const incoming = batch(() => {
+      const pane = makeHarness({ storageId: 'agent-1' })
+      pane.measure('incoming', 'incoming-key', 70)
+      outgoing.dispose()
+      return pane
+    })
+    try {
+      await settle()
+      await vi.advanceTimersByTimeAsync(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+      expect((await readStored())?.rows).toEqual([
+        older,
+        storedRow('outgoing', 'outgoing-key', 60),
+        storedRow('incoming', 'incoming-key', 70),
+      ])
+    }
+    finally {
+      incoming.dispose()
+    }
   })
 
   it('is inert without a storage id', async () => {

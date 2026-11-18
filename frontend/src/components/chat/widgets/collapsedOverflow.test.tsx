@@ -3,24 +3,13 @@ import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useCollapsedOverflow } from './collapsedOverflow'
 
-/** A ResizeObserver stand-in that counts the observers that the hook builds and ends. */
+/** Record lifecycle calls to the observer supplied by the test setup. */
 function countResizeObservers(): { built: () => number, disconnected: () => number } {
-  let built = 0
-  let disconnected = 0
-  vi.stubGlobal('ResizeObserver', class {
-    constructor() {
-      built++
-    }
-
-    observe() {}
-    unobserve() {}
-    disconnect() {
-      disconnected++
-    }
-  })
+  const disconnect = vi.spyOn(globalThis.ResizeObserver.prototype, 'disconnect')
+  const construct = vi.spyOn(globalThis, 'ResizeObserver')
   return {
-    built: () => built,
-    disconnected: () => disconnected,
+    built: () => construct.mock.calls.length,
+    disconnected: () => disconnect.mock.calls.length,
   }
 }
 
@@ -59,7 +48,7 @@ function mountBox(opts: { collapsed?: boolean, clips?: boolean } = {}) {
 
 describe('useCollapsedOverflow', () => {
   afterEach(() => {
-    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   it('reports a collapsed box that clips, and only a change after that', () => {

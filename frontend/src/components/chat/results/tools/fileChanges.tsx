@@ -32,7 +32,7 @@ import { RequestedFileChanges } from '../requestedFileChanges'
  * way, so the same failed row drew differently depending on which agent ran it. Keeping
  * the request lets the row's title still name the file the call was about.
  */
-export function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView }): JSX.Element {
+function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView }): JSX.Element {
   return (
     <Show when={props.request.changes.length > 0}>
       <RequestedFileChanges
@@ -51,13 +51,13 @@ export function RequestedChangesBody(props: { request: FileChangeRequest, view: 
  * `declined` belongs here for the same reason `failed` and `interrupted` do. A reader
  * REFUSED the call, so the tool never ran and no line reached the file.
  */
-export function fileChangeFailed(status: ToolCallStatus): boolean {
+function fileChangeFailed(status: ToolCallStatus): boolean {
   const outcome = toolCallStatusOutcome(status)
   return outcome === 'failed' || outcome === 'interrupted' || outcome === 'declined'
 }
 
 /** The changes that LANDED, one diff per file operation. */
-export function FileChangesBody(props: { changes: FileEditDiff[], view: ToolRowView }): JSX.Element {
+function FileChangesBody(props: { changes: FileEditDiff[], view: ToolRowView }): JSX.Element {
   return (
     <For each={props.changes}>
       {source => (

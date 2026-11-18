@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { PendingPreview } from './chatPendingRows'
 import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageContextResolver } from './messageContextResolver'
 import type { MessageRenderCache } from './messageRenderCache'
@@ -45,9 +46,10 @@ import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderCont
 import { useRequestReadiness } from './renderReadiness'
 import { quotableTextForRow } from './results/rowText'
 import { pendingRowRequest, ToolPendingMessage } from './results/ToolPendingMessage'
-import { REQUEST_ROW_EXPAND_KEYS, rowExpandKey } from './results/toolRowState'
+import { rowExpandKey } from './results/toolRowState'
 import { dispatchParts } from './results/tools/index'
 import { toolCallMeta } from './results/tools/meta'
+import { textNeedsCollapse } from './results/useCollapsedLines'
 import { extractedRow } from './rowExtraction'
 import { cachedChatRow, cachedSpanHeaderCall } from './rowModelCache'
 import { prepareMessage } from './rowPreparation'
@@ -231,6 +233,7 @@ export interface MessageBubbleHost {
    * pending row states none.
    */
   pendingRowOpen?: (() => boolean) | undefined
+  pendingPreview?: (() => PendingPreview | undefined) | undefined
   /**
    * Whether the transcript draws the REQUEST of a span as its own row, also while that row
    * lies outside the loaded window (see createRequestRowPresence). A row of the span reads
@@ -330,8 +333,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // scope of its row copy. A row asks for it when it depends on the request and the
   // browser does not hold it (see MessageContextResolver.loadRequest): a row that draws
   // from its request, and a result or update row, which draws its own header and request
-  // side only while the transcript draws no request row beside it. No row ever waits for
-  // its RESULT, because no row reads a later message of its span (see ToolSpanContext).
+  // side only while the transcript draws no request row beside it. A request body
+  // never waits for its result. Its expanded header can wait for the later frame.
   //
   // - A hidden premeasure copy must not report a height before it shows what the row in
   //   the list will show: a height without the request is wrong, and the row would
@@ -349,6 +352,22 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // which aborts no fetch: the lookup goes on, and the row draws again when the request
   // arrives.
   const requestLookup = useRequestReadiness(() => props)
+  const headerLookup = useRequestReadiness(() => props, untrack(() => props.premeasureMode)
+    ? 'pending'
+    : 'replacing')
+
+  function reportLookup(fetch: Promise<void> | undefined, begin: () => () => void, spanId: string, warning: string): void {
+    if (fetch === undefined)
+      return
+    const endWait = begin()
+    onCleanup(endWait)
+    void fetch
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError'))
+          console.warn(warning, { spanId, error })
+      })
+      .finally(endWait)
+  }
 
   createEffect(() => {
     const resolver = props.host?.messages
@@ -359,20 +378,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // The resolver counts its leases, so a hidden copy and the row can hold one span together.
     const release = resolver.retainRenderSpan({ spanId, agentSessionId: props.message.agentSessionId })
     onCleanup(release)
-    const fetch = resolver.loadRequest(props.message, parsed())
-    if (fetch === undefined)
-      return
-    const endWait = requestLookup.begin()
-    // The effect runs again for a new message of the same bubble. Its cleanup ends the wait
-    // of the run before, and the current message starts a limit of its own.
-    onCleanup(endWait)
-    void fetch
-      .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError'))
-          console.warn('Cannot load the request of a tool call', { spanId, error })
-      })
-      // A failure settles the fetch also: the row copy then shows what it has.
-      .finally(endWait)
+    reportLookup(resolver.loadRequest(props.message, parsed()), requestLookup.begin, spanId, 'Cannot load the request of a tool call')
   })
 
   // The three fields reading a row needs, built before the render context that
@@ -383,6 +389,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     sources,
     get renderCache() { return props.host?.renderCache },
     get spanType() { return props.message.spanType },
+    get spanId() { return props.message.spanId },
   }
 
   // The row this bubble draws, read ONCE through the shared extraction and
@@ -424,24 +431,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // its span (see toolHeader below), so the row copy waits for the lookup as it waits for
   // the request: a height measured with the words of the request alone changed when the
   // newer page that holds the result loaded.
-  const headerWraps = (): boolean => REQUEST_ROW_EXPAND_KEYS.some(key => props.host?.getMessageUiState?.(key) ?? messageUiDefault(key))
   createEffect(() => {
     const resolver = props.host?.messages
     const current = toolRow()
-    if (!resolver || props.pending || current === null || current.role === 'result' || !props.message.spanId || !headerWraps())
+    if (!resolver || props.pending || current === null || current.role === 'result' || !props.message.spanId || !toolResultExpanded())
       return
     const spanId = props.message.spanId
-    const fetch = resolver.loadResult(messageSpanIdentity(props.message))
-    if (fetch === undefined)
-      return
-    const endWait = requestLookup.begin()
-    onCleanup(endWait)
-    void fetch
-      .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError'))
-          console.warn('Cannot load the result of a tool call for its header', { spanId, error })
-      })
-      .finally(endWait)
+    reportLookup(resolver.loadResult(messageSpanIdentity(props.message)), headerLookup.begin, spanId, 'Cannot load the result of a tool call for its header')
   })
 
   // The newest call of this row's span that the browser holds, which a REQUEST row heads
@@ -450,21 +446,17 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // change the height of the row (see ToolMessage). The row's own body never reads it. The
   // pending row draws no header, so it reads none.
   //
-  // The resolver hands the same object for the same revision of a side, so these memos
-  // pass on a change of the side alone, and the shared cache extracts the header once for
-  // each revision rather than once for each copy of the row (see cachedSpanHeaderCall).
-  const spanResult = createMemo(() => sources.result())
-  const spanRequest = createMemo(() => sources.request())
+  // The shared cache extracts the header once for each pair of revisions.
   const toolHeader = createMemo((): ToolCall | undefined => {
     const current = toolRow()
     if (props.pending || current === null || current.role === 'result')
       return undefined
-    const result = spanResult()
+    const result = sources.result()
     if (result === undefined || result.message.id === prepared().message.id)
       return undefined
     // The span's request: the row's own message unless it is a later row of the span,
     // such as an update row.
-    return cachedSpanHeaderCall(result, spanRequest() ?? displayParsed())
+    return cachedSpanHeaderCall(result, sources.request() ?? displayParsed())
   })
 
   // Toolbar metadata for the current message — collapsibility, diff presence, the
@@ -614,6 +606,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         : undefined
     },
     toolProgress,
+    get headerExpansionPending() { return headerLookup.pending() },
+    get hasPendingPreview() { return props.host?.pendingRowOpen?.() === true },
+    get pendingPreviewExpandable() {
+      return !props.pending && props.host?.pendingRowOpen?.() === true
+        && textNeedsCollapse(props.host?.pendingPreview?.()?.outputTail ?? '')
+    },
     get onCopyJson() { return copyJson },
     get jsonCopied() {
       return props.premeasureMode
@@ -698,17 +696,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const renderContent = () =>
     renderExtractedRow(extraction(), renderContext, displayParsed().messageMetadata)
 
-  // The pending row of this message's tool call: only a request row has one
-  // (pendingRowRequest), so any other row draws nothing here. A result message that is
-  // this message itself does not end the call (see chatPendingRows).
-  const resultHeld = (): boolean => {
-    const result = spanResult()
-    return result !== undefined && result.message.id !== props.message.id
-  }
+  // Only a request has a pending preview. Its output belongs to the pending
+  // row owner so a remounted copy can draw the same text.
   const renderPending = () => {
     const current = pendingRowRequest(toolRow())
     return current !== null
-      ? <ToolPendingMessage row={current} context={renderContext} resultHeld={resultHeld} />
+      ? <ToolPendingMessage row={current} context={renderContext} preview={props.host?.pendingPreview} />
       : null
   }
 
@@ -918,8 +911,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // is `visibility: hidden` and `pointer-events: none`, so it can never receive
     // the gesture -- but arming one per copy would still churn listeners on every
     // fling for nothing.
-    // The pending row draws no toolbar, but a right-click or a long-press on it opens the
-    // actions of its request row: it draws the same message and the same call.
+    // The pending row shares the request's copy and diff actions. Expand belongs to
+    // the request row, which holds the expansion control.
     if (!contextMenu || props.premeasureMode)
       return
     const detach = attachContextMenuGesture(el, {

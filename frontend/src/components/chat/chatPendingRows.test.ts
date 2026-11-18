@@ -74,8 +74,9 @@ function textMessage(id: string, seq: bigint): AgentChatMessage {
 }
 
 function entryOf(message: AgentChatMessage, parsedSpanLines: (SpanLine | null)[] = []): ClassifiedEntry {
+  const prepared = prepareMessage(message)
   return {
-    ...prepareMessage(message),
+    ...prepared,
     rowId: message.id,
     pending: false,
     parsedSpanLines,
@@ -83,7 +84,7 @@ function entryOf(message: AgentChatMessage, parsedSpanLines: (SpanLine | null)[]
       revisionKey: message.id,
       isChildTranscript: false,
       settingsLabelRevision: '',
-      role: 'other',
+      role: resolvedSpanRole(prepared.resolved, message.agentProvider),
     },
     spanLinesRef: message.spanLines,
     settingsLabelDependencies: [],
@@ -124,8 +125,7 @@ function withPendingRows(initial: ClassifiedEntry[], overrides: Partial<PendingR
         items: () => entries().map(itemOf),
         tailLoaded: tail,
         resultOf: () => result(),
-        role: entry => resolvedSpanRole(entry.resolved, entry.message.agentProvider),
-        isMeasured: item => measured().has(item.id),
+        showsResult: item => measured().has(item.id),
         ...overrides,
       })
       body({
@@ -273,9 +273,11 @@ describe('createPendingRows', () => {
   // A row that both opens and closes its call -- a finished ACP `tool_call`, or the
   // closing copy of a request that a turn's end stores -- is the result of its span.
   it('draws no pending row for a tool row whose span role is not request', () => {
-    withPendingRows([request, text], {
-      role: () => 'result',
-    }, ({ ids }) => {
+    const finished: ClassifiedEntry = {
+      ...request,
+      freshness: { ...request.freshness, role: 'result' },
+    }
+    withPendingRows([finished, text], {}, ({ ids }) => {
       expect(ids()).toEqual(['req', 'text'])
     })
   })
@@ -316,23 +318,6 @@ describe('createPendingRows', () => {
       resultOf: () => result.message,
     }, ({ ids }) => {
       expect(ids()).toEqual(['req', 'text', 'res'])
-    })
-  })
-
-  // Almost every call of a window has ended. The span role costs lookups in the span
-  // index, and the list runs this for each new message, so it reads none for such a call.
-  it('reads no span role for a call whose result the browser holds', () => {
-    const result = entryOf(resultMessage('res', 3n, 'span-1'))
-    const asked: string[] = []
-    withPendingRows([request, text, result], {
-      resultOf: () => result.message,
-      role: (entry) => {
-        asked.push(entry.message.id)
-        return resolvedSpanRole(entry.resolved, entry.message.agentProvider)
-      },
-    }, ({ ids }) => {
-      expect(ids()).toEqual(['req', 'text', 'res'])
-      expect(asked).toEqual([])
     })
   })
 

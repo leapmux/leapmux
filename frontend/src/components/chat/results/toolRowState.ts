@@ -99,7 +99,8 @@ export function createToolRowState(options: {
   // assertion to pair them again.
   const parts = createMemo((): ToolCallDispatch<ToolKind> => dispatchParts(options.row().call))
   const expandKey = untrack(() => rowExpandKey(options.drawsResult(), parts()))
-  const [expanded, setExpanded] = useSharedExpandedState(options.context, expandKey)
+  const [requestedExpansion, setExpanded] = useSharedExpandedState(options.context, expandKey)
+  const expanded = () => requestedExpansion() && options.context()?.headerExpansionPending !== true
   const bodyContext = createRowBodyContext(options.context, expanded, value => setExpanded(value))
   // Solid compiles `view={view()}` to a getter. A plain function allocates a new view for
   // each child property read, and the new identity keeps the children from reusing the
