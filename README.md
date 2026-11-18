@@ -656,6 +656,7 @@ Each run creates and maintains routine branches, lockfile maintenance, and secur
   To take a younger version, wait until it is old enough, and then run the check again.
   Renovate already holds a new bun or cargo version to the age while it writes a branch.
   cargo resolves through a local copy of the crates.io index that leaves out every younger version.
+  A lockfile maintenance update has no release timestamp of its own. The tool shims and `Required CI` check the versions it adds.
   A young Go module that `go mod tidy` adds appears only in `Required CI`, after Renovate opens the PR.
 - A security PR may add the advisory's patched version and the versions that it pins exactly, and its PR comments say so.
   Only a package that an open Dependabot alert reports, in the lockfile that the alert gives, may take such a fix.
@@ -667,7 +668,7 @@ Each run creates and maintains routine branches, lockfile maintenance, and secur
 
 The Dependency Dashboard lists the updates and security alerts that Renovate did not propose under **Skipped Dependencies**, with the reason for each.
 
-A PR description holds only `Motivation`, `Modifications`, and `Result`.
+A Renovate PR description shows the dependency update table.
 Warnings, security advisories, and release notes go into bot-owned PR comments.
 `task publish-renovate-details -- --dry-run` previews the comments that a publishing run captured.
 A dry run renders no PR, so it captures none.

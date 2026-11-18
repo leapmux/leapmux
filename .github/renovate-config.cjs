@@ -22,7 +22,7 @@ module.exports = async () => {
   if (shims !== undefined && (!path.isAbsolute(shims) || ['bun', 'cargo'].some(tool => !fs.existsSync(path.join(shims, tool)))))
     throw new Error(`LEAPMUX_TOOL_SHIMS must give a directory that holds the bun and cargo shims: ${shims}`)
   const { configureSkippedDependencies } = await import('../scripts/renovate-dashboard.mjs')
-  const { dependencyDashboardFooter } = await configureSkippedDependencies({ policy: config, alerts: prepared.alerts ?? [] })
+  const { footer } = await configureSkippedDependencies({ policy: config, alerts: prepared.alerts ?? [] })
   return {
     platform: 'github',
     repositories: process.env.RENOVATE_PLATFORM === 'local'
@@ -60,7 +60,7 @@ module.exports = async () => {
     ],
     prHeader,
     prBodyTemplate,
-    dependencyDashboardFooter,
+    dependencyDashboard: { ...config.dependencyDashboard, footer },
     // Filter additive manager defaults before security overrides can enable an update.
     ...(prepared.ignorePaths
       ? { ignorePaths: prepared.ignorePaths }

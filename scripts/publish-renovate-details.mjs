@@ -113,10 +113,9 @@ function restoreNumericEntities(text) {
   return text.replace(/&#&#8203;(?=\d+;)/g, '&#')
 }
 
-export async function publishRecord(record, pr, template, { api = githubRequest, actorLogin = botLogin, sanitize = text => text } = {}) {
+export async function publishRecord(record, pr, { api = githubRequest, actorLogin = botLogin, sanitize = text => text } = {}) {
   validateDetailRecord(record)
   requireBotPullRequest(pr, record.branchName)
-  const partition = partitionLegacyBody(pr.body, template)
   // The native changelog renderer already suppresses mentions. A second pass corrupts its HTML entities.
   const clean = {
     ...record,
@@ -124,18 +123,11 @@ export async function publishRecord(record, pr, template, { api = githubRequest,
     notes: restoreNumericEntities(sanitize(record.notes)),
     changelogs: restoreNumericEntities(record.changelogs),
   }
-  // Confirm all comments before removing any details from an existing description.
   const comments = await updateDetailComments(pr.number, renderDetailComments(clean), { api, actorLogin })
-  if (pr.body.trim() !== partition.body.trim()) {
-    await api('PATCH', `${repositoryPath}/pulls/${pr.number}`, { body: partition.body })
-    const stored = await api('GET', `${repositoryPath}/pulls/${pr.number}`)
-    if (stored.body.trim() !== partition.body.trim())
-      throw new Error('The stored PR description differs from the three core sections.')
-  }
   return { pr: pr.number, comments }
 }
 
-export async function publishCapturedDetails(records, template, options = {}) {
+export async function publishCapturedDetails(records, options = {}) {
   if (!Array.isArray(records) || records.length > 10000)
     throw new Error('PR detail publication requires at most 10000 captured proposals.')
   const api = options.api ?? githubRequest
@@ -150,30 +142,37 @@ export async function publishCapturedDetails(records, template, options = {}) {
     }
     if (prs.length !== 1)
       throw new Error('More than one open PR matches a captured Renovate branch.')
-    results.push(await publishRecord(record, prs[0], template, { ...options, api }))
+    results.push(await publishRecord(record, prs[0], { ...options, api }))
   }
   return results
 }
 
-export async function migratePullRequest(pr, template, options = {}) {
+export async function migratePullRequest(pr, { api = githubRequest, ...options } = {}) {
   requireBotPullRequest(pr, pr?.head?.ref)
-  const { details } = partitionLegacyBody(pr.body, template)
-  if (!details.trim())
-    return { pr: pr.number, skipped: 'The description already contains only the core sections.' }
-  return publishRecord({
-    version: 1,
-    repository: 'leapmux/leapmux',
-    branchName: pr.head.ref,
-    warnings: '',
-    notes: details,
-    changelogs: '',
-  }, pr, template, options)
+  const partition = partitionLegacyBody(pr.body)
+  if (!partition)
+    return { pr: pr.number, skipped: 'The description already contains the update table.' }
+  // Confirm the migrated comments before removing their content from the description.
+  const result = partition.details
+    ? await publishRecord({
+        version: 1,
+        repository: 'leapmux/leapmux',
+        branchName: pr.head.ref,
+        warnings: '',
+        notes: partition.details,
+        changelogs: '',
+      }, pr, { api, ...options })
+    : { pr: pr.number, comments: [] }
+  await api('PATCH', `${repositoryPath}/pulls/${pr.number}`, { body: partition.body })
+  const stored = await api('GET', `${repositoryPath}/pulls/${pr.number}`)
+  if (stored.body.trim() !== partition.body.trim())
+    throw new Error('GitHub did not store the migrated PR description as requested.')
+  return result
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const root = resolve(import.meta.dirname, '..')
-    const template = JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8')).prBodyTemplate
     const args = process.argv.slice(2)
     const dryRun = args.length === 1 && args[0] === '--dry-run'
     const migrate = args.length === 4 && args[0] === '--migrate-pr' && /^[1-9]\d*$/.test(args[1]) && args[2] === '--actor-login' && /^[\w[\]-]+$/.test(args[3])
@@ -182,7 +181,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const { sanitizeMarkdown } = await renovateModule('util/markdown.js')
     if (migrate) {
       const pr = await githubRequest('GET', `${repositoryPath}/pulls/${args[1]}`)
-      console.log(JSON.stringify(await migratePullRequest(pr, template, { actorLogin: args[3], sanitize: sanitizeMarkdown })))
+      console.log(JSON.stringify(await migratePullRequest(pr, { actorLogin: args[3], sanitize: sanitizeMarkdown })))
     }
     else {
       let text = ''
@@ -203,7 +202,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       else {
         if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'leapmux/leapmux' || process.env.GITHUB_REF !== 'refs/heads/main')
           throw new Error('Automatic PR detail publication requires upstream main in GitHub Actions.')
-        console.log(JSON.stringify(await publishCapturedDetails(records, template, { sanitize: sanitizeMarkdown })))
+        console.log(JSON.stringify(await publishCapturedDetails(records, { sanitize: sanitizeMarkdown })))
       }
     }
   }

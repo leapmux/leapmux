@@ -99,7 +99,7 @@ func addressHeld(ctx context.Context, dial func(context.Context) (net.Conn, erro
 // verdict this probe is allowed to leave to anyone else. It checks ctx after
 // each pass, because addressHeld reads a cancelled dial as free, and returns
 // that error on cancel.
-func waitForPreviousHub(ctx context.Context, urls []string, deadline time.Time) error {
+func waitForPreviousHub(ctx context.Context, urls []string, deadline time.Time, logger *slog.Logger) error {
 	dials := make([]func(context.Context) (net.Conn, error), 0, len(urls))
 	for _, url := range urls {
 		dial, err := locallisten.Dialer(url)
@@ -127,7 +127,7 @@ func waitForPreviousHub(ctx context.Context, urls []string, deadline time.Time) 
 		}
 		if !loggedWaiting {
 			loggedWaiting = true
-			slog.Info("waiting for the previous hub to release its address and lease",
+			logger.Info("waiting for the previous hub to release its address and lease",
 				"deadline", deadline.Format(time.RFC3339))
 		}
 		if !time.Now().Add(250 * time.Millisecond).Before(deadline) {
@@ -861,7 +861,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	// deadline this returns nil, and NewServer then reports the existing
 	// error; waitForPreviousHub never invents a verdict of its own.
 	probeDeadline := time.Now().Add(previousHubWait)
-	if err := waitForPreviousHub(ctx, localURLs, probeDeadline); err != nil {
+	if err := waitForPreviousHub(ctx, localURLs, probeDeadline, slog.Default()); err != nil {
 		return nil, fmt.Errorf("wait for the previous hub: %w", err)
 	}
 	hubCfg.RuntimeLeaseWait = time.Until(probeDeadline)
