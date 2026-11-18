@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -71,65 +72,21 @@ type ResolverFunc func(ctx context.Context, shellPath string, loginShell bool) (
 // candidate is returned so that invocation produces a meaningful
 // "command not found" error rather than silently picking an alias.
 func resolveBinaryName(ctx context.Context, shellPath string, loginShell bool, candidates []string) string {
-	for _, c := range candidates {
-		if CheckBinary(ctx, shellPath, loginShell, c) == ProbeYes {
-			return c
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	results := checkBinaries(ctx, shellPath, loginShell, candidates)
+	for _, candidate := range candidates {
+		if results[candidate] == ProbeYes {
+			return candidate
 		}
 	}
 	return candidates[0]
 }
 
-// binaryAvailabilityCache memoizes the result of a login-shell binary probe.
-// Each probe spawns a (possibly login) shell that sources user profiles —
-// commonly hundreds of milliseconds — so repeat calls from the availability
-// scan (Locator.Available) and the launch (Locator.Resolve) share results for
-// the worker's lifetime. Installed binaries don't appear or disappear within
-// a session, so no TTL is needed — but only a probe that RAN TO COMPLETION
-// establishes anything: one killed by an expired context proves neither
-// presence nor absence, and caching its result would freeze a load-induced
-// timeout as "not installed" for the rest of the session (the new-agent
-// button then stays disabled no matter how idle the machine becomes).
-var (
-	binaryAvailabilityCache   sync.Map // binaryAvailabilityKey -> ProbeResult
-	binaryAvailabilityMutexes sync.Map // binaryAvailabilityKey -> *sync.Mutex
-)
-
-type binaryAvailabilityKey struct {
-	shellPath  string
-	loginShell bool
-	binaryName string
-}
-
-// CheckBinary answers whether one binary resolves, and whether
-// that answer ESTABLISHES anything.
-//
-// The second result is not optional bookkeeping: a caller that reports an
-// authoritative "not installed" needs to know the difference between a
-// shell that ran and said no, and a shell that never ran at all. A cached
-// answer is conclusive by construction, because only a conclusive probe
-// is ever cached.
+// CheckBinary reports whether the command resolves in a fresh shell.
 func CheckBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) ProbeResult {
-	key := binaryAvailabilityKey{shellPath, loginShell, binaryName}
-	if v, ok := binaryAvailabilityCache.Load(key); ok {
-		return v.(ProbeResult)
-	}
-	// Single-flight per key. A mutex rather than the previous sync.Once:
-	// once an attempt ends without caching (deadline-killed probe), the
-	// next caller must be able to probe again, and a spent Once cannot.
-	muAny, _ := binaryAvailabilityMutexes.LoadOrStore(key, &sync.Mutex{})
-	mu := muAny.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-	if v, ok := binaryAvailabilityCache.Load(key); ok {
-		return v.(ProbeResult)
-	}
-	res := probeBinary(ctx, shellPath, loginShell, binaryName)
-	// An unknown result is this call's best answer but never a cached one — the next
-	// caller re-probes with its own deadline.
-	if res.Settled() {
-		binaryAvailabilityCache.Store(key, res)
-	}
-	return res
+	return checkBinaries(ctx, shellPath, loginShell, []string{binaryName})[binaryName]
 }
 
 // ProbeResult is the answer every environment probe in this package gives: does the
@@ -146,8 +103,7 @@ func CheckBinary(ctx context.Context, shellPath string, loginShell bool, binaryN
 type ProbeResult int
 
 const (
-	// ProbeUnknown: the probe established nothing. The caller must treat the answer as
-	// incomplete and must not cache it.
+	// ProbeUnknown: the probe established nothing. The caller must treat the answer as incomplete.
 	ProbeUnknown ProbeResult = iota
 	// ProbeYes: the thing is present and usable.
 	ProbeYes
@@ -168,74 +124,72 @@ const (
 	probeReachedAbsent  = "__LEAPMUX_PROBE_REACHED__absent"
 )
 
-// probeBinary asks the shell whether binaryName resolves, and reports
-// whether the answer ESTABLISHES anything.
-//
-// The two are not the same, and conflating them is what froze a broken
-// environment as "not installed" for the worker's lifetime. Presence is
-// the inner command's marker on stdout, not the shell's exit status:
-//
-//   - the inner command printed probeReachedPresent or Absent — conclusive;
-//   - the shell could not START at all (a $SHELL that is not executable, a
-//     missing interpreter, EACCES, fork failure under load) — proves
-//     nothing about the binary;
-//   - a login profile exited before the inner command — no marker, likewise;
-//   - ctx expired and CommandContext killed the process — likewise.
-//
-// $SHELL reaches here unvalidated (terminal.ResolveDefaultShell does no
-// LookPath), so the start-failure case is reachable, not theoretical.
-func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) ProbeResult {
+// checkBinaries runs one fresh shell so all names are resolved against the same
+// PATH and profile. A profile can exit before running the checks, so only a
+// result marker establishes presence or absence.
+func checkBinaries(ctx context.Context, shellPath string, loginShell bool, names []string) map[string]ProbeResult {
+	if len(names) == 0 || ctx.Err() != nil {
+		return nil
+	}
 	shellName := terminal.ShellBaseName(shellPath)
-	quoted := shellquote.POSIX.Quote(binaryName)
+	flag := "-c"
+	if terminal.IsPwsh(shellName) {
+		flag = "-Command"
+	}
+	type answer struct {
+		name   string
+		result ProbeResult
+	}
+	markers := make(map[string]answer, 2*len(names))
+	var script strings.Builder
+	for index, name := range names {
+		present := fmt.Sprintf("%s:%d", probeReachedPresent, index)
+		absent := fmt.Sprintf("%s:%d", probeReachedAbsent, index)
+		markers[present] = answer{name: name, result: ProbeYes}
+		markers[absent] = answer{name: name, result: ProbeNo}
+		script.WriteString(binaryCheckCommand(shellName, name, present, absent))
+		script.WriteByte('\n')
+	}
 
-	var inner, flag string
+	output := runShellProbe(ctx, shellPath, loginShell, flag, script.String())
+	results := make(map[string]ProbeResult, len(names))
+	for line := range strings.SplitSeq(output, "\n") {
+		if marker, ok := markers[strings.TrimSpace(line)]; ok {
+			results[marker.name] = marker.result
+		}
+	}
+	return results
+}
+
+func binaryCheckCommand(shellName, name, present, absent string) string {
+	quoted := shellquote.POSIX.Quote(name)
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner = fmt.Sprintf(
-			"if (Get-Command %s -ErrorAction SilentlyContinue) { Write-Output '%s' } else { Write-Output '%s' }",
-			shellquote.PowerShell.Quote(binaryName), probeReachedPresent, probeReachedAbsent,
+		return fmt.Sprintf(
+			"Write-Output ''; if (Get-Command %s -ErrorAction SilentlyContinue) { Write-Output '%s' } else { Write-Output '%s' }",
+			shellquote.PowerShell.Quote(name), present, absent,
 		)
-		flag = "-Command"
 	case shellName == "nu":
-		inner = fmt.Sprintf(
-			"if (which %s | is-not-empty) { echo '%s' } else { echo '%s' }",
-			nuQuote(binaryName), probeReachedPresent, probeReachedAbsent,
+		return fmt.Sprintf(
+			"print ''; if (which %s | is-not-empty) { print '%s' } else { print '%s' }",
+			nuQuote(name), present, absent,
 		)
-		flag = "-c"
 	case shellName == "tcsh" || shellName == "csh":
-		inner = fmt.Sprintf(
-			"which %s >& /dev/null && printf '%%s\\n' '%s' || printf '%%s\\n' '%s'",
-			quoted, probeReachedPresent, probeReachedAbsent,
+		return fmt.Sprintf(
+			"echo ''; which %s >& /dev/null && echo '%s' || echo '%s'",
+			quoted, present, absent,
 		)
-		flag = "-c"
+	case shellName == "fish":
+		return fmt.Sprintf(
+			"if command -v %s >/dev/null 2>&1; printf '\\n%%s\\n' '%s'; else; printf '\\n%%s\\n' '%s'; end",
+			quoted, present, absent,
+		)
 	default:
-		inner = fmt.Sprintf(
-			"if command -v %s >/dev/null 2>&1; then printf '%%s\\n' '%s'; else printf '%%s\\n' '%s'; fi",
-			quoted, probeReachedPresent, probeReachedAbsent,
+		return fmt.Sprintf(
+			"if command -v %s >/dev/null 2>&1; then printf '\\n%%s\\n' '%s'; else printf '\\n%%s\\n' '%s'; fi",
+			quoted, present, absent,
 		)
-		flag = "-c"
 	}
-
-	args := terminal.CommandArgs(shellPath, loginShell, flag, inner)
-
-	cmd := exec.CommandContext(ctx, shellPath, args...)
-	cmd.Dir = os.TempDir()
-	procutil.HideConsoleWindow(cmd)
-	procutil.DetachFromTerminal(cmd)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	_ = cmd.Run()
-	if ctx.Err() != nil {
-		return ProbeUnknown
-	}
-	out := stdout.String()
-	if strings.Contains(out, probeReachedPresent) {
-		return ProbeYes
-	}
-	if strings.Contains(out, probeReachedAbsent) {
-		return ProbeNo
-	}
-	return ProbeUnknown
 }
 
 // ProgramPath asks the user's shell for the ABSOLUTE path of a bare program name, and
@@ -277,18 +231,24 @@ func ProgramPath(ctx context.Context, shellPath string, loginShell bool, name st
 		flag = "-c"
 	}
 
-	args := terminal.CommandArgs(shellPath, loginShell, flag, inner)
+	return parseProgramPathProbe(runShellProbe(ctx, shellPath, loginShell, flag, inner))
+}
+
+func runShellProbe(ctx context.Context, shellPath string, loginShell bool, flag, script string) string {
+	args := terminal.CommandArgs(shellPath, loginShell, flag, script)
 	cmd := exec.CommandContext(ctx, shellPath, args...)
 	cmd.Dir = os.TempDir()
 	procutil.HideConsoleWindow(cmd)
 	procutil.DetachFromTerminal(cmd)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+	// A shell profile can leave a subprocess holding stdout open.
+	cmd.WaitDelay = time.Second
 	_ = cmd.Run()
 	if ctx.Err() != nil {
-		return "", ProbeUnknown
+		return ""
 	}
-	return parseProgramPathProbe(stdout.String())
+	return stdout.String()
 }
 
 // parseProgramPathProbe extracts the path that follows the reached-present marker.
@@ -386,18 +346,54 @@ func (l Locator) Available(ctx context.Context, shellPath string, loginShell boo
 		_, res := l.resolver(ctx, shellPath, loginShell)
 		return res
 	}
+	return l.binaryAvailability(checkBinaries(ctx, shellPath, loginShell, l.binaries))
+}
+
+func (l Locator) binaryAvailability(results map[string]ProbeResult) Resolution {
 	settled := true
 	for _, name := range l.binaries {
-		res := CheckBinary(ctx, shellPath, loginShell, name)
-		if res == ProbeYes {
+		switch results[name] {
+		case ProbeYes:
 			return Found
-		}
-		if !res.Settled() {
+		case ProbeUnknown:
 			settled = false
+		case ProbeNo:
+			continue
 		}
 	}
 	if !settled {
 		return Unknown
 	}
 	return Missing
+}
+
+// ScanAvailability checks ordinary locators together in one shell. Custom
+// resolvers run concurrently and use the same resolution logic as launch.
+func ScanAvailability(ctx context.Context, shellPath string, loginShell bool, locators []Locator) []Resolution {
+	results := make([]Resolution, len(locators))
+	names := make([]string, 0, len(locators))
+	seen := make(map[string]struct{}, len(locators))
+	var pending sync.WaitGroup
+	for index, locator := range locators {
+		if locator.resolver != nil {
+			pending.Go(func() {
+				_, results[index] = locator.resolver(ctx, shellPath, loginShell)
+			})
+			continue
+		}
+		for _, name := range locator.binaries {
+			if _, duplicate := seen[name]; !duplicate {
+				names = append(names, name)
+				seen[name] = struct{}{}
+			}
+		}
+	}
+	binaries := checkBinaries(ctx, shellPath, loginShell, names)
+	for index, locator := range locators {
+		if locator.resolver == nil {
+			results[index] = locator.binaryAvailability(binaries)
+		}
+	}
+	pending.Wait()
+	return results
 }

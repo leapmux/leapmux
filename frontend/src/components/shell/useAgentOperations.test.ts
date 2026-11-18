@@ -288,6 +288,34 @@ describe('useAgentOperations', () => {
       })
     })
 
+    it('chooses a provider from the target worker for quick open', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValueOnce({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, { id: 'new-agent', workerId: 'w-2' }),
+          })
+          const { ops } = setup()
+          await flush()
+
+          mockListAvailableProviders.mockResolvedValueOnce({
+            providers: [AgentProvider.CODEX],
+          })
+          await ops.providerStore.refresh('w-2')
+          await ops.handleOpenAgent(undefined, { workerId: 'w-2', workingDir: '/other/repo' })
+
+          expect(mockOpenAgent).toHaveBeenCalledWith('w-2', expect.objectContaining({
+            agentProvider: AgentProvider.CODEX,
+          }), expect.anything())
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
     it('falls back to the current tab context when no target is given', async () => {
       await createRoot(async (dispose) => {
         try {
@@ -1592,11 +1620,7 @@ describe('useAgentOperations', () => {
     })
   })
 
-  describe('loadAvailableProviders', () => {
-    // The RETRY moved to callWorker, which every worker RPC goes through —
-    // see workerRpc.test.ts. What stays this hook's business is the
-    // CANCELLATION: a reply for the worker the user just left must not
-    // overwrite the list for the one they moved to.
+  describe('provider discovery', () => {
     it('applies the list it receives', async () => {
       await createRoot(async (dispose) => {
         try {
@@ -1606,7 +1630,7 @@ describe('useAgentOperations', () => {
           })
           const { ops } = setup()
           await flush()
-          expect(ops.availableProviders()).toEqual([AgentProvider.CLAUDE_CODE])
+          expect(ops.providerStore.providers('w-1')).toEqual([AgentProvider.CLAUDE_CODE])
           expect(mockShowWarnToast).not.toHaveBeenCalled()
         }
         finally {
@@ -1615,11 +1639,6 @@ describe('useAgentOperations', () => {
       })
     })
 
-    // The effect registers its cancel closure with onCleanup. Returning it
-    // from the effect body did nothing — SolidJS hands an effect's return
-    // value to the next run as `prev` and never calls it — so a reply
-    // outlived the scope that asked for it and landed on whatever worker
-    // the user moved to.
     it('ignores a reply that arrives after its scope is disposed', async () => {
       mockShowWarnToast.mockClear()
       let resolveList: (v: unknown) => void = () => {}
@@ -1641,44 +1660,8 @@ describe('useAgentOperations', () => {
         providers: [AgentProvider.CLAUDE_CODE],
       })
       await flush()
-      expect(ops.availableProviders()).toBeUndefined()
+      expect(ops.providerStore.providers('w-1')).toBeUndefined()
       expect(mockShowWarnToast).not.toHaveBeenCalled()
-    })
-
-    // The guard sits on the WRITE, not on the call. Every caller outside
-    // this hook -- the refresh button in the agent dialogs -- reaches
-    // `loadAvailableProviders` through hops that discard its return value,
-    // so a cancel closure handed back to the caller protected nobody.
-    it('drops a reply for the worker the tab has since left', async () => {
-      mockShowWarnToast.mockClear()
-      const pending = deferred<{ providers: AgentProvider[] }>()
-      let workerId = 'w-1'
-      await createRoot(async (dispose) => {
-        try {
-          // The mount effect settles first, so the manual refresh below is
-          // the only call left in flight.
-          mockListAvailableProviders.mockResolvedValueOnce({
-            providers: [AgentProvider.CODEX],
-          })
-          const { ops } = setup('ws-1', () => workerId)
-          await flush()
-          expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
-
-          mockListAvailableProviders.mockReturnValueOnce(pending.promise)
-          ops.loadAvailableProviders()
-          // The user moves to a tab on another worker while the scan runs.
-          workerId = 'w-2'
-          pending.resolve({
-            providers: [AgentProvider.CLAUDE_CODE],
-          })
-          await flush()
-
-          expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
-        }
-        finally {
-          dispose()
-        }
-      })
     })
 
     // A newer scan supersedes the older one, so the list cannot be written
@@ -1694,9 +1677,9 @@ describe('useAgentOperations', () => {
           mockListAvailableProviders.mockResolvedValueOnce({
             providers: [AgentProvider.CODEX],
           })
-          ops.loadAvailableProviders()
+          void ops.providerStore.refresh('w-1')
           await flush()
-          expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
+          expect(ops.providerStore.providers('w-1')).toEqual([AgentProvider.CODEX])
 
           const signal = mockListAvailableProviders.mock.calls[0]?.[2].signal as AbortSignal
           expect(signal.aborted).toBe(true)
@@ -1705,35 +1688,7 @@ describe('useAgentOperations', () => {
             providers: [AgentProvider.CLAUDE_CODE],
           })
           await flush()
-          expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
-
-    // Leaving the request to retry for a worker no tab points at spends a
-    // full backoff budget on an answer nobody can use.
-    it('aborts the scan when the tab leaves every worker', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const pending = deferred<{ providers: AgentProvider[] }>()
-          mockListAvailableProviders.mockReturnValueOnce(pending.promise)
-          let workerId = 'w-1'
-          const { ops } = setup('ws-1', () => workerId)
-          await flush()
-
-          const signal = mockListAvailableProviders.mock.calls[0]?.[2].signal as AbortSignal
-          expect(signal.aborted).toBe(false)
-
-          // The tab moves to one with no worker. The effect re-runs on that
-          // context change; the exported entry point is the same code path
-          // without the reactive plumbing.
-          workerId = ''
-          ops.loadAvailableProviders()
-          expect(signal.aborted).toBe(true)
-          expect(mockListAvailableProviders).toHaveBeenCalledTimes(1)
+          expect(ops.providerStore.providers('w-1')).toEqual([AgentProvider.CODEX])
         }
         finally {
           dispose()
@@ -1743,7 +1698,7 @@ describe('useAgentOperations', () => {
 
     // A settled failure still reaches the user. The retry budget is spent
     // inside callWorker, so what arrives here is the final answer.
-    it('toasts a failure and keeps the previous list', async () => {
+    it('toasts an initial scan failure and leaves availability unknown', async () => {
       await createRoot(async (dispose) => {
         try {
           mockShowWarnToast.mockClear()
@@ -1751,7 +1706,7 @@ describe('useAgentOperations', () => {
           mockListAvailableProviders.mockRejectedValue(unavailable)
           const { ops } = setup()
           await flush()
-          expect(ops.availableProviders()).toBeUndefined()
+          expect(ops.providerStore.providers('w-1')).toBeUndefined()
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load available agent providers', unavailable)
         }
         finally {
@@ -1770,7 +1725,7 @@ describe('useAgentOperations', () => {
           mockListAvailableProviders.mockRejectedValue(channelNotOpenError())
           const { ops } = setup()
           await flush()
-          expect(ops.availableProviders()).toBeUndefined()
+          expect(ops.providerStore.providers('w-1')).toBeUndefined()
           expect(mockShowWarnToast).not.toHaveBeenCalled()
         }
         finally {

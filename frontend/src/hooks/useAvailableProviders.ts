@@ -1,71 +1,93 @@
 import type { Accessor } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { WorkerScopedArgs } from '~/hooks/createWorkerScopedList'
-import { createSignal } from 'solid-js'
+import { batch, createEffect, createMemo, on, onCleanup, untrack, useContext } from 'solid-js'
+import { createStore } from 'solid-js/store'
 import { workerAgent } from '~/api/workerRpc'
-import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
+import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
+import { createStableContext } from '~/lib/createStableContext'
 
-export interface UseAvailableProvidersArgs {
-  workerId: string
+interface WorkerProviders {
+  providers: AgentProvider[] | undefined
+  loading: boolean
 }
 
-export interface UseAvailableProvidersResult {
-  /**
-   * The providers the worker reports, or `undefined` before the first
-   * successful load. The two states differ: `undefined` means "not asked yet",
-   * and `[]` means "this worker has none configured". A menu renders no
-   * provider row for either, but a dialog tells the user which one it is.
-   */
-  providers: Accessor<AgentProvider[] | undefined>
-  loading: Accessor<boolean>
-  /**
-   * Re-run the fetch for the current worker. The worker-driven effect fires on
-   * a workerId TRANSITION only, so a transient failure on the current worker
-   * would otherwise leave the caller with no list and no way back. Runs
-   * whatever `enabled` says; no-op while there is no worker.
-   */
-  refresh: () => Promise<void>
-}
+/** Share the latest successful answer and the current request for each worker. */
+export function createAvailableProvidersStore() {
+  const [workers, setWorkers] = createStore<Record<string, WorkerProviders | undefined>>({})
+  const requests = new Map<string, AbortController>()
+  let disposed = false
 
-/**
- * Reactive wrapper around the ListAvailableProviders worker RPC, for a surface
- * that asks about ONE stated worker on demand.
- *
- * The sibling of {@link import('./useAvailableShells').useAvailableShells}, and
- * deliberately the same shape: `workerId` says which worker and `enabled` says
- * whether to ask, the hook fetches the first time the gate is open for a worker
- * and re-fetches only when the workerId changes, and a closed gate keeps the
- * cached list rather than clearing it — so a caller that ties the gate to "the
- * menu is open" re-opens without a second round trip. A WORKER change clears
- * whatever the gate says.
- *
- * `useAgentOperations.loadAvailableProviders` is NOT this hook and does not use
- * it. That one scans for whichever worker the ACTIVE TAB is on, and it carries
- * its own abort-and-supersede rules plus a keep-the-previous-list-on-failure
- * policy for that moving target. This hook answers for a worker the caller
- * states, which is what a branch row needs: the branch's own machine, not the
- * machine the current tab happens to sit on.
- */
-export function useAvailableProviders(
-  workerId: Accessor<string>,
-  enabled: Accessor<boolean>,
-  onError?: (err: unknown) => void,
-): UseAvailableProvidersResult {
-  const [providers, setProviders] = createSignal<AgentProvider[] | undefined>(undefined)
-
-  // Every rule about WHEN to fetch, when to retry and when to clear lives in
-  // `createWorkerScopedList`. This hook keeps only the payload it stores.
-  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerAgent.listAvailableProviders>>>({
-    workerId,
-    enabled,
-    args: () => ({}),
-    fetch: (args, signal) => workerAgent.listAvailableProviders(args.workerId, {}, { signal }),
-    applySuccess: resp => setProviders([...resp.providers]),
-    // The previous worker's list is not an answer for this one, and
-    // `undefined` is the "not asked yet" state a caller distinguishes from `[]`.
-    clear: () => setProviders(undefined),
-    onError,
+  onCleanup(() => {
+    disposed = true
+    for (const request of requests.values())
+      request.abort()
+    requests.clear()
   })
 
-  return { providers, loading: list.loading, refresh: list.refresh }
+  const scan = async (workerId: string, refresh: boolean): Promise<void> => {
+    if (!workerId || disposed)
+      return
+
+    const previous = untrack(() => workers[workerId]?.providers)
+    const inFlight = requests.get(workerId)
+    if (!refresh && (inFlight || previous !== undefined))
+      return
+
+    inFlight?.abort()
+    const request = new AbortController()
+    requests.set(workerId, request)
+    setWorkers(workerId, { providers: previous, loading: true })
+
+    try {
+      const response = await workerAgent.listAvailableProviders(workerId, {}, { signal: request.signal })
+      if (!request.signal.aborted) {
+        setWorkers(workerId, {
+          providers: [...response.providers],
+          loading: false,
+        })
+      }
+    }
+    catch (error) {
+      if (request.signal.aborted)
+        return
+      batch(() => {
+        setWorkers(workerId, { providers: previous, loading: false })
+        showWarnToastUnlessDisconnected('Failed to load available agent providers', error)
+      })
+    }
+    finally {
+      if (requests.get(workerId) === request)
+        requests.delete(workerId)
+    }
+  }
+
+  return {
+    providers: (workerId: string) => workers[workerId]?.providers,
+    loading: (workerId: string) => workers[workerId]?.loading ?? false,
+    load: (workerId: string) => scan(workerId, false),
+    refresh: (workerId: string) => scan(workerId, true),
+  }
+}
+
+export const AvailableProvidersContext = createStableContext<ReturnType<typeof createAvailableProvidersStore>>('hooks/useAvailableProviders')
+
+/** Read and refresh the list for the worker this surface targets. */
+export function useAvailableProviders(
+  workerId: Accessor<string>,
+  enabled: Accessor<boolean> = () => true,
+  providerStore?: ReturnType<typeof createAvailableProvidersStore>,
+) {
+  const store = providerStore ?? useContext(AvailableProvidersContext) ?? createAvailableProvidersStore()
+  const selectedWorkerId = createMemo(workerId)
+  const shouldLoad = createMemo(enabled)
+  createEffect(on([selectedWorkerId, shouldLoad], ([id, open]) => {
+    if (open)
+      void store.load(id)
+  }))
+
+  return {
+    providers: () => store.providers(workerId()),
+    loading: () => store.loading(workerId()),
+    refresh: () => store.refresh(workerId()),
+  }
 }

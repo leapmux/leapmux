@@ -48,7 +48,7 @@ func TestProbeBinaryRunsTheShellInItsOwnSession(t *testing.T) {
 			stub, sidFile := writeSessionRecordingStub(t)
 			t.Setenv("LEAPMUX_SID_FILE", sidFile)
 
-			require.Equal(t, ProbeYes, probeBinary(context.Background(), stub, loginShell, "claude"),
+			require.Equal(t, ProbeYes, CheckBinary(context.Background(), stub, loginShell, "claude"),
 				"the stub shell runs to completion and prints the present marker")
 
 			raw, err := os.ReadFile(sidFile)
@@ -66,7 +66,7 @@ func TestProbeBinaryRunsTheShellInItsOwnSession(t *testing.T) {
 
 // writeSessionRecordingStub writes an executable stub that records its
 // own session id to $LEAPMUX_SID_FILE and exits 0, ignoring argv.
-// probeBinary passes -i -l -c …; this stub is the process exec starts,
+// CheckBinary passes -i -l -c …; this stub is the process exec starts,
 // so a missing Setsid still fails the session assertion.
 //
 // syscall.Getsid is not in the Linux syscall package, and GOOS=linux
@@ -84,7 +84,7 @@ else
 	sid=$(ps -p $$ -o sess=)
 fi
 printf '%s\n' "$sid" > "$LEAPMUX_SID_FILE"
-printf '%s\n' '` + probeReachedPresent + `'
+printf '%s\n' '` + probeReachedPresent + ":0" + `'
 exit 0
 `
 	testutil.WriteExecutable(t, bin, script)

@@ -1,6 +1,5 @@
 import type { Component } from 'solid-js'
 import type { AgentCreationSubmission, TerminalCreationSubmission } from '~/components/shell/useTabCreation'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import { createEffect, createSignal, Match, on, Show, Switch } from 'solid-js'
 import { workerGit } from '~/api/workerRpc'
@@ -21,6 +20,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createTitleState } from '~/hooks/createTitleState'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { useChangeBranchInspect } from '~/hooks/useChangeBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
@@ -31,7 +31,7 @@ import { flavorFromOs } from '~/lib/paths'
 import { randomAgentTitle, randomTerminalTitle } from '~/lib/tabTitles'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 import { workerInfoStore } from '~/stores/workerInfo.store'
-import { errorText, warningText } from '~/styles/shared.css'
+import { warningText } from '~/styles/shared.css'
 
 type WorktreeTabType = TabType.AGENT | TabType.TERMINAL
 
@@ -67,8 +67,6 @@ interface ChangeBranchDialogProps {
    * when the dialog paints.
    */
   initialMode: ChangeBranchMode
-  availableProviders?: AgentProvider[]
-  onRefreshProviders?: () => void
   /**
    * Notified after a successful in-place checkout or branch creation
    * with the local branch the working directory is now on. Parents
@@ -134,10 +132,6 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   const pathInfo = inspect.pathInfo
   /* eslint-enable solid/reactivity */
 
-  const { agentProvider, setAgentProvider, recordProviderUse, noProviders } = useAgentProviderSelection(
-    () => props.availableProviders,
-  )
-
   const [worktreeTabType, setWorktreeTabType] = createSignal<WorktreeTabType>(TabType.AGENT)
 
   // The generated title's prefix has to match the tab type the Open-as toggle
@@ -152,6 +146,12 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   // keeps that from discarding a name the user typed. `defer` skips the run on
   // mount, which would only re-roll the title the constructor just generated.
   createEffect(on(worktreeTabType, () => title.regenerateIfPristine(), { defer: true }))
+
+  const providerState = useAvailableProviders(
+    worker.workerId,
+    () => gitMode.gitMode() === GitMode.CreateWorktree && worktreeTabType() === TabType.AGENT,
+  )
+  const { agentProvider, setAgentProvider, recordProviderUse, noProviders } = useAgentProviderSelection(providerState.providers)
 
   const shellState = useAvailableShells(
     () => props.workerId,
@@ -365,20 +365,12 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
               </div>
               <Switch>
                 <Match when={worktreeTabType() === TabType.AGENT}>
-                  <Show when={noProviders()}>
-                    <div class={errorText}>
-                      No agent providers configured for this worker.
-                    </div>
-                  </Show>
                   <AgentProviderSelector
                     value={agentProvider}
                     onChange={setAgentProvider}
-                    {...(props.availableProviders !== undefined
-                      ? { availableProviders: props.availableProviders }
-                      : {})}
-                    {...(props.onRefreshProviders !== undefined
-                      ? { onRefresh: props.onRefreshProviders }
-                      : {})}
+                    availableProviders={providerState.providers()}
+                    loading={providerState.loading()}
+                    onRefresh={providerState.refresh}
                   />
                 </Match>
                 <Match when={worktreeTabType() === TabType.TERMINAL}>

@@ -1,4 +1,5 @@
 import type { Accessor } from 'solid-js'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
@@ -9,41 +10,43 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
+import { sortAgentProvidersByName } from '~/lib/agentProviders'
 import { clippedText, fieldTriggerChevron } from '~/styles/shared.css'
 import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {
-  // Accept `| undefined` because `useAgentProviderSelection` types its
-  // signal that way: when the worker has zero providers, the runtime
-  // value is undefined and the type now reflects that honestly. The
-  // currentProvider memo below already handles the missing case by
-  // falling through to the first available provider or CLAUDE_CODE.
   value: Accessor<AgentProvider | undefined>
   onChange: (provider: AgentProvider) => void
-  availableProviders?: AgentProvider[]
+  availableProviders?: readonly AgentProvider[] | undefined
+  loading?: boolean
   onRefresh?: () => void
 }
 
 export function AgentProviderSelector(props: AgentProviderSelectorProps) {
-  const providers = createMemo(() => sortAgentProvidersByName(getAvailableAgentProviders(props.availableProviders)))
+  const providers = createMemo(() => sortAgentProvidersByName(props.availableProviders ?? []))
   const currentProvider = createMemo(() => {
     const current = props.value()
-    if (current !== undefined && providers().includes(current))
-      return current
-    return providers()[0] ?? AgentProvider.CLAUDE_CODE
+    return current !== undefined && providers().includes(current)
+      ? current
+      : providers()[0]
   })
+  const emptyLabel = () => {
+    if (props.loading)
+      return 'Checking available agents…'
+    return props.availableProviders === undefined
+      ? 'Agent availability unknown'
+      : 'No agents available'
+  }
 
   return (
     <LabeledField
       label="Agent Provider"
       actions={props.onRefresh && (
-        <RefreshButton onClick={() => props.onRefresh?.()} title="Refresh available providers" />
+        <RefreshButton onClick={() => props.onRefresh?.()} disabled={props.loading ?? false} title="Refresh available providers" />
       )}
     >
       <Show
-        when={providers().length > 0}
+        when={currentProvider()}
         fallback={(
           <button
             type="button"
@@ -53,58 +56,56 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
           >
             <span class={styles.triggerValue}>
               <Icon icon={Bot} size="sm" />
-              {/* The raw style, not `ClippedText`: this button is `disabled`,
-                  and a disabled element receives no pointer events, so a
-                  tooltip on the label could never fire. The text is also a
-                  fixed literal that the trigger's width always holds. */}
-              <span class={clippedText}>No agents available</span>
+              <span class={clippedText}>{emptyLabel()}</span>
             </span>
           </button>
         )}
       >
-        <DropdownMenu
-          class={styles.menu}
-          data-testid="agent-provider-selector-menu"
-          trigger={triggerProps => (
-            <button
-              type="button"
-              aria-expanded={triggerProps['aria-expanded']}
-              ref={triggerProps.ref}
-              onPointerDown={triggerProps.onPointerDown}
-              onClick={triggerProps.onClick}
-              class={styles.trigger}
-              data-testid="agent-provider-selector-trigger"
-            >
-              <span class={styles.triggerValue}>
-                <AgentProviderIcon provider={currentProvider()} size={16} />
-                <ClippedText text={agentProviderLabel(currentProvider())} />
-              </span>
-              <ChevronDown size={16} class={fieldTriggerChevron} />
-            </button>
-          )}
-        >
-          <For each={providers()}>
-            {provider => (
+        {selection => (
+          <DropdownMenu
+            class={styles.menu}
+            data-testid="agent-provider-selector-menu"
+            trigger={triggerProps => (
               <button
                 type="button"
-                role="menuitem"
-                class={`${styles.menuItem}${provider === currentProvider()
-                  ? ` ${styles.menuItemSelected}`
-                  : ''}`}
-                data-testid={`agent-provider-option-${provider}`}
-                onClick={() => props.onChange(provider)}
+                aria-expanded={triggerProps['aria-expanded']}
+                ref={triggerProps.ref}
+                onPointerDown={triggerProps.onPointerDown}
+                onClick={triggerProps.onClick}
+                class={styles.trigger}
+                data-testid="agent-provider-selector-trigger"
               >
-                <span class={styles.menuItemValue}>
-                  <AgentProviderIcon provider={provider} size={16} />
-                  <span>{agentProviderLabel(provider)}</span>
+                <span class={styles.triggerValue}>
+                  <AgentProviderIcon provider={selection()} size={16} />
+                  <ClippedText text={agentProviderLabel(selection())} />
                 </span>
-                <Show when={provider === currentProvider()}>
-                  <Check size={14} class={styles.check} />
-                </Show>
+                <ChevronDown size={16} class={fieldTriggerChevron} />
               </button>
             )}
-          </For>
-        </DropdownMenu>
+          >
+            <For each={providers()}>
+              {provider => (
+                <button
+                  type="button"
+                  role="menuitem"
+                  class={`${styles.menuItem}${provider === currentProvider()
+                    ? ` ${styles.menuItemSelected}`
+                    : ''}`}
+                  data-testid={`agent-provider-option-${provider}`}
+                  onClick={() => props.onChange(provider)}
+                >
+                  <span class={styles.menuItemValue}>
+                    <AgentProviderIcon provider={provider} size={16} />
+                    <span>{agentProviderLabel(provider)}</span>
+                  </span>
+                  <Show when={provider === currentProvider()}>
+                    <Check size={14} class={styles.check} />
+                  </Show>
+                </button>
+              )}
+            </For>
+          </DropdownMenu>
+        )}
       </Show>
     </LabeledField>
   )

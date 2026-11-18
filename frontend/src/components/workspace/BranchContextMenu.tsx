@@ -83,11 +83,8 @@ interface BranchContextMenuProps extends ContextMenuTargetProps {
 // close over their row's branch data via the bound `actions` bundle, so
 // there's no shared overlay state to thread.
 export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
-  // The two worker lists are fetched ON OPEN, never on mount. The sidebar
-  // mounts one of these menus per branch row of every workspace, so a
-  // mount-time fetch would scan every Worker in the fleet to populate menus
-  // nobody opened. Both hooks keep their cached answer once the menu closes and
-  // re-fetch only on a workerId change, so re-opening the same row is free.
+  // Load worker lists on open so hidden branch menus do not start scans.
+  // Provider availability is shared with other surfaces for the same worker.
   const [menuOpen, setMenuOpen] = createSignal(false)
   const listWorkerId = () => props.workerId
   const { providers } = useAvailableProviders(listWorkerId, menuOpen)

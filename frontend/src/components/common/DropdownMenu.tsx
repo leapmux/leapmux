@@ -553,6 +553,14 @@ export function DropdownMenu(props: DropdownMenuProps) {
     }
   }
 
+  // The gesture depends on the row ELEMENT alone, so a memo holds it. A row
+  // passes `contextMenuFor` among optional spread props, and a read of a merged
+  // prop also reads each reactive source that the row spreads beside it, such
+  // as the tab or the pop action. Without the memo, each update of the row's
+  // item runs the attach effect again. The detach then cancels a hold that is
+  // in flight, and the menu never opens under the finger.
+  const contextMenuEl = createMemo(() => props.contextMenuFor?.())
+
   // Reposition only when the scroll originates outside the popover itself.
   // This prevents the popover from jumping when the user selects text
   // inside the popover content by dragging.
@@ -560,13 +568,14 @@ export function DropdownMenu(props: DropdownMenuProps) {
     if (popoverEl && e.target instanceof Node && popoverEl.contains(e.target)) {
       return
     }
-    // A press anchor is a frozen point in the viewport, not an element: the row
-    // the user pressed scrolled away, and re-running the arithmetic would
-    // attach the menu to that stale point over whatever scrolled into place. Every
-    // OS context menu closes on scroll instead, and so does this one. An
-    // element anchor follows its element, so it keeps repositioning.
-    if (!(getAnchor() instanceof Element)) {
-      popoverEl?.hidePopover()
+    // A press menu stays at the position where the user pressed. Close it
+    // if the row's scroll container moves. A scroll in a sibling pane, such
+    // as an agent transcript following a reply, leaves that position valid.
+    if (pressAnchor()) {
+      const row = contextMenuEl()
+      const target = e.target
+      if (target === window || (row && target instanceof Node && target.contains(row)))
+        popoverEl?.hidePopover()
       return
     }
     reposition()
@@ -926,13 +935,6 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // ~/components/common/contextMenuGesture.ts for the two calls a touch hold
   // makes and why.
   //
-  // The gesture depends on the row ELEMENT alone, so a memo holds it. A row
-  // passes `contextMenuFor` among optional spread props, and a read of a merged
-  // prop also reads each reactive source that the row spreads beside it, such
-  // as the tab or the pop action. Without the memo, each update of the row's
-  // item runs the attach effect again. The detach then cancels a hold that is
-  // in flight, and the menu never opens under the finger.
-  const contextMenuEl = createMemo(() => props.contextMenuFor?.())
   createEffect(() => {
     const el = contextMenuEl()
     if (!el)

@@ -7,7 +7,6 @@ import type { TabContext } from './tabContext'
 import type { TabCreationCoordinator } from './useTabCreation'
 import type { useTabOperations } from './useTabOperations'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState, UpdatableDialogState } from '~/hooks/createDialogState'
 import type { LinkConfirmState } from '~/hooks/createLinkConfirm'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
@@ -206,8 +205,6 @@ interface AppShellDialogsProps {
   sectionStore: ReturnType<typeof createSectionStore>
   loadWorkspaces: () => Promise<void>
   loadSections: () => Promise<void>
-  availableProviders?: AgentProvider[]
-  onRefreshProviders?: () => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -261,12 +258,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             // have to fall through to the tab context.
               defaultWorkerId={target.workerId || props.getCurrentTabContext().workerId}
               defaultWorkingDir={target.workingDir || props.getCurrentTabContext().workingDir}
-              {...(props.availableProviders !== undefined
-                ? { availableProviders: props.availableProviders }
-                : {})}
-              {...(props.onRefreshProviders !== undefined
-                ? { onRefreshProviders: props.onRefreshProviders }
-                : {})}
               blockedReason={newTabBlockedReason}
               repoGitStore={props.repoGitStore}
               onCreate={(input) => {
@@ -350,12 +341,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             <NewWorkspaceDialog
               repoGitStore={props.repoGitStore}
               startPoint={payload.startPoint ?? { kind: 'directory' }}
-              {...(props.availableProviders !== undefined
-                ? { availableProviders: props.availableProviders }
-                : {})}
-              {...(props.onRefreshProviders !== undefined
-                ? { onRefreshProviders: props.onRefreshProviders }
-                : {})}
               onCreate={input => props.creation.openWorkspace({
                 ...input,
                 retryKey: 'new-workspace-dialog',
@@ -558,12 +543,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               branchName={state.branchName}
               isWorktree={state.isWorktree}
               initialMode={state.initialMode}
-              {...(props.availableProviders !== undefined
-                ? { availableProviders: props.availableProviders }
-                : {})}
-              {...(props.onRefreshProviders !== undefined
-                ? { onRefreshProviders: props.onRefreshProviders }
-                : {})}
               onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
               // Capture the branch row's workspace even when another workspace is active.
               blockedReason={() => newTabBlockedReason(state.workspaceId)}

@@ -1,20 +1,37 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import process from 'node:process'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
+import { deregisterWorkerViaAPI } from './helpers/api'
+import { finishCleanup } from './helpers/cleanup'
+import { spawnRegisteredWorker } from './helpers/nativeWorker'
+import { stopProcess } from './helpers/process'
+import { createTestDirectory } from './helpers/runDirectory'
+import { createServerOutput } from './helpers/serverOutput'
+import { quotePosixShellArgument } from './helpers/shellArguments'
 import { getRecordedToasts } from './helpers/toast'
 import {
   agentTabs,
   archiveWorkspaceViaUI,
+  assistantBubbles,
   branchGroupRow,
+  chatScrollContainer,
   clickBranchMenuItem,
   expectAgentTabCount,
   loginViaToken,
   openBranchMenu,
+  openNewAgentDialog,
+  openNewTerminalDialog,
   openWorkspace,
   pickMenuOption,
+  sendMessage,
+  setWorkingDir,
   terminalTabs,
+  waitForAgentIdle,
+  waitForAgentStarted,
   workspaceChildren,
   workspaceRow,
 } from './helpers/ui'
@@ -36,6 +53,155 @@ async function confirmDelete(page: Page, kind: 'branch' | 'worktree') {
 }
 
 test.describe('Branch context menu', () => {
+  test('keeps a right-click menu open while a reply scrolls the transcript', async ({ page, leapmuxServer, modelScript }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repo = createGitRepo(dataDir, 'branch-menu-stream-repo')
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(hubUrl, adminToken, workerId, 'Branch Menu Stream', repo, 'stream-branch')
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+    await waitForAgentStarted(page)
+
+    const gate = 'branch-menu-scroll'
+    const line = 'The transcript grows below the viewport.'
+    const answer = `${`${line}\n\n`.repeat(40)}End of the reply.`
+    await modelScript.queue({ text: answer, gate })
+    await sendMessage(page, modelScript.prompt('Send a long reply.'))
+    await modelScript.waitForGate(gate)
+    try {
+      const row = branchGroupRow(workspaceChildren(page, workspaceId))
+      const item = page.getByRole('menuitem', { name: 'Create new worktree...' })
+      await row.click({ button: 'right' })
+      await expect(item).toBeVisible()
+
+      const transcript = chatScrollContainer(page)
+      const before = await transcript.evaluate(el => el.scrollTop)
+      await modelScript.releaseGate(gate)
+      await expect(assistantBubbles(page).filter({ hasText: 'End of the reply.' })).toHaveCount(1)
+      await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBeGreaterThan(before)
+      await waitForAgentIdle(page)
+
+      await expect(item).toBeVisible()
+      await item.click()
+      await expect(page.getByRole('dialog').getByRole('radio', { name: 'Create new worktree' })).toBeChecked()
+    }
+    finally {
+      await modelScript.releaseGateIfHeld(gate)
+    }
+  })
+
+  test('refreshes the selected worker from its shell and wraps its provider icons', async ({ page, leapmuxServer }, testInfo) => {
+    test.skip(process.platform === 'win32', 'The controlled Worker profile uses a POSIX shell script.')
+    const { hubUrl, adminToken, workerId, dataDir, agentEnv } = leapmuxServer
+    const repo = createGitRepo(dataDir, 'provider-menu-main-repo')
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(hubUrl, adminToken, workerId, 'Provider Menu', repo, 'provider-menu-main')
+
+    const root = createTestDirectory('provider-menu-')
+    const profile = join(root, 'profile')
+    const shell = join(root, 'provider-shell')
+    const initialBin = join(root, 'initial-bin')
+    const refreshedBin = join(root, 'refreshed-bin')
+    for (const directory of [initialBin, refreshedBin])
+      mkdirSync(directory)
+    const createExecutable = (directory: string, name: string) =>
+      writeFileSync(join(directory, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    createExecutable(initialBin, 'codex')
+    const refreshedCommands = [
+      'codex',
+      'claude',
+      'cursor-agent',
+      'opencode',
+      'kilo',
+      'goose',
+      'reasonix',
+      'codewhale',
+      'qwen',
+      'amp',
+      'cline',
+      'gemini',
+    ]
+    for (const command of refreshedCommands)
+      createExecutable(refreshedBin, command)
+    const setProfilePath = (path: string) => writeFileSync(profile, `export PATH=${quotePosixShellArgument(path)}\n`)
+    setProfilePath(initialBin)
+    writeFileSync(shell, `#!/bin/sh\n. ${quotePosixShellArgument(profile)}\nfor command do :; done\nexec /bin/sh -c "$command"\n`, { mode: 0o755 })
+    const output = createServerOutput()
+    const worker = await spawnRegisteredWorker(leapmuxServer, {
+      name: 'Provider Menu Worker',
+      dataDir: join(root, 'worker'),
+      env: {
+        ...agentEnv,
+        LEAPMUX_DEFAULT_SHELL: shell,
+        LEAPMUX_ZCODE_SCRIPT: join(root, 'no-zcode.cjs'),
+      },
+      output,
+    })
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+      await openNewAgentDialog(page)
+      const dialog = page.getByRole('dialog')
+      await pickMenuOption(dialog, 'worker-select-menu', worker.workerId)
+      const picker = dialog.getByTestId('agent-provider-selector-trigger')
+      const options = dialog.locator('menu[popover]:visible [data-testid^="agent-provider-option-"]')
+      await expect(picker).toHaveText('Codex')
+      await picker.click()
+      await expect(options).toHaveCount(1)
+      await picker.press('Escape')
+
+      setProfilePath(refreshedBin)
+      const refresh = dialog.getByRole('button', { name: 'Refresh available providers' })
+      await refresh.click()
+      await expect(refresh).toBeEnabled()
+      await picker.click()
+      await expect(options).toHaveCount(refreshedCommands.length)
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+
+      const otherRepo = createGitRepo(dataDir, 'provider-menu-other-repo')
+      await openNewTerminalDialog(page)
+      await pickMenuOption(dialog, 'worker-select-menu', worker.workerId)
+      await setWorkingDir(page, otherRepo)
+      await pickMenuOption(dialog, 'shell-select-menu', '/bin/sh')
+      await dialog.getByRole('button', { name: 'Create' }).click()
+      await expect(terminalTabs(page)).toHaveCount(1)
+
+      const repoHeader = workspaceChildren(page, workspaceId)
+        .getByTestId('tab-tree-repo-group')
+        .filter({ hasText: 'provider-menu-other-repo' })
+      const branch = branchGroupRow(repoHeader.locator('xpath=following-sibling::*[1]'))
+      const icons = page.locator('menu[popover]:visible [data-testid^="menu-new-agent-"]')
+      const rowSizes = () => icons.evaluateAll((buttons) => {
+        const rows = new Map<number, number>()
+        for (const button of buttons) {
+          const top = button.getBoundingClientRect().top
+          rows.set(top, (rows.get(top) ?? 0) + 1)
+        }
+        return [
+          ...rows.values(),
+        ]
+      })
+      await openBranchMenu(page, branch)
+      await expect(icons).toHaveCount(refreshedCommands.length)
+      await expect.poll(rowSizes).toEqual([10, 2])
+
+      await page.keyboard.press('Escape')
+      await page.setViewportSize({ width: 260, height: 720 })
+      await page.getByRole('button', { name: 'Toggle workspaces' }).click()
+      await openBranchMenu(page, branch)
+      await expect(icons).toHaveCount(refreshedCommands.length)
+      await expect.poll(async () => Math.max(...await rowSizes())).toBeLessThan(10)
+    }
+    finally {
+      await testInfo.attach('provider-menu-worker.log', {
+        body: output.since(0),
+        contentType: 'text/plain',
+      })
+      await finishCleanup([
+        stopProcess(worker.proc),
+        deregisterWorkerViaAPI(hubUrl, adminToken, worker.workerId),
+      ])
+    }
+  })
+
   test('three-dot menu opens with the git items, the delete item and the new-tab sections', async ({
     page,
     leapmuxServer,

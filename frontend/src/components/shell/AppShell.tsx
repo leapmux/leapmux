@@ -36,6 +36,7 @@ import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { createDialogState } from '~/hooks/createDialogState'
 import { createLinkConfirm } from '~/hooks/createLinkConfirm'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { AvailableProvidersContext } from '~/hooks/useAvailableProviders'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { useShortcuts } from '~/hooks/useShortcuts'
@@ -1531,7 +1532,6 @@ export const AppShell: Component = () => {
       isActiveWorkspaceMutatable,
       isActiveWorkspaceArchived,
       activeWorkspace,
-      getCurrentTabContext,
       getMruAgentContext,
     },
     tab: {
@@ -1888,8 +1888,9 @@ export const AppShell: Component = () => {
   )
 
   return (
-    <TunnelProvider store={workerSection.tunnelStore}>
-      {/*
+    <AvailableProvidersContext.Provider value={agentOps.providerStore}>
+      <TunnelProvider store={workerSection.tunnelStore}>
+        {/*
         Rendered unconditionally. There used to be a "workspace not found" case
         here, for a URL naming a workspace the user does not own. No URL identifies
         one any more: the active id is either this user's own click on their own
@@ -1902,82 +1903,74 @@ export const AppShell: Component = () => {
         underneath (visibility:hidden) so list/CRDT work continues; it becomes
         visible the moment the fade starts.
       */}
-      <div class={styles.bootShellHost}>
-        <div
-          class={styles.bootShellContent}
-          data-ready={shellChromeVisible()
-            ? ''
-            : undefined}
-          aria-hidden={shellChromeVisible()
-            ? undefined
-            : true}
-        >
-          <WorkspaceShellLayer />
-        </div>
+        <div class={styles.bootShellHost}>
+          <div
+            class={styles.bootShellContent}
+            data-ready={shellChromeVisible()
+              ? ''
+              : undefined}
+            aria-hidden={shellChromeVisible()
+              ? undefined
+              : true}
+          >
+            <WorkspaceShellLayer />
+          </div>
 
-        {/*
+          {/*
           Dialogs sit outside the visibility-hidden shell chrome so a CLI path
           prompt (or any other dialog) that opens during the boot hold stays
           visible and usable on top of the splash.
         */}
-        <tileRenderer.CloseDialogs />
-        <tileRenderer.RecoveryDialog />
+          <tileRenderer.CloseDialogs />
+          <tileRenderer.RecoveryDialog />
 
-        <Show when={cliPathInfo()}>
-          {info => (
-            <CliPathDialog
-              status={info()}
-              onClose={() => setCliPathInfo(null)}
-            />
-          )}
-        </Show>
+          <Show when={cliPathInfo()}>
+            {info => (
+              <CliPathDialog
+                status={info()}
+                onClose={() => setCliPathInfo(null)}
+              />
+            )}
+          </Show>
 
-        <AppShellDialogs
-          creation={creation}
-          dialogs={dialogs}
-          // The dialog states a refusal in its own slot, in the provider's words, so this
-          // path lets the rejection through rather than reporting it here.
-          onSetGoal={(agentId, objective) => agentOps.updateGoal(agentId, 'set', objective)}
-          busyProbe={busyProbe}
-          loadSections={loadSections}
-          onBranchChanged={(repo, newBranch) => handleBranchChanged(
-            { repoGitStore },
-            repo,
-            newBranch,
-          )}
-          activeWorkspace={activeWorkspace}
-          isWorkspaceMutatable={isWorkspaceMutatableById}
-          getCurrentTabContext={getCurrentTabContext}
-          tabOps={tabOps}
-          layoutStore={layoutStore}
-          sectionStore={sectionStore}
-          loadWorkspaces={loadWorkspaces}
-          {...(() => {
-            // Omitted until the provider scan answers: the prop takes no
-            // explicit undefined, and the hoist lets the spread narrow.
-            const providers = agentOps.availableProviders()
-            return providers !== undefined
-              ? { availableProviders: providers }
-              : {}
-          })()}
-          onRefreshProviders={agentOps.loadAvailableProviders}
-          repoGitStore={repoGitStore}
-        />
+          <AppShellDialogs
+            creation={creation}
+            dialogs={dialogs}
+            // The dialog states a refusal in its own slot, in the provider's words, so this
+            // path lets the rejection through rather than reporting it here.
+            onSetGoal={(agentId, objective) => agentOps.updateGoal(agentId, 'set', objective)}
+            busyProbe={busyProbe}
+            loadSections={loadSections}
+            onBranchChanged={(repo, newBranch) => handleBranchChanged(
+              { repoGitStore },
+              repo,
+              newBranch,
+            )}
+            activeWorkspace={activeWorkspace}
+            isWorkspaceMutatable={isWorkspaceMutatableById}
+            getCurrentTabContext={getCurrentTabContext}
+            tabOps={tabOps}
+            layoutStore={layoutStore}
+            sectionStore={sectionStore}
+            loadWorkspaces={loadWorkspaces}
+            repoGitStore={repoGitStore}
+          />
 
-        <workerSection.Dialogs />
+          <workerSection.Dialogs />
 
-        <Show when={bootSplashMounted()}>
-          <div
-            class={styles.bootSplashOverlay}
-            data-exiting={shellReady()
-              ? ''
-              : undefined}
-            aria-hidden={shellReady() || undefined}
-          >
-            <BootSplash />
-          </div>
-        </Show>
-      </div>
-    </TunnelProvider>
+          <Show when={bootSplashMounted()}>
+            <div
+              class={styles.bootSplashOverlay}
+              data-exiting={shellReady()
+                ? ''
+                : undefined}
+              aria-hidden={shellReady() || undefined}
+            >
+              <BootSplash />
+            </div>
+          </Show>
+        </div>
+      </TunnelProvider>
+    </AvailableProvidersContext.Provider>
   )
 }

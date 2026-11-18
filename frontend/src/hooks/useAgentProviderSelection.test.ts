@@ -154,7 +154,7 @@ describe('useAgentProviderSelection', () => {
     })
   })
 
-  it('reports noProviders as true exactly when availableProviders is an empty array', () => {
+  it('blocks selection when the worker has no confirmed providers', () => {
     mockStored = []
     createRoot((dispose) => {
       const [available, setAvailable] = createSignal<AgentProvider[] | undefined>([])
@@ -164,10 +164,9 @@ describe('useAgentProviderSelection', () => {
       setAvailable([CC])
       expect(sel.noProviders()).toBe(false)
 
-      // `undefined` is the "not loaded yet" signal -- the helper falls
-      // back to DEFAULT_AGENT_PROVIDERS, so noProviders must be false.
       setAvailable(undefined)
-      expect(sel.noProviders()).toBe(false)
+      expect(sel.noProviders()).toBe(true)
+      expect(sel.agentProvider()).toBeUndefined()
       dispose()
     })
   })

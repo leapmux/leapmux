@@ -3,10 +3,14 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 
@@ -472,6 +476,37 @@ func TestPutAgentForTestAcceptsValueAndPointerProviders(t *testing.T) {
 	planted := &agenttest.GroupsAgent{}
 	m.PutAgentForTest("pointer", planted)
 	assert.True(t, m.HasAgent("pointer"))
+}
+
+func TestListAvailableProvidersReadsCurrentShellPath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell profile")
+	}
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile")
+	shell := filepath.Join(dir, "shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\n. "+shellquote.POSIX.Quote(profile)+"\nexec /bin/sh \"$@\"\n")
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	reg := testRegistration(provider)
+	reg.Locator = launch.Binaries("leapmux-shell-path-test")
+	registry := agenttest.MustNewRegistry(reg)
+	programDir := t.TempDir()
+	testutil.WriteExecutable(t, filepath.Join(programDir, "leapmux-shell-path-test"), "#!/bin/sh\nexit 0\n")
+
+	for _, tc := range []struct {
+		path string
+		want []leapmuxv1.AgentProvider
+	}{
+		{programDir, []leapmuxv1.AgentProvider{provider}},
+		{dir, nil},
+		{programDir, []leapmuxv1.AgentProvider{provider}},
+	} {
+		require.NoError(t, os.WriteFile(profile, []byte("export PATH="+shellquote.POSIX.Quote(tc.path)+"\n"), 0o600))
+		providers, complete := registry.ListAvailable(context.Background(), shell, false)
+		require.True(t, complete)
+		require.Equal(t, tc.want, providers)
+	}
 }
 
 func TestListAvailableProviders_ExpiredContextIsIncomplete(t *testing.T) {

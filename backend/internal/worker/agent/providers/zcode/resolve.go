@@ -112,50 +112,8 @@ func fileExists(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// zcodeLaunchCache memoizes launch resolution per (shell, loginShell). Resolution spawns a
-// login shell and up to three interpreter subprocesses, and the availability scan plus
-// every agent launch ask for the same answer. Only a CONCLUSIVE resolution is cached, for
-// the same reason binaryAvailabilityCache caches only a conclusive probe: caching
-// Unknown would freeze a load-induced timeout as a permanent verdict for the worker's
-// lifetime.
-var (
-	zcodeLaunchCache   sync.Map // zcodeLaunchKey -> zcodeLaunchCacheEntry
-	zcodeLaunchMutexes sync.Map // zcodeLaunchKey -> *sync.Mutex
-)
-
-type zcodeLaunchKey struct {
-	shellPath  string
-	loginShell bool
-}
-
-type zcodeLaunchCacheEntry struct {
-	spec launch.Spec
-	res  launch.Resolution
-}
-
-// resolveZCodeLaunch is the registered ResolverFunc: the cache in front of
-// resolveZCodeLaunchWith.
 func resolveZCodeLaunch(ctx context.Context, shellPath string, loginShell bool) (launch.Spec, launch.Resolution) {
-	key := zcodeLaunchKey{shellPath, loginShell}
-	if v, ok := zcodeLaunchCache.Load(key); ok {
-		e := v.(zcodeLaunchCacheEntry)
-		return e.spec, e.res
-	}
-	// Single-flight per key, with a mutex rather than a sync.Once: an attempt that ends
-	// inconclusively must be repeatable, and a spent Once cannot repeat.
-	muAny, _ := zcodeLaunchMutexes.LoadOrStore(key, &sync.Mutex{})
-	mu := muAny.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-	if v, ok := zcodeLaunchCache.Load(key); ok {
-		e := v.(zcodeLaunchCacheEntry)
-		return e.spec, e.res
-	}
-	spec, res := resolveZCodeLaunchWith(ctx, shellPath, loginShell, zcodeProductionDeps())
-	if res != launch.Unknown {
-		zcodeLaunchCache.Store(key, zcodeLaunchCacheEntry{spec, res})
-	}
-	return spec, res
+	return resolveZCodeLaunchWith(ctx, shellPath, loginShell, zcodeProductionDeps())
 }
 
 // resolveZCodeLaunchWith resolves how to launch ZCode using the supplied lookups.

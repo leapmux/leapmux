@@ -13,7 +13,7 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-const { useAvailableProviders } = await import('./useAvailableProviders')
+const { createAvailableProvidersStore, useAvailableProviders } = await import('./useAvailableProviders')
 
 function providersResp(providers: AgentProvider[]): ListAvailableProvidersResponse {
   return {
@@ -27,6 +27,45 @@ beforeEach(() => {
 })
 
 describe('useAvailableProviders', () => {
+  it('shares one scan per worker and keeps out-of-order replies with their worker', async () => {
+    const first = deferred<ListAvailableProvidersResponse>()
+    const second = deferred<ListAvailableProvidersResponse>()
+    listAvailableProviders.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    await createRoot(async (dispose) => {
+      try {
+        const store = createAvailableProvidersStore()
+        const [workerId, setWorkerId] = createSignal('A')
+        const dialog = useAvailableProviders(workerId, () => true, store)
+        const menu = useAvailableProviders(() => 'A', () => true, store)
+        await flush()
+        expect(listAvailableProviders).toHaveBeenCalledTimes(1)
+
+        setWorkerId('B')
+        second.resolve(providersResp([AgentProvider.CODEX]))
+        await flush()
+        expect(dialog.providers()).toEqual([AgentProvider.CODEX])
+        expect(menu.providers()).toBeUndefined()
+
+        first.resolve(providersResp([AgentProvider.CLAUDE_CODE]))
+        await flush()
+        expect(dialog.providers()).toEqual([AgentProvider.CODEX])
+        expect(menu.providers()).toEqual([AgentProvider.CLAUDE_CODE])
+
+        setWorkerId('A')
+        expect(dialog.providers()).toEqual([AgentProvider.CLAUDE_CODE])
+        expect(listAvailableProviders).toHaveBeenCalledTimes(2)
+
+        listAvailableProviders.mockRejectedValueOnce(new Error('offline'))
+        await dialog.refresh()
+        expect(dialog.providers()).toEqual([AgentProvider.CLAUDE_CODE])
+        expect(dialog.loading()).toBe(false)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('does not fetch while there is no worker', async () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -181,18 +220,16 @@ describe('useAvailableProviders', () => {
     })
   })
 
-  it('reports the failure, clears the list, and lets the same worker retry', async () => {
-    const onError = vi.fn()
+  it('lets the same worker retry after its first scan fails', async () => {
     listAvailableProviders
       .mockRejectedValueOnce(new Error('offline'))
       .mockResolvedValueOnce(providersResp([AgentProvider.CODEX]))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const [workerId, setWorkerId] = createSignal('')
-        const hook = useAvailableProviders(workerId, () => true, onError)
+        const hook = useAvailableProviders(workerId, () => true)
         setWorkerId('A')
         await flush()
-        expect(onError).toHaveBeenCalledTimes(1)
         expect(hook.providers()).toBeUndefined()
         expect(hook.loading()).toBe(false)
 

@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -145,28 +146,23 @@ func zcodeStartupFixture(t *testing.T, desktopConfig string) (agent.Options, str
 	builtin := filepath.Join(t.TempDir(), "builtin.json")
 	require.NoError(t, os.WriteFile(builtin, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
 	calls := filepath.Join(t.TempDir(), "calls.log")
-	key := zcodeLaunchKey{shellPath: shell}
-	previous, existed := zcodeLaunchCache.Load(key)
-	zcodeLaunchCache.Store(key, zcodeLaunchCacheEntry{res: launch.Found, spec: launch.Spec{
-		Program: executable, PrefixArgs: []string{"-test.run=^TestZCodeStartupProcess$", "--"},
-		Env: []string{"LEAPMUX_ZCODE_STARTUP_FIXTURE=1",
-			"LEAPMUX_ZCODE_FIXTURE_DATABASE=" + filepath.Join(home, "native.db"), "LEAPMUX_ZCODE_FIXTURE_CALLS=" + calls,
-			zcodeBuiltinProviderConfigEnv + "=" + builtin},
-	}})
-	t.Cleanup(func() {
-		if existed {
-			zcodeLaunchCache.Store(key, previous)
-		} else {
-			zcodeLaunchCache.Delete(key)
-		}
+	previous := zcodeLocator
+	zcodeLocator = launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		return launch.Spec{
+			Program: executable, PrefixArgs: []string{"-test.run=^TestZCodeStartupProcess$", "--"},
+			Env: []string{"LEAPMUX_ZCODE_STARTUP_FIXTURE=1",
+				"LEAPMUX_ZCODE_FIXTURE_DATABASE=" + filepath.Join(home, "native.db"), "LEAPMUX_ZCODE_FIXTURE_CALLS=" + calls,
+				zcodeBuiltinProviderConfigEnv + "=" + builtin},
+		}, launch.Found
 	})
+	t.Cleanup(func() { zcodeLocator = previous })
 	return agent.Options{AgentID: "personal-only", HomeDir: home, WorkingDir: working, Shell: shell,
 		StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
 		ExtraEnv: []string{"HOME=" + home, "USERPROFILE=" + home}}, calls
 }
 
 func TestZCodeStart_UsesNativePersonalProvidersWithoutALegacyRegistry(t *testing.T) {
-	// Launch resolution is a package cache, so these fixtures run serially.
+	// The fixtures replace the registered locator, so they run serially.
 	for _, legacyConfig := range []string{"", `{"provider":{}}`} {
 		t.Run(legacyConfig, func(t *testing.T) {
 			opts, _ := zcodeStartupFixture(t, legacyConfig)

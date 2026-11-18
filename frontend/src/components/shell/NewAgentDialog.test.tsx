@@ -1,7 +1,6 @@
 import type { AgentCreationSubmission } from './useTabCreation'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent, workerGit } from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
@@ -9,6 +8,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
+import { pickMenuValue } from '~/test-support/menu'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import '~/components/chat/providers'
 
@@ -26,6 +26,7 @@ vi.mock('~/api/clients', () => ({
     listWorkers: vi.fn(async () => ({
       workers: [
         create(WorkerSchema, { id: 'w-1', online: true }),
+        create(WorkerSchema, { id: 'w-2', online: true }),
       ],
     })),
   },
@@ -61,6 +62,13 @@ vi.mock('~/api/workerRpc', () => ({
   },
   workerAgent: {
     openAgent: vi.fn(async () => ({})),
+    listAvailableProviders: vi.fn(async (workerId: string) => ({
+      providers: [
+        workerId === 'w-1'
+          ? AgentProvider.CLAUDE_CODE
+          : AgentProvider.CODEX,
+      ],
+    })),
   },
 }))
 
@@ -90,6 +98,27 @@ async function findCreateButton(): Promise<HTMLButtonElement> {
   await screen.findByRole('button', { name: 'Create' })
   return screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement
 }
+
+describe('NewAgentDialog worker providers', () => {
+  it('loads and refreshes the providers for the selected worker', async () => {
+    renderDialog()
+    const providerPicker = () => screen.getByTestId('agent-provider-selector-trigger')
+    await waitFor(() => expect(providerPicker()).toHaveTextContent('Claude Code'))
+    expect(workerAgent.listAvailableProviders).toHaveBeenCalledWith('w-1', {}, expect.anything())
+
+    pickMenuValue('worker-select-menu', 'w-2')
+    await waitFor(() => expect(providerPicker()).toHaveTextContent('Codex'))
+    expect(workerAgent.listAvailableProviders).toHaveBeenLastCalledWith('w-2', {}, expect.anything())
+
+    vi.mocked(workerAgent.listAvailableProviders).mockResolvedValueOnce({
+      $typeName: 'leapmux.v1.ListAvailableProvidersResponse',
+      providers: [AgentProvider.CURSOR],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh available providers' }))
+    await waitFor(() => expect(providerPicker()).toHaveTextContent('Cursor'))
+    expect(workerAgent.listAvailableProviders).toHaveBeenLastCalledWith('w-2', {}, expect.anything())
+  })
+})
 
 describe('NewAgentDialog tab-placement guard', () => {
   beforeEach(() => {
@@ -132,18 +161,26 @@ describe('NewAgentDialog startup options', () => {
   })
 
   function mountMuseDialog() {
-    const [providers, setProviders] = createSignal([AgentProvider.MUSE_CODE])
+    vi.mocked(workerAgent.listAvailableProviders).mockResolvedValueOnce({
+      $typeName: 'leapmux.v1.ListAvailableProvidersResponse',
+      providers: [AgentProvider.MUSE_CODE],
+    })
     render(withPreferences(() => (
       <NewAgentDialog
         defaultWorkerId="w-1"
         defaultWorkingDir="/native/workspace"
-        availableProviders={providers()}
         onCreate={submitCreation}
         onClose={() => {}}
         repoGitStore={createRepoGitStore()}
       />
     )))
-    return setProviders
+    return (provider: AgentProvider) => {
+      vi.mocked(workerAgent.listAvailableProviders).mockResolvedValueOnce({
+        $typeName: 'leapmux.v1.ListAvailableProvidersResponse',
+        providers: [provider],
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh available providers' }))
+    }
   }
 
   it('sends the selected startup trust with the exact native provider', async () => {
@@ -163,9 +200,9 @@ describe('NewAgentDialog startup options', () => {
     const setProviders = mountMuseDialog()
     await fireEvent.click(await screen.findByRole('radio', { name: 'Trust for this agent' }))
     expect(screen.getByRole('radio', { name: 'Trust for this agent' })).toHaveAttribute('aria-checked', 'true')
-    setProviders([AgentProvider.CODEX])
+    setProviders(AgentProvider.CODEX)
     await waitFor(() => expect(screen.queryByRole('radio', { name: 'Trust for this agent' })).toBeNull())
-    setProviders([AgentProvider.MUSE_CODE])
+    setProviders(AgentProvider.MUSE_CODE)
     const choice = await screen.findByRole('radio', { name: 'Use native trust' })
     expect(choice).toHaveAttribute('aria-checked', 'true')
   })

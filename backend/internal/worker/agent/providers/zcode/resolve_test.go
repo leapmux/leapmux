@@ -93,18 +93,6 @@ func (s *zcodeStubDeps) resolve(t *testing.T) (launch.Spec, launch.Resolution) {
 	return resolveZCodeLaunchWith(context.Background(), "/bin/zsh", true, s.deps())
 }
 
-// clearZCodeLaunchCache drops every memoized launch resolution.
-//
-// The cache is package state keyed by shell, so a test that changes what resolution SEES
-// must clear it on both sides: a stale entry would answer instead of the probe, and the
-// entry this test causes would answer for the next one.
-func clearZCodeLaunchCache() {
-	zcodeLaunchCache.Range(func(k, _ any) bool {
-		zcodeLaunchCache.Delete(k)
-		return true
-	})
-}
-
 // forceZCodeUnavailable makes ZCode resolve conclusively missing for the rest of the test.
 //
 // ZCode resolves through the FILESYSTEM, not the shell, so a developer machine with the
@@ -115,8 +103,6 @@ func clearZCodeLaunchCache() {
 func forceZCodeUnavailable(t *testing.T) {
 	t.Helper()
 	t.Setenv(zcodeScriptEnvOverride, filepath.Join(t.TempDir(), "no-such-zcode.cjs"))
-	clearZCodeLaunchCache()
-	t.Cleanup(clearZCodeLaunchCache)
 }
 
 // registryWithZCodeResolver returns a registry of ZCode alone, with its launch
@@ -704,36 +690,6 @@ func TestBundledInterpreters_OnlyIncludesWhatExists(t *testing.T) {
 	assert.Equal(t, []string{zcodeElectronAsNodeEnv}, interpreters[0].env)
 
 	assert.Empty(t, bundledInterpreters(script, func(string) bool { return false }))
-}
-
-// --- the shell probe parser ---
-
-// --- the cache ---
-
-// Only a CONCLUSIVE resolution is cached. Caching Unknown would freeze a
-// load-induced timeout as a permanent verdict for the worker's lifetime.
-func TestResolveZCodeLaunch_CachesOnlyAConclusiveResolution(t *testing.T) {
-	// Not parallel: the cache is package state, keyed by shell.
-	shell := "/bin/zsh-cache-test"
-	t.Cleanup(func() {
-		zcodeLaunchCache.Delete(zcodeLaunchKey{shell, true})
-		zcodeLaunchMutexes.Delete(zcodeLaunchKey{shell, true})
-	})
-
-	stub := newZCodeStubDeps()
-	stub.nameProbe = launch.ProbeUnknown
-	_, res := resolveZCodeLaunchWith(context.Background(), shell, true, stub.deps())
-	require.Equal(t, launch.Unknown, res)
-	_, cached := zcodeLaunchCache.Load(zcodeLaunchKey{shell, true})
-	assert.False(t, cached, "an inconclusive resolution must stay retryable")
-
-	// The production entry point caches a conclusive answer under the same key.
-	zcodeLaunchCache.Store(zcodeLaunchKey{shell, true}, zcodeLaunchCacheEntry{
-		spec: launch.Spec{Program: "zcode"}, res: launch.Found,
-	})
-	spec, res := resolveZCodeLaunch(context.Background(), shell, true)
-	assert.Equal(t, launch.Found, res)
-	assert.Equal(t, "zcode", spec.Program, "the cached entry is served without a probe")
 }
 
 // --- the registration ---
