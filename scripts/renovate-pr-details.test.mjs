@@ -17,7 +17,8 @@ const MarkdownIt = requireRenovate('markdown-it')
 const { parse: parseHtml } = requireRenovate('node-html-parser')
 const markdown = new MarkdownIt({ html: true })
 const resultText = '- Dependency changes remain subject to human review and required CI.'
-const template = `## Motivation\n\n- Update dependencies.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n${resultText}`
+const legacyTemplate = `## Motivation\n\n- Keep dependencies current and address reported vulnerabilities.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n${resultText}`
+const template = '{{{table}}}'
 const fixtures = []
 const cleanups = []
 afterEach(() => {
@@ -70,6 +71,8 @@ describe('PR detail capture', () => {
     }
     const body = getPrBody(branch, { debugData: {} }, branch)
     expect(body).toContain('example.com/library')
+    expect(body).toStartWith('This PR contains the following updates:\n\n| Package | Change |')
+    expect(body).toEndWith('<!--renovate-debug:e30=-->\n')
     expect(body).not.toContain('Complete advisory details.')
     expect(body).not.toContain('truncated')
     expect(captured).toHaveLength(1)
@@ -89,10 +92,7 @@ describe('PR detail capture', () => {
       token: 'never-export-this-value',
     }
     const body = compile(capture.prBodyTemplate, data, false)
-    expect([
-      ...body.matchAll(/^## (.+)$/gm),
-    ].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
-    expect(body).toContain('Runtime: 1 → 2')
+    expect(body.trim()).toBe(data.table)
     expect(body).not.toContain(data.warnings)
     expect(body).not.toContain('Security details.')
     expect(body).not.toContain('Release notes.')
@@ -282,18 +282,16 @@ describe('PR detail comments', () => {
     for (const limit of [0, -1, 99, 46001, Infinity, 0.5])
       expect(() => splitDetailText('value', limit)).toThrow('limit')
   })
-  it('moves the legacy prefix and details without removing the core or debug metadata', () => {
-    const body = `> [!NOTE]\n> Truncated upstream notes.\n\n${compile(template, { table: '- Runtime: 1 → 2' }, false)}\n\n### Security advisory\nImportant details.\n<!--renovate-debug:abc-->`
-    const parts = partitionLegacyBody(body, template)
-    expect(parts.body).toContain('Runtime: 1 → 2')
-    expect(parts.body).toContain(resultText)
-    expect(parts.body).toContain('<!--renovate-debug:abc-->')
-    expect(parts.body).not.toContain('Security advisory')
-    expect(parts.details).toContain('Truncated upstream notes.')
-    expect(parts.details).toContain('Important details.')
-    expect(parts.details).not.toContain('renovate-debug')
-    expect(() => partitionLegacyBody('Human-written body', template)).toThrow('three core')
-    expect(() => partitionLegacyBody(body.replace(resultText, 'Human-modified result.'), template)).toThrow('differs')
+  it('extracts details from a legacy description and preserves the table and debug metadata', () => {
+    const table = 'This PR contains the following updates:\n\n| Package | Change |\n|---|---|\n| Runtime | 1 → 2 |'
+    const body = `> [!NOTE]\n> Truncated upstream notes.\n\n${compile(legacyTemplate, { table }, false)}\n\n### Security advisory\nImportant details.\n<!--renovate-debug:abc-->`
+    const parts = partitionLegacyBody(body)
+    expect(parts.body).toBe(`${table}\n<!--renovate-debug:abc-->\n`)
+    expect(parts.details).toBe('> [!NOTE]\n> Truncated upstream notes.\n\n### Security advisory\nImportant details.')
+    expect(partitionLegacyBody(parts.body)).toBeNull()
+    expect(() => partitionLegacyBody('Human-written body')).toThrow('three sections')
+    expect(() => partitionLegacyBody(body.replace(resultText, 'Human-modified result.'))).toThrow('differs')
+    expect(() => partitionLegacyBody(body.replace(resultText, `${resultText} Extra text.`))).toThrow('differs')
   })
 })
 
@@ -305,6 +303,15 @@ describe('renderDetailComments', () => {
     changelogs,
   })
   const content = body => body.slice(body.indexOf('\n\n') + 2)
+  it('omits the part count for one comment and numbers every comment in a split', () => {
+    expect(render('Release notes.')).toEqual([
+      '<!-- leapmux-renovate-details:v1 part=1 -->\n## Renovate update details\n\nRelease notes.',
+    ])
+    const comments = render('Release notes.\n'.repeat(5000))
+    expect(comments).toHaveLength(2)
+    for (const [index, body] of comments.entries())
+      expect(body).toContain(`\n## Renovate update details (${index + 1}/2)\n`)
+  })
   it('removes each terminal escape sequence whole, so GitHub stores the body as written', () => {
     for (const [changelogs, expected] of [
       ['\x1B[36m./src/app.ts\x1B[22m → \x1B[1;39mdist\x1B[0m', './src/app.ts → dist'],

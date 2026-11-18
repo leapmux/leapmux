@@ -77,8 +77,8 @@ describe('trusted Renovate configuration', () => {
       const gtk={};
       for (const update of [{updateType:'patch',newValue:'0.18',newVersion:'0.18.3'},{updateType:'minor',newValue:'0.19',newVersion:'0.19.0'},{updateType:'major',newValue:'1.0',newVersion:'1.0.0'}]) {
         console.error('phase: grouping gtk '+update.updateType);
-        const result=await branchifyUpgrades({...config,repoIsOnboarded:true},{cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[{depName:'gtk',packageName:'gtk',sourceUrl:'https://github.com/gtk-rs/gtk3-rs',depType:'dependencies',currentValue:'0.18',currentVersion:'0.18.2',updates:[update]}]}]});
-        gtk[update.updateType]=result.branches.filter(branch=>!branch.isLockFileMaintenance).flatMap(branch=>branch.upgrades.map(upgrade=>branch.groupName+' '+upgrade.depName+' '+upgrade.newVersion));
+        const result=await branchifyUpgrades({...config,repoIsOnboarded:true},{cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[{depName:'gtk',packageName:'gtk',sourceUrl:'https://github.com/gtk-rs/gtk3-rs',depType:'dependencies',currentValue:'0.18',currentVersion:'0.18.2',isSingleVersion:true,updates:[update]}]}]});
+        gtk[update.updateType]=result.branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({name:branch.branchName,title:branch.prTitle}));
       }
       console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,gtk,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group)),titles:branches.map(branch=>branch.prTitle)}));
     `
@@ -118,7 +118,9 @@ describe('trusted Renovate configuration', () => {
       schedule: ['at any time'],
       // The Tauri planner owns the gtk requirement, so only an update inside it remains.
       gtk: {
-        patch: ['Rust gtk 0.18.3'],
+        patch: [
+          { name: 'renovate/rust', title: 'chore(deps): Update gtk to v0.18.3' },
+        ],
         minor: [],
         major: [],
       },
@@ -270,7 +272,7 @@ describe('trusted Renovate configuration', () => {
     // Without the shims of run-renovate.mjs, as for the validator, the child PATH stays as it is.
     expect(config.customEnvVariables.PATH).toBeUndefined()
     expect(config.requireConfig).toBe('ignored')
-    expect(config.dependencyDashboardFooter).toBe('{{{leapmuxSkippedDependencies}}}')
+    expect(config.dependencyDashboard).toEqual({ enabled: true, footer: '{{{leapmuxSkippedDependencies}}}' })
   })
   it('puts the shims that run-renovate.mjs wrote first on the child PATH, and rejects a directory without them', () => {
     const shims = resolve(fixtureDirectory(), '.tmp/renovate-shims/bin')
@@ -295,7 +297,7 @@ describe('trusted Renovate configuration', () => {
       logLevelRemap: [
         { matchMessage: 'Repository remap', newLogLevel: 'info' },
       ],
-      dependencyDashboardFooter: 'Repository footer',
+      dependencyDashboard: { ...policy.dependencyDashboard, title: 'Dependency updates', footer: 'Repository footer' },
     }))
     const result = loadConfig(dir)
     expect(result.status, result.stderr).toBe(0)
@@ -304,7 +306,11 @@ describe('trusted Renovate configuration', () => {
       'Could not re-extract the packageFile after updating it',
       'Repository remap',
     ])
-    expect(config.dependencyDashboardFooter).toBe('Repository footer\n\n{{{leapmuxSkippedDependencies}}}')
+    expect(config.dependencyDashboard).toEqual({
+      enabled: true,
+      title: 'Dependency updates',
+      footer: 'Repository footer\n\n{{{leapmuxSkippedDependencies}}}',
+    })
   })
   it('renders the Skipped Dependencies footer with the alerts of the prepared file', () => {
     const dir = fixtureDirectory()
@@ -333,7 +339,7 @@ describe('trusted Renovate configuration', () => {
       const {PackageFiles}=await engine('workers/repository/package-files.js');
       const {compile}=await engine('util/template/index.js');
       PackageFiles.add('main',{cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[]}]});
-      console.log(JSON.stringify(compile(config.dependencyDashboardFooter,config)));
+      console.log(JSON.stringify(compile(config.dependencyDashboard.footer,config)));
     `
     const result = spawnSync('node', [
       '--input-type=module',

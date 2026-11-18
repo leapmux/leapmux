@@ -398,7 +398,7 @@ describe('configureSkippedDependencies', () => {
     handlebars.registerHelper('leapmuxSkippedDependencies', earlier)
     try {
       const configured = await configureSkippedDependencies({ policy, alerts: [] })
-      expect(configured.dependencyDashboardFooter).toBe('{{{leapmuxSkippedDependencies}}}')
+      expect(configured.footer).toBe('{{{leapmuxSkippedDependencies}}}')
       expect(handlebars.helpers.leapmuxSkippedDependencies).not.toBe(earlier)
       configured.dispose()
       expect(handlebars.helpers.leapmuxSkippedDependencies).toBe(earlier)
@@ -451,7 +451,7 @@ describe('the Skipped Dependencies helper in Renovate under Node', () => {
       const {getConfig}=await engine('config/defaults.js');
       const {mergeChildConfig}=await engine('config/utils.js');
       const [policy,packageFiles,alerts]=process.argv.slice(2).map(value=>JSON.parse(value));
-      const {dependencyDashboardFooter:footer}=await configureSkippedDependencies({policy,alerts});
+      const {footer}=await configureSkippedDependencies({policy,alerts});
       const config=mergeChildConfig(getConfig(),policy);
       const attempt=input=>{ try { return compile(footer,input) } catch (error) { return 'error: '+error.message } };
       const empty=attempt(config);

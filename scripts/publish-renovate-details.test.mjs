@@ -9,7 +9,10 @@ await init()
 const { sanitizeMarkdown } = await renovateModule('util/markdown.js')
 const { getChangelogs } = await renovateModule('workers/repository/update/pr/body/changelogs.js')
 const root = '/repos/leapmux/leapmux'
-const template = '## Motivation\n\n- Update dependencies.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n- Review and CI remain required.'
+const table = 'This PR contains the following updates:\n\n| Package | Change |\n|---|---|\n| Runtime | 1 → 2 |'
+const debugComment = '<!--renovate-debug:abc-->'
+const currentBody = `${table}\n${debugComment}\n`
+const legacyBody = `## Motivation\n\n- Keep dependencies current and address reported vulnerabilities.\n\n## Modifications\n\n${table}\n\n## Result\n\n- Dependency changes remain subject to human review and required CI.\n\nLegacy advisory details.\n${debugComment}`
 function record() {
   return {
     version: 1,
@@ -28,7 +31,7 @@ function githubStored(text) {
     ? '^?'
     : `^${String.fromCharCode(character.charCodeAt(0) + 64)}`)
 }
-function fixture(actor = bot, { store = text => text } = {}) {
+function fixture(actor = bot, { store = text => text, body = currentBody } = {}) {
   const pr = {
     number: 546,
     user: { login: bot, type: 'Bot' },
@@ -40,7 +43,7 @@ function fixture(actor = bot, { store = text => text } = {}) {
       ref: 'renovate/go-security',
       repo: { full_name: 'leapmux/leapmux' },
     },
-    body: `${template.replace('{{{table}}}', '- Runtime: 1 → 2')}\n\nLegacy advisory details.`,
+    body,
   }
   const comments = [
     {
@@ -116,7 +119,7 @@ describe('managed Renovate detail comments', () => {
       warnings: 'Ask @octocat.',
       notes: 'See #123.',
       changelogs,
-    }, state.pr, template, { api: state.api, sanitize: sanitizeMarkdown })
+    }, state.pr, { api: state.api, sanitize: sanitizeMarkdown })
     const body = state.comments.find(comment => comment.user.login === bot).body
     expect(body).toContain(changelogs.trim())
     expect(body).toContain('@&#8203;octocat')
@@ -147,7 +150,7 @@ describe('managed Renovate detail comments', () => {
       warnings: 'Copyright &#169;.',
       notes: 'Quote &#34;text&#34;.',
       changelogs,
-    }, state.pr, template, { api: state.api, sanitize: sanitizeMarkdown })
+    }, state.pr, { api: state.api, sanitize: sanitizeMarkdown })
     const body = state.comments.find(comment => comment.user.login === bot).body
     expect(body).toContain('End reason &#39;failed&#39;. Code: `&#39;`. Hex: &#x27;.')
     expect(body).toContain('Copyright &#169;.')
@@ -156,25 +159,20 @@ describe('managed Renovate detail comments', () => {
     expect(body).toContain('#&#8203;123')
     expect(body).not.toContain('&#&#8203;')
   })
-  it('publishes complete details before cleaning the body and never edits human comments', async () => {
+  it('publishes every detail part without changing the description or human comments', async () => {
     const state = fixture()
     const data = record()
-    await publishRecord(data, state.pr, template, { api: state.api })
-    expect(state.pr.body).not.toContain('Legacy advisory details.')
-    expect(state.pr.body).toContain('- Runtime: 1 → 2')
-    expect([
-      ...state.pr.body.matchAll(/^## (.+)$/gm),
-    ].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
+    await publishRecord(data, state.pr, { api: state.api })
+    expect(state.pr.body).toBe(currentBody)
     expect(state.comments[0].body).toContain('Human content.')
     const managed = state.comments.filter(comment => comment.user.login === bot)
     expect(managed.length).toBeGreaterThan(1)
     expect(managed[0].body).toContain(data.warnings)
     expect(managed.at(-1).body).toContain(data.changelogs)
     expect(managed.map(comment => comment.body.match(/Advisory details\./g)?.length ?? 0).reduce((a, b) => a + b, 0)).toBe(4000)
-    const bodyUpdate = state.calls.findIndex(call => call.method === 'PATCH' && call.path === `${root}/pulls/546`)
-    expect(state.calls.slice(bodyUpdate).some(call => call.method === 'POST')).toBe(false)
+    expect(state.calls.some(call => call.method === 'PATCH')).toBe(false)
     const posts = state.calls.filter(call => call.method === 'POST').length
-    await publishRecord(data, state.pr, template, { api: state.api })
+    await publishRecord(data, state.pr, { api: state.api })
     expect(state.calls.filter(call => call.method === 'POST')).toHaveLength(posts)
     expect(state.comments[0].body).toContain('Human content.')
   })
@@ -186,23 +184,23 @@ describe('managed Renovate detail comments', () => {
       notes: 'Notes.',
       changelogs: '$ rollup -c\n\x1B[36m\n\x1B[1m./src/app.ts\x1B[22m → \x1B[1mdist\x1B[22m\x1B[39m\r\nDone\x07.',
     }
-    await publishRecord(data, state.pr, template, { api: state.api })
+    await publishRecord(data, state.pr, { api: state.api })
     const managed = state.comments.filter(comment => comment.user.login === bot)
     expect(managed).toHaveLength(1)
     expect(managed[0].body).toContain('$ rollup -c\n\n./src/app.ts → dist\nDone.')
     expect(managed[0].body).toBe(githubStored(managed[0].body))
-    expect(state.pr.body).not.toContain('Legacy advisory details.')
+    expect(state.pr.body).toBe(currentBody)
   })
   it('updates existing parts and retires surplus parts without deleting comments', async () => {
     const state = fixture()
-    await publishRecord(record(), state.pr, template, { api: state.api })
+    await publishRecord(record(), state.pr, { api: state.api })
     const count = state.comments.length
     await publishRecord({
       ...record(),
       warnings: '',
       notes: 'Changed advisory.',
       changelogs: '',
-    }, state.pr, template, { api: state.api })
+    }, state.pr, { api: state.api })
     expect(state.comments).toHaveLength(count)
     expect(state.comments[1].body).toContain('Changed advisory.')
     expect(state.comments.at(-1).body).toContain('no longer needs')
@@ -210,7 +208,7 @@ describe('managed Renovate detail comments', () => {
   })
   it('preserves the original body after failed writes or inconsistent read-back', async () => {
     for (const failure of ['write', 'author', 'readback']) {
-      const state = fixture()
+      const state = fixture(bot, { body: legacyBody })
       const original = state.pr.body
       const api = async (method, path, body) => {
         if (failure === 'write' && method === 'POST')
@@ -222,7 +220,7 @@ describe('managed Renovate detail comments', () => {
           result.body = 'Unexpected stored value'
         return result
       }
-      await expect(publishRecord(record(), state.pr, template, { api })).rejects.toThrow()
+      await expect(migratePullRequest(state.pr, { api })).rejects.toThrow()
       expect(state.pr.body).toBe(original)
     }
   })
@@ -238,7 +236,7 @@ describe('managed Renovate detail comments', () => {
     ]) {
       const state = fixture()
       change(state.pr)
-      await expect(publishRecord(record(), state.pr, template, { api: state.api })).rejects.toThrow('expected Renovate PR')
+      await expect(publishRecord(record(), state.pr, { api: state.api })).rejects.toThrow('expected Renovate PR')
       expect(state.calls).toEqual([])
     }
   })
@@ -250,39 +248,51 @@ describe('managed Renovate detail comments', () => {
         ...record(),
         notes: 'Newest advisory.',
       },
-    ], template, { api: state.api })
+    ], { api: state.api })
     expect(state.comments[1].body).toContain('Newest advisory.')
     expect(state.comments[1].body).not.toContain('Advisory details.')
     const result = await publishCapturedDetails([
       record(),
-    ], template, {
+    ], {
       api: async () => [],
     })
     expect(result[0].skipped).toContain('No open PR')
     await expect(publishCapturedDetails([
       record(),
-    ], template, {
+    ], {
       api: async () => [state.pr, state.pr],
     })).rejects.toThrow('More than one')
   })
-  it('allows an explicit administrator migration without changing authorship', async () => {
-    const state = fixture('trustin')
-    await publishRecord({
-      ...record(),
-      notes: 'Historical details.',
-    }, state.pr, template, { api: state.api, actorLogin: 'trustin' })
-    expect(state.comments[1].user.login).toBe('trustin')
+  it('publishes legacy details before removing the old sections from the description', async () => {
+    const state = fixture('trustin', { body: legacyBody })
+    await migratePullRequest(state.pr, { api: state.api, actorLogin: 'trustin' })
+    expect(state.pr.body).toBe(currentBody)
     expect(state.pr.user.login).toBe(bot)
-  })
-  it('keeps migrated details intact when the migration is retried', async () => {
-    const state = fixture('trustin')
-    await migratePullRequest(state.pr, template, { api: state.api, actorLogin: 'trustin' })
-    const stored = structuredClone(state.comments)
+    expect(state.comments[1].user.login).toBe('trustin')
+    expect(state.comments[1].body).toContain('Legacy advisory details.')
+    const bodyUpdate = state.calls.findIndex(call => call.method === 'PATCH' && call.path === `${root}/pulls/546`)
+    const lastCommentRead = state.calls.findLastIndex(call => call.method === 'GET' && call.path === `${root}/issues/comments/2`)
+    expect(lastCommentRead).toBeGreaterThanOrEqual(0)
+    expect(bodyUpdate).toBeGreaterThan(lastCommentRead)
+
     const calls = state.calls.length
-    const result = await migratePullRequest(state.pr, template, { api: state.api, actorLogin: 'trustin' })
+    const result = await migratePullRequest(state.pr, { api: state.api, actorLogin: 'trustin' })
     expect(result.skipped).toContain('already contains')
-    expect(state.comments).toEqual(stored)
     expect(state.calls).toHaveLength(calls)
+  })
+  it('updates a legacy description with no inline details without retiring its comments', async () => {
+    const state = fixture(bot, {
+      body: legacyBody.replace('\n\nLegacy advisory details.', ''),
+    })
+    state.comments.push({
+      id: 2,
+      user: { login: bot },
+      body: `${COMMENT_MARKER}1 -->\nExisting details.`,
+    })
+    await migratePullRequest(state.pr, { api: state.api })
+    expect(state.pr.body).toBe(currentBody)
+    expect(state.comments[1].body).toContain('Existing details.')
+    expect(state.calls.map(call => call.path)).toEqual([`${root}/pulls/546`, `${root}/pulls/546`])
   })
   it('finds managed parts after pagination and rejects duplicate owned parts', async () => {
     const state = fixture()
@@ -303,7 +313,7 @@ describe('managed Renovate detail comments', () => {
       warnings: '',
       notes: 'Updated details.',
       changelogs: '',
-    }, state.pr, template, { api: state.api })
+    }, state.pr, { api: state.api })
     expect(state.calls.some(call => call.path.endsWith('page=2'))).toBe(true)
     expect(state.calls.some(call => call.method === 'POST')).toBe(false)
     expect(state.comments.at(-1).body).toContain('Updated details.')
@@ -312,7 +322,7 @@ describe('managed Renovate detail comments', () => {
       user: { login: bot },
       body: `${COMMENT_MARKER}1 -->\nDuplicate.`,
     })
-    await expect(publishRecord(record(), state.pr, template, { api: state.api })).rejects.toThrow('duplicate')
+    await expect(publishRecord(record(), state.pr, { api: state.api })).rejects.toThrow('duplicate')
   })
   it('retires an existing sparse part without overwriting unrelated comments', async () => {
     const state = fixture()
@@ -326,7 +336,7 @@ describe('managed Renovate detail comments', () => {
       warnings: '',
       notes: 'Current details.',
       changelogs: '',
-    }, state.pr, template, { api: state.api })
+    }, state.pr, { api: state.api })
     expect(state.comments.find(comment => comment.id === 999).body).toContain('no longer needs')
     expect(state.comments[0].body).toContain('Human content.')
     expect(state.comments.some(comment => comment.body.includes('Current details.'))).toBe(true)

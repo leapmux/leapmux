@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -1567,12 +1568,10 @@ func TestSoloStart_TheLocalWorkerDialsTheIPCSocket(t *testing.T) {
 }
 
 // startAcceptingPredecessor uses the platform transport and joins its accept loop.
-func startAcceptingPredecessor(t *testing.T, url string) (func(), <-chan struct{}) {
+func startAcceptingPredecessor(t *testing.T, url string) func() {
 	t.Helper()
 	ln, err := locallisten.Listen(url)
 	require.NoError(t, err)
-	accepted := make(chan struct{})
-	announce := sync.OnceFunc(func() { close(accepted) })
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1582,12 +1581,18 @@ func startAcceptingPredecessor(t *testing.T, url string) (func(), <-chan struct{
 				return
 			}
 			_ = conn.Close()
-			announce()
 		}
 	}()
-	closeListener := sync.OnceFunc(func() { _ = ln.Close(); <-done })
+	closeListener := sync.OnceFunc(func() {
+		require.NoError(t, ln.Close())
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the predecessor accept loop did not stop after the listener closed")
+		}
+	})
 	t.Cleanup(closeListener)
-	return closeListener, accepted
+	return closeListener
 }
 
 type logMessageObserver struct {
@@ -1614,22 +1619,28 @@ func (h logMessageObserver) WithGroup(group string) slog.Handler {
 	return h
 }
 
-func observeLogMessage(message string) (<-chan struct{}, func()) {
-	previous := slog.Default()
-	observed := make(chan struct{})
-	slog.SetDefault(slog.New(logMessageObserver{Handler: previous.Handler(), message: message,
-		observed: sync.OnceFunc(func() { close(observed) })}))
-	return observed, func() { slog.SetDefault(previous) }
+func loggerObservingMessage(message string, observed func()) *slog.Logger {
+	return slog.New(logMessageObserver{
+		Handler:  slog.NewTextHandler(io.Discard, nil),
+		message:  message,
+		observed: observed,
+	})
 }
 
-func startPreviousHubWait(t *testing.T, urls []string, deadline time.Time) (context.CancelFunc, <-chan error) {
+func startPreviousHubWait(t *testing.T, urls []string, deadline time.Time) (context.CancelFunc, <-chan error, <-chan struct{}) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
+	observed := make(chan struct{})
+	logger := loggerObservingMessage("waiting for the previous hub to release its address and lease",
+		sync.OnceFunc(func() { close(observed) }))
 	done := make(chan struct{})
-	go func() { defer close(done); result <- waitForPreviousHub(ctx, urls, deadline) }()
+	go func() {
+		defer close(done)
+		result <- waitForPreviousHub(ctx, urls, deadline, logger)
+	}()
 	t.Cleanup(func() { cancel(); <-done })
-	return cancel, result
+	return cancel, result, observed
 }
 
 func requirePreviousHubWaiting(t *testing.T, observed <-chan struct{}, result <-chan error) {
@@ -1645,22 +1656,24 @@ func requirePreviousHubWaiting(t *testing.T, observed <-chan struct{}, result <-
 
 func TestWaitForPreviousHub(t *testing.T) {
 	t.Run("no socket returns at once", func(t *testing.T) {
-		_, done := startPreviousHubWait(t, nil, time.Now().Add(5*time.Second))
+		_, done, observed := startPreviousHubWait(t, nil, time.Now().Add(5*time.Second))
 		select {
 		case err := <-done:
 			require.NoError(t, err)
 		case <-time.After(30 * time.Second):
 			t.Fatal("a free address must return at once")
 		}
+		select {
+		case <-observed:
+			t.Fatal("the predecessor probe reported a held address with no listeners")
+		default:
+		}
 	})
 	t.Run("a live listener returns once it closes", func(t *testing.T) {
 		url := locallistentest.UniqueListenURL(t, "prev-live")
-		closeListener, accepted := startAcceptingPredecessor(t, url)
-		observed, restore := observeLogMessage("waiting for the previous hub to release its address and lease")
-		t.Cleanup(restore)
-		_, done := startPreviousHubWait(t, []string{url}, time.Now().Add(time.Minute))
+		closeListener := startAcceptingPredecessor(t, url)
+		_, done, observed := startPreviousHubWait(t, []string{url}, time.Now().Add(time.Minute))
 		requirePreviousHubWaiting(t, observed, done)
-		<-accepted
 		closeListener()
 		select {
 		case err := <-done:
@@ -1671,29 +1684,34 @@ func TestWaitForPreviousHub(t *testing.T) {
 	})
 	t.Run("a live listener at the deadline returns nil", func(t *testing.T) {
 		url := locallistentest.UniqueListenURL(t, "prev-held")
-		_, accepted := startAcceptingPredecessor(t, url)
-		_, done := startPreviousHubWait(t, []string{url}, time.Now())
+		startAcceptingPredecessor(t, url)
+		_, done, observed := startPreviousHubWait(t, []string{url}, time.Now())
 		select {
 		case err := <-done:
 			require.NoError(t, err)
 		case <-time.After(30 * time.Second):
 			t.Fatal("the predecessor wait did not stop at its deadline")
 		}
-		<-accepted
+		// A busy Windows named pipe can time out before Accept returns. The probe
+		// reports the address as held in both cases and logs that before it returns.
+		select {
+		case <-observed:
+		default:
+			t.Fatal("the predecessor probe did not observe a held address")
+		}
 	})
 	t.Run("a cancel before the dial returns the context error", func(t *testing.T) {
 		url := locallistentest.UniqueListenURL(t, "prev-cancelled-dial")
 		startAcceptingPredecessor(t, url)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		require.ErrorIs(t, waitForPreviousHub(ctx, []string{url}, time.Now().Add(time.Minute)), context.Canceled)
+		logger := slog.New(slog.DiscardHandler)
+		require.ErrorIs(t, waitForPreviousHub(ctx, []string{url}, time.Now().Add(time.Minute), logger), context.Canceled)
 	})
 	t.Run("a cancel returns the context error", func(t *testing.T) {
 		url := locallistentest.UniqueListenURL(t, "prev-cancel")
 		startAcceptingPredecessor(t, url)
-		observed, restore := observeLogMessage("waiting for the previous hub to release its address and lease")
-		t.Cleanup(restore)
-		cancel, done := startPreviousHubWait(t, []string{url}, time.Now().Add(time.Minute))
+		cancel, done, observed := startPreviousHubWait(t, []string{url}, time.Now().Add(time.Minute))
 		requirePreviousHubWaiting(t, observed, done)
 		cancel()
 		select {
@@ -1768,8 +1786,7 @@ func TestSoloStart_CancelDuringTheLeaseWaitEndsPromptly(t *testing.T) {
 	d := defaultDeps()
 	d.serveHub = func(ctx context.Context, srv *hub.Server) error {
 		current := slog.Default()
-		slog.SetDefault(slog.New(logMessageObserver{Handler: current.Handler(),
-			message: "another Hub holds the runtime lease; waiting for it to release", observed: announceRefusal}))
+		slog.SetDefault(loggerObservingMessage("another Hub holds the runtime lease; waiting for it to release", announceRefusal))
 		defer slog.SetDefault(current)
 		return srv.Serve(ctx)
 	}
