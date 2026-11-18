@@ -82,15 +82,38 @@ func (k Kind) namedForm() string {
 // Help is one sentence about the forms that a target of the kind accepts,
 // for the help of an argument. Canonical reads exactly these forms.
 func (k Kind) Help() string {
+	return joinWithOr(append(k.forms(), fmt.Sprintf("%q for %s", SelfTarget, k.selfMeaning()))) + "."
+}
+
+// HelpWithoutSelf is Help for a command that refuses the caller's own
+// object, such as a wait on the calling agent, so the help offers no "self".
+func (k Kind) HelpWithoutSelf() string {
+	return joinWithOr(k.forms()) + "."
+}
+
+// forms lists the forms of a target of the kind, except "self".
+func (k Kind) forms() []string {
 	article := "A"
 	if k == KindAgent {
 		article = "An"
 	}
-	forms := fmt.Sprintf("%s %s id, a unique prefix of %d or more characters of one", article, k, MinPrefixLength)
-	if named := k.namedForm(); named != "" {
-		forms += fmt.Sprintf(", %q", named)
+	forms := []string{
+		fmt.Sprintf("%s %s id", article, k),
+		fmt.Sprintf("a unique prefix of %d or more characters of one", MinPrefixLength),
 	}
-	return fmt.Sprintf("%s, or %q for %s.", forms, SelfTarget, k.selfMeaning())
+	if named := k.namedForm(); named != "" {
+		forms = append(forms, fmt.Sprintf("%q", named))
+	}
+	return forms
+}
+
+// joinWithOr joins two items as "a or b", and more as "a, b, or c".
+func joinWithOr(items []string) string {
+	last := len(items) - 1
+	if last == 1 {
+		return items[0] + " or " + items[1]
+	}
+	return strings.Join(items[:last], ", ") + ", or " + items[last]
 }
 
 // selfMeaning states what "self" selects for the kind.

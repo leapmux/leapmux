@@ -306,6 +306,9 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 					sendInternalError(sender, "failed to prepare transcript message")
 					return
 				}
+				if r.GetIncludeReplyText() {
+					message.ReplyText = svc.replyTextOf(message)
+				}
 				protoMessages = append(protoMessages, message)
 			}
 
@@ -4120,6 +4123,41 @@ func reverseMessages(msgs []db.Message) {
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
+}
+
+// replyTextOf reads the reply text of a listed agent row through its
+// provider, from the same content and rendering supplement that the browser
+// reads. A row of another source, or one that holds no reply, gives nil. A
+// row whose bytes do not decode gives nil too: the page still lists it, and
+// the caller sees no reply in it.
+func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage) *string {
+	if message.GetSource() != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
+		return nil
+	}
+	content, err := msgcodec.Decompress(message.GetContent(), message.GetContentCompression())
+	if err != nil {
+		slog.Warn("decode the content of a listed message for its reply text", "message_id", message.GetId(), "error", err)
+		return nil
+	}
+	var supplemental []byte
+	if len(message.GetSupplementalContent()) > 0 {
+		supplemental, err = msgcodec.Decompress(message.GetSupplementalContent(), message.GetSupplementalContentCompression())
+		if err != nil {
+			slog.Warn("decode the supplement of a listed message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+	}
+	stored, err := agent.DecodeMessageSupplement(content, supplemental)
+	if err != nil {
+		slog.Warn("parse the supplement of a listed message for its reply text", "message_id", message.GetId(), "error", err)
+		return nil
+	}
+	stored.AgentSessionID = message.GetAgentSessionId()
+	text, ok := agent.ReplyText(svc.Agents.Registry().Plugin(message.GetAgentProvider()), stored)
+	if !ok {
+		return nil
+	}
+	return &text
 }
 
 // messageToProto converts a DB Message to a proto AgentChatMessage.

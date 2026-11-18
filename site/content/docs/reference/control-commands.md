@@ -455,6 +455,15 @@ The text is the second argument, "-" to read it from stdin, or --file. A
 message that starts with "-" needs "--" before it, so that a misspelled flag
 never reaches the agent as text.
 
+The agent's input queue holds the message until the agent reads it.
+
+With --wait, the command first refuses to send to an agent that waits for an
+answer to a permission prompt, and exits 5. Otherwise it sends the message,
+waits until the agent settles after it, and prints the agent's last reply as
+the transcript shows it, or every reply with --all. It exits 6 when the agent
+stops at a prompt after the message, or when --timeout passes. The output
+then says whether the message is still queued.
+
 This command changes state.
 
 ```text
@@ -469,6 +478,9 @@ leapmux control agent send <agent> [text] [flags]
 | Flag | Description |
 |---|---|
 | `--file string` | read the message from this file ("-" reads stdin) |
+| `--wait` | wait until the agent settles after the message, then print its last reply |
+| `--all` | with --wait, print every reply after the message, not only the last one |
+| `--timeout duration` | with --wait, stop waiting after this long, such as 90s or 30m; 0 waits without a limit (default: 0s) |
 
 ```sh
 leapmux control agent send 87a19d5f "Run the tests"
@@ -478,6 +490,45 @@ leapmux control agent send 87a19d5f --file prompt.md
 
 # Send a message that starts with a dash.
 leapmux control agent send 87a19d5f -- "-v is the verbose flag"
+
+# Ask a question and print the answer.
+leapmux control agent send 87a19d5f "Which tests fail?" --wait --timeout 30m
+```
+
+### `leapmux control agent wait`
+
+Wait until each agent reaches a state, then print the state of each.
+
+An agent reaches the state when the Worker reports it at any moment after the
+wait began, so an agent that is in the state already ends the wait at once.
+"settled" is "idle" or "waiting_for_user": the agent works no more, because it
+finished or because it waits for an answer to a permission prompt. An agent
+whose input queue holds a message that it will read is neither idle nor
+settled yet, as an agent that "agent open --message" just started.
+
+The command exits 0 when the condition holds. It exits 6 when the wait ended
+without it: --timeout passed, or an agent closed before it reached the state.
+It prints the state of each agent in both cases.
+
+```text
+leapmux control agent wait <agent>... [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>...` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+
+| Flag | Description |
+|---|---|
+| `--until string` | the state to wait for (one of: settled, idle, working, waiting_for_user; default: settled) |
+| `--any` | end the wait when one agent reaches the state, not every agent |
+| `--timeout duration` | stop waiting after this long, such as 90s or 10m; 0 waits without a limit (default: 0s) |
+
+```sh
+leapmux control agent wait 87a19d5f
+
+# Wait until the first of two agents waits for an answer, for 10 minutes at most.
+leapmux control agent wait 87a19d5f 5c2e0b91 --until waiting_for_user --any --timeout 10m
 ```
 
 ### `leapmux control agent interrupt`

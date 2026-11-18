@@ -262,6 +262,27 @@ type Provider interface {
 	// needs; it costs a database read, so it is a function that only the parsers
 	// which need it call, and it returns nil when there is no such message.
 	ExtractTodoEvent(spanType string, content []byte, pairedToolUse func() []byte) (todoevents.Event, bool)
+	// ReplyText returns the text of the agent's reply that one native frame
+	// holds, exactly as the browser's transcript shows it, and ok=false for a
+	// frame that holds no reply text: a tool call, a reasoning block, a
+	// status frame.
+	//
+	// `message.Original` is the frame after ResolveMessageContent,
+	// `message.Supplemental` the provider section of the row's supplement,
+	// and `message.AgentSessionID` the row's session: the three inputs that
+	// the browser plugin reads. agent.ReplyText decides the LeapMux envelopes
+	// first: it refuses a notification thread and a row of the reasoning or
+	// plan kind, and it reads a valid assembled text row itself. An assembled
+	// envelope that the browser refuses as malformed still reaches this
+	// method, because the browser hands it to the plugin too. The default
+	// (ProviderDefaults) reads nothing, which is right for a provider whose
+	// text reaches the transcript only as assembled rows.
+	//
+	// This is the one stated exception to frontend-owns-message-extraction
+	// (AGENTS.md): a CLI that waits for an agent's reply must not carry the
+	// browser's plugins. testdata/reply_text_conformance.json pins each
+	// implementation to the browser's extraction.
+	ReplyText(message MessageContent) (text string, ok bool)
 }
 
 // PlanExitModeDeferrer is a RUNNING provider that cannot apply the permission
@@ -305,6 +326,11 @@ func (ProviderDefaults) Classify(json.RawMessage) NotificationClassification {
 }
 
 func (ProviderDefaults) IsInterrupt(string) bool { return false }
+
+// ReplyText defaults to NO native reply text: a provider whose text reaches
+// the transcript only as assembled rows says nothing, and agent.ReplyText
+// reads those rows itself.
+func (ProviderDefaults) ReplyText(MessageContent) (string, bool) { return "", false }
 
 // ExtractTodoEvent defaults to NO to-do list. A provider whose CLI states one
 // overrides this with the shape that carries it.

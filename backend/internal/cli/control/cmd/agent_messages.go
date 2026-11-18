@@ -455,7 +455,7 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	// terminals cursor stays empty — we don't subscribe terminals here.
 	terminals := streamevents.NewTerminalCursor()
 
-	transport, err := newAgentMessagesTransport(ctx, c, workerID)
+	transport, err := newWorkerWatchTransport(ctx, c, workerID)
 	if err != nil {
 		return err
 	}
@@ -599,16 +599,16 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	}
 }
 
-// agentMessagesTransport packages the per-mode plumbing for
-// `agent messages --follow` so the reconnect loop above doesn't have
-// to know whether it's running over an E2EE channel or the local
-// IPC socket.
-type agentMessagesTransport struct {
+// workerWatchTransport packages the per-mode plumbing of a WatchEvents
+// stream to one Worker, so `agent messages --follow`, `agent wait` and
+// `agent send --wait` need not know whether they run over an E2EE channel
+// or the local IPC socket.
+type workerWatchTransport struct {
 	transport streamevents.Transport
 	close     func()
 }
 
-func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID string) (*agentMessagesTransport, error) {
+func newWorkerWatchTransport(ctx context.Context, c *control.Client, workerID string) (*workerWatchTransport, error) {
 	if c.IsWorkerIPC() {
 		// Local-IPC mode: route via ControlIPCService.StreamInner.
 		// workerID may be empty; the router resolves the spawning
@@ -621,7 +621,7 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 		if err != nil {
 			return nil, err
 		}
-		return &agentMessagesTransport{
+		return &workerWatchTransport{
 			transport: streamevents.NewLocalIPCTransport(ipc, workerID, slog.Default()),
 			close:     func() {},
 		}, nil
@@ -633,7 +633,7 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 	if err != nil {
 		return nil, err
 	}
-	return &agentMessagesTransport{
+	return &workerWatchTransport{
 		transport: streamevents.NewChannelTransport(ch, slog.Default()),
 		close: func() {
 			ch.Close()

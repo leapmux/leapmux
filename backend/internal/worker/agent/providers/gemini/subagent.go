@@ -118,8 +118,8 @@ func geminiChildWrites(session geminiSession) ([]geminiChildWrite, error) {
 			writes = append(writes, geminiChildWrite{Key: fmt.Sprintf("%s:thought:%d", message.ID, index), Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: agent.MessageContent{Original: message.Original, Supplemental: supplement}})
 		}
 		for _, record := range message.ToolCalls {
-			var tool geminiToolIdentity
-			if json.Unmarshal(record, &tool) != nil || tool.ID == "" || tool.Name == "" || !strings.HasPrefix(tool.ID, tool.Name+"__") || (tool.Status != "success" && tool.Status != "error") {
+			tool, ok := decodeFinishedGeminiTool(record)
+			if !ok {
 				continue
 			}
 			writes = append(writes, geminiChildWrite{Key: tool.ID + ":result", Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: agent.MessageContent{Original: record}, Span: agent.SpanInfo{SpanID: tool.ID, SpanType: tool.Name, Closing: true}})

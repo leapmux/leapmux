@@ -232,6 +232,27 @@ func TestEveryRegisteredProviderReadsItsSessionStore(t *testing.T) {
 	}
 }
 
+// TestEveryRegisteredProviderReadsItsReplyText sweeps the registry, so a
+// provider added after this was written fails until its package replays its
+// cases of testdata/reply_text_conformance.json through
+// agenttest.RunReplyTextConformance. The suite itself fails a provider with no
+// case, so the sweep and the corpus together cover every provider.
+func TestEveryRegisteredProviderReadsItsReplyText(t *testing.T) {
+	t.Parallel()
+
+	providers := Registry().Providers()
+	require.NotEmpty(t, providers, "the sweep proves nothing against an empty registry")
+	for _, id := range providers {
+		t.Run(id.String(), func(t *testing.T) {
+			t.Parallel()
+			dir, ok := providerDirs[id]
+			require.Truef(t, ok, "%v has no package directory in providerDirs", id)
+			assert.Truef(t, suitesCalledIn(t, dir)["RunReplyTextConformance"],
+				"the tests of %s must run agenttest.RunReplyTextConformance over its cases of testdata/reply_text_conformance.json", dir)
+		})
+	}
+}
+
 // TestEveryProviderPackageRunsItsConformanceSuites checks each row of
 // requiredSuites against the tests of its package, and checks that each
 // registered provider has a row.

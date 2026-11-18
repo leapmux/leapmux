@@ -213,15 +213,16 @@ func TestSubscription_ForwardsRetractionWithoutAdvancingAgentCursor(t *testing.T
 	assert.Equal(t, int64(20), agents.Get(agentID))
 }
 
-// TestSubscription_TurnEndNotifyDoesNotForward pins that AgentTurnEnd is a
-// UI-only notify frame: the CLI events stream must neither invoke onAgent nor
-// advance the agent cursor.
-func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
+// TestSubscription_TurnEndReachesOnAgentWithoutMovingTheCursor pins that
+// AgentTurnEnd, a notification-class frame, reaches onAgent: `agent send
+// --wait` reads it, because a provider can end a turn without an activity
+// change. It carries no message, so the agent cursor stays where it was.
+func TestSubscription_TurnEndReachesOnAgentWithoutMovingTheCursor(t *testing.T) {
 	tr := &fakeTransport{}
 	agents := NewAgentCursor()
-	var calls int
+	var got []*leapmuxv1.AgentEvent
 	sub := NewSubscription(tr, agents, NewTerminalCursor(),
-		func(*leapmuxv1.AgentEvent) { calls++ },
+		func(ae *leapmuxv1.AgentEvent) { got = append(got, ae) },
 		nil, nil)
 	t.Cleanup(sub.Cancel)
 
@@ -235,8 +236,92 @@ func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
 		}},
 	})
 
-	assert.Equal(t, 0, calls, "turn_end must not reach onAgent")
-	assert.Equal(t, int64(0), agents.Get("a-1"), "turn_end must not advance the agent cursor")
+	require.Len(t, got, 1, "the turn end reaches onAgent")
+	assert.NotNil(t, got[0].GetTurnEnd())
+	assert.Equal(t, int64(0), agents.Get("a-1"), "a turn end does not advance the agent cursor")
+}
+
+// updateAck is the acknowledgement of updateID that rejects each id in
+// notFound as closed.
+func updateAck(updateID uint64, notFound ...string) *leapmuxv1.WatchEventsResponse {
+	ack := &leapmuxv1.WatchUpdateAck{UpdateId: updateID}
+	for _, id := range notFound {
+		ack.RejectedAgents = append(ack.RejectedAgents, &leapmuxv1.WatchRejection{
+			EntityId: id,
+			Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND,
+		})
+	}
+	return &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: ack}}
+}
+
+func notifyInterest(agentIDs ...string) *leapmuxv1.WatchEventsRequest {
+	req := &leapmuxv1.WatchEventsRequest{}
+	for _, id := range agentIDs {
+		req.Agents = append(req.Agents, &leapmuxv1.WatchAgentEntry{AgentId: id, Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY})
+	}
+	return req
+}
+
+// TestSubscription_WithUpdateAckReceivesOnlyTheCurrentAcknowledgement pins
+// the hook that a wait reads its start state after: the acknowledgement of
+// the interest in force reaches it with its rejections, and the
+// acknowledgement of a replaced revision does not.
+func TestSubscription_WithUpdateAckReceivesOnlyTheCurrentAcknowledgement(t *testing.T) {
+	tr := &fakeTransport{}
+	var acks []*leapmuxv1.WatchUpdateAck
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithUpdateAck(func(ack *leapmuxv1.WatchUpdateAck) { acks = append(acks, ack) }))
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	first := tr.calls[0].GetUpdateId()
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1", "a-2")))
+	second := tr.lastUpdate().GetUpdateId()
+	require.Greater(t, second, first)
+
+	tr.pushFrame(updateAck(first))
+	assert.Empty(t, acks, "the acknowledgement of a replaced revision is stale")
+	tr.pushFrame(updateAck(0))
+	assert.Empty(t, acks, "an acknowledgement with no update id answers no request")
+
+	tr.pushFrame(updateAck(second, "a-2"))
+	require.Len(t, acks, 1)
+	assert.Equal(t, second, acks[0].GetUpdateId())
+	require.Len(t, acks[0].GetRejectedAgents(), 1)
+	assert.Equal(t, "a-2", acks[0].GetRejectedAgents()[0].GetEntityId())
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND, acks[0].GetRejectedAgents()[0].GetReason())
+
+	tr.pushFrame(updateAck(second))
+	assert.Len(t, acks, 2, "each acknowledgement of the current interest reaches the hook")
+}
+
+// openingAckTransport delivers the acknowledgement of the opening request
+// before OpenWatchEvents returns, as a fast Worker can.
+type openingAckTransport struct {
+	fakeTransport
+}
+
+func (t *openingAckTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (Handle, error) {
+	onFrame(updateAck(req.GetUpdateId()))
+	return t.fakeTransport.OpenWatchEvents(ctx, req, onFrame)
+}
+
+// TestSubscription_WithUpdateAckReceivesAnAcknowledgementThatPrecedesTheOpen
+// covers the acknowledgement that arrives while the stream still opens. The
+// subscription holds it until the handle is installed, then hands it to the
+// hook once.
+func TestSubscription_WithUpdateAckReceivesAnAcknowledgementThatPrecedesTheOpen(t *testing.T) {
+	tr := &openingAckTransport{}
+	var acks []*leapmuxv1.WatchUpdateAck
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithUpdateAck(func(ack *leapmuxv1.WatchUpdateAck) { acks = append(acks, ack) }))
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	require.Len(t, acks, 1)
+	assert.Equal(t, tr.calls[0].GetUpdateId(), acks[0].GetUpdateId())
 }
 
 // fastRetry is a small, jitterless LOOKUP_FAILED budget for tests that drive

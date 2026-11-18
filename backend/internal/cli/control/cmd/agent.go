@@ -71,23 +71,67 @@ func newAgentCommand() *cobra.Command {
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "send <agent> [text]",
-			Short:   "Send a message to an agent",
+			Short:   "Send a message to an agent, and optionally wait for its reply",
 			Mutates: true,
 			Long: `Send a message to an agent.
 
 The text is the second argument, "-" to read it from stdin, or --file. A
 message that starts with "-" needs "--" before it, so that a misspelled flag
-never reaches the agent as text.`,
+never reaches the agent as text.
+
+The agent's input queue holds the message until the agent reads it.
+
+With --wait, the command first refuses to send to an agent that waits for an
+answer to a permission prompt, and exits 5. Otherwise it sends the message,
+waits until the agent settles after it, and prints the agent's last reply as
+the transcript shows it, or every reply with --all. It exits 6 when the agent
+stops at a prompt after the message, or when --timeout passes. The output
+then says whether the message is still queued.`,
 			Examples: []cli.Example{
 				{Command: `leapmux control agent send 87a19d5f "Run the tests"`},
 				{Comment: "Send the contents of a file.", Command: "leapmux control agent send 87a19d5f --file prompt.md"},
 				{Comment: "Send a message that starts with a dash.", Command: `leapmux control agent send 87a19d5f -- "-v is the verbose flag"`},
+				{Comment: "Ask a question and print the answer.", Command: `leapmux control agent send 87a19d5f "Which tests fail?" --wait --timeout 30m`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				fs.String("file", "", `read the message from this file ("-" reads stdin)`)
+				fs.Bool("wait", false, "wait until the agent settles after the message, then print its last reply")
+				fs.Bool("all", false, "with --wait, print every reply after the message, not only the last one")
+				fs.Duration("timeout", 0, "with --wait, stop waiting after this long, such as 90s or 30m; 0 waits without a limit")
 			},
 			Complete: completeTargets,
 			Run:      runAgentSend,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "wait <agent>...",
+			Short: "Wait until agents settle, or until they reach another state",
+			// The calling agent cannot settle while it waits, so the wait
+			// refuses it, and the help offers no "self".
+			Args: map[string]string{"agent": resolve.KindAgent.HelpWithoutSelf()},
+			Long: `Wait until each agent reaches a state, then print the state of each.
+
+An agent reaches the state when the Worker reports it at any moment after the
+wait began, so an agent that is in the state already ends the wait at once.
+"settled" is "idle" or "waiting_for_user": the agent works no more, because it
+finished or because it waits for an answer to a permission prompt. An agent
+whose input queue holds a message that it will read is neither idle nor
+settled yet, as an agent that "agent open --message" just started.
+
+The command exits 0 when the condition holds. It exits 6 when the wait ended
+without it: --timeout passed, or an agent closed before it reached the state.
+It prints the state of each agent in both cases.`,
+			Examples: []cli.Example{
+				{Command: "leapmux control agent wait 87a19d5f"},
+				{Comment: "Wait until the first of two agents waits for an answer, for 10 minutes at most.", Command: "leapmux control agent wait 87a19d5f 5c2e0b91 --until waiting_for_user --any --timeout 10m"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("until", string(waitUntilSettled), "the state to wait for")
+				cli.SetEnum(fs, "until", waitUntilTokens()...)
+				fs.Bool("any", false, "end the wait when one agent reaches the state, not every agent")
+				fs.Duration("timeout", 0, "stop waiting after this long, such as 90s or 10m; 0 waits without a limit")
+			},
+			Complete: completeTargets,
+			Run:      runAgentWait,
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "interrupt <agent>",
@@ -206,32 +250,59 @@ type agentResult struct {
 }
 
 // runAgentSend forwards a user message to the agent. The Worker queues it,
-// and the agent reads it when its current turn ends.
+// and the agent reads it when its current turn ends. With --wait it waits
+// for the agent's reply; see sendAndWait.
 func runAgentSend(inv *cli.Invocation) (any, error) {
+	wait := boolFlag(inv, "wait")
+	if !wait {
+		for _, name := range []string{"all", "timeout"} {
+			if inv.Changed(name) {
+				return nil, cli.Usagef("--%s needs --wait", name)
+			}
+		}
+	}
+	timeout, err := waitTimeoutFlag(inv)
+	if err != nil {
+		return nil, err
+	}
 	text, err := inputText(inv, "text")
 	if err != nil {
 		return nil, err
 	}
-	s, err := openSession(inv)
+	// A wait runs until the agent settles, so only each call has a deadline.
+	open := openSession
+	if wait {
+		open = openStreamSession
+	}
+	s, err := open(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
+	bounded := s.bounded()
+	defer bounded.Close()
+	got, err := bounded.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
 		return nil, err
 	}
-	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
+	if err := maybePreflightWorker(bounded.ctx, s.c, got.WorkerID); err != nil {
 		return nil, err
 	}
 	inputID := id.Generate()
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
-		AgentId: got.ID, InputId: inputID, Text: text,
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-	}, nil); err != nil {
+	if !wait {
+		if err := enqueueUserMessage(s.ctx, s.c, got, inputID, text); err != nil {
+			return nil, err
+		}
+		return agentResult{ID: got.ID, InputID: inputID}, nil
+	}
+	result, outcome, err := sendAndWait(s, got, text, inputID, boolFlag(inv, "all"), timeout)
+	if err != nil {
 		return nil, err
 	}
-	return agentResult{ID: got.ID, InputID: inputID}, nil
+	if outcome == replyWaitSettled {
+		return result, nil
+	}
+	return nil, agentReplyEnded(inv.Printer, result, outcome, timeout)
 }
 
 func runAgentInterrupt(inv *cli.Invocation) (any, error) {

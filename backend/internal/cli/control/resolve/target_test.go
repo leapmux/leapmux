@@ -202,6 +202,15 @@ func TestKind_HelpStatesTheFormsThatCanonicalReads(t *testing.T) {
 		resolve.KindWorker.Help())
 }
 
+// Kind.HelpWithoutSelf states the same forms as Help except "self", for a
+// command that refuses the caller's own object.
+func TestKind_HelpWithoutSelfOffersNoSelf(t *testing.T) {
+	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, or "title:<title>".`,
+		resolve.KindAgent.HelpWithoutSelf())
+	assert.Equal(t, `A tile id or a unique prefix of 4 or more characters of one.`,
+		resolve.KindTile.HelpWithoutSelf(), "two forms join with a bare \"or\"")
+}
+
 func TestCanonical_AnEmptyTargetIsAUsageError(t *testing.T) {
 	_, err := resolve.Canonical(context.Background(), sampleListing().listing(), resolve.KindTab, "  ")
 	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)

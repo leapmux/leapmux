@@ -63,6 +63,11 @@ type Subscription struct {
 	// it reads more data. Nil ignores the frame.
 	onCursorReset func(terminalID string)
 
+	// onUpdateAck runs for each acknowledgement of the current interest, on
+	// the Transport's frame goroutine and outside every lock. Nil ignores
+	// them. See WithUpdateAck.
+	onUpdateAck func(*leapmuxv1.WatchUpdateAck)
+
 	lifecycleMu sync.Mutex
 	// closed is set by Cancel under lifecycleMu and read by Update under the
 	// same lock. It is the closed-defense that stops a LOOKUP_FAILED retry
@@ -140,6 +145,22 @@ func WithClock(clock quartz.Clock) SubscriptionOption {
 	}
 	return func(s *Subscription) {
 		s.clock = clock
+	}
+}
+
+// WithUpdateAck sets a callback that receives each acknowledgement of the
+// current interest: the Worker's report of what it registered, with the
+// entities that it rejected. An acknowledgement of a revision that a newer
+// one replaced does not reach it.
+//
+// A NOTIFY watch carries changes only, never a level, so a consumer that
+// needs the current state reads it after this callback runs: every change
+// after that read reaches the consumer as an event. The callback runs on the
+// frame goroutine, so it must not wait for a call over the same transport.
+// Hand the work to another goroutine instead.
+func WithUpdateAck(onUpdateAck func(*leapmuxv1.WatchUpdateAck)) SubscriptionOption {
+	return func(s *Subscription) {
+		s.onUpdateAck = onUpdateAck
 	}
 }
 
@@ -509,6 +530,9 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 		ok       bool
 		logOnce  bool
 		attempts int
+		// acknowledgesCurrent is set once the ack answers the interest in
+		// force, so the deferred call hands it to onUpdateAck.
+		acknowledgesCurrent bool
 	)
 	s.mu.Lock()
 	defer func() {
@@ -520,6 +544,9 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 			slog.Warn("streamevents: LOOKUP_FAILED retry budget exhausted",
 				"attempts", attempts)
 		}
+		if acknowledgesCurrent && s.onUpdateAck != nil {
+			s.onUpdateAck(proto.Clone(ack).(*leapmuxv1.WatchUpdateAck))
+		}
 	}()
 	// Repeat the exact current-ID check after the external log handlers return.
 	// A newer revision can replace the interest while those handlers run.
@@ -527,6 +554,7 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 	if ackId == 0 || s.inflightUpdateId == 0 || ackId != s.inflightUpdateId {
 		return
 	}
+	acknowledgesCurrent = true
 	if s.lastReq == nil {
 		// No interest to restate. Check before consuming an attempt so a spurious
 		// LOOKUP_FAILED ack (e.g. one racing a fresh open before lastReq is set)
@@ -656,13 +684,11 @@ func (s *Subscription) armLookupRetry(retryCtx context.Context, delay time.Durat
 	}
 }
 
+// dispatchAgentEvent advances the cursor of a message and hands every agent
+// event to onAgent, notification-class events included: a wait reads the
+// activity changes and the turn ends of a NOTIFY watch.
 func (s *Subscription) dispatchAgentEvent(ae *leapmuxv1.AgentEvent) {
 	if ae == nil {
-		return
-	}
-	if ae.GetTurnEnd() != nil {
-		slog.Debug("streamevents: ignoring agent turn_end notify frame",
-			"agent_id", ae.GetAgentId())
 		return
 	}
 	if retraction := ae.GetMessagesRetracted(); retraction != nil {

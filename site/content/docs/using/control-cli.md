@@ -152,8 +152,8 @@ The exit status states the class of the failure, so a script can branch without 
 | `2` | `usage` | The command line cannot run: an unknown command or flag, a missing argument, or a value the CLI refuses before it sends anything |
 | `3` | `not_logged_in`, `permission_denied` | No usable credential, or a credential that does not allow the call |
 | `4` | `not_found`, `ambiguous_target` | The target does not exist, or matches more than one object |
-| `5` | `self_target_refused`, `tab_busy_refused` | A safety guard refused the command; see [Safety guards](#safety-guards) |
-| `6` | `timeout` | A wait ended before its condition held |
+| `5` | `self_target_refused`, `tab_busy_refused`, `agent_waiting` | A safety guard refused the command; see [Safety guards](#safety-guards). `agent_waiting` is `agent send --wait` to an agent that waits for an answer to a permission prompt. |
+| `6` | `timeout` | A wait ended before its condition held; see [Waiting for agents](#waiting-for-agents) |
 | `7` | `worker_offline`, `unavailable` | The Worker or the Hub cannot answer now; a retry can succeed |
 | `130` | | You interrupted the command |
 
@@ -315,9 +315,22 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
 ### Agents
 
 - `agent list` and `agent get` print each agent's state (`idle`, `working`, `waiting_for_user`), model, effort and git state. `agent get --options` also prints every option group with its choices.
-- `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`.
+- `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`. `--wait` waits for the reply; see [Waiting for agents](#waiting-for-agents).
+- `agent wait <agent>...` waits until each agent reaches a state; see [Waiting for agents](#waiting-for-agents).
 - `agent messages` prints the most recent page by default (`--anchor latest`). `--anchor oldest` prints the first messages in history. `--anchor before --cursor-seq N` prints the page older than seq N, and `--anchor after --cursor-seq N` the page newer than it. Messages always come back in ascending seq. `--follow` prints the page and then each new message as it arrives, and reconnects after a transient drop. It accepts only `--anchor latest` and `--anchor after`.
 - `agent set` changes the model, the effort, the permission mode, and any provider option with `--option key=value`. A provider that can apply a change to the running process applies it at once (Claude Code and Codex do for most settings). Another change restarts the agent. See [Coding Agents](/docs/using/coding-agents/) for the settings of each provider.
+
+### Waiting for agents
+
+`agent wait` and `agent send --wait` watch the agents through the Worker. They never poll, and they never read a screen.
+
+- **`agent wait <agent>... --until <state>`** ends once each agent was in the state at some moment after the wait began. An agent that is in the state already ends the wait at once. `--until` takes a state that `agent list` prints (`idle`, `working`, `waiting_for_user`), or `settled`, the default: `idle` or `waiting_for_user`, so the agent works no more. `--any` ends the wait with the first agent instead of the last.
+  - An agent whose input queue holds a message that it will read is neither `idle` nor `settled` yet. So a wait right after `agent open --message` waits for the turn of that first message, although the starting agent reports `idle`. A message scheduled for later does not hold the wait.
+- **`agent send <agent> [text] --wait`** sends the message, waits until the agent settles after it, and prints the agent's last reply as the transcript shows it. `--all` prints every reply after the message. An agent that runs a background task settles when the task ends too.
+  - It sends nothing to an agent that waits for an answer to a permission prompt, because the message would wait behind the prompt. The command fails with `agent_waiting` (status `5`).
+  - A paused input queue keeps the message, and the command says so on stderr and keeps waiting. A planned restart pauses the queue too, and that pause ends by itself.
+- **Both print their result even when the condition did not hold, and exit `6`**: `--timeout` passed, an agent closed, or the agent stopped at a prompt after the message. The result states where things stand. For `agent wait`, `reached` marks each agent that reached the state. For `agent send --wait`, `message` is `queued` or `delivered`, and `state` is the agent's state, such as `waiting_for_user`.
+- **A wait refuses the calling agent** with `usage`, because an agent cannot settle while its own turn runs the wait.
 
 ### Terminals
 
@@ -368,6 +381,19 @@ A=$(leapmux control agent open --workspace "$WS" --worker name:build-box \
       --message "Find and fix the failing test in ./pkg/auth." -q)
 
 leapmux control agent messages "$A" --follow
+```
+
+### Run two agents and collect their answers
+
+```bash
+A=$(leapmux control agent open --provider claude --message "Fix the flaky test in ./pkg/auth." -q)
+B=$(leapmux control agent open --provider codex --message "Update CHANGELOG.md for the release." -q)
+
+# Wait until both agents settle, for half an hour at most.
+leapmux control agent wait "$A" "$B" --timeout 30m
+
+# Ask one of them a follow-up question and keep the answer.
+summary=$(leapmux control agent send "$A" "Summarize your change in one line." --wait)
 ```
 
 ### A script that runs inside an agent

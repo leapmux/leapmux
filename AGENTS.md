@@ -246,6 +246,7 @@ Add a file only when the provider owns that role.
 | `family_base.go` | Base behavior shared by that family. |
 | `model_names.go` | Model ID normalization. |
 | `launch_env.go` | Launch environment detection. |
+| `reply_text.go` | `ReplyText`: the reply text of a stored row, as the browser's transcript shows it. |
 
 Keep the locator and static fallback groups in `Registration()`.
 The startup path reads that registration through `providerkit.ResolveLaunch`
@@ -309,6 +310,12 @@ tree.
 Extracting a preview, summary or plaintext is layer 1's job in the browser,
 never the Go backend's (the `frontend-owns-message-extraction` principle):
 layer 1 is where raw shapes are known.
+
+One exception: `Provider.ReplyText` reads the reply text of a stored agent row
+in Go, because `leapmux control agent send --wait` prints it and a CLI cannot
+run the browser's plugins. `testdata/reply_text_conformance.json` pins each
+provider's reader to layer 1's extraction: the Worker's provider packages and
+`replyTextConformance.test.ts` replay the same cases.
 
 ### Tests
 

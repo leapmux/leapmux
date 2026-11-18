@@ -327,6 +327,13 @@ leapmux control agent list
 leapmux control agent send <agent> "Refactor the auth module"
 leapmux control agent messages <agent> --follow
 
+# Send a message, wait until the agent settles, and print its last reply
+leapmux control agent send <agent> "Which tests fail?" --wait --timeout 30m
+
+# Wait until agents settle, or until one of them waits for an answer
+leapmux control agent wait <agent> <agent>
+leapmux control agent wait <agent> <agent> --until waiting_for_user --any
+
 # Interrupt the current turn
 leapmux control agent interrupt <agent> --reason "wrong file"
 

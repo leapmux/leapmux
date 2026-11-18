@@ -756,6 +756,14 @@ message AgentChatMessage {
   string agent_session_id = 21;
   // True when this transcript update must not change current live state.
   bool transcript_only = 22;
+  // The text of the agent's reply that this row holds, as the transcript's
+  // quote copies it: without the white space at either end. Set only on a
+  // ListAgentMessages page that asked for it with include_reply_text, and only
+  // on an agent row that holds a reply: a tool call, a reasoning block or a
+  // status row leaves it unset. The Worker reads it through the provider's own
+  // ReplyText, so a client needs no provider code;
+  // testdata/reply_text_conformance.json pins it to the browser's extraction.
+  optional string reply_text = 23;
 }
 
 // AgentStatusChange notifies of agent status transitions. AgentEvent.agent_id
@@ -804,6 +812,9 @@ message ListAgentMessagesRequest {
   MessagePageAnchor anchor = 2; // Which page to return; defaults to LATEST.
   int64 cursor_seq = 3;         // Exclusive seq bound for BEFORE/AFTER; ignored for LATEST/OLDEST.
   int32 limit = 4;              // Max messages to return (contracts.MessagePageLimit).
+  // Fill AgentChatMessage.reply_text on each agent row that holds a reply.
+  // The browser extracts the text itself and leaves this unset.
+  bool include_reply_text = 5;
 }
 
 message ListAgentMessagesResponse {

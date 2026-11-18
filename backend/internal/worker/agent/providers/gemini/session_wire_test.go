@@ -109,3 +109,33 @@ func TestDecodeGeminiSessionRejectsAnObsoleteCompleteJSONTranscript(t *testing.T
 	_, err := decodeGeminiSession([]byte(`{"sessionId":"obsolete-session","projectHash":"native-project","messages":[{"id":"u","type":"user","content":"obsolete context"}]}`))
 	require.Error(t, err)
 }
+
+// decodeFinishedGeminiTool is the one test of a finished tool record, which
+// the Worker's child writes and the reply text both read, as the browser's
+// geminiStoredToolRecord does.
+func TestDecodeFinishedGeminiTool(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		record string
+		ok     bool
+	}{
+		"a finished call":           {`{"id":"read_file__1","name":"read_file","status":"success","args":{}}`, true},
+		"a failed call":             {`{"id":"read_file__1","name":"read_file","status":"error"}`, true},
+		"a call that still runs":    {`{"id":"read_file__1","name":"read_file","status":"executing"}`, false},
+		"an id with no suffix":      {`{"id":"read_file__","name":"read_file","status":"success"}`, false},
+		"an id of another tool":     {`{"id":"write_file__1","name":"read_file","status":"success"}`, false},
+		"no name":                   {`{"id":"__1","name":"","status":"success"}`, false},
+		"a name that is not a text": {`{"id":"read_file__1","name":7,"status":"success"}`, false},
+		"a message record":          {`{"id":"msg-1","type":"gemini","content":"Hi."}`, false},
+		"no JSON object":            {`[1]`, false},
+	} {
+		tool, ok := decodeFinishedGeminiTool([]byte(tc.record))
+		assert.Equal(t, tc.ok, ok, name)
+		if ok {
+			assert.Equal(t, "read_file__1", tool.ID, name)
+			assert.Equal(t, "read_file", tool.Name, name)
+		} else {
+			assert.Equal(t, geminiToolIdentity{}, tool, name)
+		}
+	}
+}

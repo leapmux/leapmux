@@ -1,0 +1,867 @@
+{
+  "_readme": [
+    "The reply text that each provider's stored agent row holds, as the browser's transcript shows it.",
+    "Two implementations replay this file: agenttest.RunReplyTextConformance, which the package of each provider in backend/internal/worker/agent/providers runs over its own cases through agent.ReplyText, and frontend/src/components/chat/replyTextConformance.test.ts, which replays every case through prepareChatRow.",
+    "A case states the row that the Worker stores: `content` is the decoded content, `supplemental` the decoded rendering supplement, `agent_session_id` the session that the row belongs to, and `assembled_kind` the column that the Worker derives from an assembled envelope.",
+    "`reply` is the quotable text of the assistant-text row that the browser extracts (quotableTextForRow: the text without the white space at either end), or null for a row that holds no reply: another kind of row, or an assistant text of white space only.",
+    "Each provider has a case with a reply and a case without one. `leapmux control agent send --wait` prints this text."
+  ],
+  "cases": [
+    {
+      "name": "claude: an assembled text row",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The tests pass.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The tests pass."
+    },
+    {
+      "name": "claude: an assembled reasoning row",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assembled_message", "kind": "reasoning", "text": "Thinking about it.", "completion": "complete" },
+      "assembled_kind": "reasoning",
+      "reply": null
+    },
+    {
+      "name": "claude: one text block",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] } },
+      "reply": "Done."
+    },
+    {
+      "name": "claude: text blocks around a thinking block join as paragraphs",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "First.\n" }, { "type": "thinking", "thinking": "hidden" }, { "type": "text", "text": "Second." }] } },
+      "reply": "First.\n\nSecond."
+    },
+    {
+      "name": "claude: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Let me look." }, { "type": "tool_use", "id": "toolu_1", "name": "Read", "input": { "file_path": "/tmp/a" } }] } },
+      "reply": null
+    },
+    {
+      "name": "claude: a thinking block alone is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "thinking", "thinking": "Hmm." }] } },
+      "reply": null
+    },
+    {
+      "name": "claude: an empty text block is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "" }] } },
+      "reply": null
+    },
+    {
+      "name": "claude: a result frame is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "result", "subtype": "success", "result": "Done.", "num_turns": 1 },
+      "reply": null
+    },
+    {
+      "name": "claude: a thread of status notifications is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "notification_thread", "old_seqs": [], "messages": [{ "type": "system", "subtype": "status", "status": "compacting" }] },
+      "reply": null
+    },
+    {
+      "name": "claude: an empty thread is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "notification_thread", "old_seqs": [], "messages": [] },
+      "reply": null
+    },
+    {
+      "name": "qoder: text blocks join with nothing between them",
+      "provider": "AGENT_PROVIDER_QODER",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "First." }, { "type": "text", "text": "Second." } ]}},
+      "reply": "First.Second."
+    },
+    {
+      "name": "qoder: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_QODER",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Reading." }, { "type": "tool_use", "id": "t1", "name": "Read", "input": {}} ]}},
+      "reply": null
+    },
+    {
+      "name": "qoder: a thinking block alone is no reply",
+      "provider": "AGENT_PROVIDER_QODER",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "thinking", "thinking": "Hmm." } ]}},
+      "reply": null
+    },
+    {
+      "name": "qoder: a result frame is no reply",
+      "provider": "AGENT_PROVIDER_QODER",
+      "content": { "type": "result", "subtype": "success", "result": "Done." },
+      "reply": null
+    },
+    {
+      "name": "codebuddy: an assistant frame",
+      "provider": "AGENT_PROVIDER_CODEBUDDY",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Hello " }, { "type": "text", "text": "there." } ]}},
+      "reply": "Hello there."
+    },
+    {
+      "name": "codebuddy: a stored response record",
+      "provider": "AGENT_PROVIDER_CODEBUDDY",
+      "content": { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Stored " }, { "type": "output_text", "text": "reply." } ]},
+      "reply": "Stored reply."
+    },
+    {
+      "name": "codebuddy: a stored record with empty texts is no reply",
+      "provider": "AGENT_PROVIDER_CODEBUDDY",
+      "content": { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "" } ]},
+      "reply": null
+    },
+    {
+      "name": "codebuddy: a stored user record is no reply",
+      "provider": "AGENT_PROVIDER_CODEBUDDY",
+      "content": { "type": "message", "role": "user", "content": [{ "type": "output_text", "text": "Hi" } ]},
+      "reply": null
+    },
+    {
+      "name": "codebuddy: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_CODEBUDDY",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls" }} ]}},
+      "reply": null
+    },
+    {
+      "name": "amp: non-blank text blocks join with a blank line",
+      "provider": "AGENT_PROVIDER_AMP",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "One." }, { "type": "text", "text": "  " }, { "type": "text", "text": "Two." } ]}, "session_id": "T-1" },
+      "reply": "One.\n\nTwo."
+    },
+    {
+      "name": "amp: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_AMP",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Running." }, { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "cmd": "ls" }} ]}, "session_id": "T-1" },
+      "reply": null
+    },
+    {
+      "name": "amp: a thinking block alone is no reply",
+      "provider": "AGENT_PROVIDER_AMP",
+      "content": { "type": "assistant", "message": { "role": "assistant", "content": [{ "type": "thinking", "thinking": "Considering." } ]}, "session_id": "T-1" },
+      "reply": null
+    },
+    {
+      "name": "pi: an assistant message_end",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "message_end", "message": { "role": "assistant", "content": [{ "type": "thinking", "thinking": "Hmm." }, { "type": "text", "text": "One." }, { "type": "text", "text": "Two." } ]}},
+      "reply": "One.\n\nTwo."
+    },
+    {
+      "name": "pi: an assistant message_end with no text is no reply",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "message_end", "message": { "role": "assistant", "content": [{ "type": "thinking", "thinking": "Hmm." } ]}},
+      "reply": null
+    },
+    {
+      "name": "pi: a displayed custom message",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "message_end", "message": { "role": "custom", "customType": "notice", "content": "The extension says hello." }},
+      "reply": "The extension says hello."
+    },
+    {
+      "name": "pi: a hidden custom message is no reply",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "message_end", "message": { "role": "custom", "customType": "notice", "display": false, "content": "Hidden." }},
+      "reply": null
+    },
+    {
+      "name": "pi: a subagent notification is no reply",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "message_end", "message": { "role": "custom", "customType": "subagent-notification", "display": true, "content": "Done.", "details": { "id": "child", "status": "completed", "resultPreview": "Preview" }}},
+      "reply": null
+    },
+    {
+      "name": "pi: a displayed custom entry",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "entry_appended", "entry": { "type": "custom_message", "display": true, "content": "Entry text." }},
+      "reply": "Entry text."
+    },
+    {
+      "name": "pi: a custom entry with no display flag is no reply",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "entry_appended", "entry": { "type": "custom_message", "content": "Entry text." }},
+      "reply": null
+    },
+    {
+      "name": "pi: a plan call that repeats the plan states the notice",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "tool_execution_end", "toolCallId": "c1", "toolName": "plan_mode_complete", "result": { "content": [{ "type": "text", "text": "**Proposed Plan**\n1. Do it." } ], "details": { "plan": "1. Do it." }}, "isError": false},
+      "reply": "Plan ready for review."
+    },
+    {
+      "name": "pi: a failed plan call states its reason",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "tool_execution_end", "toolCallId": "c1", "toolName": "plan_mode_complete", "result": { "content": [{ "type": "text", "text": "  Not in plan mode.  " } ], "details": { "plan": "1. Do it." }}, "isError": true},
+      "reply": "Not in plan mode."
+    },
+    {
+      "name": "pi: the plan call that carries the plan is no reply",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "tool_execution_start", "toolCallId": "c1", "toolName": "plan_mode_complete", "args": { "plan": "1. Do it." }},
+      "reply": null
+    },
+    {
+      "name": "pi: another tool is no reply",
+      "provider": "AGENT_PROVIDER_PI",
+      "content": { "type": "tool_execution_end", "toolCallId": "c2", "toolName": "bash", "result": { "content": [{ "type": "text", "text": "ok" } ]}, "isError": false},
+      "reply": null
+    },
+    {
+      "name": "ohmypi: an assistant message_end",
+      "provider": "AGENT_PROVIDER_OH_MY_PI",
+      "content": { "type": "message_end", "message": { "role": "assistant", "content": [{ "type": "text", "text": "One." }, { "type": "thinking", "thinking": "x" }, { "type": "text", "text": "Two." } ]}},
+      "reply": "One.\n\nTwo."
+    },
+    {
+      "name": "ohmypi: a custom message is no reply",
+      "provider": "AGENT_PROVIDER_OH_MY_PI",
+      "content": { "type": "message_end", "message": { "role": "custom", "content": "A notice for the model." }},
+      "reply": null
+    },
+    {
+      "name": "ohmypi: an assistant message_end with no text is no reply",
+      "provider": "AGENT_PROVIDER_OH_MY_PI",
+      "content": { "type": "message_end", "message": { "role": "assistant", "content": []}},
+      "reply": null
+    },
+    {
+      "name": "codex: an agentMessage item in a notification",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "content": { "method": "item/completed", "params": { "threadId": "th1", "turnId": "tu1", "item": { "type": "agentMessage", "id": "m1", "text": "All set." }}},
+      "reply": "All set."
+    },
+    {
+      "name": "codex: a bare agentMessage item",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "content": { "item": { "type": "agentMessage", "id": "m1", "text": "Bare." }},
+      "reply": "Bare."
+    },
+    {
+      "name": "codex: a reasoning item is no reply",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "content": { "method": "item/completed", "params": { "item": { "type": "reasoning", "id": "r1", "summary": ["Thinking."]}}},
+      "reply": null
+    },
+    {
+      "name": "codex: a command execution is no reply",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "content": { "method": "item/completed", "params": { "item": { "type": "commandExecution", "id": "c1", "command": "ls", "status": "completed" }}},
+      "reply": null
+    },
+    {
+      "name": "codex: a raw response mirror is no reply",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "content": { "method": "rawResponseItem/completed", "params": { "item": { "type": "agentMessage", "text": "Mirror." }}},
+      "reply": null
+    },
+    {
+      "name": "codex: a turn end is no reply",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "content": { "method": "turn/completed", "params": { "threadId": "th1" }, "turn": { "id": "tu1", "status": "completed" }},
+      "reply": null
+    },
+    {
+      "name": "copilot: an assistant message",
+      "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "content": { "method": "session.event", "params": { "event": { "id": "e1", "type": "assistant.message", "data": { "content": "Here it is." }}}},
+      "reply": "Here it is."
+    },
+    {
+      "name": "copilot: an empty assistant message is no reply",
+      "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "content": { "method": "session.event", "params": { "event": { "id": "e1", "type": "assistant.message", "data": { "content": "  " }}}},
+      "reply": null
+    },
+    {
+      "name": "copilot: a reasoning event is no reply",
+      "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "content": { "method": "session.event", "params": { "event": { "id": "e2", "type": "assistant.reasoning", "data": { "content": "Thinking." }}}},
+      "reply": null
+    },
+    {
+      "name": "zcode: a model response",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "content": { "type": "session.updated", "payload": { "content": "Hello", "stopReason": "stop" }},
+      "reply": "Hello"
+    },
+    {
+      "name": "zcode: a turn that only called tools is no reply",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "content": { "type": "session.updated", "payload": { "content": "", "stopReason": "tool-calls" }},
+      "reply": null
+    },
+    {
+      "name": "zcode: a subagent update is no reply",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "content": { "type": "session.updated", "payload": { "agentId": "a1", "parentToolCallId": "t1", "content": "Child text", "stopReason": "stop" }},
+      "reply": null
+    },
+    {
+      "name": "muse: an agentMessage item",
+      "provider": "AGENT_PROVIDER_MUSE_CODE",
+      "content": { "method": "item/completed", "params": { "item": { "itemId": "i1", "kind": "agentMessage", "text": "Hi" }}},
+      "reply": "Hi"
+    },
+    {
+      "name": "muse: a reasoning item is no reply",
+      "provider": "AGENT_PROVIDER_MUSE_CODE",
+      "content": { "method": "item/completed", "params": { "item": { "itemId": "i2", "kind": "reasoning", "summary": ["Thinking."]}}},
+      "reply": null
+    },
+    {
+      "name": "muse: an agentMessage item with no id is no reply",
+      "provider": "AGENT_PROVIDER_MUSE_CODE",
+      "content": { "method": "item/completed", "params": { "item": { "kind": "agentMessage", "text": "Hi" }}},
+      "reply": null
+    },
+    {
+      "name": "muse: a turn end is no reply",
+      "provider": "AGENT_PROVIDER_MUSE_CODE",
+      "content": { "method": "turn/completed", "params": { "turnId": "t1" }},
+      "reply": null
+    },
+    {
+      "name": "commandcode: a message_end joins its text blocks with nothing between them",
+      "provider": "AGENT_PROVIDER_COMMAND_CODE",
+      "content": { "type": "event", "event": { "type": "message_end", "content": [{ "type": "text", "text": " First\n" }, { "type": "text", "text": "Second " } ]}},
+      "reply": "First\nSecond",
+      "why": "The blocks join to \" First\\nSecond \", and the quotable text drops the white space at either end."
+    },
+    {
+      "name": "commandcode: a thinking end is no reply",
+      "provider": "AGENT_PROVIDER_COMMAND_CODE",
+      "content": { "type": "event", "event": { "type": "thinking_end", "text": "Hmm." }},
+      "reply": null
+    },
+    {
+      "name": "commandcode: a message_end with no text block is no reply",
+      "provider": "AGENT_PROVIDER_COMMAND_CODE",
+      "content": { "type": "event", "event": { "type": "message_end", "content": []}},
+      "reply": null
+    },
+    {
+      "name": "deepseekharness: the text block that blockIndex selects",
+      "provider": "AGENT_PROVIDER_DEEPSEEK_HARNESS",
+      "content": { "type": "assistant/message", "data": { "message": { "content": [{ "type": "reasoning", "text": "Hmm." }, { "type": "text", "text": "Hi" } ]}}, "blockIndex": 1},
+      "reply": "Hi"
+    },
+    {
+      "name": "deepseekharness: a reasoning block is no reply",
+      "provider": "AGENT_PROVIDER_DEEPSEEK_HARNESS",
+      "content": { "type": "assistant/message", "data": { "message": { "content": [{ "type": "reasoning", "text": "Hmm." }, { "type": "text", "text": "Hi" } ]}}, "blockIndex": 0},
+      "reply": null
+    },
+    {
+      "name": "deepseekharness: an index past the blocks is no reply",
+      "provider": "AGENT_PROVIDER_DEEPSEEK_HARNESS",
+      "content": { "type": "assistant/message", "data": { "message": { "content": [{ "type": "text", "text": "Hi" } ]}}, "blockIndex": 3},
+      "reply": null
+    },
+    {
+      "name": "codewhale: a completed agent_message item",
+      "provider": "AGENT_PROVIDER_CODEWHALE",
+      "content": { "event": "item.completed", "thread_id": "th1", "turn_id": "tu1", "payload": { "item": { "kind": "agent_message", "summary": "Hi", "detail": "Hi there." }}},
+      "reply": "Hi there."
+    },
+    {
+      "name": "codewhale: an open item is no reply",
+      "provider": "AGENT_PROVIDER_CODEWHALE",
+      "content": { "event": "item.started", "thread_id": "th1", "turn_id": "tu1", "payload": { "item": { "kind": "agent_message", "summary": "Hi", "detail": "Hi there." }}},
+      "reply": null
+    },
+    {
+      "name": "codewhale: a reasoning item is no reply",
+      "provider": "AGENT_PROVIDER_CODEWHALE",
+      "content": { "event": "item.completed", "thread_id": "th1", "turn_id": "tu1", "payload": { "item": { "kind": "agent_reasoning", "summary": "Hmm", "detail": "Hmm." }}},
+      "reply": null
+    },
+    {
+      "name": "codewhale: a subagent's assistant text block",
+      "provider": "AGENT_PROVIDER_CODEWHALE",
+      "content": { "kind": "message", "index": 3, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Child reply." } ]}},
+      "reply": "Child reply."
+    },
+    {
+      "name": "antigravity: the modified response wins",
+      "provider": "AGENT_PROVIDER_ANTIGRAVITY_CLI",
+      "content": { "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE", "status": "CORTEX_STEP_STATUS_DONE", "plannerResponse": { "response": "Original.", "modifiedResponse": "Modified." }},
+      "reply": "Modified."
+    },
+    {
+      "name": "antigravity: a planner response",
+      "provider": "AGENT_PROVIDER_ANTIGRAVITY_CLI",
+      "content": { "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE", "status": "CORTEX_STEP_STATUS_DONE", "plannerResponse": { "response": "Hi" }},
+      "reply": "Hi"
+    },
+    {
+      "name": "antigravity: thinking alone is no reply",
+      "provider": "AGENT_PROVIDER_ANTIGRAVITY_CLI",
+      "content": { "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE", "status": "CORTEX_STEP_STATUS_DONE", "plannerResponse": { "thinking": "Hmm." }},
+      "reply": null
+    },
+    {
+      "name": "antigravity: a turn end is no reply",
+      "provider": "AGENT_PROVIDER_ANTIGRAVITY_CLI",
+      "content": { "name": "antigravity_turn_end" },
+      "reply": null
+    },
+    {
+      "name": "cline: an assistant.finished event",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "content": { "event": "assistant.finished", "payload": { "text": "Hi" }},
+      "reply": "Hi"
+    },
+    {
+      "name": "cline: a media event states its type",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "content": { "event": "assistant.media", "payload": { "media": { "mimeType": "image/png" }}},
+      "reply": "The model returned media (image/png)."
+    },
+    {
+      "name": "cline: a blank assistant.finished is no reply",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "content": { "event": "assistant.finished", "payload": { "text": "  " }},
+      "reply": null
+    },
+    {
+      "name": "cline: a reasoning event is no reply",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "content": { "event": "reasoning.finished", "payload": { "reasoning": "Hmm." }},
+      "reply": null
+    },
+    {
+      "name": "letta: an assembled text row",
+      "provider": "AGENT_PROVIDER_LETTA",
+      "content": { "type": "assembled_message", "kind": "text", "text": "Hello.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "Hello."
+    },
+    {
+      "name": "letta: a malformed assembled row still reads its text",
+      "provider": "AGENT_PROVIDER_LETTA",
+      "content": { "type": "assembled_message", "kind": "text", "text": "Hello." },
+      "assembled_kind": "text",
+      "reply": "Hello.",
+      "why": "The browser's shared reader refuses an envelope with no completion, and Letta's own classifier then draws its text."
+    },
+    {
+      "name": "letta: a native assistant_message holds no top-level text",
+      "provider": "AGENT_PROVIDER_LETTA",
+      "content": { "message_type": "assistant_message", "content": "Native." },
+      "reply": null
+    },
+    {
+      "name": "letta: a turn end is no reply",
+      "provider": "AGENT_PROVIDER_LETTA",
+      "content": { "type": "turn_finished" },
+      "reply": null
+    },
+    {
+      "name": "cursor: an assembled text row",
+      "provider": "AGENT_PROVIDER_CURSOR",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "cursor: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_CURSOR",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "dirac: an assembled text row",
+      "provider": "AGENT_PROVIDER_DIRAC",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "dirac: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_DIRAC",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "goose: an assembled text row",
+      "provider": "AGENT_PROVIDER_GOOSE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "goose: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_GOOSE",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "grok: an assembled text row",
+      "provider": "AGENT_PROVIDER_GROK_BUILD",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "grok: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_GROK_BUILD",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "junie: an assembled text row",
+      "provider": "AGENT_PROVIDER_JUNIE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "junie: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_JUNIE",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "kiro: an assembled text row",
+      "provider": "AGENT_PROVIDER_KIRO",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "kiro: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_KIRO",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "qwen: an assembled text row",
+      "provider": "AGENT_PROVIDER_QWEN_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "qwen: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_QWEN_CODE",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "reasonix: an assembled text row",
+      "provider": "AGENT_PROVIDER_REASONIX",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "reasonix: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_REASONIX",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "opencode: an assembled text row",
+      "provider": "AGENT_PROVIDER_OPENCODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "opencode: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_OPENCODE",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "kilo: an assembled text row",
+      "provider": "AGENT_PROVIDER_KILO",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "kilo: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_KILO",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "cursor: an assembled reasoning row is no reply",
+      "provider": "AGENT_PROVIDER_CURSOR",
+      "content": { "type": "assembled_message", "kind": "reasoning", "text": "Thinking it over.", "completion": "complete" },
+      "assembled_kind": "reasoning",
+      "reply": null
+    },
+    {
+      "name": "goose: a malformed assembled text row is no reply",
+      "provider": "AGENT_PROVIDER_GOOSE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "Hello." },
+      "assembled_kind": "text",
+      "reply": null,
+      "why": "The browser refuses an envelope with no completion, and the ACP row reader draws no assistant text of its own."
+    },
+    {
+      "name": "dirac: a retry notice is no reply",
+      "provider": "AGENT_PROVIDER_DIRAC",
+      "content": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Retrying API request..." }},
+      "reply": null
+    },
+    {
+      "name": "kiro: an assembled reply keeps its steer notes",
+      "provider": "AGENT_PROVIDER_KIRO",
+      "content": { "type": "assembled_message", "kind": "text", "text": "Done. [STEERING steer-1a: use tabs] Tabs it is.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "Done. [STEERING steer-1a: use tabs] Tabs it is.",
+      "why": "The browser draws each steer note as a chip, but the row's text keeps the note."
+    },
+    {
+      "name": "kimi: an assembled text row",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "kimi: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "content": { "type": "tool.call.started", "agentId": "main", "turnId": 0, "toolCallId": "call_1", "name": "Bash", "args": { "command": "echo hi" }},
+      "reply": null
+    },
+    {
+      "name": "mimo: an assembled text row",
+      "provider": "AGENT_PROVIDER_MIMO_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "mimo: a tool part is no reply",
+      "provider": "AGENT_PROVIDER_MIMO_CODE",
+      "content": { "type": "message.part.updated", "properties": { "sessionID": "ses_test", "part": { "id": "prt_call-1", "messageID": "msg_1", "sessionID": "ses_test", "type": "tool", "tool": "bash", "callID": "call-1", "state": { "status": "running", "input": { "command": "echo hi" }}}}},
+      "reply": null
+    },
+    {
+      "name": "droid: an assembled text row",
+      "provider": "AGENT_PROVIDER_DROID",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "droid: a malformed assembled text row still reads its text",
+      "provider": "AGENT_PROVIDER_DROID",
+      "content": { "type": "assembled_message", "kind": "text", "text": "Hello." },
+      "assembled_kind": "text",
+      "reply": "Hello.",
+      "why": "The browser refuses an envelope with no completion; the kind column still classifies the row as assistant text, and Droid's row reader draws its text."
+    },
+    {
+      "name": "droid: a malformed assembled row of an unknown kind is no reply",
+      "provider": "AGENT_PROVIDER_DROID",
+      "content": { "type": "assembled_message", "kind": "summary", "text": "Hello." },
+      "reply": null,
+      "why": "No kind column classifies the row, and Droid's classifier reads it as no row it knows."
+    },
+    {
+      "name": "droid: an assistant message record is no reply",
+      "provider": "AGENT_PROVIDER_DROID",
+      "content": { "type": "create_message", "message": { "role": "assistant", "content": [{ "type": "text", "text": "Native." } ]}},
+      "reply": null,
+      "why": "The Worker stores the assistant's text in assembled rows beside this record, which the browser hides."
+    },
+    {
+      "name": "letta: a malformed assembled reasoning row is no reply",
+      "provider": "AGENT_PROVIDER_LETTA",
+      "content": { "type": "assembled_message", "kind": "reasoning", "text": "Thinking." },
+      "assembled_kind": "reasoning",
+      "reply": null,
+      "why": "The kind column classifies the row as reasoning before Letta's classifier reads it."
+    },
+    {
+      "name": "letta: a malformed assembled row of an unknown kind reads its text",
+      "provider": "AGENT_PROVIDER_LETTA",
+      "content": { "type": "assembled_message", "kind": "summary", "text": "Hello." },
+      "reply": "Hello.",
+      "why": "No kind column classifies the row, and Letta's classifier reads any assembled row with text as assistant text."
+    },
+    {
+      "name": "gemini: an assembled text row",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "gemini: the content of a session record",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "msg-1", "type": "gemini", "timestamp": "2026-11-19T00:00:00Z", "content": "The subagent is done.", "thoughts": [{ "subject": "Plan", "description": "Check the file." } ]},
+      "supplemental": { "provider": { "geminiMessagePart": "content" }},
+      "reply": "The subagent is done."
+    },
+    {
+      "name": "gemini: a session record with no part selector reads its content",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "msg-1", "type": "gemini", "timestamp": "2026-11-19T00:00:00Z", "content": "The subagent is done.", "thoughts": [{ "subject": "Plan", "description": "Check the file." } ]},
+      "reply": "The subagent is done."
+    },
+    {
+      "name": "gemini: a thought of a session record is no reply",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "msg-1", "type": "gemini", "timestamp": "2026-11-19T00:00:00Z", "content": "The subagent is done.", "thoughts": [{ "subject": "Plan", "description": "Check the file." } ]},
+      "supplemental": { "provider": { "geminiMessagePart": "thought", "geminiMessagePartIndex": 0}},
+      "reply": null
+    },
+    {
+      "name": "gemini: the content parts of a session record join, without the thoughts",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "msg-2", "type": "gemini", "content": [{ "text": "First." }, { "text": "hidden", "thought": true}, { "text": " Second." }, { "inlineData": {}} ]},
+      "supplemental": { "provider": { "geminiMessagePart": "content" }},
+      "reply": "First. Second."
+    },
+    {
+      "name": "gemini: an error record reads as text",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "msg-3", "type": "error", "content": "The quota ran out." },
+      "supplemental": { "provider": { "geminiMessagePart": "content" }},
+      "reply": "The quota ran out."
+    },
+    {
+      "name": "gemini: a user record is no reply",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "msg-4", "type": "user", "content": "Do it." },
+      "supplemental": { "provider": { "geminiMessagePart": "content" }},
+      "reply": null
+    },
+    {
+      "name": "gemini: a record with no id is no reply",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "type": "gemini", "content": "Anonymous." },
+      "supplemental": { "provider": { "geminiMessagePart": "content" }},
+      "reply": null
+    },
+    {
+      "name": "gemini: a finished tool record is no reply",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "id": "read_file__1", "name": "read_file", "status": "success", "type": "gemini", "content": "Not a message.", "args": { "path": "a.txt" }},
+      "reply": null,
+      "why": "The browser reads a record whose id is its name, two underscores and a suffix, with a final status, as a tool record first."
+    },
+    {
+      "name": "gemini: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_GEMINI_CLI",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "fastagent: an assembled text row",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The change is ready."
+    },
+    {
+      "name": "fastagent: a content block of an archived message",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0}}},
+      "agent_session_id": "fa-session",
+      "reply": "The research is done."
+    },
+    {
+      "name": "fastagent: a text block of the error channel",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The model request failed." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "channels", "index": 0, "channel": "fast-agent-error" }}},
+      "agent_session_id": "fa-session",
+      "reply": "The model request failed."
+    },
+    {
+      "name": "fastagent: a text block of the reasoning channel is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "Thinking." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "channels", "index": 0, "channel": "reasoning" }}},
+      "agent_session_id": "fa-session",
+      "reply": null
+    },
+    {
+      "name": "fastagent: an archive row of another session is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0}}},
+      "agent_session_id": "other-session",
+      "reply": null,
+      "why": "The archive must belong to the session that the row states."
+    },
+    {
+      "name": "fastagent: an archive row with a fractional index is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0.5}}},
+      "agent_session_id": "fa-session",
+      "reply": null
+    },
+    {
+      "name": "fastagent: an archive row with a null timestamp is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0, "timestamp": null}}},
+      "agent_session_id": "fa-session",
+      "reply": null
+    },
+    {
+      "name": "fastagent: an archive row with a timestamp reads its text",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0, "timestamp": "2026-11-19T00:00:00Z" }}},
+      "agent_session_id": "fa-session",
+      "reply": "The research is done."
+    },
+    {
+      "name": "fastagent: an archive row with an unsafe history file is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v1", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_../a.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0}}},
+      "agent_session_id": "fa-session",
+      "reply": null
+    },
+    {
+      "name": "fastagent: an archive row of an unknown format is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "type": "text", "text": "The research is done." },
+      "supplemental": { "provider": { "fast-agent/root-archive": { "format": "fast-agent/history-element/v2", "captureId": "cap-1", "sessionId": "fa-session", "actor": "researcher", "historyFile": "history_researcher.json", "messageIndex": 1, "role": "assistant", "field": "content", "index": 0}}},
+      "agent_session_id": "fa-session",
+      "reply": null
+    },
+    {
+      "name": "fastagent: a tool call is no reply",
+      "provider": "AGENT_PROVIDER_FAST_AGENT",
+      "content": { "sessionUpdate": "tool_call", "toolCallId": "call_1", "kind": "read", "title": "Read a.txt", "status": "pending", "rawInput": { "path": "/w/a.txt" }},
+      "reply": null
+    },
+    {
+      "name": "claude: an assembled reply loses the white space at either end",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "\n\n  The tests pass.\n  ", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "The tests pass."
+    },
+    {
+      "name": "claude: a reply of zero width no-break spaces is no reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "\ufeff \ufeff", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": null,
+      "why": "JavaScript's trim removes U+FEFF, which Unicode's White_Space property leaves out."
+    },
+    {
+      "name": "claude: a reply of a next line character is a reply",
+      "provider": "AGENT_PROVIDER_CLAUDE_CODE",
+      "content": { "type": "assembled_message", "kind": "text", "text": "\u0085", "completion": "complete" },
+      "assembled_kind": "text",
+      "reply": "\u0085",
+      "why": "JavaScript's trim keeps U+0085, which Unicode's White_Space property includes."
+    }
+  ]
+}

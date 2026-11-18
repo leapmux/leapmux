@@ -77,6 +77,19 @@ type geminiToolIdentity struct {
 	Status string          `json:"status"`
 }
 
+// decodeFinishedGeminiTool reads a finished tool record of a session file, as
+// the browser's geminiStoredToolRecord does: its id is its name, two
+// underscores and a suffix, and its status is final. ok is false for every
+// other record.
+func decodeFinishedGeminiTool(record []byte) (tool geminiToolIdentity, ok bool) {
+	if json.Unmarshal(record, &tool) != nil || tool.Name == "" ||
+		!strings.HasPrefix(tool.ID, tool.Name+"__") || len(tool.ID) <= len(tool.Name)+2 ||
+		(tool.Status != "success" && tool.Status != "error") {
+		return geminiToolIdentity{}, false
+	}
+	return tool, true
+}
+
 // decodeGeminiSession applies Gemini's append-only session records in file order.
 // A partial last line carries no complete native record and remains unread.
 func decodeGeminiSession(data []byte) (geminiSession, error) {
