@@ -2,14 +2,17 @@ package config
 
 import (
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	"github.com/spf13/pflag"
+
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/internal/cli"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/listenset"
@@ -547,13 +550,13 @@ func boolFlag(name, koanfKey, category, usage string, def bool) flagDef {
 // durationFlag registers a duration, not an int of seconds. The flag then takes
 // the same spellings that the config file and the environment variable take,
 // and the seconds count that the key carried before keeps working as the
-// bare-number form. usage gains the syntax, so -help states it at each flag.
+// bare-number form. usage gains the syntax, so --help states it at each flag.
 func durationFlag(name, koanfKey, category, usage string, def time.Duration) flagDef {
 	return flagDef{
 		name:     name,
 		koanfKey: koanfKey,
 		category: category,
-		usage:    usage + ". " + internalconfig.UnitSyntax,
+		usage:    usage + "; " + internalconfig.UnitSyntax,
 		value:    def,
 	}
 }
@@ -562,7 +565,7 @@ func durationFlag(name, koanfKey, category, usage string, def time.Duration) fla
 // a kind nothing handles used to mean the flag silently vanished from -help and
 // from the defaults map, with no compile or test signal, which is exactly how
 // int64Default came to be dropped in prefixFlags.
-func (fd flagDef) register(fs *flag.FlagSet) {
+func (fd flagDef) register(fs *pflag.FlagSet) {
 	switch v := fd.value.(type) {
 	case string:
 		fs.String(fd.name, v, fd.usage)
@@ -584,50 +587,116 @@ func (fd flagDef) register(fs *flag.FlagSet) {
 	default:
 		panic(fmt.Sprintf("config: flag %q has an unsupported default type %T", fd.name, fd.value))
 	}
+	cli.SetFlagGroup(fs, fd.name, fd.category)
 }
 
-// ExtraFlagDef defines a string CLI flag that is not part of the hub's own
-// config but should be parsed alongside it (e.g. worker-specific flags in
-// solo mode).
+// ExtraFlagDef defines a CLI flag that is not part of the hub's own config
+// but should be parsed alongside it (e.g. worker-specific flags in solo
+// mode). Build one with StringExtraFlag, BoolExtraFlag or IntExtraFlag, so
+// the type of the default is the type of the flag, as it is for the same
+// flag of `leapmux worker`.
 //
-// String-only by construction: extras land in Config.Extras, a
-// map[string]string read back through k.String, so there is no other kind for
-// StrDefault to be a default FOR.
+// Every extra lands in Config.Extras, a map[string]string that k.String reads
+// back: a bool reads as "true" or "false", and an int as its decimal form.
 type ExtraFlagDef struct {
-	Name       string
-	KoanfKey   string
-	Usage      string
-	StrDefault string
-	// Category groups the flag in the help output; it must be one of
-	// hubFlagCategoryOrder. Empty defaults to "Server options", which is where
-	// the solo/dev launcher's own extras belong.
-	Category string
+	def flagDef
 }
+
+// extraFlagCategory is the help section of an extra whose category is empty:
+// the solo/dev launcher's own extras belong there.
+const extraFlagCategory = "Server options"
+
+func newExtraFlag(fd flagDef) ExtraFlagDef {
+	if fd.category == "" {
+		fd.category = extraFlagCategory
+	}
+	return ExtraFlagDef{def: fd}
+}
+
+// StringExtraFlag defines an extra string flag. An empty category puts it in
+// the "Server options" section of the help.
+func StringExtraFlag(name, koanfKey, category, usage, def string) ExtraFlagDef {
+	return newExtraFlag(strFlag(name, koanfKey, category, usage, def))
+}
+
+// BoolExtraFlag defines an extra bool flag. An empty category puts it in the
+// "Server options" section of the help.
+func BoolExtraFlag(name, koanfKey, category, usage string, def bool) ExtraFlagDef {
+	return newExtraFlag(boolFlag(name, koanfKey, category, usage, def))
+}
+
+// IntExtraFlag defines an extra int flag. An empty category puts it in the
+// "Server options" section of the help.
+func IntExtraFlag(name, koanfKey, category, usage string, def int) ExtraFlagDef {
+	return newExtraFlag(intFlag(name, koanfKey, category, usage, def))
+}
+
+// Name is the flag's name, without its dashes.
+func (e ExtraFlagDef) Name() string { return e.def.name }
+
+// KoanfKey is the key of Config.Extras that holds the flag's value.
+func (e ExtraFlagDef) KoanfKey() string { return e.def.koanfKey }
+
+// Category is the section of the help that lists the flag.
+func (e ExtraFlagDef) Category() string { return e.def.category }
+
+// Usage is the help text of the flag.
+func (e ExtraFlagDef) Usage() string { return e.def.usage }
+
+// Default is the flag's default. Its type is the flag's type.
+func (e ExtraFlagDef) Default() any { return e.def.value }
 
 // LoadOptions parameterizes differences between hub and solo/dev mode config loading.
 type LoadOptions struct {
-	DefaultListen     string              // default TCP listen address (hub: ":4327", solo: "127.0.0.1:4327")
-	DefaultConfigDir  string              // for data_dir resolution (e.g. "~/.config/leapmux/solo")
-	DefaultConfigFile string              // default config file path
-	FlagSetName       string              // flag.NewFlagSet name ("hub" vs "leapmux")
-	Description       string              // short command description for help output
-	CLIFlags          []string            // if non-nil, only register these flags (solo exposes a subset)
-	ExtraFlags        []ExtraFlagDef      // additional flags not in the hub's allFlags list
-	SoloMode          bool                // set on resulting Config
-	ConfigureFlags    func(*flag.FlagSet) // register caller-owned flags before parsing
-	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
-	AfterFlagsParsed func(*flag.FlagSet) error
+	DefaultListen     string         // default TCP listen address (hub: ":4327", solo: "127.0.0.1:4327")
+	DefaultConfigDir  string         // for data_dir resolution (e.g. "~/.config/leapmux/solo")
+	DefaultConfigFile string         // default config file path
+	CLIFlags          []string       // if non-nil, only register these flags (solo exposes a subset)
+	ExtraFlags        []ExtraFlagDef // additional flags not in the hub's allFlags list
+	SoloMode          bool           // set on resulting Config
 }
 
 // Load parses hub configuration from defaults, config file, env vars, and CLI flags.
-// Returns the config, whether -version was requested, and any error.
-func Load(args []string) (*Config, bool, error) {
+func Load(args []string) (*Config, error) {
 	return LoadWithOptions(args, LoadOptions{})
 }
 
-// LoadWithOptions parses hub configuration with customizable options.
-// Zero-value LoadOptions fields fall back to hub defaults.
-func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
+// LoadWithOptions parses args as the flags of the hub and loads the
+// configuration, for a caller that has no command tree to parse them. A
+// command registers Flags on its own flag set instead, and calls Flags.Load
+// after the parse.
+func LoadWithOptions(args []string, opts LoadOptions) (*Config, error) {
+	flags := NewFlags(opts)
+	fs := pflag.NewFlagSet("leapmux hub", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	flags.Register(fs)
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	return flags.Load(fs)
+}
+
+// Flags declares the flags of the hub for one command: which flags the
+// command takes, the configuration key of each, and the defaults. Register
+// adds them to the command's flag set, and Load reads that set after the
+// parse, so the help, the parse and the load read one declaration.
+type Flags struct {
+	opts       LoadOptions
+	listen     string
+	configDir  string
+	configFile string
+	// registered lists the flags that Register adds, in help order.
+	registered []flagDef
+	fieldMap   map[string]string
+	defaults   map[string]interface{}
+}
+
+// NewFlags declares the flags of the hub with opts. Zero-value LoadOptions
+// fields fall back to hub defaults.
+func NewFlags(opts LoadOptions) *Flags {
 	listen := opts.DefaultListen
 	if listen == "" {
 		listen = defaultListen
@@ -639,14 +708,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	configFile := opts.DefaultConfigFile
 	if configFile == "" {
 		configFile = defaultConfigFile
-	}
-	fsName := opts.FlagSetName
-	if fsName == "" {
-		fsName = "leapmux hub"
-	}
-	description := opts.Description
-	if description == "" && fsName == "leapmux hub" {
-		description = "Run the Hub service."
 	}
 
 	// prefixFlags creates flagDefs by prepending a CLI and koanf prefix to
@@ -687,8 +748,8 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	allFlags := []flagDef{
-		strSliceFlag("listen", "listen", "Server options", "listen address, repeatable: a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so that leapmux control keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
-		strFlag("data-dir", "data_dir", "Server options", "data directory", "."),
+		strSliceFlag("listen", "listen", "Server options", "listen address, a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so that leapmux control keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
+		strFlag("data-dir", "data_dir", "Server options", "data directory, which LEAPMUX_HUB_DATA_DIR and data_dir of the config file also set; a relative path is relative to the directory of the config file", "."),
 		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
 		// Storage configuration
@@ -716,81 +777,73 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		}
 	}
 
-	// Define CLI flags and build fieldMap/defaults from the canonical list.
-	fs := flag.NewFlagSet(fsName, flag.ContinueOnError)
-	fs.String("config", configFile, "path to config file")
-	usageCategories := map[string]string{"config": "Common options"}
-	fieldMap := make(map[string]string, len(allFlags))
-	defaults := make(map[string]interface{}, len(allFlags))
-
+	// Build fieldMap/defaults from the canonical list. The config file flag
+	// comes first, so the help lists it first.
+	f := &Flags{
+		opts: opts, listen: listen, configDir: configDir, configFile: configFile,
+		registered: []flagDef{strFlag("config", "", "Common options", "path to config file", configFile)},
+		fieldMap:   make(map[string]string, len(allFlags)),
+		defaults:   make(map[string]interface{}, len(allFlags)),
+	}
 	for _, fd := range allFlags {
 		// Always add to defaults. One assignment, not a four-arm switch: the
 		// value already carries its own type.
-		defaults[fd.koanfKey] = fd.value
+		f.defaults[fd.koanfKey] = fd.value
 
 		// Register CLI flag only if allowed.
 		if allowedFlags != nil && !allowedFlags[fd.name] {
 			continue
 		}
-		fieldMap[fd.name] = fd.koanfKey
-		usageCategories[fd.name] = fd.category
-		fd.register(fs)
+		f.fieldMap[fd.name] = fd.koanfKey
+		f.registered = append(f.registered, fd)
 	}
-	// Register extra flags (e.g. worker-specific flags in solo mode). Same four
-	// statements as the loop above, through the same flagDef, so a change to how
-	// a flag is registered reaches extras too -- hand-rolling the fs.String here
-	// is what let the two drift.
+	// Register extra flags (e.g. worker-specific flags in solo mode). Same
+	// statements as the loop above, through the same flagDef, so a change to
+	// how a flag is registered reaches extras too -- hand-rolling the fs.String
+	// here is what let the two drift.
 	//
 	// One deliberate difference: no allowedFlags check. CLIFlags names the subset
 	// of the HUB's own flags a launcher exposes, and an extra is by definition not
 	// in that list, so honouring it here would drop every extra the caller asked
 	// for.
 	for _, ef := range opts.ExtraFlags {
-		category := ef.Category
-		if category == "" {
-			category = "Server options"
-		}
-		fd := strFlag(ef.Name, ef.KoanfKey, category, ef.Usage, ef.StrDefault)
-		defaults[fd.koanfKey] = fd.value
-		fieldMap[fd.name] = fd.koanfKey
-		usageCategories[fd.name] = fd.category
+		fd := ef.def
+		f.defaults[fd.koanfKey] = fd.value
+		f.fieldMap[fd.name] = fd.koanfKey
+		f.registered = append(f.registered, fd)
+	}
+	return f
+}
+
+// Register adds the flags to fs. The help lists them in groups, in the order
+// of the first flag of each group.
+func (f *Flags) Register(fs *pflag.FlagSet) {
+	for _, fd := range f.registered {
 		fd.register(fs)
 	}
+}
 
-	showVersion := fs.Bool("version", false, "print version and exit")
-	usageCategories["version"] = "Common options"
-	if opts.ConfigureFlags != nil {
-		opts.ConfigureFlags(fs)
-	}
-
-	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, hubFlagCategoryOrder); err != nil {
-		return nil, false, err
-	}
-
-	if *showVersion {
-		return nil, true, nil
-	}
-	if opts.AfterFlagsParsed != nil {
-		if err := opts.AfterFlagsParsed(fs); err != nil {
-			return nil, false, err
-		}
-	}
+// Load reads fs, which a parse filled after Register, and loads the
+// configuration: the defaults, then the config file, then the environment,
+// then the flags that the command line set.
+func (f *Flags) Load(fs *pflag.FlagSet) (*Config, error) {
+	opts, configDir, listen := f.opts, f.configDir, f.listen
 	configPath := fs.Lookup("config").Value.String()
 
 	k := koanf.New(internalconfig.Delim)
-	fp := internalconfig.NewFlagProvider(fs, fieldMap)
+	fp := internalconfig.NewFlagProvider(fs, f.fieldMap)
 
 	// `listen` is the one environment variable that holds a delimited list:
 	// LEAPMUX_HUB_LISTEN is the comma-delimited form of the repeatable flag.
 	envListKeys := map[string]bool{"listen": true}
 
-	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", envListKeys, fp); err != nil {
-		return nil, false, fmt.Errorf("load config: %w", err)
+	if err := internalconfig.Load(k, f.defaults, configPath, "LEAPMUX_HUB_", envListKeys, fp); err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 
 	var cfg Config
 	if err := internalconfig.Unmarshal(k, &cfg); err != nil {
-		return nil, false, fmt.Errorf("unmarshal config: %w", err)
+		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
 	// Validate every --listen entry early: a malformed value should surface
@@ -805,10 +858,10 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 			continue
 		}
 		if errors.Is(localErr, locallisten.ErrMissingTarget) {
-			return nil, false, fmt.Errorf("invalid listen[%d]: %w", i, localErr)
+			return nil, fmt.Errorf("invalid listen[%d]: %w", i, localErr)
 		}
 		if _, err := listenset.Parse(entry); err != nil {
-			return nil, false, fmt.Errorf("invalid listen[%d]: %w", i, err)
+			return nil, fmt.Errorf("invalid listen[%d]: %w", i, err)
 		}
 	}
 
@@ -821,23 +874,11 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	if len(opts.ExtraFlags) > 0 {
 		cfg.Extras = make(map[string]string, len(opts.ExtraFlags))
 		for _, ef := range opts.ExtraFlags {
-			cfg.Extras[ef.KoanfKey] = k.String(ef.KoanfKey)
+			cfg.Extras[ef.KoanfKey()] = k.String(ef.KoanfKey())
 		}
 	}
 
-	return &cfg, false, nil
-}
-
-var hubFlagCategoryOrder = []string{
-	"Common options",
-	"Server options",
-	"Storage common options",
-	"SQLite storage options",
-	"PostgreSQL storage options",
-	"CockroachDB storage options",
-	"YugabyteDB storage options",
-	"MySQL storage options",
-	"TiDB storage options",
+	return &cfg, nil
 }
 
 // Validate checks the configuration values and ensures required directories exist.
@@ -891,6 +932,11 @@ func (c *Config) Validate() error {
 func DefaultHubDataDir() string {
 	return internalconfig.ExpandHome(defaultConfigDir)
 }
+
+// DefaultHubDataDirHelp is the default data directory of the Hub as a help
+// text prints it: with "~", so the text never holds the home directory of the
+// machine that prints it.
+const DefaultHubDataDirHelp = defaultConfigDir
 
 // SQLiteDBPath returns the path to the SQLite database file.
 // Uses Storage.SQLite.Path if set, otherwise defaults to {DataDir}/hub.db.

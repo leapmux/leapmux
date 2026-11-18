@@ -24,9 +24,9 @@ func TestEnablePrintsInstanceManagementCommands(t *testing.T) {
 			require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
 			manager := &nativeStartRecorder{t: t}
 			output, err := captureStdout(t, func() error {
-				return runModeEnableWithController(mode.String(), nativeRecorderController(manager))(cmdCtx{}, []string{
+				return runLifecycleWithController(mode.String(), "enable", nativeRecorderController(manager), []string{
 					"--config", configuration, "--data-dir", root, "--startup=login", "--yes",
-				})
+				}...)
 			})
 			require.NoError(t, err)
 			require.Len(t, manager.installs, 1)
@@ -52,9 +52,9 @@ func TestEnablePrintedCommandsSelectTheConfiguredInstance(t *testing.T) {
 	require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
 	manager := &nativeStartRecorder{t: t}
 	output, err := captureStdout(t, func() error {
-		return runModeEnableWithController("hub", nativeRecorderController(manager))(cmdCtx{}, []string{
+		return runLifecycleWithController("hub", "enable", nativeRecorderController(manager), []string{
 			"--config", configuration, "--data-dir", root, "--startup=login", "--yes",
-		})
+		}...)
 	})
 	require.NoError(t, err)
 	spec, err := lifecycle.ReadServiceSpec(lifecycle.PathsOf(mustCanonicalDir(t, root)).ServiceSpec)
@@ -70,7 +70,7 @@ func TestEnablePrintedCommandsSelectTheConfiguredInstance(t *testing.T) {
 	}
 
 	_, err = captureStdout(t, func() error {
-		return executeNativeStartWithController("hub", "start", startWords[3:], nativeRecorderController(manager))
+		return runLifecycleWithController("hub", "start", nativeRecorderController(manager), startWords[3:]...)
 	})
 	require.NoError(t, err)
 	assert.Len(t, manager.installs, 1, "the printed command must match the saved configuration")
@@ -189,8 +189,7 @@ func TestStartPrintsTheURLAndTheNextCommands(t *testing.T) {
 				execution:           lifecycle.ExecutionService, readiness: test.readiness,
 			}
 			output, err := captureStdout(t, func() error {
-				return executeNativeStartWithController(spec.Mode.String(), "start",
-					[]string{"--data-dir", spec.DataDirectory, "--yes"}, nativeRecorderController(manager))
+				return runLifecycleWithController(spec.Mode.String(), "start", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--yes"}...)
 			})
 			require.NoError(t, err)
 			assert.Contains(t, output, capitalize(spec.Mode.String())+" started.\n"+test.wantOpen+"\nCommands for this instance:\n")
@@ -211,8 +210,7 @@ func TestStopPrintsTheNextCommands(t *testing.T) {
 		configuration := filepath.Join(t.TempDir(), "hub.yaml")
 		require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
 		output, err := captureStdout(t, func() error {
-			return runModeStopWithController("hub", nativeRecorderController(&nativeStartRecorder{t: t}))(cmdCtx{},
-				[]string{"--config", configuration, "--data-dir", root})
+			return runLifecycleWithController("hub", "stop", nativeRecorderController(&nativeStartRecorder{t: t}), []string{"--config", configuration, "--data-dir", root}...)
 		})
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(output, "Not running.\n"), output)
@@ -222,8 +220,7 @@ func TestStopPrintsTheNextCommands(t *testing.T) {
 		spec := managedTestSpec(t)
 		saveManagedTestSpec(t, spec)
 		output, err := captureStdout(t, func() error {
-			return runModeStopWithController("hub", nativeRecorderController(&nativeStartRecorder{t: t, installed: true}))(cmdCtx{},
-				[]string{"--data-dir", spec.DataDirectory})
+			return runLifecycleWithController("hub", "stop", nativeRecorderController(&nativeStartRecorder{t: t, installed: true}), []string{"--data-dir", spec.DataDirectory}...)
 		})
 		require.NoError(t, err)
 		assertNextCommands(t, output, serviceSelection(spec), "start", "disable")
@@ -238,8 +235,7 @@ func TestDisablePrintsTheNextCommands(t *testing.T) {
 		spec := managedTestSpec(t)
 		saveManagedTestSpec(t, spec)
 		output, err := captureStdout(t, func() error {
-			return runModeDisableWithController("hub", nativeRecorderController(&nativeStartRecorder{t: t, installed: true}))(cmdCtx{},
-				[]string{"--data-dir", spec.DataDirectory})
+			return runLifecycleWithController("hub", "disable", nativeRecorderController(&nativeStartRecorder{t: t, installed: true}), []string{"--data-dir", spec.DataDirectory}...)
 		})
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(output, "Startup configuration removed."), output)
@@ -251,8 +247,7 @@ func TestDisablePrintsTheNextCommands(t *testing.T) {
 		configuration := filepath.Join(t.TempDir(), "hub.yaml")
 		require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
 		output, err := captureStdout(t, func() error {
-			return runModeDisableWithController("hub", nativeRecorderController(&nativeStartRecorder{t: t}))(cmdCtx{},
-				[]string{"--config", configuration, "--data-dir", root})
+			return runLifecycleWithController("hub", "disable", nativeRecorderController(&nativeStartRecorder{t: t}), []string{"--config", configuration, "--data-dir", root}...)
 		})
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(output, "No startup configuration.\n"), output)
@@ -269,14 +264,14 @@ func TestStatusPrintsTheURLAndTheNextCommands(t *testing.T) {
 		manager := &nativeStartRecorder{t: t, installed: true, accessURL: "http://localhost:4327"}
 		require.NoError(t, manager.Start(t.Context(), servicelaunch.LaunchSpec(spec)))
 		output, err := captureStdout(t, func() error {
-			return executeModeStatusWithController("hub", []string{"--data-dir", spec.DataDirectory}, nativeRecorderController(manager))
+			return runLifecycleWithController("hub", "status", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory}...)
 		})
 		require.NoError(t, err)
 		assert.Contains(t, output, "URL:          http://localhost:4327\n")
 		assertNextCommands(t, output, serviceSelection(spec), "stop", "restart")
 
 		json, err := captureStdout(t, func() error {
-			return executeModeStatusWithController("hub", []string{"--data-dir", spec.DataDirectory, "--json"}, nativeRecorderController(manager))
+			return runLifecycleWithController("hub", "status", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--json"}...)
 		})
 		require.NoError(t, err)
 		assert.Contains(t, json, `"url":"http://localhost:4327"`)
@@ -286,7 +281,7 @@ func TestStatusPrintsTheURLAndTheNextCommands(t *testing.T) {
 		spec := managedTestSpec(t)
 		saveManagedTestSpec(t, spec)
 		output, err := captureStdout(t, func() error {
-			return executeModeStatusWithController("hub", []string{"--data-dir", spec.DataDirectory}, nativeRecorderController(&nativeStartRecorder{t: t, installed: true}))
+			return runLifecycleWithController("hub", "status", nativeRecorderController(&nativeStartRecorder{t: t, installed: true}), []string{"--data-dir", spec.DataDirectory}...)
 		})
 		require.ErrorIs(t, err, errStoppedExit)
 		assert.NotContains(t, output, "URL:")
@@ -297,7 +292,7 @@ func TestStatusPrintsTheURLAndTheNextCommands(t *testing.T) {
 		configuration := filepath.Join(t.TempDir(), "hub.yaml")
 		require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
 		output, err := captureStdout(t, func() error {
-			return executeModeStatusWithController("hub", []string{"--config", configuration, "--data-dir", root}, nativeRecorderController(&nativeStartRecorder{t: t}))
+			return runLifecycleWithController("hub", "status", nativeRecorderController(&nativeStartRecorder{t: t}), []string{"--config", configuration, "--data-dir", root}...)
 		})
 		require.ErrorIs(t, err, errStoppedExit)
 		assertNextCommands(t, output, currentSelection(t, "hub", configuration, root), "start")

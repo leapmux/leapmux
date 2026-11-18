@@ -53,13 +53,13 @@ A few useful flags (full reference in [Configuration](/docs/admin/configuration/
 
 | Flag | Purpose | Default |
 | --- | --- | --- |
-| `-listen` | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) | `127.0.0.1:4327` plus the platform's local IPC socket |
-| `-data-dir` | Data directory | `.` (resolves to `~/.config/leapmux/solo`) |
-| `-log-level` | `debug`, `info`, `warn`, `error` | `info` |
-| `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
+| `--listen` | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) | `127.0.0.1:4327` plus the platform's local IPC socket |
+| `--data-dir` | Data directory | `.` (resolves to `~/.config/leapmux/solo`) |
+| `--log-level` | `debug`, `info`, `warn`, `error` | `info` |
+| `--config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
 {{< callout type="warning" >}}
-If you change `-listen` to a non-loopback address before setup, the first TCP caller can claim the `solo` account by setting its password. Other protected RPCs stay closed. Set the password from a trusted connection and restrict the address with a firewall or tunnel. See [Security & Threat Model](/docs/admin/security/).
+If you change `--listen` to a non-loopback address before setup, the first TCP caller can claim the `solo` account by setting its password. Other protected RPCs stay closed. Set the password from a trusted connection and restrict the address with a firewall or tunnel. See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 {{< callout >}}

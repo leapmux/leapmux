@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -43,7 +42,7 @@ func newAdminAppList() *cobra.Command {
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include retired apps")
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AppService().ListApps(context.Background(), &leapmuxv1.ListAppsRequest{
+			resp, err := c.AppService().ListApps(a.Context(), &leapmuxv1.ListAppsRequest{
 				Page: page.request(), IncludeRevoked: includeRevoked,
 			})
 			if err != nil {
@@ -142,7 +141,7 @@ func newAdminAppRegister() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := c.AppService().RegisterApp(context.Background(), &leapmuxv1.RegisterAppRequest{
+			resp, err := c.AppService().RegisterApp(a.Context(), &leapmuxv1.RegisterAppRequest{
 				ClientName:       name,
 				ClientUri:        uri,
 				RedirectUris:     splitCommaList(redirect),
@@ -215,7 +214,7 @@ func newAdminAppUpdate() *cobra.Command {
 				msg.ReplaceGrantTypes = true
 				msg.GrantTypes = splitCommaList(grants)
 			}
-			resp, err := c.AppService().UpdateApp(context.Background(), msg)
+			resp, err := c.AppService().UpdateApp(a.Context(), msg)
 			if err != nil {
 				return err
 			}
@@ -238,7 +237,7 @@ func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Exa
 		Mutates:    true,
 		BeforeDial: argInto(&clientID, "app"),
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AppService().SetAppElevationAllowed(context.Background(),
+			resp, err := c.AppService().SetAppElevationAllowed(a.Context(),
 				&leapmuxv1.SetAppElevationAllowedRequest{ClientId: clientID, Allowed: allowed})
 			if err != nil {
 				return err
@@ -257,7 +256,7 @@ func newAdminAppSetVerified(verified bool, use, short string, examples []cli.Exa
 		Mutates:    true,
 		BeforeDial: argInto(&clientID, "app"),
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AppService().VerifyApp(context.Background(),
+			resp, err := c.AppService().VerifyApp(a.Context(),
 				&leapmuxv1.VerifyAppRequest{ClientId: clientID, Verified: verified})
 			if err != nil {
 				return err
@@ -278,7 +277,7 @@ func newAdminAppRevoke() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&clientID, "app"),
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AppService().RevokeApp(context.Background(),
+			resp, err := c.AppService().RevokeApp(a.Context(),
 				&leapmuxv1.RevokeAppRequest{ClientId: clientID})
 			if err != nil {
 				return err
@@ -302,7 +301,7 @@ func newAdminAppDelete() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&clientID, "app"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AppService().DeleteApp(context.Background(),
+			if _, err := c.AppService().DeleteApp(a.Context(),
 				&leapmuxv1.DeleteAppRequest{ClientId: clientID}); err != nil {
 				return err
 			}

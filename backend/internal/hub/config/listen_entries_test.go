@@ -115,7 +115,7 @@ func TestListenEntries_AlwaysBindsAtLeastOneLocalIPCAddress(t *testing.T) {
 	t.Run("LEAPMUX_HUB_LISTEN with two TCP addresses comma-delimited", func(t *testing.T) {
 		unsetAmbientEnvPrefix(t, "LEAPMUX_HUB_")
 		t.Setenv("LEAPMUX_HUB_LISTEN", ":8080,:9090")
-		cfg, _, err := Load(nil)
+		cfg, err := Load(nil)
 		require.NoError(t, err)
 		entries, err := cfg.ListenEntries()
 		require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestListenEntries_LocalEntriesReplaceThePlatformLocalSocket(t *testing.T) {
 		{"a comma in the path survives the flag", "unix:/tmp/a,b.sock", "unix:/tmp/a,b.sock"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, _, err := Load([]string{"-listen", tc.arg})
+			cfg, err := Load([]string{"--listen", tc.arg})
 			require.NoError(t, err)
 			local, err := cfg.LocalListenURLs()
 			require.NoError(t, err)
@@ -193,9 +193,9 @@ func TestLoad_ListenEnvVarIsCommaDelimited(t *testing.T) {
 	unsetAmbientEnvPrefix(t, "LEAPMUX_HUB_")
 	t.Setenv("LEAPMUX_HUB_LISTEN", ":8080, unix:/tmp/x.sock")
 
-	fromEnv, _, err := Load(nil)
+	fromEnv, err := Load(nil)
 	require.NoError(t, err)
-	fromFlag, _, err := Load([]string{"-listen", ":8080", "-listen", "unix:/tmp/x.sock"})
+	fromFlag, err := Load([]string{"--listen", ":8080", "--listen", "unix:/tmp/x.sock"})
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{":8080", "unix:/tmp/x.sock"}, fromEnv.Listen)
@@ -212,13 +212,13 @@ func TestLoad_ListenEnvVarIsCommaDelimited(t *testing.T) {
 func TestLoad_ListenCommaIsAFlagCharacterAndAnEnvSeparator(t *testing.T) {
 	unsetAmbientEnvPrefix(t, "LEAPMUX_HUB_")
 
-	fromFlag, _, err := Load([]string{"-listen", "unix:/tmp/a,b.sock"})
+	fromFlag, err := Load([]string{"--listen", "unix:/tmp/a,b.sock"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"unix:/tmp/a,b.sock"}, fromFlag.Listen,
 		"the flag takes the value verbatim")
 
 	t.Setenv("LEAPMUX_HUB_LISTEN", "unix:/tmp/a,b.sock")
-	_, _, err = Load(nil)
+	_, err = Load(nil)
 	require.Error(t, err, "the env form splits on commas")
 	assert.Contains(t, err.Error(), "invalid listen[1]",
 		"the split piece after the comma reaches the validator as its own entry")
@@ -236,7 +236,7 @@ func TestLoad_ListenEntryThatIsNeitherKindFailsWithItsIndex(t *testing.T) {
 		{"a whitespace-only entry", "   "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := Load([]string{"-listen", ":8080", "-listen", tc.arg})
+			_, err := Load([]string{"--listen", ":8080", "--listen", tc.arg})
 			require.Error(t, err, "Load should reject %q", tc.arg)
 			assert.Contains(t, err.Error(), "invalid listen[1]",
 				"the error must name the entry's index")

@@ -246,13 +246,13 @@ Every row here stays in solo mode. A solo Hub whose account holds a password sig
 
 This section appears in solo, hub, and dev modes. It contains two separate rows.
 
-**Network access** appears only in solo mode. It controls which addresses the Hub answers on beside the addresses `-listen` gives it.
+**Network access** appears only in solo mode. It controls which addresses the Hub answers on beside the addresses `--listen` gives it.
 
-**TCP listeners** lists the TCP addresses the Hub answers on right now, with the reason for each entry — from `-listen`, an address you added, or one socket serving both. **Local access** lists the local endpoints the Hub opened at startup (its Unix socket or Windows named pipe): a read-only inventory for local CLI tools, which the editor does not touch. **Additional addresses** is the editable TCP list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
+**TCP listeners** lists the TCP addresses the Hub answers on right now, with the reason for each entry — from `--listen`, an address you added, or one socket serving both. **Local access** lists the local endpoints the Hub opened at startup (its Unix socket or Windows named pipe): a read-only inventory for local CLI tools, which the editor does not touch. **Additional addresses** is the editable TCP list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
 
 Applying an address makes every TCP address require a sign-in as `solo`, including `127.0.0.1`. The panel stores the first password before it publishes a non-loopback address. The desktop app's local socket stays credential-free.
 
-Overlapping addresses merge: ask for every interface on the port `-listen` already uses and one socket serves both, which the "TCP listeners" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
+Overlapping addresses merge: ask for every interface on the port `--listen` already uses and one socket serves both, which the "TCP listeners" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 
 **Trusted reverse proxies** appears in every Hub mode. Add an IP address, CIDR, inclusive range, short IPv4 range, or the `cloudflare` or `cloudfront` provider preset. Rows stay staged until **Apply**. **Cancel** restores the stored list, and backend validation errors leave the staged rows in place.
 

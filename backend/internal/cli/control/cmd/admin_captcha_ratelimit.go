@@ -38,20 +38,20 @@ import (
 // compile-time difference between a partial DOCUMENT (a map of field
 // names) and a whole SCALAR value — and that mistake does not fail at the
 // call site, it travels to the hub and comes back as a merge error.
-func updateSettingJSON(c *control.Client, key string, value any) (*leapmuxv1.SettingValue, error) {
+func updateSettingJSON(ctx context.Context, c *control.Client, key string, value any) (*leapmuxv1.SettingValue, error) {
 	doc, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	updated, _, err := updateOneSetting(c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
+	updated, _, err := updateOneSetting(ctx, c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
 	return updated, err
 }
 
 // updateOneSetting sends ONE write through UpdateSettings, the hub's only
 // write verb. It returns the key's resulting value, and whether the hub
 // applies the key only after a restart.
-func updateOneSetting(c *control.Client, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
-	resp, err := c.AdminSettingsService().UpdateSettings(context.Background(), &leapmuxv1.UpdateSettingsRequest{
+func updateOneSetting(ctx context.Context, c *control.Client, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().UpdateSettings(ctx, &leapmuxv1.UpdateSettingsRequest{
 		Writes: []*leapmuxv1.SettingWrite{write},
 	})
 	if err != nil {
@@ -67,8 +67,8 @@ func updateOneSetting(c *control.Client, write *leapmuxv1.SettingWrite) (*leapmu
 // resetOneSetting removes ONE key's row through ResetSettings, the hub's only
 // reset verb, and returns the key's resulting value and whether the key is
 // restart-class.
-func resetOneSetting(c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
-	resp, err := c.AdminSettingsService().ResetSettings(context.Background(), &leapmuxv1.ResetSettingsRequest{
+func resetOneSetting(ctx context.Context, c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().ResetSettings(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{key},
 	})
 	if err != nil {
@@ -92,15 +92,15 @@ func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue
 }
 
 // adminUpdateSetting merges one partial document onto one settings key.
-func adminUpdateSetting(c *control.Client, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
-	return updateSettingJSON(c, key, partial)
+func adminUpdateSetting(ctx context.Context, c *control.Client, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
+	return updateSettingJSON(ctx, c, key, partial)
 }
 
 // adminUpdateSettingScalar writes a scalar key's whole value. The type
 // parameter is what makes the split above real: a map does not satisfy it,
 // so the merge error the comment describes cannot be written here.
-func adminUpdateSettingScalar[T bool | int64 | float64 | string](c *control.Client, key string, value T) (*leapmuxv1.SettingValue, error) {
-	return updateSettingJSON(c, key, value)
+func adminUpdateSettingScalar[T bool | int64 | float64 | string](ctx context.Context, c *control.Client, key string, value T) (*leapmuxv1.SettingValue, error) {
+	return updateSettingJSON(ctx, c, key, value)
 }
 
 // Secrets need no helper of their own, because updateOneSetting takes a
@@ -145,7 +145,7 @@ func newAdminCaptchaShow() *cobra.Command {
 			{Command: "leapmux control admin captcha get"},
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+			resp, err := c.AdminSettingsService().ListSettings(a.Context(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
 				return err
 			}
@@ -213,14 +213,14 @@ type captchaState struct {
 	altchaAlgorithm string
 }
 
-func readCaptchaState(c *control.Client) (captchaState, error) {
+func readCaptchaState(ctx context.Context, c *control.Client) (captchaState, error) {
 	out := captchaState{
 		selected:        captcha.ProviderAltcha,
 		siteKeySet:      map[string]bool{},
 		secretSet:       map[string]bool{},
 		altchaAlgorithm: captcha.DefaultAltchaSettings().Algorithm,
 	}
-	resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+	resp, err := c.AdminSettingsService().ListSettings(ctx, &leapmuxv1.ListSettingsRequest{})
 	if err != nil {
 		return out, err
 	}
@@ -342,7 +342,7 @@ func newAdminCaptchaSet() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			state, err := readCaptchaState(c)
+			state, err := readCaptchaState(a.Context(), c)
 			if err != nil {
 				return err
 			}
@@ -502,7 +502,7 @@ func newAdminCaptchaSet() *cobra.Command {
 			if len(writes) == 0 {
 				return cli.Usagef("nothing to set (pass --provider or a tuning flag)")
 			}
-			if _, err := c.AdminSettingsService().UpdateSettings(context.Background(),
+			if _, err := c.AdminSettingsService().UpdateSettings(a.Context(),
 				&leapmuxv1.UpdateSettingsRequest{Writes: writes}); err != nil {
 				return err
 			}
@@ -523,7 +523,7 @@ func newAdminCaptchaSetEnabled(enabled bool, use, short string, examples []cli.E
 		Examples: examples,
 		Mutates:  true,
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := adminUpdateSettingScalar(c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
+			if _, err := adminUpdateSettingScalar(a.Context(), c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
 				return err
 			}
 			return a.Result(map[string]any{captcha.CaptchaEnabledKey.Name(): enabled})
@@ -566,7 +566,7 @@ func newAdminCaptchaReset() *cobra.Command {
 				// would leave a selection whose row has no keys, which the
 				// cross-key rule refuses. Return the selection to its default
 				// in the SAME request, so the state that rule sees is legal.
-				state, err := readCaptchaState(c)
+				state, err := readCaptchaState(a.Context(), c)
 				if err != nil {
 					return err
 				}
@@ -580,7 +580,7 @@ func newAdminCaptchaReset() *cobra.Command {
 			// leave part of the set already cleared. The loop this replaced
 			// destroyed the selection and two provider rows before
 			// answering that it reset nothing.
-			resp, err := c.AdminSettingsService().ResetSettings(context.Background(),
+			resp, err := c.AdminSettingsService().ResetSettings(a.Context(),
 				&leapmuxv1.ResetSettingsRequest{Keys: keys})
 			if err != nil {
 				return err
@@ -647,7 +647,7 @@ func newAdminRateLimitList() *cobra.Command {
 			{Command: "leapmux control admin rate-limit list"},
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+			resp, err := c.AdminSettingsService().ListSettings(a.Context(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
 				return err
 			}
@@ -702,7 +702,7 @@ func newAdminRateLimitSet() *cobra.Command {
 			if a.Passed("window") {
 				doc["window_seconds"] = defaultIfZero(window, def.WindowSeconds)
 			}
-			value, err := adminUpdateSetting(c, target.Key, doc)
+			value, err := adminUpdateSetting(a.Context(), c, target.Key, doc)
 			if err != nil {
 				return err
 			}
@@ -720,7 +720,7 @@ func newAdminRateLimitSetEnabled(enabled bool, use, short string, examples []cli
 		Mutates:    true,
 		BeforeDial: target.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			value, err := adminUpdateSetting(c, target.Key, map[string]any{"enabled": enabled})
+			value, err := adminUpdateSetting(a.Context(), c, target.Key, map[string]any{"enabled": enabled})
 			if err != nil {
 				return err
 			}
@@ -740,7 +740,7 @@ func newAdminRateLimitReset() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: target.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			value, _, err := resetOneSetting(c, target.Key)
+			value, _, err := resetOneSetting(a.Context(), c, target.Key)
 			if err != nil {
 				return err
 			}

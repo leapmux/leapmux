@@ -63,7 +63,7 @@ Each mode looks for a YAML config file in its own directory under `~/.config/lea
 | `solo`   | `~/.config/leapmux/solo`          | `~/.config/leapmux/solo/solo.yaml`       |
 | `dev`    | `~/.config/leapmux/dev`           | `~/.config/leapmux/dev/dev.yaml`         |
 
-Override the path with the `--config` (or `-config`) flag, which accepts `--config=PATH`, `--config PATH`, `-config=PATH`, or `-config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
+Override the path with the `--config` (or `--config`) flag, which accepts `--config=PATH`, `--config PATH`, `--config=PATH`, or `--config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
 
 ```bash
 # Pass the same path to every command of the instance.
@@ -178,12 +178,12 @@ Before the `solo` account has a password, a TCP caller can only set the first pa
 
 ### Network access
 
-Solo mode serves additional addresses beside the addresses `-listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux control admin settings`.
+Solo mode serves additional addresses beside the addresses `--listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux control admin settings`.
 
 Two things follow from adding one:
 
 - **Every network address then asks for a sign-in as `solo`**, `127.0.0.1` included. The panel asks you to set that password before it will publish an address. The desktop app's local socket is the only transport that never asks. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the rule in full.
-- **Overlapping addresses merge.** Ask for every interface on the port `-listen` already uses and the Hub serves one socket rather than two: `-listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. Every `-listen` address takes part, so a secondary one folds too. The panel says so before you apply, and **TCP listeners** lists what is serving with the reason for each entry.
+- **Overlapping addresses merge.** Ask for every interface on the port `--listen` already uses and the Hub serves one socket rather than two: `--listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. Every `--listen` address takes part, so a secondary one folds too. The panel says so before you apply, and **TCP listeners** lists what is serving with the reason for each entry.
 
 An address that cannot be bound — a VPN that is down, a port another program holds — does not stop the Hub. It stays configured, the rest are served, and the panel reports the operating system's own reason beside it.
 
@@ -740,12 +740,12 @@ A service reads the configuration file at the path that it saved, each time it s
 
 ## Help and version
 
-Every mode supports the standard help tokens, and each mode command honors `--version`:
+Every command prints its help, and the binary prints its version:
 
-- `-h`, `-help`, or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub <command> --help`), it prints the flags of that command, grouped by category. The bare `help` token works only at the top level (`leapmux help`).
-- `--version` (or `-version`) prints the build version and exits. It works at the top level (`leapmux --version`) and after a command (`leapmux hub <command> --version`).
+- `-h` or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub <command> --help`), it prints the flags of that command, grouped by category. `leapmux help <command>` prints the same help.
+- `leapmux --version`, `leapmux -v` and `leapmux version` print the build version. A command takes no `--version` of its own, so `leapmux hub run --version` fails as an unknown flag.
 
-The bare `version` subcommand is a **top-level** command (`leapmux version`), not a mode command. `leapmux hub version` fails with `unknown hub command: version` and prints the commands of the mode. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
+`version` is a top-level command, not a mode command: `leapmux hub version` fails with `unknown command "version" for "leapmux hub"`. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
 
 ## Related chapters
 

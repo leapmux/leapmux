@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"flag"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,35 +17,13 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
-// cliOutcome is what one run of the binary's command line printed, and its
-// exit status.
-type cliOutcome struct {
-	code   int
-	stdout string
-	stderr string
-}
-
-// runTestCLI runs `leapmux <args...>` through runCLI with the recording
-// runners of testCLIRunners.
-func runTestCLI(t *testing.T, calls *[]cliCall, args ...string) cliOutcome {
-	t.Helper()
-	var stdout, stderr bytes.Buffer
-	code := runCLI(context.Background(), args, strings.NewReader(""), &stdout, &stderr, testCLIRunners(calls))
-	return cliOutcome{code: code, stdout: stdout.String(), stderr: stderr.String()}
-}
-
 func TestRunCLIExplicitRouting(t *testing.T) {
-	recoverUsageText := formatGroupUsage(recoverTree, "recover")
-	recoverPasswordUsageText := formatGroupUsage(findTestGroup(t, recoverTree, "password"), "recover password")
-	recoverEncryptionUsageText := formatGroupUsage(findTestGroup(t, recoverTree, "encryption-key"), "recover encryption-key")
-
 	tests := []struct {
 		name       string
 		args       []string
 		wantCode   int
 		wantStdout string
 		wantStderr string
-		wantCalls  []cliCall
 	}{
 		{
 			name:       "bare command prints the root help",
@@ -72,97 +50,58 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			wantStderr: `hint: a long flag takes two dashes, as in "--version"`,
 		},
 		{
-			name:     "solo run dispatches through the lifecycle group",
-			args:     []string{"solo", "run", "-dev-frontend", "http://localhost:4328"},
-			wantCode: 0,
-			wantCalls: []cliCall{{
-				command: "solo",
-				args:    []string{"run", "-dev-frontend", "http://localhost:4328"},
-			}},
+			name:       "a mode command parses with the parser of every command",
+			args:       []string{"solo", "run", "-dev-frontend", "http://localhost:4328"},
+			wantCode:   cli.ExitUsage,
+			wantStderr: `hint: a long flag takes two dashes, as in "--version"`,
 		},
 		{
-			name:       "bare solo identifies the required verb",
-			args:       []string{"solo", "-dev-frontend", "http://localhost:4328"},
-			wantCode:   1,
-			wantStderr: "the solo command is required before any flags",
+			name:       "a flag before the mode command states where the flag goes",
+			args:       []string{"solo", "--dev-frontend", "http://localhost:4328"},
+			wantCode:   cli.ExitUsage,
+			wantStderr: `hint: a flag goes after the command that takes it, as in "leapmux solo <command> [flags]"`,
 		},
 		{
-			name:       "a flag before the verb identifies the corrected command",
+			name:       "the version flag belongs to the root alone",
 			args:       []string{"solo", "--version"},
-			wantCode:   1,
-			wantStderr: "`leapmux solo start [flags]`",
+			wantCode:   cli.ExitUsage,
+			wantStderr: "unknown flag: --version",
 		},
 		{
-			name:     "dev run dispatches through the lifecycle group",
-			args:     []string{"dev", "run", "-dev-frontend", "http://localhost:4328"},
-			wantCode: 0,
-			wantCalls: []cliCall{{
-				command: "dev",
-				args:    []string{"run", "-dev-frontend", "http://localhost:4328"},
-			}},
+			name:       "hub run resolves to the lifecycle command",
+			args:       []string{"hub", "run", "--help"},
+			wantCode:   cli.ExitOK,
+			wantStdout: lifecycleSummary("hub", "run") + "\n\nUsage:\n  leapmux hub run [flags]\n",
 		},
 		{
-			name:     "hub run dispatches through the lifecycle group",
-			args:     []string{"hub", "run", "-listen", ":4327"},
-			wantCode: 0,
-			wantCalls: []cliCall{{
-				command: "hub",
-				args:    []string{"run", "-listen", ":4327"},
-			}},
+			name:       "worker register checks its required flags before it runs",
+			args:       []string{"worker", "register", "--hub", "https://hub.example.com"},
+			wantCode:   cli.ExitUsage,
+			wantStderr: "missing required flag --registration-key",
 		},
 		{
-			name:     "worker register dispatches through the lifecycle group",
-			args:     []string{"worker", "register", "--hub", "https://hub.example.com"},
-			wantCode: 0,
-			wantCalls: []cliCall{{
-				command: "worker",
-				args:    []string{"register", "--hub", "https://hub.example.com"},
-			}},
-		},
-		{
-			name:     "recover dispatches unchanged",
-			args:     []string{"recover", "db", "path"},
-			wantCode: 0,
-			wantCalls: []cliCall{{
-				command: "recover",
-				args:    []string{"db", "path"},
-			}},
-		},
-		{
-			name:       "recover without group prints recover usage without dispatching",
-			args:       []string{"recover"},
-			wantCode:   1,
-			wantStderr: "Usage: leapmux recover <group> <command> [flags]",
-		},
-		{
-			name:       "recover help prints recover usage without dispatching",
+			name:       "recover help prints the recover usage",
 			args:       []string{"recover", "--help"},
-			wantCode:   0,
-			wantStdout: recoverUsageText,
+			wantCode:   cli.ExitOK,
+			wantStdout: "Offline break-glass recovery (opens the database directly).\n",
 		},
 		{
-			name:       "recover group without command prints group usage without dispatching",
+			name:       "a recover group alone prints its help",
 			args:       []string{"recover", "password"},
-			wantCode:   1,
-			wantStderr: "Usage: leapmux recover password <command> [flags]",
+			wantCode:   cli.ExitOK,
+			wantStdout: "Reset passwords offline\n\nUsage:\n  leapmux recover password <command>\n",
 		},
 		{
-			name:       "recover group help prints group usage without dispatching",
-			args:       []string{"recover", "password", "--help"},
-			wantCode:   0,
-			wantStdout: recoverPasswordUsageText,
-		},
-		{
-			name:       "unknown recover group prints clean error without dispatching",
+			name:       "unknown recover group is refused",
 			args:       []string{"recover", "bogus"},
-			wantCode:   1,
-			wantStderr: "unknown recover group: bogus",
+			wantCode:   cli.ExitUsage,
+			wantStderr: `unknown command "bogus" for "leapmux recover"`,
 		},
 		{
-			name:       "unknown recover group command prints group usage without dispatching",
+			name:       "unknown recover group command is refused",
 			args:       []string{"recover", "password", "bogus"},
-			wantCode:   1,
-			wantStderr: "unknown recover password command: bogus",
+			wantCode:   cli.ExitUsage,
+			wantStderr: `unknown command "bogus" for "leapmux recover password"`,
 		},
 		{
 			name:       "the old admin tree is gone",
@@ -171,16 +110,10 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			wantStderr: `unknown command "admin" for "leapmux"`,
 		},
 		{
-			name:       "recover encryption-key group help prints nested usage without dispatching",
-			args:       []string{"recover", "encryption-key", "help"},
-			wantCode:   0,
-			wantStdout: recoverEncryptionUsageText,
-		},
-		{
-			name:       "unknown recover encryption-key command prints nested usage without dispatching",
-			args:       []string{"recover", "encryption-key", "bogus"},
-			wantCode:   1,
-			wantStderr: "unknown recover encryption-key command: bogus",
+			name:       "help of a nested group goes through the help command",
+			args:       []string{"help", "recover", "encryption-key"},
+			wantCode:   cli.ExitOK,
+			wantStdout: "Manage encryption keys\n\nUsage:\n  leapmux recover encryption-key <command>\n",
 		},
 		{
 			name:       "unknown command is rejected",
@@ -210,29 +143,30 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var calls []cliCall
-			o := runTestCLI(t, &calls, tt.args...)
+			o := runTestCLI(t, tt.args...)
 
 			assert.Equal(t, tt.wantCode, o.code, "stderr: %s", o.stderr)
-			assert.Equal(t, tt.wantStdout, o.stdout)
+			assert.True(t, strings.HasPrefix(o.stdout, tt.wantStdout), "stdout: %s", o.stdout)
+			if tt.wantStdout == "" {
+				assert.Empty(t, o.stdout)
+			}
 			assert.Contains(t, o.stderr, tt.wantStderr)
-			assert.Equal(t, tt.wantCalls, calls)
 		})
 	}
 }
 
-func TestRunCLISubcommandErrorReportsPlainly(t *testing.T) {
-	// The lifecycle tree requires a verb; a bare mode identifies it.
-	o := runTestCLI(t, &[]cliCall{}, "hub")
+func TestRunCLIBareModePrintsItsHelp(t *testing.T) {
+	// A mode alone is a group: it prints its commands and starts nothing.
+	o := runTestCLI(t, "hub")
 
-	assert.Equal(t, 1, o.code)
-	assert.Equal(t, "", o.stdout)
-	assert.Contains(t, o.stderr, "command is required")
+	assert.Equal(t, cli.ExitOK, o.code)
+	assert.Empty(t, o.stderr)
+	assert.Contains(t, o.stdout, "Usage:\n  leapmux hub <command>\n")
 }
 
 func TestRunCLISubcommandHelpReturnsSuccess(t *testing.T) {
 	// The mode group's help prints its verbs without starting anything.
-	o := runTestCLI(t, &[]cliCall{}, "hub", "--help")
+	o := runTestCLI(t, "hub", "--help")
 
 	assert.Equal(t, 0, o.code)
 	assert.Contains(t, o.stdout, "run")
@@ -242,52 +176,37 @@ func TestRunCLISubcommandHelpReturnsSuccess(t *testing.T) {
 // TestRunCLI_TopLevelAbbreviation verifies the top-level command dispatch
 // resolves unambiguous prefixes.
 func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
-	t.Run("abbreviated solo dispatches its run verb", func(t *testing.T) {
-		var calls []cliCall
-		o := runTestCLI(t, &calls, "sol", "run")
-		assert.Equal(t, 0, o.code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "solo", calls[0].command)
-		assert.Equal(t, []string{"run"}, calls[0].args)
+	t.Run("abbreviated solo resolves its run verb", func(t *testing.T) {
+		o := runTestCLI(t, "sol", "run", "--help")
+		assert.Equal(t, 0, o.code, o.stderr)
+		assert.Contains(t, o.stdout, "Usage:\n  leapmux solo run [flags]\n")
 	})
 
 	t.Run("abbreviated version dispatches", func(t *testing.T) {
-		o := runTestCLI(t, &[]cliCall{}, "ver")
+		o := runTestCLI(t, "ver")
 		assert.Equal(t, 0, o.code)
 		assert.Equal(t, "test-version\n", o.stdout)
 	})
 
 	t.Run("abbreviated recover dispatches", func(t *testing.T) {
-		var calls []cliCall
-		o := runTestCLI(t, &calls, "rec", "db", "path")
-		assert.Equal(t, 0, o.code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "recover", calls[0].command)
+		dataDir := t.TempDir()
+		o := runTestCLI(t, "rec", "db", "path", "--data-dir", dataDir)
+		assert.Equal(t, 0, o.code, o.stderr)
+		assert.Equal(t, filepath.Join(dataDir, "hub.db")+"\n", o.stdout)
 	})
 
 	t.Run("abbreviated control dispatches", func(t *testing.T) {
 		// "con" is a unique prefix of "control"; "c" also matches
 		// "commands" and "completion". `guide` prints without a hub.
-		o := runTestCLI(t, &[]cliCall{}, "con", "gu")
+		o := runTestCLI(t, "con", "gu")
 		assert.Equal(t, 0, o.code, "stderr: %s", o.stderr)
 		assert.Contains(t, o.stdout, "leapmux control")
 	})
 
-	t.Run("abbreviated dev dispatches its run verb", func(t *testing.T) {
-		var calls []cliCall
-		o := runTestCLI(t, &calls, "d", "run")
-		assert.Equal(t, 0, o.code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "dev", calls[0].command)
-		assert.Equal(t, []string{"run"}, calls[0].args)
-	})
-
-	t.Run("full command names still work", func(t *testing.T) {
-		var calls []cliCall
-		o := runTestCLI(t, &calls, "hub", "status")
-		assert.Equal(t, 0, o.code)
-		require.Len(t, calls, 1)
-		assert.Equal(t, "hub", calls[0].command)
+	t.Run("abbreviated dev resolves its run verb", func(t *testing.T) {
+		o := runTestCLI(t, "d", "run", "--help")
+		assert.Equal(t, 0, o.code, o.stderr)
+		assert.Contains(t, o.stdout, "Usage:\n  leapmux dev run [flags]\n")
 	})
 }
 
@@ -296,7 +215,7 @@ func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
 // as an unknown command.
 func TestRunCLI_TopLevelAmbiguity(t *testing.T) {
 	t.Run("an ambiguous prefix lists the candidates", func(t *testing.T) {
-		o := runTestCLI(t, &[]cliCall{}, "c")
+		o := runTestCLI(t, "c")
 		assert.Equal(t, cli.ExitUsage, o.code)
 		assert.Contains(t, o.stderr, `ambiguous command "c" for "leapmux"`)
 		for _, name := range []string{"control", "commands", "completion"} {
@@ -305,19 +224,19 @@ func TestRunCLI_TopLevelAmbiguity(t *testing.T) {
 	})
 
 	t.Run("unknown command reports error", func(t *testing.T) {
-		o := runTestCLI(t, &[]cliCall{}, "xyz")
+		o := runTestCLI(t, "xyz")
 		assert.Equal(t, cli.ExitUsage, o.code)
 		assert.Contains(t, o.stderr, `unknown command "xyz" for "leapmux"`)
 	})
 
 	t.Run("an unknown flag is a usage error", func(t *testing.T) {
-		o := runTestCLI(t, &[]cliCall{}, "-x")
+		o := runTestCLI(t, "-x")
 		assert.Equal(t, cli.ExitUsage, o.code)
 		assert.Contains(t, o.stderr, "unknown shorthand flag")
 	})
 
 	t.Run("a failure prints its envelope on stdout with --json", func(t *testing.T) {
-		o := runTestCLI(t, &[]cliCall{}, "xyz", "--json")
+		o := runTestCLI(t, "xyz", "--json")
 		assert.Equal(t, cli.ExitUsage, o.code)
 		var env struct {
 			Error map[string]any `json:"error"`
@@ -390,17 +309,15 @@ func TestRootHelp_MatchesTheReferenceDoc(t *testing.T) {
 }
 
 // TestRootCommands_EveryCommandRuns proves that every top-level command does
-// something when it runs alone: a mode or recover reaches its dispatcher, a
-// group prints its help, and a leaf prints its result or its refusal.
+// something when it runs alone: a group prints its help, and a leaf prints
+// its result or its refusal.
 func TestRootCommands_EveryCommandRuns(t *testing.T) {
-	for _, cmd := range newRootCommand(testCLIRunners(&[]cliCall{})).Commands() {
+	for _, cmd := range newRootCommand(testCLIRunners(t)).Commands() {
 		t.Run(cmd.Name(), func(t *testing.T) {
-			var calls []cliCall
-			o := runTestCLI(t, &calls, cmd.Name())
+			o := runTestCLI(t, cmd.Name())
 			assert.NotContains(t, o.stderr, "unknown command",
 				"the abbreviation must resolve every command to itself")
-			assert.True(t, len(calls) > 0 || o.stdout != "" || o.stderr != "",
-				"a command runs a runner or prints something")
+			assert.True(t, o.stdout != "" || o.stderr != "", "a command prints something")
 		})
 	}
 }
@@ -417,13 +334,13 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 	require.Len(t, marks, len(shells), "every supported shell has a mark here")
 	for _, shell := range shells {
 		t.Run(shell, func(t *testing.T) {
-			o := runTestCLI(t, &[]cliCall{}, "completion", shell)
+			o := runTestCLI(t, "completion", shell)
 			assert.Equal(t, 0, o.code, "stderr: %s", o.stderr)
 			assert.Contains(t, o.stdout, marks[shell])
 		})
 	}
 
-	o := runTestCLI(t, &[]cliCall{}, "completion", "tcsh")
+	o := runTestCLI(t, "completion", "tcsh")
 	assert.Equal(t, cli.ExitUsage, o.code)
 	assert.Contains(t, o.stderr, `unknown shell "tcsh"`)
 	assert.Contains(t, o.stderr, "bash, zsh, fish, powershell")
@@ -432,7 +349,7 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 // The completion asks the binary for its candidates, so a prefix completes
 // to the command names it can still become.
 func TestCompletion_CompletesCommandNames(t *testing.T) {
-	o := runTestCLI(t, &[]cliCall{}, "__complete", "control", "wo")
+	o := runTestCLI(t, "__complete", "control", "wo")
 	assert.Equal(t, 0, o.code, "stderr: %s", o.stderr)
 	assert.Contains(t, o.stdout, "workspace")
 	assert.Contains(t, o.stdout, "worker")
@@ -442,7 +359,7 @@ func TestCompletion_CompletesCommandNames(t *testing.T) {
 // `leapmux commands --json` lists every command of the tree with its
 // arguments and flags, so a caller learns the grammar without parsing help.
 func TestCommands_DescribesTheWholeTree(t *testing.T) {
-	o := runTestCLI(t, &[]cliCall{}, "commands", "--json")
+	o := runTestCLI(t, "commands", "--json")
 	require.Equal(t, 0, o.code, "stderr: %s", o.stderr)
 	var env struct {
 		Data cli.CommandTree `json:"data"`
@@ -469,13 +386,13 @@ func TestCommands_DescribesTheWholeTree(t *testing.T) {
 // `leapmux control` alone, and each of its groups alone, prints the help of
 // the group on stdout and exits 0: the caller asked what the group holds.
 func TestControlGroups_PrintTheirHelp(t *testing.T) {
-	o := runTestCLI(t, &[]cliCall{}, "control")
+	o := runTestCLI(t, "control")
 	assert.Equal(t, 0, o.code)
 	assert.Contains(t, o.stdout, "Usage:\n  leapmux control <command>\n")
 	assert.Contains(t, o.stdout, "\n  admin ")
 	assert.Empty(t, o.stderr)
 
-	o = runTestCLI(t, &[]cliCall{}, "control", "worker", "pins")
+	o = runTestCLI(t, "control", "worker", "pins")
 	assert.Equal(t, 0, o.code)
 	for _, verb := range []string{"list", "get", "remove"} {
 		assert.Contains(t, o.stdout, "\n  "+verb+" ")
@@ -485,11 +402,11 @@ func TestControlGroups_PrintTheirHelp(t *testing.T) {
 // A token that resolves to nothing under a group is refused with the path of
 // the group, at every depth.
 func TestControlGroups_RefuseAnUnknownCommand(t *testing.T) {
-	o := runTestCLI(t, &[]cliCall{}, "control", "xyz")
+	o := runTestCLI(t, "control", "xyz")
 	assert.Equal(t, cli.ExitUsage, o.code)
 	assert.Contains(t, o.stderr, `unknown command "xyz" for "leapmux control"`)
 
-	o = runTestCLI(t, &[]cliCall{}, "control", "admin", "xyz")
+	o = runTestCLI(t, "control", "admin", "xyz")
 	assert.Equal(t, cli.ExitUsage, o.code)
 	assert.Contains(t, o.stderr, `unknown command "xyz" for "leapmux control admin"`)
 }
@@ -503,7 +420,7 @@ func TestCommandTree_KeepsTheRulesOfEveryLeaf(t *testing.T) {
 		targets = append(targets, kind.String())
 	}
 	require.Contains(t, targets, "worker", "the loop must reach the last kind")
-	clitest.CheckTree(t, newRootCommand(testCLIRunners(&[]cliCall{})), clitest.TreeRules{Targets: targets})
+	clitest.CheckTree(t, newRootCommand(testCLIRunners(t)), clitest.TreeRules{Targets: targets})
 }
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite the reference pages of the docs site that the command tree generates")
@@ -534,7 +451,7 @@ This page lists every command of ` + "`leapmux control`" + ` with its arguments,
 // to a command shows in its diff.
 func TestControlReference_IsCurrent(t *testing.T) {
 	var body bytes.Buffer
-	require.NoError(t, cli.WriteReference(&body, cli.Describe(newRootCommand(testCLIRunners(&[]cliCall{}))), "control"))
+	require.NoError(t, cli.WriteReference(&body, cli.Describe(newRootCommand(testCLIRunners(t))), "control"))
 	got := controlReferenceHeader + strings.TrimRight(body.String(), "\n") + "\n"
 	// The page is published, so a value that a flag reads from this machine
 	// must never reach it.

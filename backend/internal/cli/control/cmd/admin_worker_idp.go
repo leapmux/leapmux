@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"strconv"
 
@@ -52,7 +51,7 @@ func newAdminWorkerList() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminWorkerService().ListWorkers(context.Background(), &leapmuxv1.AdminWorkerServiceListWorkersRequest{
+			resp, err := c.AdminWorkerService().ListWorkers(a.Context(), &leapmuxv1.AdminWorkerServiceListWorkersRequest{
 				User: owner.Selector(), Status: statusEnum, Page: page.request(),
 			})
 			if err != nil {
@@ -97,7 +96,7 @@ func newAdminWorkerGet() *cobra.Command {
 		},
 		BeforeDial: argInto(&id, "worker"),
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminWorkerService().GetWorker(context.Background(), &leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: id})
+			resp, err := c.AdminWorkerService().GetWorker(a.Context(), &leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: id})
 			if err != nil {
 				return err
 			}
@@ -117,7 +116,7 @@ func newAdminWorkerDeregister() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&id, "worker"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminWorkerService().DeregisterWorker(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id}); err != nil {
+			if _, err := c.AdminWorkerService().DeregisterWorker(a.Context(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id}); err != nil {
 				return err
 			}
 			return a.Result(map[string]any{"deregistered": id})
@@ -139,7 +138,7 @@ func newAdminWorkerRegKeyList() *cobra.Command {
 			fs.BoolVar(&includeExpired, "include-expired", false, "include revoked or expired keys (forensics; default shows only live keys)")
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminWorkerService().ListRegistrationKeys(context.Background(), &leapmuxv1.ListRegistrationKeysRequest{
+			resp, err := c.AdminWorkerService().ListRegistrationKeys(a.Context(), &leapmuxv1.ListRegistrationKeysRequest{
 				IncludeExpired: includeExpired, Page: page.request(),
 			})
 			if err != nil {
@@ -184,7 +183,7 @@ func newAdminWorkerRegKeyRevoke() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&id, "reg-key"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: id}); err != nil {
+			if _, err := c.AdminWorkerService().RevokeRegistrationKey(a.Context(), &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: id}); err != nil {
 				return err
 			}
 			return a.Result(map[string]any{"revoked": id})
@@ -201,7 +200,7 @@ func newAdminWorkerRegKeyPurgeExpired() *cobra.Command {
 		},
 		Mutates: true,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(context.Background(), &leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
+			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(a.Context(), &leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
 			if err != nil {
 				return err
 			}
@@ -262,7 +261,7 @@ func newAdminOAuthProviderAdd() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminIdPService().AddOAuthProvider(context.Background(), req)
+			resp, err := c.AdminIdPService().AddOAuthProvider(a.Context(), req)
 			if err != nil {
 				return err
 			}
@@ -279,7 +278,7 @@ func newAdminOAuthProviderList() *cobra.Command {
 			{Command: "leapmux control admin idp list"},
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminIdPService().ListOAuthProviders(context.Background(), &leapmuxv1.ListOAuthProvidersRequest{})
+			resp, err := c.AdminIdPService().ListOAuthProviders(a.Context(), &leapmuxv1.ListOAuthProvidersRequest{})
 			if err != nil {
 				return err
 			}
@@ -318,7 +317,7 @@ func newAdminOAuthProviderRemove() *cobra.Command {
 		},
 		BeforeDial: argInto(&id, "idp"),
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminIdPService().RemoveOAuthProvider(context.Background(), &leapmuxv1.RemoveOAuthProviderRequest{
+			resp, err := c.AdminIdPService().RemoveOAuthProvider(a.Context(), &leapmuxv1.RemoveOAuthProviderRequest{
 				Id: id, Force: force,
 			})
 			if err != nil {
@@ -340,7 +339,7 @@ func newAdminOAuthProviderSetEnabled(enabled bool, use, short string, examples [
 		Mutates:    true,
 		BeforeDial: argInto(&id, "idp"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminIdPService().SetOAuthProviderEnabled(context.Background(), &leapmuxv1.SetOAuthProviderEnabledRequest{
+			if _, err := c.AdminIdPService().SetOAuthProviderEnabled(a.Context(), &leapmuxv1.SetOAuthProviderEnabledRequest{
 				Id: id, Enabled: enabled,
 			}); err != nil {
 				return err

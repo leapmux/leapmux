@@ -5,14 +5,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"io"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
@@ -34,16 +36,11 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
-// testCmdCtx is the dummy cmdCtx tests pass to leaf functions. The Path
-// and Description fields only affect --help output, which these tests don't
-// exercise — so an empty ctx is sufficient.
-var testCmdCtx = cmdCtx{}
-
 // createTestUser seeds a user row directly through the generated queries.
 // The old seeding path (`admin user create`) is now an online RPC; the
 // recover tree only creates the FIRST admin, so offline tests seed plain
 // users here. The hash is a placeholder: every test that goes through
-// runPasswordReset overwrites it.
+// `recover password reset` overwrites it.
 func createTestUser(t *testing.T, dir, username string) gendb.User {
 	t.Helper()
 	_, q := openTestDB(t, dir)
@@ -94,7 +91,7 @@ func seedEncryptedOAuthProvider(t *testing.T, dir, secret string) {
 	ctx := context.Background()
 	ks, err := keystore.LoadOrGenerate(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	provID := id.Generate()
@@ -117,7 +114,7 @@ func seedCaptchaTurnstileSecret(t *testing.T, dir string) {
 	ctx := context.Background()
 	ks, err := keystore.LoadOrGenerate(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	enc, err := ks.Encrypt([]byte(`{"secret_key":"captcha-secret"}`), keystore.SettingsSecretAAD("captcha.turnstile"))
@@ -171,7 +168,7 @@ func TestCLI_RotateEncryptionKey(t *testing.T) {
 	dir := setupTestDataDir(t)
 	keyPath := filepath.Join(dir, "encryption.key")
 
-	err := runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir})
+	err := runRecover(t, "encryption-key", "rotate", "--data-dir", dir)
 	require.NoError(t, err)
 
 	ks, err := keystore.LoadFromFile(keyPath)
@@ -183,8 +180,8 @@ func TestCLI_RotateEncryptionKey(t *testing.T) {
 func TestCLI_RotateEncryptionKey_TwiceIncrementsVersion(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	_ = runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir})
-	_ = runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir})
+	_ = runRecover(t, "encryption-key", "rotate", "--data-dir", dir)
+	_ = runRecover(t, "encryption-key", "rotate", "--data-dir", dir)
 
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
@@ -195,16 +192,16 @@ func TestCLI_RotateEncryptionKey_TwiceIncrementsVersion(t *testing.T) {
 func TestCLI_RemoveEncryptionKey_ActiveVersionFails(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	err := runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot remove active")
 }
 
 func TestCLI_RemoveEncryptionKey_OldVersion(t *testing.T) {
 	dir := setupTestDataDir(t)
-	_ = runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir})
+	_ = runRecover(t, "encryption-key", "rotate", "--data-dir", dir)
 
-	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	err := runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir)
 	require.NoError(t, err)
 
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
@@ -217,13 +214,14 @@ func TestCLI_RemoveEncryptionKey_RefusesInvalidVersion(t *testing.T) {
 	for _, version := range []string{"0", "-1", "4294967296", "4294967297", "18446744073709551615"} {
 		t.Run(version, func(t *testing.T) {
 			dir := setupTestDataDir(t)
-			require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+			require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
 			keyPath := filepath.Join(dir, "encryption.key")
 			before, err := os.ReadFile(keyPath)
 			require.NoError(t, err)
 
-			err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", version, "--data-dir", dir})
-			assert.Error(t, err)
+			err = runRecover(t, "encryption-key", "remove", version, "--data-dir", dir)
+			require.Error(t, err)
+			assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code, "an invalid <version> is a usage error")
 
 			after, err := os.ReadFile(keyPath)
 			require.NoError(t, err)
@@ -242,7 +240,7 @@ func TestCLI_RemoveEncryptionKey_ReportsAbsentMaximumVersion(t *testing.T) {
 	before, err := os.ReadFile(keyPath)
 	require.NoError(t, err)
 
-	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "4294967295", "--data-dir", dir})
+	err = runRecover(t, "encryption-key", "remove", "4294967295", "--data-dir", dir)
 	assert.ErrorContains(t, err, "key version 4294967295 not in ring")
 
 	after, err := os.ReadFile(keyPath)
@@ -259,10 +257,10 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 	seedEncryptedOAuthProvider(t, dir, "original-secret")
 
 	// Rotate key.
-	_ = runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir})
+	_ = runRecover(t, "encryption-key", "rotate", "--data-dir", dir)
 
 	// Re-encrypt.
-	err := runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir})
+	err := runRecover(t, "encryption-key", "reencrypt", "--data-dir", dir)
 	require.NoError(t, err)
 
 	// Verify the encrypted secret can be decrypted with the new key only.
@@ -291,7 +289,7 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 
 	ksBefore, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	providers, err := st.OAuthProviders().ListAllWithSecrets(ctx)
 	require.NoError(t, err)
@@ -299,10 +297,10 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 	before := append([]byte(nil), providers[0].ClientSecret...)
 	require.NoError(t, st.Close())
 
-	err = runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir})
+	err = runRecover(t, "encryption-key", "reencrypt", "--data-dir", dir)
 	require.NoError(t, err)
 
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	st, err = storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	after, err := st.OAuthProviders().GetByID(ctx, providers[0].ID)
@@ -323,7 +321,7 @@ func TestCLI_ReencryptSecrets_MigratesOAuthTokens(t *testing.T) {
 
 	ks, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	user := storetest.SeedUser(t, st, "tokuser")
 	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
@@ -345,13 +343,13 @@ func TestCLI_ReencryptSecrets_MigratesOAuthTokens(t *testing.T) {
 	}))
 	require.NoError(t, st.Close())
 
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
-	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
+	require.NoError(t, runRecover(t, "encryption-key", "reencrypt", "--data-dir", dir))
 
 	ks2, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), ks2.ActiveVersion())
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	st, err = storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	tokens, err := st.OAuthTokens().ListByKeyVersion(ctx, 2)
@@ -376,17 +374,17 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenReferenced(t *testing.T) {
 	seedEncryptedOAuthProvider(t, dir, "s1")
 
 	// Rotate to version 2; the provider secret is still encrypted under v1.
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
 
 	// Removing v1 must be refused — it still encrypts the provider secret.
-	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	err := runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
 
 	// After reencrypt migrates the secret to v2, v1 is unreferenced and
 	// removal succeeds.
-	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
-	require.NoError(t, runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "reencrypt", "--data-dir", dir))
+	require.NoError(t, runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir))
 
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
@@ -398,7 +396,7 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed an OAuth token encrypted under key version 1.
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	user := storetest.SeedUser(t, st, "tokuser")
 	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
@@ -414,11 +412,11 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 	require.NoError(t, st.Close())
 
 	// Rotate to version 2; the OAuth token is still on version 1.
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
 
 	// Removing v1 must be refused — an OAuth token still refers to it. This
 	// exercises the guard's CountByKeyVersion (oauth_tokens) branch.
-	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	err = runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OAuth token")
 }
@@ -433,20 +431,20 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T
 	seedCaptchaTurnstileSecret(t, dir)
 
 	// Rotate to version 2; the captcha secret is still encrypted under v1.
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
 
 	// Removing v1 must be refused — it still encrypts the captcha secret.
-	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	err := runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
 	assert.Contains(t, err.Error(), "settings secret")
 
 	// Reencrypt migrates the secret; it must decrypt under v2 with the
 	// same key-name-scoped AAD and the original plaintext.
-	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "reencrypt", "--data-dir", dir))
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	row, err := st.Settings().Get(ctx, "captcha.turnstile")
@@ -461,13 +459,13 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T
 	assert.Equal(t, "captcha-secret", ts.SecretKey)
 
 	// With the secret migrated, v1 is unreferenced and removal succeeds.
-	require.NoError(t, runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir))
 }
 
 func TestCLI_RotatePepper_RequiresYes(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runRotatePepper(testCmdCtx, []string{"--data-dir", dir})
+	err := runRecover(t, "encryption-key", "rotate-pepper", "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--yes")
 	for _, effect := range []string{"every session", "Worker auth token", "API and delegation tokens", "app secrets", "registration keys", "device codes"} {
@@ -487,7 +485,7 @@ func TestCLI_RotatePepper_ChangesPepperLeavesKeysIntact(t *testing.T) {
 	before, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
 
-	require.NoError(t, runRotatePepper(testCmdCtx, []string{"--yes", "--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "rotate-pepper", "--yes", "--data-dir", dir))
 
 	after, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
@@ -506,11 +504,7 @@ func TestCLI_PasswordReset(t *testing.T) {
 	require.NoError(t, err)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 
-	err = runPasswordReset(testCmdCtx, []string{
-		"--id", user.ID,
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	})
+	err = runRecover(t, "password", "reset", "id:"+user.ID, "--password", "NewPassword2!", "--data-dir", dir)
 	require.NoError(t, err)
 
 	// Verify hash changed.
@@ -536,11 +530,7 @@ func TestCLI_PasswordReset_PreservesOtherUserSessions(t *testing.T) {
 	bobSessionID := createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	// Reset alice's password.
-	err := runPasswordReset(testCmdCtx, []string{
-		"--id", alice.ID,
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "password", "reset", "id:"+alice.ID, "--password", "NewPassword2!", "--data-dir", dir)
 	require.NoError(t, err)
 
 	// Verify bob's session is still there.
@@ -555,29 +545,22 @@ func TestCLI_PasswordReset_MissingPassword(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runPasswordReset(testCmdCtx, []string{"--id", user.ID, "--data-dir", dir})
+	err := runRecover(t, "password", "reset", "id:"+user.ID, "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a terminal")
 }
 
-// The refusal echoes the selector the operator typed, whichever flag held it.
+// The refusal is not_found, and it echoes the <user> that the operator typed,
+// in either form.
 func TestCLI_PasswordReset_NotFound(t *testing.T) {
-	for _, tc := range []struct {
-		flag, value string
-	}{
-		{"--id", "nonexistent-id"},
-		{"--username", "nobody"},
-	} {
-		t.Run(tc.flag, func(t *testing.T) {
+	for _, user := range []string{"id:nonexistent-id", "nobody"} {
+		t.Run(user, func(t *testing.T) {
 			dir := setupTestDataDir(t)
 
-			err := runPasswordReset(testCmdCtx, []string{
-				tc.flag, tc.value,
-				"--password", "NewPassword2!",
-				"--data-dir", dir,
-			})
+			err := runRecover(t, "password", "reset", user, "--password", "NewPassword2!", "--data-dir", dir)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "user not found: "+tc.value)
+			assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+			assert.Contains(t, err.Error(), fmt.Sprintf("no user %q", user))
 		})
 	}
 }
@@ -586,11 +569,7 @@ func TestCLI_PasswordReset_ByUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runPasswordReset(testCmdCtx, []string{
-		"--username", "alice",
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "password", "reset", "alice", "--password", "NewPassword2!", "--data-dir", dir)
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -599,21 +578,17 @@ func TestCLI_PasswordReset_ByUsername(t *testing.T) {
 	assert.NotEqual(t, "placeholder", updated.PasswordHash)
 }
 
-// Both flags are refused before any lookup, even when they name two different
-// users, and neither user's password changes.
-func TestCLI_PasswordReset_IdAndUsernameMutuallyExclusive(t *testing.T) {
+// A second <user> is refused before any lookup, even when the two name two
+// different users, and neither user's password changes.
+func TestCLI_PasswordReset_RefusesASecondUser(t *testing.T) {
 	dir := setupTestDataDir(t)
 	alice := createTestUser(t, dir, "alice")
 	createTestUser(t, dir, "bob")
 
-	err := runPasswordReset(testCmdCtx, []string{
-		"--id", alice.ID,
-		"--username", "bob",
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "password", "reset", "id:"+alice.ID, "bob", "--password", "NewPassword2!", "--data-dir", dir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--id and --username are mutually exclusive")
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	assert.Contains(t, err.Error(), `unexpected argument "bob"`)
 
 	_, q := openTestDB(t, dir)
 	for _, username := range []string{"alice", "bob"} {
@@ -623,18 +598,28 @@ func TestCLI_PasswordReset_IdAndUsernameMutuallyExclusive(t *testing.T) {
 	}
 }
 
-// With neither flag, resolveUser builds no selector, and the shared rule's
-// ErrNoUserSelector reaches the operator in flag words.
-func TestCLI_PasswordReset_RequiresASelector(t *testing.T) {
-	dir := setupTestDataDir(t)
-	createTestUser(t, dir, "alice")
-
-	err := runPasswordReset(testCmdCtx, []string{
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--id or --username is required")
+// A missing or empty <user> is a usage error, and the command opens no
+// database: a usage error changes nothing on disk.
+func TestCLI_PasswordReset_RequiresAUser(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		message string
+	}{
+		{"missing", nil, "missing argument <user>"},
+		{"empty", []string{""}, "<user> is empty"},
+		{"an id prefix alone", []string{"id:"}, `<user> "id:" has no id after the "id:" prefix`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "hub")
+			args := append([]string{"password", "reset"}, tc.args...)
+			err := runRecover(t, append(args, "--password", "NewPassword2!", "--data-dir", dir)...)
+			require.Error(t, err)
+			assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+			assert.Contains(t, err.Error(), tc.message)
+			assert.NoDirExists(t, dir, "a usage error must not create the data directory")
+		})
+	}
 }
 
 func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
@@ -642,7 +627,7 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 	ctx := context.Background()
 	user := createTestUser(t, dir, "alice")
 
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
@@ -658,13 +643,9 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.Close())
 
-	require.NoError(t, runPasswordReset(testCmdCtx, []string{
-		"--id", user.ID,
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	}))
+	require.NoError(t, runRecover(t, "password", "reset", "id:"+user.ID, "--password", "NewPassword2!", "--data-dir", dir))
 
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	st, err = storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	tokens, err := st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
@@ -681,36 +662,83 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 		"a password reset must advance the user's credential epoch")
 }
 
-func captureStdout(t *testing.T, fn func() error) (string, error) {
-	t.Helper()
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	old := os.Stdout
-	os.Stdout = w
-	fnErr := fn()
-	require.NoError(t, w.Close())
-	os.Stdout = old
-	out, err := io.ReadAll(r)
-	require.NoError(t, err)
-	return string(out), fnErr
-}
-
 func TestCLI_DBPath(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	out, err := captureStdout(t, func() error {
-		return runDBPath(testCmdCtx, []string{"--data-dir", dir})
-	})
+	out, err := runRecoverOutput(t, "db", "path", "--data-dir", dir)
 	require.NoError(t, err)
-	assert.Equal(t, recoverConfig(dir).SQLiteDBPath(), strings.TrimSpace(out))
+	assert.Equal(t, testHubConfig(dir).SQLiteDBPath(), strings.TrimSpace(out))
+}
+
+// db path reads the configuration only: it creates no data directory.
+func TestCLI_DBPath_CreatesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hub")
+
+	out, err := runRecoverOutput(t, "db", "path", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "hub.db"), strings.TrimSpace(out))
+	assert.NoDirExists(t, dir)
+}
+
+// --config selects the database through the storage settings of the file,
+// and --data-dir still replaces the data directory of the file.
+func TestCLI_DBPath_ReadsTheConfigurationFile(t *testing.T) {
+	root := t.TempDir()
+	configFile := filepath.Join(root, "hub.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("storage:\n  sqlite:\n    path: /srv/leapmux/hub.db\n"), 0o600))
+
+	out, err := runRecoverOutput(t, "db", "path", "--config", configFile)
+	require.NoError(t, err)
+	assert.Equal(t, "/srv/leapmux/hub.db", strings.TrimSpace(out))
+
+	require.NoError(t, os.WriteFile(configFile, []byte("data_dir: from-file\n"), 0o600))
+	out, err = runRecoverOutput(t, "db", "path", "--config", configFile)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "from-file", "hub.db"), strings.TrimSpace(out), "a relative data_dir follows the file")
+
+	dataDir := t.TempDir()
+	out, err = runRecoverOutput(t, "db", "path", "--config", configFile, "--data-dir", dataDir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dataDir, "hub.db"), strings.TrimSpace(out), "--data-dir replaces the data directory of the file")
+}
+
+// A --config that the operator typed must exist: the loader would skip an
+// absent file without a word, and the command would then open the SQLite
+// database of the data directory instead of the configured backend.
+func TestCLI_RefusesAnAbsentConfigurationFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hub")
+	err := runRecover(t, "db", "version", "--config", filepath.Join(t.TempDir(), "typo.yaml"), "--data-dir", dir)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	assert.Contains(t, err.Error(), "cannot read the configuration file")
+	assert.NoDirExists(t, dir, "the refusal must not create the data directory")
+}
+
+// Without --config, the command reads no configuration file and no
+// variable: the default file of the Hub would select the wrong database for
+// the data directory of a solo or dev instance.
+func TestCLI_ReadsNoConfigurationWithoutTheFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LEAPMUX_HUB_STORAGE_TYPE", "postgres")
+	hubFile := filepath.Join(home, ".config", "leapmux", "hub", "hub.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(hubFile), 0o700))
+	require.NoError(t, os.WriteFile(hubFile, []byte("storage:\n  sqlite:\n    path: /srv/elsewhere.db\n"), 0o600))
+	dir := setupTestDataDir(t)
+
+	out, err := runRecoverOutput(t, "db", "path", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "hub.db"), strings.TrimSpace(out))
+
+	require.NoError(t, runRecover(t, "db", "version", "--data-dir", dir),
+		"the command opens the SQLite database despite LEAPMUX_HUB_STORAGE_TYPE")
 }
 
 func TestCLI_DBVersion(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	out, err := captureStdout(t, func() error {
-		return runDBVersion(testCmdCtx, []string{"--data-dir", dir})
-	})
+	out, err := runRecoverOutput(t, "db", "version", "--data-dir", dir)
 	require.NoError(t, err)
 	assert.Contains(t, out, "Current schema version:")
 	assert.Contains(t, out, "Latest available version:")
@@ -719,11 +747,34 @@ func TestCLI_DBVersion(t *testing.T) {
 func TestCLI_DBMigrate_AlreadyLatest(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	out, err := captureStdout(t, func() error {
-		return runDBMigrate(testCmdCtx, []string{"--data-dir", dir})
-	})
+	out, err := runRecoverOutput(t, "db", "migrate", "--data-dir", dir)
 	require.NoError(t, err)
 	assert.Contains(t, out, "Already at latest version.")
+}
+
+// --to migrates to the version it gives. The latest version is a valid
+// target, and the command reports it.
+func TestCLI_DBMigrate_ToTheLatestVersion(t *testing.T) {
+	dir := setupTestDataDir(t)
+	st, err := storeopen.Open(context.Background(), testHubConfig(dir))
+	require.NoError(t, err)
+	latest := st.Migrator().LatestVersion()
+	require.NoError(t, st.Close())
+
+	out, err := runRecoverOutput(t, "db", "migrate", "--to", strconv.FormatInt(latest, 10), "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, fmt.Sprintf("Migration complete. Current version: %d", latest))
+}
+
+// A negative --to is a usage error, and the command opens no database.
+func TestCLI_DBMigrate_RefusesANegativeVersion(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hub")
+
+	err := runRecover(t, "db", "migrate", "--to", "-3", "--data-dir", dir)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	assert.Contains(t, err.Error(), "--to -3 is not a schema version")
+	assert.NoDirExists(t, dir, "a usage error must not create the data directory")
 }
 
 // ---- recover bootstrap ----
@@ -731,11 +782,7 @@ func TestCLI_DBMigrate_AlreadyLatest(t *testing.T) {
 func TestCLI_BootstrapCreateAdmin(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "firstadmin",
-		"--password", "AdminPassword1!",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "bootstrap", "create-admin", "firstadmin", "--password", "AdminPassword1!", "--data-dir", dir)
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -743,14 +790,16 @@ func TestCLI_BootstrapCreateAdmin(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotZero(t, user.IsAdmin, "the bootstrapped user is always an administrator")
 
-	// The precondition refuses a second bootstrap once any admin exists.
-	err = runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "secondadmin",
-		"--password", "AdminPassword1!",
-		"--data-dir", dir,
-	})
+	// The precondition refuses a second bootstrap once any admin exists, and
+	// it points at the online command that creates every later user.
+	err = runRecover(t, "bootstrap", "create-admin", "secondadmin", "--password", "AdminPassword1!", "--data-dir", dir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "control admin user create")
+	failure := cli.FromError(err)
+	assert.Equal(t, cli.CodeConflict, failure.Code)
+	assert.Contains(t, failure.Message, "an administrator already exists")
+	assert.Contains(t, strings.Join(failure.Hints, "\n"), "leapmux control admin user create --admin")
+	_, err = q.GetUserByUsername(context.Background(), "secondadmin")
+	require.Error(t, err, "the refusal must happen before the insert")
 }
 
 // TestCLI_BootstrapCreateAdmin_RefusesAReservedUsername pins the guard
@@ -763,11 +812,7 @@ func TestCLI_BootstrapCreateAdmin(t *testing.T) {
 func TestCLI_BootstrapCreateAdmin_RefusesAReservedUsername(t *testing.T) {
 	for _, name := range []string{"solo", "SOLO", " Solo "} {
 		dir := setupTestDataDir(t)
-		err := runBootstrapCreateAdmin(testCmdCtx, []string{
-			"--username", name,
-			"--password", "AdminPassword1!",
-			"--data-dir", dir,
-		})
+		err := runRecover(t, "bootstrap", "create-admin", name, "--password", "AdminPassword1!", "--data-dir", dir)
 		require.Errorf(t, err, "%q normalizes to the reserved solo username", name)
 		assert.Contains(t, err.Error(), "reserved username")
 
@@ -778,22 +823,34 @@ func TestCLI_BootstrapCreateAdmin_RefusesAReservedUsername(t *testing.T) {
 	}
 }
 
+// A missing or blank <username> is a usage error, and the command opens no
+// database: a usage error changes nothing on disk.
 func TestCLI_BootstrapCreateAdmin_MissingUsername(t *testing.T) {
-	dir := setupTestDataDir(t)
-	err := runBootstrapCreateAdmin(testCmdCtx, []string{"--password", "AdminPassword1!", "--data-dir", dir})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--username is required")
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		message string
+	}{
+		{"missing", nil, "missing argument <username>"},
+		{"blank", []string{"  "}, "<username> is empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "hub")
+			args := append([]string{"bootstrap", "create-admin"}, tc.args...)
+			err := runRecover(t, append(args, "--password", "AdminPassword1!", "--data-dir", dir)...)
+			require.Error(t, err)
+			assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+			assert.Contains(t, err.Error(), tc.message)
+			assert.NoDirExists(t, dir, "a usage error must not create the data directory")
+		})
+	}
 }
 
 func TestCLI_BootstrapCreateAdmin_SucceedsWhenOnlyNonAdminsExist(t *testing.T) {
 	dir := setupTestDataDir(t)
 	createTestUser(t, dir, "bob")
 
-	err := runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "alice",
-		"--password", "AdminPassword1!",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "bootstrap", "create-admin", "alice", "--password", "AdminPassword1!", "--data-dir", dir)
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -806,11 +863,7 @@ func TestCLI_BootstrapCreateAdmin_DuplicateUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	createTestUser(t, dir, "alice")
 
-	err := runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "alice",
-		"--password", "AdminPassword1!",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "bootstrap", "create-admin", "alice", "--password", "AdminPassword1!", "--data-dir", dir)
 	require.Error(t, err)
 	// The bootstrap admin carries no email, so the only unique index it can
 	// lose is users.username. The typed error keeps that field readable to a
@@ -842,11 +895,7 @@ func TestCLI_BootstrapCreateAdmin_PassesAStoreFaultThrough(t *testing.T) {
 	_, err := sqlDB.Exec("DROP TABLE workspace_sections")
 	require.NoError(t, err)
 
-	err = runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "firstadmin",
-		"--password", "AdminPassword1!",
-		"--data-dir", dir,
-	})
+	err = runRecover(t, "bootstrap", "create-admin", "firstadmin", "--password", "AdminPassword1!", "--data-dir", dir)
 	require.Error(t, err)
 
 	var taken *service.FieldTakenError
@@ -870,11 +919,9 @@ func TestCLI_BootstrapCreateAdmin_RefusesAMalformedUsername(t *testing.T) {
 	// username that becomes "upper". These are the shapes it refuses.
 	for _, username := range []string{"has space", "under_score", "-leading", "trailing-", "double--hyphen", strings.Repeat("a", 33)} {
 		dir := setupTestDataDir(t)
-		err := runBootstrapCreateAdmin(testCmdCtx, []string{
-			"--username", username,
-			"--password", "AdminPassword1!",
-			"--data-dir", dir,
-		})
+		// "--" ends the flags, so a username that starts with a dash is the
+		// argument and not a flag.
+		err := runRecover(t, "bootstrap", "create-admin", "--password", "AdminPassword1!", "--data-dir", dir, "--", username)
 		require.Errorf(t, err, "username %q must be refused", username)
 		assert.Contains(t, err.Error(), "username")
 	}
@@ -882,11 +929,7 @@ func TestCLI_BootstrapCreateAdmin_RefusesAMalformedUsername(t *testing.T) {
 
 func TestCLI_BootstrapCreateAdmin_NormalizesTheUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
-	require.NoError(t, runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "  FirstAdmin  ",
-		"--password", "AdminPassword1!",
-		"--data-dir", dir,
-	}))
+	require.NoError(t, runRecover(t, "bootstrap", "create-admin", "  FirstAdmin  ", "--password", "AdminPassword1!", "--data-dir", dir))
 	_, q := openTestDB(t, dir)
 	user, err := q.GetUserByUsername(context.Background(), "firstadmin")
 	require.NoError(t, err, "the username is lowercased and trimmed before it is stored")
@@ -895,11 +938,7 @@ func TestCLI_BootstrapCreateAdmin_NormalizesTheUsername(t *testing.T) {
 
 func TestCLI_BootstrapCreateAdmin_RefusesAWeakPassword(t *testing.T) {
 	dir := setupTestDataDir(t)
-	err := runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "firstadmin",
-		"--password", "short",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "bootstrap", "create-admin", "firstadmin", "--password", "short", "--data-dir", dir)
 	require.Error(t, err)
 
 	// The refusal must happen BEFORE the row is written.
@@ -912,119 +951,47 @@ func TestCLI_BootstrapCreateAdmin_RefusesAWeakPassword(t *testing.T) {
 // pipe would put it somewhere a pipe can be recorded.
 func TestCLI_BootstrapCreateAdmin_RefusesAMissingPasswordOffATerminal(t *testing.T) {
 	dir := setupTestDataDir(t)
-	err := runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "firstadmin",
-		"--data-dir", dir,
-	})
+	err := runRecover(t, "bootstrap", "create-admin", "firstadmin", "--data-dir", dir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stdin is not a terminal")
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	assert.Contains(t, err.Error(), "--password is required (stdin is not a terminal)")
 }
 
 // --display-name is the flag every E2E hub bootstraps with, and nothing
 // covered it: an empty one falls back to the username.
 func TestCLI_BootstrapCreateAdmin_DisplayName(t *testing.T) {
 	dir := setupTestDataDir(t)
-	require.NoError(t, runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "firstadmin",
-		"--password", "AdminPassword1!",
-		"--display-name", "First Admin",
-		"--data-dir", dir,
-	}))
+	require.NoError(t, runRecover(t, "bootstrap", "create-admin", "firstadmin", "--password", "AdminPassword1!", "--display-name", "First Admin", "--data-dir", dir))
 	_, q := openTestDB(t, dir)
 	user, err := q.GetUserByUsername(context.Background(), "firstadmin")
 	require.NoError(t, err)
 	assert.Equal(t, "First Admin", user.DisplayName)
 
 	other := setupTestDataDir(t)
-	require.NoError(t, runBootstrapCreateAdmin(testCmdCtx, []string{
-		"--username", "nodisplayname",
-		"--password", "AdminPassword1!",
-		"--data-dir", other,
-	}))
+	require.NoError(t, runRecover(t, "bootstrap", "create-admin", "nodisplayname", "--password", "AdminPassword1!", "--data-dir", other))
 	_, q2 := openTestDB(t, other)
 	fallback, err := q2.GetUserByUsername(context.Background(), "nodisplayname")
 	require.NoError(t, err)
 	assert.Equal(t, "nodisplayname", fallback.DisplayName, "an omitted display name falls back to the username")
 }
 
-// TestResolveGroupTokenTreatsSubgroupsAndCommandsAsOneNamespace pins the
-// rule the two tree walkers share.
-//
-// Matching each category separately and preferring the subgroup was wrong
-// in two ways at once: a prefix that fitted a subgroup AND a command
-// dispatched the subgroup with no word to the operator, and it beat an
-// EXACT command match — the one thing prefix matching must never do. No
-// group in recoverTree mixes the two categories today, so the property
-// needs a fixture to stay true.
-func TestResolveGroupTokenTreatsSubgroupsAndCommandsAsOneNamespace(t *testing.T) {
-	noop := func(cmdCtx, []string) error { return nil }
-	mixed := cmdGroup{
-		Subgroups: []cmdGroup{{Name: "passwords"}},
-		Commands: []cmdLeaf{
-			{Name: "password", Run: noop},
-			{Name: "path", Run: noop},
-		},
-	}
+// TestRecover_RefusesAnUnknownCommand pins the refusal that an operator reads
+// for a command that the recover tree does not hold, at each level.
+func TestRecover_RefusesAnUnknownCommand(t *testing.T) {
+	o := runTestCLI(t, "recover", "zzz")
+	assert.Equal(t, cli.ExitUsage, o.code)
+	assert.Contains(t, o.stderr, `unknown command "zzz" for "leapmux recover"`)
 
-	// An exact command name wins although a subgroup shares its prefix.
-	m := resolveGroupToken(mixed, "password")
-	assert.Equal(t, -1, m.Subgroup, "an exact command match must not be overtaken by a subgroup")
-	assert.Equal(t, 0, m.Command)
+	o = runTestCLI(t, "recover", "db", "zzz")
+	assert.Equal(t, cli.ExitUsage, o.code)
+	assert.Contains(t, o.stderr, `unknown command "zzz" for "leapmux recover db"`)
 
-	// A prefix that fits one subgroup and one command is AMBIGUOUS, and the
-	// candidate list names both.
-	m = resolveGroupToken(mixed, "passw")
-	assert.Equal(t, -1, m.Subgroup)
-	assert.Equal(t, -1, m.Command)
-	assert.ElementsMatch(t, []string{"passwords", "password"}, m.Candidates)
-
-	// A prefix unique across the union still resolves.
-	m = resolveGroupToken(mixed, "pat")
-	assert.Equal(t, 1, m.Command)
-
-	// A prefix that fits nothing resolves to nothing, with no candidates.
-	m = resolveGroupToken(mixed, "zzz")
-	assert.Equal(t, -1, m.Subgroup)
-	assert.Equal(t, -1, m.Command)
-	assert.Empty(t, m.Candidates)
-}
-
-// TestRecoverRefusalWordingIsTheOneAnOperatorSees pins the refusal at the
-// layer that actually prints it.
-//
-// The validating walk runs FIRST and reports "handled" on every failure,
-// so the dispatcher's own refusal never reaches a terminal. Both now build
-// the message through unresolvedTokenError, so the spelling a test pins is
-// the spelling an operator reads.
-func TestRecoverRefusalWordingIsTheOneAnOperatorSees(t *testing.T) {
-	run := func(args ...string) (int, bool, string) {
-		var stdout, stderr strings.Builder
-		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, args, &stdout, &stderr)
-		return code, handled, stderr.String()
-	}
-
-	code, handled, out := run("zzz")
-	assert.Equal(t, 1, code)
-	assert.True(t, handled, "an unresolved token is handled by the walk, never by the dispatcher")
-	assert.Contains(t, out, "unknown recover group: zzz")
-
-	_, _, out = run("db", "zzz")
-	assert.Contains(t, out, "unknown recover db command: zzz")
-
-	// No two real subgroups share a first letter, so the ambiguity path has
-	// no input in this tree; the fixture test above covers that branch.
-	// A unique prefix still resolves.
-	code, handled, _ = run("boot")
-	assert.Equal(t, 1, code, "the group still needs a command")
-	assert.True(t, handled)
-
-	// And the dispatcher, reached directly, says exactly the same thing.
-	err := runRecover([]string{"zzz"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown recover group: zzz")
-	err = runRecover([]string{"db", "zzz"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown recover db command: zzz")
+	// A unique prefix of a group resolves, and the group alone prints its
+	// help.
+	o = runTestCLI(t, "recover", "boot")
+	assert.Equal(t, cli.ExitOK, o.code, o.stderr)
+	assert.Contains(t, o.stdout, "Usage:\n  leapmux recover bootstrap <command>\n")
+	assert.Contains(t, o.stdout, "create-admin")
 }
 
 func TestCLI_PasswordReset_DeletesPasskeys(t *testing.T) {
@@ -1032,7 +999,7 @@ func TestCLI_PasswordReset_DeletesPasskeys(t *testing.T) {
 	user := createTestUser(t, dir, "pkuser")
 	ctx := context.Background()
 
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	pkID := id.Generate()
 	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
@@ -1042,13 +1009,9 @@ func TestCLI_PasswordReset_DeletesPasskeys(t *testing.T) {
 	}))
 	require.NoError(t, st.Close())
 
-	require.NoError(t, runPasswordReset(testCmdCtx, []string{
-		"--id", user.ID,
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	}))
+	require.NoError(t, runRecover(t, "password", "reset", "id:"+user.ID, "--password", "NewPassword2!", "--data-dir", dir))
 
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	st, err = storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	rows, err := st.PasskeyCredentials().ListByUser(ctx, user.ID)
@@ -1063,7 +1026,7 @@ func TestCLI_Reencrypt_MigratesPasskeyPublicKey(t *testing.T) {
 
 	ks, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	user := storetest.SeedUser(t, st, "pkreenc")
 	pkID := id.Generate()
@@ -1077,13 +1040,13 @@ func TestCLI_Reencrypt_MigratesPasskeyPublicKey(t *testing.T) {
 	}))
 	require.NoError(t, st.Close())
 
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
-	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
+	require.NoError(t, runRecover(t, "encryption-key", "reencrypt", "--data-dir", dir))
 
 	ks2, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), ks2.ActiveVersion())
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	st, err = storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	rows, err := st.PasskeyCredentials().ListByKeyVersion(ctx, 2)
@@ -1101,7 +1064,7 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenPasskeyReferenced(t *testing.T) {
 	dir := setupTestDataDir(t)
 	ctx := context.Background()
 
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
+	st, err := storeopen.Open(ctx, testHubConfig(dir))
 	require.NoError(t, err)
 	user := storetest.SeedUser(t, st, "pkref")
 	pkID := id.Generate()
@@ -1112,8 +1075,8 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenPasskeyReferenced(t *testing.T) {
 	}))
 	require.NoError(t, st.Close())
 
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
-	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	require.NoError(t, runRecover(t, "encryption-key", "rotate", "--data-dir", dir))
+	err = runRecover(t, "encryption-key", "remove", "1", "--data-dir", dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
 	assert.Contains(t, err.Error(), "passkey")

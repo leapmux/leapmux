@@ -2,24 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 
-	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/lifecycle"
-	"github.com/leapmux/leapmux/util/version"
 )
-
-func handleVersionQuery(err error) bool {
-	if errors.Is(err, internalconfig.ErrVersionRequested) {
-		fmt.Println(version.Format())
-		return true
-	}
-	return false
-}
 
 func validateLifecycleSelection(configuration *lifecycleConfiguration) error {
 	return lifecycle.ValidateDirectorySelection(configuration.role, configuration.dataDirectory)
@@ -120,27 +110,32 @@ func reconcileNativeStatus(ctx context.Context, role lifecycle.Role, root string
 	return status, nil
 }
 
-// errStoppedExit and errUnresponsiveExit carry the status exit codes
-// through runCLI's error path.
+// errStoppedExit and errUnresponsiveExit carry the exit statuses of `status`,
+// which follow the LSB convention for a status command: 3 for a stopped
+// instance, and 1 for one that failed or does not answer. The report already
+// printed, so the root prints nothing more.
 var (
 	errNativeStartupFailed = errors.New("native startup failed")
-	errStoppedExit         = fmt.Errorf("\x00stopped")
-	errUnresponsiveExit    = fmt.Errorf("\x00unresponsive")
+	errStoppedExit         = &cli.ExitStatus{Code: 3}
+	errUnresponsiveExit    = &cli.ExitStatus{Code: 1}
 )
 
-// executeModeStatusWithController reports process state and relevant diagnostics.
-// Exit code 3 reports a stopped instance. A registered, disconnected worker
+// executeModeStatus reports process state and relevant diagnostics. Exit
+// code 3 reports a stopped instance. A registered, disconnected worker
 // remains running and returns exit code 0.
-func executeModeStatusWithController(mode string, args []string, newController nativeControllerFactory) error {
-	configuration, options, done, err := openLifecycleCommand(mode, "status", args)
-	if done {
+func executeModeStatus(ctx context.Context, printer *cli.Printer, line lifecycleCommandLine, newController nativeControllerFactory) error {
+	mode := line.mode()
+	configuration, options, err := openLifecycleCommand(line)
+	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	ctx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
 	status, observeErr := observeLifecycleModeWithController(ctx, configuration, newController)
 	if options.json {
-		if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
+		// The report is the result of the command, so it takes the envelope
+		// of every other --json result: {"data": <status>}.
+		if err := printer.Result(status); err != nil {
 			return err
 		}
 	} else {

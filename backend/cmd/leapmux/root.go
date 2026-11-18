@@ -25,67 +25,16 @@ your browser.
 Start with "leapmux solo start" on one machine. "leapmux control" drives a
 running LeapMux from a script or from an agent.`
 	for _, mode := range []string{"solo", "hub", "worker", "dev"} {
-		root.AddCommand(newModeCommand(mode, runners))
+		root.AddCommand(newModeCommand(mode, runners.modes))
 	}
 	root.AddCommand(
-		newRecoverCommand(runners),
+		newRecoverCommand(),
 		cmdcontrol.NewCommand(),
 		newVersionCommand(runners),
 		newCommandsCommand(root),
 		newCompletionCommand(root),
 	)
 	return root
-}
-
-// newModeCommand hands `leapmux <mode> ...` to the lifecycle dispatcher,
-// which walks the mode's own tree and prints its own messages.
-func newModeCommand(mode string, runners cliRunners) *cobra.Command {
-	return &cobra.Command{
-		Use:                mode + " <command>",
-		Short:              modeSummary(mode),
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
-			// The group walk validates and prints help; only a resolved
-			// leaf reaches the runner, so help never starts a process.
-			if code, handled := walkModeArgs(modeCommandGroup(mode), mode, args, stdout, stderr); handled {
-				return exitStatus(code)
-			}
-			if err := runners.runMode(mode, args); err != nil {
-				// The status exit codes ride their own marker; everything
-				// else is a failure or invalid use.
-				return exitStatus(modeExitCode(stderr, err))
-			}
-			return nil
-		},
-	}
-}
-
-// newRecoverCommand hands `leapmux recover ...` to the recover dispatcher.
-func newRecoverCommand(runners cliRunners) *cobra.Command {
-	return &cobra.Command{
-		Use:                "recover <command>",
-		Short:              recoverTree.Summary,
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if code, handled := walkGroupArgs(recoverTree, []string{"recover"}, args, cmd.OutOrStdout(), cmd.ErrOrStderr()); handled {
-				return exitStatus(code)
-			}
-			if err := runners.runRecover(args); err != nil {
-				return exitStatus(handleRunError(cmd.ErrOrStderr(), err))
-			}
-			return nil
-		},
-	}
-}
-
-// exitStatus turns an exit code that a dispatcher already reported into the
-// error that cli.Execute exits with, without a second message.
-func exitStatus(code int) error {
-	if code == 0 {
-		return nil
-	}
-	return &cli.ExitStatus{Code: code}
 }
 
 func newVersionCommand(runners cliRunners) *cobra.Command {

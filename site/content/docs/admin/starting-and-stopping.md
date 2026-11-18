@@ -158,9 +158,9 @@ leapmux solo status
 - The latest start: when it began and ended, its exit code, and the reason it failed
 - The full path of the log of that start
 
-`status` exits with `0` when the instance runs, `3` when it is stopped, and `1` when the command fails or the instance does not answer. A Worker that runs but has no connection to its Hub exits with `0`. So does a `dev` instance that waits for `/setup`.
+`status` exits with `0` when the instance runs, `3` when it is stopped, `1` when the command fails or the instance does not answer, and `2` for invalid use, such as an unknown flag. A Worker that runs but has no connection to its Hub exits with `0`. So does a `dev` instance that waits for `/setup`.
 
-`status --json` prints the same report as one JSON object for scripts. The [CLI Reference](/docs/reference/cli-reference/#status---json) lists its fields.
+`status --json` prints the same report for scripts, as one line: `{"data": <report>}`, the form of every `--json` result. The [CLI Reference](/docs/reference/cli-reference/#status---json) lists its fields.
 
 Each start writes its own log under `<data-dir>/.lifecycle/logs/`, and LeapMux keeps the logs of the last ten starts. When `start` fails or times out, it prints the end of the log and the full path of the log.
 

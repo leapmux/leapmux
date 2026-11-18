@@ -313,8 +313,8 @@ leapmux control worker pins remove <worker>           # clear one pin
 For a Worker's cross-worker pins (runs entirely against local files — no Worker process needs to run):
 
 ```bash
-leapmux worker cross-worker-pins list                              # see all pins (JSON)
-leapmux worker cross-worker-pins remove --target-worker-id <id>    # clear one pin
+leapmux worker cross-worker-pins list                  # see all pins
+leapmux worker cross-worker-pins remove <worker-id>     # clear one pin
 ```
 
 The browser clears its own pins under **Preferences → Advanced → Trusted worker keys**. The control CLI's pins and a Worker's cross-worker pins have no UI; clear them with the commands above. See [Control CLI](/docs/using/control-cli/) and [Managing Workers](/docs/admin/managing-workers/).

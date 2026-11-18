@@ -84,14 +84,14 @@ func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"127.0.0.1:4327"}, resp.GetBaseTcpAddresses(),
-		"-listen is reported read-only: it is a command-line option, never a setting")
+		"--listen is reported read-only: it is a command-line option, never a setting")
 	assert.Equal(t, []string{"unix:/tmp/hub.sock"}, resp.GetLocalIpcAddresses(),
 		"the local endpoints are startup facts, reported beside the TCP bases")
 	assert.Equal(t, []string{"*:4327", "192.168.1.24:8080"}, resp.GetConfigured())
 
 	require.Len(t, resp.GetBound(), 2)
 	assert.Equal(t, "*:4327", resp.GetBound()[0].GetAddress())
-	// "merged" is what lets the panel say the -listen address is served by
+	// "merged" is what lets the panel say the --listen address is served by
 	// this one rather than gone.
 	assert.Equal(t, "merged", resp.GetBound()[0].GetSource())
 	assert.Empty(t, resp.GetBound()[0].GetError())

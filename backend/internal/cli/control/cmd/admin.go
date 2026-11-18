@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -190,7 +189,7 @@ func newAdminSettingsList() *cobra.Command {
 			{Command: "leapmux control admin settings list"},
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+			resp, err := c.AdminSettingsService().ListSettings(a.Context(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
 				return err
 			}
@@ -272,7 +271,7 @@ func newAdminSettingsGet() *cobra.Command {
 		},
 		Run: func(c *control.Client, a adminArgs) error {
 			key := a.Rest[0]
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+			resp, err := c.AdminSettingsService().ListSettings(a.Context(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
 				return err
 			}
@@ -361,7 +360,7 @@ func newAdminSettingsSet() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			updated, restart, err := updateOneSetting(c, &leapmuxv1.SettingWrite{
+			updated, restart, err := updateOneSetting(a.Context(), c, &leapmuxv1.SettingWrite{
 				Key: a.Rest[0], PartialJson: string(value),
 			})
 			if err != nil {
@@ -405,7 +404,7 @@ func newAdminSettingsSetSecret() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			updated, restart, err := updateOneSetting(c, &leapmuxv1.SettingWrite{
+			updated, restart, err := updateOneSetting(a.Context(), c, &leapmuxv1.SettingWrite{
 				Key: a.Rest[0], SecretPartialJson: a.Rest[1],
 			})
 			if err != nil {
@@ -428,7 +427,7 @@ func newAdminSettingsReset() *cobra.Command {
 		},
 		Mutates: true,
 		Run: func(c *control.Client, a adminArgs) error {
-			value, restart, err := resetOneSetting(c, a.Rest[0])
+			value, restart, err := resetOneSetting(a.Context(), c, a.Rest[0])
 			if err != nil {
 				return err
 			}
@@ -560,7 +559,7 @@ func adminArgHelp() map[string]string {
 		operations = append(operations, string(op))
 	}
 	return map[string]string{
-		"user":      userArgHelp,
+		"user":      control.UserArgumentHelp,
 		"worker":    `A worker id, as "leapmux control admin worker list" prints it.`,
 		"reg-key":   `A registration key id, as "leapmux control admin worker reg-key list" prints it.`,
 		"app":       `An app's client id, as "leapmux control admin app list" prints it.`,

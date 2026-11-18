@@ -33,6 +33,9 @@ const (
 	// annotationArgs holds the JSON of a leaf's argument descriptions: a map
 	// from the argument name to one sentence about the values it accepts.
 	annotationArgs = "leapmux_args"
+	// annotationGroup gives the section of the help that lists a flag, for a
+	// command with more flags than one list reads well.
+	annotationGroup = "leapmux_group"
 )
 
 // Example is one example in a command's help.
@@ -69,6 +72,12 @@ type Leaf struct {
 	// removes an existing object takes the object as a REQUIRED argument,
 	// never as an optional one that defaults to the caller's own object.
 	Mutates bool
+	// HandlesSignals marks a command that handles SIGINT and SIGTERM itself,
+	// as a server in the foreground does to shut down gracefully on them.
+	// The leaf then installs no handler of its own, and it returns the
+	// command's error as it is, never as the interrupted exit status: an
+	// error after a shutdown signal is a failure of the shutdown.
+	HandlesSignals bool
 	// Flags registers the command's own flags.
 	Flags func(fs *pflag.FlagSet)
 	// Run does the work and returns the result to print. A nil result
@@ -216,8 +225,12 @@ func NewLeaf(l Leaf) *cobra.Command {
 		if err := validateRequiredFlags(cmd); err != nil {
 			return err
 		}
-		ctx, stop := WithInterrupt(cmd.Context())
-		defer stop()
+		ctx := cmd.Context()
+		if !l.HandlesSignals {
+			var stop func()
+			ctx, stop = WithInterrupt(ctx)
+			defer stop()
+		}
 		inv := &Invocation{
 			Context: ctx,
 			Command: cmd,
@@ -231,7 +244,7 @@ func NewLeaf(l Leaf) *cobra.Command {
 			// An interrupt ends every call in flight, and each reports the
 			// cancellation as its own failure. The user asked for the stop,
 			// so the command exits as a shell reports an interrupted one.
-			if Interrupted(inv.Context) {
+			if !l.HandlesSignals && Interrupted(inv.Context) {
 				return &ExitStatus{Code: ExitInterrupted}
 			}
 			return err
@@ -381,6 +394,13 @@ func SetEnum(fs *pflag.FlagSet, name string, values ...string) {
 // the live value of the caller's environment.
 func SetEnvDefault(fs *pflag.FlagSet, name, env string) {
 	mustAnnotate(fs, name, annotationEnvDefault, []string{env})
+}
+
+// SetFlagGroup puts the flag name in the section group of the help. The
+// help lists the flags of no group first, then each group in the order of
+// its first flag.
+func SetFlagGroup(fs *pflag.FlagSet, name, group string) {
+	mustAnnotate(fs, name, annotationGroup, []string{group})
 }
 
 func mustAnnotate(fs *pflag.FlagSet, name, key string, values []string) {

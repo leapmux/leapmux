@@ -169,11 +169,11 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       proc = spawn(options.binaryPath, [
         'dev',
         'run',
-        '-listen',
+        '--listen',
         `${E2E_HUB_HOST}:0`,
-        '-listen',
+        '--listen',
         localListen,
-        '-data-dir',
+        '--data-dir',
         dataDir,
       ], {
         stdio: ['ignore', log, log],
@@ -238,7 +238,6 @@ async function bootstrapFirstAdmin(binaryPath: string, dataDir: string): Promise
     'recover',
     'bootstrap',
     'create-admin',
-    '--username',
     TEST_ADMIN_USERNAME,
     '--password',
     TEST_ADMIN_PASSWORD,

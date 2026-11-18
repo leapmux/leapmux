@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -176,4 +177,17 @@ func TestWorkerDeregisterPrintsTheNextSteps(t *testing.T) {
 		assert.Contains(t, output, registerAgain)
 		assertNextCommands(t, output, serviceSelection(spec), "disable")
 	})
+}
+
+// A saved token that the Hub refuses fails with the steps that remove the
+// Worker without it, and the credentials stay.
+func TestWorkerDeregisterRefusedTokenHintsTheManualRemoval(t *testing.T) {
+	env := startRegisterEnv(t)
+	cfg := writeRegisteredStateAgainst(t, env.url)
+	err := runWorkerDeregister([]string{"--data-dir", cfg.DataDir})
+	require.Error(t, err)
+	failure := cli.FromError(err)
+	assert.Equal(t, cli.CodeNotLoggedIn, failure.Code, failure.Message)
+	assert.Equal(t, []string{"remove this Worker in the Worker list of the Hub, then delete " + cfg.StatePath()}, failure.Hints)
+	assert.FileExists(t, cfg.StatePath(), "an unconfirmed deregistration keeps the credentials")
 }

@@ -1,16 +1,17 @@
 package config
 
 import (
-	"errors"
-	"flag"
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
-	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,9 +38,8 @@ func TestLoad(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("defaults only", func(t *testing.T) {
-		cfg, showVersion, err := Load(nil)
+		cfg, err := Load(nil)
 		require.NoError(t, err)
-		assert.False(t, showVersion)
 		assert.Empty(t, cfg.Listen, "the flag default is empty; the platform default is applied at bind time")
 		entries, err := cfg.ListenEntries()
 		require.NoError(t, err)
@@ -62,7 +62,7 @@ log_level: "debug"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, []string{":9999"}, cfg.Listen)
 		assert.Equal(t, 16, cfg.SQLiteDBConfig().MaxConns)
@@ -81,7 +81,7 @@ log_level: "debug"
 
 		t.Setenv("LEAPMUX_HUB_LISTEN", ":7777")
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, []string{":7777"}, cfg.Listen)
 		assert.Equal(t, "debug", cfg.LogLevel) // from config file
@@ -90,19 +90,20 @@ log_level: "debug"
 	t.Run("CLI flags override env vars", func(t *testing.T) {
 		t.Setenv("LEAPMUX_HUB_LISTEN", ":7777")
 
-		cfg, _, err := Load([]string{"-listen", ":5555"})
+		cfg, err := Load([]string{"--listen", ":5555"})
 		require.NoError(t, err)
 		assert.Equal(t, []string{":5555"}, cfg.Listen)
 	})
 
-	t.Run("version flag", func(t *testing.T) {
-		_, showVersion, err := Load([]string{"-version"})
-		require.NoError(t, err)
-		assert.True(t, showVersion)
+	// The root command alone prints the version: a loader takes no --version
+	// of its own.
+	t.Run("version flag is not a flag of the hub", func(t *testing.T) {
+		_, err := Load([]string{"--version"})
+		require.ErrorContains(t, err, "unknown flag: --version")
 	})
 
 	t.Run("missing config file silently ignored", func(t *testing.T) {
-		cfg, _, err := Load([]string{"-config", "/nonexistent/hub.yaml"})
+		cfg, err := Load([]string{"--config", "/nonexistent/hub.yaml"})
 		require.NoError(t, err)
 		assert.Empty(t, cfg.Listen, "the flag default is empty; the platform default is applied at bind time")
 	})
@@ -112,7 +113,7 @@ log_level: "debug"
 		configPath := filepath.Join(tmpDir, "hub.yaml")
 		require.NoError(t, os.WriteFile(configPath, []byte("invalid: [yaml: broken"), 0o644))
 
-		_, _, err := Load([]string{"-config", configPath})
+		_, err := Load([]string{"--config", configPath})
 		assert.Error(t, err)
 	})
 
@@ -125,7 +126,7 @@ log_level: "debug"
 		yamlContent := "data_dir: '" + dataDir + "'\n"
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, dataDir, cfg.DataDir)
 	})
@@ -137,14 +138,14 @@ log_level: "debug"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(tmpDir, "subdir"), cfg.DataDir)
 	})
 
 	t.Run("data dir from CLI flag", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		cfg, _, err := Load([]string{"-data-dir", tmpDir})
+		cfg, err := Load([]string{"--data-dir", tmpDir})
 		require.NoError(t, err)
 		assert.Equal(t, tmpDir, cfg.DataDir)
 	})
@@ -153,7 +154,7 @@ log_level: "debug"
 func TestLoadWithOptions(t *testing.T) {
 	unsetAmbientEnvPrefix(t, "LEAPMUX_HUB_")
 	t.Run("custom DefaultListen applied", func(t *testing.T) {
-		cfg, _, err := LoadWithOptions(nil, LoadOptions{
+		cfg, err := LoadWithOptions(nil, LoadOptions{
 			DefaultListen: "127.0.0.1:4327",
 		})
 		require.NoError(t, err)
@@ -164,7 +165,7 @@ func TestLoadWithOptions(t *testing.T) {
 	})
 
 	t.Run("SoloMode set on output", func(t *testing.T) {
-		cfg, _, err := LoadWithOptions(nil, LoadOptions{
+		cfg, err := LoadWithOptions(nil, LoadOptions{
 			SoloMode: true,
 		})
 		require.NoError(t, err)
@@ -172,20 +173,20 @@ func TestLoadWithOptions(t *testing.T) {
 	})
 
 	t.Run("SoloMode false by default", func(t *testing.T) {
-		cfg, _, err := LoadWithOptions(nil, LoadOptions{})
+		cfg, err := LoadWithOptions(nil, LoadOptions{})
 		require.NoError(t, err)
 		assert.False(t, cfg.SoloMode)
 	})
 
 	t.Run("CLIFlags restriction rejects unlisted flags", func(t *testing.T) {
-		_, _, err := LoadWithOptions([]string{"-dev-frontend"}, LoadOptions{
+		_, err := LoadWithOptions([]string{"--dev-frontend"}, LoadOptions{
 			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		assert.Error(t, err)
 	})
 
 	t.Run("CLIFlags restriction allows listed flags", func(t *testing.T) {
-		cfg, _, err := LoadWithOptions([]string{"-listen", ":9999"}, LoadOptions{
+		cfg, err := LoadWithOptions([]string{"--listen", ":9999"}, LoadOptions{
 			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		require.NoError(t, err)
@@ -200,7 +201,7 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, LoadOptions{
+		cfg, err := LoadWithOptions([]string{"--config", configPath}, LoadOptions{
 			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		require.NoError(t, err)
@@ -215,34 +216,29 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 		home, err := os.UserHomeDir()
 		require.NoError(t, err)
 
-		cfg, _, err := LoadWithOptions(nil, LoadOptions{
+		cfg, err := LoadWithOptions(nil, LoadOptions{
 			DefaultConfigDir: "~/.config/leapmux/solo",
 		})
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/solo"), cfg.DataDir)
 	})
 
-	t.Run("custom FlagSetName", func(t *testing.T) {
-		// Verify it doesn't error (flag set name is internal).
-		_, _, err := LoadWithOptions(nil, LoadOptions{
-			FlagSetName: "leapmux",
-		})
-		require.NoError(t, err)
-	})
-
 	t.Run("ExtraFlags register, default, and group under their Category", func(t *testing.T) {
 		extras := []ExtraFlagDef{
-			{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", StrDefault: "0", Category: "Timeout and limit options"},
-			{Name: "encryption-mode", KoanfKey: "encryption_mode", StrDefault: "post-quantum"},
+			IntExtraFlag("max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", "maximum in-flight chunked sequences", 0),
+			StringExtraFlag("encryption-mode", "encryption_mode", "", "encryption mode", "post-quantum"),
+			BoolExtraFlag("use-login-shell", "use_login_shell", "", "use the login shell", true),
 		}
-		cfg, _, err := LoadWithOptions([]string{"-max-incomplete-chunked", "8"}, LoadOptions{
+		cfg, err := LoadWithOptions([]string{"--max-incomplete-chunked", "8"}, LoadOptions{
 			CLIFlags:   []string{"listen"},
 			ExtraFlags: extras,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "8", cfg.Extras["max_incomplete_chunked"])
-		// An unset extra still lands in Extras at its declared default.
+		// An unset extra still lands in Extras at its declared default, in the
+		// spelling that k.String gives its type.
 		assert.Equal(t, "post-quantum", cfg.Extras["encryption_mode"])
+		assert.Equal(t, "true", cfg.Extras["use_login_shell"])
 
 		// CLIFlags lists only "listen", so parsing -max-incomplete-chunked at all
 		// is the assertion that extras bypass the allowlist: that list names the
@@ -253,24 +249,23 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 		// so the grouping this subtest is named for is asserted rather than
 		// assumed -- including the empty-Category default, which is the arm a
 		// caller gets by omitting the field.
-		output := testutil.CaptureStdout(t, func() {
-			_, _, err := LoadWithOptions([]string{"--help"}, LoadOptions{
-				CLIFlags:   []string{"listen"},
-				ExtraFlags: extras,
-			})
-			require.True(t, errors.Is(err, flag.ErrHelp))
+		output := flagsHelp(t, LoadOptions{
+			CLIFlags:   []string{"listen"},
+			ExtraFlags: extras,
 		})
 		server := strings.Index(output, "\nServer options:\n")
 		timeouts := strings.Index(output, "\nTimeout and limit options:\n")
 		require.Positive(t, server, "an extra's fallback category must open a section")
 		require.Positive(t, timeouts, "an extra's declared category must open a section")
-		require.Less(t, server, timeouts, "hubFlagCategoryOrder puts Server before Timeout")
-		assert.Greater(t, strings.Index(output, "  -max-incomplete-chunked string"), timeouts,
-			"an extra must be listed under the Category it declared")
-		encryptionMode := strings.Index(output, "  -encryption-mode string")
+		require.Less(t, server, timeouts, "the help lists the groups in the order of their first flag")
+		assert.Greater(t, strings.Index(output, "  --max-incomplete-chunked int"), timeouts,
+			"an extra must be listed under the Category it declared, with its type")
+		encryptionMode := strings.Index(output, "  --encryption-mode string")
 		assert.Greater(t, encryptionMode, server)
 		assert.Less(t, encryptionMode, timeouts,
 			"an extra with no Category falls back to Server options")
+		assert.Contains(t, output, "  --use-login-shell ", "a bool extra takes no value name")
+		assert.NotContains(t, output, "--use-login-shell string")
 	})
 
 	t.Run("ExtraFlags read from the config file too", func(t *testing.T) {
@@ -278,10 +273,10 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 		configPath := filepath.Join(tmpDir, "solo.yaml")
 		require.NoError(t, os.WriteFile(configPath, []byte("max_incomplete_chunked: 16\n"), 0o644))
 
-		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, LoadOptions{
+		cfg, err := LoadWithOptions([]string{"--config", configPath}, LoadOptions{
 			CLIFlags: []string{"listen"},
 			ExtraFlags: []ExtraFlagDef{
-				{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", StrDefault: "0", Category: "Timeout and limit options"},
+				IntExtraFlag("max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", "maximum in-flight chunked sequences", 0),
 			},
 		})
 		require.NoError(t, err)
@@ -294,16 +289,22 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 		// admits one in-flight chunked sequence per channel+direction, which is
 		// strictly stronger than any count cap. The flag is solo-only (worker-scoped);
 		// re-adding it to allFlags would resurrect a dead hub knob.
-		_, _, err := LoadWithOptions([]string{"-max-incomplete-chunked", "8"}, LoadOptions{})
+		_, err := LoadWithOptions([]string{"--max-incomplete-chunked", "8"}, LoadOptions{})
 		assert.Error(t, err, "the hub must not accept a flag it cannot act on")
 	})
 
-	t.Run("version flag works with options", func(t *testing.T) {
-		_, showVersion, err := LoadWithOptions([]string{"-version"}, LoadOptions{
-			CLIFlags: []string{"listen"},
+	// A bool extra takes the bare flag, as the same flag of `leapmux worker`
+	// does.
+	t.Run("a bool extra takes the bare flag", func(t *testing.T) {
+		cfg, err := LoadWithOptions([]string{"--use-login-shell=false"}, LoadOptions{
+			ExtraFlags: []ExtraFlagDef{BoolExtraFlag("use-login-shell", "use_login_shell", "", "use the login shell", true)},
 		})
 		require.NoError(t, err)
-		assert.True(t, showVersion)
+		assert.Equal(t, "false", cfg.Extras["use_login_shell"])
+		_, err = LoadWithOptions([]string{"--use-login-shell=sometimes"}, LoadOptions{
+			ExtraFlags: []ExtraFlagDef{BoolExtraFlag("use-login-shell", "use_login_shell", "", "use the login shell", true)},
+		})
+		require.Error(t, err, "a bool extra refuses a value that is not a bool")
 	})
 }
 
@@ -313,11 +314,11 @@ func TestLoadRejectsPositionalArguments(t *testing.T) {
 		args []string
 	}{
 		{"bare help word", []string{"help"}},
-		{"trailing positional after flag", []string{"-listen", ":4327", "garbage"}},
+		{"trailing positional after flag", []string{"--listen", ":4327", "garbage"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := Load(tc.args)
+			_, err := Load(tc.args)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "unexpected argument")
 		})
@@ -325,10 +326,7 @@ func TestLoadRejectsPositionalArguments(t *testing.T) {
 }
 
 func TestHubHelpGroupsStorageOptions(t *testing.T) {
-	output := testutil.CaptureStdout(t, func() {
-		_, _, err := Load([]string{"--help"})
-		require.True(t, errors.Is(err, flag.ErrHelp))
-	})
+	output := flagsHelp(t, LoadOptions{})
 
 	sections := []string{
 		"\nCommon options:\n",
@@ -347,11 +345,11 @@ func TestHubHelpGroupsStorageOptions(t *testing.T) {
 	for i := 1; i < len(sections); i++ {
 		assert.Less(t, strings.Index(output, sections[i-1]), strings.Index(output, sections[i]))
 	}
-	assert.Contains(t, output, "\nStorage common options:\n\n  -storage-type string")
-	assert.Contains(t, output, "\nSQLite storage options:\n\n  -storage-sqlite-cache-size int")
-	// The flag package reads a back-quoted word in a usage string as the name
-	// of the flag's value, so a quoted command in the text would replace it.
-	assert.Contains(t, output, "\n  -listen value\n", "the -listen usage must not rename its value")
+	assert.Contains(t, output, "\nStorage common options:\n      --storage-type string")
+	assert.Contains(t, output, "\nSQLite storage options:\n      --storage-sqlite-path string")
+	// pflag reads a back-quoted word in a usage string as the name of the
+	// flag's value, so a quoted command in the text would replace it.
+	assert.Contains(t, output, "\n      --listen string ", "the --listen usage must not rename its value")
 }
 
 func TestValidate(t *testing.T) {
@@ -404,7 +402,7 @@ func TestPaths(t *testing.T) {
 func TestFlagDefRegistersEveryKindAndRefusesTheRest(t *testing.T) {
 	t.Parallel()
 
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	for _, fd := range []flagDef{
 		strFlag("s", "s", "c", "u", "x"),
 		intFlag("i", "i", "c", "u", 1),
@@ -431,9 +429,9 @@ func TestFlagDefRegistersEveryKindAndRefusesTheRest(t *testing.T) {
 // error and "3600" as 3600 nanoseconds. The storage pool durations are the
 // duration keys the hub still owns; the timeout keys moved to hub_settings.
 func TestDurationOptionsShareTheParser(t *testing.T) {
-	cfg, _, err := Load([]string{
-		"-storage-postgres-conn-max-lifetime", "1d",
-		"-storage-mysql-conn-max-idle-time", "30s",
+	cfg, err := Load([]string{
+		"--storage-postgres-conn-max-lifetime", "1d",
+		"--storage-mysql-conn-max-idle-time", "30s",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 24*time.Hour, cfg.Storage.Postgres.ConnMaxLifetime)
@@ -445,11 +443,11 @@ func TestDurationOptionsShareTheParser(t *testing.T) {
 // provider handed koanf a flat "storage.postgres.dsn", which is a top-level key
 // whose name contains dots, and Unmarshal walks the nested map instead.
 func TestNestedFlagsReachTheConfig(t *testing.T) {
-	cfg, _, err := Load([]string{
-		"-storage-type", "postgres",
-		"-storage-postgres-dsn", "postgres://example/db",
-		"-storage-postgres-max-conns", "77",
-		"-storage-sqlite-path", "/tmp/hub.db",
+	cfg, err := Load([]string{
+		"--storage-type", "postgres",
+		"--storage-postgres-dsn", "postgres://example/db",
+		"--storage-postgres-max-conns", "77",
+		"--storage-sqlite-path", "/tmp/hub.db",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, StorageTypePostgres, cfg.Storage.Type)
@@ -467,9 +465,9 @@ func TestNestedFlagsReachTheConfig(t *testing.T) {
 // The pool code tests for zero (`if cfg.ConnMaxLifetime > 0`), so filling one in
 // here would silently start pinning a lifetime the operator never asked for.
 func TestPoolDurationsKeepTheirOwnZero(t *testing.T) {
-	cfg, _, err := Load([]string{
-		"-storage-postgres-conn-max-lifetime", "0",
-		"-storage-mysql-conn-max-idle-time", "0",
+	cfg, err := Load([]string{
+		"--storage-postgres-conn-max-lifetime", "0",
+		"--storage-mysql-conn-max-idle-time", "0",
 	})
 	require.NoError(t, err)
 	assert.Zero(t, cfg.Storage.Postgres.ConnMaxLifetime,
@@ -478,8 +476,24 @@ func TestPoolDurationsKeepTheirOwnZero(t *testing.T) {
 
 	// The flag default still applies when the operator sets nothing, so zero
 	// only ever arrives because someone asked for it.
-	unset, _, err := Load(nil)
+	unset, err := Load(nil)
 	require.NoError(t, err)
 	assert.Equal(t, time.Hour, unset.Storage.Postgres.ConnMaxLifetime)
 	assert.Equal(t, 5*time.Minute, unset.Storage.MySQL.ConnMaxIdleTime)
+}
+
+// flagsHelp prints the help of a command whose flags NewFlags(opts)
+// registers, as the help of a lifecycle command prints them.
+func flagsHelp(t *testing.T, opts LoadOptions) string {
+	t.Helper()
+	leaf := cli.NewLeaf(cli.Leaf{
+		Use:   "probe",
+		Short: "Probe the flags",
+		Flags: func(fs *pflag.FlagSet) { NewFlags(opts).Register(fs) },
+		Run:   func(*cli.Invocation) (any, error) { return nil, nil },
+	})
+	var stdout, stderr bytes.Buffer
+	code := cli.Execute(context.Background(), leaf, []string{"--help"}, strings.NewReader(""), &stdout, &stderr)
+	require.Equal(t, cli.ExitOK, code, stderr.String())
+	return stdout.String()
 }

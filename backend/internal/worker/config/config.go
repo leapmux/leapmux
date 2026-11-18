@@ -4,8 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,8 +14,12 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	"github.com/spf13/pflag"
+
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -253,104 +257,108 @@ func (s *State) EnsureCompositeKeypair() (*noiseutil.CompositeKeypair, bool, err
 	return ck, true, nil
 }
 
-// LoadOptions supplies flags and configuration hooks for a command.
+// LoadOptions selects the flags of a command.
 type LoadOptions struct {
-	// FlagSetName and Description head the help output. Empty values give
-	// "leapmux worker" and the description of the worker mode.
-	FlagSetName string
-	Description string
 	// CLIFlags, when non-nil, lists the only worker flags the command accepts
-	// and shows; config and version are always registered. The config file and
+	// and shows; config is always registered. The config file and
 	// LEAPMUX_WORKER_* variables still reach every key.
 	CLIFlags []string
-	// ConfigureFlags registers caller-owned command flags.
-	ConfigureFlags func(*flag.FlagSet)
-	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
-	AfterFlagsParsed func(*flag.FlagSet) error
 }
 
 // Load parses worker configuration from defaults, config file, env vars, and CLI flags.
-// Returns the config, whether -version was requested, and any error.
-func Load(args []string) (*Config, bool, error) {
+func Load(args []string) (*Config, error) {
 	return LoadWithOptions(args, LoadOptions{})
 }
 
-// LoadWithOptions parses mode flags and caller-owned command flags together.
-// Only mode flags enter the configuration values.
-func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
-	flagSetName := opts.FlagSetName
-	if flagSetName == "" {
-		flagSetName = "leapmux worker"
+// LoadWithOptions parses args as the flags of the worker and loads the
+// configuration, for a caller that has no command tree to parse them. A
+// command registers Flags on its own flag set instead, and calls Flags.Load
+// after the parse.
+func LoadWithOptions(args []string, opts LoadOptions) (*Config, error) {
+	flags := NewFlags(opts)
+	fs := pflag.NewFlagSet("leapmux worker", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	flags.Register(fs)
+	if err := fs.Parse(args); err != nil {
+		return nil, err
 	}
-	description := opts.Description
-	if description == "" {
-		description = "Run a Worker connected to a Hub."
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
+	return flags.Load(fs)
+}
 
+// Flags declares the flags of the worker for one command. Register adds them
+// to the command's flag set, and Load reads that set after the parse, so the
+// help, the parse and the load read one declaration.
+type Flags struct {
+	opts LoadOptions
+}
+
+// NewFlags declares the flags of the worker with opts.
+func NewFlags(opts LoadOptions) *Flags {
+	return &Flags{opts: opts}
+}
+
+// Register adds the flags to fs, in the groups that the help prints.
+func (f *Flags) Register(fs *pflag.FlagSet) {
 	// Define every worker flag on a scratch set, then copy the ones this
 	// command accepts. One definition list serves every subset, so a subset
-	// cannot carry a stale default or usage string of its own.
-	all := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
+	// cannot carry a stale default or usage string of its own. The order is
+	// the order of the help, group by group.
+	all := pflag.NewFlagSet("worker", pflag.ContinueOnError)
+	all.SortFlags = false
 	all.String("config", defaultConfigFile, "path to config file")
 	all.String("name", "", "worker display name (default: hostname)")
-	all.String("data-dir", ".", "data directory")
-	all.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
-	all.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
-	all.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
-	all.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
+	all.String("data-dir", ".", "data directory, which LEAPMUX_WORKER_DATA_DIR and data_dir of the config file also set; a relative path is relative to the directory of the config file")
+	all.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
+	all.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
+	all.Bool("use-login-shell", true, "wrap each agent invocation in the user's login shell")
+	all.Int("max-incomplete-chunked", 0, fmt.Sprintf("maximum in-flight chunked sequences per channel (0 = %d)", contracts.DefaultMaxIncompleteChunked))
 	all.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
 	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
-		"agent-startup-timeout", "agent startup timeout. "+internalconfig.UnitSyntax)
+		"agent-startup-timeout", "agent startup timeout; "+internalconfig.UnitSyntax)
 	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
-		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
+		"api-timeout", "JSON-RPC request timeout; "+internalconfig.UnitSyntax)
 	all.Int("agent-startup-concurrency", 0,
 		fmt.Sprintf("how many agents to bring back at once after a restart "+
 			"(0 = %d, or the CPU count when that is lower); "+
 			"it never delays an agent you start yourself", DefaultMaxStartupConcurrency))
-	all.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
-	all.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
-	all.Bool("use-login-shell", true, "wrap each agent invocation in the user's login shell")
-	showVersion := all.Bool("version", false, "print version and exit")
+	all.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
+	all.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
+	all.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
 
-	fs := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
-	all.VisitAll(func(f *flag.Flag) {
-		if opts.CLIFlags != nil && f.Name != "config" && f.Name != "version" && !slices.Contains(opts.CLIFlags, f.Name) {
+	all.VisitAll(func(flag *pflag.Flag) {
+		if f.opts.CLIFlags != nil && flag.Name != "config" && !slices.Contains(f.opts.CLIFlags, flag.Name) {
 			return
 		}
-		fs.Var(f.Value, f.Name, f.Usage)
+		fs.AddFlag(flag)
+		cli.SetFlagGroup(fs, flag.Name, workerFlagGroups[flag.Name])
 	})
-	usageCategories := map[string]string{
-		"config":                    "Common options",
-		"version":                   "Common options",
-		"name":                      "Worker options",
-		"data-dir":                  "Worker options",
-		"log-level":                 "Worker options",
-		"encryption-mode":           "Worker options",
-		"use-login-shell":           "Worker options",
-		"max-incomplete-chunked":    "Timeout and limit options",
-		"max-message-size":          "Timeout and limit options",
-		"agent-startup-timeout":     "Timeout and limit options",
-		"api-timeout":               "Timeout and limit options",
-		"agent-startup-concurrency": "Timeout and limit options",
-		"db-max-conns":              "SQLite database options",
-		"db-cache-size":             "SQLite database options",
-		"db-mmap-size":              "SQLite database options",
-	}
-	if opts.ConfigureFlags != nil {
-		opts.ConfigureFlags(fs)
-	}
-	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, workerFlagCategoryOrder); err != nil {
-		return nil, false, err
-	}
+}
 
-	if *showVersion {
-		return nil, true, nil
-	}
-	if opts.AfterFlagsParsed != nil {
-		if err := opts.AfterFlagsParsed(fs); err != nil {
-			return nil, false, err
-		}
-	}
+// workerFlagGroups is the section of the help that lists each worker flag.
+var workerFlagGroups = map[string]string{
+	"config":                    "Common options",
+	"name":                      "Worker options",
+	"data-dir":                  "Worker options",
+	"log-level":                 "Worker options",
+	"encryption-mode":           "Worker options",
+	"use-login-shell":           "Worker options",
+	"max-incomplete-chunked":    "Timeout and limit options",
+	"max-message-size":          "Timeout and limit options",
+	"agent-startup-timeout":     "Timeout and limit options",
+	"api-timeout":               "Timeout and limit options",
+	"agent-startup-concurrency": "Timeout and limit options",
+	"db-max-conns":              "SQLite database options",
+	"db-cache-size":             "SQLite database options",
+	"db-mmap-size":              "SQLite database options",
+}
+
+// Load reads fs, which a parse filled after Register, and loads the
+// configuration: the defaults, then the config file, then the environment,
+// then the flags that the command line set.
+func (f *Flags) Load(fs *pflag.FlagSet) (*Config, error) {
 	configPath := fs.Lookup("config").Value.String()
 
 	// Flag name -> koanf key mapping.
@@ -394,12 +402,12 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// The worker has no list-typed environment variable: every key it reads
 	// holds one value.
 	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", nil, fp); err != nil {
-		return nil, false, fmt.Errorf("load config: %w", err)
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 
 	var cfg Config
 	if err := internalconfig.Unmarshal(k, &cfg); err != nil {
-		return nil, false, fmt.Errorf("unmarshal config: %w", err)
+		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
 	// Resolve the timeouts before anything reads one.
@@ -408,14 +416,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, defaultConfigDir)
 
-	return &cfg, false, nil
-}
-
-var workerFlagCategoryOrder = []string{
-	"Common options",
-	"Worker options",
-	"Timeout and limit options",
-	"SQLite database options",
+	return &cfg, nil
 }
 
 // Validate checks the configuration and ensures required directories exist.

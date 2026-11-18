@@ -55,11 +55,11 @@ Use these flags to customize solo mode:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory |
-| `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
+| `--listen` | `127.0.0.1:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
 For all supported flags and runtime settings, see [Configuration](/docs/admin/configuration/).
 
@@ -79,11 +79,11 @@ Enable sign-up with `leapmux control admin settings set signup_enabled true`, or
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` plus a local socket address | A TCP address or local socket address. Repeat the flag to listen on multiple addresses. |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
-| `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
-| `-log-level` | `info` | Log level |
-| `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
+| `--listen` | `:4327` plus a local socket address | A TCP address or local socket address. Repeat the flag to listen on multiple addresses. |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
+| `--storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
+| `--log-level` | `info` | Log level |
+| `--config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 
 Set listening addresses and database connections at startup. Change account, email, session, timeout, and per-user limit settings on the running Hub with `leapmux control admin settings`:
 
@@ -92,7 +92,7 @@ leapmux control admin settings set signup_enabled true
 leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
 ```
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `--storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
 
 {{< callout type="info" >}}
 For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse Proxy](/docs/admin/reverse-proxy/).
@@ -118,12 +118,12 @@ These flags customize a running Worker:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-name` | hostname | Worker display name |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-use-login-shell` | `true` | Wrap agent invocation in your login shell |
-| `-log-level` | `info` | Log level |
-| `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
+| `--name` | hostname | Worker display name |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--use-login-shell` | `true` | Wrap agent invocation in your login shell |
+| `--log-level` | `info` | Log level |
+| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
 For approving Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
 
@@ -141,13 +141,13 @@ Use these flags to customize dev mode:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
-| `-log-level` | `info` | Log level |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
+| `--listen` | `:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
+| `--log-level` | `info` | Log level |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
 
-Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/admin/configuration/)).
+Like solo, dev also accepts the SQLite tuning flags plus `--dev-frontend` (see [Configuration](/docs/admin/configuration/)).
 
 Dev mode enables sign-up by default unless you override the `signup_enabled` setting. For account and session settings, see [Configuration](/docs/admin/configuration/).
 

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -49,7 +48,7 @@ func newAdminUserList() *cobra.Command {
 			fs.StringVar(&query, "query", "", "search query (empty = list all)")
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().ListUsers(context.Background(), &leapmuxv1.ListUsersRequest{
+			resp, err := c.AdminUserService().ListUsers(a.Context(), &leapmuxv1.ListUsersRequest{
 				Page: page.request(), Query: query,
 			})
 			if err != nil {
@@ -64,9 +63,8 @@ func newAdminUserList() *cobra.Command {
 	})
 }
 
-// userTarget is the <user> argument of every verb that addresses ONE user:
-// a username, or "id:<id>" for a user id. A username cannot hold a colon,
-// so the prefix cannot collide with one.
+// userTarget is the <user> argument of every verb that addresses ONE user,
+// as control.ParseUserArgument reads it.
 //
 // read refuses an empty argument before the dial. The hub holds the same
 // rule (service.ResolveUserSelector), but it can only answer over a
@@ -81,26 +79,11 @@ type userTarget struct {
 	Selector *leapmuxv1.UserSelector
 }
 
-// userArgHelp is the help text of a <user> argument.
-const userArgHelp = `A username, or "id:<id>" for a user id.`
-
 // read reads the <user> argument. It matches adminVerbSpec.BeforeDial, so a
 // verb assigns it directly.
-func (u *userTarget) read(a adminArgs) error {
-	raw := strings.TrimSpace(a.Arg("user"))
-	id, byID := strings.CutPrefix(raw, "id:")
-	id = strings.TrimSpace(id)
-	switch {
-	case byID && id == "":
-		return cli.Usagef("<user> %q has no id after the \"id:\" prefix", raw)
-	case byID:
-		u.Selector = service.SelectUserByID(id)
-	case raw == "":
-		return cli.Usagef("<user> is empty").WithHint(`give a username, or "id:<id>" for a user id`)
-	default:
-		u.Selector = service.SelectUserByUsername(raw)
-	}
-	return nil
+func (u *userTarget) read(a adminArgs) (err error) {
+	u.Selector, err = control.ParseUserArgument(a.Arg("user"))
+	return err
 }
 
 // userFilterFlags binds the OPTIONAL (--user-id | --username) owner filter of
@@ -155,7 +138,7 @@ func newAdminUserGet() *cobra.Command {
 		},
 		BeforeDial: user.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().GetUser(context.Background(), &leapmuxv1.GetUserRequest{
+			resp, err := c.AdminUserService().GetUser(a.Context(), &leapmuxv1.GetUserRequest{
 				User: user.Selector,
 			})
 			if err != nil {
@@ -195,7 +178,7 @@ func newAdminUserCreate() *cobra.Command {
 			if err := argInto(&username, "username")(a); err != nil {
 				return err
 			}
-			entered, err := control.RequirePassword(password, "Password: ")
+			entered, err := control.RequirePassword(a.Context(), password, "Password: ")
 			if err != nil {
 				return cli.Wrap(cli.CodeUsage, err, "")
 			}
@@ -203,7 +186,7 @@ func newAdminUserCreate() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().CreateUser(context.Background(), &leapmuxv1.CreateUserRequest{
+			resp, err := c.AdminUserService().CreateUser(a.Context(), &leapmuxv1.CreateUserRequest{
 				Username: username, Password: password, DisplayName: displayName,
 				Email: email, EmailVerified: emailVerified, IsAdmin: admin,
 			})
@@ -267,7 +250,7 @@ func newAdminUserUpdate() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().UpdateUser(context.Background(), req)
+			resp, err := c.AdminUserService().UpdateUser(a.Context(), req)
 			if err != nil {
 				return err
 			}
@@ -292,7 +275,7 @@ func newAdminUserDelete() *cobra.Command {
 		},
 		BeforeDial: user.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminUserService().DeleteUser(context.Background(), &leapmuxv1.DeleteUserRequest{
+			if _, err := c.AdminUserService().DeleteUser(a.Context(), &leapmuxv1.DeleteUserRequest{
 				User: user.Selector, Force: force,
 			}); err != nil {
 				return err
@@ -326,7 +309,7 @@ func newAdminUserSetAdmin(admin bool, use, short string, examples []cli.Example)
 		},
 		BeforeDial: user.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().SetUserAdmin(context.Background(), &leapmuxv1.SetUserAdminRequest{
+			resp, err := c.AdminUserService().SetUserAdmin(a.Context(), &leapmuxv1.SetUserAdminRequest{
 				User: user.Selector, IsAdmin: admin, Force: force,
 			})
 			if err != nil {
@@ -365,7 +348,7 @@ func newAdminUserResetPassword() *cobra.Command {
 			if err := user.read(a); err != nil {
 				return err
 			}
-			entered, err := control.RequirePassword(pw, "New password: ")
+			entered, err := control.RequirePassword(a.Context(), pw, "New password: ")
 			if err != nil {
 				return cli.Wrap(cli.CodeUsage, err, "")
 			}
@@ -373,7 +356,7 @@ func newAdminUserResetPassword() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().ResetPassword(context.Background(), &leapmuxv1.ResetPasswordRequest{
+			resp, err := c.AdminUserService().ResetPassword(a.Context(), &leapmuxv1.ResetPasswordRequest{
 				User: user.Selector, Password: pw,
 			})
 			if err != nil {
@@ -404,7 +387,7 @@ func newAdminUserListSessions() *cobra.Command {
 		Page:       &page,
 		BeforeDial: user.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().ListUserSessions(context.Background(), &leapmuxv1.ListUserSessionsRequest{
+			resp, err := c.AdminUserService().ListUserSessions(a.Context(), &leapmuxv1.ListUserSessionsRequest{
 				Page: page.request(), User: user.Selector,
 			})
 			if err != nil {
@@ -508,7 +491,7 @@ func newAdminSessionList() *cobra.Command {
 		},
 		Page: &page,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().ListSessions(context.Background(), &leapmuxv1.ListSessionsRequest{
+			resp, err := c.AdminUserService().ListSessions(a.Context(), &leapmuxv1.ListSessionsRequest{
 				Page: page.request(),
 			})
 			if err != nil {
@@ -534,7 +517,7 @@ func newAdminSessionRevoke() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&id, "session"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminUserService().RevokeSession(context.Background(), &leapmuxv1.RevokeSessionRequest{Id: id}); err != nil {
+			if _, err := c.AdminUserService().RevokeSession(a.Context(), &leapmuxv1.RevokeSessionRequest{Id: id}); err != nil {
 				return err
 			}
 			return a.Result(map[string]any{"revoked": id})
@@ -554,7 +537,7 @@ func newAdminSessionRevokeUser() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: user.read,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().RevokeUserSessions(context.Background(), &leapmuxv1.RevokeUserSessionsRequest{
+			resp, err := c.AdminUserService().RevokeUserSessions(a.Context(), &leapmuxv1.RevokeUserSessionsRequest{
 				User: user.Selector,
 			})
 			if err != nil {
@@ -578,7 +561,7 @@ func newAdminSessionPurgeExpired() *cobra.Command {
 		},
 		Mutates: true,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().PurgeExpiredSessions(context.Background(), &leapmuxv1.PurgeExpiredSessionsRequest{})
+			resp, err := c.AdminUserService().PurgeExpiredSessions(a.Context(), &leapmuxv1.PurgeExpiredSessionsRequest{})
 			if err != nil {
 				return err
 			}
@@ -608,7 +591,7 @@ func newAdminAPITokenList() *cobra.Command {
 		},
 		BeforeDial: owner.resolve,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().ListAPITokens(context.Background(), &leapmuxv1.ListAPITokensRequest{
+			resp, err := c.AdminUserService().ListAPITokens(a.Context(), &leapmuxv1.ListAPITokensRequest{
 				User: owner.Selector(), ClientId: clientID,
 				IncludeRevoked: includeRevoked, Page: page.request(),
 			})
@@ -678,7 +661,7 @@ func newAdminAPITokenIssue() *cobra.Command {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), &leapmuxv1.IssueAPITokenRequest{
+			resp, err := c.AdminUserService().IssueAPIToken(a.Context(), &leapmuxv1.IssueAPITokenRequest{
 				User: user.Selector, ClientId: clientID,
 				InstallationName: installationName,
 				TtlSeconds:       ttlSeconds, Scopes: scopeList,
@@ -710,7 +693,7 @@ func newAdminAPITokenRevoke() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&id, "token"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminUserService().RevokeAPIToken(context.Background(), &leapmuxv1.RevokeAPITokenRequest{Id: id}); err != nil {
+			if _, err := c.AdminUserService().RevokeAPIToken(a.Context(), &leapmuxv1.RevokeAPITokenRequest{Id: id}); err != nil {
 				return err
 			}
 			return a.Result(map[string]any{"revoked": id})
@@ -736,7 +719,7 @@ func newAdminDelegationTokenList() *cobra.Command {
 		},
 		BeforeDial: owner.resolve,
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminUserService().ListDelegationTokens(context.Background(), &leapmuxv1.ListDelegationTokensRequest{
+			resp, err := c.AdminUserService().ListDelegationTokens(a.Context(), &leapmuxv1.ListDelegationTokensRequest{
 				User: owner.Selector(), IncludeRevoked: includeRevoked, Page: page.request(),
 			})
 			if err != nil {
@@ -763,7 +746,7 @@ func newAdminDelegationTokenRevoke() *cobra.Command {
 		Mutates:    true,
 		BeforeDial: argInto(&id, "token"),
 		Run: func(c *control.Client, a adminArgs) error {
-			if _, err := c.AdminUserService().RevokeDelegationToken(context.Background(), &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id}); err != nil {
+			if _, err := c.AdminUserService().RevokeDelegationToken(a.Context(), &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id}); err != nil {
 				return err
 			}
 			return a.Result(map[string]any{"revoked": id})

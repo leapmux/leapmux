@@ -13,7 +13,7 @@ import (
 // a blanket true reads as "rate limits do not apply to solo" rather than as the
 // narrower fact it was: elevation is keyed by USER, and solo has one. An
 // address-keyed limit on an endpoint solo also serves is a different case, and
-// hiding its key would leave a `leapmux solo -listen 0.0.0.0:4327` operator no
+// hiding its key would leave a `leapmux solo --listen 0.0.0.0:4327` operator no
 // way to reach it -- not through the preferences dialog and not through
 // `leapmux control admin settings`, because HiddenInSolo drops the key from
 // ListSettings itself.

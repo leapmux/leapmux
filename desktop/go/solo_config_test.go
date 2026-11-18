@@ -17,7 +17,7 @@ func TestDesktopSoloConfig_PassesDevFrontendWhenSet(t *testing.T) {
 
 	cfg := desktopSoloConfig("http://localhost:4328")
 	assert.True(t, cfg.NoTCP)
-	assert.Equal(t, []string{"-dev-frontend", "http://localhost:4328"}, cfg.Args)
+	assert.Equal(t, []string{"--dev-frontend", "http://localhost:4328"}, cfg.Args)
 }
 
 func TestDesktopSoloConfig_OmitsDevFrontendWhenEmpty(t *testing.T) {
@@ -32,7 +32,7 @@ func TestDesktopSoloConfigFromEnv_ReadsContractEnv(t *testing.T) {
 	// Not parallel: t.Setenv mutates process env for this test.
 	t.Setenv(contracts.EnvDevFrontend, "http://localhost:4328")
 	cfg := desktopSoloConfigFromEnv()
-	assert.Equal(t, []string{"-dev-frontend", "http://localhost:4328"}, cfg.Args)
+	assert.Equal(t, []string{"--dev-frontend", "http://localhost:4328"}, cfg.Args)
 
 	t.Setenv(contracts.EnvDevFrontend, "")
 	cfg = desktopSoloConfigFromEnv()

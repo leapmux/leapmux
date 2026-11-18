@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -391,13 +392,15 @@ func TestDevForegroundStatusAdvancesAfterAdministratorSetup(t *testing.T) {
 
 }
 
+// --version belongs to the root alone: `leapmux <mode> run --version` is a
+// usage error, and it starts no runtime.
 func TestForegroundVersionDoesNotStartRuntime(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
 		t.Run(mode, func(t *testing.T) {
 			home := t.TempDir()
 			result := invokeLifecycleCLI(t, home, mode, "run", "--version")
-			assert.Equal(t, 0, result.exitCode, result.stderr)
-			assert.NotEmpty(t, result.stdout)
+			assert.Equal(t, cli.ExitUsage, result.exitCode, result.stderr)
+			assert.Contains(t, result.stderr, "unknown flag: --version")
 			assert.NotContains(t, result.stderr, "panic:")
 			assert.NoDirExists(t, filepath.Join(home, ".config", "leapmux", mode, ".lifecycle"))
 		})
@@ -411,12 +414,12 @@ func TestConfigurationMetadataAndInvalidFlagsDoNotMutate(t *testing.T) {
 				t.Run(mode+"/"+verb+"/"+argument, func(t *testing.T) {
 					root := filepath.Join(t.TempDir(), "absent")
 					result := invokeLifecycleCLI(t, t.TempDir(), mode, verb, argument, "--data-dir", root)
-					if argument == "--help" || argument == "--version" {
-						assert.Equal(t, 0, result.exitCode, result.stdout+result.stderr)
+					if argument == "--help" {
+						assert.Equal(t, cli.ExitOK, result.exitCode, result.stdout+result.stderr)
 						assert.NotEmpty(t, result.stdout+result.stderr)
 						assert.NotContains(t, result.stdout, "No startup configuration")
 					} else {
-						assert.Equal(t, 1, result.exitCode, result.stdout+result.stderr)
+						assert.Equal(t, cli.ExitUsage, result.exitCode, result.stdout+result.stderr)
 					}
 					assert.NoDirExists(t, root)
 				})
@@ -443,8 +446,7 @@ func TestWorkerRunRefusesRegistrationFlags(t *testing.T) {
 func TestStoppedStatusPrintsJSON(t *testing.T) {
 	result := invokeLifecycleCLI(t, t.TempDir(), "worker", "status", "--json", "--data-dir", t.TempDir())
 	assert.Equal(t, 3, result.exitCode, result.stderr)
-	var status lifecycle.Status
-	require.NoError(t, json.Unmarshal([]byte(result.stdout), &status), result.stdout)
+	status := statusFromJSON[lifecycle.Status](t, result.stdout)
 	assert.Equal(t, new("worker"), status.Mode)
 	assert.Equal(t, lifecycle.ProcessStopped, status.Process.State)
 	assert.Equal(t, lifecycle.RegistrationUnregistered, status.Registration.State)
@@ -461,8 +463,7 @@ func TestCombinedCLIStatusPreservesLiveRegistration(t *testing.T) {
 			runtime.SetReadiness(lifecycle.ReadinessReady)
 			result := invokeLifecycleCLI(t, t.TempDir(), mode.String(), "status", "--data-dir", runtime.Record().DataDir, "--json")
 			require.Equal(t, 0, result.exitCode, result.stdout+result.stderr)
-			var status lifecycle.Status
-			require.NoError(t, json.Unmarshal([]byte(result.stdout), &status))
+			status := statusFromJSON[lifecycle.Status](t, result.stdout)
 			assert.Equal(t, lifecycle.RegistrationRegistered, status.Registration.State)
 			assert.Equal(t, new("local-worker"), status.Registration.WorkerID)
 			assert.Equal(t, lifecycle.ConnectionConnected, status.Connection.State)
@@ -473,8 +474,7 @@ func TestCombinedCLIStatusPreservesLiveRegistration(t *testing.T) {
 func TestStoppedStatusUsesNullForUnavailableScalars(t *testing.T) {
 	result := invokeLifecycleCLI(t, t.TempDir(), "worker", "status", "--json", "--data-dir", t.TempDir())
 	require.Equal(t, 3, result.exitCode, result.stderr)
-	var status map[string]any
-	require.NoError(t, json.Unmarshal([]byte(result.stdout), &status))
+	status := statusFromJSON[map[string]any](t, result.stdout)
 	for _, key := range []string{"execution", "readiness", "startup"} {
 		require.Contains(t, status, key)
 		assert.Nil(t, status[key], key)
@@ -512,8 +512,7 @@ func TestForegroundFailureAppearsInAttemptLogAndStatus(t *testing.T) {
 	assert.Contains(t, string(log), "open worker db")
 	statusResult := invokeLifecycleCLI(t, home, "worker", "status", "--json", "--data-dir", cfg.DataDir)
 	require.Equal(t, 1, statusResult.exitCode, statusResult.stdout+statusResult.stderr)
-	var status lifecycle.Status
-	require.NoError(t, json.Unmarshal([]byte(statusResult.stdout), &status))
+	status := statusFromJSON[lifecycle.Status](t, statusResult.stdout)
 	assert.Equal(t, lifecycle.ProcessFailed, status.Process.State)
 	var found bool
 	for _, diagnostic := range status.Diagnostics {

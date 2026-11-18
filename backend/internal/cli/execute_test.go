@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -181,6 +183,15 @@ func TestExecute_AGroupAlonePrintsItsHelp(t *testing.T) {
 	assert.Contains(t, stdout, abbreviationNote)
 }
 
+// Every summary of a command list starts in one column, two spaces past the
+// longest name, so a long name never runs into its summary.
+func TestExecute_AlignsTheSummariesPastTheLongestName(t *testing.T) {
+	_, stdout, _ := execute(t, testTree(&[]testInvocation{}), "workspace")
+	assert.Contains(t, stdout, "\n  list    A leaf\n")
+	assert.Contains(t, stdout, "\n  get     A leaf\n")
+	assert.Contains(t, stdout, "\n  rename  A leaf\n", "the longest name keeps a gap of two spaces")
+}
+
 func TestExecute_RefusesAnUnknownCommandUnderAGroup(t *testing.T) {
 	code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "workspace", "xyz")
 	assert.Equal(t, ExitUsage, code)
@@ -222,6 +233,18 @@ func TestExecute_AnUnknownFlagStatesBothWaysOut(t *testing.T) {
 	assert.Equal(t, []string{"t", "-version"}, seen[0].args)
 }
 
+// A group takes no flag of its own, so an unknown flag on a group states
+// where the flag goes. An unknown flag on a leaf does not.
+func TestExecute_AnUnknownFlagOnAGroupStatesWhereItGoes(t *testing.T) {
+	code, _, stderr := execute(t, testTree(&[]testInvocation{}), "workspace", "--title", "x")
+	assert.Equal(t, ExitUsage, code)
+	assert.Contains(t, stderr, "error: usage: unknown flag: --title\n")
+	assert.Contains(t, stderr, `hint: a flag goes after the command that takes it, as in "tool workspace <command> [flags]"`)
+
+	_, _, stderr = execute(t, testTree(&[]testInvocation{}), "workspace", "list", "--title", "x")
+	assert.NotContains(t, stderr, "a flag goes after the command")
+}
+
 func TestExecute_PrintsAFailureOnceInTheFormatAskedFor(t *testing.T) {
 	code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "xyz", "--json")
 	assert.Equal(t, ExitUsage, code)
@@ -260,4 +283,59 @@ func TestExecute_PrintsTheHelpOfALeaf(t *testing.T) {
 
 	_, stdout, _ = execute(t, testTree(&[]testInvocation{}), "--help")
 	assert.True(t, strings.HasSuffix(stdout, "\nRead the guide first.\n"), "the footer prints last: %q", stdout)
+}
+
+// Run returns the error of the command and prints nothing for it: the caller
+// decides how a failure reads. A result still prints.
+func TestRun_ReturnsTheErrorUnprinted(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), testTree(&[]testInvocation{}), []string{"workspace", "xyz"}, strings.NewReader(""), &stdout, &stderr)
+	require.Error(t, err)
+	assert.Equal(t, CodeUsage, FromError(err).Code)
+	assert.Empty(t, stdout.String())
+	assert.Empty(t, stderr.String())
+
+	var seen []testInvocation
+	stdout.Reset()
+	require.NoError(t, Run(context.Background(), testTree(&seen), []string{"works", "ren", "w-1", "x"}, strings.NewReader(""), &stdout, &stderr),
+		"Run expands an abbreviation as Execute does")
+	require.Len(t, seen, 1)
+	assert.Equal(t, "tool workspace rename", seen[0].path)
+	assert.Equal(t, "w-1\nx\n", stdout.String())
+}
+
+// A leaf runs under a context that an interrupt ends, and it reports an
+// error after an interrupt as the interrupted exit status. A leaf that
+// handles the signals itself runs under the context of the caller, and its
+// error stays its own: an error after a shutdown signal is a failure of the
+// shutdown.
+func TestNewLeaf_HandlesSignals(t *testing.T) {
+	failure := errors.New("shutdown failed")
+	run := func(handles bool) (context.Context, context.Context, error) {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(ErrInterrupted)
+		var got context.Context
+		leaf := NewLeaf(Leaf{
+			Use:            "serve",
+			Short:          "Serve",
+			HandlesSignals: handles,
+			Run: func(inv *Invocation) (any, error) {
+				got = inv.Context
+				return nil, failure
+			},
+		})
+		err := Run(ctx, leaf, nil, strings.NewReader(""), io.Discard, io.Discard)
+		return ctx, got, err
+	}
+
+	parent, got, err := run(false)
+	assert.NotSame(t, parent, got, "a leaf listens for the signals under a context of its own")
+	var status *ExitStatus
+	require.ErrorAs(t, err, &status)
+	assert.Equal(t, ExitInterrupted, status.Code)
+
+	parent, got, err = run(true)
+	assert.Equal(t, parent, got, "a leaf that handles the signals runs under the context of the caller")
+	require.ErrorIs(t, err, failure)
+	require.NotErrorAs(t, err, &status)
 }

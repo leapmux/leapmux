@@ -134,9 +134,9 @@ function spawnSeparateHub(listen: string, dataDir: string, output: ServerOutput)
   const hubProc = spawnTestProcess(getGlobalState().binaryPath, [
     'hub',
     'run',
-    '-listen',
+    '--listen',
     listen,
-    '-data-dir',
+    '--data-dir',
     join(dataDir, 'hub'),
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],

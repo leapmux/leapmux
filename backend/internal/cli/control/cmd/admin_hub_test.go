@@ -820,7 +820,7 @@ func TestReadCaptchaState_ReportsEachProvidersOwnSecretField(t *testing.T) {
 
 	c, err := control.NewClientOrAnonymous(url)
 	require.NoError(t, err)
-	state, err := readCaptchaState(c)
+	state, err := readCaptchaState(t.Context(), c)
 	require.NoError(t, err)
 
 	assert.True(t, state.secretSet[captcha.AltchaKey.Name()], "ALTCHA stores its signing key as hmac_key")

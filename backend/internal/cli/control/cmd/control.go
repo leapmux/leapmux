@@ -71,6 +71,7 @@ the stored credentials.`
 		"worker":    resolve.KindWorker.Help(),
 		"text":      `The text, or "-" to read it from standard input.`,
 	})
+	addHubHints(root)
 	return root
 }
 

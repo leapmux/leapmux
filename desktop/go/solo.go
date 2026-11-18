@@ -58,7 +58,7 @@ func desktopSoloConfig(devFrontend string) solo.Config {
 		NoTCP: true,
 	}
 	if devFrontend != "" {
-		cfg.Args = []string{"-dev-frontend", devFrontend}
+		cfg.Args = []string{"--dev-frontend", devFrontend}
 	}
 	return cfg
 }

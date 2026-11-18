@@ -38,6 +38,8 @@ type FlagInfo struct {
 	// Global marks a flag that a parent command declares for all of its
 	// descendants.
 	Global bool `json:"global,omitempty"`
+	// Group is the section of the help that lists the flag, when it has one.
+	Group string `json:"group,omitempty"`
 }
 
 // CommandTree is the result of `leapmux commands`.
@@ -170,6 +172,9 @@ func describeFlag(f *pflag.Flag, global bool) FlagInfo {
 	}
 	if env := f.Annotations[annotationEnvDefault]; len(env) > 0 {
 		info.EnvDefault = env[0]
+	}
+	if group := f.Annotations[annotationGroup]; len(group) > 0 {
+		info.Group = group[0]
 	}
 	if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" && f.DefValue != "[]" {
 		info.Default = f.DefValue

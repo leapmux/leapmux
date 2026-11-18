@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -303,6 +304,8 @@ func TestWorkerRegisterReportsMalformedPendingData(t *testing.T) {
 	assert.Equal(t, data, preserved)
 }
 
+// --version belongs to the root alone: a credential command refuses it as a
+// usage error, before it writes anything.
 func TestWorkerRegistrationVersionQueriesHaveNoSideEffects(t *testing.T) {
 	for _, args := range [][]string{
 		{"register", "--version"},
@@ -314,8 +317,8 @@ func TestWorkerRegistrationVersionQueriesHaveNoSideEffects(t *testing.T) {
 			command := append([]string{"worker"}, args...)
 			command = append(command, "--data-dir", dataDir)
 			result := invokeLifecycleCLI(t, t.TempDir(), command...)
-			require.Equal(t, 0, result.exitCode, result.stderr)
-			assert.NotEmpty(t, result.stdout)
+			require.Equal(t, cli.ExitUsage, result.exitCode, result.stderr)
+			assert.Contains(t, result.stderr, "unknown flag: --version")
 			assert.NotContains(t, result.stderr, "panic:")
 			assert.NoDirExists(t, dataDir)
 		})
@@ -376,7 +379,7 @@ func httpStatusOf(code connect.Code) int {
 // way the command does.
 func workerConfigOf(t *testing.T, dataDir string) *config.Config {
 	t.Helper()
-	cfg, _, err := config.Load([]string{"--data-dir", dataDir})
+	cfg, err := config.Load([]string{"--data-dir", dataDir})
 	require.NoError(t, err)
 	return cfg
 }
@@ -440,15 +443,22 @@ func TestWorkerRegisterRequiresItsInputs(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no key", []string{"--hub", hubURL, "--data-dir", t.TempDir()}, "--registration-key is required"},
-		{"no hub", []string{"--registration-key", key, "--data-dir", t.TempDir()}, "--hub is required"},
+		{"no key", []string{"--hub", hubURL}, "missing required flag --registration-key"},
+		{"no hub", []string{"--registration-key", key}, "missing required flag --hub"},
+		{"neither", nil, "missing required flags --hub, --registration-key"},
+		{"an empty key", []string{"--hub", hubURL, "--registration-key="}, "--registration-key is empty"},
+		{"an empty hub", []string{"--hub=", "--registration-key", key}, "--hub is empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := runWorkerRegister(tc.args)
+			dataDir := filepath.Join(t.TempDir(), "must-not-exist")
+			err := runWorkerRegister(append(tc.args, "--data-dir", dataDir))
 			require.Error(t, err)
+			assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
 			assert.Contains(t, err.Error(), tc.want)
+			assert.NoDirExists(t, dataDir, "a refusal writes nothing")
 		})
 	}
+	assert.Zero(t, env.registerCalls.Load(), "a refused command must send no request")
 }
 
 // A durable pending record left by a crashed run is REUSED, never
@@ -525,4 +535,17 @@ func TestWorkerRegisterPrintsTheNextCommands(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(output, "Worker registered.\n"), output)
 	assertNextCommands(t, output, currentSelection(t, "worker", configuration, mustCanonicalDir(t, dataDir)), "start", "status")
+}
+
+// A key that the Hub refuses fails with the next step that fixes it: a new
+// key. The `auth login` hint of `leapmux control` does not apply, because
+// the key is the credential of this call.
+func TestWorkerRegisterRefusedKeyHintsANewKey(t *testing.T) {
+	env := startRegisterEnv(t)
+	err := runWorkerRegister([]string{"--hub", env.url, "--registration-key", "not-a-key", "--data-dir", t.TempDir()})
+	require.Error(t, err)
+	failure := cli.FromError(err)
+	assert.Equal(t, cli.CodeNotLoggedIn, failure.Code, failure.Message)
+	assert.Contains(t, failure.Message, "permanently refused")
+	assert.Equal(t, []string{"generate a new registration key in the Register worker dialog of the Hub, and run the command with it"}, failure.Hints)
 }

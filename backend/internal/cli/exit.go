@@ -14,9 +14,9 @@ import (
 const ExitInterrupted = 130
 
 // ExitStatus is an error that already reported itself and carries only the
-// exit status of the process. Execute prints nothing for it. A command that
-// hands its arguments to an older parser, which prints its own messages,
-// returns one.
+// exit status of the process. Execute prints nothing for it. A command whose
+// exit status is part of its result returns one after it prints the result,
+// as `leapmux <mode> status` exits 3 for a stopped instance.
 type ExitStatus struct {
 	Code int
 }

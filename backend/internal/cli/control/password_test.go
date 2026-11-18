@@ -5,13 +5,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/cli"
 )
 
 // RequirePassword is shared by the offline `recover` verbs and the online
 // `control admin user create`, so a password no longer has to be typed on
 // the command line where the shell history and the process table record it.
 func TestRequirePasswordReturnsTheFlagValueWithoutPrompting(t *testing.T) {
-	got, err := RequirePassword("s3cret", "Password: ")
+	got, err := RequirePassword(t.Context(), "s3cret", "Password: ")
 	require.NoError(t, err)
 	assert.Equal(t, "s3cret", got, "a supplied password is used as-is; no prompt")
 }
@@ -20,8 +22,9 @@ func TestRequirePasswordReturnsTheFlagValueWithoutPrompting(t *testing.T) {
 // path: a piped password is a password in a script or a log, and reading
 // one would defeat the point of prompting.
 func TestRequirePasswordRefusesWhenStdinIsNotATerminal(t *testing.T) {
-	_, err := RequirePassword("", "Password: ")
+	_, err := RequirePassword(t.Context(), "", "Password: ")
 	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code, "the missing flag is a usage error")
 	assert.Contains(t, err.Error(), "stdin is not a terminal")
 }
 
@@ -32,14 +35,14 @@ func TestRequirePasswordRefusesWhenStdinIsNotATerminal(t *testing.T) {
 // which is what that caller can change.
 func TestRequirePasswordRefusesWhenTheCallerRefusedThePrompt(t *testing.T) {
 	t.Setenv(noPromptEnv, "1")
-	_, err := RequirePassword("", "Password: ")
+	_, err := RequirePassword(t.Context(), "", "Password: ")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--password is required")
 	assert.Contains(t, err.Error(), noPromptEnv)
 
 	// A supplied password still needs no prompt, so the variable changes
 	// nothing for a caller that passed one.
-	got, err := RequirePassword("s3cret", "Password: ")
+	got, err := RequirePassword(t.Context(), "s3cret", "Password: ")
 	require.NoError(t, err)
 	assert.Equal(t, "s3cret", got)
 }

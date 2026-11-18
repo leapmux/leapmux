@@ -16,47 +16,47 @@ Because `leapmux recover` writes straight to the database, anyone who can run it
 ## The tree
 
 ```text
-leapmux recover bootstrap create-admin   # refuses when any admin exists
-leapmux recover password reset           # --id | --username, prompts for the new password
-leapmux recover db          path | version | migrate
-leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper
+leapmux recover bootstrap create-admin <username>   # refuses when any admin exists
+leapmux recover password reset <user>               # prompts for the new password
+leapmux recover db path | version | migrate
+leapmux recover encryption-key rotate | remove <version> | reencrypt | rotate-pepper
 ```
 
-Running `leapmux recover` with no group fails, states that a group is required, and prints the root usage. Help works at every level (`--help`, `help`); any command name can be shortened as far as it stays unambiguous.
+`<user>` is a username, or `id:<id>` for a user id, as in [`leapmux control admin`](/docs/admin/admin-cli/). Running `leapmux recover` or one of its groups alone prints its help. `--help` works at every level, and so does `leapmux help recover <group>`. Any command name can be shortened as far as it stays unambiguous.
 
 ### Locating the data: `--data-dir` and `--config`
 
-Every command that touches data resolves the database and encryption key through two common flags:
+Every command resolves the database and the encryption key through two common flags:
 
 | Flag | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `--data-dir` | string | (empty) | Hub data directory. Empty falls back to `~/.config/leapmux/hub`. |
+| `--data-dir` | string | (empty) | Data directory of the instance. Empty falls back to the `data_dir` of `--config`, or to `~/.config/leapmux/hub` without it. |
 | `--config` | string | (empty) | Path to a Hub config file; loads its storage settings so the command targets the same backend the Hub uses. |
 
-- With `--config`, storage settings come from the config file; an explicit `--data-dir` overrides its `DataDir`.
-- Without `--config`, a minimal config is built from `--data-dir`.
+- With `--config`, storage settings come from the config file and the `LEAPMUX_HUB_*` variables; an explicit `--data-dir` overrides its `data_dir`. A `--config` path that does not exist fails, so a mistyped path never opens another database.
+- Without `--config`, the command reads no config file and no variable, and opens the SQLite database in `--data-dir`. One rule serves a Hub, a solo and a dev instance: the default config file of one mode would select the wrong database for another.
 - The SQLite database defaults to `{DataDir}/hub.db`; the encryption key file to `{DataDir}/encryption.key`.
 
 {{< callout >}}
 If your Hub runs on Postgres or MySQL, always pass `--config /path/to/hub.yaml`. Without it the CLI builds a SQLite-only config and would operate on `{DataDir}/hub.db` instead of your real backend.
 {{< /callout >}}
 
-Commands that need only the key file or config path — not a live database connection — accept only `--data-dir`: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper`.
+`db path`, `encryption-key rotate`, and `encryption-key rotate-pepper` open no database: they read the key file or print the path. The other commands open the database, and create the data directory when it is absent. A command checks its arguments first, so a usage error creates nothing.
 
 ## `bootstrap create-admin`
 
 Creates the **first administrator** on a hub that has no administrator yet — the one identity operation that cannot require an authenticated admin to already exist.
 
 ```bash
-leapmux recover bootstrap create-admin --username alice
+leapmux recover bootstrap create-admin alice
 # (prompts for the password)
 ```
 
-| Flag | Description |
+| Argument or flag | Description |
 | --- | --- |
-| `--username` | Required. |
+| `<username>` | Required. |
 | `--password` | Prompted with no echo when omitted; fails when stdin is not a terminal. |
-| `--display-name` | Optional display name. |
+| `--display-name` | Optional display name; the username when omitted. |
 
 The created user is always an administrator. The command **refuses once any admin exists**, and it points you at [`control admin user create --admin`](/docs/admin/admin-cli/) instead.
 
@@ -67,13 +67,13 @@ Every later user — admin included — is created online through [`control admi
 Resets any user's password with the hub stopped — the break-glass path when no administrator can sign in. Use it when the hub cannot serve; while the hub runs, [`leapmux control admin user reset-password`](/docs/admin/admin-cli/#user-passwords) does the same work over RPC and needs an administrator login.
 
 ```bash
-leapmux recover password reset --username alice
+leapmux recover password reset alice
 # New password: (no echo)
 ```
 
-| Flag | Description |
+| Argument or flag | Description |
 | --- | --- |
-| `--id` / `--username` | Exactly one is required. |
+| `<user>` | Required. A username, or `id:<id>` for a user id. |
 | `--password` | New password; prompted (no echo) when omitted. Fails when you omit the flag and stdin is not a terminal, because there is nothing to prompt. |
 
 On success the password is updated, **every passkey on the account is deleted**, every session for the user is revoked, and all their API and delegation tokens are revoked. The revocations are written in the same transaction, so a running hub applies them automatically. The command reports the user it reset, by username and by ID, and states that it revoked the sessions and passkeys.
@@ -89,7 +89,7 @@ The token pepper is a dedicated, stable secret stored in the key file but **inde
 {{< /callout >}}
 
 {{< callout type="info" >}}
-`rotate` and `rotate-pepper` use `--data-dir` only; `reencrypt` and `remove` open the store and accept both `--data-dir` and `--config`.
+`rotate` and `rotate-pepper` read the key file and open no database; `reencrypt` and `remove` open the database too.
 {{< /callout >}}
 
 ### `encryption-key rotate`
@@ -100,11 +100,9 @@ Generate a new key version and make it active. It does **not** re-encrypt existi
 
 Re-encrypts every secret not already under the active key version — OAuth provider client secrets, OAuth access/refresh tokens, hub-settings secret halves, and passkey public keys. Run after `rotate` and a hub restart.
 
-### `encryption-key remove`
+### `encryption-key remove <version>`
 
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--version` | `0` | Key version to remove (must be `>= 1`). |
+`<version>` is the key version to remove, from `1` to `4294967295`.
 
 Refuses the active version, an absent version, or a version that still encrypts anything (`...; run 'leapmux recover encryption-key reencrypt' first`). Always `reencrypt` after a restart, then `remove`.
 
@@ -138,7 +136,7 @@ The rotation runbook:
 leapmux recover encryption-key rotate              # adds version 2, makes it active
 # ... restart the hub so it writes new secrets under version 2 ...
 leapmux recover encryption-key reencrypt           # rewrites all old secrets to version 2
-leapmux recover encryption-key remove --version 1  # once nothing references version 1
+leapmux recover encryption-key remove 1            # once nothing references version 1
 ```
 
 ## `db` — database utilities
@@ -147,7 +145,7 @@ Opening the store auto-applies pending migrations, so a normal hub start already
 
 ### `db path`
 
-Prints the resolved SQLite database path. `--data-dir` only. (Always the SQLite path; on Postgres/MySQL use your database server's tooling.)
+Prints the resolved SQLite database path. (Always the SQLite path; on Postgres/MySQL use your database server's tooling.)
 
 ### `db version`
 
@@ -160,7 +158,7 @@ Latest available version: 1
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--version` | `-1` | Target migration version (`-1` for latest). |
+| `--to` | the latest version | Target migration version, from `0`. |
 
 Mainly useful for down-migrating (where the backend supports it) or as a confirmation — opening the store already migrates up.
 

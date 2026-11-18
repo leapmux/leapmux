@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -50,6 +52,10 @@ func (a adminArgs) AnyPassed() bool {
 // Arg returns the positional argument that the verb's Use line declares as
 // name.
 func (a adminArgs) Arg(name string) string { return a.inv.Arg(name) }
+
+// Context returns the context of the invocation. Every RPC of a verb runs
+// under it, so an interrupt ends the RPC.
+func (a adminArgs) Context() context.Context { return a.inv.Context }
 
 // Result prints the verb's result. A verb body returns it, so the result
 // prints once, in the format that the command line selected.

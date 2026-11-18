@@ -12,6 +12,7 @@ require (
 	github.com/coder/quartz v0.3.1
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/creack/pty v1.1.24
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/go-ole/go-ole v1.3.0
@@ -38,6 +39,8 @@ require (
 	github.com/prometheus/client_model v0.6.3
 	github.com/realclientip/realclientip-go v1.0.1-0.20260615104152-545b12e0e8c7
 	github.com/shirou/gopsutil/v4 v4.26.10
+	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.1.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.45.0
 	github.com/tklauser/go-sysconf v0.4.0
@@ -70,7 +73,6 @@ require (
 	github.com/containerd/log v0.2.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/creack/pty v1.1.24 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
@@ -115,8 +117,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sethvargo/go-retry v0.5.0 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
-	github.com/spf13/pflag v1.1.0 // indirect
 	github.com/stretchr/objx v0.8.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect

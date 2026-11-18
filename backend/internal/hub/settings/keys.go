@@ -408,9 +408,9 @@ func validateMaxMessageSize(v int64) error {
 }
 
 // ExtraListenValue is the extra_listen_addresses key's shape: the addresses an
-// administrator adds BESIDE the one -listen gives.
+// administrator adds BESIDE the one --listen gives.
 //
-// The -listen address is not in here and cannot be. It is read before the
+// The --listen address is not in here and cannot be. It is read before the
 // database opens, so a hub whose stored settings are unreadable still binds
 // the address its operator gave on the command line.
 type ExtraListenValue struct {
@@ -428,7 +428,7 @@ func (v ExtraListenValue) Addrs() ([]listenset.Addr, error) {
 // ExtraListenAddresses reads the key as parsed addresses. A stored document
 // that no longer parses degrades to NO extra addresses, with the error for the
 // caller to log: the alternative is a hub that refuses to serve at all, and
-// the -listen address is always still bound.
+// the --listen address is always still bound.
 func ExtraListenAddresses(s *Snapshot) ([]listenset.Addr, error) {
 	return KeyExtraListenAddresses.Of(s).Addrs()
 }
@@ -447,7 +447,7 @@ func validateExtraListen(v ExtraListenValue) error {
 		if err != nil {
 			return fmt.Errorf("extra listen address %d: %w", i+1, err)
 		}
-		// Port 0 asks the operating system to choose, which -listen may do
+		// Port 0 asks the operating system to choose, which --listen may do
 		// and a stored address may not: the hub would answer on a port
 		// nobody can be told, and a different one after every restart.
 		if addr.Port() == 0 {
@@ -518,7 +518,7 @@ var (
 		})
 
 	// Solo reads this too, so the whole general category stays there. A solo
-	// hub is not localhost-only: `leapmux solo -listen 0.0.0.0:4327` and the
+	// hub is not localhost-only: `leapmux solo --listen 0.0.0.0:4327` and the
 	// extra_listen_addresses setting both serve a LAN or Tailscale address,
 	// and public_url is how that hub tells a REMOTE worker where to dial.
 	// It reaches the solo launcher's banner and, as worker_hub_url in
@@ -545,7 +545,7 @@ var (
 	//
 	// It is NOT hidden in solo. A solo hub authorizes apps like any other --
 	// the solo rung yields to a presented bearer, so a scoped credential
-	// binds there too -- and an operator who runs `leapmux solo -listen
+	// binds there too -- and an operator who runs `leapmux solo --listen
 	// 0.0.0.0:4327` on a LAN has exactly the same decision to make.
 	//
 	// The metadata document reads it: with the setting off,
@@ -586,7 +586,7 @@ var (
 		})
 
 	// The addresses an administrator publishes the hub on, beside the one
-	// -listen gives. Solo only, and HiddenInHub says so: `leapmux hub` and
+	// --listen gives. Solo only, and HiddenInHub says so: `leapmux hub` and
 	// `leapmux dev` already bind every interface by default and already
 	// authenticate every caller, so the key would only offer them a way to
 	// break a working deployment.
@@ -603,7 +603,7 @@ var (
 				WithUI(UIMeta{
 			Category:    "network",
 			Title:       "Network access",
-			Summary:     "additional addresses this hub accepts connections on, beside the one -listen gives",
+			Summary:     "additional addresses this hub accepts connections on, beside the one --listen gives",
 			HiddenInHub: true,
 			// A WHOLE-VALUE custom editor: one field, no name, so the client
 			// owns the document rather than one property of it. The addresses

@@ -90,15 +90,13 @@ func TestFromError(t *testing.T) {
 		assert.Equal(t, CodeUnavailable, got.Code)
 		assert.NotEmpty(t, got.Message, "a message must never be empty")
 	})
-	t.Run("hints the login for an unauthenticated call", func(t *testing.T) {
-		got := FromError(connect.NewError(connect.CodeUnauthenticated, "expired"))
-		require.NotEmpty(t, got.Hints)
-		assert.Contains(t, got.Hints[0], "auth login")
-	})
-	t.Run("hints the version comparison for an unimplemented call", func(t *testing.T) {
-		got := FromError(connect.NewError(connect.CodeUnimplemented, "no such method"))
-		require.NotEmpty(t, got.Hints)
-		assert.Contains(t, got.Hints[0], "version")
+	// The next step after a refused call depends on the command, so the
+	// classifier adds none; the tree of the command does.
+	t.Run("adds no hint to a Connect error", func(t *testing.T) {
+		for _, code := range []connect.Code{connect.CodeUnauthenticated, connect.CodeUnimplemented, connect.CodePermissionDenied} {
+			got := FromError(connect.NewError(code, "refused"))
+			assert.Empty(t, got.Hints, code.String())
+		}
 	})
 	t.Run("classifies a not-logged-in sentinel", func(t *testing.T) {
 		got := FromError(fmt.Errorf("%w to this hub", ErrNotLoggedIn))

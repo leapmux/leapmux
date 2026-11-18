@@ -134,9 +134,9 @@ describe('process restart cleanup', () => {
       expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', [
         'hub',
         'run',
-        '-listen',
+        '--listen',
         ':12345',
-        '-data-dir',
+        '--data-dir',
         join(server.dataDir, 'hub'),
       ], expect.objectContaining({ detached: true }))
       expect(loginViaAPI).toHaveBeenCalledWith(server.hubUrl, 'admin', 'password')
@@ -289,9 +289,9 @@ describe('initial process fixture port ownership', () => {
     expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'private-leapmux', [
       'hub',
       'run',
-      '-listen',
+      '--listen',
       '127.0.0.1:0',
-      '-data-dir',
+      '--data-dir',
       expect.any(String),
     ], expect.any(Object))
     expect(waitForHubStart).toHaveBeenCalledWith(expect.stringMatching(/hub[/\\]state\.json$/), children[0]?.proc)

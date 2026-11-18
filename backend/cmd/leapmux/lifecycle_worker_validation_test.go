@@ -50,7 +50,7 @@ func TestWorkerRuntimeRejectsInvalidMessageSizeBeforePublication(t *testing.T) {
 		for _, source := range []string{"flags", "environment", "configuration", "managed"} {
 			t.Run(source+"/"+strconv.Itoa(value), func(t *testing.T) {
 				args, root := workerValidationArguments(t, source, "max-message-size", strconv.Itoa(value))
-				err := runModeRunWithInvocation("worker", runInvocation{Context: testutil.DeadlineContext(t)})(cmdCtx{}, args)
+				err := runForeground("worker", runInvocation{Context: testutil.DeadlineContext(t)}, args...)
 				assert.ErrorContains(t, err, "max_message_size")
 				assert.NoFileExists(t, lifecycle.PathsOf(root).RuntimeRecord, "invalid runtime configuration must precede publication")
 				assert.NoFileExists(t, lifecycle.PathsOf(root).ControlToken)
@@ -68,7 +68,7 @@ func TestWorkerRegistrationKeyIsAFlagOfRegisterOnly(t *testing.T) {
 	const credential = "registration-only-credential"
 	t.Run("flags", func(t *testing.T) {
 		args, root := workerValidationArguments(t, "flags", "registration-key", credential)
-		err := runModeRunWithInvocation("worker", runInvocation{Context: testutil.DeadlineContext(t)})(cmdCtx{}, args)
+		err := runForeground("worker", runInvocation{Context: testutil.DeadlineContext(t)}, args...)
 		assert.ErrorContains(t, err, "leapmux worker register")
 		assert.NoFileExists(t, lifecycle.PathsOf(root).RuntimeRecord)
 		assert.NoFileExists(t, lifecycle.PathsOf(root).ControlToken)
@@ -76,7 +76,7 @@ func TestWorkerRegistrationKeyIsAFlagOfRegisterOnly(t *testing.T) {
 	for _, source := range []string{"environment", "configuration", "managed"} {
 		t.Run(source, func(t *testing.T) {
 			args, _ := workerValidationArguments(t, source, "registration-key", credential)
-			err := runModeRunWithInvocation("worker", runInvocation{Context: testutil.DeadlineContext(t)})(cmdCtx{}, args)
+			err := runForeground("worker", runInvocation{Context: testutil.DeadlineContext(t)}, args...)
 			// The obstructed worker.db stops the run after configuration
 			// and publication, so the key changed nothing on the way there.
 			require.ErrorContains(t, err, "open worker db")

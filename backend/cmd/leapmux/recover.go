@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
-	"strings"
 
-	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -17,371 +18,156 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-type cmdLeaf struct {
-	Name    string
-	Summary string // shown in parent's command list
-	Run     func(ctx cmdCtx, args []string) error
+// newRecoverCommand builds `leapmux recover`, the ONLY command tree that
+// opens the database directly. Every other administration task runs online,
+// authenticated, through `leapmux control admin ...` against the
+// Admin*Service RPC surface. These four groups are the pieces that must work
+// when the hub is stopped or locked out: first-admin bootstrap, password
+// reset, schema migration, and encryption-key surgery.
+func newRecoverCommand() *cobra.Command {
+	group := cli.Group("recover", "Offline break-glass recovery (opens the database directly)")
+	group.Long = `Offline break-glass recovery (opens the database directly).
+
+Each command works on the database and the encryption key file of a Hub, solo or
+dev instance, with no running Hub, no network call and no login. --data-dir
+selects the instance; --config reads the storage settings of a Hub on PostgreSQL
+or MySQL. While the Hub serves, use "leapmux control admin" instead.`
+	group.AddCommand(
+		cli.Group("bootstrap", "First-run recovery on an empty hub (online administration: `leapmux control admin user create`)",
+			newBootstrapCreateAdminCommand()),
+		cli.Group("password", "Reset passwords offline",
+			newPasswordResetCommand()),
+		cli.Group("encryption-key", "Manage encryption keys",
+			newEncryptionKeyRotateCommand(),
+			newEncryptionKeyRemoveCommand(),
+			newEncryptionKeyReencryptCommand(),
+			newEncryptionKeyRotatePepperCommand()),
+		cli.Group("db", "Database utilities",
+			newDBPathCommand(),
+			newDBMigrateCommand(),
+			newDBVersionCommand()),
+	)
+	return group
 }
 
-// cmdCtx carries the resolved path and description from the dispatcher
-// down into the leaf, so leaves don't have to hand-type their own path or
-// look up their description via a side-channel map.
-type cmdCtx struct {
-	Path        string // e.g. "recover password reset", "control admin user list"
-	Description string
+// recoverSpec declares one recover command: its leaf, without Run, and the
+// check of its command line.
+type recoverSpec struct {
+	cli.Leaf
+	// BeforeOpen runs after the parse and BEFORE the command reads the
+	// configuration or opens the database. Put every check of an argument or
+	// a flag here: opening the database creates the data directory and the
+	// database file, and a usage error must change nothing on disk.
+	BeforeOpen func(inv *cli.Invocation) error
 }
 
-type cmdGroup struct {
-	Name      string // group name; the root of a tree has one also
-	Summary   string // one line; the parent lists it, and the group's own help prints it
-	Commands  []cmdLeaf
-	Subgroups []cmdGroup
-}
-
-// recoverTree is the ONLY command tree that opens the database directly.
-// Everything else that used to live under the removed offline admin tree is administered
-// online, authenticated, through `leapmux control admin ...` against the
-// Admin*Service RPC surface; these four groups are the pieces that must
-// work when the hub is stopped or locked out (first-admin bootstrap,
-// password reset, schema migration, encryption-key surgery).
-var recoverTree = cmdGroup{
-	Name:    "recover",
-	Summary: "Offline break-glass recovery (opens the database directly)",
-	Subgroups: []cmdGroup{
-		{
-			Name:    "bootstrap",
-			Summary: "First-run recovery on an empty hub (online administration: `leapmux control admin user create`)",
-			Commands: []cmdLeaf{
-				{Name: "create-admin", Summary: "Create the initial administrator (refuses once any admin exists)", Run: runBootstrapCreateAdmin},
-			},
-		},
-		{
-			Name:    "password",
-			Summary: "Reset passwords offline",
-			Commands: []cmdLeaf{
-				{Name: "reset", Summary: "Reset a user's password and revoke all their sessions", Run: runPasswordReset},
-			},
-		},
-		{
-			Name:    "encryption-key",
-			Summary: "Manage encryption keys",
-			Commands: []cmdLeaf{
-				{Name: "rotate", Summary: "Generate and add a new encryption key version", Run: runRotateEncryptionKey},
-				{Name: "remove", Summary: "Remove an old encryption key version", Run: runRemoveEncryptionKey},
-				{Name: "reencrypt", Summary: "Re-encrypt all secrets with the active key", Run: runReencryptSecrets},
-				{Name: "rotate-pepper", Summary: "Rotate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app secrets, registration keys and device codes", Run: runRotatePepper},
-			},
-		},
-		{
-			Name:    "db",
-			Summary: "Database utilities",
-			Commands: []cmdLeaf{
-				{Name: "path", Summary: "Print the database path", Run: runDBPath},
-				{Name: "migrate", Summary: "Run schema migrations", Run: runDBMigrate},
-				{Name: "version", Summary: "Show current schema version", Run: runDBVersion},
-			},
-		},
-	},
-}
-
-func runRecover(args []string) error {
-	return dispatchGroup(recoverTree, args, []string{"recover"})
-}
-
-// matchCommandToken resolves arg against names using btrfs-style prefix
-// matching: an exact match always wins; otherwise arg must be a unique
-// unambiguous prefix of exactly one name. This mirrors the algorithm in
-// btrfs-progs' parse_one_token (btrfs.c): shorten any command name as far
-// as it stays unambiguous.
-//
-// Returns the matched name, or an error describing ambiguity ("ambiguous
-// token 'pre'; did you mean one of: a, b") or a total miss ("unknown
-// command: pre"). candidates holds the names that share the prefix, so
-// the caller can render the "did you mean" list in its own error format.
-func matchCommandToken(arg string, names []string) (matched string, candidates []string, err error) {
-	// Exact match wins outright, even if arg is also a prefix of others.
-	for _, n := range names {
-		if n == arg {
-			return n, nil, nil
+// recoverConfigLeaf builds a recover command that reads the configuration of
+// the instance and opens no database. The command takes --config and
+// --data-dir after its own flags.
+func recoverConfigLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config) error) *cobra.Command {
+	var selection recoverSelection
+	leaf := spec.Leaf
+	own := leaf.Flags
+	leaf.Flags = func(fs *pflag.FlagSet) {
+		if own != nil {
+			own(fs)
 		}
+		selection.register(fs)
 	}
-	// Otherwise collect every name for which arg is a strict prefix.
-	for _, n := range names {
-		if strings.HasPrefix(n, arg) {
-			candidates = append(candidates, n)
+	leaf.Run = func(inv *cli.Invocation) (any, error) {
+		if spec.BeforeOpen != nil {
+			if err := spec.BeforeOpen(inv); err != nil {
+				return nil, err
+			}
 		}
-	}
-	switch len(candidates) {
-	case 0:
-		return "", nil, fmt.Errorf("unknown command: %s", arg)
-	case 1:
-		return candidates[0], candidates, nil
-	default:
-		return "", candidates, fmt.Errorf("ambiguous token %q; did you mean one of: %s", arg, strings.Join(candidates, ", "))
-	}
-}
-
-// groupTokenMatch is what one token resolves to inside a group: at most
-// one of Subgroup and Command is a valid index, and the other is -1.
-// Candidates lists every name the token is a prefix of when nothing
-// resolved, so the caller can render its own "did you mean" list.
-type groupTokenMatch struct {
-	Subgroup   int
-	Command    int
-	Candidates []string
-}
-
-// resolveGroupToken resolves one token against a group's subgroups AND its
-// commands, as ONE namespace.
-//
-// The union is the point. Matching each category separately and preferring
-// the subgroup meant a token that was a unique prefix of both dispatched
-// the subgroup in silence — and it beat an EXACT command match, which is
-// the one thing prefix matching must never do. Over the union an exact
-// match always wins and a prefix that fits two names is ambiguous, whether
-// those names sit in the same category or not.
-//
-// Both walkers over this tree call it: the dispatcher that runs a leaf and
-// the validator that prints help. They shared the matching rules and the
-// error wording by copy before, and had already drifted apart.
-func resolveGroupToken(group cmdGroup, arg string) groupTokenMatch {
-	names := make([]string, 0, len(group.Subgroups)+len(group.Commands))
-	for i := range group.Subgroups {
-		names = append(names, group.Subgroups[i].Name)
-	}
-	for i := range group.Commands {
-		names = append(names, group.Commands[i].Name)
-	}
-	out := groupTokenMatch{Subgroup: -1, Command: -1}
-	matched, candidates, err := matchCommandToken(arg, names)
-	if err != nil {
-		out.Candidates = candidates
-		return out
-	}
-	for i := range group.Subgroups {
-		if group.Subgroups[i].Name == matched {
-			out.Subgroup = i
-			return out
-		}
-	}
-	for i := range group.Commands {
-		if group.Commands[i].Name == matched {
-			out.Command = i
-			return out
-		}
-	}
-	return out
-}
-
-// tokenNoun gives the word for what the next token under g must be. A group
-// that holds subgroups and no command of its own accepts a group name only.
-// Every other group accepts a command name, so "command" is the default.
-//
-// The refusal, the "Usage:" line, and the section headers of the help text
-// all ask the same question, so they all ask it here. A tree that later mixes
-// commands into a group of groups changes all three at once.
-func tokenNoun(g cmdGroup) string {
-	if len(g.Commands) == 0 && len(g.Subgroups) > 0 {
-		return "group"
-	}
-	return "command"
-}
-
-// unresolvedTokenError renders the refusal for a token that resolved to
-// nothing.
-//
-// Both tree walkers call it, so the wording cannot drift — and only ONE of
-// them is reachable for any given input: the validating walk runs first
-// and returns "handled" on every failure, so the dispatcher's copy of this
-// message never reaches a terminal. Two hand-written copies meant the
-// spelling a test could pin was not the spelling an operator saw.
-//
-// fullPath ALWAYS holds the top-level name, so `["recover"]` is the recover
-// root and `["control", "admin"]` is a subgroup of the control root. Both
-// walkers pass that convention. The message gives the whole path an operator
-// typed, which is the one they can act on. noun is what the token had to be
-// — see tokenNoun.
-func unresolvedTokenError(fullPath []string, arg string, candidates []string, noun string) error {
-	if len(candidates) > 0 {
-		return fmt.Errorf("ambiguous token %q; did you mean one of: %s", arg, strings.Join(candidates, ", "))
-	}
-	return fmt.Errorf("unknown %s %s: %s", strings.Join(fullPath, " "), noun, arg)
-}
-
-// dispatchGroup walks a command tree to invoke a leaf command. path is
-// the fully-qualified path of group, from the top-level name down, so the
-// recover root is `["recover"]`. It builds the error messages and the leaf's
-// cmdCtx. walkGroupArgs passes the same convention.
-//
-// Command and subgroup names may be abbreviated to any unambiguous prefix
-// (btrfs-style): e.g. `control admin user lis` resolves to `user list`.
-func dispatchGroup(group cmdGroup, args, path []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("%s %s is required", strings.Join(path, " "), tokenNoun(group))
-	}
-
-	match := resolveGroupToken(group, args[0])
-	switch {
-	case match.Subgroup >= 0:
-		sub := group.Subgroups[match.Subgroup]
-		return dispatchGroup(sub, args[1:], append(path, sub.Name))
-	case match.Command >= 0:
-		leaf := group.Commands[match.Command]
-		return leaf.Run(cmdCtx{
-			Path:        strings.Join(append(path, leaf.Name), " "),
-			Description: leaf.Summary + ".",
-		}, args[1:])
-	default:
-		return unresolvedTokenError(path, args[0], match.Candidates, tokenNoun(group))
-	}
-}
-
-// formatGroupUsage renders the help text for a group. fullPath is the
-// command path beneath the binary (e.g., "recover", "control admin user").
-func formatGroupUsage(g cmdGroup, fullPath string) string {
-	var sb strings.Builder
-	sb.WriteString(g.Summary + ".")
-	sb.WriteString("\n\n")
-	// A group of groups needs two more tokens; every other group needs one.
-	if tokenNoun(g) == "group" {
-		fmt.Fprintf(&sb, "Usage: leapmux %s <group> <command> [flags]\n\n", fullPath)
-	} else {
-		fmt.Fprintf(&sb, "Usage: leapmux %s <command> [flags]\n\n", fullPath)
-	}
-	// A group can hold both, and then it gets both headers. One flat list
-	// under a single header told the reader that `control admin` runs, when
-	// it is a group that needs another token.
-	if len(g.Commands) > 0 {
-		sb.WriteString("Commands:\n")
-		for _, c := range g.Commands {
-			fmt.Fprintf(&sb, "  %-18s%s\n", c.Name, c.Summary)
-		}
-	}
-	if len(g.Subgroups) > 0 {
-		if len(g.Commands) > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString("Groups:\n")
-		for _, sub := range g.Subgroups {
-			fmt.Fprintf(&sb, "  %-18s%s\n", sub.Name, sub.Summary)
-		}
-	}
-	sb.WriteString("\nAny command name can be shortened as far as it stays unambiguous.\n")
-	return sb.String()
-}
-
-// ---- Helpers ----
-
-// printJSON writes an indented JSON document to stdout (worker_pins and
-// the recover leaves share it).
-func printJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
-}
-
-// withRecoverStore creates a flag set with --data-dir and --config, parses
-// args, opens the store, and calls fn. The store is closed after fn returns.
-// When --config is provided, the hub config file is loaded to obtain storage
-// settings. Otherwise, a minimal config is constructed from --data-dir.
-func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store) error) error {
-	fs := flag.NewFlagSet("leapmux "+cmd.Path, flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	configFile := fs.String("config", "", "path to hub config file (loads storage settings)")
-	if setup != nil {
-		setup(fs)
-	}
-	if err := internalconfig.ConfigureAndParse(fs, args, cmd.Description, nil, nil); err != nil {
-		return err
-	}
-
-	var cfg *config.Config
-	if *configFile != "" {
-		var err error
-		cfg, _, err = config.LoadWithOptions([]string{"--config", *configFile}, config.LoadOptions{})
+		cfg, err := selection.load()
 		if err != nil {
-			return fmt.Errorf("load config from %s: %w", *configFile, err)
+			return nil, err
 		}
-		if *dataDir != "" {
-			cfg.DataDir = *dataDir
-		}
-	} else {
-		cfg = recoverConfig(*dataDir)
+		return nil, run(inv, cfg)
 	}
-
-	// The hub creates the data dir at startup; recover commands run
-	// before (or instead of) it, so create it here for the same
-	// out-of-the-box behavior (Validate is MkdirAll + storage checks,
-	// exactly what NewServer runs).
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("validate config: %w", err)
-	}
-
-	st, err := storeopen.Open(context.Background(), cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-
-	return fn(context.Background(), cfg, st)
+	return cli.NewLeaf(leaf)
 }
 
-// recoverConfig returns a minimal Config with DataDir set. When dataDir is
-// empty it uses the default hub data directory.
-func recoverConfig(dataDir string) *config.Config {
-	cfg := &config.Config{}
-	if dataDir != "" {
-		cfg.DataDir = dataDir
-	} else {
-		cfg.DataDir = config.DefaultHubDataDir()
-	}
-	return cfg
-}
-
-// withRecoverConfig creates a flag set with --data-dir, parses args, and
-// calls fn with the resolved config. Use this for commands that need
-// the config but not a database connection.
-func withRecoverConfig(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(cfg *config.Config) error) error {
-	fs := flag.NewFlagSet("leapmux "+cmd.Path, flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "data directory")
-	if setup != nil {
-		setup(fs)
-	}
-	if err := internalconfig.ConfigureAndParse(fs, args, cmd.Description, nil, nil); err != nil {
-		return err
-	}
-	return fn(recoverConfig(*dataDir))
-}
-
-// resolveUser looks up a user by ID or username using the Store interface.
+// recoverSelection binds the flags that select the database of a recover
+// command.
 //
-// The selector RULE lives in service.ResolveUserSelector, shared with the
-// online admin RPCs so the two surfaces cannot disagree about what a valid
-// selector is. The WORDING stays here: this one talks to a person at a
-// terminal, so it lists flags and echoes the selector they typed. The
-// selector holds one of the two values, so service.SelectUserFromPair refuses
-// both flags, and this function states that refusal with its own flag names.
-func resolveUser(ctx context.Context, st store.Store, userID, username string) (*store.User, error) {
-	sel, err := service.SelectUserFromPair(userID, username)
+// A recover command serves a Hub, a solo and a dev instance alike, and each
+// mode has a default configuration file of its own. So the command reads a
+// configuration file only when --config gives one: the default file of one
+// mode would select the wrong database for the data directory of another.
+type recoverSelection struct {
+	configFile string
+	dataDir    string
+}
+
+func (r *recoverSelection) register(fs *pflag.FlagSet) {
+	fs.StringVar(&r.dataDir, "data-dir", "", "data directory of the instance; the data_dir of --config, or "+config.DefaultHubDataDirHelp+" without --config")
+	fs.StringVar(&r.configFile, "config", "", "configuration file whose storage settings select the database, for a Hub on PostgreSQL or MySQL; without it, the command opens the SQLite database in --data-dir")
+}
+
+// load builds the configuration that the selection gives. With --config, it
+// reads that file and the LEAPMUX_HUB_ variables, as the Hub does, and
+// --data-dir still replaces the data directory of the file. Without --config,
+// it selects the SQLite database in the data directory.
+func (r *recoverSelection) load() (*config.Config, error) {
+	if r.configFile == "" {
+		dataDir := r.dataDir
+		if dataDir == "" {
+			dataDir = config.DefaultHubDataDir()
+		}
+		return &config.Config{DataDir: dataDir}, nil
+	}
+	// The loader skips an absent file without a word, which is right for a
+	// default path and wrong for a path that the operator typed: a typo would
+	// open the SQLite database of the data directory instead.
+	if _, err := os.Stat(r.configFile); err != nil {
+		return nil, cli.Usagef("cannot read the configuration file %s: %v", r.configFile, err)
+	}
+	cfg, err := config.LoadWithOptions([]string{"--config", r.configFile}, config.LoadOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("--id and --username are mutually exclusive")
+		return nil, fmt.Errorf("load config from %s: %w", r.configFile, err)
 	}
+	if r.dataDir != "" {
+		cfg.DataDir = r.dataDir
+	}
+	return cfg, nil
+}
+
+// recoverStoreLeaf builds a recover command that opens the database of the
+// Hub. The store closes after run returns.
+func recoverStoreLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config, st store.Store) error) *cobra.Command {
+	return recoverConfigLeaf(spec, func(inv *cli.Invocation, cfg *config.Config) error {
+		// The hub creates the data dir at startup; recover commands run
+		// before (or instead of) it, so create it here for the same
+		// out-of-the-box behavior (Validate is MkdirAll + storage checks,
+		// exactly what NewServer runs).
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("validate config: %w", err)
+		}
+		st, err := storeopen.Open(inv.Context, cfg)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
+		return run(inv, cfg, st)
+	})
+}
+
+// resolveUser returns the user that sel selects. The selector RULE lives in
+// service.ResolveUserSelector, shared with the online admin RPCs, so the two
+// surfaces cannot disagree about what a selector selects. The WORDING stays
+// here: it speaks to a person at a terminal and repeats the <user> that the
+// person typed.
+func resolveUser(ctx context.Context, st store.Store, sel *leapmuxv1.UserSelector, typed string) (*store.User, error) {
 	user, err := service.ResolveUserSelector(ctx, st, sel)
-	if err == nil {
-		return user, nil
-	}
-	selector := userID
-	field := "ID"
-	if userID == "" {
-		selector, field = username, "username"
-	}
 	switch {
-	case errors.Is(err, service.ErrNoUserSelector):
-		return nil, fmt.Errorf("--id or --username is required")
+	case err == nil:
+		return user, nil
 	case errors.Is(err, store.ErrNotFound):
-		return nil, fmt.Errorf("user not found: %s", selector)
+		return nil, cli.Newf(cli.CodeNotFound, "no user %q", typed)
 	default:
-		return nil, fmt.Errorf("get user by %s: %w", field, err)
+		return nil, fmt.Errorf("look up the user %q: %w", typed, err)
 	}
 }
 
@@ -393,7 +179,7 @@ func resolveUser(ctx context.Context, st store.Store, userID, username string) (
 // tokens, and delegation tokens. An unminted id unwraps to "" there, which
 // MATCHES every blank-owner row instead of none, so the command would touch
 // the wrong rows or report success having revoked nothing. One refusal, one
-// wording, for every recover command that resolves a user by --id/--username.
+// wording, for every recover command that resolves a <user>.
 func mintResolvedUserID(user *store.User) (userid.UserID, error) {
 	uid, ok := userid.New(user.ID)
 	if !ok {

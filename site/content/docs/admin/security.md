@@ -251,7 +251,7 @@ The desktop app writes its Worker's line to standard error, prefixed with `deskt
 
 In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Its tunnels share that record; see [Tunnel key trust](#tunnel-key-trust). Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/).
 
-- Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove --target-worker-id=<id>`.
+- Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove <worker-id>`.
 - `leapmux control` CLI pins, cleared with `leapmux control worker pins remove <worker>`.
 
 Both follow the same rule: first contact auto-pins, any later mismatch aborts the connection until you explicitly clear the pin.
@@ -294,7 +294,7 @@ Setting the password is what [Network access](/docs/admin/configuration/#network
 A solo hub runs no captcha, so a rate limit guards the sign-in form instead: ten failed passwords from one client address pause sign-in from that address for fifteen minutes. `rate_limit.login_anonymous` sets it — see [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits).
 
 {{< callout type="warning" >}}
-Point solo mode at a non-loopback address with `-listen` and LeapMux warns you at startup. Until the `solo` account has a password, another machine can win the first-password setup race.
+Point solo mode at a non-loopback address with `--listen` and LeapMux warns you at startup. Until the `solo` account has a password, another machine can win the first-password setup race.
 
 The app shows only the password-setup screen on every passwordless TCP connection, including loopback. Set the password from a trusted connection. Firewall or tunnel a non-loopback address.
 {{< /callout >}}

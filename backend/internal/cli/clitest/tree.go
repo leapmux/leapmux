@@ -52,11 +52,9 @@ func CheckTree(t TestingT, root *cobra.Command, rules TreeRules) {
 	assert.NotZero(t, leaves, "the walk must find the leaves of the tree")
 }
 
-// walkLeaves calls fn for each runnable command that parses its own flags. A
-// command that disables the parse hands its arguments to another dispatcher,
-// which owns their rules.
+// walkLeaves calls fn for each runnable command of the tree.
 func walkLeaves(cmd *cobra.Command, fn func(*cobra.Command)) {
-	if cmd.Runnable() && !cmd.HasSubCommands() && !cmd.DisableFlagParsing && cmd.Name() != "help" {
+	if cmd.Runnable() && !cmd.HasSubCommands() && cmd.Name() != "help" {
 		fn(cmd)
 	}
 	for _, child := range cmd.Commands() {

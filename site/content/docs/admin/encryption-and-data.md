@@ -107,7 +107,7 @@ Rotation generates a new active key version. Existing ciphertext stays readable 
 | --- | --- |
 | `leapmux recover encryption-key rotate` | Generate and add a new encryption key version |
 | `leapmux recover encryption-key reencrypt` | Re-encrypt all secrets with the active key |
-| `leapmux recover encryption-key remove --version <N>` | Remove an old encryption key version |
+| `leapmux recover encryption-key remove <N>` | Remove an old encryption key version |
 | `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app client secrets, registration keys, and device codes |
 
 These commands do **not** all take the same flags, because they touch different things:
@@ -154,7 +154,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 4. **(Optional) Remove the retired version** once nothing references it, then restart the Hub.
 
    ```bash
-   leapmux recover encryption-key remove --version 1
+   leapmux recover encryption-key remove 1
    # Removed encryption key version 1.
    # Restart the hub to apply.
    sudo systemctl restart leapmux-hub
@@ -237,13 +237,13 @@ The `leapmux recover db` commands let you inspect and (where supported) control 
 
 | Command | Summary | Notes |
 | --- | --- | --- |
-| `leapmux recover db path` | Print the database path | Always prints `{data_dir}/hub.db`. Because `db path` takes no `--config`, it cannot load the config file, so it never reflects a custom `storage.sqlite.path` and does **not** consult `storage.type` — it prints the default SQLite path even when a SQL backend is configured. |
+| `leapmux recover db path` | Print the database path | Prints the path of the SQLite database: `{data_dir}/hub.db`, or the `storage.sqlite.path` of `--config`. It does **not** consult `storage.type`, so it prints a SQLite path even when a SQL backend is configured. |
+| `leapmux recover db version` | Show current schema version | Opens the store (which applies pending migrations), then prints current and latest versions. |
+| `leapmux recover db migrate` | Run schema migrations | `--to <version>` selects a target; the latest version when omitted. |
 
 {{< callout type="info" >}}
-`db path` prints the default SQLite location only. Point `db version` or `db migrate` at a custom backend with `--config`.
+`db path` prints a SQLite location only. Point `db version` or `db migrate` at a SQL backend with `--config`.
 {{< /callout >}}
-| `leapmux recover db version` | Show current schema version | Opens the store (which applies pending migrations), then prints current and latest versions. |
-| `leapmux recover db migrate` | Run schema migrations | `--version <int64>` selects a target (default `-1` = latest). |
 
 Example:
 
@@ -258,14 +258,14 @@ leapmux recover db migrate
 # Already at latest version.
 ```
 
-Because opening the store already migrates up to the latest version, an explicit `migrate` to the latest is mostly a confirmation. Supplying an explicit `--version` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
+Because opening the store already migrates up to the latest version, an explicit `migrate` to the latest is mostly a confirmation. Supplying an explicit `--to` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
 
 ```bash
 # Target a specific version (down-migration support depends on the backend)
-leapmux recover db migrate --version 1
+leapmux recover db migrate --to 1
 ```
 
-Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store, so both accept `--data-dir` and `--config`; pass `--config` so the command targets the same backend the Hub uses. `recover db path` does not open the store, so it accepts `--data-dir` only. See [Recovery](/docs/admin/recover/).
+Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store; pass `--config` so the command targets the same backend the Hub uses. Every recover command accepts `--data-dir` and `--config`. See [Recovery](/docs/admin/recover/).
 
 ## Backup & restore
 

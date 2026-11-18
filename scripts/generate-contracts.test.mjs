@@ -3927,7 +3927,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('emits the hub DevFrontend env var to Go and Rust', () => {
     // The debug sidecar writes this value. Solo mode reads it into
-    // `-dev-frontend`. A one-sided change leaves TCP extras on the embedded
+    // `--dev-frontend`. A one-sided change leaves TCP extras on the embedded
     // single-page application.
     const d = readContract('desktop')
     expect(d.envVars.devFrontend).toBe('LEAPMUX_HUB_DEV_FRONTEND')

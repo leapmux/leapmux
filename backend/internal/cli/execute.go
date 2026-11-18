@@ -23,31 +23,36 @@ const abbreviationNote = "Any command name can be shortened as far as it stays u
 // from a flag that does not parse to a refusal of the hub, reaches the
 // caller as one error, and Execute prints it once.
 func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	err := Run(ctx, root, args, stdin, stdout, stderr)
+	if err == nil {
+		return ExitOK
+	}
+	var status *ExitStatus
+	if errors.As(err, &status) {
+		return status.Code
+	}
 	printer := &Printer{Out: stdout, Err: stderr}
 	if wantsJSON(args) {
 		printer.Format = FormatJSON
 	}
+	e := FromError(err)
+	printer.Failure(e)
+	return e.ExitCode()
+}
+
+// Run runs root with args, as Execute does, and returns the error of the
+// command instead of printing it. A command's result still prints.
+func Run(ctx context.Context, root *cobra.Command, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	prepare(root)
 	expanded, err := ExpandCommandPath(root, args)
 	if err != nil {
-		e := FromError(err)
-		printer.Failure(e)
-		return e.ExitCode()
+		return err
 	}
 	root.SetArgs(expanded)
 	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	if err := root.ExecuteContext(ctx); err != nil {
-		var status *ExitStatus
-		if errors.As(err, &status) {
-			return status.Code
-		}
-		e := FromError(err)
-		printer.Failure(e)
-		return e.ExitCode()
-	}
-	return ExitOK
+	return root.ExecuteContext(ctx)
 }
 
 // prepare applies the settings that every command of the tree shares. It is
@@ -56,6 +61,12 @@ func prepare(root *cobra.Command) {
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		e := Usagef("%s", err.Error())
+		if cmd.HasSubCommands() && strings.HasPrefix(err.Error(), "unknown") {
+			// A group takes no flag of its own beyond --help, so the flag
+			// almost always belongs to a command of the group, typed before
+			// the name of that command.
+			e = e.WithHint(`a flag goes after the command that takes it, as in "%s <command> [flags]"`, cmd.CommandPath())
+		}
 		if strings.HasPrefix(err.Error(), "unknown shorthand flag") {
 			// pflag reads "-version" as the letters v, e, r, ..., so its
 			// complaint is about a letter the user never meant as a flag.
@@ -296,10 +307,7 @@ Examples:
 {{.Example}}{{end}}{{if .HasAvailableSubCommands}}
 
 Commands:{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
-  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{with flagUsages .LocalFlags}}
-
-Flags:
-{{.}}{{end}}{{with flagUsages .InheritedFlags}}
+  {{rpad .Name (commandColumn $)}}{{.Short}}{{end}}{{end}}{{end}}{{flagSections .LocalFlags}}{{with flagUsages .InheritedFlags}}
 
 Global Flags:
 {{.}}{{end}}{{if .HasAvailableSubCommands}}

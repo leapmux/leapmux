@@ -332,7 +332,7 @@ browser pin workers independently, and neither sees the other's pins.
 | Client | Pin store | How to reset a pin |
 | --- | --- | --- |
 | **Your browser** (Frontend) | IndexedDB (strict database `leapmux-trust`, key `leapmux:u:<your-user-id>:key-pins`, kept about one year and refreshed on use) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
-| **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove --target-worker-id=<id>` |
+| **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove <worker-id>` |
 | **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove <worker>` |
 
 ### What a mismatch looks like in the browser
@@ -354,7 +354,7 @@ For non-browser clients there is no dialog — agents and scripts can't answer i
 leapmux control worker pins remove <worker>
 
 # One Worker connecting to a sibling Worker hit a pin mismatch:
-leapmux worker cross-worker-pins remove --target-worker-id=<id>
+leapmux worker cross-worker-pins remove <worker-id>
 ```
 
 Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|get|remove` reference, see [Control CLI](/docs/using/control-cli/#worker-key-pins).

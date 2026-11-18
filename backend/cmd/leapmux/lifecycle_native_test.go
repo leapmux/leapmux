@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -53,7 +53,7 @@ func TestNativeStartAuthorizesBeforeRuntimeBudget(t *testing.T) {
 		authorized = true
 		return nil
 	}
-	require.NoError(t, executeNativeStartWithController("hub", "start", []string{"--data-dir", spec.DataDirectory, "--yes"}, nativeRecorderController(manager)))
+	require.NoError(t, runLifecycleWithController("hub", "start", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--yes"}...))
 	require.True(t, authorized)
 	require.Len(t, manager.starts, 1)
 }
@@ -102,8 +102,7 @@ func TestNativeStartupRequiresServiceExecutionForReadiness(t *testing.T) {
 						nativeStartRecorder: &nativeStartRecorder{t: t, installed: true},
 						execution:           execution, readiness: readiness,
 					}
-					err := executeNativeStartWithController(spec.Mode.String(), verb,
-						[]string{"--data-dir", spec.DataDirectory, "--yes"}, nativeRecorderController(manager))
+					err := runLifecycleWithController(spec.Mode.String(), verb, nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--yes"}...)
 					if execution == lifecycle.ExecutionService {
 						assert.NoError(t, err)
 					} else {
@@ -134,14 +133,13 @@ func TestReadinessRejectsMissingOrInvalidExecution(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			observations := 0
-			err := waitForReadinessObserved("hub", mustCanonicalDir(t, t.TempDir()), 30*time.Second, "", lifecycle.ExecutionService,
-				func(context.Context) (lifecycle.Status, error) {
-					observations++
-					return lifecycle.Status{
-						Process:   lifecycle.ProcessStatus{State: lifecycle.ProcessRunning},
-						Readiness: new(lifecycle.ReadinessReady), Execution: test.execution,
-					}, nil
-				})
+			err := waitForReadinessObserved(t.Context(), "hub", mustCanonicalDir(t, t.TempDir()), 30*time.Second, "", lifecycle.ExecutionService, func(context.Context) (lifecycle.Status, error) {
+				observations++
+				return lifecycle.Status{
+					Process:   lifecycle.ProcessStatus{State: lifecycle.ProcessRunning},
+					Readiness: new(lifecycle.ReadinessReady), Execution: test.execution,
+				}, nil
+			})
 			require.ErrorContains(t, err, "execution")
 			require.NotErrorIs(t, err, context.DeadlineExceeded)
 			assert.Equal(t, 1, observations, "unverified execution must refuse immediately")
@@ -209,13 +207,13 @@ func TestConcurrentLifecycleCommandsSerializeNativeMutation(t *testing.T) {
 	controller := nativeRecorderController(manager)
 	done := make(chan error, 1)
 	go func() {
-		done <- executeNativeStartWithController("hub", "start", []string{"--data-dir", root, "--startup=boot", "--yes"}, controller)
+		done <- runLifecycleWithController("hub", "start", controller, []string{"--data-dir", root, "--startup=boot", "--yes"}...)
 	}()
 	<-entered
 	for _, verb := range []string{"start", "restart", "stop", "disable"} {
 		var err error
 		if verb == "start" || verb == "restart" {
-			err = executeNativeStartWithController("hub", verb, []string{"--data-dir", root, "--yes"}, controller)
+			err = runLifecycleWithController("hub", verb, controller, []string{"--data-dir", root, "--yes"}...)
 		} else {
 			err = runMode(t, "hub", verb, "--data-dir", root)
 		}
@@ -233,7 +231,7 @@ func TestReadinessWaitReportsCleanExitBeforeReady(t *testing.T) {
 	runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: lifecycle.RoleHub, DataDir: root, Execution: lifecycle.ExecutionForeground})
 	require.NoError(t, err)
 	require.NoError(t, runtime.Finish(nil))
-	require.ErrorContains(t, waitForReadiness("hub", root, time.Second), "exited before it became ready")
+	require.ErrorContains(t, waitForReadiness(t.Context(), "hub", root, time.Second), "exited before it became ready")
 }
 
 func (m *nativeStartRecorder) Inspect(ctx context.Context, spec servicelaunch.LaunchSpec) (servicelaunch.NativeStatus, error) {
@@ -264,7 +262,7 @@ func TestRestartWaitsForNativeExitAfterApplicationJoin(t *testing.T) {
 		require.GreaterOrEqual(t, inspections, 3, "native exit must precede another start")
 		return nil
 	}
-	require.NoError(t, executeNativeStartWithController("hub", "restart", []string{"--data-dir", spec.DataDirectory, "--yes"}, nativeRecorderController(manager)))
+	require.NoError(t, runLifecycleWithController("hub", "restart", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--yes"}...))
 }
 
 func TestStatusReconcilesNativeDefinitionWithoutMutation(t *testing.T) {
@@ -306,11 +304,10 @@ func TestStatusJSONPreservesRuntimeObservationFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(lifecycle.PathsOf(spec.DataDirectory).RuntimeRecord, []byte("[invalid YAML"), 0o600))
 	manager := &nativeStartRecorder{t: t, installed: true}
 	output := testutil.CaptureStdout(t, func() {
-		err := executeModeStatusWithController("hub", []string{"--data-dir", spec.DataDirectory, "--json"}, nativeRecorderController(manager))
+		err := runLifecycleWithController("hub", "status", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--json"}...)
 		require.ErrorIs(t, err, errUnresponsiveExit)
 	})
-	var status lifecycle.Status
-	require.NoError(t, json.Unmarshal([]byte(output), &status), "JSON output must not contain prose")
+	status := statusFromJSON[lifecycle.Status](t, output)
 	assert.Contains(t, fmt.Sprint(status.Diagnostics), "runtime record")
 	assert.Empty(t, manager.installs)
 	assert.Empty(t, manager.starts)
@@ -362,7 +359,7 @@ func TestPlainNativeStartPreservesSavedConfiguration(t *testing.T) {
 			spec.EnvironmentFile = &environment
 			saveManagedTestSpec(t, spec)
 			manager := &nativeStartRecorder{t: t, installed: true}
-			err := executeNativeStartWithController("hub", verb, []string{"--data-dir", spec.DataDirectory, "--yes"}, nativeRecorderController(manager))
+			err := runLifecycleWithController("hub", verb, nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--yes"}...)
 			require.NoError(t, err)
 			assert.Empty(t, manager.installs, "plain execution must not rewrite the saved configuration")
 			require.Len(t, manager.starts, 1)
@@ -404,7 +401,7 @@ func TestEnableRefusesActiveMaterialChangesBeforeNativeAccess(t *testing.T) {
 				t.Fatal("a refused material change inspected native state")
 				return servicelaunch.NativeStatus{}, nil
 			}}
-			err = runModeEnableWithController("hub", nativeRecorderController(manager))(cmdCtx{}, args)
+			err = runLifecycleWithController("hub", "enable", nativeRecorderController(manager), args...)
 			require.ErrorContains(t, err, "stop")
 			assert.Empty(t, manager.installs)
 			assert.Empty(t, manager.starts)
@@ -437,7 +434,7 @@ func TestNativeConfigurationRetainsPreflightLeases(t *testing.T) {
 					}
 				}
 			}
-			err := executeNativeStartWithController(mode.String(), "start", []string{"--data-dir", root, "--startup=boot", "--yes"}, nativeRecorderController(manager))
+			err := runLifecycleWithController(mode.String(), "start", nativeRecorderController(manager), []string{"--data-dir", root, "--startup=boot", "--yes"}...)
 			require.NoError(t, err, "the native child must acquire the released preflight leases")
 			require.Len(t, manager.starts, 1)
 		})
@@ -493,7 +490,7 @@ func TestNativeStartupSelectionPreservesPrecedenceAndReadErrors(t *testing.T) {
 			calls++
 			return lifecycle.ServiceSpec{Startup: test.saved}, test.readErr
 		}}
-		selection, err := selectNativeStartup(controller, test.requested, true)
+		selection, err := selectNativeStartup(t.Context(), controller, test.requested, true)
 		assert.Equal(t, 1, calls)
 		if test.failure {
 			require.Error(t, err)
@@ -501,6 +498,7 @@ func TestNativeStartupSelectionPreservesPrecedenceAndReadErrors(t *testing.T) {
 				assert.ErrorIs(t, err, assert.AnError)
 			} else {
 				assert.ErrorContains(t, err, "--startup is required")
+				assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
 			}
 		} else {
 			require.NoError(t, err)
@@ -526,7 +524,7 @@ func TestNativeStartupObservationPreservesPrepublicationEvidence(t *testing.T) {
 			assert.Equal(t, lifecycle.ProcessFailed, status.Process.State)
 			status.Diagnostics = nil
 			calls := 0
-			result := waitForReadinessObserved("hub", spec.DataDirectory, 30*time.Second, "previous", lifecycle.ExecutionService, func(context.Context) (lifecycle.Status, error) { calls++; return status, err })
+			result := waitForReadinessObserved(t.Context(), "hub", spec.DataDirectory, 30*time.Second, "previous", lifecycle.ExecutionService, func(context.Context) (lifecycle.Status, error) { calls++; return status, err })
 			require.ErrorContains(t, result, "failed to start")
 			assert.Equal(t, 1, calls, "the failure cause must not depend on a diagnostic title or the old attempt")
 		} else {
@@ -539,7 +537,7 @@ func TestNativeStartupObservationPreservesPrepublicationEvidence(t *testing.T) {
 func TestReadinessWaitRejectsPreviousReadyAndFailedAttempts(t *testing.T) {
 	for _, oldState := range []string{lifecycle.ProcessRunning, lifecycle.ProcessFailed} {
 		calls := 0
-		err := waitForReadinessObserved("hub", t.TempDir(), 30*time.Second, "previous", lifecycle.ExecutionService, func(context.Context) (lifecycle.Status, error) {
+		err := waitForReadinessObserved(t.Context(), "hub", t.TempDir(), 30*time.Second, "previous", lifecycle.ExecutionService, func(context.Context) (lifecycle.Status, error) {
 			calls++
 			status := lifecycle.Status{Process: lifecycle.ProcessStatus{State: lifecycle.ProcessRunning}, Readiness: new(lifecycle.ReadinessReady), Execution: new(lifecycle.ExecutionService), Attempt: lifecycle.AttemptStatus{ID: new("new")}}
 			if calls == 1 {
@@ -565,7 +563,7 @@ func TestNativeStartupFailureDoesNotReportPreviousAttempt(t *testing.T) {
 	calls := 0
 	var result error
 	output := testutil.CaptureStdout(t, func() {
-		result = waitForReadinessObserved("hub", spec.DataDirectory, 30*time.Second, previous.Record().AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
+		result = waitForReadinessObserved(t.Context(), "hub", spec.DataDirectory, 30*time.Second, previous.Record().AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
 			calls++
 			return observeNativeStartupWithController(ctx, configuration, nativeRecorderController(manager))
 		})
@@ -604,7 +602,7 @@ func TestNativeStartupTimeoutDoesNotReportPreviousAttempt(t *testing.T) {
 	status.Readiness = new(lifecycle.ReadinessStarting)
 	var result error
 	output := testutil.CaptureStdout(t, func() {
-		result = waitForReadinessObserved("hub", spec.DataDirectory, time.Millisecond, previous.Record().AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
+		result = waitForReadinessObserved(t.Context(), "hub", spec.DataDirectory, time.Millisecond, previous.Record().AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
 			<-ctx.Done()
 			return status, ctx.Err()
 		})
@@ -625,7 +623,7 @@ func TestNativeFailureRetainsFreshApplicationDiagnostics(t *testing.T) {
 	manager := &nativeStartRecorder{t: t, inspection: &servicelaunch.NativeStatus{Installed: true, DefinitionMatches: true, Failure: "native manager reported exit"}}
 	var result error
 	output := testutil.CaptureStdout(t, func() {
-		result = waitForReadinessObserved("hub", spec.DataDirectory, 30*time.Second, previous.Record().AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
+		result = waitForReadinessObserved(t.Context(), "hub", spec.DataDirectory, 30*time.Second, previous.Record().AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
 			return observeNativeStartupWithController(ctx, configuration, nativeRecorderController(manager))
 		})
 	})
@@ -647,7 +645,7 @@ func TestNativeRestartRejectsBrokenEnvironmentBeforeStopping(t *testing.T) {
 	defer func() { require.NoError(t, runtime.Finish(nil)) }()
 	runtime.SetReadiness(lifecycle.ReadinessReady)
 	manager := &nativeStartRecorder{t: t, installed: true}
-	err = executeNativeStartWithController("hub", "restart", []string{"--data-dir", spec.DataDirectory, "--yes", "--timeout=1s"}, nativeRecorderController(manager))
+	err = runLifecycleWithController("hub", "restart", nativeRecorderController(manager), []string{"--data-dir", spec.DataDirectory, "--yes", "--timeout=1s"}...)
 	require.ErrorContains(t, err, "environment file")
 	assert.Empty(t, manager.installs)
 	assert.Empty(t, manager.starts)

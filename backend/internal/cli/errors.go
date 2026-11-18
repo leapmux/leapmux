@@ -247,23 +247,19 @@ func FromError(err error) *Error {
 // fromConnect maps a Connect error to its envelope. err is the whole chain,
 // so the message keeps the context that callers wrapped around the Connect
 // error.
+//
+// It adds no hint. The next step depends on the command: a refused
+// credential of `leapmux control` asks for `auth login`, and a refused
+// registration key of `leapmux worker register` asks for a new key. The
+// tree of each command adds its own.
 func fromConnect(err error, connectErr *connect.Error) *Error {
-	code := codeOfConnect(connectErr.Code())
 	// A Connect error prints its own code before its message. The envelope
 	// states a code of its own, so the message keeps the peer's words alone.
 	message := err.Error()
 	if connectErr.Message() != "" {
 		message = strings.Replace(message, connectErr.Error(), connectErr.Message(), 1)
 	}
-	out := &Error{Code: code, Message: strings.TrimSpace(message), cause: err}
-	switch code {
-	case CodeNotLoggedIn:
-		return out.WithHint(`run "leapmux control auth login --hub <url>" to sign in again`)
-	case CodeVersionMismatch:
-		return out.WithHint(`run "leapmux control version --hub <url>" to compare the CLI with the hub, and upgrade the older one`)
-	default:
-		return out
-	}
+	return &Error{Code: codeOfConnect(connectErr.Code()), Message: strings.TrimSpace(message), cause: err}
 }
 
 // codeOfConnect maps a Connect code to the code of the envelope.

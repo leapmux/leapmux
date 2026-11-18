@@ -59,12 +59,12 @@ Notes on dispatch:
 
 - The default TCP port for every mode is **4327**.
 - `-h` and `--help` are recognized at every level (help prints to stdout, exit 0), and `leapmux help <command>` prints the help of a command.
-- `-v`, `--version`, and the `version` command all print the same version string. `--version` also works after a mode command (`leapmux hub <command> --version`).
-- A mode needs a command, and flags follow the command: `leapmux solo start -listen ...`. `leapmux solo -listen ...` fails, and the error shows the corrected command. LeapMux also rejects an unknown leading flag such as `leapmux -listen ...`, because it is not a top-level flag; a long flag at the top level takes two dashes.
+- `-v`, `--version`, and the `version` command all print the same version string. A command takes no `--version` of its own.
+- A mode needs a command, and flags follow the command: `leapmux solo start --listen ...`. `leapmux solo --listen ...` fails, and the error states that a flag goes after the command that takes it. LeapMux also rejects an unknown leading flag such as `leapmux --listen ...`, because it is not a top-level flag.
 - LeapMux rejects an unexpected positional argument and points you at `--help`.
 
 {{< callout >}}
-The flags of a daemon mode and of `recover` accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). The daemon-mode flag tables below use the single-hyphen form, matching the binary's help output. `control` takes a long flag only with two hyphens (`--json`), and a single hyphen only before a one-letter flag (`-q`).
+Every command of the binary parses its flags the same way. A long flag takes two hyphens (`--listen`), and a single hyphen goes only before a one-letter flag (`-q`, `-v`). A single hyphen before a long name, as in `-listen`, fails, and the error states the two-hyphen form.
 {{< /callout >}}
 
 > **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/admin/configuration/#duration-values).
@@ -94,18 +94,20 @@ A lifecycle command that succeeds, and `worker register`, end with the commands 
 
 | Flag | Commands | Default | Meaning |
 |------|----------|---------|---------|
-| `--data-dir`, `--config` | all; `cross-worker-pins` takes only `--data-dir` | the defaults of the mode | Select the instance. Pass the same values to every command for one instance. |
+| `--data-dir`, `--config` | all | the defaults of the mode | Select the instance. Pass the same values to every command for one instance. |
 | `--timeout` | `start`, `restart`, `stop`, `status`, `worker register`, `worker deregister` | `60s` for `start`, `4m` for `restart`, `3m` for `stop`, `30s` for `deregister`, `3s` for `status`, `5m` for `register` | How long to wait: a positive duration, or a bare number of seconds. The operation can continue after the wait ends. |
 | `--startup` | `start`, `restart`, `enable` | the saved choice, else a prompt | `login` or `boot` |
 | `--yes` | `start`, `restart`, `enable` | off | Accept the proposed configuration without the consent prompt. It does not choose `--startup`. |
 | `--environment-file` | `start`, `restart`, `enable` | none | Path to a YAML map of environment variables for the service. `--environment-file=` removes the saved file. |
-| `--json` | `status` | off | Print the report as one JSON object. |
+| `--json` | `status` | off | Print the report as one `{"data": ...}` line, the form of every `--json` result. |
 
-`status` exits with `0` when the instance runs, `3` when it is stopped, and `1` for a failure, an instance that does not answer, or invalid use. A Worker without a Hub connection and a `dev` instance that waits for `/setup` both count as running.
+`status` exits with `0` when the instance runs, `3` when it is stopped, `1` for a failure or an instance that does not answer, and `2` for invalid use. A Worker without a Hub connection and a `dev` instance that waits for `/setup` both count as running.
+
+Every other command of a mode, and every `recover` command, reports a failure as `leapmux control` does: an `error: <code>: <message>` line with its hints on stderr, or the `{"error": ...}` envelope with `--json`. The code sets the exit status by the one table in [Errors and exit codes](/docs/using/control-cli/#errors-and-exit-codes). For example, an unknown flag exits with `2`, a registration key that the Hub refuses with `3`, a `cross-worker-pins get` of a Worker without a pin with `4`, and a Hub that cannot answer with `7`. A command that an interrupt such as Ctrl-C ends exits with `130`.
 
 ### `status --json`
 
-`status --json` prints one JSON object and nothing else. A value that is not available is `null`.
+`status --json` prints one line, `{"data": <report>}`, and nothing else, as every `--json` command prints its result. A command line that fails before the report prints `{"error": ...}` instead. In the report, a value that is not available is `null`. These are the fields under `data`:
 
 | Field | Shape |
 | --- | --- |
@@ -139,18 +141,17 @@ leapmux solo start [flags]
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` plus the platform's local IPC URL | One listen address, repeatable: a TCP address or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set; the platform's local IPC URL is added when the list names none. Additional addresses are a setting; see [Network access](/docs/admin/configuration/#network-access). |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
-| `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
-| `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
-| `-storage-sqlite-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
-| `-storage-sqlite-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
-| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` (for the bundled Worker) |
-| `-use-login-shell` | `true` | Wrap the agent invocation in the user's login shell (for the bundled Worker) |
-| `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
-| `-version` | — | Print version and exit |
+| `--listen` | `127.0.0.1:4327` plus the platform's local IPC URL | One listen address, repeatable: a TCP address or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set; the platform's local IPC URL is added when the list names none. Additional addresses are a setting; see [Network access](/docs/admin/configuration/#network-access). |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
+| `--dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
+| `--storage-sqlite-max-conns` | `4` | SQLite max open connections |
+| `--storage-sqlite-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
+| `--storage-sqlite-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
+| `--max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` (for the bundled Worker) |
+| `--use-login-shell` | `true` | Wrap the agent invocation in the user's login shell (for the bundled Worker) |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
 {{< callout type="info" >}}
 Binding solo to a non-loopback address logs a warning. Before the account has a password, the first TCP caller can claim it through the restricted setup flow. Set the password first, or use `hub` or `dev` for a multi-user deployment.
@@ -176,10 +177,10 @@ This table lists the most common flags. The full set — including all PostgreSQ
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | platform default | One listen address, repeatable. A TCP address (`:4327`, `127.0.0.1:4327`) or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none. |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
-| `-dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
-| `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--listen` | platform default | One listen address, repeatable. A TCP address (`:4327`, `127.0.0.1:4327`) or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none. |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
+| `--dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
 **Behavioral settings.** Auth policy (sign-up, verification, sessions), SMTP, timeouts, and per-user limits are not flags: they are instance settings in the Hub's database, managed by `leapmux control admin settings` (see [Configuration](/docs/admin/configuration/) and the [`control admin` section](/docs/admin/admin-cli/)).
 
@@ -187,15 +188,15 @@ This table lists the most common flags. The full set — including all PostgreSQ
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
-| `-storage-sqlite-path` | empty (= `<data-dir>/hub.db`) | SQLite database file path |
-| `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
-| `-storage-sqlite-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
-| `-storage-sqlite-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
-| `-storage-postgres-dsn` | empty | PostgreSQL connection string (required when `storage.type` is `postgres`) |
-| `-storage-mysql-dsn` | empty | MySQL connection string (required when `storage.type` is `mysql`) |
+| `--storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
+| `--storage-sqlite-path` | empty (= `<data-dir>/hub.db`) | SQLite database file path |
+| `--storage-sqlite-max-conns` | `4` | SQLite max open connections |
+| `--storage-sqlite-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
+| `--storage-sqlite-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
+| `--storage-postgres-dsn` | empty | PostgreSQL connection string (required when `storage.type` is `postgres`) |
+| `--storage-mysql-dsn` | empty | MySQL connection string (required when `storage.type` is `mysql`) |
 
-The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-yugabytedb-*`) and the MySQL family (`-storage-mysql-*`, `-storage-tidb-*`) share pool defaults:
+The Postgres family (`--storage-postgres-*`, `--storage-cockroachdb-*`, `--storage-yugabytedb-*`) and the MySQL family (`--storage-mysql-*`, `--storage-tidb-*`) share pool defaults:
 
 | Family | `max-conns` | `min-conns` | `max-idle-conns` | `conn-max-lifetime` | `conn-max-idle-time` | `health-check-period` |
 |---|---|---|---|---|---|---|
@@ -208,8 +209,7 @@ CockroachDB/YugabyteDB use the Postgres driver; TiDB uses the MySQL driver. See 
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
-| `-version` | — | Print version and exit |
+| `--config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 
 {{< callout type="info" >}}
 One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux control admin settings` — see [Admin CLI](/docs/admin/admin-cli/). See also [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/admin/encryption-and-data/).
@@ -235,36 +235,35 @@ The Worker connects to the Hub URL that its registration saved, so the runtime c
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-name` | empty (= hostname) | Worker display name |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory (holds `state.json`, `worker.db`) |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-use-login-shell` | `true` | Wrap each agent invocation in the user's login shell |
-| `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--name` | empty (= hostname) | Worker display name |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory (holds `state.json`, `worker.db`) |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--use-login-shell` | `true` | Wrap each agent invocation in the user's login shell |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
 **Timeout and limit options**
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
-| `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
-| `-agent-startup-timeout` | `5m` | Agent startup timeout |
-| `-api-timeout` | `10s` | JSON-RPC request timeout |
-| `-agent-startup-concurrency` | `0` (= 4, or the CPU count when lower) | How many agents the Worker brings back at once after a restart |
+| `--max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
+| `--max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
+| `--agent-startup-timeout` | `5m` | Agent startup timeout |
+| `--api-timeout` | `10s` | JSON-RPC request timeout |
+| `--agent-startup-concurrency` | `0` (= 4, or the CPU count when lower) | How many agents the Worker brings back at once after a restart |
 
 **SQLite database options**
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-db-max-conns` | `4` | Max open database connections |
-| `-db-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
-| `-db-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
+| `--db-max-conns` | `4` | Max open database connections |
+| `--db-cache-size` | `0` | Page cache: positive = pages, negative = KiB (e.g. `-65536` = 64 MiB) |
+| `--db-mmap-size` | `0` | Memory-mapped I/O size in bytes (0 = disabled) |
 
 **Common options**
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
-| `-version` | — | Print version and exit |
+| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
 ### worker register
 
@@ -276,13 +275,13 @@ leapmux worker register --hub <url> --registration-key <key> [flags]
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-hub` | required | URL of the Hub: `http[s]://...`, `unix:<socket>`, or `npipe:<name>`. The Worker connects to this URL from then on. |
-| `-registration-key` | required | The key from the **Register worker** dialog of the Hub |
-| `-timeout` | `5m` | How long to wait for the Hub, retries included |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
-| `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path; it supplies `data_dir` |
+| `--hub` | required | URL of the Hub: `http[s]://...`, `unix:<socket>`, or `npipe:<name>`. The Worker connects to this URL from then on. |
+| `--registration-key` | required | The key from the **Register worker** dialog of the Hub |
+| `--timeout` | `5m` | How long to wait for the Hub, retries included |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
+| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path; it supplies `data_dir` |
 
-`-hub` and `-registration-key` are flags only: no config key or environment variable sets them. When an earlier run stopped before it finished, the same command completes that registration without using another key. A data directory that already holds credentials makes the command fail; see [Register a Worker again](/docs/admin/managing-workers/#register-a-worker-again).
+`--hub` and `--registration-key` are flags only: no config key or environment variable sets them. When an earlier run stopped before it finished, the same command completes that registration without using another key. A data directory that already holds credentials makes the command fail; see [Register a Worker again](/docs/admin/managing-workers/#register-a-worker-again).
 
 ### worker deregister
 
@@ -294,27 +293,31 @@ leapmux worker deregister [flags]
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-timeout` | `30s` | How long to wait for the Hub |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
-| `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path; it supplies `data_dir` |
+| `--timeout` | `30s` | How long to wait for the Hub |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
+| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path; it supplies `data_dir` |
 
 The command keeps `worker.db`. When the Hub cannot confirm the deletion, it keeps the credentials too, so that you can run it again.
 
 ### worker cross-worker-pins
 
-A local-only utility for inspecting the Worker's TOFU pin store. It runs entirely against local files — no Worker process starts. See [Security & Threat Model](/docs/admin/security/) for what these pins protect.
+A local-only utility for the Worker's trust-on-first-use (TOFU) pin store. It works on local files alone, and no Worker process starts. See [Security & Threat Model](/docs/admin/security/) for what these pins protect.
 
 ```bash
-leapmux worker cross-worker-pins list|show|remove [--target-worker-id=<id>] [--data-dir=<dir>]
+leapmux worker cross-worker-pins list [flags]
+leapmux worker cross-worker-pins get <worker-id> [flags]
+leapmux worker cross-worker-pins remove <worker-id> [flags]
 ```
 
-| Subcommand | Requires | Action |
-|------------|----------|--------|
-| `list` | — | Print all pins as JSON |
-| `show` | `--target-worker-id` | Print one pin (errors `no pin recorded for target_worker_id=<id>` if absent) |
-| `remove` | `--target-worker-id` | Remove the pin; prints `{"removed_target_worker_id": <id>}` |
+| Command | Action |
+|---------|--------|
+| `list` | Print every pin: a table of the Worker ids and the times, or with `--json`, `{"data": {"pins": [...]}}` with the keys |
+| `get <worker-id>` | Print the pin of one sibling Worker, with its keys |
+| `remove <worker-id>` | Remove the pin of one sibling Worker; with `--json`, prints `{"data": {"removed": "<worker-id>"}}` |
 
-When `--data-dir` is omitted, the data directory is resolved through the standard Worker config loader, so it matches the data directory of the other Worker commands: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
+`<worker-id>` is the full id of the sibling Worker, as `list` prints it. `get` and `remove` fail with `not_found` (exit status `4`) for a Worker that has no pin, so a mistyped id never reads as a removed pin.
+
+The commands take `--data-dir` and `--config`, as every other command of the Worker does, so they read the pin store of the same data directory: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
 
 ## dev
 
@@ -326,7 +329,7 @@ leapmux dev start [flags]
 
 Dev mode uses the **same flag set as solo**.
 
-The other differences from solo: dev enables `signup_enabled=true` by default, and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`. The runtime knobs (`session_duration_seconds`, `limits`, `timeouts`, …) are `leapmux control admin settings` keys. The default `-listen` is `:4327` (all interfaces), and the config/data location is `~/.config/leapmux/dev/`.
+The other differences from solo: dev enables `signup_enabled=true` by default, and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`. The runtime knobs (`session_duration_seconds`, `limits`, `timeouts`, …) are `leapmux control admin settings` keys. The default `--listen` is `:4327` (all interfaces), and the config/data location is `~/.config/leapmux/dev/`.
 
 ## version
 
@@ -337,24 +340,24 @@ $ leapmux version
 0.0.1-dev · 9c81b87 · feature/foo · Thu, 4/23/2026, 11:45:00 PM KST
 ```
 
-Fields are conditional: the version value is always present (falls back to `dev`), the commit hash and build time appear when set, and the branch is shown only when it is not `main`. The top-level `-version` / `--version` flags print the same string.
+Fields are conditional: the version value is always present (falls back to `dev`), the commit hash and build time appear when set, and the branch is shown only when it is not `main`. The top-level `--version` and `-v` flags print the same string.
 
 ## recover (command-group outline)
 
 `leapmux recover` is the **offline break-glass** tree: it manages the Hub's database and encryption key file **directly, with the hub stopped** — no network call, no login. It is deliberately tiny. For full per-command flags and behavior, see [Recovery](/docs/admin/recover/).
 
 ```bash
-leapmux recover <group> <command> [flags]
+leapmux recover <group> <command> [arguments] [flags]
 ```
 
 | Group | Commands |
 |-------|----------|
-| `bootstrap` | `create-admin` (refuses once any admin exists) |
-| `password` | `reset` (`--id` or `--username`; prompts for the new password) |
-| `encryption-key` | `rotate`, `remove`, `reencrypt`, `rotate-pepper` |
+| `bootstrap` | `create-admin <username>` (refuses once any admin exists) |
+| `password` | `reset <user>` (`<user>` is a username, or `id:<id>`; prompts for the new password) |
+| `encryption-key` | `rotate`, `remove <version>`, `reencrypt`, `rotate-pepper` |
 | `db` | `path`, `migrate`, `version` |
 
-Recover commands accept `--data-dir` to locate the data directory. The commands that open the database also accept `--config`, which loads the Hub's storage settings; pass it whenever the Hub runs on Postgres or MySQL. Three leaves need no database connection and take no `--config`: `db path`, `encryption-key rotate`, and `encryption-key rotate-pepper` (which also takes `--yes`).
+Every recover command takes `--data-dir` to select the instance, and `--config` to read the storage settings of a Hub on PostgreSQL or MySQL. Without `--config`, a command reads no configuration file and opens the SQLite database in the data directory. A `--config` path that does not exist fails.
 
 Commands that take `--password` prompt interactively when you omit the flag. Every other administration task is online — see [Admin CLI](/docs/admin/admin-cli/), and [Recovery](/docs/admin/recover/) for the full per-command reference.
 
@@ -409,7 +412,7 @@ The Worker reads:
 | `LEAPMUX_WORKER_LOG_LEVEL` | worker `log_level` | `info` |
 | `LEAPMUX_WORKER_AGENT_STARTUP_CONCURRENCY` | worker `agent_startup_concurrency` | `4` |
 
-The prefix strip lowercases the remainder but does **not** translate `_` into `.`, so nested storage keys such as `storage.type` and `storage.postgres.dsn` cannot be set cleanly via env vars — use the YAML config file or the dedicated `-storage-*` flags instead. See [Configuration](/docs/admin/configuration/) for the full list and precedence rules (defaults < config file < env vars < explicitly-set CLI flags).
+The prefix strip lowercases the remainder but does **not** translate `_` into `.`, so nested storage keys such as `storage.type` and `storage.postgres.dsn` cannot be set cleanly via env vars — use the YAML config file or the dedicated `--storage-*` flags instead. See [Configuration](/docs/admin/configuration/) for the full list and precedence rules (defaults < config file < env vars < explicitly-set CLI flags).
 
 ### Remote CLI (`leapmux control`)
 

@@ -18,24 +18,19 @@ import (
 // replaces it to observe which commands print it.
 var printModeBanner = logging.PrintBanner
 
-// openLifecycleCommand parses a lifecycle command and prints the banner. It
-// reports done when the command needs no further work: --version printed the
-// version, or the flags failed to parse. The caller then returns err.
+// openLifecycleCommand loads a lifecycle command and prints the banner.
 //
-// A parse failure and --help print no banner. Neither does `status --json`,
+// A load failure and --help print no banner. Neither does `status --json`,
 // because a script reads its output.
-func openLifecycleCommand(mode, verb string, args []string) (configuration *lifecycleConfiguration, options lifecycleOptions, done bool, err error) {
-	configuration, options, err = loadLifecycleCommand(mode, verb, args)
-	if handleVersionQuery(err) {
-		return nil, options, true, nil
-	}
+func openLifecycleCommand(line lifecycleCommandLine) (configuration *lifecycleConfiguration, options lifecycleOptions, err error) {
+	configuration, options, err = line.load()
 	if err != nil {
-		return nil, options, true, err
+		return nil, options, err
 	}
 	if !options.json {
-		printModeBanner(mode)
+		printModeBanner(line.mode())
 	}
-	return configuration, options, false, nil
+	return configuration, options, nil
 }
 
 // instanceSelection identifies one instance in a printed command: the

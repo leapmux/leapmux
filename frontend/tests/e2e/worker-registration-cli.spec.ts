@@ -75,7 +75,10 @@ test.describe('registration dialog CLI', () => {
         registration!.once('close', (code, signal) => resolve({ code, signal }))
       })
       output.capture(registration, 'revoked registration')
-      expect(await completion, output.since(0)).toEqual({ code: 1, signal: null })
+      // The Hub refused the credential of the call, the key: exit status 3, with the next step that fixes it.
+      expect(await completion, output.since(0)).toEqual({ code: 3, signal: null })
+      expect(output.since(0)).toContain('generate a new registration key in the Register worker dialog of the Hub')
+      expect(output.since(0)).not.toContain('auth login')
       expect(existsSync(join(directory, 'state.json'))).toBe(false)
       expect(existsSync(join(directory, 'worker.db'))).toBe(false)
       expect(new Set((await listWorkersViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)).map(worker => worker.id))).toEqual(previous)

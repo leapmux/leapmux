@@ -307,9 +307,9 @@ describe('multi-worker port ownership', () => {
       expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'leapmux', [
         'hub',
         'run',
-        '-listen',
+        '--listen',
         '127.0.0.1:0',
-        '-data-dir',
+        '--data-dir',
         harness.hubDataDir,
       ], expect.any(Object))
       expect(waitForHubStart).toHaveBeenCalledWith(join(harness.hubDataDir, 'state.json'), harness.hubProc)

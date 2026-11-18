@@ -1,165 +1,43 @@
 package main
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/cli"
 )
 
-// TestMatchCommandToken pins the btrfs-style abbreviation algorithm: exact
-// match wins outright, a unique prefix resolves to it, an ambiguous prefix
-// lists every candidate, and a total miss reports "unknown".
-func TestMatchCommandToken(t *testing.T) {
-	t.Run("exact match wins over longer prefixed names", func(t *testing.T) {
-		// "list" is also a prefix of "list-sessions", but exact wins.
-		matched, candidates, err := matchCommandToken("list", []string{"list", "list-sessions"})
-		require.NoError(t, err)
-		assert.Equal(t, "list", matched)
-		assert.Nil(t, candidates)
-	})
-
-	t.Run("unique prefix resolves", func(t *testing.T) {
-		matched, _, err := matchCommandToken("lis", []string{"list", "create", "delete"})
-		require.NoError(t, err)
-		assert.Equal(t, "list", matched)
-	})
-
-	t.Run("single-character prefix resolves when unique", func(t *testing.T) {
-		matched, _, err := matchCommandToken("s", []string{"solo", "hub", "admin"})
-		require.NoError(t, err)
-		assert.Equal(t, "solo", matched)
-	})
-
-	t.Run("ambiguous prefix lists all candidates", func(t *testing.T) {
-		// "lo" is a prefix of both "login" and "logout".
-		matched, candidates, err := matchCommandToken("lo", []string{"login", "logout", "list", "status"})
-		require.Error(t, err)
-		assert.Equal(t, "", matched)
-		assert.ElementsMatch(t, []string{"login", "logout"}, candidates)
-		assert.Contains(t, err.Error(), "ambiguous")
-		assert.Contains(t, err.Error(), "login")
-		assert.Contains(t, err.Error(), "logout")
-	})
-
-	t.Run("ambiguous prefix across subcommands", func(t *testing.T) {
-		// "re" is a prefix of "rename" and "remove".
-		matched, _, err := matchCommandToken("re", []string{"rename", "remove", "list", "get"})
-		require.Error(t, err)
-		assert.Equal(t, "", matched)
-	})
-
-	t.Run("total miss reports unknown", func(t *testing.T) {
-		matched, candidates, err := matchCommandToken("xyz", []string{"list", "get", "create"})
-		require.Error(t, err)
-		assert.Equal(t, "", matched)
-		assert.Nil(t, candidates)
-		assert.Contains(t, err.Error(), "unknown command")
-	})
-
-	t.Run("full name exact match among siblings", func(t *testing.T) {
-		matched, _, err := matchCommandToken("get", []string{"get", "grant-admin", "list"})
-		require.NoError(t, err)
-		assert.Equal(t, "get", matched)
-	})
-
-	t.Run("grant-admin disambiguates from get with gr", func(t *testing.T) {
-		// "gr" is a prefix of "grant-admin" but NOT of "get".
-		matched, _, err := matchCommandToken("gr", []string{"get", "grant-admin", "list"})
-		require.NoError(t, err)
-		assert.Equal(t, "grant-admin", matched)
-	})
-
-	t.Run("empty names list is unknown", func(t *testing.T) {
-		_, _, err := matchCommandToken("anything", nil)
-		require.Error(t, err)
-	})
-
-	t.Run("exact match against empty arg is not a prefix false-positive", func(t *testing.T) {
-		// An empty arg is a prefix of everything; it must be ambiguous,
-		// not silently resolve to the first name.
-		matched, candidates, err := matchCommandToken("", []string{"solo", "hub", "admin"})
-		require.Error(t, err)
-		assert.Equal(t, "", matched)
-		assert.Len(t, candidates, 3)
-	})
+// TestAbbreviation_ResolvesInTheModeAndRecoverTrees pins the one abbreviation
+// rule of cli.ExpandCommandPath on the trees of the lifecycle, the Worker and
+// recover: a unique prefix resolves at every level, an exact name wins over a
+// longer name that it prefixes, and a prefix of several names lists them.
+func TestAbbreviation_ResolvesInTheModeAndRecoverTrees(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"rec", "pass", "res", "--help"}, "Usage:\n  leapmux recover password reset <user> [flags]\n"},
+		{[]string{"hu", "stat", "--help"}, "Usage:\n  leapmux hub status [flags]\n"},
+		{[]string{"wo", "cross", "l", "--help"}, "Usage:\n  leapmux worker cross-worker-pins list [flags]\n"},
+		{[]string{"wo", "dereg", "--help"}, "Usage:\n  leapmux worker deregister [flags]\n"},
+		// "rotate" is also a prefix of "rotate-pepper"; the exact name wins.
+		{[]string{"recover", "encryption-key", "rotate", "--help"}, "Usage:\n  leapmux recover encryption-key rotate [flags]\n"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			o := runTestCLI(t, tc.args...)
+			assert.Equal(t, cli.ExitOK, o.code, o.stderr)
+			assert.Contains(t, o.stdout, tc.want)
+		})
+	}
 }
 
-// TestDispatchGroup_Abbreviation verifies the integrated dispatcher
-// resolves abbreviated subcommands and leaf commands through the real
-// recoverTree, and that ambiguity surfaces as an error.
-func TestDispatchGroup_Abbreviation(t *testing.T) {
-	t.Run("abbreviated subgroup resolves", func(t *testing.T) {
-		// "pass" is a unique prefix of "password".
-		err := dispatchGroup(recoverTree, []string{"pass", "reset", "--data-dir", "/nonexistent"},
-			[]string{"recover"})
-		// The dispatch reaches runPasswordReset, which fails on the bad data
-		// dir — that's expected; the important thing is no "unknown group"
-		// error.
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), "unknown recover group: pass")
-	})
+func TestAbbreviation_RefusesAnAmbiguousPrefix(t *testing.T) {
+	o := runTestCLI(t, "worker", "st")
+	assert.Equal(t, cli.ExitUsage, o.code)
+	assert.Contains(t, o.stderr, `ambiguous command "st" for "leapmux worker"; it matches: start, stop, status`)
 
-	t.Run("abbreviated leaf command resolves", func(t *testing.T) {
-		// "res" is a unique prefix of "reset" within the password group.
-		err := dispatchGroup(recoverTree, []string{"password", "res", "--data-dir", "/nonexistent"},
-			[]string{"recover"})
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), "unknown recover password command: res")
-	})
-
-	t.Run("ambiguous subgroup prefix errors", func(t *testing.T) {
-		// The recover tree has no ambiguous subgroup prefix to use here,
-		// so this case builds a contrived tree with two subgroups that
-		// share one.
-		tree := cmdGroup{
-			Name: "test",
-			Subgroups: []cmdGroup{
-				{Name: "subvolume"},
-				{Name: "subtree"},
-			},
-		}
-		err := dispatchGroup(tree, []string{"sub"}, []string{"test"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "ambiguous")
-	})
-}
-
-// TestWalkGroupArgs_Abbreviation verifies the help/validation walk also
-// resolves abbreviated names, so `leapmux recover pass --help` shows the
-// "password" group's help (not "unknown group").
-func TestWalkGroupArgs_Abbreviation(t *testing.T) {
-	t.Run("abbreviated subgroup shows help", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		// "pass" uniquely abbreviates "password"; the walk should descend
-		// into the password subgroup and print its usage.
-		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, []string{"pass", "--help"}, &stdout, &stderr)
-		assert.True(t, handled)
-		assert.Equal(t, 0, code)
-		assert.Contains(t, stdout.String(), "Reset a user's password")
-	})
-
-	t.Run("abbreviated subgroup without command prints error+usage", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, []string{"pass"}, &stdout, &stderr)
-		assert.True(t, handled)
-		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr.String(), "command is required")
-	})
-
-	t.Run("unknown subgroup prints error", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, []string{"xyz"}, &stdout, &stderr)
-		assert.True(t, handled)
-		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr.String(), "unknown recover group: xyz")
-	})
-}
-
-// TestFormatGroupUsage_AbbreviationNote verifies the help text tells
-// users they can abbreviate.
-func TestFormatGroupUsage_AbbreviationNote(t *testing.T) {
-	usage := formatGroupUsage(recoverTree, "recover")
-	assert.Contains(t, usage, "Any command name can be shortened as far as it stays unambiguous.")
+	o = runTestCLI(t, "recover", "encryption-key", "r")
+	assert.Equal(t, cli.ExitUsage, o.code)
+	assert.Contains(t, o.stderr, "it matches: rotate, remove, reencrypt, rotate-pepper")
 }

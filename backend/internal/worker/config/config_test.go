@@ -1,8 +1,8 @@
 package config
 
 import (
-	"errors"
-	"flag"
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,8 +12,9 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
-	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,9 +24,8 @@ func TestLoad(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("defaults only", func(t *testing.T) {
-		cfg, showVersion, err := Load(nil)
+		cfg, err := Load(nil)
 		require.NoError(t, err)
-		assert.False(t, showVersion)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/worker"), cfg.DataDir)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.DBMaxConns)
 		assert.Equal(t, "info", cfg.LogLevel)
@@ -40,7 +40,7 @@ log_level: "warn"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, "from-file", cfg.Name)
 		assert.Equal(t, 8, cfg.DBMaxConns)
@@ -58,7 +58,7 @@ log_level: "warn"
 
 		t.Setenv("LEAPMUX_WORKER_NAME", "from-env")
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, "from-env", cfg.Name)
 		assert.Equal(t, "warn", cfg.LogLevel) // from config file
@@ -67,7 +67,7 @@ log_level: "warn"
 	t.Run("CLI flags override env vars", func(t *testing.T) {
 		t.Setenv("LEAPMUX_WORKER_NAME", "from-env")
 
-		cfg, _, err := Load([]string{"-name", "from-flag"})
+		cfg, err := Load([]string{"--name", "from-flag"})
 		require.NoError(t, err)
 		assert.Equal(t, "from-flag", cfg.Name)
 	})
@@ -76,19 +76,20 @@ log_level: "warn"
 	// which takes both as its own flags. The shared loader defines neither.
 	for _, name := range []string{"hub", "registration-key"} {
 		t.Run("rejects the registration flag "+name, func(t *testing.T) {
-			_, _, err := Load([]string{"-" + name, "value"})
-			require.ErrorContains(t, err, "flag provided but not defined: -"+name)
+			_, err := Load([]string{"--" + name, "value"})
+			require.ErrorContains(t, err, "unknown flag: --"+name)
 		})
 	}
 
-	t.Run("version flag", func(t *testing.T) {
-		_, showVersion, err := Load([]string{"-version"})
-		require.NoError(t, err)
-		assert.True(t, showVersion)
+	// The root command alone prints the version: a loader takes no --version
+	// of its own.
+	t.Run("version flag is not a flag of the worker", func(t *testing.T) {
+		_, err := Load([]string{"--version"})
+		require.ErrorContains(t, err, "unknown flag: --version")
 	})
 
 	t.Run("missing config file silently ignored", func(t *testing.T) {
-		cfg, _, err := Load([]string{"-config", "/nonexistent/worker.yaml"})
+		cfg, err := Load([]string{"--config", "/nonexistent/worker.yaml"})
 		require.NoError(t, err)
 		assert.Equal(t, "info", cfg.LogLevel)
 	})
@@ -98,7 +99,7 @@ log_level: "warn"
 		configPath := filepath.Join(tmpDir, "worker.yaml")
 		require.NoError(t, os.WriteFile(configPath, []byte("invalid: [yaml: broken"), 0o644))
 
-		_, _, err := Load([]string{"-config", configPath})
+		_, err := Load([]string{"--config", configPath})
 		assert.Error(t, err)
 	})
 
@@ -113,7 +114,7 @@ log_level: "warn"
 		yamlContent := "data_dir: '" + dataDir + "'\n"
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, dataDir, cfg.DataDir)
 	})
@@ -125,14 +126,14 @@ log_level: "warn"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		cfg, _, err := Load([]string{"-config", configPath})
+		cfg, err := Load([]string{"--config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(tmpDir, "subdir"), cfg.DataDir)
 	})
 
 	t.Run("data dir from CLI flag", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		cfg, _, err := Load([]string{"-data-dir", tmpDir})
+		cfg, err := Load([]string{"--data-dir", tmpDir})
 		require.NoError(t, err)
 		assert.Equal(t, tmpDir, cfg.DataDir)
 	})
@@ -143,14 +144,14 @@ log_level: "warn"
 // keeps the two flag sets speaking the same language.
 func TestTimeoutDurations(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
-		cfg, _, err := Load(nil)
+		cfg, err := Load(nil)
 		require.NoError(t, err)
 		assert.Equal(t, DefaultAgentStartupTimeout, cfg.AgentStartupTimeout)
 		assert.Equal(t, DefaultAPITimeout, cfg.APITimeout)
 	})
 
 	t.Run("an explicit zero means the default", func(t *testing.T) {
-		cfg, _, err := Load([]string{"-agent-startup-timeout", "0", "-api-timeout", "0"})
+		cfg, err := Load([]string{"--agent-startup-timeout", "0", "--api-timeout", "0"})
 		require.NoError(t, err)
 		assert.Equal(t, DefaultAgentStartupTimeout, cfg.AgentStartupTimeout,
 			"a zero timeout would make every agent handshake fail at once")
@@ -169,7 +170,7 @@ func TestTimeoutDurations(t *testing.T) {
 		{"1d", 24 * time.Hour},
 	} {
 		t.Run("flag "+c.text, func(t *testing.T) {
-			cfg, _, err := Load([]string{"-agent-startup-timeout", c.text})
+			cfg, err := Load([]string{"--agent-startup-timeout", c.text})
 			require.NoError(t, err)
 			assert.Equal(t, c.want, cfg.AgentStartupTimeout)
 		})
@@ -177,14 +178,14 @@ func TestTimeoutDurations(t *testing.T) {
 		t.Run("config file "+c.text, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "worker.yaml")
 			require.NoError(t, os.WriteFile(path, []byte("agent_startup_timeout: "+c.text+"\n"), 0o644))
-			cfg, _, err := Load([]string{"-config", path})
+			cfg, err := Load([]string{"--config", path})
 			require.NoError(t, err)
 			assert.Equal(t, c.want, cfg.AgentStartupTimeout)
 		})
 
 		t.Run("env "+c.text, func(t *testing.T) {
 			t.Setenv("LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT", c.text)
-			cfg, _, err := Load(nil)
+			cfg, err := Load(nil)
 			require.NoError(t, err)
 			assert.Equal(t, c.want, cfg.AgentStartupTimeout)
 		})
@@ -193,14 +194,14 @@ func TestTimeoutDurations(t *testing.T) {
 	t.Run("rejects a value that is not a duration", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "worker.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("api_timeout: 30x\n"), 0o644))
-		_, _, err := Load([]string{"-config", path})
+		_, err := Load([]string{"--config", path})
 		require.Error(t, err, "a typed unit must fail at startup, not read as zero")
 	})
 
 	t.Run("rejects a value past the representable range", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "worker.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("api_timeout: 18446744075\n"), 0o644))
-		_, _, err := Load([]string{"-config", path})
+		_, err := Load([]string{"--config", path})
 		require.Error(t, err, "an out-of-range value must fail rather than wrap")
 	})
 }
@@ -211,11 +212,11 @@ func TestLoadRejectsPositionalArguments(t *testing.T) {
 		args []string
 	}{
 		{"bare help word", []string{"help"}},
-		{"trailing positional after flag", []string{"-name", "w1", "garbage"}},
+		{"trailing positional after flag", []string{"--name", "w1", "garbage"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := Load(tc.args)
+			_, err := Load(tc.args)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "unexpected argument")
 		})
@@ -223,10 +224,7 @@ func TestLoadRejectsPositionalArguments(t *testing.T) {
 }
 
 func TestWorkerHelpGroupsOptions(t *testing.T) {
-	output := testutil.CaptureStdout(t, func() {
-		_, _, err := Load([]string{"--help"})
-		require.True(t, errors.Is(err, flag.ErrHelp))
-	})
+	output := flagsHelp(t, LoadOptions{})
 
 	sections := []string{
 		"\nCommon options:\n",
@@ -240,69 +238,59 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 	for i := 1; i < len(sections); i++ {
 		assert.Less(t, strings.Index(output, sections[i-1]), strings.Index(output, sections[i]))
 	}
-	assert.Contains(t, output, "\nCommon options:\n\n  -config string")
-	// The first flag in each section is alphabetical-by-name; pinning a
-	// specific lead flag would make adding a new option in front of it
-	// (e.g. `--allow-cross-worker-filesystem` ahead of `--data-dir`) a
-	// noisy churn. Assert that the section header is followed by *some*
+	assert.Contains(t, output, "\nCommon options:\n      --config string")
+	// Pinning a specific lead flag would make adding a new option in front of
+	// it a noisy churn. Assert that the section header is followed by *some*
 	// flag instead.
-	assert.Contains(t, output, "\nWorker options:\n\n  -")
-	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -")
-	assert.Contains(t, output, "\nSQLite database options:\n\n  -")
+	assert.Contains(t, output, "\nWorker options:\n      --")
+	assert.Contains(t, output, "\nTimeout and limit options:\n      --")
+	assert.Contains(t, output, "\nSQLite database options:\n      --")
 
 	// Then pin each flag to its SECTION, which "the output contains this flag
-	// somewhere" does not. A flag whose usageCategories entry is dropped or
-	// mistyped still prints -- PrintFlagUsage collects the uncategorized ones
-	// under a generic "Options" heading -- so a bare Contains passes while
-	// `leapmux worker --help` groups the flag under the wrong header. Reading
-	// the section back is lead-flag independent, so it survives a new option
-	// sorting ahead of any of these.
+	// somewhere" does not. A flag whose workerFlagGroups entry is dropped or
+	// mistyped still prints -- the help lists a flag of no group first, under
+	// no header -- so a bare Contains passes while `leapmux worker run --help`
+	// groups the flag under the wrong header. Reading the section back is
+	// lead-flag independent, so it survives a new option ahead of any of
+	// these.
 	for flagLine, section := range map[string]string{
-		"  -data-dir string":                "Worker options",
-		"  -name string":                    "Worker options",
-		"  -agent-startup-timeout duration": "Timeout and limit options",
-		"  -agent-startup-concurrency int":  "Timeout and limit options",
-		"  -api-timeout duration":           "Timeout and limit options",
-		"  -db-cache-size int":              "SQLite database options",
+		"--config string":                  "Common options",
+		"--data-dir string":                "Worker options",
+		"--name string":                    "Worker options",
+		"--agent-startup-timeout duration": "Timeout and limit options",
+		"--agent-startup-concurrency int":  "Timeout and limit options",
+		"--api-timeout duration":           "Timeout and limit options",
+		"--db-cache-size int":              "SQLite database options",
 	} {
 		assert.Equal(t, section, helpSectionOf(t, output, flagLine), "flag %q is in the wrong help section", flagLine)
 	}
-	assert.NotContains(t, output, "  -hub ", "the Hub URL belongs to `leapmux worker register`")
-	assert.NotContains(t, output, "  -registration-key ", "the key belongs to `leapmux worker register`")
+	assert.NotContains(t, output, "--hub ", "the Hub URL belongs to `leapmux worker register`")
+	assert.NotContains(t, output, "--registration-key ", "the key belongs to `leapmux worker register`")
 }
 
 // A command that selects only the data directory shows and accepts only that
 // flag, while the config file and the environment still reach every key.
 func TestLoadWithCLIFlagSubset(t *testing.T) {
-	opts := LoadOptions{
-		FlagSetName: "leapmux worker probe",
-		Description: "Probe the subset.",
-		CLIFlags:    []string{"data-dir"},
-	}
+	opts := LoadOptions{CLIFlags: []string{"data-dir"}}
 
-	t.Run("help shows the header and only the selected flags", func(t *testing.T) {
-		output := testutil.CaptureStdout(t, func() {
-			_, _, err := LoadWithOptions([]string{"--help"}, opts)
-			require.True(t, errors.Is(err, flag.ErrHelp))
-		})
-		assert.True(t, strings.HasPrefix(output, "Probe the subset.\n\nUsage: leapmux worker probe [flags]\n"), output)
-		assert.Contains(t, output, "  -config string")
-		assert.Contains(t, output, "  -version")
-		assert.Contains(t, output, "  -data-dir string")
-		for _, absent := range []string{"  -name ", "  -log-level ", "  -db-max-conns ", "  -agent-startup-timeout "} {
+	t.Run("help shows only the selected flags", func(t *testing.T) {
+		output := flagsHelp(t, opts)
+		assert.Contains(t, output, "--config string")
+		assert.Contains(t, output, "--data-dir string")
+		for _, absent := range []string{"--name ", "--log-level ", "--db-max-conns ", "--agent-startup-timeout ", "--version"} {
 			assert.NotContains(t, output, absent)
 		}
 		assert.NotContains(t, output, "Timeout and limit options", "an empty section prints no header")
 	})
 
 	t.Run("a flag outside the subset is rejected", func(t *testing.T) {
-		_, _, err := LoadWithOptions([]string{"-log-level", "debug"}, opts)
-		require.ErrorContains(t, err, "flag provided but not defined: -log-level")
+		_, err := LoadWithOptions([]string{"--log-level", "debug"}, opts)
+		require.ErrorContains(t, err, "unknown flag: --log-level")
 	})
 
 	t.Run("the selected flag still sets its key", func(t *testing.T) {
 		dataDir := t.TempDir()
-		cfg, _, err := LoadWithOptions([]string{"-data-dir", dataDir}, opts)
+		cfg, err := LoadWithOptions([]string{"--data-dir", dataDir}, opts)
 		require.NoError(t, err)
 		assert.Equal(t, dataDir, cfg.DataDir)
 	})
@@ -311,27 +299,23 @@ func TestLoadWithCLIFlagSubset(t *testing.T) {
 		configPath := filepath.Join(t.TempDir(), "worker.yaml")
 		require.NoError(t, os.WriteFile(configPath, []byte("log_level: warn\n"), 0o644))
 		t.Setenv("LEAPMUX_WORKER_DB_MAX_CONNS", "7")
-		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, opts)
+		cfg, err := LoadWithOptions([]string{"--config", configPath}, opts)
 		require.NoError(t, err)
 		assert.Equal(t, "warn", cfg.LogLevel)
 		assert.Equal(t, 7, cfg.DBMaxConns)
 	})
 
-	t.Run("an empty subset keeps config and version", func(t *testing.T) {
-		_, showVersion, err := LoadWithOptions([]string{"-version"}, LoadOptions{CLIFlags: []string{}})
+	t.Run("an empty subset keeps config", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "worker.yaml")
+		_, err := LoadWithOptions([]string{"--config", configPath}, LoadOptions{CLIFlags: []string{}})
 		require.NoError(t, err)
-		assert.True(t, showVersion)
-		_, _, err = LoadWithOptions([]string{"-data-dir", t.TempDir()}, LoadOptions{CLIFlags: []string{}})
-		require.ErrorContains(t, err, "flag provided but not defined: -data-dir")
+		_, err = LoadWithOptions([]string{"--data-dir", t.TempDir()}, LoadOptions{CLIFlags: []string{}})
+		require.ErrorContains(t, err, "unknown flag: --data-dir")
 	})
 
-	t.Run("no subset and no header select the worker defaults", func(t *testing.T) {
-		output := testutil.CaptureStdout(t, func() {
-			_, _, err := LoadWithOptions([]string{"--help"}, LoadOptions{})
-			require.True(t, errors.Is(err, flag.ErrHelp))
-		})
-		assert.True(t, strings.HasPrefix(output, "Run a Worker connected to a Hub.\n\nUsage: leapmux worker [flags]\n"), output)
-		assert.Contains(t, output, "  -log-level string")
+	t.Run("no subset selects every worker flag", func(t *testing.T) {
+		output := flagsHelp(t, LoadOptions{})
+		assert.Contains(t, output, "--log-level string")
 	})
 }
 
@@ -406,13 +390,13 @@ func TestPaths(t *testing.T) {
 // entry points that pass the value straight through.
 func TestAgentStartupConcurrency(t *testing.T) {
 	t.Run("unset stays zero so the consumer resolves the default", func(t *testing.T) {
-		cfg, _, err := Load(nil)
+		cfg, err := Load(nil)
 		require.NoError(t, err)
 		assert.Equal(t, 0, cfg.AgentStartupConcurrency)
 	})
 
 	t.Run("flag", func(t *testing.T) {
-		cfg, _, err := Load([]string{"-agent-startup-concurrency", "7"})
+		cfg, err := Load([]string{"--agent-startup-concurrency", "7"})
 		require.NoError(t, err)
 		assert.Equal(t, 7, cfg.AgentStartupConcurrency)
 	})
@@ -420,14 +404,14 @@ func TestAgentStartupConcurrency(t *testing.T) {
 	t.Run("config file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "worker.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("agent_startup_concurrency: 3\n"), 0o644))
-		cfg, _, err := Load([]string{"-config", path})
+		cfg, err := Load([]string{"--config", path})
 		require.NoError(t, err)
 		assert.Equal(t, 3, cfg.AgentStartupConcurrency)
 	})
 
 	t.Run("env", func(t *testing.T) {
 		t.Setenv("LEAPMUX_WORKER_AGENT_STARTUP_CONCURRENCY", "5")
-		cfg, _, err := Load(nil)
+		cfg, err := Load(nil)
 		require.NoError(t, err)
 		assert.Equal(t, 5, cfg.AgentStartupConcurrency)
 	})
@@ -435,13 +419,13 @@ func TestAgentStartupConcurrency(t *testing.T) {
 	t.Run("flag beats config file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "worker.yaml")
 		require.NoError(t, os.WriteFile(path, []byte("agent_startup_concurrency: 3\n"), 0o644))
-		cfg, _, err := Load([]string{"-config", path, "-agent-startup-concurrency", "9"})
+		cfg, err := Load([]string{"--config", path, "--agent-startup-concurrency", "9"})
 		require.NoError(t, err)
 		assert.Equal(t, 9, cfg.AgentStartupConcurrency)
 	})
 
 	t.Run("a negative value loads and is resolved downstream", func(t *testing.T) {
-		cfg, _, err := Load([]string{"-agent-startup-concurrency", "-2"})
+		cfg, err := Load([]string{"--agent-startup-concurrency", "-2"})
 		require.NoError(t, err)
 		assert.Equal(t, -2, cfg.AgentStartupConcurrency,
 			"Load does not clamp; agent.ResolveStartupConcurrency turns any non-positive value into the default")
@@ -455,12 +439,11 @@ func TestAgentStartupConcurrency(t *testing.T) {
 // makes `leapmux worker --help` lie the day the default changes -- silently, and
 // with nothing that fails.
 func TestAgentStartupConcurrencyHelpDerivesTheDefault(t *testing.T) {
-	output := testutil.CaptureStdout(t, func() {
-		_, _, err := Load([]string{"--help"})
-		require.True(t, errors.Is(err, flag.ErrHelp))
-	})
+	output := flagsHelp(t, LoadOptions{})
 	assert.Contains(t, output, "0 = "+strconv.Itoa(DefaultMaxStartupConcurrency),
 		"the flag help must derive the default from DefaultMaxStartupConcurrency")
+	assert.Contains(t, output, "per channel (0 = "+strconv.Itoa(contracts.DefaultMaxIncompleteChunked)+")",
+		"the flag help must derive the chunk cap from contracts.DefaultMaxIncompleteChunked")
 }
 
 // TestResolveStartupConcurrency covers the rule the two help strings describe.
@@ -490,4 +473,20 @@ func TestResolveStartupConcurrency(t *testing.T) {
 		t.Cleanup(func() { runtime.GOMAXPROCS(prev) })
 		assert.Equal(t, 1, ResolveStartupConcurrency(0))
 	})
+}
+
+// flagsHelp prints the help of a command whose flags NewFlags(opts)
+// registers, as the help of a Worker command prints them.
+func flagsHelp(t *testing.T, opts LoadOptions) string {
+	t.Helper()
+	leaf := cli.NewLeaf(cli.Leaf{
+		Use:   "probe",
+		Short: "Probe the flags",
+		Flags: func(fs *pflag.FlagSet) { NewFlags(opts).Register(fs) },
+		Run:   func(*cli.Invocation) (any, error) { return nil, nil },
+	})
+	var stdout, stderr bytes.Buffer
+	code := cli.Execute(context.Background(), leaf, []string{"--help"}, strings.NewReader(""), &stdout, &stderr)
+	require.Equal(t, cli.ExitOK, code, stderr.String())
+	return stdout.String()
 }

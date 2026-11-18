@@ -1,11 +1,14 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
+
+	"github.com/leapmux/leapmux/internal/cli"
 )
 
 // isInteractive reports whether a person drives this process, by testing
@@ -29,20 +32,43 @@ func isInteractive() bool {
 // process listing. Both refusals go through promptsAllowed, so one variable
 // answers for every prompt this CLI can open -- a caller that states "I am a
 // script" must not then be asked to type a secret.
-func PromptPassword(prompt string) (string, error) {
+//
+// An end of ctx, such as an interrupt, ends the prompt with the cause of ctx.
+// The terminal reads with its echo off until the read returns, and the read
+// cannot stop, so the prompt turns the echo back on itself first.
+func PromptPassword(ctx context.Context, prompt string) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !promptsAllowed() {
-		return "", fmt.Errorf("--password is required (%s)", noPromptReason())
+		return "", cli.Usagef("--password is required (%s)", noPromptReason())
+	}
+	state, err := term.GetState(fd)
+	if err != nil {
+		return "", fmt.Errorf("read the terminal state: %w", err)
 	}
 
 	fmt.Fprint(os.Stderr, "\x1b]133;P\x07")
 	fmt.Fprint(os.Stderr, prompt)
-	pw, err := term.ReadPassword(fd)
-	fmt.Fprintln(os.Stderr) // newline after hidden input
-	if err != nil {
-		return "", fmt.Errorf("read password: %w", err)
+	type answer struct {
+		password []byte
+		err      error
 	}
-	return string(pw), nil
+	done := make(chan answer, 1)
+	go func() {
+		pw, err := term.ReadPassword(fd)
+		done <- answer{pw, err}
+	}()
+	select {
+	case a := <-done:
+		fmt.Fprintln(os.Stderr) // newline after hidden input
+		if a.err != nil {
+			return "", fmt.Errorf("read password: %w", a.err)
+		}
+		return string(a.password), nil
+	case <-ctx.Done():
+		_ = term.Restore(fd, state)
+		fmt.Fprintln(os.Stderr)
+		return "", context.Cause(ctx)
+	}
 }
 
 // RequirePassword returns the password from the flag if set, otherwise
@@ -52,9 +78,9 @@ func PromptPassword(prompt string) (string, error) {
 // create`: an RPC surface is no reason to make an operator type a password
 // on the command line, where the shell history and the process table both
 // record it. The prompt happens locally, before this code builds the request.
-func RequirePassword(pw string, prompt string) (string, error) {
+func RequirePassword(ctx context.Context, pw string, prompt string) (string, error) {
 	if pw != "" {
 		return pw, nil
 	}
-	return PromptPassword(prompt)
+	return PromptPassword(ctx, prompt)
 }

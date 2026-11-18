@@ -163,7 +163,7 @@ const (
 	// until the first call succeeds. So the window before a password exists
 	// is a window in which an unauthenticated caller drives memory-hard
 	// hashing at request speed. That window is the exact state
-	// `leapmux solo -listen 0.0.0.0:4327` warns about.
+	// `leapmux solo --listen 0.0.0.0:4327` warns about.
 	//
 	// It counts ADMITTED REQUESTS rather than failures, like OpOAuthAnonymous.
 	// The cost here is the hash, not a wrong answer, and the caller CHOOSES
@@ -246,7 +246,7 @@ type opSpec struct {
 	// so the key is inert clutter. For a limit keyed by client ADDRESS on an
 	// endpoint solo also serves, the answer is yes -- and hiding the key would
 	// take it out of the preferences dialog AND out of `leapmux control admin
-	// settings`, leaving an operator who runs `leapmux solo -listen
+	// settings`, leaving an operator who runs `leapmux solo --listen
 	// 0.0.0.0:4327` no way to reach it.
 	hiddenInSolo bool
 }

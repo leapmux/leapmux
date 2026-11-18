@@ -44,6 +44,10 @@ func (f *StringSliceFlag) String() string {
 	return strings.Join(*f.target, ",")
 }
 
+// Type names the value in help. "stringArray" is pflag's own name for a
+// repeatable string, so the help marks the flag repeatable.
+func (f *StringSliceFlag) Type() string { return "stringArray" }
+
 // Get returns the values as a slice, for a provider that stores a list.
 func (f *StringSliceFlag) Get() []string {
 	if !f.set {

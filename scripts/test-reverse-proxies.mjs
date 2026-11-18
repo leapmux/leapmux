@@ -285,10 +285,9 @@ export class ProxyEnvironment {
       'recover',
       'bootstrap',
       'create-admin',
+      ADMIN_USERNAME,
       '--data-dir',
       '/data/hub',
-      '--username',
-      ADMIN_USERNAME,
       '--password',
       this.password,
     ])
@@ -580,7 +579,8 @@ export class ProxyEnvironment {
         '/data/worker',
         '--json',
       ])
-      const status = JSON.parse(result.stdout)
+      // With --json, `leapmux worker status` prints the report as {"data": ...}.
+      const status = JSON.parse(result.stdout).data
       if (status.readiness === 'ready' && status.connection?.state === 'connected')
         return status.registration.worker_id
       throw new Error(`readiness ${status.readiness}, connection ${status.connection?.state}`)

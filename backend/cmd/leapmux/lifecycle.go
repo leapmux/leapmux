@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -14,58 +12,139 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
-	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
+	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
-// The lifecycle tree every mode requires. The seven verbs share one
-// group per mode; exact matches win and abbreviations resolve as far
-// as they stay unambiguous (`worker sta` identifies both start and status,
-// so the CLI lists both).
+// The lifecycle commands every mode has. start and stop come first: they are
+// the recommended way to run an instance. run comes last, for a container.
 //
 // `run` is the only verb that starts a foreground process, and it never
-// configures a native service or requests elevation. The other verbs
-// work through the directory's locks, the saved specification, and the
-// native managers.
+// configures a native service or requests elevation. The other verbs work
+// through the directory's locks, the saved specification, and the native
+// managers.
+var lifecycleVerbs = []string{"start", "stop", "restart", "status", "enable", "disable", "run"}
 
-type lifecycleDependencies struct {
-	controller nativeControllerFactory
-	foreground runInvocation
+// modeDependencies holds what the commands of a mode reach outside the
+// process: the native service manager, the context and callbacks of a
+// foreground run, and the files of a Worker's registration. A test replaces
+// them.
+type modeDependencies struct {
+	controller        nativeControllerFactory
+	foreground        runInvocation
+	registrationFiles func(*workerconfig.Config) workerRegistrationFiles
 }
 
-// lifecycleCommands builds one mode's lifecycle group.
-func lifecycleCommands(mode string) cmdGroup {
-	return lifecycleCommandsWithDependencies(mode, lifecycleDependencies{controller: nativeController, foreground: runInvocation{Context: context.Background()}})
-}
-
-func lifecycleCommandsWithDependencies(mode string, dependencies lifecycleDependencies) cmdGroup {
-	leaf := func(verb string, run func(cmdCtx, []string) error) cmdLeaf {
-		return cmdLeaf{Name: verb, Summary: lifecycleSummary(mode, verb), Run: run}
+func defaultModeDependencies() modeDependencies {
+	return modeDependencies{
+		controller:        nativeController,
+		foreground:        runInvocation{Context: context.Background()},
+		registrationFiles: configuredWorkerRegistrationFiles,
 	}
-	return cmdGroup{
-		Name:    mode,
-		Summary: modeSummary(mode),
-		// start and stop come first: they are the recommended way to run an
-		// instance. run comes last, for a container.
-		Commands: []cmdLeaf{
-			leaf("start", func(_ cmdCtx, args []string) error {
-				return executeNativeStartWithController(mode, "start", args, dependencies.controller)
-			}),
-			leaf("stop", runModeStopWithController(mode, dependencies.controller)),
-			leaf("restart", func(_ cmdCtx, args []string) error {
-				return executeNativeStartWithController(mode, "restart", args, dependencies.controller)
-			}),
-			leaf("status", func(_ cmdCtx, args []string) error {
-				return executeModeStatusWithController(mode, args, dependencies.controller)
-			}),
-			leaf("enable", runModeEnableWithController(mode, dependencies.controller)),
-			leaf("disable", runModeDisableWithController(mode, dependencies.controller)),
-			leaf("run", runModeRunWithInvocation(mode, dependencies.foreground)),
+}
+
+// lifecycleCommandLine is the parsed command line of one lifecycle command,
+// with what its registration bound.
+type lifecycleCommandLine struct {
+	flags *lifecycleFlags
+	set   *pflag.FlagSet
+}
+
+func (l lifecycleCommandLine) mode() string { return l.flags.mode }
+
+func (l lifecycleCommandLine) verb() string { return l.flags.verb }
+
+// load loads the configuration and the options of the command.
+func (l lifecycleCommandLine) load() (*lifecycleConfiguration, lifecycleOptions, error) {
+	return l.flags.load(l.set)
+}
+
+// newModeCommand builds `leapmux <mode>`: the lifecycle commands, plus the
+// Worker's registration commands and pin store.
+func newModeCommand(mode string, deps modeDependencies) *cobra.Command {
+	group := cli.Group(mode, modeSummary(mode))
+	for _, verb := range lifecycleVerbs {
+		group.AddCommand(newLifecycleCommand(mode, verb, deps))
+	}
+	if mode == "worker" {
+		group.AddCommand(
+			newWorkerRegisterCommand(deps.registrationFiles),
+			newWorkerDeregisterCommand(deps.registrationFiles),
+			newCrossWorkerPinsCommand(),
+		)
+	}
+	return group
+}
+
+// newLifecycleCommand builds `leapmux <mode> <verb>`.
+func newLifecycleCommand(mode, verb string, deps modeDependencies) *cobra.Command {
+	var flags *lifecycleFlags
+	return cli.NewLeaf(cli.Leaf{
+		Use:      verb,
+		Short:    lifecycleSummary(mode, verb),
+		Mutates:  verb != "status",
+		Examples: lifecycleExamples(mode, verb),
+		// `run` shuts down gracefully on its own handler of the signals.
+		HandlesSignals: verb == "run",
+		Flags: func(fs *pflag.FlagSet) {
+			var err error
+			flags, err = registerLifecycleFlags(mode, verb, fs)
+			if err != nil {
+				panic(fmt.Sprintf("leapmux %s %s: %v", mode, verb, err))
+			}
 		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			line := lifecycleCommandLine{flags: flags, set: inv.Command.Flags()}
+			return nil, runLifecycleVerb(inv.Context, inv.Printer, line, deps)
+		},
+	})
+}
+
+// runLifecycleVerb runs the verb of line. An end of ctx, such as an
+// interrupt, ends every wait of the verb. `run` handles its shutdown signals
+// itself, so it runs under the context of deps instead.
+func runLifecycleVerb(ctx context.Context, printer *cli.Printer, line lifecycleCommandLine, deps modeDependencies) error {
+	switch line.verb() {
+	case "start", "restart":
+		return executeNativeStart(ctx, line, deps.controller)
+	case "stop":
+		return stopLifecycleInstance(ctx, line, deps.controller)
+	case "status":
+		return executeModeStatus(ctx, printer, line, deps.controller)
+	case "enable":
+		return enableLifecycleService(ctx, line, deps.controller)
+	case "disable":
+		return disableLifecycleService(ctx, line, deps.controller)
+	case "run":
+		return runLifecycleForeground(line, deps.foreground)
+	}
+	return fmt.Errorf("leapmux %s has no command %q", line.mode(), line.verb())
+}
+
+// lifecycleExamples gives the examples of `leapmux <mode> <verb>`.
+func lifecycleExamples(mode, verb string) []cli.Example {
+	switch verb {
+	case "start":
+		return []cli.Example{
+			{Command: "leapmux " + mode + " start"},
+			{Comment: "Start at computer start, under this account, without a prompt.", Command: "leapmux " + mode + " start --startup boot --yes"},
+		}
+	case "status":
+		return []cli.Example{
+			{Command: "leapmux " + mode + " status"},
+			{Comment: "Read the status from a script.", Command: "leapmux " + mode + " status --json"},
+		}
+	case "run":
+		return []cli.Example{{Comment: "Run in the foreground of a container.", Command: "leapmux " + mode + " run --data-dir /data"}}
+	default:
+		return []cli.Example{{Command: "leapmux " + mode + " " + verb}}
 	}
 }
 
@@ -131,150 +210,115 @@ type runInvocation struct {
 	ServiceName string
 }
 
-// runModeRunWithInvocation runs the mode in the foreground under the common runtime:
-// the directory leases, the runtime lock, the attempt identity, the
-// private control interface, and the diagnostics log all belong to it.
-// It never configures a service and never requests elevation.
-func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx, []string) error {
-	return func(c cmdCtx, args []string) (result error) {
-		selection := managedRunSelection{}
-		selected := false
-		configuration, err := loadLifecycleConfiguration(mode, "run", args, func(fs *flag.FlagSet) {
-			// The service definition passes this flag; a person never does,
-			// so help omits it.
-			internalconfig.HiddenFunc(fs, "service-spec", "private specification for native startup", func(path string) error {
-				if selected || path == "" {
-					return fmt.Errorf("managed launch requires exactly one nonempty service specification")
-				}
-				selected = true
-				selection.specPath = path
-				return nil
-			})
-		}, func(fs *flag.FlagSet) error {
-			if !selected {
-				return nil
-			}
-			var invalid string
-			fs.Visit(func(value *flag.Flag) {
-				switch value.Name {
-				case "service-spec":
-				case "data-dir":
-					selection.dataDirectory = new(value.Value.String())
-				default:
-					invalid = value.Name
-				}
-			})
-			if invalid != "" {
-				return fmt.Errorf("managed launch cannot override --%s", invalid)
-			}
-			return errManagedRunSelected
-		})
-		if handleVersionQuery(err) {
-			return nil
+// runLifecycleForeground runs the mode in the foreground under the common
+// runtime: the directory leases, the runtime lock, the attempt identity, the
+// private control interface, and the diagnostics log all belong to it. It
+// never configures a service and never requests elevation.
+func runLifecycleForeground(line lifecycleCommandLine, invocation runInvocation) (result error) {
+	mode := line.mode()
+	configuration, _, err := line.load()
+	var managed *lifecycle.ServiceSpec
+	var effective []string
+	if errors.Is(err, errManagedRunSelected) {
+		managed, effective, err = managedRun(mode, line.flags.managed)
+	}
+	if err != nil {
+		return err
+	}
+	if invocation.ServiceName != "" {
+		if managed == nil || managed.Startup != lifecycle.StartupBoot || invocation.ServiceName != servicelaunch.WindowsServiceName(managed.Mode, managed.InstanceID) {
+			return fmt.Errorf("the Windows service entry does not match its saved boot specification")
 		}
-		var managed *lifecycle.ServiceSpec
-		effective := args
-		if errors.Is(err, errManagedRunSelected) {
-			managed, effective, err = managedRun(mode, selection)
-		}
+	}
+	execution := lifecycle.ExecutionForeground
+	if managed != nil {
+		restore, err := applyManagedEnvironment(*managed)
 		if err != nil {
 			return err
 		}
-		if invocation.ServiceName != "" {
-			if managed == nil || managed.Startup != lifecycle.StartupBoot || invocation.ServiceName != servicelaunch.WindowsServiceName(managed.Mode, managed.InstanceID) {
-				return fmt.Errorf("the Windows service entry does not match its saved boot specification")
-			}
-		}
-		execution := lifecycle.ExecutionForeground
-		if managed != nil {
-			restore, err := applyManagedEnvironment(*managed)
-			if err != nil {
-				return err
-			}
-			defer func() { result = errors.Join(result, restore()) }()
-			execution = lifecycle.ExecutionService
-			configuration, err = loadLifecycleConfiguration(mode, "run", effective, nil, nil)
-			if err != nil {
-				return err
-			}
-		}
-		if err := configuration.validateRuntime(); err != nil {
-			return fmt.Errorf("validate runtime configuration: %w", err)
-		}
-		// Survive a lost console reader so the attempt can finish its shutdown.
-		// The Go handler preserves the default SIGPIPE behavior in child processes.
-		procutil.KeepRunningOnBrokenPipe()
-		ctx, cancel := context.WithCancel(invocation.Context)
-		defer cancel()
-		var monitor servicelaunch.SessionMonitor
-		var account servicelaunch.AccountRef
-		if managed != nil && managed.Startup == lifecycle.StartupLogin {
-			monitor = servicelaunch.NewSessionMonitor()
-			account = servicelaunch.AccountRef{ID: managed.AccountID, Name: managed.AccountName}
-			initial, err := monitor.Sessions(ctx, account)
-			if err != nil {
-				return fmt.Errorf("managed login launch cannot read desktop sessions: %w", err)
-			}
-			if stop, _ := servicelaunch.LastSessionRule(initial, nil); stop {
-				return fmt.Errorf("managed login launch requires an active desktop session; choose boot startup for use without a desktop login")
-			}
-		}
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, procutil.ShutdownSignals()...)
-		defer signal.Stop(signals)
-		dataDir := configuration.dataDirectory
-		var runtime *lifecycle.Runtime
-		if managed != nil {
-			runtime, err = lifecycle.StartServiceRuntime(*managed)
-		} else {
-			runtime, err = lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: modeRole(mode), DataDir: dataDir, Execution: execution})
-		}
+		defer func() { result = errors.Join(result, restore()) }()
+		execution = lifecycle.ExecutionService
+		configuration, _, err = loadLifecycleCommand(mode, "run", effective)
 		if err != nil {
 			return err
 		}
-		execute := func(ctx context.Context, runtime *lifecycle.Runtime) error {
-			// The capture is active here, so the banner reaches both the
-			// console and the attempt log, which a service launch reads.
-			printModeBanner(mode)
-			watchCtx, cancelWatchers := context.WithCancel(ctx)
-			var watchers sync.WaitGroup
-			// Observers start after capture and join before it closes. Their
-			// final diagnostics therefore use the required attempt log.
-			defer func() { cancelWatchers(); watchers.Wait() }()
-			if invocation.OnReady != nil {
-				watchers.Go(func() {
-					select {
-					case <-runtime.Ready():
-						invocation.OnReady()
-					case <-watchCtx.Done():
-					}
-				})
-			}
-			if monitor != nil {
-				watchers.Go(func() {
-					if err := servicelaunch.WatchLoginSessions(watchCtx, monitor, account, quartz.NewReal(), func(err error) {
-						if watchCtx.Err() == nil {
-							log.Printf("Cannot read desktop sessions; keeping the instance running: %v", err)
-						}
-					}); err == nil {
-						cancel()
-					}
-				})
-			}
+	}
+	if err := configuration.validateRuntime(); err != nil {
+		return fmt.Errorf("validate runtime configuration: %w", err)
+	}
+	// Survive a lost console reader so the attempt can finish its shutdown.
+	// The Go handler preserves the default SIGPIPE behavior in child processes.
+	procutil.KeepRunningOnBrokenPipe()
+	ctx, cancel := context.WithCancel(invocation.Context)
+	defer cancel()
+	var monitor servicelaunch.SessionMonitor
+	var account servicelaunch.AccountRef
+	if managed != nil && managed.Startup == lifecycle.StartupLogin {
+		monitor = servicelaunch.NewSessionMonitor()
+		account = servicelaunch.AccountRef{ID: managed.AccountID, Name: managed.AccountName}
+		initial, err := monitor.Sessions(ctx, account)
+		if err != nil {
+			return fmt.Errorf("managed login launch cannot read desktop sessions: %w", err)
+		}
+		if stop, _ := servicelaunch.LastSessionRule(initial, nil); stop {
+			return fmt.Errorf("managed login launch requires an active desktop session; choose boot startup for use without a desktop login")
+		}
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, procutil.ShutdownSignals()...)
+	defer signal.Stop(signals)
+	dataDir := configuration.dataDirectory
+	var runtime *lifecycle.Runtime
+	if managed != nil {
+		runtime, err = lifecycle.StartServiceRuntime(*managed)
+	} else {
+		runtime, err = lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: modeRole(mode), DataDir: dataDir, Execution: execution})
+	}
+	if err != nil {
+		return err
+	}
+	execute := func(ctx context.Context, runtime *lifecycle.Runtime) error {
+		// The capture is active here, so the banner reaches both the
+		// console and the attempt log, which a service launch reads.
+		printModeBanner(mode)
+		watchCtx, cancelWatchers := context.WithCancel(ctx)
+		var watchers sync.WaitGroup
+		// Observers start after capture and join before it closes. Their
+		// final diagnostics therefore use the required attempt log.
+		defer func() { cancelWatchers(); watchers.Wait() }()
+		if invocation.OnReady != nil {
 			watchers.Go(func() {
 				select {
+				case <-runtime.Ready():
+					invocation.OnReady()
 				case <-watchCtx.Done():
-				case <-signals:
-					cancel()
-					log.Printf("shutdown signal received")
-				case <-runtime.StopSignal():
+				}
+			})
+		}
+		if monitor != nil {
+			watchers.Go(func() {
+				if err := servicelaunch.WatchLoginSessions(watchCtx, monitor, account, quartz.NewReal(), func(err error) {
+					if watchCtx.Err() == nil {
+						log.Printf("Cannot read desktop sessions; keeping the instance running: %v", err)
+					}
+				}); err == nil {
 					cancel()
 				}
 			})
-			return configuration.executeForeground(ctx, runtime)
 		}
-		return executeForegroundAttempt(ctx, cancel, runtime, execute)
+		watchers.Go(func() {
+			select {
+			case <-watchCtx.Done():
+			case <-signals:
+				cancel()
+				log.Printf("shutdown signal received")
+			case <-runtime.StopSignal():
+				cancel()
+			}
+		})
+		return configuration.executeForeground(ctx, runtime)
 	}
+	return executeForegroundAttempt(ctx, cancel, runtime, execute)
 }
 
 // foregroundResult treats requested cancellation as successful shutdown only
@@ -301,28 +345,27 @@ const (
 	defaultStatusTimeout  = 3 * time.Second
 )
 
-// runModeStopWithController stops the running instance and waits for the FULL
+// stopLifecycleInstance stops the running instance and waits for the FULL
 // shutdown, including the database close. An already stopped instance
 // succeeds.
-func runModeStopWithController(mode string, newController nativeControllerFactory) func(cmdCtx, []string) error {
-	return func(c cmdCtx, args []string) error {
-		configuration, options, done, err := openLifecycleCommand(mode, "stop", args)
-		if done {
-			return err
-		}
-		release, err := lifecycle.OperationLock(configuration.dataDirectory)
-		if err != nil {
-			return err
-		}
-		defer release()
-		ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
-		defer cancel()
-		if err := stopLifecycleInstanceWithController(ctx, configuration, newController); err != nil {
-			return err
-		}
-		printSelectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, []string{"start"}, []string{"disable"})
-		return nil
+func stopLifecycleInstance(ctx context.Context, line lifecycleCommandLine, newController nativeControllerFactory) error {
+	mode := line.mode()
+	configuration, options, err := openLifecycleCommand(line)
+	if err != nil {
+		return err
 	}
+	release, err := lifecycle.OperationLock(configuration.dataDirectory)
+	if err != nil {
+		return err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, options.timeout)
+	defer cancel()
+	if err := stopLifecycleInstanceWithController(ctx, configuration, newController); err != nil {
+		return err
+	}
+	printSelectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, []string{"start"}, []string{"disable"})
+	return nil
 }
 
 func stopLifecycleInstanceWithController(ctx context.Context, configuration *lifecycleConfiguration, newController nativeControllerFactory) error {
@@ -442,103 +485,4 @@ func printStatusValue[T any](label string, value *T) {
 	if value != nil {
 		fmt.Printf("%-14s%v\n", label+":", *value)
 	}
-}
-
-// modeCommandGroup is one mode's complete command tree: the lifecycle
-// commands, plus the worker's registration commands and pin store. The
-// dispatcher and the help walk both read it, so help cannot list a command
-// that dispatch does not know.
-func modeCommandGroup(mode string) cmdGroup {
-	group := lifecycleCommands(mode)
-	if mode == "worker" {
-		group.Commands = append(group.Commands,
-			cmdLeaf{Name: "register", Summary: workerRegisterSummary, Run: func(c cmdCtx, args []string) error {
-				return runWorkerRegister(args)
-			}},
-			cmdLeaf{Name: "deregister", Summary: workerDeregisterSummary, Run: func(c cmdCtx, args []string) error {
-				return runWorkerDeregister(args)
-			}},
-		)
-		group.Subgroups = []cmdGroup{workerPinsGroup()}
-	}
-	return group
-}
-
-// commandBeforeFlagsError refuses a flag where the mode's command belongs. It
-// shows the recommended command with the flags after it; the dispatcher and
-// the help walk print the same refusal.
-func commandBeforeFlagsError(mode string) error {
-	return fmt.Errorf("the %s command is required before any flags, as in `leapmux %s start [flags]`", mode, mode)
-}
-
-// runModeCommand walks one mode's command tree. A command is required: a
-// flag where the command belongs gets the exact corrected command in the
-// hint.
-func runModeCommand(mode string, args []string) error {
-	// A flag where the verb belongs identifies the corrected command in the
-	// hint rather than dispatching.
-	if len(args) > 0 && strings.HasPrefix(args[0], "-") && !internalconfig.IsHelpArg(args[0]) {
-		return commandBeforeFlagsError(mode)
-	}
-	return dispatchGroup(modeCommandGroup(mode), args, []string{mode})
-}
-
-// workerPinsGroup is the cross-worker-pins subtree, unchanged in shape.
-func workerPinsGroup() cmdGroup {
-	return cmdGroup{
-		Name:    "cross-worker-pins",
-		Summary: "Manage the worker-local TOFU pin store",
-		Commands: []cmdLeaf{
-			{Name: "list", Summary: "List pinned cross-worker keys", Run: func(c cmdCtx, args []string) error {
-				return runWorkerCrossWorkerPins(append([]string{"list"}, args...))
-			}},
-			{Name: "show", Summary: "Show one pinned worker's keys", Run: func(c cmdCtx, args []string) error {
-				return runWorkerCrossWorkerPins(append([]string{"show"}, args...))
-			}},
-			{Name: "remove", Summary: "Remove one pinned worker's keys", Run: func(c cmdCtx, args []string) error {
-				return runWorkerCrossWorkerPins(append([]string{"remove"}, args...))
-			}},
-		},
-	}
-}
-
-// modeExitCode maps a mode command's error to its exit code: 0 for a
-// successful operation and a running instance, 3 for a stopped instance
-// reported by status, 1 for failures and invalid use.
-func modeExitCode(stderr io.Writer, err error) int {
-	if errors.Is(err, errStoppedExit) {
-		return 3
-	}
-	if errors.Is(err, errUnresponsiveExit) {
-		return 1
-	}
-	return handleRunError(stderr, stripExitMarker(err))
-}
-
-// stripExitMarker removes the NUL marker the status exit codes carry,
-// so handleRunError never prints it.
-func stripExitMarker(err error) error {
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), "\x00") {
-		return errors.New(strings.ReplaceAll(err.Error(), "\x00", ""))
-	}
-	return err
-}
-
-// walkModeArgs validates the mode group's tokens and prints its help;
-// it reports (code, true) when it fully handled the request.
-func walkModeArgs(group cmdGroup, mode string, args []string, stdout, stderr io.Writer) (int, bool) {
-	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		if internalconfig.IsHelpArg(args[0]) {
-			_, _ = fmt.Fprint(stdout, formatGroupUsage(group, mode))
-			return 0, true
-		}
-		// A flag before the verb is the dispatcher's error, printed
-		// here with the exact corrected command.
-		_, _ = fmt.Fprintf(stderr, "error: %v\n", commandBeforeFlagsError(mode))
-		return 1, true
-	}
-	return walkGroupArgs(group, []string{mode}, args, stdout, stderr)
 }
