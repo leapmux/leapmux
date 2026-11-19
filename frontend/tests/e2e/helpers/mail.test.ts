@@ -12,8 +12,8 @@
  * the helper is worth unit-testing at all.
  */
 import type { CaptureSmtpServer } from './mail'
-import { connect } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { connect, Server } from 'node:net'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { extractAccountRecoveryToken, startCaptureSmtpServer } from './mail'
 
 /** The width of `id.Generate()`, which mints the emailed recovery token. */
@@ -229,13 +229,24 @@ describe('startCaptureSmtpServer', () => {
   })
 
   it('stops listening once stopped', async () => {
-    const smtp = await startCaptureSmtpServer()
-    const { port, host } = smtp
-    await smtp.stop()
-
-    await expect(new Promise((resolve, reject) => {
-      const socket = connect(port, host, () => resolve('connected'))
-      socket.on('error', reject)
-    })).rejects.toThrow(/ECONNREFUSED/)
+    const listeners: Server[] = []
+    const originalListen = Server.prototype.listen
+    const listen = vi.spyOn(Server.prototype, 'listen').mockImplementation(function (this: Server, ...args: Parameters<Server['listen']>) {
+      listeners.push(this)
+      return originalListen.apply(this, args)
+    })
+    try {
+      const smtp = await startCaptureSmtpServer()
+      await smtp.stop()
+      // The liveness is read from the server's own handle. A connect probe
+      // cannot carry this assertion: an ephemeral port is free for any other
+      // fixture to bind the moment this one stops, and a connect then reaches
+      // that listener instead of failing (see the codex auth cleanup test,
+      // where exactly that flaked on a busy Linux runner).
+      expect(listeners[0]?.listening).toBe(false)
+    }
+    finally {
+      listen.mockRestore()
+    }
   })
 })
