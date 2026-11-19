@@ -85,6 +85,7 @@ function codebuddyModels(options: CodebuddyEnvironmentOptions): Record<string, u
     url: `${options.baseURL}/chat/completions`,
     temperature: 0,
     supportsToolCall: true,
+    toolMode: 'code_mode',
     // CodeBuddy drops image and document blocks before the model request
     // when this catalog entry declares text-only input.
     supportsImages: true,

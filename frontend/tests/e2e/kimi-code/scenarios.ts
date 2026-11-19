@@ -51,7 +51,7 @@ export async function exerciseKimiModelRetry(context: ManagedNativeScenarioConte
       { status: 500, message: 'The stream failed.', midStream: true },
     ],
     answer: 'RETRIED-ANSWER',
-    failedAttempt: 'interrupted',
+    failedAttempt: 'error',
   })
 }
 

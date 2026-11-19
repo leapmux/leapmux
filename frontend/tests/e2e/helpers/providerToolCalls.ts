@@ -13,14 +13,17 @@ import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-proto
 import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-protocol'
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek-harness-protocol'
+import { DIRAC_TOOL } from '../../../src/generated/contracts/dirac-protocol'
 import { FASTAGENT_TOOL } from '../../../src/generated/contracts/fastagent-protocol'
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
 import { MUSE_PARENT_INPUT } from '../../../src/generated/contracts/muse-protocol'
+import { OH_MY_PI_TOOL } from '../../../src/generated/contracts/ohmypi-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
+import { REASONIX_CAPABILITY_ACTION, REASONIX_CAPABILITY_PREFIX, REASONIX_TOOL } from '../../../src/generated/contracts/reasonix-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
@@ -154,7 +157,7 @@ export interface SubagentRequest {
    * A builder whose native spawn call carries a background choice states it on every call, so a changed native
    * default cannot change the test. An absent value takes the default of that builder, which its comment states:
    * the foreground for most of them, and the background where the existing specs of the provider rely on it.
-   * A builder refuses a value that its native spawn cannot honor: Letta Code always runs a child in the background,
+   * A builder refuses a value that its native spawn cannot honor: Dirac and Letta Code always start a child asynchronously,
    * Oh My Pi lets its profile decide, and Cursor's task call carries no background choice. Other provider builders
    * ignore this field.
    */
@@ -529,19 +532,29 @@ function ohMyPiTaskToolCall(id: string, requests: readonly SubagentRequest[]): M
 }
 
 /**
- * Spawn Dirac children through one `use_subagents` call (dirac-cli 0.5.17). The tool starts every child of the call at
- * once and returns when all of them end. Its schema sets no item limit, and an empty list fails the call ("Missing
- * required parameter: subagents"). Each title states the row, in 5 words or 80 characters at most.
+ * Start one to sixteen Dirac assignments asynchronously through subagents create (dirac-cli 0.6.0).
+ * Acceptance returns native handles. A later committed outcome proves completion.
+ * Native headers have at most five words and eighty UTF-16 code units after whitespace normalization.
  */
 function diracSubagentsToolCall(id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
   if (requests.length === 0)
-    throw new Error('The native Dirac use_subagents call requires at least one subagent.')
+    throw new Error('The native Dirac subagents call requires at least one subagent.')
+  if (requests.length > 16)
+    throw new Error('The native Dirac subagents call accepts at most sixteen assignments.')
+  const assignments = requests.map((request) => {
+    if (request.background === false)
+      throw new Error('The native Dirac subagents call is always asynchronous.')
+    const header = request.description.trim().replace(/\s+/gu, ' ')
+    if (!header || header.length > 80 || header.split(' ').length > 5)
+      throw new Error('The native Dirac assignment header requires one to five words and at most eighty UTF-16 code units.')
+    if (!request.prompt.trim())
+      throw new Error('The native Dirac assignment requires a nonempty task description.')
+    return { type: 'default', task_header: request.description, task_description: request.prompt }
+  })
   return {
     id,
-    name: 'use_subagents',
-    arguments: {
-      subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })),
-    },
+    name: DIRAC_TOOL.Subagents,
+    arguments: { operation: 'create', assignments },
   }
 }
 
@@ -1173,8 +1186,8 @@ const TOOL_VOCABULARY = {
     }),
     read: (id, path) => ({
       id,
-      name: 'read',
-      arguments: { path },
+      name: 'shell',
+      arguments: { command: `cat -- ${quotePosixShellArgument(path)}` },
     }),
     // No plan-mode tool in its declaration.
     enterPlanMode: null,
@@ -1441,7 +1454,14 @@ const TOOL_VOCABULARY = {
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
-    mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
+    mcpTool: (id, { server, tool, input }) => ({
+      id,
+      name: 'mcp_tool_use',
+      arguments: {
+        name: `${server.replace(/[^\w-]/g, '_')}_${tool.replace(/[^\w-]/g, '_')}`,
+        arguments: input,
+      },
+    }),
     codeExecution: (id, source) => ({
       id,
       name: 'exec',
@@ -1452,45 +1472,61 @@ const TOOL_VOCABULARY = {
   [AgentProvider.OPENCODE]: {
     bash: (id, command) => ({
       id,
-      name: 'bash',
+      name: 'shell',
       arguments: { command },
     }),
     edit: (id, { path, before, after }) => ({
       id,
       name: 'edit',
-      arguments: { filePath: path, oldString: before, newString: after },
+      arguments: { path, oldString: before, newString: after },
     }),
     write: (id, { path, content }) => ({
       id,
       name: 'write',
-      arguments: { filePath: path, content },
+      arguments: { path, content },
     }),
     read: (id, path) => ({
       id,
       name: 'read',
-      arguments: { filePath: path },
+      arguments: { path },
     }),
     // No plan-mode tool in its declaration.
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
     askUserQuestion: questionBuilder(openCodeFamilyQuestionCall),
-    // The native tool/task.ts schema requires subagent_type as a Schema.String beside description and prompt.
-    // The general agent is built in through agent/agent.ts.
-    // Without that field, a registry row can appear but its child runs no turn.
-    // Kilo shares this task schema.
+    // Native subagents run asynchronously and identify their agent explicitly.
     spawnSubagent: (id, { description, prompt }) => ({
       id,
-      name: 'task',
-      arguments: { description, prompt, subagent_type: 'general' },
+      name: 'subagent',
+      arguments: { description, prompt, agent: 'general' },
     }),
     spawnSubagentBatch: null,
-    backgroundBash: null,
-    updateTodos: openCodeFamilyTodoCall,
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'shell',
+      arguments: { command, background: true },
+    }),
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todowrite',
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          content: step,
+          status: acceptedTodoStatus('OpenCode native todowrite', OPENCODE_FAMILY_TODO_STATUSES, status),
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
-    mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
+    mcpTool: (id, { server, tool, input }) => ({
+      id,
+      name: 'execute',
+      arguments: {
+        code: `return await tools[${JSON.stringify(server.replace(/[^\w-]/g, '_'))}][${JSON.stringify(tool.replace(/[^\w-]/g, '_'))}](${JSON.stringify(input)})`,
+      },
+    }),
     codeExecution: (id, source) => ({
       id,
       name: 'execute',
@@ -1836,7 +1872,7 @@ const TOOL_VOCABULARY = {
     workflowTools: null,
   },
   // Oh My Pi supplies these tool schemas in tools/*.ts.
-  // Native probes use omp 18.2.11.
+  // Native probes use omp 18.20.0.
   // The isolated E2E profile selects edit.mode=replace.
   // That edit mode accepts the old text and replacement text.
   // The default hashline mode requires a hash from a prior native file read.
@@ -1866,22 +1902,11 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    // `ask` takes an id for each question and `multi` for a multi-select.
-    askUserQuestion: questionBuilder((id, questions) => ({
-      id,
-      name: 'ask',
-      arguments: {
-        questions: questions.map((question, index) => ({
-          id: `q${index + 1}`,
-          question: question.question,
-          header: question.header,
-          options: question.options,
-          ...(question.multiSelect
-            ? { multi: true }
-            : {}),
-        })),
-      },
-    })),
+    // The native ask tool takes one HTML form. Its RPC fallback asks each field.
+    askUserQuestion: questionBuilder((id, questions) => ohMyPiAskFormToolCall(id, ohMyPiQuestionForm(questions), questions.length === 1
+      ? questions[0]?.question ?? 'Complete the form'
+      : 'Complete the project settings form')),
+
     // The task tool accepts a task list, and one call with several tasks runs them at the same time.
     spawnSubagent: (id, request) => ohMyPiTaskToolCall(id, [request]),
     spawnSubagentBatch: ohMyPiTaskToolCall,
@@ -1964,13 +1989,15 @@ const TOOL_VOCABULARY = {
         },
       }
     }),
-    // The native read_only_task schema lives in internal/agent/task.go.
-    // It requires prompt.
-    // Its description is the 3-to-7-word label that the dispatch line shows.
-    spawnSubagent: (id, { description, prompt }) => ({
+    // The installed catalog exposes a read-only explorer through the capability proxy.
+    spawnSubagent: (id, { prompt }) => ({
       id,
-      name: 'read_only_task',
-      arguments: { prompt, description },
+      name: REASONIX_TOOL.UseCapability,
+      arguments: {
+        action: REASONIX_CAPABILITY_ACTION.Call,
+        capability_id: `${REASONIX_CAPABILITY_PREFIX.Tool}${REASONIX_TOOL.Explore}`,
+        arguments: { task: prompt },
+      },
     }),
     spawnSubagentBatch: null,
     backgroundBash: null,
@@ -2467,7 +2494,12 @@ const TOOL_VOCABULARY = {
       return {
         id,
         name: 'Agent',
-        arguments: { description, prompt, subagent_type: 'general-purpose' },
+        arguments: {
+          description,
+          prompt,
+          harness: 'letta',
+          fork_context: false,
+        },
       }
     },
     spawnSubagentBatch: null,
@@ -2671,23 +2703,23 @@ const TOOL_VOCABULARY = {
   [AgentProvider.DROID]: {
     bash: (id, command) => droidExecuteToolCall(id, { command, summary: 'Run the scripted command', riskLevel: 'medium' }),
     edit: (id, request) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'Edit',
       arguments: { file_path: request.path, old_str: request.before, new_str: request.after },
     }),
     write: (id, request) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'Create',
       arguments: { file_path: request.path, content: request.content },
     }),
     read: (id, path) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'Read',
       arguments: { file_path: path },
     }),
     enterPlanMode: null,
     exitPlanMode: (id, plan) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'ExitSpecMode',
       arguments: { plan },
     }),
@@ -2696,7 +2728,7 @@ const TOOL_VOCABULARY = {
     // array. The format is numbered `[question]` blocks with `[topic]` and
     // `[option]` lines.
     askUserQuestion: questionBuilder((id, questions) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'AskUser',
       arguments: {
         questionnaire: questions.map((q, i) => [
@@ -2709,7 +2741,7 @@ const TOOL_VOCABULARY = {
     // `explorer` is a built-in child type. Droid runs it in the background
     // when `await` is false; it does not accept a `background` argument.
     spawnSubagent: (id, { description, prompt, background }) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'Task',
       arguments: {
         subagent_type: 'explorer',
@@ -2721,7 +2753,7 @@ const TOOL_VOCABULARY = {
     spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: (id, steps) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: 'TodoWrite',
       arguments: {
         todos: steps.map(s => ({
@@ -2734,7 +2766,7 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({
-      id: droidCallId(id),
+      id: droidToolCallId(id),
       name: `${server}___${tool}`,
       arguments: input,
     }),
@@ -3215,8 +3247,8 @@ function requireBuilder<T>(builder: T | null, provider: AgentProvider, operation
   return builder
 }
 
-/** Keep the full tool identity through Droid's native call_ preservation rule. */
-function droidCallId(id: string): string {
+/** Identify one scripted Droid call consistently in builders and receipt checks. */
+export function droidToolCallId(id: string): string {
   if (!id)
     throw new Error('The native Droid tool call requires a nonempty ID.')
   return id.startsWith('call_')
@@ -3379,6 +3411,23 @@ export function spawnSubagentBatchToolCall(provider: AgentProvider, id: string, 
   return requireBuilder(vocabulary(provider).spawnSubagentBatch, provider, 'subagent batch spawn')(id, requests)
 }
 
+/** Resume the exact native Dirac tasklet through its parent's supervision tool. */
+export function diracResumeSubagentToolCall(id: string, taskletId: string, message?: string): MockModelToolCall {
+  if (!id.trim() || !taskletId.trim() || (message !== undefined && !message.trim()))
+    throw new Error('The native Dirac resume requires a call ID, a tasklet ID and nonempty provided text.')
+  return {
+    id,
+    name: 'subagents',
+    arguments: {
+      operation: 'resume',
+      tasklet_id: taskletId,
+      ...(message === undefined
+        ? {}
+        : { message }),
+    },
+  }
+}
+
 export function updateTodosToolCall(provider: AgentProvider, id: string, steps: TodoStep[]): MockModelToolCall {
   return requireBuilder(vocabulary(provider).updateTodos, provider, 'to-do list update')(id, steps)
 }
@@ -3477,7 +3526,7 @@ export function codebuddyReplToolCall(id: string, code: string): MockModelToolCa
 
 /** Invoke the current Droid shell tool with its required summary and explicit risk level. */
 export function droidExecuteToolCall(id: string, request: { command: string, summary: string, riskLevel: 'low' | 'medium' | 'high' }): MockModelToolCall {
-  const callId = droidCallId(id)
+  const callId = droidToolCallId(id)
   if (!request.command.trim() || !request.summary.trim() || !['low', 'medium', 'high'].includes(request.riskLevel))
     throw new Error('The native Droid Execute call requires an ID, command, summary, and valid risk level.')
   return {
@@ -3492,7 +3541,7 @@ export function droidScriptToolCall(id: string, script: string): MockModelToolCa
   if (typeof script !== 'string' || !script.trim() || new TextEncoder().encode(script).byteLength > 512 * 1024)
     throw new Error('The native Droid script requires nonempty source within 512 KiB.')
   return {
-    id: droidCallId(id),
+    id: droidToolCallId(id),
     name: 'Script',
     arguments: { script },
   }
@@ -3546,7 +3595,7 @@ export function droidToolSearchToolCall(id: string, query: string, maxResults?: 
   if (maxResults !== undefined && (!Number.isSafeInteger(maxResults) || maxResults <= 0))
     throw new RangeError('The native Droid tool search requires a positive safe result maximum.')
   return {
-    id: droidCallId(id),
+    id: droidToolCallId(id),
     name: 'ToolSearch',
     arguments: {
       query,
@@ -3835,6 +3884,20 @@ export function cursorWebFetchPermissionToolCall(id: string, url: string): MockM
   }
 }
 
+/** Invoke a registered Kimi skill with its native argument string. */
+export function kimiSkillToolCall(id: string, skill: string, args?: string): MockModelToolCall {
+  return {
+    id,
+    name: KIMI_TOOL.Skill,
+    arguments: {
+      skill,
+      ...(args === undefined
+        ? {}
+        : { args }),
+    },
+  }
+}
+
 /** Load one Claude Code skill through its native tool. */
 export function claudeSkillToolCall(id: string, skill: string): MockModelToolCall {
   return {
@@ -3882,6 +3945,45 @@ function withMultiSelect({ freeText: _freeText, ...question }: QuestionRequest):
 }
 
 /** Ask the user to choose, in the provider's own tool. */
+function ohMyPiEscapeMarkup(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+/** One native HTML ask call, including forms with defaults or optional fields. */
+export function ohMyPiAskFormToolCall(id: string, html: string, instruction = 'Complete the form'): MockModelToolCall {
+  if (!id.trim() || !html.trim() || !instruction.trim())
+    throw new Error('An Oh My Pi form call requires a call ID, HTML, and an instruction.')
+  return {
+    id,
+    name: OH_MY_PI_TOOL.Ask,
+    arguments: { i: instruction, html },
+  }
+}
+
+function ohMyPiQuestionForm(questions: QuestionRequest[]): string {
+  return `<form>${questions.map((question, index) => {
+    const name = `q${index + 1}`
+    const title = question.header || question.question
+    const caption = title === question.question
+      ? ''
+      : `<p>${ohMyPiEscapeMarkup(question.question)}</p>`
+    const controls = question.options.length === 0
+      ? `<input type="text" name="${name}" required>`
+      : question.options.map((option, optionIndex) => {
+          const type = question.multiSelect ? 'checkbox' : 'radio'
+          const value = ohMyPiEscapeMarkup(option.label).replace(/\r/g, '&#13;').replace(/\n/g, '&#10;')
+          return `<label><input type="${type}" name="${name}" value="${value}"${optionIndex === 0
+            ? ' required'
+            : ''}><strong>${ohMyPiEscapeMarkup(option.label)}</strong>${option.description
+            ? ` <span>${ohMyPiEscapeMarkup(option.description)}</span>`
+            : ''}${option.preview
+            ? ` <pre>${ohMyPiEscapeMarkup(option.preview)}</pre>`
+            : ''}</label>`
+        }).join('')
+    return `<fieldset><legend>${ohMyPiEscapeMarkup(title)}</legend>${caption}${controls}</fieldset>`
+  }).join('')}</form>`
+}
+
 export function askUserQuestionToolCall(provider: AgentProvider, id: string, questions: QuestionRequest[]): MockModelToolCall {
   const builder = requireBuilder(vocabulary(provider).askUserQuestion, provider, 'ask user question')
   if (!builder.supportsSelectionLimits && questions.some(question => question.minimumSelections !== undefined || question.maximumSelections !== undefined))

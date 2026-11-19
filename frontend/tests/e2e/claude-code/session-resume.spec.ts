@@ -9,7 +9,6 @@ import { createFromSessionRow, openNewAgentFor, openSessionMenu, openSoleSession
 import { openResumeSubject, sessionPickerRepository } from '../helpers/nativeResumePicker'
 import { exerciseWorkerRestart, expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from '../helpers/nativeWorkerRestart'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, composerEditor, expectAnyVisible, expectAssistantAnswer, expectSettingsChip, expectUserMessage, interruptButton, loginViaToken, menuOptionLabel, messageBubbles, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, settingsBar, sidebarLeaves, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait, listAgentsViaAPI, waitForAgentStatusViaAPI } from '../helpers/workerTabs'
 import { restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
@@ -74,15 +73,16 @@ test.describe('worker restart thinking indicator', () => {
       // The Worker restarts the agent process. Its idle turn shows no thinking indicator.
       await expect(thinkingIndicator).not.toBeVisible()
 
-      // A new message reaches the resumed agent. The distinct answer cannot
-      // match the first turn's saved bubble. The watch starts before the send,
-      // so it records even a short indicator before the answer streams.
-      const sawThinking = await thinkingIndicatorShownDuring(page, async () => {
-        await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT })
+      // Hold the resumed response until the indicator is observable.
+      const gate = 'claude-code-resumed-thinking'
+      await withCleanup(async () => {
+        await modelScript.queue({ text: SECOND_ARITHMETIC_ANSWER_TEXT, gate })
         await sendMessage(page, modelScript.prompt(SECOND_ARITHMETIC_PROMPT))
+        await modelScript.waitForGate(gate)
+        await expect(thinkingIndicator).toBeVisible()
+        await modelScript.releaseGate(gate)
         await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
-      })
-      expect(sawThinking).toBe(true)
+      }, async () => { await modelScript.releaseGateIfHeld(gate) })
     })
   })
 })
@@ -524,6 +524,7 @@ claudeTest.describe('session picker in the New Agent dialog', () => {
     await expect(sessionRow).toContainText('ago')
 
     await sessionRow.click()
+    await expect(menu).toBeHidden()
     await expect(trigger).toHaveAttribute('data-value', sessionValue)
     await expect(trigger).toContainText(sessionTitle)
 

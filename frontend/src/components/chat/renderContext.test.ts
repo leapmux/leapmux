@@ -1,5 +1,6 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it, vi } from 'vitest'
+import { BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { NO_FILE_IMAGES } from './fileImageResolver'
 import { imageActionsFrom, isDisplayHeld, reviewActionsFrom, shouldPauseSyntaxHighlighting, subagentsFrom } from './renderContext'
 
@@ -25,6 +26,7 @@ describe('subagentsFrom', () => {
 
   it('carries both members through when both are supplied', () => {
     const item: BackgroundTaskItem = {
+      role: BackgroundTaskRole.TASK_OUTCOME,
       rowKey: 'k',
       kind: 'subagent',
       title: 'Inspect it',

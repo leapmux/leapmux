@@ -2,6 +2,7 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** Read one original native persisted result and its exact inline preview. */
@@ -43,8 +44,9 @@ export function readCodeBuddyNativeOutput(snapshot: NativeMessageSnapshot, callI
   const segments = typeof path === 'string'
     ? path.split(/[\\/]/u)
     : []
+  const filename = new RegExp(`^${escapeRegExp(callId.replace(/[^\w-]/g, '_'))}-[0-9a-f]{8}\\.txt$`, 'u')
   if (!isFilesystemPath(path) || segments.at(-2) !== 'tool-results'
-    || !segments.includes(snapshot.agentSessionId) || segments.at(-1) !== `${callId}.txt`) {
+    || !segments.includes(snapshot.agentSessionId) || !filename.test(segments.at(-1) ?? '')) {
     throw new Error('The native CodeBuddy result has no filesystem output pointer.')
   }
   const previewText = texts.join('')

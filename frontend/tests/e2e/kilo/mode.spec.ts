@@ -7,8 +7,8 @@ import { nativeModelLastUserText } from '../helpers/nativeScenario'
 import { exerciseRestoredNativeOption, expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { expectSettingsChip, waitForSettingsHydrated } from '../helpers/ui'
 import { kiloTest } from '../kilo-fixtures'
-import { exercisePlanAndEffort } from '../opencode/settingsScenario'
 import { KILO_PLAN_REMINDER } from './scenarios'
+import { exercisePlanAndEffort } from './settingsScenario'
 
 kiloTest('mode: keeps its Plan mode and effort after a turn and reload', async ({ native }) => {
   await exercisePlanAndEffort(native, 'mode', KILO_PLAN_REMINDER)

@@ -7,6 +7,8 @@ export interface QuestionOption {
 
 export interface QuestionPrompt {
   header?: string
+  /** Additional prompt text, excluded from short titles and saved answer labels. */
+  context?: string
   question: string
   options: QuestionOption[]
 }
@@ -15,6 +17,8 @@ export interface ControlQuestion extends QuestionPrompt {
   id?: string
   multiSelect?: boolean
   allowEmpty?: boolean
+  /** Native initial values apply only while this request has no answer draft. */
+  initialSelections?: string[]
   /** False when the native transport accepts selected options only. Absent permits custom text. */
   allowCustomText?: boolean
   /**

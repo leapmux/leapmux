@@ -20,8 +20,7 @@ opencodeTest('tool call renders with span', async ({ native }) => {
 })
 
 opencodeTest('keeps actual native shell output and a failed command result', async ({ native }) => {
-  // OpenCode 1.18.34 ends the output reader's scope when the shell exits (ShellTool.run).
-  // Hold the shell until the browser shows its output, so the reader keeps the bytes before its scope ends.
+  // Keep the command running until the browser displays its live output.
   await exerciseShellToolExecution(
     {
       ...native,

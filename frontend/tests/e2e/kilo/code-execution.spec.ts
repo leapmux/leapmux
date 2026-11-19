@@ -1,5 +1,5 @@
 import { kiloTest } from '../kilo-fixtures'
-import { exerciseOpenCodeFamilyCodeExecution } from '../opencode/codeExecution'
+import { exerciseOpenCodeFamilyCodeExecution } from './codeExecution'
 import { nativeContext } from './scenarios'
 
 kiloTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {

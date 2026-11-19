@@ -482,22 +482,16 @@ describe('ohMyPiToolCall', () => {
     })
   })
 
-  it('reads the question tool, headed by its one question', () => {
+  it('heads the HTML question tool by its instruction and reads native answers', () => {
     const call = ohMyPiToolCall(resultRow(OH_MY_PI_TOOL.Ask, {
-      questions: [
-        {
-          id: 'db',
-          question: 'Which database?',
-          options: [
-            { label: 'SQLite' },
-          ],
-        },
-      ],
+      i: 'Which database?',
+      html: '<form><label><input type="radio" name="db" value="sqlite">SQLite</label></form>',
     }, {
-      content: text('User selected: SQLite'),
+      content: text('User answers: {"db":"sqlite"}'),
       details: {
-        question: 'Which database?',
-        selectedOptions: ['SQLite'],
+        answers: [
+          { name: 'db', question: 'Which database?', answer: 'SQLite' },
+        ],
       },
     }))
     expect(call.title).toBe('Which database?')
@@ -510,24 +504,17 @@ describe('ohMyPiToolCall', () => {
     })
   })
 
-  it('keeps the tool\'s name above a call of several questions', () => {
-    const questions = [
-      { id: 'a', question: 'First?', options: [] },
-      { id: 'b', question: 'Second?', options: [] },
-    ]
-    expect(ohMyPiToolCall(requestRow(OH_MY_PI_TOOL.Ask, { questions })).title).toBe('Ask')
+  it('uses the native instruction above a form with multiple fields', () => {
+    expect(ohMyPiToolCall(requestRow(OH_MY_PI_TOOL.Ask, {
+      i: 'Choose project settings',
+      html: '<form><input name="a"><input name="b"></form>',
+    })).title).toBe('Choose project settings')
   })
 
   it('reads the result text as the answer when the details state none', () => {
     const call = ohMyPiToolCall(resultRow(OH_MY_PI_TOOL.Ask, {
-      questions: [
-        {
-          id: 'db',
-          question: 'Which database?',
-          header: 'Storage',
-          options: [],
-        },
-      ],
+      i: 'Which database?',
+      html: '<form><input name="db"></form>',
     }, {
       content: text('User selected: SQLite'),
       details: {},
@@ -536,7 +523,7 @@ describe('ohMyPiToolCall', () => {
       ? call.result
       : null).toEqual({
       answers: [
-        { header: 'Storage', answer: 'User selected: SQLite' },
+        { header: 'Which database?', answer: 'User selected: SQLite' },
       ],
     })
     // A call that states no question and no text still answers under a heading.

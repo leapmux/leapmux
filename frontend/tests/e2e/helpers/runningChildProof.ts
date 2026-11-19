@@ -4,6 +4,7 @@ import type { MockModelMatcher, MockModelRequestRecord, MockModelRule, MockModel
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { SubagentRequest } from './providerToolCalls'
 import { expect } from '@playwright/test'
+import { BACKGROUND_TASK_ROLE_CAPABILITIES } from '../../../src/generated/contracts/background-task-roles'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { withCleanup } from './cleanup'
@@ -207,6 +208,13 @@ export function childTaskAnywhere(task: string): MockModelMatcher {
   }
 }
 
+/** Match a child prompt before native user reminders, without matching parent tool arguments. */
+export function childTaskInUserHistory(task: string): MockModelMatcher {
+  return {
+    userHistory: escapeRegExp(requireTask(task)),
+  }
+}
+
 function requireTask(task: string): string {
   if (task.trim() === '')
     throw new Error('A child task matcher needs a task that is not empty.')
@@ -310,7 +318,7 @@ export async function openProfiledNativeChild(
   return openRunningNativeChild(context, profiledChildOptions(context, profile, child, options))
 }
 
-export type NativeChildTask = Pick<BackgroundTaskItem, 'id' | 'kind' | 'status' | 'childAgentId' | 'parentAgentId' | 'title'>
+export type NativeChildTask = Pick<BackgroundTaskItem, 'id' | 'kind' | 'status' | 'childAgentId' | 'parentAgentId' | 'title' | 'role'>
 
 export interface NativeChildTaskSelection {
   parentId: string
@@ -324,11 +332,19 @@ export interface NativeChildTaskSelection {
 export function selectRunningChildTask(tasks: readonly NativeChildTask[], options: NativeChildTaskSelection): NativeChildTask | undefined {
   if (!options.parentId || !options.rootAgentId || (options.taskId !== undefined && options.taskId.trim() === ''))
     throw new Error('The native child selection requires exact parent, root, and supplied task identities.')
+  const belongsToParent = (task: NativeChildTask) => task.parentAgentId === options.parentId
+    || (task.parentAgentId === '' && options.parentId === options.rootAgentId)
+  const addressedChildren = options.taskId === undefined
+    ? undefined
+    : new Set(tasks.filter(task => task.id === options.taskId && belongsToParent(task)
+      && task.status === BackgroundTaskStatus.RUNNING
+      && BACKGROUND_TASK_ROLE_CAPABILITIES[task.role]?.countsAsTask === true).map(task => task.childAgentId))
   const matches = tasks.filter(task => task.kind === BackgroundTaskKind.SUBAGENT
+    && BACKGROUND_TASK_ROLE_CAPABILITIES[task.role]?.canonicalChildActivity === true
     && task.status === BackgroundTaskStatus.RUNNING && task.id.trim() !== '' && task.childAgentId.trim() !== ''
-    && (task.parentAgentId === options.parentId || (task.parentAgentId === '' && options.parentId === options.rootAgentId))
+    && belongsToParent(task)
     && !options.previousChildIds.has(task.childAgentId)
-    && (options.taskId === undefined || task.id === options.taskId)
+    && (addressedChildren === undefined || addressedChildren.has(task.childAgentId))
     && (options.taskId !== undefined || options.rowText === undefined || task.title.includes(options.rowText)))
   if (matches.length > 1)
     throw new Error('The native child selection matched more than one running task.')
@@ -413,7 +429,7 @@ export async function openRunningNativeChild(
     await context.modelScript.waitForGate(options.gate)
     await options.beforeRelease?.()
     const taskId = await options.resolveTaskId?.(parent.id)
-    const childId = await retryUntilPass(async () => {
+    const selectedChild = await retryUntilPass(async () => {
       const snapshot = await readNativeSidebarSnapshot(context, parent.id)
       const selected = selectRunningChildTask(snapshot.backgroundTasks, {
         parentId: parent.id,
@@ -428,10 +444,13 @@ export async function openRunningNativeChild(
       })
       const selectedId = selected?.childAgentId ?? ''
       expect(selectedId, 'the Worker holds the running task of the scripted native child').not.toBe('')
-      return selectedId
+      if (!selected)
+        throw new Error('The Worker has no canonical running child row.')
+      return selected
     })
     await expandBackgroundTasksSection(context.page)
-    const row = backgroundTaskRows(context.page, { kind: 'subagent', childAgentId: childId }).first()
+    const childId = selectedChild.childAgentId
+    const row = backgroundTaskRows(context.page, { kind: 'subagent', childAgentId: childId, role: selectedChild.role }).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-status', 'running')
     return {

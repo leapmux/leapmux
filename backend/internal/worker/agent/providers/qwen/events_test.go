@@ -455,3 +455,13 @@ func TestQwenModeUpdateWithNoSessionMovesTheCurrentMode(t *testing.T) {
 	a.HandleOutput(frame(t, map[string]any{"method": qwenModeUpdateMethod, "params": map[string]any{"currentModeId": contracts.QwenModePlan}}))
 	assert.Equal(t, contracts.QwenModePlan, a.PermissionModeForTest())
 }
+
+func TestLastUserPromptNotificationHasNoTranscriptRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	raw := []byte(`{"jsonrpc":"2.0","method":"qwen/notify/session/last-user-prompt","params":{"v":1,"sessionId":"session-1","timestamp":"2026-11-13T15:36:48.306Z"}}`)
+	a.HandleOutput(raw)
+	assert.Empty(t, sink.Messages())
+	request := providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":0,"method":"qwen/notify/session/last-user-prompt","params":{"sessionId":"session-1"}}`))
+	assert.False(t, a.handleExtraMethod(request), "a request requires an answer from the shared refusal path")
+}

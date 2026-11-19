@@ -91,7 +91,7 @@ func TestChildHeadActivitySurvivesHistoricalLifecycle(t *testing.T) {
 				for _, published := range child.TurnActiveCalls {
 					assert.Equal(t, active, published, "historical lifecycle cannot contradict the coherent head")
 				}
-				require.ErrorIs(t, a.SendChildInput(state.childKey, "cannot bypass failed proof", nil), agent.ErrChildRouteNotReady)
+				require.ErrorIs(t, agenttest.SendChildInput(a, state.childKey, agent.ChildInput{Content: "cannot bypass failed proof"}), agent.ErrChildRouteNotReady)
 				assert.NotContains(t, methods, methodChildFollowup)
 				assert.NotContains(t, methods, methodChildSend)
 			})
@@ -549,7 +549,7 @@ func TestReadyNotLoadedCompletedChildRefreshKeepsItsProvedLifecycle(t *testing.T
 			if olderHead {
 				assert.Positive(t, refreshPages, "an older metadata head cannot prove inactivity at the newer accepted completion cursor")
 			}
-			assert.NoError(t, a.SendChildInput(state.childKey, "The later human note.", nil))
+			assert.NoError(t, agenttest.SendChildInput(a, state.childKey, agent.ChildInput{Content: "The later human note."}))
 			assert.Equal(t, 1, humanCommands, "the original child must receive exactly one native human command")
 		})
 	}
@@ -1027,7 +1027,7 @@ func TestEmptyChildViewRetainsItsObservedHeadWithoutInventingActivity(t *testing
 					require.ErrorAs(t, state.projection.failed, &refusal)
 					assert.Equal(t, -32020, refusal.Code)
 					assert.Equal(t, "session child not found", refusal.Message)
-					require.ErrorIs(t, a.SendChildInput(state.childKey, "cannot bypass unknown activity", nil), agent.ErrChildRouteNotReady)
+					require.ErrorIs(t, agenttest.SendChildInput(a, state.childKey, agent.ChildInput{Content: "cannot bypass unknown activity"}), agent.ErrChildRouteNotReady)
 					assert.NotContains(t, methods, methodChildFollowup)
 					assert.NotContains(t, methods, methodChildSend)
 				}

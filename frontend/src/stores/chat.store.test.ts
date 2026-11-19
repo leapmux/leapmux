@@ -5,7 +5,7 @@ import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageCompletion, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createChatStore, MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { testMessageContext } from '~/test-support/messageContext'
@@ -1622,6 +1622,174 @@ describe('createChatStore', () => {
           await loadPromise
 
           expect(store.isFetchingOlder('a1')).toBe(false)
+          dispose()
+        })
+      })
+    })
+
+    describe('refreshLoadedMessages', () => {
+      it('updates every loaded page without adding new rows or changing pagination', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const rows = Array.from({ length: MESSAGE_PAGE_LIMIT + 2 }, (_, index) => makeMessage(`m${index}`, BigInt(index + 100)))
+          store.setMessages('a1', rows, true)
+          const revised = rows.map(message => ({ ...message, supplementalRevision: 1n, completion: MessageCompletion.INTERRUPTED }))
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: revised.slice(0, MESSAGE_PAGE_LIMIT),
+            hasMore: true,
+          })
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [
+              ...revised.slice(MESSAGE_PAGE_LIMIT),
+              makeMessage('outside', 9999n),
+            ],
+            hasMore: true,
+          })
+          const signal = new AbortController().signal
+          await store.refreshLoadedMessages('w1', 'a1', signal)
+          expect(store.getMessages('a1').map(message => message.id)).toEqual(rows.map(message => message.id))
+          expect(store.getMessages('a1').every(message => message.completion === MessageCompletion.INTERRUPTED && message.supplementalRevision === 1n)).toBe(true)
+          expect(store.hasOlderMessages('a1')).toBe(true)
+          expect(store.hasNewerMessages('a1')).toBe(false)
+          expect(mockListAgentMessages).toHaveBeenNthCalledWith(1, 'w1', {
+            agentId: 'a1',
+            anchor: MessagePageAnchor.AFTER,
+            cursorSeq: 99n,
+            limit: MESSAGE_PAGE_LIMIT,
+          }, { signal })
+          expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, 'w1', {
+            agentId: 'a1',
+            anchor: MessagePageAnchor.AFTER,
+            cursorSeq: BigInt(MESSAGE_PAGE_LIMIT + 99),
+            limit: MESSAGE_PAGE_LIMIT,
+          }, { signal })
+          dispose()
+        })
+      })
+
+      it('keeps a newer live revision and excludes rows removed during the refresh', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const first = makeMessage('first', 10n)
+          const second = makeMessage('second', 11n)
+          store.setMessages('a1', [first, second], true)
+          const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+          mockListAgentMessages.mockReturnValueOnce(reply.promise)
+          const refresh = store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+          store.setMessages('a1', [
+            { ...second, supplementalRevision: 3n, completion: MessageCompletion.ERROR },
+          ], true)
+          reply.resolve({
+            messages: [
+              first,
+              { ...second, supplementalRevision: 2n, completion: MessageCompletion.COMPLETE },
+            ],
+            hasMore: false,
+          })
+          await refresh
+          expect(store.getMessages('a1').map(message => [message.id, message.supplementalRevision, message.completion]))
+            .toEqual([
+              ['second', 3n, MessageCompletion.ERROR],
+            ])
+          dispose()
+        })
+      })
+
+      it('refuses a replacement identity at the same sequence', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const original = makeMessage('first', 10n)
+          store.setMessages('a1', [original])
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [
+              makeMessage('another', 10n),
+            ],
+            hasMore: false,
+          })
+          await store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+          expect(store.getMessages('a1').map(message => message.id)).toEqual(['first'])
+          dispose()
+        })
+      })
+
+      it('discards a late response when the full watch is retired', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const original = makeMessage('first', 10n)
+          store.setMessages('a1', [original])
+          const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+          mockListAgentMessages.mockReturnValueOnce(reply.promise)
+          const owner = new AbortController()
+          const refresh = store.refreshLoadedMessages('w1', 'a1', owner.signal)
+          owner.abort()
+          reply.resolve({
+            messages: [
+              { ...original, supplementalRevision: 1n },
+            ],
+            hasMore: false,
+          })
+          await refresh
+          expect(store.getMessages('a1')[0]?.supplementalRevision).toBe(0n)
+          dispose()
+        })
+      })
+
+      it('leaves the window intact after a request failure', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', [
+            makeMessage('first', 10n),
+          ])
+          mockListAgentMessages.mockRejectedValueOnce(new Error('revision read unavailable'))
+          await expect(store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)).rejects.toThrow('revision read unavailable')
+          expect(store.getMessages('a1').map(message => message.id)).toEqual(['first'])
+          expect(store.isFetchingOlder('a1')).toBe(false)
+          expect(store.isFetchingNewer('a1')).toBe(false)
+          dispose()
+        })
+      })
+
+      it.each([
+        { messages: [], hasMore: true },
+        {
+          messages: [
+            makeMessage('first', 9n),
+          ],
+          hasMore: true,
+        },
+        {
+          name: 'descending sequences',
+          messages: [
+            makeMessage('later', 11n),
+            makeMessage('first', 10n),
+          ],
+          hasMore: true,
+        },
+      ])('rejects a page that does not advance in sequence order: $name', async (response) => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', [
+            makeMessage('first', 10n),
+            makeMessage('last', 12n),
+          ])
+          mockListAgentMessages.mockResolvedValueOnce(response)
+          await expect(store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)).rejects.toThrow(/cursor|sequence/u)
+          expect(store.getMessages('a1').map(message => message.id)).toEqual(['first', 'last'])
+          dispose()
+        })
+      })
+
+      it('does not fetch an empty window or an already retired watch', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const owner = new AbortController()
+          await store.refreshLoadedMessages('w1', 'a1', owner.signal)
+          store.setMessages('a1', [
+            makeMessage('first', 10n),
+          ])
+          owner.abort()
+          await store.refreshLoadedMessages('w1', 'a1', owner.signal)
+          expect(mockListAgentMessages).not.toHaveBeenCalled()
           dispose()
         })
       })

@@ -24,6 +24,7 @@ const harness = vi.hoisted(() => ({
   /** The Worker queue state of the next sent message, as the held turn leaves it. */
   queueNextSend: undefined as { state: number, canSteer: boolean, canPreempt: boolean } | undefined,
   steerFailure: undefined as Error | undefined,
+  onSteer: undefined as (() => void) | undefined,
   stopWithPending: false,
 }))
 
@@ -105,6 +106,7 @@ vi.mock('./steer', () => ({
       throw harness.steerFailure
     harness.sent.push(input.message)
     harness.events.push(`steer:${input.message}`)
+    harness.onSteer?.()
     if (harness.stopWithPending) {
       harness.queue = [
         {
@@ -198,6 +200,7 @@ vi.mock('@playwright/test', async (importOriginal) => {
 /** A script whose queue starts at `offset`, as after an earlier turn. `requestAt` builds each request from what the test sent. */
 function fakeScript(offset: number, request: (stepIndex: number, queued: readonly MockModelStep[]) => MockModelRequestRecord) {
   const queued: MockModelStep[] = []
+  let gateHeld = false
   const script = {
     prompt: (text: string) => `MARKED:${text}`,
     queue: vi.fn(async (...steps: MockModelStep[]) => {
@@ -206,13 +209,22 @@ function fakeScript(offset: number, request: (stepIndex: number, queued: readonl
       return index
     }),
     waitForGate: vi.fn(async (gate: string) => {
+      gateHeld = true
       harness.events.push(`gate held:${gate.split('-').slice(0, -1).join('-')}`)
     }),
     releaseGate: vi.fn(async () => {
+      gateHeld = false
       harness.events.push('gate released')
       harness.queue = []
     }),
-    releaseGateIfHeld: vi.fn(async () => false),
+    releaseGateIfHeld: vi.fn(async () => {
+      if (!gateHeld)
+        return false
+      gateHeld = false
+      harness.events.push('gate released')
+      harness.queue = []
+      return true
+    }),
     waitForSteps: vi.fn(async (count: number) => {
       harness.events.push(`steps:${count}`)
     }),
@@ -223,7 +235,11 @@ function fakeScript(offset: number, request: (stepIndex: number, queued: readonl
       return request(stepIndex, queued)
     }),
   }
-  return { script, queued }
+  return {
+    script,
+    queued,
+    cancelHeldGate: () => { gateHeld = false },
+  }
 }
 
 function context(script: ReturnType<typeof fakeScript>['script']): ManagedNativeScenarioContext {
@@ -263,6 +279,7 @@ beforeEach(() => {
   harness.queue = []
   harness.queueNextSend = undefined
   harness.steerFailure = undefined
+  harness.onSteer = undefined
   harness.stopWithPending = false
 })
 
@@ -356,6 +373,17 @@ describe('continued steer evidence', () => {
 
 describe('exerciseSteerBeforeTool', () => {
   const steering = 'Also include the word STEEREDWORD in your reply.'
+
+  it('accepts a steer that cancels the held model request', async () => {
+    const { script, cancelHeldGate } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering))
+    harness.onSteer = cancelHeldGate
+    await exerciseSteerBeforeTool(context(script))
+    expect(script.releaseGate).not.toHaveBeenCalled()
+    expect(script.releaseGateIfHeld).toHaveBeenCalled()
+    expect(harness.events).not.toContain('gate released')
+    expect(harness.events).toContain('steps:2')
+    expect(harness.events).toContain('request:1')
+  })
 
   it('steers while the gate holds the tool step and returns the request after the tool step', async () => {
     const { script, queued } = fakeScript(2, stepIndex => bodyRequest(stepIndex, steering))

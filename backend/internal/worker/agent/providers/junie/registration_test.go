@@ -19,3 +19,12 @@ func TestRegistrationRecognizesBraveMode(t *testing.T) {
 	assert.True(t, ids["permissionMode"])
 	assert.False(t, ids["brave-auto"])
 }
+
+func TestFallbackModesMatchInstalledNativeCatalog(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, []*leapmuxv1.AvailableOption{
+		{Id: "default", Name: "Default"},
+		{Id: "plan", Name: "Plan"},
+		{Id: "goal", Name: "Goal"},
+	}, fallbackJunieModes())
+}

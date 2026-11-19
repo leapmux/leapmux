@@ -85,6 +85,34 @@ func liveCatalogCallbackFixture(t *testing.T, storedModel string, wrap ...func(a
 	return svc, writer, services
 }
 
+func TestCatalogRetryKeepsAnotherPreparedConfirmation(t *testing.T) {
+	t.Parallel()
+	svc, writer, _ := liveSwitchFixture(t, fixtureModelA)
+	sink := requireRootOutputSink(t, svc.Output, "agent-1")
+	before := len(agentStatusChanges(t, writer, "agent-1"))
+	older := sink.beginCatalogOperation()
+	newer := sink.beginCatalogOperation()
+	require.NotNil(t, older)
+	require.NotNil(t, newer)
+	request := catalogRequest{kind: catalogConfirmation}
+	prepared, failure := sink.prepareCatalog(request, mustGetAgent(t, svc))
+	require.NoError(t, failure.err)
+	require.Equal(t, catalogPreparationChanged, older.state(), "the newer operation invalidates the earlier sample")
+	require.True(t, older.restart())
+	result, failure := sink.admitCatalog(newer, prepared, request, false)
+	require.NoError(t, failure.err)
+	require.Equal(t, catalogAdmitted, result, "retrying one operation cannot invalidate another prepared operation with the same native source")
+
+	prepared, failure = sink.prepareCatalog(request, mustGetAgent(t, svc))
+	require.NoError(t, failure.err)
+	result, failure = sink.admitCatalog(older, prepared, request, false)
+	require.NoError(t, failure.err)
+	require.Equal(t, catalogAdmitted, result)
+	svc.Watchers.DrainAgentEvents("agent-1")
+	assert.Len(t, agentStatusChanges(t, writer, "agent-1")[before:], 1, "both confirmations publish the changed catalog only once")
+	assert.Contains(t, effortLevels(parseOptionGroups(mustGetAgent(t, svc).OptionGroups)), "max")
+}
+
 func TestCatalogProviderSampleCanPublishTheSameSink(t *testing.T) {
 	for _, operation := range []string{"catalog confirmation", "active status"} {
 		t.Run(operation, func(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// FamilyDDL is the `session` table as OpenCode, Kilo and ZCode all ship
-// it. Only the columns the shared reader touches are declared: a fixture that
+// FamilyDDL is the `session` table that Kilo, ZCode and MiMo Code ship.
+// Only the columns the shared reader touches are declared: a fixture that
 // restated the whole table would drift against three CLIs without testing
 // anything more.
 const FamilyDDL = `

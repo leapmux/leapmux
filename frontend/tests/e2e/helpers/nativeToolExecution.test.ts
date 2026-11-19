@@ -3,7 +3,7 @@ import type { MockModelRequestRecord, MockModelScenarioStatus, MockModelStep } f
 import type { MockModelServer } from './mockModelServer'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { NativeToolStep, ShellCommand, ShellResultEvidence } from './nativeToolExecution'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
@@ -1444,7 +1444,7 @@ describe('exerciseShellToolExecution', () => {
     }
     const steps: MockModelStep[][] = []
     const context: ManagedNativeScenarioContext = {
-      page: guardedBrowserHandle<Page>({}),
+      page: fakeLocatorTree({ log: [] }).page,
       provider,
       providerAgent: { provider, prefix: 'native-e2e' },
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
@@ -1574,17 +1574,22 @@ describe('exerciseShellToolExecution', () => {
       arguments: { command },
     }))
     calls.agent.mockResolvedValue({ workingDir: directory })
+    const executions: Promise<void>[] = []
     calls.send.mockImplementation(async () => {
       if (queued.length === 0)
         throw new Error('The scenario sent a prompt before it queued a command.')
       for (const call of queued) {
-        try {
-          outcomes.set(call.callId, outcome(execFileSync('/bin/sh', ['-c', call.command], { encoding: 'utf8', stdio: 'pipe' }), '', 0))
-        }
-        catch (error) {
-          const failed = error as { stdout: string, stderr: string, status: number }
-          outcomes.set(call.callId, outcome(failed.stdout, failed.stderr, failed.status))
-        }
+        executions.push(new Promise<void>((resolve, reject) => {
+          execFile('/bin/sh', ['-c', call.command], { encoding: 'utf8' }, (error, stdout, stderr) => {
+            const exitCode = error?.code ?? 0
+            if (typeof exitCode !== 'number') {
+              reject(error)
+              return
+            }
+            outcomes.set(call.callId, outcome(stdout, stderr, exitCode))
+            resolve()
+          })
+        }))
       }
     })
     const context: ManagedNativeScenarioContext = {
@@ -1610,7 +1615,10 @@ describe('exerciseShellToolExecution', () => {
           return 0
         },
         status: async () => status,
-        waitForSteps: async () => status,
+        waitForSteps: async () => {
+          await Promise.all(executions)
+          return status
+        },
         requestAt: async (stepIndex) => {
           requested.push(stepIndex)
           return {
@@ -1637,6 +1645,18 @@ describe('exerciseShellToolExecution', () => {
     })
     return { log, queued, requested }
   }
+
+  it.runIf(existsSync('/bin/sh'))('gives the result reader the exact held command sent to the native tool', async () => {
+    const seen: Readonly<ShellCommand>[] = []
+    const { queued } = await runScenario({ outputGate: true }, {
+      evidence: (outcome, command) => {
+        seen.push(command)
+        return { kind: 'output', outcome }
+      },
+    })
+    expect(seen.map(command => command.command)).toEqual(queued.map(call => call.command))
+    expect(seen).toHaveLength(2)
+  })
 
   it.runIf(existsSync('/bin/sh'))('reads both results from the one request after the shared answer', async () => {
     expect((await runScenario({})).requested).toEqual([1, 1])

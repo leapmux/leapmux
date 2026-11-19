@@ -16,7 +16,7 @@ import { batch, createEffect, createRenderEffect, createRoot, createSignal, For 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
-import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, AgentStatus, BackgroundTaskRole, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { deferred } from '~/test-support/async'
@@ -1731,6 +1731,7 @@ describe('ChatView', () => {
         backgroundTask: rowKey => rowKey === 'child-1'
           ? {
               rowKey,
+              role: BackgroundTaskRole.CHILD_TASK,
               kind: 'subagent',
               title: title(),
               activity: '',
@@ -1891,7 +1892,7 @@ describe('ChatView', () => {
       })),
       contentCompression: ContentCompression.NONE,
       seq: 2n,
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId,
       spanType: 'edit',
       agentSessionId,
@@ -1907,7 +1908,7 @@ describe('ChatView', () => {
       })),
       contentCompression: ContentCompression.NONE,
       seq: 73n,
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId,
       spanType: 'edit',
       agentSessionId,

@@ -18,79 +18,64 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// TestKimiTurnFrames states which frames move the main turn flag: the main
-// agent's turn.started and turn.ended, and nothing else. A subagent's turn
-// moves its own tab's flag, never the main one.
+// TestKimiTurnFrames checks native main activity and keeps child activity separate.
 func TestKimiTurnFrames(t *testing.T) {
 	t.Parallel()
-
-	event := func(payload string) string {
-		return `{"type":"x","session_id":"session_1","seq":1,"payload":` + payload + `}`
+	const header = `"turn_id":"t0","ordinal":0,"kind":"agent","started_at":"2026-11-18T00:00:00Z","steps":[]`
+	const start = `{"type":"turn.started","turn":{` + header + `,"status":"running"}}`
+	const end = `{"type":"turn.ended","turn":{` + header + `,"status":"ended","outcome":"completed"}}`
+	frame := func(agentID, event string) string {
+		return string(kimiConversationTestFrame(t, "session_1", agentID, event))
 	}
 	cases := []agenttest.TurnFrameCase{
-		{Name: "turn started", Line: event(`{"type":"turn.started","agentId":"main","turnId":0,"origin":{"kind":"user"}}`), Moves: true},
-		{Name: "turn ended", Line: event(`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"completed"}`), Moves: true},
-		{Name: "turn started with no agent", Line: event(`{"type":"turn.started","turnId":0,"origin":{"kind":"user"}}`), Moves: true},
-		{Name: "subagent turn started", Line: event(`{"type":"turn.started","agentId":"agent-0","turnId":0,"origin":{"kind":"system_trigger"}}`)},
-		{Name: "subagent turn ended", Line: event(`{"type":"turn.ended","agentId":"agent-0","turnId":0,"reason":"completed"}`)},
-		{Name: "assistant delta", Line: event(`{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"hi"}`)},
-		{Name: "tool call started", Line: event(`{"type":"tool.call.started","agentId":"main","turnId":0,"toolCallId":"c1","name":"Bash","args":{}}`)},
-		{Name: "tool result", Line: event(`{"type":"tool.result","agentId":"main","turnId":0,"toolCallId":"c1","output":"ok"}`)},
-		{Name: "status update", Line: event(`{"type":"agent.status.updated","agentId":"main","planMode":true}`)},
-		{Name: "prompt started", Line: event(`{"type":"prompt.started","agentId":"main"}`)},
-		{Name: "prompt completed", Line: event(`{"type":"prompt.completed","agentId":"main"}`)},
-		{Name: "session status changed", Line: event(`{"type":"event.session.status_changed","agentId":"main","busy":false}`)},
-		{Name: "step interrupted", Line: event(`{"type":"turn.step.interrupted","agentId":"main","turnId":0}`)},
-		{Name: "a type this build does not know", Line: event(`{"type":"turn.paused","agentId":"main","turnId":0}`)},
-		{Name: "a frame of another session", Line: `{"type":"turn.started","session_id":"session_other","payload":{"type":"turn.started","agentId":"main","turnId":0}}`},
-		{Name: "a frame with no payload", Line: `{"type":"turn.started","session_id":"session_1"}`},
-		{Name: "a payload that is not an event", Line: event(`"turn.started"`)},
+		{Name: "main turn started", Line: frame(kimiMainAgentID, start), Moves: true},
+		{Name: "main turn ended", Line: frame(kimiMainAgentID, end), Moves: true},
+		{Name: "missing native agent", Line: frame("", start)},
+		{Name: "child turn started", Line: frame("agent-0", start)},
+		{Name: "child turn ended", Line: frame("agent-0", end)},
+		{Name: "assistant item", Line: frame(kimiMainAgentID, `{"type":"item.started","turn_id":"t0","item":{"type":"assistant_message","item_id":"answer","status":"running","created_at":"2026-11-18T00:00:00Z","text":"hi"}}`)},
+		{Name: "tool opening", Line: frame(kimiMainAgentID, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"call","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","input":{}}}`)},
+		{Name: "tool result", Line: frame(kimiMainAgentID, `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"call","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","input":{},"output":"ok"}}`)},
+		{Name: "flat usage", Line: `{"type":"usage","session_id":"session_1","agent_id":"main","context_tokens":1,"max_context_tokens":10}`},
+		{Name: "step interrupted", Line: frame(kimiMainAgentID, `{"type":"turn.updated","turn_id":"t0","step":{"index":1,"outcome":"interrupted","started_at":"2026-11-18T00:00:00Z"}}`)},
+		{Name: "unknown frame", Line: frame(kimiMainAgentID, `{"type":"future.event"}`)},
+		{Name: "foreign session", Line: string(kimiConversationTestFrame(t, "session_other", kimiMainAgentID, end))},
+		{Name: "missing turn", Line: frame(kimiMainAgentID, `{"type":"turn.ended"}`)},
+		{Name: "invalid turn", Line: frame(kimiMainAgentID, `{"type":"turn.ended","turn":"not a turn"}`)},
 	}
 	agenttest.AssertTurnFrames(t, cases, func(t *testing.T, tc agenttest.TurnFrameCase) []bool {
-		sink := &agenttest.Sink{}
-		a := newOfflineKimiAgent(t, sink)
-		a.HandleOutput([]byte(tc.Line))
-		return sink.TurnActives()
+		rig := newKimiConversationRig(t)
+		if tc.Name != "main turn started" {
+			rig.conversationFrame(t, start)
+		}
+		if tc.Name == "child turn started" || tc.Name == "child turn ended" {
+			adoptNativeKimiChild(t, rig.agent, "agent-0")
+		}
+		if tc.Name == "child turn ended" {
+			rig.conversationAgentFrame(t, "agent-0", start)
+		}
+		before := len(rig.sink.TurnActives())
+		rig.agent.HandleOutput([]byte(tc.Line))
+		return rig.sink.TurnActives()[before:]
 	})
 }
 
 func TestParseKimiEvent(t *testing.T) {
 	t.Parallel()
 
-	event, ok := parseKimiEvent(kimiFrame{Payload: json.RawMessage(`{"type":"turn.started","turnId":3}`)})
+	event, ok := parseKimiEvent(kimiFrame{Payload: json.RawMessage(`{"type":"warning","message":"A profile warning."}`)})
 	require.True(t, ok)
-	assert.Equal(t, contracts.KimiEventTurnStarted, event.Type)
+	assert.Equal(t, contracts.KimiEventWarning, event.Type)
 	assert.Equal(t, kimiMainAgentID, event.AgentID, "an event that states no agent is the main agent's")
-	assert.JSONEq(t, `{"type":"turn.started","turnId":3}`, string(event.Raw))
+	assert.JSONEq(t, `{"type":"warning","message":"A profile warning."}`, string(event.Raw))
 
-	event, ok = parseKimiEvent(kimiFrame{Payload: json.RawMessage(`{"type":"turn.started","agentId":"agent-2"}`)})
+	event, ok = parseKimiEvent(kimiFrame{Payload: json.RawMessage(`{"type":"warning","agentId":"agent-2"}`)})
 	require.True(t, ok)
 	assert.Equal(t, "agent-2", event.AgentID)
 
 	for _, payload := range []string{``, `{}`, `{"type":""}`, `[]`, `null`} {
 		_, ok := parseKimiEvent(kimiFrame{Payload: json.RawMessage(payload)})
 		assert.False(t, ok, payload)
-	}
-}
-
-func TestKimiBlockedPromptPersistsTheHookResult(t *testing.T) {
-	t.Parallel()
-	rig := newKimiOutputRig(t)
-	// Trimmed from .tmp/probe/kimi/logs/ws-frames.jsonl, the blocked prompt after frame 89.
-	rig.feed(t, map[string]any{"type": "hook.result", "hookEvent": "UserPromptSubmit", "content": "probe hook blocked this prompt", "blocked": true})
-	rig.feed(t, map[string]any{"type": "prompt.completed", "reason": "blocked"})
-	require.Len(t, rig.sink.PersistedNotifications(), 1)
-	assert.Contains(t, string(rig.sink.PersistedNotifications()[0].Content), "probe hook blocked this prompt")
-	assert.Empty(t, rig.sink.Messages(), "a blocked prompt starts no turn and writes no divider")
-}
-
-func TestKimiPassedHookResultIsDropped(t *testing.T) {
-	t.Parallel()
-	for _, blocked := range []any{false, nil, "true"} {
-		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": "hook.result", "hookEvent": "UserPromptSubmit", "content": "a hook detail", "blocked": blocked})
-		assert.Empty(t, rig.sink.PersistedNotifications())
-		assert.Empty(t, rig.sink.Messages())
 	}
 }
 
@@ -174,17 +159,31 @@ func TestKimiConfigWarningConcurrentFramesPersistOnce(t *testing.T) {
 	assert.Len(t, rig.sink.PersistedNotifications(), 1)
 }
 
-func TestKimiConfigWarningBeforeSessionAdmissionWaitsForReplay(t *testing.T) {
+func TestKimiConfigWarningBeforeSessionAdmissionWaitsForPersistence(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
 	raw := []byte(`{"type":"event.config.warning","session_id":"__global__","timestamp":"2099-01-01T00:00:00Z","payload":{"type":"event.config.warning","warnings":[{"domain":"config","message":"Startup warning."}]}}`)
 	rig.agent.HandleOutput(raw)
-	assert.Empty(t, rig.sink.PersistedNotifications(), "the startup replay supplies the warning after the sink receives its session")
+	assert.Empty(t, rig.sink.PersistedNotifications(), "startup retains the warning until the sink receives its session")
 	assert.Empty(t, rig.agent.storedConfigWarnings)
 	rig.sink.UpdateSessionID("session_1")
+	rig.agent.flushStartupConfigWarnings()
 	rig.agent.HandleOutput(raw)
 	require.Len(t, rig.sink.PersistedNotifications(), 1)
 	assert.Equal(t, "session_1", rig.sink.PersistedNotifications()[0].AgentSessionID)
+}
+
+func TestKimiStartupWarningSurvivesWithoutAGlobalSubscription(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	stream := newKimiStreamRig(t)
+	rig.agent.stream = stream.stream
+	rig.agent.HandleOutput([]byte(`{"type":"event.config.warning","session_id":"__global__","timestamp":"2099-01-01T00:00:00Z","payload":{"type":"event.config.warning","warnings":[{"domain":"config","message":"Startup warning."}]}}`))
+	rig.sink.UpdateSessionID("session_1")
+	rig.agent.flushStartupConfigWarnings()
+	require.Len(t, rig.sink.PersistedNotifications(), 1)
+	assert.Equal(t, "session_1", rig.sink.PersistedNotifications()[0].AgentSessionID)
+	assert.Empty(t, stream.fake.subscribeFrames())
 }
 
 type failedConfigWarningSink struct {
@@ -252,5 +251,22 @@ func TestKimiDispatchToleratesAMinimalPayloadOfEveryType(t *testing.T) {
 				a.HandleOutput([]byte(`{"type":"` + eventType + `","session_id":"session_1","payload":` + string(payload) + `}`))
 			}, "%s from %s", eventType, agentID)
 		}
+	}
+}
+
+func TestKimiNativeServerMetadataDoesNotBecomeConversation(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []string{"session.meta.updated", "event.session.created", "event.session.work_changed", "event.session.status_changed"} {
+		t.Run(typ, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			payload := map[string]any{"type": typ, "agentId": "main", "sessionId": "session_1", "title": "Native title", "session": map[string]any{"id": "session_1"}}
+			raw, err := json.Marshal(map[string]any{"type": typ, "session_id": "session_1", "timestamp": "2099-01-01T00:00:00Z", "payload": payload})
+			require.NoError(t, err)
+			rig.agent.HandleOutput(raw)
+			assert.Empty(t, rig.sink.Messages(), "global publisher records can carry the real session ID")
+			assert.Empty(t, rig.sink.PersistedNotifications())
+			assert.False(t, rig.agent.PublishTurnActive().Active)
+		})
 	}
 }

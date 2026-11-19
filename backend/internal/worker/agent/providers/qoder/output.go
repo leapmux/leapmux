@@ -157,6 +157,9 @@ func qoderProgressScope(kind string, index int) string {
 // handleInboundControlRequest publishes a native request through the control service.
 // The control service stores and displays its card. A separate transcript row would duplicate the request.
 func (a *Agent) handleInboundControlRequest(raw []byte) {
+	if a.answerDaemonAuthentication(raw) {
+		return
+	}
 	var envelope controlRequestEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		slog.Warn("qoder: malformed control_request", "agent_id", a.AgentID(), "error", err)
@@ -190,6 +193,14 @@ func (a *Agent) handleSystemTo(target agent.ProviderServices, raw []byte, owner 
 	}
 	if json.Unmarshal(raw, &envelope) == nil {
 		switch envelope.Subtype {
+		case contracts.QoderSystemSubtypePermissionPolicy:
+			if root {
+				a.handlePermissionPolicy(raw)
+			}
+			return
+		case contracts.QoderSystemSubtypeHookDiagnostics:
+			a.persistNotificationTo(target, raw)
+			return
 		case contracts.QoderSystemSubtypeInit:
 			if !root {
 				return
@@ -647,6 +658,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (q
 	}
 	result := qoderControlResult{
 		Success:     envelope.Response.Subtype == "success",
+		SessionID:   envelope.SessionID,
 		Error:       envelope.Response.Error,
 		RawResponse: envelope.Response.Response,
 		Mode:        providerkit.StringField(envelope.Response.Response, "mode"),
@@ -660,16 +672,19 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (q
 	return result, nil
 }
 
-// initializeStream completes Qoder's stream-json initialize handshake.
-//
-// The CLI refuses user messages and cancels the session until initialize succeeds.
-// Its error is "initialize_required: user message received before successful initialize".
-// Startup completes this handshake before it accepts input.
+// initializeStream initializes the SDK session before it accepts input.
+// Catalog readiness makes Qoder apply the selected model after account discovery.
 func (a *Agent) initializeStream() error {
-	body, err := json.Marshal(map[string]any{
-		"subtype":                       contracts.QoderControlRequestSubtypeInitialize,
-		"supportsAvailableModelsUpdate": true,
-	})
+	request := map[string]any{
+		"subtype":                        contracts.QoderControlRequestSubtypeInitialize,
+		"supportsAvailableModelsUpdate":  true,
+		"supportsCatalogReadyInitialize": true,
+		"includePartialMessages":         true,
+	}
+	if model := a.opts.Model(); model != "" {
+		request["model"] = model
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		return err
 	}

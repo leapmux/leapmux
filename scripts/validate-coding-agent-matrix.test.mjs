@@ -876,17 +876,30 @@ describe('validateCodingAgentMatrix', () => {
         [],
       ],
       [
-        'records hosted hook trust for ZCode',
+        'records the native fast-output limitation for CodeBuddy Code',
+        'shell-tool-execution',
+        'codebuddy-code',
+        {
+          support: 'agent-limit',
+          audit: 'covered-negative',
+          testStatus: 'passed',
+          verified: true,
+          spec: 'frontend/tests/e2e/codebuddy-code/shell-tool-execution.spec.ts',
+        },
+        ['process exit event', 'spool', 'stdout, stderr and exit-status'],
+      ],
+      [
+        'records hosted hook trust and the project MCP trust limitation for ZCode',
         'workspace-trust',
         'zcode',
         {
-          support: 'supported',
-          audit: 'source-verified',
+          support: 'leapmux-limit',
+          audit: 'covered-negative',
           testStatus: 'passed',
           verified: true,
           spec: 'frontend/tests/e2e/zcode/workspace-trust.spec.ts',
         },
-        [],
+        ['workspace/mcp/trust', 'declarationDigest', 'v4 conversation snapshot'],
       ],
       [
         'records native PDF attachment support for ZCode',
@@ -1178,44 +1191,192 @@ describe('validateCodingAgentMatrix', () => {
     })
 
     it.each([
-      ['claude-code', 'agent-limit', 'Messages API'],
-      ['codex', 'supported', 'input_audio.audio_url'],
-      ['cursor', 'agent-limit', 'audit-8D7OZV'],
-      ['github-copilot', 'agent-limit', 'copilot-audit-1.log'],
-      ['kilo', 'supported', 'capabilities.input.audio'],
-      ['opencode', 'supported', 'capabilities.input.audio'],
-      ['goose', 'agent-limit', 'convert_acp_prompt_to_message'],
-      ['pi', 'agent-limit', 'pi-6wxxro'],
-      ['reasonix', 'agent-limit', 'promptText'],
-      ['zcode', 'agent-limit', 'zcode-PbCD0M'],
-      ['codewhale', 'agent-limit', 'magic-format'],
-      ['kimi-code', 'agent-limit', 'ReadMediaFile'],
-      ['mimo-code', 'supported', 'capabilities.input.audio'],
-      ['qwen-code', 'supported', 'run-rUPUPT'],
-      ['oh-my-pi', 'agent-limit', 'pi-6wxxro'],
-      ['grok-build', 'agent-limit', '-32602'],
-      ['kiro', 'agent-limit', 'audit-8D7OZV'],
-      ['amp', 'agent-limit', 'message.content.1'],
-      ['cline', 'agent-limit', 'Cannot read binary file into context'],
-      ['codebuddy-code', 'supported', 'file.file_data'],
-      ['junie', 'agent-limit', 'audit-8D7OZV'],
-      ['letta-code', 'agent-limit', 'letta-lR905P'],
-      ['dirac', 'agent-limit', 'audit-l1x00T'],
-      ['qoder-cli', 'agent-limit', 'stream-aHFbCW'],
-      ['factory-droid', 'agent-limit', 'params.files.0'],
-      ['fast-agent', 'supported', '/model switch'],
-      ['command-code', 'agent-limit', '-32602'],
-      ['deepseek-harness', 'agent-limit', 'gateway/input-invalid'],
-      ['gemini-cli', 'supported', 'audit-zeZZxP'],
-      ['muse-code', 'agent-limit', 'UUIDv7'],
-    ])('records native audio attachment evidence for %s', (provider, support, evidence) => {
+      [
+        'claude-code',
+        'agent-limit',
+        'Messages API',
+        'unsupported',
+      ],
+      [
+        'codex',
+        'supported',
+        'input_audio.audio_url',
+        'source-verified',
+      ],
+      [
+        'cursor',
+        'agent-limit',
+        'audit-8D7OZV',
+        'unsupported',
+      ],
+      [
+        'github-copilot',
+        'agent-limit',
+        'copilot-audit-1.log',
+        'unsupported',
+      ],
+      [
+        'kilo',
+        'supported',
+        'capabilities.input.audio',
+        'source-verified',
+      ],
+      [
+        'opencode',
+        'agent-limit',
+        'attachmentContent',
+        'refusal-covered',
+      ],
+      [
+        'goose',
+        'agent-limit',
+        'convert_acp_prompt_to_message',
+        'unsupported',
+      ],
+      [
+        'pi',
+        'agent-limit',
+        'pi-6wxxro',
+        'unsupported',
+      ],
+      [
+        'reasonix',
+        'agent-limit',
+        'promptText',
+        'unsupported',
+      ],
+      [
+        'zcode',
+        'agent-limit',
+        'zcode-PbCD0M',
+        'unsupported',
+      ],
+      [
+        'codewhale',
+        'agent-limit',
+        'magic-format',
+        'unsupported',
+      ],
+      [
+        'kimi-code',
+        'agent-limit',
+        'ReadMediaFile',
+        'unsupported',
+      ],
+      [
+        'mimo-code',
+        'supported',
+        'capabilities.input.audio',
+        'source-verified',
+      ],
+      [
+        'qwen-code',
+        'supported',
+        'run-rUPUPT',
+        'source-verified',
+      ],
+      [
+        'oh-my-pi',
+        'agent-limit',
+        'pi-6wxxro',
+        'unsupported',
+      ],
+      [
+        'grok-build',
+        'agent-limit',
+        '-32602',
+        'unsupported',
+      ],
+      [
+        'kiro',
+        'agent-limit',
+        'audit-8D7OZV',
+        'unsupported',
+      ],
+      [
+        'amp',
+        'agent-limit',
+        'message.content.1',
+        'unsupported',
+      ],
+      [
+        'cline',
+        'agent-limit',
+        'Cannot read binary file into context',
+        'unsupported',
+      ],
+      [
+        'codebuddy-code',
+        'supported',
+        'file.file_data',
+        'source-verified',
+      ],
+      [
+        'junie',
+        'agent-limit',
+        'audit-8D7OZV',
+        'unsupported',
+      ],
+      [
+        'letta-code',
+        'agent-limit',
+        'letta-lR905P',
+        'unsupported',
+      ],
+      [
+        'dirac',
+        'agent-limit',
+        'audit-l1x00T',
+        'unsupported',
+      ],
+      [
+        'qoder-cli',
+        'agent-limit',
+        'stream-aHFbCW',
+        'unsupported',
+      ],
+      [
+        'factory-droid',
+        'agent-limit',
+        'params.files.0',
+        'unsupported',
+      ],
+      [
+        'fast-agent',
+        'supported',
+        '/model switch',
+        'source-verified',
+      ],
+      [
+        'command-code',
+        'agent-limit',
+        '-32602',
+        'unsupported',
+      ],
+      [
+        'deepseek-harness',
+        'agent-limit',
+        'gateway/input-invalid',
+        'unsupported',
+      ],
+      [
+        'gemini-cli',
+        'supported',
+        'audit-zeZZxP',
+        'source-verified',
+      ],
+      [
+        'muse-code',
+        'agent-limit',
+        'UUIDv7',
+        'unsupported',
+      ],
+    ])('records native audio attachment evidence for %s', (provider, support, evidence, audit) => {
       const { checklist } = readCodingAgentMatrix()
       const cell = checklist.cells['audio-attachments']?.[provider]
       expect(cell).toMatchObject({
         support,
-        audit: support === 'supported'
-          ? 'source-verified'
-          : 'unsupported',
+        audit,
         verified: true,
         testStatus: 'passed',
         spec: `frontend/tests/e2e/${provider}/audio-attachments.spec.ts`,
@@ -1316,7 +1477,14 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1229, 'agent-limit': 445, 'leapmux-limit': 0 })
+      expect(counts).toEqual({ 'supported': 1225, 'agent-limit': 448, 'leapmux-limit': 1 })
+      expect(checklist.cells['subagent-live-transcript'].goose).toMatchObject({
+        support: 'agent-limit',
+        audit: 'unsupported',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/goose/subagent-live-transcript.spec.ts',
+      })
       expect(checklist.cells['interrupt-a-subagent'].codewhale).toMatchObject({
         support: 'supported',
         audit: 'source-verified',

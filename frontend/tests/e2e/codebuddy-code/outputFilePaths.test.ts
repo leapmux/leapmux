@@ -2,7 +2,7 @@ import { describe } from 'vitest'
 import { READER_CALL_ID, READER_PREVIEW, READER_SESSION_ID, runNativeOutputReaderCases } from '../helpers/nativeOutputReaderCases'
 import { readCodeBuddyNativeOutput } from './outputFilePaths'
 
-const path = `/native/${READER_SESSION_ID}/tool-results/${READER_CALL_ID}.txt`
+const path = `/native/${READER_SESSION_ID}/tool-results/${READER_CALL_ID}-4608ddd4.txt`
 const frame = {
   type: 'user',
   session_id: READER_SESSION_ID,

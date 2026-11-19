@@ -19,6 +19,7 @@ import { MarkdownEditor } from './MarkdownEditor'
 let gatedKey: string | null = null
 let gateResolvers: Array<() => void> = []
 let gateStarted = false
+let gateCompleted = false
 
 // A WRITE SEAM for one draft key. `saveDraft` throws for the key that the case
 // names, as storage does when a key is not registered. Every other key writes for real.
@@ -29,7 +30,8 @@ vi.mock('~/lib/editor/draftPersistence', async (importActual) => {
   return {
     ...actual,
     loadDraft: async (agentId: string) => {
-      if (agentId === gatedKey) {
+      const held = agentId === gatedKey
+      if (held) {
         gateStarted = true
         // One resolver per call: a second reader of the same key must not
         // orphan the first one's promise.
@@ -37,7 +39,10 @@ vi.mock('~/lib/editor/draftPersistence', async (importActual) => {
           gateResolvers.push(resolve)
         })
       }
-      return actual.loadDraft(agentId)
+      const draft = await actual.loadDraft(agentId)
+      if (held)
+        gateCompleted = true
+      return draft
     },
     saveDraft: (...args: Parameters<typeof actual.saveDraft>) => {
       if (args[0] === failingSaveKey)
@@ -50,6 +55,7 @@ vi.mock('~/lib/editor/draftPersistence', async (importActual) => {
 function gateDraftRead(key: string): void {
   gatedKey = key
   gateStarted = false
+  gateCompleted = false
   gateResolvers = []
 }
 
@@ -62,6 +68,18 @@ function releaseGatedDraft(): void {
   for (const resolve of gateResolvers)
     resolve()
   gateResolvers = []
+}
+
+/**
+ * Yield to the real task queue until `done` holds.
+ *
+ * A swap reads storage through fake-indexeddb, which needs a few real tasks.
+ * `vi.waitFor` cannot be used here because it advances the fake clock that these cases control explicitly.
+ */
+async function settleUntil(done: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 1000 && !done(); turn++)
+    await new Promise<void>(resolve => setImmediate(resolve))
+  expect(done()).toBe(true)
 }
 
 // A draft is on the ASYNCHRONOUS storage tier, which has no in-memory mirror, so
@@ -267,6 +285,154 @@ describe('MarkdownEditor draft key swaps', () => {
     releaseGatedDraft()
   })
 
+  it('does not report outgoing text to the host while the incoming draft waits', async () => {
+    saveDraft(KEY_A, 'the outgoing prompt', -1)
+    await flushStorageWrites()
+    const [key, setKey] = createSignal(KEY_A)
+    const report = vi.fn()
+    let insert: ((text: string) => void) | undefined
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{
+            key: key(),
+          }}
+          onSend={() => {}}
+          onMarkdownChange={report}
+          imperative={{
+            insertRef: fn => insert = fn,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(insert).toBeTypeOf('function'))
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'Date'],
+    })
+    try {
+      insert?.(' still outgoing')
+      gateDraftRead(KEY_B)
+      setKey(KEY_B)
+      await settleUntil(gatedReadStarted)
+      report.mockClear()
+      await vi.advanceTimersByTimeAsync(200)
+      expect(container.querySelector('.ProseMirror')).toHaveTextContent('the outgoing prompt still outgoing')
+      expect(report).not.toHaveBeenCalled()
+      releaseGatedDraft()
+      await settleUntil(() => container.querySelector('.ProseMirror')?.textContent === '')
+      expect(report).toHaveBeenLastCalledWith('')
+    }
+    finally {
+      releaseGatedDraft()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the current draft editable when only its metadata changes', async () => {
+    saveDraft(KEY_A, 'the A document', -1)
+    await flushStorageWrites()
+    const [revision, setRevision] = createSignal(0)
+    let send: (() => void | Promise<void>) | undefined
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{
+            key: KEY_A,
+            controlRequestId: String(revision()),
+          }}
+          onSend={() => {}}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    gateDraftRead(KEY_A)
+    setRevision(1)
+    await flush()
+    expect(gatedReadStarted()).toBe(false)
+    expect(container.querySelector('.ProseMirror')).toHaveAttribute('contenteditable', 'true')
+    expect(container.querySelector('.ProseMirror')).toHaveTextContent('the A document')
+  })
+
+  it('prevents editing and sending until the incoming draft loads', async () => {
+    saveDraft(KEY_A, 'the A document', -1)
+    saveDraft(KEY_B, 'the B document', -1)
+    await flushStorageWrites()
+    const [key, setKey] = createSignal(KEY_A)
+    const onSend = vi.fn()
+    const ready = vi.fn<(key: string | null) => void>()
+    let send: (() => void | Promise<void>) | undefined
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{
+            key: key(),
+          }}
+          onSend={onSend}
+          onDocumentDraftReady={ready}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    const view = () => container.querySelector('.ProseMirror')
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    gateDraftRead(KEY_B)
+    setKey(KEY_B)
+    await waitFor(() => expect(gatedReadStarted()).toBe(true))
+    expect(ready).toHaveBeenLastCalledWith(null)
+    await waitFor(() => expect(view()).toHaveAttribute('contenteditable', 'false'))
+    await send?.()
+    expect(onSend).not.toHaveBeenCalled()
+    releaseGatedDraft()
+    await waitFor(() => expect(view()).toHaveTextContent('the B document'))
+    await waitFor(() => expect(view()).toHaveAttribute('contenteditable', 'true'))
+    expect(ready).toHaveBeenLastCalledWith(KEY_B)
+    await send?.()
+    expect(onSend).toHaveBeenCalledWith('the B document')
+  })
+
+  it('cancels an incoming read when the user returns to the displayed draft', async () => {
+    saveDraft(KEY_A, 'the A document', -1)
+    saveDraft(KEY_B, 'the B document', -1)
+    await flushStorageWrites()
+    const [key, setKey] = createSignal(KEY_A)
+    let send: (() => void | Promise<void>) | undefined
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{
+            key: key(),
+          }}
+          onSend={() => {}}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    const view = () => container.querySelector('.ProseMirror')
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    gateDraftRead(KEY_B)
+    setKey(KEY_B)
+    await waitFor(() => expect(gatedReadStarted()).toBe(true))
+    setKey(KEY_A)
+    releaseGatedDraft()
+    await waitFor(() => expect(gateCompleted).toBe(true))
+    await flush()
+    await waitFor(() => expect(view()).toHaveTextContent('the A document'))
+    await flushStorageWrites()
+    expect((await loadDraft(KEY_A)).content).toBe('the A document')
+    expect((await loadDraft(KEY_B)).content).toBe('the B document')
+  })
+
   it('does not save the outgoing document under a key whose read never landed', async () => {
     saveDraft(KEY_A, 'the A document', -1)
     saveDraft(KEY_B, 'the B document', -1)
@@ -419,19 +585,6 @@ describe('MarkdownEditor draft saves', () => {
     vi.useRealTimers()
   })
 
-  /**
-   * Yield to the real task queue until `done` holds.
-   *
-   * The condition decides, not a duration: a swap reads storage through
-   * fake-indexeddb, which needs a few real tasks, and `waitFor` cannot be used
-   * here because `vi.waitFor` moves the fake clock that these cases place by hand.
-   */
-  async function settleUntil(done: () => boolean): Promise<void> {
-    for (let turn = 0; turn < 1000 && !done(); turn++)
-      await new Promise<void>(resolve => setImmediate(resolve))
-    expect(done()).toBe(true)
-  }
-
   interface MountedComposer {
     send: () => void | Promise<void>
     /** Type into the composer, as a key press does. */
@@ -576,11 +729,7 @@ describe('MarkdownEditor draft saves', () => {
     expect(composer.text()).toBe('')
   })
 
-  // The same mechanism through the other writer: the key moves while a read is
-  // open, and the user keeps typing into the document of the OUTGOING key. The
-  // save that follows must go to the key that owns that document, never to the
-  // key that is still loading.
-  it('saves the outgoing document under its own key when the user types while the next key loads', async () => {
+  it('keeps both drafts intact when an insertion arrives while the next draft loads', async () => {
     saveDraft(AGENT_KEY, 'the agent document', -1)
     saveDraft(CONTROL_KEY, 'the control document', -1)
     await flushStorageWrites()
@@ -591,6 +740,7 @@ describe('MarkdownEditor draft saves', () => {
     composer.setKey(CONTROL_KEY)
     await settleUntil(gatedReadStarted)
     composer.type(' typed while the control draft loads')
+    expect(composer.text()).toBe('the agent document')
     await vi.advanceTimersByTimeAsync(200)
     await vi.advanceTimersByTimeAsync(500)
     releaseGatedDraft()
@@ -598,7 +748,7 @@ describe('MarkdownEditor draft saves', () => {
     await flushStorageWrites()
 
     expect((await loadDraft(CONTROL_KEY)).content).toBe('the control document')
-    expect((await loadDraft(AGENT_KEY)).content).toBe('the agent document typed while the control draft loads')
+    expect((await loadDraft(AGENT_KEY)).content).toBe('the agent document')
   })
 })
 

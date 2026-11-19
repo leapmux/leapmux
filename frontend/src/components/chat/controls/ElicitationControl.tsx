@@ -17,7 +17,7 @@ import { PermissionRequestContent } from './PermissionRequestContent'
 import { createControlChoice, sendResponse } from './types'
 
 export const ElicitationContent: Component<ContentProps & { elicitation: ElicitationRequest }> = (props) => {
-  const form = createMemo(() => createElicitationForm(props.elicitation.schema))
+  const form = createMemo(() => createElicitationForm(props.elicitation.schema, props.elicitation.fieldRules))
   const values = () => props.answerState.choices()
   const validation = createMemo(() => form().read(values()))
   const setValue = (key: string, value: string) => props.answerState.setChoices(previous => ({ ...previous, [elicitationFieldKey(key)]: value }))
@@ -59,7 +59,7 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
         <Match when={props.elicitation.mode === MCP_ELICITATION_MODE.Form}>
           <Show when={form().fields.length > 0 || validation().error}>
             <fieldset disabled={props.optionsDisabled} style={{ 'min-width': '0', 'display': 'grid', 'gap': 'var(--space-3, 0.75rem)' }} data-elicitation-form data-testid="elicitation-form">
-              <For each={form().fields}>
+              <For each={form().visibleFields(values())}>
                 {(field) => {
                   const id = createUniqueId()
                   const label = `${field.label || 'Response'}${field.required ? ' *' : ''}`
@@ -155,7 +155,7 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
 }
 
 export const ElicitationActions: Component<ActionsProps & { elicitation: ElicitationRequest }> = (props) => {
-  const form = createMemo(() => createElicitationForm(props.elicitation.schema))
+  const form = createMemo(() => createElicitationForm(props.elicitation.schema, props.elicitation.fieldRules))
   const answer = createMemo(() => form().read(props.answerState.choices()))
   const canAccept = () => props.elicitation.mode === MCP_ELICITATION_MODE.Form
     ? !!answer().content

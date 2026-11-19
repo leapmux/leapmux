@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { withCleanup } from './cleanup'
 import { writePrivateJSON } from './privateConfigFile'
 
 export interface ZcodeEnvironmentOptions {
@@ -216,6 +217,46 @@ export async function withZcodeConfigurationRestored<T>(homeDir: string, use: ()
   if ('error' in outcome)
     throw outcome.error
   return outcome.value
+}
+
+/** Use a trusted user MCP declaration for one scenario and restore the original configuration afterward. */
+export async function withZcodeUserMcpServer<T>(
+  homeDir: string,
+  name: string,
+  server: { command: string, args: readonly string[] },
+  use: () => Promise<T>,
+): Promise<T> {
+  if (!name.trim() || !server.command.trim())
+    throw new Error('The ZCode user MCP declaration requires a server name and command.')
+  const path = join(homeDir, '.zcode', 'cli', 'config.json')
+  const before = existsSync(path)
+    ? readFileSync(path)
+    : null
+  const config = before
+    ? JSON.parse(before.toString('utf8'))
+    : {}
+  config.mcp = {
+    ...config.mcp,
+    servers: {
+      ...config.mcp?.servers,
+      [name]: {
+        type: 'stdio',
+        command: server.command,
+        args: [...server.args],
+        env: {},
+      },
+    },
+  }
+  mkdirSync(dirname(path), { recursive: true })
+  return withCleanup(async () => {
+    writePrivateJSON(path, config)
+    return use()
+  }, async () => {
+    if (before === null)
+      rmSync(path, { force: true })
+    else
+      writeFileSync(path, before, { mode: 0o600 })
+  })
 }
 
 /** Run a scenario with the personal provider configuration alone. */

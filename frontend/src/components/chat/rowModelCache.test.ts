@@ -52,6 +52,36 @@ describe('rowModelCache', () => {
     })
   })
 
+  it('passes the stored span identity and rebuilds a row when that identity changes', () => {
+    const native = resolveMessageForRendering(parsed({
+      type: 'session.tool.success',
+      data: {
+        sessionID: 'ses_1',
+        assistantMessageID: 'msg_1',
+        id: 'native-call',
+        name: 'shell',
+        input: { command: 'pwd' },
+        content: [
+          { type: 'text', text: 'output' },
+        ],
+      },
+    }), AgentProvider.OPENCODE)
+    const context = {
+      spanId: 'stored-span',
+      renderCache: createMessageRenderCacheStore().forRow('same-revision'),
+    }
+    const first = extractedRow(cachedChatRow(context, AgentProvider.OPENCODE, native, { kind: 'tool_result' }, undefined))
+    expect(first?.kind === 'tool'
+      ? first.call.id
+      : undefined).toBe('stored-span')
+    context.spanId = 'changed-span'
+    const second = extractedRow(cachedChatRow(context, AgentProvider.OPENCODE, native, { kind: 'tool_result' }, undefined))
+    expect(second?.kind === 'tool'
+      ? second.call.id
+      : undefined).toBe('changed-span')
+    expect(second).not.toBe(first)
+  })
+
   it('rebuilds a row when its resolved sibling becomes visible', () => {
     const request = resolveMessageForRendering(parsed({
       sessionUpdate: 'tool_call',
@@ -60,7 +90,7 @@ describe('rowModelCache', () => {
       kind: 'execute',
       title: 'Run checks',
       rawInput: { command: 'bun test' },
-    }), AgentProvider.OPENCODE)
+    }), AgentProvider.KILO)
     const result = resolveMessageForRendering(parsed({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'call',
@@ -71,7 +101,7 @@ describe('rowModelCache', () => {
           content: { type: 'text', text: 'passed' },
         },
       ],
-    }), AgentProvider.OPENCODE)
+    }), AgentProvider.KILO)
     let requestVisible = false
     const context = {
       renderCache: createMessageRenderCacheStore().forRow('result-revision'),
@@ -83,13 +113,13 @@ describe('rowModelCache', () => {
       spanType: 'execute',
     } as unknown as RowExtractionContext
 
-    const first = extractedRow(cachedChatRow(context, AgentProvider.OPENCODE, result, { kind: 'tool_use' }, undefined))
+    const first = extractedRow(cachedChatRow(context, AgentProvider.KILO, result, { kind: 'tool_use' }, undefined))
     expect(first?.kind === 'tool'
       ? first.hasRequestRow
       : undefined).toBe(false)
 
     requestVisible = true
-    const second = extractedRow(cachedChatRow(context, AgentProvider.OPENCODE, result, { kind: 'tool_use' }, undefined))
+    const second = extractedRow(cachedChatRow(context, AgentProvider.KILO, result, { kind: 'tool_use' }, undefined))
     expect(second?.kind === 'tool'
       ? second.hasRequestRow
       : undefined).toBe(true)

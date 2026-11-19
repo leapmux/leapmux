@@ -14,6 +14,59 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStoredSessionQueryLookupEnvPreservesPresenceAndOrder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		entries []string
+		value   string
+		present bool
+	}{
+		{"absent", []string{}, "", false},
+		{"empty", []string{"KEY="}, "", true},
+		{"last empty", []string{"KEY=old", "KEY="}, "", true},
+		{"last value", []string{"KEY=", "KEY=new"}, "new", true},
+		{"malformed", []string{"KEY", "=invalid"}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			query := agent.StoredSessionQuery{EnvEntries: tc.entries, Getenv: func(string) string { t.Error("the snapshot must take precedence"); return "conflicting" }}
+			value, present := query.LookupEnv("KEY")
+			assert.Equal(t, tc.value, value)
+			assert.Equal(t, tc.present, present)
+			assert.Equal(t, tc.value, query.Env("KEY"))
+		})
+	}
+	query := agent.StoredSessionQuery{EnvEntries: []string{"key=value"}}
+	value, present := query.LookupEnv("KEY")
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, "value", value)
+		assert.True(t, present)
+	} else {
+		assert.Empty(t, value)
+		assert.False(t, present)
+	}
+}
+
+func TestStoredSessionQueryLookupEnvReadsAGetterOnce(t *testing.T) {
+	t.Parallel()
+	for _, response := range []string{"", "value"} {
+		calls := 0
+		query := agent.StoredSessionQuery{Getenv: func(key string) string { calls++; assert.Equal(t, "KEY", key); return response }}
+		value, present := query.LookupEnv("KEY")
+		assert.Equal(t, response, value)
+		assert.Equal(t, response != "", present)
+		assert.Equal(t, 1, calls)
+	}
+}
+
+func TestStoredSessionQueryLookupEnvReadsEmptyProcessValues(t *testing.T) {
+	t.Setenv("LEAPMUX_TEST_STORED_QUERY_EMPTY", "")
+	value, present := (agent.StoredSessionQuery{}).LookupEnv("LEAPMUX_TEST_STORED_QUERY_EMPTY")
+	assert.Empty(t, value)
+	assert.True(t, present)
+}
+
 func TestSortAndCapSessions(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)

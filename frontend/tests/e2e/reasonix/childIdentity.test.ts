@@ -25,12 +25,22 @@ describe('reasonixChildTaskMatcher', () => {
     })).toBe(true)
   })
 
+  it('matches the current explorer context without a workspace block', () => {
+    const current = `<subagent-context event="SubagentStart">\nBefore acting, check the available skills and tools.\n</subagent-context>\n\n${prompt}\n\n<execution-policy preset="balanced" version="3">\nverify=targeted\n</execution-policy>`
+    expect(matchesRequest(reasonixChildTaskMatcher(marker), {
+      protocol: 'openai-chat-completions',
+      userText: current,
+      systemText: '',
+      body: {},
+    })).toBe(true)
+  })
+
   it('does not match another child, a root prompt, or a historical task copy', () => {
     const matcher = reasonixChildTaskMatcher(marker)
     for (const userText of [
       actualPack.replace(marker, 'ANOTHER_CHILD'),
       prompt,
-      actualPack.replace('SubagentWorkspace', 'OtherWorkspace'),
+      actualPack.replace('SubagentStart', 'OtherStart'),
       actualPack.replace(`\n\n${prompt}`, `\n\n## Task\n${prompt}`),
       `Quoted context:\n${actualPack}`,
     ]) {
@@ -71,6 +81,26 @@ describe('reasonixChildTaskMatcher', () => {
 })
 
 describe('reasonixChildTaskId', () => {
+  it('pairs a native explorer with its exact task inside the capability wrapper', () => {
+    const wrapped = {
+      ...nativeCall,
+      title: 'use_capability',
+      rawInput: {
+        action: 'call',
+        capability_id: 'tool:explore',
+        arguments: { task: prompt },
+      },
+    }
+    expect(reasonixChildTaskId(nativeFrameSnapshot(wrapped), 'spawn', prompt)).toBe('spawn')
+    expect(() => reasonixChildTaskId(nativeFrameSnapshot({
+      ...wrapped,
+      rawInput: {
+        ...wrapped.rawInput,
+        arguments: { task: 'Another task.' },
+      },
+    }), 'spawn', prompt)).toThrow('another tool or child prompt')
+  })
+
   it('uses the exact native task call and ignores its display description', () => {
     expect(reasonixChildTaskId(nativeFrameSnapshot(nativeCall), 'spawn', prompt)).toBe('spawn')
   })

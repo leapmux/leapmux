@@ -7,7 +7,9 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isObject } from '../../src/lib/jsonPick'
 import { DIRAC_AGENT, nativeContext } from './dirac/scenarios'
+import { diracAskingState } from './helpers/diracEnvironment'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
 
@@ -29,9 +31,9 @@ export const diracTest = createProviderTest({
     const path = join(home, 'data', 'globalState.json')
     const original = readFileSync(path, 'utf8')
     const parsed: unknown = JSON.parse(original)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+    if (!isObject(parsed))
       throw new Error('the isolated Dirac state is not an object')
-    writeFileSync(path, JSON.stringify({ ...parsed, autoApproveAllToggled: false, yoloModeToggled: false }))
+    writeFileSync(path, JSON.stringify(diracAskingState(parsed)))
     try {
       await use(home)
     }

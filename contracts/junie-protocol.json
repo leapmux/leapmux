@@ -5,7 +5,8 @@
   },
   "modes": {
     "Default": "default",
-    "Plan": "plan"
+    "Plan": "plan",
+    "Goal": "goal"
   },
   "defaultMode": "Default",
   "supplement": {

@@ -1,7 +1,9 @@
 package goose
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -421,4 +423,73 @@ func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) bool {
 	default:
 		return false
 	}
+}
+
+// goosePromptOutputState contains observations owned by one prompt.
+// Consuming them together keeps goal and error decisions on the same native message.
+type goosePromptOutputState struct {
+	goalArmed       bool
+	goalObjective   string
+	lastMessageID   string
+	lastMessageText []byte
+	compactPending  bool
+}
+
+// observeGooseSessionUpdate retains the last main-session message for goal and error decisions.
+// It claims no update, so the shared dispatcher still writes the native transcript.
+func (a *Agent) observeGooseSessionUpdate(sessionID string, _ agent.ProviderServices, update json.RawMessage) bool {
+	if !a.IsCurrentSession(sessionID) {
+		return false
+	}
+	var message struct {
+		SessionUpdate string `json:"sessionUpdate"`
+		MessageID     string `json:"messageId"`
+		Content       struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(update, &message) != nil || message.Content.Type != "text" {
+		return false
+	}
+	if message.SessionUpdate != contracts.ACPUpdateAgentMessageChunk || message.MessageID == "" {
+		return false
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.promptOutput.lastMessageID != message.MessageID {
+		a.promptOutput.lastMessageID = message.MessageID
+		a.promptOutput.lastMessageText = nil
+	}
+	a.promptOutput.lastMessageText = append(a.promptOutput.lastMessageText, message.Content.Text...)
+	return false
+}
+
+// Goose writes its native error message before returning this RPC error.
+// A missing or different observed message still needs the shared failure note.
+func goosePromptFailureWasDisplayed(output goosePromptOutputState, err error) bool {
+	var response *providerkit.JSONRPCResponseError
+	return output.lastMessageID != "" && len(output.lastMessageText) != 0 && errors.As(err, &response) &&
+		response.Code == -32603 && bytes.Equal([]byte(response.Message), output.lastMessageText) &&
+		providerkit.StringField(response.Data, "reason") == "turn_failed"
+}
+
+// finishGoosePrompt consumes one prompt's message, goal and compaction observations.
+func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
+	a.Mu.Lock()
+	output := a.promptOutput
+	// Later chunks need a new buffer because this snapshot is read after unlock.
+	a.promptOutput = goosePromptOutputState{}
+	a.Mu.Unlock()
+	ending := a.finishGooseGoalPrompt(output, err, stopped)
+	if !stopped && goosePromptFailureWasDisplayed(output, err) {
+		ending.NoteWritten = true
+	}
+	if output.compactPending {
+		if err == nil && !stopped {
+			providerkit.PersistCompactionEnded(a.Sink(), providerkit.CompactionEndCompleted, "")
+		}
+		providerkit.EndCompaction(a.Sink())
+	}
+	return ending
 }

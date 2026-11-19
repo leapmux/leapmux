@@ -188,6 +188,31 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     expect(harness.events).toContain('extra proof:1')
   })
 
+  it('accepts a native permission without an optional title', async () => {
+    await exerciseUnsupportedControlThroughPermission(context(), {
+      purpose: 'workspace-trust',
+      classify: () => ({
+        kind: 'permission',
+        permission: { command: 'printf proof', options: [] },
+      }),
+      operation: plan('untitled'),
+    })
+    expect(harness.events).toContain('decision allow')
+    expect(harness.events.at(-1)).toBe('watch cancelled')
+  })
+
+  it.each(['Trust the workspace', 'Do not trust'])('rejects an actual workspace-trust title: %s', async (title) => {
+    await expect(exerciseUnsupportedControlThroughPermission(context(), {
+      purpose: 'workspace-trust',
+      classify: () => ({
+        kind: 'permission',
+        permission: { title, options: [] },
+      }),
+      operation: plan('trust'),
+    })).rejects.toThrow(/not to match.*Trust the workspace/)
+    expect(harness.events.at(-1)).toBe('watch cancelled')
+  })
+
   it('observes both question surfaces and refuses a frame that the provider marks as a question', async () => {
     harness.defaultPlan = plan('default')
     await expect(exerciseUnsupportedControlThroughPermission(context(), {

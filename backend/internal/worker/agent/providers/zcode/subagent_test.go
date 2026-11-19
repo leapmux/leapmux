@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -20,11 +21,12 @@ import (
 // The spawn, then one tool call the subagent made. The subagent-marking fields are
 // exactly what the app-server sends: the update identifies the tool call that started it.
 const (
-	zcodeSpawnScheduled = `{"kind":"scheduled","toolCallId":"spawn-1","toolName":"Agent",
+	zcodeSubagentSessionID = "sess_subagent_agent-1"
+	zcodeSpawnScheduled    = `{"kind":"scheduled","toolCallId":"spawn-1","toolName":"Agent",
 	  "input":{"prompt":"count the files","description":"file census"}}`
 	zcodeSubagentScheduled = `{"kind":"scheduled","toolCallId":"sub-1","toolName":"Bash",
 	  "source":"subagent","agentId":"agent-1","agentType":"Explore",
-	  "childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1",
+	  "childSessionId":"` + zcodeSubagentSessionID + `","parentToolCallId":"spawn-1",
 	  "input":{"command":"ls -la"}}`
 	zcodeSubagentResult = `{"kind":"result","toolCallId":"sub-1","source":"subagent",
 	  "agentId":"agent-1","parentToolCallId":"spawn-1","result":{"success":true,"content":"one file"}}`
@@ -205,7 +207,7 @@ func TestZCodeSubagent_BackgroundLaunchIsNotAChildReport(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: agent-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-1', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nIn your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running."}}`))
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
@@ -215,6 +217,38 @@ func TestZCodeSubagent_BackgroundLaunchIsNotAChildReport(t *testing.T) {
 	assert.True(t, stillOpen)
 	child := sink.Child(rows[0].ChildAgentID)
 	assert.Empty(t, child.LeapMuxNotifications())
+}
+
+func TestZCodeBackgroundLaunchRequiresACompleteSuccessfulReceipt(t *testing.T) {
+	t.Parallel()
+	identity := "agent-child"
+	content := strings.Join([]string{
+		contracts.ZCodeAgentLaunchHeader,
+		contracts.ZCodeAgentLaunchIdentityPrefix + identity + contracts.ZCodeAgentLaunchIdentityMiddle + identity + contracts.ZCodeAgentLaunchIdentitySuffix,
+		contracts.ZCodeAgentLaunchBackground,
+		contracts.ZCodeAgentLaunchWait,
+	}, "\n")
+	for _, tc := range []struct {
+		name    string
+		content string
+		success bool
+		want    bool
+	}{
+		{"current", content, true, true},
+		{"failed", content, false, false},
+		{"empty", "", true, false},
+		{"partial", strings.Join(strings.Split(content, "\n")[:3], "\n"), true, false},
+		{"foreign identity", strings.Replace(content, "to: 'agent-child'", "to: 'other'", 1), true, false},
+		{"empty identity", strings.Replace(content, "agentId: agent-child", "agentId: ", 1), true, false},
+		{"unknown suffix", content + "\nUnknown", true, false},
+		{"quoted receipt", "Report:\n" + content, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := json.Marshal(map[string]any{"success": tc.success, "content": tc.content})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, zcodeSubagentLaunchedInBackground(zcodeToolUpdated{ToolName: "Agent", Result: result}))
+		})
+	}
 }
 
 func TestZCodeSubagent_MessageEventRoutesToTheChild(t *testing.T) {
@@ -332,7 +366,7 @@ func TestZCodeSubagent_FinalLifecycleClosesWithoutAnAgentResult(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: agent-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-1', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nIn your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running."}}`))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
 		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"Done."}`))
 
@@ -528,9 +562,13 @@ func TestZCodeSubagent_AResumedSpawnResultStillClosesTheRow(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	// The state a resume leaves behind: the durable row exists, the in-memory caches do
 	// not.
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "stored-spawn-span", ProviderChildKey: "native-child", Title: "file census"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "stored-spawn-span", ProviderChildKey: "native-child", Title: "file census"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "native-child", Kind: bgtask.KindSubagent, Title: "file census",
 		Status: bgtask.StatusRunning, ChildAgentID: childID,
 	}))
@@ -597,23 +635,34 @@ func TestZCodeSubagent_ASpawnWithNoToolCallsPersistsItsPromptAndReport(t *testin
 func TestZCodeSubagent_TheBackgroundTaskAndToolPathsShareOneTranscript(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.ControlSink{}
-	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	for _, order := range []string{"background event first", "child tool first"} {
+		t.Run(order, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
-	// The background-task event arrives first, keyed on the SAME spawn tool call.
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent",
-		  "childSessionId":"sess_sub","status":"running"}`))
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
+			updates := [2]struct{ eventType, payload string }{
+				{contracts.ZCodeEventSessionUpdated, `{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent",
+				  "childSessionId":"` + zcodeSubagentSessionID + `","status":"running"}`},
+				{contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled},
+			}
+			if order == "child tool first" {
+				updates[0], updates[1] = updates[1], updates[0]
+			}
+			a.HandleOutput(zcodeEventLine(t, 2, updates[0].eventType, updates[0].payload))
+			a.HandleOutput(zcodeEventLine(t, 3, updates[1].eventType, updates[1].payload))
 
-	assert.Len(t, sink.ChildAgentIDs(), 1, "one subagent gets one transcript")
-	rows := sink.BackgroundTasks()
-	require.Len(t, rows, 1, "and one registry row")
-	assert.Equal(t, "file census", rows[0].Title,
-		"the SPAWN's label wins over the background event's bare tool name")
-	assert.Equal(t, sink.ChildAgentIDs()[0], rows[0].ChildAgentID)
+			children := sink.ChildAgentIDs()
+			require.Len(t, children, 1)
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, zcodeSubagentSessionID, rows[0].RowKey)
+			assert.Equal(t, "file census", rows[0].Title, "the spawn supplies the child title")
+			assert.Equal(t, children[0], rows[0].ChildAgentID)
+		})
+	}
 }
 
 // A background task without a tool-call ID records its registry row but does not
@@ -856,7 +905,7 @@ func newZCodeLifecycleChild(t *testing.T) (*Agent, *agenttest.ControlSink, *zcod
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleStart))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated,
-		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent_1"}}`))
+		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: agent_1 (internal ID - do not mention to user. Use SendMessage with to: 'agent_1', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nIn your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running."}}`))
 	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
 	return a, sink, calls, stdin
 }
@@ -1011,7 +1060,7 @@ func TestZCodeSubagents_BackgroundToolsOutliveTheirParentTurn(t *testing.T) {
 			a.HandleOutput(zcodeTurnEventLine(t, 3, "parent", contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
 			child := sink.Child(sink.ChildAgentIDs()[0])
 			childSpan := zcodeTestSpanID(t, sink, "sub-1")
-			a.HandleOutput(zcodeTurnEventLine(t, 4, "parent", contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 4, "parent", contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: agent-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-1', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nIn your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running."}}`))
 			a.HandleOutput(zcodeTurnEventLine(t, 5, "parent", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 			assert.Empty(t, child.ClosedSpans(), "the parent end must leave its background child's tool open")
 			assert.Equal(t, "Bash", child.GetSpanType(childSpan))
@@ -1063,4 +1112,29 @@ func TestZCodeSubagent_ReportFreeLifecycleWaitsForTheForegroundResult(t *testing
 	assert.Equal(t, "1 file", reports[0][contracts.NotificationFieldText])
 	assert.True(t, a.children.hasEnded(spanID))
 	assert.Len(t, sink.ChildAgentIDs(), 1, "completion must not create a replacement child")
+}
+
+type zcodeCleanupObservationSink struct {
+	*agenttest.ControlSink
+	statusesAtCleanup []bgtask.Status
+}
+
+func (sink *zcodeCleanupObservationSink) CleanupChildAgent(childID string) {
+	for _, row := range sink.BackgroundTasks() {
+		if row.ChildAgentID == childID && row.Role.IsCanonicalChildActivity() {
+			sink.statusesAtCleanup = append(sink.statusesAtCleanup, row.Status)
+		}
+	}
+	sink.ControlSink.CleanupChildAgent(childID)
+}
+func TestZCodeBackgroundTaskPublishesItsFinalStateBeforeRetiringTheChild(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeCleanupObservationSink{ControlSink: &agenttest.ControlSink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
+	assert.Equal(t, []bgtask.Status{bgtask.StatusStopped}, sink.statusesAtCleanup,
+		"retiring a still-working activity entry before the final registry update leaves its published spinner unchanged")
 }

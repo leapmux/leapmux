@@ -7,7 +7,7 @@ import { chooseQuestionOption, chooseQuestionOptionWithNote, exerciseQuestionAns
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { nativeModelLastUserText } from '../helpers/nativeScenario'
 import { codexAsyncQuestionToolCall } from '../helpers/providerToolCalls'
-import { chooseSettingsOption, composerEditor, controlButton, expectNoControlBanner, openPendingQuestions, pendingQuestionsBanner, queuePauseButton, resumePausedQueue, sendMessage, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, composerEditor, controlButton, expectNoControlBanner, fillComposer, openPendingQuestions, pendingQuestionsBanner, queuePauseButton, resumePausedQueue, sendMessage, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
 codexTest.describe('agent questions for Codex', () => {
   for (const note of [undefined, 'Use a darker red.']) {
@@ -232,7 +232,7 @@ codexTest.describe('async agent questions for Codex', () => {
     await waitForAgentIdle(native.page)
     await expect(pendingQuestionsBanner(native.page)).toContainText('The agent asked a question.')
 
-    await composerEditor(native.page).fill('Answer the color question in a moment.')
+    await fillComposer(native.page, 'Answer the color question in a moment.')
     const opened = await openPendingQuestions(native.page)
     await opened.getByTestId('control-answer-later').click()
     await expectNoControlBanner(native.page)

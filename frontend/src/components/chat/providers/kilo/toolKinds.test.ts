@@ -2,8 +2,7 @@ import type { ToolCall } from '../../model/toolCall'
 import { describe, expect, it } from 'vitest'
 import { isToolFailureResult, typedResult } from '../../model/toolCall'
 import { acpToolCall } from '../acp/extractors/toolCall'
-import { openCodeToolCallAdapterFor } from '../opencode/extractors/toolCall'
-import { OPENCODE_REFUSED_TOOL_ERRORS } from '../opencode/protocol'
+import { kiloToolCallAdapterFor } from '../kilo/extractors/toolCall'
 import { KILO_REFUSED_TOOL_ERRORS } from './protocol'
 import { kiloToolKind } from './toolKinds'
 
@@ -14,7 +13,7 @@ import { kiloToolKind } from './toolKinds'
  * it changes: the model refuses an `edit` whose request names none -- the row composes
  * its header from that list at every state of the call -- and degrades the call to
  * the uncategorized row. Kilo spells the three keys `path`, `old_string` and
- * `new_string`, which is why `openCodeToolCall` reads every alias of them.
+ * `new_string`, which is why `kiloToolCall` reads every alias of them.
  */
 const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
   notebook_edit: { path: '/project/notes.ipynb', old_string: 'before', new_string: 'after' },
@@ -35,7 +34,7 @@ function kiloCall(title: string, kind = 'other', tool: Record<string, unknown> =
       rawInput: MINIMAL_INPUT[title],
       ...tool,
     },
-    openCodeToolCallAdapterFor(KILO_FAMILY),
+    kiloToolCallAdapterFor(KILO_FAMILY),
     undefined,
   )
 }
@@ -100,7 +99,7 @@ describe('kiloToolKind', () => {
         kind: 'other',
         title: 'semantic_search',
       },
-      openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }),
+      kiloToolCallAdapterFor({ refusals: KILO_REFUSED_TOOL_ERRORS }),
       undefined,
     )
     // The shared build narrows the protocol's own `other` to the kind of the card it
@@ -146,7 +145,7 @@ describe('the kilo chart tool', () => {
           content: { type: 'text', text: output },
         },
       ],
-    }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
+    }, kiloToolCallAdapterFor(KILO_FAMILY), undefined)
   }
 
   it('reads the returned configuration into a chart result', () => {
@@ -180,7 +179,7 @@ describe('the kilo chart tool', () => {
           content: { type: 'text', text: 'The chart tool is not installed' },
         },
       ],
-    }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
+    }, kiloToolCallAdapterFor(KILO_FAMILY), undefined)
     expect(call.kind).toBe('chart')
     expect(isToolFailureResult(call.result) && call.result.text).toBe('The chart tool is not installed')
   })
@@ -218,7 +217,7 @@ describe('the kilo chart tool', () => {
         title: 'Weekly hits',
         spec: JSON.stringify(CONFIG),
       },
-    }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
+    }, kiloToolCallAdapterFor(KILO_FAMILY), undefined)
     expect(call.kind).toBe('chart')
     expect(call.kind === 'chart' && call.request.spec).toBe(JSON.stringify(CONFIG))
     expect(call.kind === 'chart' && call.request.title).toBe('Weekly hits')

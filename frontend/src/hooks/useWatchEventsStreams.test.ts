@@ -283,6 +283,56 @@ describe('useWatchEventsStreams', () => {
     expect(requested).toHaveBeenCalledTimes(2)
   })
 
+  it('cancels a full replay signal on demotion and replacement without cancelling a sibling', async () => {
+    const [identity, setIdentity] = createSignal('owner-1')
+    const [mode, setMode] = createSignal(WatchMode.FULL)
+    const { hook } = mount(() => {
+      const plans = identityPlans(identity())
+      const plan = plans.get('w1')!
+      plan.agents[0] = {
+        ...plan.agents[0]!,
+        mode: mode(),
+      }
+      return plans
+    })
+    await flush()
+    const first = hook.agentReplaySignal('w1', 'child-1')
+    const sibling = hook.agentReplaySignal('w1', 'sibling-1')
+    expect(first?.aborted).toBe(false)
+    expect(sibling?.aborted).toBe(false)
+    const acknowledge = () => {
+      const handle = handles[0]!
+      const request = handle.update.mock.calls.length > 0
+        ? recordedRequest(handle, handle.update.mock.calls.length - 1)
+        : recordedRequest()
+      handle._emit(create(WatchEventsResponseSchema, {
+        event: {
+          case: 'updateAck',
+          value: {
+            updateId: request.updateId,
+            agentStates: request.agents.map(watchAgentState),
+          },
+        },
+      }))
+    }
+    acknowledge()
+    setIdentity('owner-2')
+    await flush()
+    expect(first?.aborted).toBe(true)
+    expect(sibling?.aborted).toBe(false)
+    const replacement = hook.agentReplaySignal('w1', 'child-1')
+    expect(replacement).not.toBe(first)
+    expect(replacement?.aborted).toBe(false)
+    acknowledge()
+    setMode(WatchMode.NOTIFY)
+    await flush()
+    expect(replacement?.aborted).toBe(true)
+    expect(hook.agentReplaySignal('w1', 'child-1')).toBeUndefined()
+    expect(sibling?.aborted).toBe(false)
+    disposeRoot?.()
+    expect(sibling?.aborted).toBe(true)
+  })
+
   it('coalesces pending authority changes while preserving the transmitted identity snapshot', async () => {
     let finishOpen: ((handle: FakeHandle) => void) | undefined
     vi.mocked(watchEventsViaChannel).mockImplementationOnce(() => new Promise<Awaited<ReturnType<typeof watchEventsViaChannel>>>((resolve) => {

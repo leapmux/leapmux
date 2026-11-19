@@ -8,7 +8,7 @@ import type { ClientRequest, IncomingMessage, RequestOptions, ServerResponse } f
 import type { Server as HttpsServer } from 'node:https'
 import type { Duplex } from 'node:stream'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import { join } from 'node:path'
@@ -20,11 +20,15 @@ export interface TlsProxyHandle {
   url: string
   /** The cleartext Hub URL. */
   hubUrl: string
+  /** Trust this private certificate while the proxy runs. Closing the proxy removes it. */
+  certificatePath: string
   close: () => Promise<void>
 }
 
-async function mintSelfSignedCert(): Promise<{ key: Buffer, cert: Buffer, dir: string }> {
-  const dir = createTestDirectory('leapmux-e2e-tls-')
+async function mintSelfSignedCert(directory?: string): Promise<{ key: Buffer, cert: Buffer, dir: string }> {
+  const dir = directory === undefined
+    ? createTestDirectory('leapmux-e2e-tls-')
+    : mkdtempSync(join(directory, 'leapmux-e2e-tls-'))
   return cleanupOnFailure(async () => {
     const keyPath = join(dir, 'key.pem')
     const certPath = join(dir, 'cert.pem')
@@ -134,12 +138,12 @@ function reportProxyFailure(response: ServerResponse, error: Error): void {
 }
 
 /** Start a private HTTPS listener that forwards HTTP and WebSocket requests. */
-export async function startTlsProxy(hubUrl: string): Promise<TlsProxyHandle> {
+export async function startTlsProxy(hubUrl: string, certificateDirectory?: string): Promise<TlsProxyHandle> {
   const target = new URL(hubUrl)
   if (target.protocol !== 'http:')
     throw new Error(`startTlsProxy expects a cleartext hub URL, got ${hubUrl}`)
 
-  const { key, cert, dir } = await mintSelfSignedCert()
+  const { key, cert, dir } = await mintSelfSignedCert(certificateDirectory)
   // A private HTTP Agent prevents one proxy's shutdown from closing another proxy's pooled connections.
   const upstreamAgent = new http.Agent({ keepAlive: true })
   const sockets = new Set<Duplex>()
@@ -275,7 +279,12 @@ export async function startTlsProxy(hubUrl: string): Promise<TlsProxyHandle> {
     if (!address || typeof address === 'string')
       throw new Error('The TLS proxy listener has no TCP address.')
     const url = `https://localhost:${address.port}`
-    await verifyTlsReadiness(url)
-    return { url, hubUrl, close }
+    await verifyTlsReadiness(new URL(target.pathname + target.search, url).href)
+    return {
+      url,
+      hubUrl,
+      certificatePath: join(dir, 'cert.pem'),
+      close,
+    }
   }, close)
 }

@@ -37,7 +37,7 @@ describe('classification and extraction agree on every row kind', () => {
     ).toEqual([])
   })
 
-  it.each(ROW_KIND_CASES)('$provider $name', ({ provider, payload, category, spanType, messageMetadata }) => {
+  it.each(ROW_KIND_CASES)('$provider $name', ({ provider, payload, category, spanId, spanType, messageMetadata }) => {
     // A plugin for every case but the one whose whole subject is that it has none. Stated
     // both ways, so a rename that dropped a provider from the registry cannot take its
     // cases with it and leave the remaining assertions passing.
@@ -77,6 +77,9 @@ describe('classification and extraction agree on every row kind', () => {
 
     // Half two: the row the transcript draws is the kind the list measured.
     const extraction = extractChatRow(provider, parsed, classified, {
+      ...(spanId === undefined
+        ? {}
+        : { spanId }),
       ...(spanType !== undefined
         ? { spanType }
         : {}),

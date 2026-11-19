@@ -100,6 +100,22 @@ func messageCompletionFromToken(token string) leapmuxv1.MessageCompletion {
 	}
 }
 
+// MessageCompletionFromProto reads the Worker's stored rendering outcome.
+func MessageCompletionFromProto(value leapmuxv1.MessageCompletion) MessageCompletion {
+	switch value {
+	case leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_COMPLETE:
+		return MessageCompletionComplete
+	case leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_INTERRUPTED:
+		return MessageCompletionInterrupted
+	case leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR:
+		return MessageCompletionError
+	case leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED:
+		return MessageCompletionFinished
+	default:
+		return ""
+	}
+}
+
 func IncompleteTaskStatus(completion MessageCompletion) bgtask.Status {
 	if completion == MessageCompletionFinished {
 		return bgtask.StatusEndedWithUnknownOutcome

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
@@ -32,11 +33,11 @@ func prepareConnection(ctx context.Context, opts agent.Options, registration age
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	pinned := []string{"MUSE_NO_AUTO_UPDATE=1"}
-	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinned})
 	if env == nil {
-		env = cmd.Environ()
+		env = os.Environ()
 	}
-	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(env, opts), pinned...)
+	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinned, Environment: env})
+	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinned...)
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err

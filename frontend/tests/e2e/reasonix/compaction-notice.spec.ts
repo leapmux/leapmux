@@ -1,4 +1,6 @@
+import { readFile } from 'node:fs/promises'
 import { expect } from '@playwright/test'
+import { isObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
@@ -32,21 +34,8 @@ reasonixTest('shows automatic native compaction and keeps its notice after reloa
       modelScript,
     })
     const before = await currentNativeAgent(native)
-    const summaryMarker = `REASONIX_NATIVE_SUMMARY_${uniqueMarker()}`
-    const rule = 'the native context summary'
-    await modelScript.rule({
-      name: rule,
-      when: {
-        system: String.raw`^You are compacting the earlier part of a coding agent's conversation to save context\.`,
-        lastMessage: { role: 'user', text: String.raw`^\[assistant\]\nSeed 0\.` },
-      },
-      respond: {
-        text: `## Goal\nContinue the compaction test.\n## Standing facts & constraints\n${summaryMarker}`,
-        usage: { inputTokens: 10000, outputTokens: 80 },
-      },
-      once: true,
-    })
-    const padding = Array.from({ length: 400 }, (_, index) => `OLD_ASSISTANT_PADDING_${index} contains material for context compaction.`).join('\n')
+    // Native preflight estimates stored messages rather than reported usage.
+    const padding = Array.from({ length: 650 }, (_, index) => `OLD_ASSISTANT_PADDING_${index} contains material for context compaction.`).join('\n')
     for (let index = 0; index < 5; index++) {
       const start = await modelScript.queue({
         text: `${modelScript.prompt(`Seed ${index}.`)}\n${padding}`,
@@ -68,15 +57,26 @@ reasonixTest('shows automatic native compaction and keeps its notice after reloa
     await modelScript.waitForSteps(finalStep + 1)
     await expect(assistantBubbles(page).filter({ hasText: finalAnswer })).toBeVisible()
     await waitForAgentIdle(page)
-    const status = await modelScript.status()
-    expect(status.ruleMatches[rule]).toBe(1)
-    const summary = status.requests.find(request => request.rule === rule)
-    if (!summary)
-      throw new Error('Reasonix produced no native summary request.')
-    expect(JSON.stringify(summary.body)).toContain('Seed 0.')
     const continued = await modelScript.requestAt(finalStep)
-    expect(JSON.stringify(continued.body)).toContain(summaryMarker)
+    if (!isObject(continued.body))
+      throw new TypeError('The native Reasonix request body is not an object.')
+    const messages = continued.body.messages
+    if (!Array.isArray(messages))
+      throw new TypeError('The native Reasonix request has no messages.')
+    const summaries = messages.filter(isObject).filter(message => message.role === 'user'
+      && typeof message.content === 'string' && message.content.startsWith('<compaction-summary>\n'))
+    expect(summaries).toHaveLength(1)
+    const summary = summaries[0]!.content as string
+    expect(summary).toContain('They were archived, not summarized: the record is complete and verbatim.')
+    const archivePath = /^Archive: (\/[^\n]+)$/m.exec(summary)?.[1]
+    if (!archivePath)
+      throw new Error('The native Reasonix compaction notice has no archive path.')
+    const archive = await readFile(archivePath, 'utf8')
+    for (let index = 0; index < 5; index++)
+      expect(archive).toContain(`Seed ${index}.`)
+    expect(archive).toContain(padding)
     expect(JSON.stringify(continued.body)).not.toContain('Seed 0.')
+    expect((await modelScript.status()).unexpectedRequests).toEqual([])
     expect((await currentNativeAgent(native)).agentSessionId).toBe(before.agentSessionId)
     await expectCompactionNoticeAfterReload(page, { count: 1 })
   })

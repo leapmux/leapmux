@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"database/sql"
 	"errors"
@@ -187,7 +189,9 @@ func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID: "readonly-parent", WorkingDir: t.TempDir(), AgentProvider: provider,
 			}))
-			childID, err := newTestRootOutputSink(t, svc.Output, "readonly-parent", provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "readonly-spawn", ProviderChildKey: "native-child", Title: "native child"})
+			childID, err := newTestRootOutputSink(t, svc.Output, "readonly-parent", provider).EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "readonly-spawn", ProviderChildKey: "native-child", Title: "native child"})
 			require.NoError(t, err)
 			if active {
 				_, err = svc.InputQueue.TurnStarted(ctx, childID, false)
@@ -231,7 +235,9 @@ func TestChildInputAdmissionKeepsSupportedMessagesAndControlFeedback(t *testing.
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID: "admission-parent", WorkingDir: t.TempDir(), AgentProvider: tc.provider,
 			}))
-			childID, err := newTestRootOutputSink(t, svc.Output, "admission-parent", tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "admission-spawn", ProviderChildKey: "native-child", Title: "native child"})
+			childID, err := newTestRootOutputSink(t, svc.Output, "admission-parent", tc.provider).EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "admission-spawn", ProviderChildKey: "native-child", Title: "native child"})
 			require.NoError(t, err)
 			_, err = svc.InputQueue.SetPaused(ctx, childID, true)
 			require.NoError(t, err)
@@ -1035,7 +1041,9 @@ func TestChildQueuePublishesOnlyEffectiveSteeringCapability(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "zcode-span", ProviderChildKey: "zcode-child", Title: "read-only child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "zcode-span", ProviderChildKey: "zcode-child", Title: "read-only child"})
 	require.NoError(t, err)
 	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: rootID, WorkingDir: t.TempDir(),
@@ -2193,7 +2201,9 @@ func TestRequeueDroppedInputReportsARefusalAndStatesNothing(t *testing.T) {
 	t.Run("a subagent", func(t *testing.T) {
 		t.Parallel()
 		svc, sink := newRequeueFixture(t)
-		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span", ProviderChildKey: "row-key", Title: "child task"})
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "spawn-span", ProviderChildKey: "row-key", Title: "child task"})
 		require.NoError(t, err)
 		err = sink.ChildSink(childID).RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
 		require.ErrorContains(t, err, "has no input queue")

@@ -23,9 +23,9 @@ func (sink *Sink) SessionObservationWriterFor(captured agent.CapturedTranscript)
 		content.AgentSessionID == "" || content.AgentSessionID != owner.key.session.id {
 		return nil, errors.New("the captured session observation belongs to another source")
 	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if !owner.currentSessionLocked() {
+	release := sink.lockNativeSessionSource()
+	defer release()
+	if !owner.currentNativeStateSourceLocked() {
 		return nil, errors.New("the captured session observation expired")
 	}
 	writer := &sinkSessionObservationWriter{sink: sink, owner: owner}
@@ -34,20 +34,20 @@ func (sink *Sink) SessionObservationWriterFor(captured agent.CapturedTranscript)
 }
 
 func (writer *sinkSessionObservationWriter) currentLocked() bool {
-	return writer.sink.sessionObservation == writer && writer.owner.currentSessionLocked()
+	return writer.sink.sessionObservation == writer && writer.owner.currentNativeStateSourceLocked()
 }
 
 func (writer *sinkSessionObservationWriter) PersistSettingsRefresh(refresh optionmap.Map) {
-	writer.sink.mu.Lock()
-	defer writer.sink.mu.Unlock()
+	release := writer.sink.lockNativeSessionSource()
+	defer release()
 	if writer.currentLocked() {
 		writer.sink.persistSettingsRefreshLocked(refresh)
 	}
 }
 
 func (writer *sinkSessionObservationWriter) PublishSessionInfo(info map[string]interface{}) bool {
-	writer.sink.mu.Lock()
-	defer writer.sink.mu.Unlock()
+	release := writer.sink.lockNativeSessionSource()
+	defer release()
 	if !writer.currentLocked() {
 		return false
 	}
@@ -80,9 +80,11 @@ type testTranscriptKey struct {
 	scope     *testTranscriptScope
 }
 type testTranscriptOwner struct {
-	sink  *Sink
-	key   testTranscriptKey
-	spans []SpanOpen
+	activationLease  *testChildSinkLifetime
+	publisherSession *testSessionFact
+	sink             *Sink
+	key              testTranscriptKey
+	spans            []SpanOpen
 }
 
 func (sink *Sink) CaptureMessage(content agent.MessageContent, _ agent.SpanInfo) agent.MessageContent {
@@ -96,27 +98,39 @@ func (sink *Sink) CaptureMessage(content agent.MessageContent, _ agent.SpanInfo)
 }
 
 func (sink *Sink) captureMessageLocked(content agent.MessageContent) agent.MessageContent {
-	if sink.sessionFact == nil {
-		sink.sessionFact = &testSessionFact{id: sink.currentSessionIDLocked()}
+	session := sink.sessionFact.Load()
+	if session == nil {
+		sink.sessionFact.CompareAndSwap(nil, &testSessionFact{})
+		session = sink.sessionFact.Load()
+	}
+	publisher := sink.registry()
+	publisherSession := publisher.sessionFact.Load()
+	if publisherSession == nil {
+		publisher.sessionFact.CompareAndSwap(nil, &testSessionFact{})
+		publisherSession = publisher.sessionFact.Load()
 	}
 	if sink.transcriptScope == nil {
 		sink.transcriptScope = &testTranscriptScope{}
 	}
 	if content.AgentSessionID == "" {
-		content.AgentSessionID = sink.sessionFact.id
+		content.AgentSessionID = session.id
 	}
-	key := testTranscriptKey{session: sink.sessionFact, sessionID: content.AgentSessionID, scope: sink.transcriptScope}
-	owner := &testTranscriptOwner{sink: sink, key: key, spans: sink.liveSpansLocked()}
+	key := testTranscriptKey{session: session, sessionID: content.AgentSessionID, scope: sink.transcriptScope}
+	owner := &testTranscriptOwner{sink: sink, key: key, publisherSession: publisherSession, spans: sink.liveSpansLocked()}
 	content.Publication = owner
 	return content
 }
 
 func (owner *testTranscriptOwner) currentLocked() bool {
-	return owner.sink.transcriptScope == owner.key.scope && owner.currentSessionLocked()
+	return owner.sink.transcriptScope == owner.key.scope && owner.currentSessionLocked() && (owner.activationLease == nil || owner.sink.childLifetime == owner.activationLease)
 }
 
 func (owner *testTranscriptOwner) currentSessionLocked() bool {
-	return owner.key.session != nil && owner.sink.sessionFact == owner.key.session && owner.key.sessionID == owner.key.session.id
+	return owner.key.session != nil && owner.sink.sessionFact.Load() == owner.key.session && owner.key.sessionID == owner.key.session.id
+}
+
+func (owner *testTranscriptOwner) currentNativeStateSourceLocked() bool {
+	return owner.currentSessionLocked() && owner.publisherSession != nil && owner.sink.registry().sessionFact.Load() == owner.publisherSession
 }
 
 func (owner *testTranscriptOwner) Owner() agent.TranscriptOwner { return owner }
@@ -214,4 +228,16 @@ func (writer *sinkGoalWriter) apply(update *agent.GoalUpdate) error {
 		writer.root.upsertGoalLocked(*update)
 	}
 	return nil
+}
+
+// lockNativeSessionSource keeps root adoption and child state commits in one
+// order. Atomic session facts let ordinary child captures avoid reverse locks.
+func (sink *Sink) lockNativeSessionSource() func() {
+	root := sink.registry()
+	root.mu.Lock()
+	if root == sink {
+		return root.mu.Unlock
+	}
+	sink.mu.Lock()
+	return func() { sink.mu.Unlock(); root.mu.Unlock() }
 }

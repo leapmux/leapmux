@@ -1,9 +1,8 @@
 /**
  * Qoder CLI E2E fixtures.
  *
- * The worker runs `qodercli --config-dir <dir> -p --input-format stream-json
- * --output-format stream-json` and drives it over newline-delimited JSON (NDJSON).
- * Qoder requires login for stream-json. These tests mock authentication as the Cursor and Copilot tests do.
+ * The worker runs `qodercli --sdk --config-dir <dir>` and drives it over newline-delimited JSON (NDJSON).
+ * Qoder requires login for its SDK daemon. These tests mock authentication as the Cursor and Copilot tests do.
  * `helpers/mockAgentEnvironment.ts` configures authentication and model calls through the mock endpoint under an isolated `--config-dir`.
  * Tests use no Qoder account or real model. They never read the developer's Qoder configuration.
  */

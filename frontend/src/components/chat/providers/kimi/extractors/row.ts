@@ -1,25 +1,44 @@
-import type { ChatRow, ToolSpanRowRole } from '../../../model/row'
+import type { ChatRow } from '../../../model/row'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
-import type { ParsedMessageContent } from '~/lib/messageParser'
-import { KIMI_EVENT } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_RECORD_ROLE } from '~/generated/contracts/kimi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
-import { kimiEventData } from '../protocol'
+import { kimiConversationRow, kimiConversationToolsMatch } from '../conversation'
 import { kimiPlanText } from './plan'
 import { kimiToolCall, kimiToolRow } from './toolCall'
 
-/**
- * Read one Kimi Code row into the shared row model.
- *
- * The worker assembles the streamed text and thinking into rows of LeapMux's own, which
- * the shared classifier answers before this plugin runs. What reaches here is a tool
- * call, the plan an `ExitPlanMode` call proposes, and a row the service layer wrote.
- */
+/** Read a public Kimi conversation record or a row written by LeapMux. */
 export function kimiExtractRow(input: RowExtractionInput): ChatRow | null {
   const { category, resolved: parsed } = input
+  const conversation = kimiConversationRow(parsed.parentObject)
   switch (category.kind) {
+    case 'user_text':
+      return conversation?.kind === 'item' && conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Item
+        && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.UserMessage
+        ? {
+            kind: 'user',
+            text: kimiChildPromptText(pickString(conversation.item, KIMI_CONVERSATION_FIELD.Text)),
+            attachments: [],
+          }
+        : null
+    case 'assistant_text':
+      return conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.AssistantMessage
+        ? {
+            kind: 'assistant-text',
+            text: pickString(conversation.item, KIMI_CONVERSATION_FIELD.Text),
+          }
+        : null
+    case 'assistant_thinking':
+      return conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.Reasoning
+        ? {
+            kind: 'assistant-thinking',
+            text: pickString(conversation.item, KIMI_CONVERSATION_FIELD.Text),
+          }
+        : null
     case 'assistant_plan': {
+      if (conversation?.kind !== 'item' || conversation.role !== KIMI_CONVERSATION_RECORD_ROLE.Request)
+        return null
       const plan = kimiPlanText(parsed.parentObject)
       return plan === null
         ? null
@@ -37,28 +56,32 @@ export function kimiExtractRow(input: RowExtractionInput): ChatRow | null {
   }
 }
 
-/**
- * Resolve the current row and the span's request into one Kimi Code tool call.
- *
- * A result row reads the name and the arguments off its paired start. A request row
- * reads its own start alone, so it states no result.
- */
-function kimiToolSpanRow(input: RowExtractionInput): ChatRow | null {
-  const { resolved: parsed, span, spanType, completion } = input
-  const row = kimiToolRow(parsed.parentObject, spanType, span.request?.parentObject, completion ?? parsed.completion, parsed.topLevel)
-  if (!row)
-    return null
-  const call = kimiToolCall(row)
-  const role: ToolSpanRowRole = row.finished ? 'result' : 'request'
-  // The span's request is a row of any kind, so it must state THIS call before it counts
-  // as the row beside this one.
-  return toolCallRow(call, role, {
-    request: span.visibleRows.request && kimiSideStates(span.request, row.toolCallId, KIMI_EVENT.ToolCallStarted),
-  })
+/** Kimi injects this leading block into coordinator prompts for children. */
+function kimiChildPromptText(value: string): string {
+  const text = value.trim()
+  const opening = '<git-context>'
+  const closing = '</git-context>'
+  if (!text.startsWith(opening))
+    return text
+  const end = text.indexOf(closing)
+  return end < 0
+    ? text
+    : text.slice(end + closing.length).trim()
 }
 
-/** Whether one side of the span is the given event of the named call. */
-function kimiSideStates(side: ParsedMessageContent | undefined, toolCallId: string, type: string): boolean {
-  const data = kimiEventData(side?.parentObject, type)
-  return !!data && pickString(data, 'toolCallId') === toolCallId
+/**
+ * Resolve one native tool row without reading a later result.
+ * An earlier request supplies only the native identity check for span layout.
+ */
+function kimiToolSpanRow(input: RowExtractionInput): ChatRow | null {
+  const { resolved: parsed, span, completion } = input
+  const conversation = kimiConversationRow(parsed.parentObject)
+  if (conversation?.kind !== 'item')
+    return null
+  const row = kimiToolRow(parsed.parentObject, completion ?? parsed.completion, parsed.topLevel)
+  if (!row)
+    return null
+  const request = kimiConversationRow(span.request?.parentObject)
+  const paired = kimiConversationToolsMatch(conversation, request)
+  return toolCallRow(kimiToolCall(row), row.finished ? 'result' : 'request', { request: span.visibleRows.request && paired })
 }

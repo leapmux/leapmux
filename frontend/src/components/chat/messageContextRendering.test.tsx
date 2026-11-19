@@ -15,7 +15,7 @@ function resultMessage() {
     id: 'result',
     seq: 10n,
     spanId: 'call',
-    agentProvider: AgentProvider.OPENCODE,
+    agentProvider: AgentProvider.KILO,
     content: rawContent({ sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed' }),
   })
 }
@@ -94,7 +94,7 @@ describe('message context rendering', () => {
       id: 'request',
       seq: 1n,
       spanId: 'call',
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       content: rawContent({
         sessionUpdate: 'tool_call',
         toolCallId: 'call',
@@ -153,7 +153,7 @@ describe('message context rendering', () => {
       id: 'request',
       seq: 1n,
       spanId: 'call',
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       content: rawContent({
         sessionUpdate: 'tool_call',
         toolCallId: 'call',

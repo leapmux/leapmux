@@ -5,6 +5,44 @@ import { input } from '../testUtils'
 import { classifyQoderMessage } from './classification'
 
 describe('classifyQoderMessage', () => {
+  it('hides a completed hook configuration check without diagnostics', () => {
+    expect(classifyQoderMessage(input({
+      type: 'system',
+      subtype: 'hook_diagnostics',
+      read_status: 'complete',
+      diagnostics: [],
+    }, null, AgentProvider.QODER)))
+      .toEqual({ kind: 'hidden' })
+  })
+
+  it('hides an empty hook diagnostic inside a stored notification thread', () => {
+    expect(classifyQoderMessage(input(undefined, {
+      old_seqs: [],
+      messages: [
+        {
+          type: 'system',
+          subtype: 'hook_diagnostics',
+          read_status: 'complete',
+          diagnostics: [],
+        },
+      ],
+    }, AgentProvider.QODER))).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps a failed hook configuration check visible when it has no details', () => {
+    expect(classifyQoderMessage(input({
+      type: 'system',
+      subtype: 'hook_diagnostics',
+      read_status: 'failed',
+      diagnostics: [],
+    }, null, AgentProvider.QODER)))
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'hook', outcome: 'failed', detail: 'Qoder could not read the hook configuration' },
+        ],
+      })
+  })
   it('keeps a completed native compaction boundary as a notification', () => {
     const frame = {
       type: QODER_FRAME_KIND.System,

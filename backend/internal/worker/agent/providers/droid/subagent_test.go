@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const droidTaskCall = `{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"task-1","name":"Task","input":{"subagent_type":"explorer","description":"Inspect the note","prompt":"Read the child note."}}}}}`
-const droidChildAvailable = `{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":"child-1","toolUseId":"task-1","subagentType":"explorer","description":"Inspect the note"}}}`
+const droidTaskCall = `{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"task-1","name":"Task","input":{"subagent_type":"explorer","description":"Inspect the note","prompt":"Read the child note."}}}}}`
+const droidChildAvailable = `{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":"child-1","toolUseId":"task-1","subagentType":"explorer","description":"Inspect the note"}}}`
 
 func TestChildSessionAvailableCreatesRegistryAndPrompt(t *testing.T) {
 	t.Parallel()
@@ -40,9 +40,13 @@ func TestChildSessionMessagesAndTurnEndStayInChildTranscript(t *testing.T) {
 	a.HandleOutput([]byte(droidTaskCall))
 	a.HandleOutput([]byte(droidChildAvailable))
 	// Isolate output routing from the separate missing-registration failure.
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "droid-tool-task-1", ProviderChildKey: "child-1", Title: "Inspect the note"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: "child-1", Title: "Inspect the note"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "child-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusRunning,
 	}))
@@ -50,12 +54,12 @@ func TestChildSessionMessagesAndTurnEndStayInChildTranscript(t *testing.T) {
 	rootCount := len(sink.Messages())
 
 	for _, frame := range []string{
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_delta","messageId":"msg-1","blockIndex":0,"textDelta":"CHILD_EARLY"}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_complete","messageId":"msg-1","blockIndex":0}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"CHILD_EARLY"}]}}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"/note.txt"}}}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"read-1","content":"CHILD_READ_MARKER","isError":false}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_delta","messageId":"msg-1","blockIndex":0,"textDelta":"CHILD_EARLY"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_complete","messageId":"msg-1","blockIndex":0}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"CHILD_EARLY"}]}}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"/note.txt"}}}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"read-1","content":"CHILD_READ_MARKER","isError":false}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}
@@ -76,9 +80,9 @@ func TestUnknownNativeSessionCannotWriteIntoTheRoot(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
 	for _, frame := range []string{
-		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant"}}}}`,
-		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"droid_working_state_changed","newState":"thinking"}}}`,
-		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"unknown-session","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant"}}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"unknown-session","notification":{"type":"droid_working_state_changed","newState":"thinking"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"unknown-session","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}

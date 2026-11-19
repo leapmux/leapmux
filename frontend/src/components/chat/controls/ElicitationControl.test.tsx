@@ -62,6 +62,72 @@ const providers = [
 ] as const
 
 describe('shared elicitation control', () => {
+  it('updates conditional fields and sends hidden defaults with typed answers', async () => {
+    const request = {
+      requestId: 'conditional-form',
+      agentId: 'agent',
+      agentProvider: AgentProvider.OPENCODE,
+      payload: {
+        type: 'form.created',
+        data: {
+          form: {
+            fields: [
+              { key: 'choice', type: 'string', title: 'Choice' },
+              {
+                key: 'details',
+                type: 'string',
+                title: 'Details',
+                required: true,
+                when: [
+                  { key: 'choice', op: 'eq', value: 'yes' },
+                ],
+              },
+              {
+                key: 'count',
+                type: 'integer',
+                title: 'Hidden count',
+                hidden: true,
+                default: 0,
+              },
+            ],
+          },
+        },
+      },
+    }
+    const answerState = createControlAnswerState()
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <>
+        <ControlRequestContent request={request} answerState={answerState} />
+        <ControlRequestActions request={request} answerState={answerState} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
+      </>
+    ))
+    expect(screen.queryByLabelText('Hidden count')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Details *')).not.toBeInTheDocument()
+    fireEvent.input(screen.getByLabelText('Choice'), {
+      target: { value: 'yes' },
+    })
+    expect(screen.getByLabelText('Details *')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
+    fireEvent.input(screen.getByLabelText('Details *'), {
+      target: { value: 'stale' },
+    })
+    fireEvent.input(screen.getByLabelText('Choice'), {
+      target: { value: 'no' },
+    })
+    expect(screen.queryByLabelText('Details *')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0]))).toMatchObject({
+      response: {
+        response: {
+          action: 'accept',
+          content: { choice: 'no', count: 0 },
+        },
+      },
+    })
+  })
+
   it.each([undefined, AgentProvider.CLAUDE_CODE])('renders the request provider when separate metadata gives %s', async (agentProvider) => {
     const request = {
       requestId: 'early-form',

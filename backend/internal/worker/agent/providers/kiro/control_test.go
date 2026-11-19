@@ -55,6 +55,56 @@ func TestKiroControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, contracts.KiroMethodUserInput)
 }
 
+func TestKiroInterruptCancelsBeforeReleasingPendingControls(t *testing.T) {
+	t.Parallel()
+	for _, control := range []struct {
+		name  string
+		frame func(*testing.T) []byte
+	}{
+		{name: "question", frame: func(t *testing.T) []byte { return userInputRequest(t, 77, "waiting-question") }},
+		{name: "elicitation", frame: func(t *testing.T) []byte { return elicitationRequest(t, 77, "waiting-form") }},
+		{name: "permission", frame: func(t *testing.T) []byte {
+			return frame(t, map[string]any{"id": 77, "method": "session/request_permission", "params": map[string]any{
+				"sessionId": kiroTestSession,
+				"toolCall":  map[string]any{"toolCallId": "waiting-tool", "kind": "execute"},
+				"options":   []any{map[string]any{"optionId": "deny", "kind": "reject_once"}},
+			}})
+		}},
+	} {
+		t.Run(control.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+			a.SetSessionIDForTest(kiroTestSession)
+			a.SetPromptActiveForTest(true)
+			original := a.StdinForTest()
+			stdin := &agenttest.Stdin{}
+			a.SetStdinForTest(stdin)
+			defer a.SetStdinForTest(original)
+			a.HandleOutput(control.frame(t))
+			require.Len(t, sink.PublishedControls(), 1)
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
+			require.NoError(t, a.SendNotification("test/barrier", nil))
+			cancelAt, replyAt := -1, -1
+			for index, raw := range strings.Split(strings.TrimSpace(stdin.String()), "\n") {
+				var message struct {
+					Method string `json:"method"`
+					ID     int    `json:"id"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(raw), &message))
+				if message.Method == acp.MethodSessionCancel {
+					cancelAt = index
+				}
+				if message.Method == "" && message.ID == 77 {
+					replyAt = index
+				}
+			}
+			require.NotEqual(t, -1, cancelAt)
+			require.NotEqual(t, -1, replyAt)
+			assert.Less(t, cancelAt, replyAt, "cancel the native turn before a dismissed control resumes its model loop")
+		})
+	}
+}
+
 // userInputRequest is Kiro's question of the main session, as the probe
 // recorded it.
 func userInputRequest(t *testing.T, id int, toolCallID string) []byte {

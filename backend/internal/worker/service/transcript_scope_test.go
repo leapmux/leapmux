@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"encoding/json"
 	"testing"
 
@@ -38,7 +40,9 @@ func TestTranscriptScopeRetainsHistoricalAuthorityAndIndependentSpans(t *testing
 	services.UpdateSessionID("native-b")
 	services.SetTurnState(agent.TurnState{Active: true}, 3)
 	services.OpenSpan("new-live", "")
-	childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "scope-child", AgentSessionID: "native-child"})
+	childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "scope-child", AgentSessionID: "native-child"})
 	require.NoError(t, err)
 	child := services.ChildSink(childID)
 	child.OpenSpan("child-live", "")
@@ -118,7 +122,9 @@ func TestTranscriptScopeRejectsForeignAuthorityAndCapturedRows(t *testing.T) {
 	require.NoError(t, err)
 	_, err = services.TranscriptScopeFor(agent.CapturedTranscript{})
 	require.Error(t, err)
-	childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "foreign", AgentSessionID: "child-session"})
+	childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "foreign", AgentSessionID: "child-session"})
 	require.NoError(t, err)
 	foreign := agent.CaptureTranscript(services.ChildSink(childID), agent.MessageContent{}, agent.SpanInfo{})
 	_, err = services.TranscriptScopeFor(foreign)

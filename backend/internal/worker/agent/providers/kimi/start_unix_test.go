@@ -26,7 +26,8 @@ import (
 )
 
 // The launch tests put a fake `kimi` on PATH that re-runs this test binary as
-// TestHelperProcessKimi. The helper rejects `--version`, and `web` starts the
+// TestHelperProcessKimi. The helper records every invocation and rejects `--version`.
+// `doctor config` validates a synthetic configuration, and `web` starts the
 // same fake kap-server the other tests use, on a real loopback port, and prints
 // the ready line the real server prints.
 //
@@ -43,7 +44,7 @@ func installFakeKimi(t *testing.T, env ...string) string {
 	argsFile := filepath.Join(t.TempDir(), "args")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
 		Binary: kimiBinaryName, HelperRun: "TestHelperProcessKimi", WantEnv: kimiHelperEnv,
-		Env: env, ArgsFile: argsFile, ForwardArgs: true,
+		Env: append(env, "LEAPMUX_TEST_KIMI_ARGS_FILE="+argsFile), ForwardArgs: true,
 	})
 	return argsFile
 }
@@ -81,7 +82,7 @@ func TestKimiStartLaunchesTheServer(t *testing.T) {
 
 	args, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
-	assert.Equal(t, strings.Join(kimiServerArgs, " "), strings.TrimSpace(string(args)),
+	assert.Equal(t, strings.Join(kimiServerArgs, " "), strings.Split(strings.TrimSpace(string(args)), "\n")[0],
 		"the server runs with --no-open, a free loopback port and the quiet log level")
 	assert.Equal(t, "session_1", sink.LastSessionID())
 	assert.Equal(t, []string{"session_1"}, sink.StatusActives())
@@ -99,6 +100,21 @@ func TestKimiStartLaunchesTheServer(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the server did not exit on stop")
 	}
+}
+
+func TestKimiFreshRuntimeRetainsOptionsAndAttributesSessionWarnings(t *testing.T) {
+	installFakeKimi(t, kimiHelperScenarioEnv+"=session-warning")
+	running, sink, err := startKimiForTest(t, agent.Options{Options: options(agent.OptionIDModel, "kimi-text", kimiOptionSwarmMode, kimiSwarmOn)})
+	require.NoError(t, err)
+	require.NotNil(t, running)
+	assert.Equal(t, "session_2", sink.MessageSessionID())
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "session_2", rows[0].AgentSessionID)
+	assert.Contains(t, string(rows[0].Content), "AGENTS.md total exceeds the recommended size.")
+	opts := agent.CurrentOptions(running.OptionGroups())
+	assert.Equal(t, "kimi-text", opts[agent.OptionIDModel])
+	assert.Equal(t, kimiSwarmOn, opts[kimiOptionSwarmMode])
 }
 
 // A session that opens on a model of the Kimi Code account shows the windows
@@ -179,6 +195,16 @@ func TestKimiStartDoesNotProbeTheRelease(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(args), "--version")
 	assert.Contains(t, string(args), "web")
+	assert.Contains(t, string(args), "doctor config")
+}
+
+func TestKimiHelperRecordsARefusedVersionProbe(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv("LEAPMUX_TEST_KIMI_ARGS_FILE", argsFile)
+	assert.Equal(t, 91, runFakeKimi([]string{"--version"}))
+	args, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	assert.Equal(t, "--version\n", string(args))
 }
 
 func TestKimiStartDoesNotRequireServerReleaseMetadata(t *testing.T) {
@@ -217,9 +243,25 @@ func TestHelperProcessKimi(t *testing.T) {
 
 func runFakeKimi(args []string) int {
 	scenario := os.Getenv(kimiHelperScenarioEnv)
+	if argsFile := os.Getenv("LEAPMUX_TEST_KIMI_ARGS_FILE"); argsFile != "" {
+		file, err := os.OpenFile(argsFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		_, writeErr := fmt.Fprintln(file, strings.Join(args, " "))
+		if err := errors.Join(writeErr, file.Close()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 	if slices.Contains(args, "--version") {
 		fmt.Fprintln(os.Stderr, "version probes are forbidden")
 		return 91
+	}
+	if slices.Equal(args, []string{"doctor", "config"}) {
+		fmt.Print("Kimi doctor\n\nSKIP config.toml  synthetic-config.toml\n\nAll checked config files are valid.\n")
+		return 0
 	}
 	if len(args) == 0 || args[0] != "web" {
 		fmt.Fprintln(os.Stderr, "unknown command")
@@ -232,6 +274,11 @@ func runFakeKimi(args []string) int {
 
 	fake := newFakeKapState()
 	switch scenario {
+	case "session-warning":
+		fake.nextSession = 1
+		fake.reply("GET "+kimiSessionPath("session_2", "/warnings"), fakeKapReply{Data: map[string]any{
+			"warnings": []map[string]string{{"code": "agents-md-oversized", "message": "AGENTS.md total exceeds the recommended size.", "severity": "warning"}},
+		}})
 	case "no-models":
 		fake.models = nil
 		fake.config = map[string]any{}

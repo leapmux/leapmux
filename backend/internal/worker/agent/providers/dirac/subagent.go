@@ -1,175 +1,27 @@
 package dirac
 
-import (
-	"encoding/json"
-	"slices"
-	"sync"
-	"time"
+import "github.com/coder/quartz"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
-)
-
-// diracChildState records one native child card and the trajectory it sent.
-type diracChildState struct {
-	nativeID    string
-	sessionID   string
-	rowKey      string
-	agentID     int
-	agentName   string
-	prompt      string
-	trajectory  []diracTrajectoryEvent
-	finalStatus bgtask.Status
-	finalSeen   bool
-	retrying    bool
-	deadline    time.Time
-	done        chan struct{}
-	replayMu    sync.Mutex
-	eventIndex  int
-	lastError   error
+// beforeWaitCleanup joins the final native read before generic child cleanup.
+func (a *Agent) beforeWaitCleanup() {
+	a.archiveWG.Wait()
 }
 
-type diracTrajectoryEvent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type diracChildCardInput struct {
-	IsSubagent bool   `json:"isSubagent"`
-	AgentID    int    `json:"agentId"`
-	AgentName  string `json:"agentName"`
-	TaskTitle  string `json:"taskTitle"`
-	Prompt     string `json:"prompt"`
-}
-
-type diracChildCardOutput struct {
-	Trajectory []diracTrajectoryEvent `json:"trajectory"`
-}
-
-func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	if child := a.observeChildCard(tc.ToolCallID, tc.Title, tc.RawInput, tc.RawOutput, tc.Status); child != nil {
-		return child
+func (a *Agent) archiveClock() quartz.Clock {
+	if a.clock != nil {
+		return a.clock
 	}
-	return diracSubagentFromToolCall(tc)
+	return quartz.NewReal()
 }
 
-func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
-	return a.observeChildCard(tcu.ToolCallID, tcu.Title, tcu.RawInput, tcu.RawOutput, tcu.Status)
-}
-
-// observeChildCard maps one native child card to a linked registry row.
-func (a *Agent) observeChildCard(rowKey, title string, rawInput, rawOutput json.RawMessage, status string) *acp.SubagentObservation {
-	if rowKey == "" {
-		return nil
-	}
-	nativeID := rowKey
-	var input diracChildCardInput
-	if len(rawInput) > 0 && json.Unmarshal(rawInput, &input) != nil {
-		return nil
-	}
-	var output diracChildCardOutput
-	if len(rawOutput) > 0 && json.Unmarshal(rawOutput, &output) != nil {
-		return nil
-	}
-
-	sessionID := a.CurrentSessionID()
+// clearChildState stops readers of the outgoing native session. An already
+// captured output keeps its original destination through the transition.
+func (a *Agent) clearChildState() {
 	a.childMu.Lock()
-	if a.childState == nil {
-		a.childState = make(map[string]*diracChildState)
+	if a.childStop != nil {
+		close(a.childStop)
+		a.childStop = nil
 	}
-	if _, done := a.childDone[nativeID]; done {
-		a.childMu.Unlock()
-		return nil
-	}
-	state, known := a.childState[nativeID]
-	if known && state.finalSeen {
-		a.childMu.Unlock()
-		return nil
-	}
-	if !known {
-		if !input.IsSubagent || input.AgentID <= 0 || input.AgentName == "" || input.Prompt == "" {
-			a.childMu.Unlock()
-			return nil
-		}
-		state = &diracChildState{
-			nativeID: nativeID, sessionID: sessionID, rowKey: diracChildRowKey(sessionID, nativeID),
-			agentID: input.AgentID, agentName: input.AgentName, prompt: input.Prompt,
-			done: make(chan struct{}),
-		}
-		a.childState[nativeID] = state
-	}
-	final := acp.StatusIsFinal(status)
-	if output.Trajectory != nil && !final {
-		state.trajectory = slices.Clone(output.Trajectory)
-	}
-	if final {
-		state.finalStatus = acp.FinalStatus(status)
-		state.finalSeen = true
-		state.deadline = a.archiveClock().Now().Add(diracArchiveDeadline)
-		// The archive reader keeps identity and replay position. The last live
-		// delta is already in newEvents, so no cumulative card must stay here.
-		state.trajectory = nil
-	}
-	prompt := state.prompt
-	agentName := state.agentName
-	registryKey := state.rowKey
+	a.taskletWatch = nil
 	a.childMu.Unlock()
-
-	if title == "" {
-		title = agentName
-	}
-	obs := &acp.SubagentObservation{
-		RowKey: registryKey, ChildAgentKey: registryKey, Title: title,
-		Status: bgtask.StatusRunning, Prompt: prompt, Spawns: !known,
-	}
-	// A live card states no child text. A card can skip whole events of the
-	// child's timeline -- Dirac streams an answer to the archive only -- so a
-	// live-fed report could land above archive-only text that precedes it. The
-	// archive replay that closes the row reads the whole timeline in order,
-	// and it is the one writer of the child's text rows.
-	return obs
-}
-
-func diracChildRowKey(sessionID, nativeID string) string {
-	if sessionID == "" {
-		return bgtask.NormalizeRowKey(nativeID)
-	}
-	return bgtask.NormalizeRowKey(sessionID + ":" + nativeID)
-}
-
-// diracSubagentFromToolCall maps Dirac's aggregate `use_subagents` card to a
-// SUBAGENT registry row. Dirac stamps the model-facing tool name on
-// `rawInput.tool`, which is the one field of the call that names the tool:
-// `title` is the card's display label ("Run Subagents"). Dirac runs its
-// children behind one card, so the row is registry-only: no child transcript
-// opens, and the row's activity is the card's own title.
-func diracSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	if diracRawInputTool(tc.RawInput) != contracts.DiracToolUseSubagents {
-		return nil
-	}
-	title := tc.Title
-	if title == "" {
-		title = contracts.DiracToolUseSubagents
-	}
-	return &acp.SubagentObservation{
-		RowKey:   tc.ToolCallID,
-		Title:    title,
-		Activity: title,
-	}
-}
-
-// diracRawInputTool reads the `tool` field Dirac stamps on every raw input.
-// An input that is not a Dirac tool payload answers "".
-func diracRawInputTool(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var input struct {
-		Tool string `json:"tool"`
-	}
-	if json.Unmarshal(raw, &input) != nil {
-		return ""
-	}
-	return input.Tool
 }

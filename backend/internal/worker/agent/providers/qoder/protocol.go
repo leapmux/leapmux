@@ -96,7 +96,8 @@ type qoderImageBlock struct {
 
 // controlResponseEnvelope routes a control_response to its pending request.
 type controlResponseEnvelope struct {
-	Response struct {
+	SessionID string `json:"session_id"`
+	Response  struct {
 		Subtype   string          `json:"subtype"`
 		RequestID string          `json:"request_id"`
 		Response  json.RawMessage `json:"response"`

@@ -195,6 +195,29 @@ function fileNotificationFixture(initial: MiMoProducerFile[]) {
 }
 
 describe('observeMiMoNativeOutputSize observer lifecycle', () => {
+  it('reads the final file size when the watchers miss the last write', async () => {
+    vi.useFakeTimers()
+    const native = fileNotificationFixture([
+      { path: '/native/tool_current', byteLength: 3, identity: 'first' },
+    ])
+    const settled = native.control.observedPath.then(path => ({ path }), error => ({ error }))
+    try {
+      expect(native.release).not.toHaveBeenCalled()
+      native.replaceFiles([
+        { path: '/native/tool_current', byteLength: 8, identity: 'first' },
+      ])
+      await vi.advanceTimersToNextTimerAsync()
+      expect(native.release).toHaveBeenCalledTimes(1)
+      await expect(settled).resolves.toEqual({ path: '/native/tool_current' })
+      expect(vi.getTimerCount()).toBe(0)
+    }
+    finally {
+      native.control.close()
+      await settled
+      vi.useRealTimers()
+    }
+  })
+
   it('observes a final write that occurs while the file observer installs', async () => {
     let bytes = 3
     const release = vi.fn()

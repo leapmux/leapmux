@@ -902,7 +902,7 @@ export function cursorMcpExec(id: number, call: CursorMcpCall): Uint8Array {
     ...input,
     encodeStringField(3, call.callID),
     encodeStringField(4, call.server),
-    encodeStringField(5, nativeToolName),
+    encodeStringField(5, call.tool),
     encodeVarintField(8, 1),
     encodeStringField(9, call.server),
   ])

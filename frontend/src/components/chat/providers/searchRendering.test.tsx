@@ -30,9 +30,9 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
   }
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderKiloUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.KILO)
   return render(() => result)
 }
 
@@ -160,9 +160,9 @@ describe('claude Glob tool_result rendering', () => {
   })
 })
 
-describe('opencode search tool_call_update rendering', () => {
+describe('kilo search tool_call_update rendering', () => {
   it('renders matches summary via the shared body', () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'search',
       status: 'completed',
@@ -175,7 +175,7 @@ describe('opencode search tool_call_update rendering', () => {
   })
 
   it('renders "No matches found" when matches is 0', () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'search',
       status: 'completed',

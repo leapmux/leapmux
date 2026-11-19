@@ -2636,9 +2636,34 @@ describe('tool row quote', () => {
     expect(screen.getByRole('button', { name: 'Copy', hidden: true })).toBeInTheDocument()
   })
 
-  it('quotes a to-do row that carries a result with the saved checklist', () => {
+  it('renders and quotes a native tool through its stored Worker span', () => {
     const msg = makeMsg({
       agentProvider: AgentProvider.OPENCODE,
+      source: MessageSource.AGENT,
+      spanId: 'worker-native-span',
+      spanType: 'shell',
+      content: rawContent({
+        type: 'session.tool.success',
+        data: {
+          sessionID: 'ses_1',
+          assistantMessageID: 'msg_1',
+          id: 'native-call',
+          name: 'shell',
+          input: { command: 'pwd' },
+          content: [
+            { type: 'text', text: '/native/project' },
+          ],
+          metadata: { exit: 0 },
+        },
+      }),
+    })
+    expect(quoteOf(msg).join('')).toContain('/native/project')
+    expect(screen.queryByTestId('unrendered-row')).not.toBeInTheDocument()
+  })
+
+  it('quotes a to-do row that carries a result with the saved checklist', () => {
+    const msg = makeMsg({
+      agentProvider: AgentProvider.KILO,
       source: MessageSource.AGENT,
       content: rawContent({
         sessionUpdate: 'plan',

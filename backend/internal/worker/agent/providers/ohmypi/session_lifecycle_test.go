@@ -250,7 +250,7 @@ func TestClearContextEndsAnOpenCompactionEvenIfStateReadFails(t *testing.T) {
 	})
 	_, err := r.agent.ClearContext()
 	require.ErrorContains(t, err, "state unavailable")
-	assert.False(t, r.agent.rootConversation().compactionOpen)
+	assert.Nil(t, r.agent.rootConversation().compaction)
 	assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: nil})
 	notifications := r.sink.Notifications()
 	require.Len(t, notifications, 1)

@@ -104,3 +104,83 @@ func TestYoloChangesSettlePendingToolsAndRestoreManualApproval(t *testing.T) {
 	assert.Equal(t, 2, sink.PublishedControlCount(), "disabling YOLO restores manual approval")
 	assert.NotContains(t, replies(), "103")
 }
+
+func TestDiracAppliesYoloOnlyBetweenNativePrompts(t *testing.T) {
+	t.Parallel()
+	a, requests := acptest.NewAgentForRPCWithRequestResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(request agenttest.RecordedRequest) agenttest.RPCReply {
+			switch request.Method {
+			case acp.MethodSessionSetConfigOption:
+				assert.Equal(t, diracTestSession, request.Params["sessionId"])
+				assert.Equal(t, contracts.DiracConfigYolo, request.Params["configId"])
+				assert.Equal(t, true, request.Params["value"])
+				return agenttest.RPCReply{Result: []byte(`{"configOptions":[{"id":"yolo","type":"boolean","currentValue":true}]}`)}
+			case acp.MethodSessionPrompt:
+				return agenttest.RPCReply{Result: []byte(`{"stopReason":"end_turn"}`)}
+			default:
+				return agenttest.RPCReply{Result: []byte(`{}`)}
+			}
+		},
+	)
+	*a.HooksForTest() = a.configure(nil)
+	a.SetSessionIDForTest(diracTestSession)
+	sink := &agenttest.ControlSink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.Mu.Lock()
+	a.ApplyOptionGroupsLockedForTest([]acp.ConfigOption{{ID: contracts.DiracConfigYolo, Type: "boolean", CurrentValue: "false"}})
+	a.Mu.Unlock()
+	a.SetPromptActiveForTest(true)
+	a.PublishSessionControlRequest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":101,"method":"session/request_permission","params":{"sessionId":"session-1","toolCall":{"name":"execute_command","title":"Execute command","kind":"execute"},"options":[{"optionId":"allow_once","kind":"allow_once"}]}}`)), nil)
+	require.Equal(t, 1, sink.PublishedControlCount())
+
+	result := a.UpdateSettings(map[string]string{contracts.DiracConfigYolo: "true"})
+	require.True(t, result.AppliedLive)
+	testutil.AssertEventually(t, func() bool {
+		var lines []string
+		for _, request := range requests() {
+			lines = append(lines, request.Raw)
+		}
+		return agenttest.JSONRPCResultsByID(t, strings.Join(lines, "\n"))["101"] != ""
+	}, "the pending card receives its exact approval")
+	assert.Empty(t, acptest.ConfigWrites(requests()), "the native card cannot be consumed by a Yolo write while this prompt runs")
+	assert.Equal(t, "true", agent.CurrentOptions(a.OptionGroups())[contracts.DiracConfigYolo])
+
+	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[contracts.DiracConfigYolo].State)
+	a.Mu.Lock()
+	a.ApplyOptionGroupsLockedForTest([]acp.ConfigOption{{ID: contracts.DiracConfigYolo, Type: "boolean", CurrentValue: "false"}})
+	a.Mu.Unlock()
+	assert.Equal(t, "true", agent.CurrentOptions(a.OptionGroups())[contracts.DiracConfigYolo], "a native snapshot cannot erase a pending user selection")
+
+	a.SetPromptActiveForTest(false)
+	require.NoError(t, a.SendInput("The next turn.", nil))
+	syncPeer(t, a)
+	var operations []string
+	for _, request := range requests() {
+		if request.Method == acp.MethodSessionSetConfigOption || request.Method == acp.MethodSessionPrompt {
+			operations = append(operations, request.Method)
+		}
+	}
+	assert.Equal(t, []string{acp.MethodSessionSetConfigOption, acp.MethodSessionPrompt}, operations)
+}
+
+func TestDiracReversingADeferredYoloChoiceSendsNoNativeWrite(t *testing.T) {
+	t.Parallel()
+	a, requests := newDiracAgent(t)
+	a.SetSinkForTest(agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.Mu.Lock()
+	a.ApplyOptionGroupsLockedForTest([]acp.ConfigOption{{ID: contracts.DiracConfigYolo, Type: "boolean", CurrentValue: "false"}})
+	a.Mu.Unlock()
+	a.SetPromptActiveForTest(true)
+	require.True(t, a.UpdateSettings(map[string]string{contracts.DiracConfigYolo: "true"}).AppliedLive)
+	result := a.UpdateSettings(map[string]string{contracts.DiracConfigYolo: "false"})
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, "false", result.ConfirmedOptions().Get(contracts.DiracConfigYolo))
+	assert.Equal(t, "false", agent.CurrentOptions(a.OptionGroups())[contracts.DiracConfigYolo])
+	a.SetPromptActiveForTest(false)
+	require.NoError(t, a.SendInput("The next turn stays manual.", nil))
+	syncPeer(t, a)
+	assert.Empty(t, acptest.ConfigWrites(requests()))
+	assert.Len(t, requestsFor(requests(), acp.MethodSessionPrompt), 1)
+}

@@ -86,6 +86,33 @@ func TestQueuedMessagesDiscardedReportsPendingSteers(t *testing.T) {
 	assert.Empty(t, sink.Messages())
 }
 
+func TestQueueSnapshotDoesNotSettlePendingSteer(t *testing.T) {
+	t.Parallel()
+	for _, populated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("populated=%t", populated), func(t *testing.T) {
+			t.Parallel()
+			a, sink, requests, _ := newDroidInputHarness(t)
+			a.startTurn()
+			done := make(chan error, 1)
+			go func() { done <- a.SteerInput("queued guidance", nil) }()
+			request := receiveDroidInput(t, requests)
+			answerDroidInput(t, a, request.ID, false)
+			require.NoError(t, <-done)
+			messages := `[]`
+			if populated {
+				messages = fmt.Sprintf(`[{"requestId":%q,"queuePlacement":"next","text":"queued guidance","imageCount":0,"fileCount":0}]`, request.ID)
+			}
+			a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"queued_messages_changed","messages":`+messages+`}`)))
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Empty(t, sink.SteerEchoReports())
+			assert.True(t, a.PublishTurnActive().Active)
+			a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, request)))
+			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+		})
+	}
+}
+
 func TestDroidSteerEchoPrecedesTheReplyAndSurvivesTheTurnEnd(t *testing.T) {
 	t.Parallel()
 	a, sink, requests, _ := newDroidInputHarness(t)

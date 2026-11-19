@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
 // SpanInfo groups span-related metadata for a persisted message.
@@ -121,9 +122,13 @@ type TranscriptPublication interface {
 
 // MessageEnrichment describes a conditional update to separate rendering data.
 type MessageEnrichment struct {
-	Publication         TranscriptPublication
-	WriteReceipt        *MessageEnrichmentReceipt
-	AgentSessionID      string
+	// Completion updates the rendering outcome when nonempty. It repeats no completion effects.
+	Completion     MessageCompletion
+	Publication    TranscriptPublication
+	WriteReceipt   *MessageEnrichmentReceipt
+	AgentSessionID string
+	// Seq selects an exact stored row. Zero selects the latest row of SpanID.
+	// A row without a span requires a positive sequence.
 	Seq                 int64
 	SpanID              string
 	OriginalContent     []byte
@@ -153,6 +158,12 @@ type TranscriptServices interface {
 	CaptureMessage(content MessageContent, span SpanInfo) MessageContent
 	// TranscriptScopeFor plans independent span geometry under the capture's original authority.
 	TranscriptScopeFor(CapturedTranscript) (TranscriptScope, error)
+	// HistoricalTranscriptScopeFor preserves the captured destination and native session,
+	// including an empty session, with independent spans and permanently historical authority.
+	HistoricalTranscriptScopeFor(CapturedTranscript) (TranscriptScope, error)
+	// ReadMessageByIdempotencyKey returns one immutable provider record.
+	// The native session is exact, including an empty session. An empty key returns nil.
+	ReadMessageByIdempotencyKey(sessionID, idempotencyKey string) (*StoredMessage, error)
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
 	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is
@@ -373,6 +384,16 @@ type PlanServices interface {
 	UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string)
 }
 
+// CapturedTodoSnapshot owns an immutable list and its original native source.
+// Persist reports false without an error after that source expires. A current
+// identical list reports true without changing the store or publishing an event.
+type CapturedTodoSnapshot interface{ Persist() (bool, error) }
+
+// TodoServices prepares state-only writes without adding transcript rows.
+type TodoServices interface {
+	PrepareTodoSnapshot(CapturedTranscript, []todoevents.Item) (CapturedTodoSnapshot, error)
+}
+
 // GoalServices owns the provider-neutral session goal.
 type GoalServices interface {
 	// UpsertGoal records the provider's current session goal (see goal.go for the
@@ -500,7 +521,10 @@ type AutoRetryWriter interface {
 // ChildAgentSpec supplies a native child identity and its initial stored options.
 // A child without a known spawn span must supply its exact provider key.
 type ChildAgentSpec struct {
-	SpawnSpanID      string
+	RegistryRole bgtask.Role
+	// SpawnSpanID records the parent tool origin. Several native children may share it.
+	SpawnSpanID string
+	// ProviderChildKey identifies one exact native child independently of its origin.
 	ProviderChildKey string
 	Title            string
 	Options          optionmap.Map
@@ -514,6 +538,10 @@ type ChildServices interface {
 	// AcquireChildSink creates one child service lifetime without invoking callbacks.
 	// Activate publishes its captured progress reset after the caller installs the sink.
 	AcquireChildSink(childAgentID string) ChildSinkLease
+	// AcquireChildStateSink supersedes cleanup authority while preserving the
+	// current activity scope, spans and progress. Activate promotes it to a
+	// transcript lifetime when a native turn starts. Activation is idempotent.
+	AcquireChildStateSink(childAgentID string) ChildSinkLease
 
 	// --- Subagent transcripts and the background-task registry ---
 
@@ -521,6 +549,7 @@ type ChildServices interface {
 	// It creates an absent child and stores its initial options before publication.
 	// Replays and Worker restarts resolve the same stored child.
 	// A nonempty ProviderChildKey supplies the registry key also.
+	// A span-only lookup refuses an origin that several children share.
 	//
 	// The sink cleans the model's Title with the common validate.CleanName rule.
 	// The provider must supply its original title without a separate cap or character filter.
@@ -633,6 +662,9 @@ type BackgroundTaskServices interface {
 	// that has a better fallback for that case applies it BEFORE it calls
 	// (acpBridge's terminal/create falls back to "shell").
 	UpsertBackgroundTask(task bgtask.Upsert) error
+	// UpdateBackgroundTaskDescription changes only descriptive text on an
+	// existing row. It preserves lifecycle, linkage and display admission.
+	UpdateBackgroundTaskDescription(rowKey, description string) error
 	UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error
 	CloseBackgroundTask(rowKey string, status bgtask.Status) error
 	// RenameBackgroundTask atomically re-keys a row from oldKey to newKey,
@@ -740,6 +772,7 @@ type ServiceFacets interface {
 	ControlServices
 	SessionServices
 	PlanServices
+	TodoServices
 	GoalServices
 	AutoRetryServices
 	ChildServices
@@ -763,6 +796,7 @@ type providerServices struct {
 	ControlServices
 	SessionServices
 	PlanServices
+	TodoServices
 	GoalServices
 	AutoRetryServices
 	ChildServices
@@ -782,6 +816,7 @@ func NewProviderServices(services ServiceFacets) ProviderServices {
 		ControlServices:        services,
 		SessionServices:        services,
 		PlanServices:           services,
+		TodoServices:           services,
 		GoalServices:           services,
 		AutoRetryServices:      services,
 		ChildServices:          services,
@@ -1069,6 +1104,32 @@ func (e *AgentBusyError) Unwrap() error {
 	return e.Err
 }
 
+// ChildInput carries one user message and its readiness notification.
+type ChildInput struct {
+	Content     string
+	Attachments []*leapmuxv1.Attachment
+	// Ready asks the Worker to reconsider this child's queue. The capture
+	// retains the original physical and native source across delayed receipts.
+	// Call it outside provider locks. An expired source is a successful no-op.
+	Ready func(CapturedTranscript) error
+}
+
+// ChildInputResult distinguishes native prompt admission from a started turn.
+type ChildInputResult struct {
+	StartsTurn bool
+}
+
+// InputReadinessAdmission retains the source of a native readiness observation.
+// Acquire returns nil after that source retires.
+type InputReadinessAdmission interface{ Acquire() InputReadinessLease }
+
+// InputReadinessLease protects scheduling only. Release it before dispatch.
+type InputReadinessLease interface{ Release() }
+
+// ErrInputPending means a prior input awaits native admission without a turn.
+// Its readiness notification, rather than a turn event, releases queued input.
+var ErrInputPending = errors.New("an earlier input awaits native admission")
+
 // ChildSteerer lets a provider send input to a child conversation in its
 // process. Queue dispatch resolves the child registry row and drives the owner.
 // Providers that cannot send direct child input do not implement this interface.
@@ -1076,7 +1137,7 @@ type ChildSteerer interface {
 	// SendChildInput sends a user message to a child conversation identified by
 	// childKey (the provider linkage key stored in the registry row_key). Returns
 	// ErrChildOperationUnsupported only via the Manager's capability check.
-	SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
+	SendChildInput(childKey string, input ChildInput) (ChildInputResult, error)
 	// SteerChildInput adds input to the child's active turn.
 	SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
 	// ActiveChildTurnState classifies the child's current turn after

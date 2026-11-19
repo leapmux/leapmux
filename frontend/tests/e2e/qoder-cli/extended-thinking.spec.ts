@@ -12,17 +12,17 @@ const THINKING_VALUE = { auto: 'auto', off: 'false', on: 'true' } as const
 const THINKING_STATE = { [THINKING_VALUE.auto]: 'auto', [THINKING_VALUE.off]: 'off', [THINKING_VALUE.on]: 'on' } as const
 
 /**
- * Require the thinking state that Qoder states in an OpenAI-compatible model request at effort Auto.
- * Off sends `--thinking disabled`. On sends `--thinking adaptive`. Auto sends no thinking flag, and at effort Auto
- * Qoder then states no thinking field at all. At a concrete effort Qoder turns thinking on by itself, so this check
- * needs effort Auto to tell Auto from On.
+ * Require Qoder 1.1.86's native request fields for the declared thinking-capable model.
+ * Off disables thinking explicitly. On selects adaptive thinking. Auto keeps the model's adaptive default.
+ * The native OpenAI-compatible adapter represents adaptive thinking through its default Medium effort.
  */
 function expectNativeThinkingAtAutomaticEffort(request: MockModelRequestRecord, thinking: 'auto' | 'off' | 'on'): void {
-  if (thinking === 'auto') {
-    expect(request.body).not.toHaveProperty('enable_thinking')
+  if (thinking === 'off') {
+    expect(request.body).toMatchObject({ enable_thinking: false, reasoning_effort: 'none' })
     return
   }
-  expect(request.body).toMatchObject({ enable_thinking: thinking === 'on' })
+  expect(request.body).toMatchObject({ reasoning_effort: 'medium' })
+  expect(request.body).not.toHaveProperty('enable_thinking')
 }
 
 qoderTest.describe('Qoder CLI extended thinking', () => {
@@ -65,7 +65,8 @@ qoderTest.describe('Qoder CLI extended thinking', () => {
     await expectSettingsOptionChosen(page, `${THINKING}-${THINKING_VALUE.on}`)
     await expect(effortChip).toContainText('Low')
     const on = await sendNativeAnswer(native, 'Reply once with thinking on at effort Low.', 'Thinking returned at effort Low.')
-    expect(on.body).toMatchObject({ enable_thinking: true, reasoning_effort: 'low' })
+    expect(on.body).toMatchObject({ reasoning_effort: 'low' })
+    expect(on.body).not.toHaveProperty('enable_thinking')
   })
 
   qoderTest('keeps thinking Off after a model switch and a reload', async ({ native }) => {

@@ -4,6 +4,11 @@ export const questionGroup = style({
   marginBottom: 'var(--space-3)',
 })
 
+export const questionContext = style({
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+})
+
 export const questionLabel = style({
   fontSize: 'var(--text-7)',
   fontWeight: 'var(--font-normal)',

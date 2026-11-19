@@ -10,11 +10,48 @@ export interface DiracEnvironmentOptions {
   modelID: string
 }
 
+/** Enable the native capabilities exercised by the isolated Dirac profiles. */
+export function diracTestState() {
+  return {
+    telemetrySetting: 'disabled',
+    autoApproveAllToggled: true,
+    yoloModeToggled: true,
+    subagentsEnabled: true,
+  }
+}
+
+/** Disable automatic approval in the isolated profile used for permission tests. */
+export function diracAskingState(state: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...state,
+    autoApproveAllToggled: false,
+    yoloModeToggled: false,
+    // Dirac 0.6.0 treats enabled as a legacy field. Individual actions control
+    // ordinary approvals, and executeCommands defaults to true when absent.
+    autoApprovalSettings: {
+      version: 1,
+      enabled: true,
+      favorites: [],
+      maxRequests: 20,
+      actions: {
+        readFiles: false,
+        readFilesExternally: false,
+        editFiles: false,
+        editFilesExternally: false,
+        executeCommands: false,
+        useBrowser: false,
+        applyDiff: false,
+      },
+      enableNotifications: false,
+    },
+  }
+}
+
 /** Point Dirac at the mock through its OpenAI provider, with telemetry off, every approval granted, and no update. */
 export function createDiracEnvironment(options: DiracEnvironmentOptions): Record<string, string> {
   const diracDir = join(options.homeDir, '.dirac')
   mkdirSync(join(diracDir, 'data', 'state'), { recursive: true })
-  writeFileSync(join(diracDir, 'data', 'globalState.json'), JSON.stringify({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true }), { mode: 0o600 })
+  writeFileSync(join(diracDir, 'data', 'globalState.json'), JSON.stringify(diracTestState()), { mode: 0o600 })
   return {
     DIRAC_PROVIDER: 'openai',
     DIRAC_BASE_URL: options.baseURL,

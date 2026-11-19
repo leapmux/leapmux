@@ -4,7 +4,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelBodiesAfter } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsChip, messageContents, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
 import { KIMI_PLAN_FILE_CAPTURE } from './planScenario'
 
@@ -88,6 +88,16 @@ kimiTest.describe('reviews a Kimi Code plan', () => {
     // Kimi Code. The server leaves plan mode in that mode, and the worker
     // follows it.
     await expectSettingsChip(page, 'Ask When Needed')
+
+    const savedProposal = messageContents(page).filter({
+      has: page.getByText('Proposed Plan', { exact: true }),
+    })
+    await expect(savedProposal).toHaveCount(1)
+    await expect(savedProposal).toContainText('Option B: do it the robust way.')
+    await page.reload()
+    await waitForSettingsHydrated(page)
+    await expect(savedProposal).toHaveCount(1)
+    await expect(savedProposal).toContainText('Option B: do it the robust way.')
   })
 
   kimiTest('a request for revisions keeps plan mode, and the model hears it', async ({ authenticatedKimiWorkspace, page, modelScript }) => {

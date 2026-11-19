@@ -67,8 +67,12 @@ func TestNotificationVerdicts(t *testing.T) {
 	}{
 		{"heartbeat", `{"type":"tool_execution_heartbeat","toolUseId":"call"}`, false},
 		{"permission receipt", `{"type":"permission_resolved"}`, false},
+		{"child completion receipt", `{"type":"child_session_settled","childSessionId":"child-1","toolUseId":"call","status":"completed","timestamp":1794597829850}`, false},
 		{"token usage", `{"type":"session_token_usage_changed","tokenUsage":{"total":7}}`, false},
 		{"title", `{"type":"session_title_updated","title":"new title"}`, false},
+		{"empty native queue", `{"type":"queued_messages_changed","messages":[]}`, false},
+		{"populated native queue", `{"type":"queued_messages_changed","messages":[{"requestId":"queued","queuePlacement":"next","text":"guidance","imageCount":0,"fileCount":0}]}`, false},
+		{"script oracle", `{"type":"script_oracle_changed","scriptToolUseId":"call","oracle":{"callCount":0,"rows":[]}}`, false},
 		{"hook start", `{"type":"hook_execution_started","hookEventName":"UserPromptSubmit"}`, false},
 		{"hook success", `{"type":"hook_execution_completed","hookStatus":"completed","hookResults":[{"exitCode":0}]}`, false},
 		{"hidden hook failure", `{"type":"hook_execution_completed","hookStatus":"error","hiddenFromUserViews":true}`, false},
@@ -91,6 +95,24 @@ func TestNotificationVerdicts(t *testing.T) {
 				assert.Empty(t, sink.PersistedNotifications())
 				assert.Empty(t, sink.Messages())
 			}
+		})
+	}
+}
+
+func TestNonSessionNotificationDoesNotWriteTranscript(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"droid.disconnect", "droid.future_metadata", ""} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSteerAgent(t)
+			env := newDroidEnvelope(droidTypeNotification)
+			env.Method = method
+			env.Params = json.RawMessage(`{}`)
+			line, err := env.Marshal()
+			require.NoError(t, err)
+			a.HandleOutput(line)
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Empty(t, sink.Messages())
 		})
 	}
 }
@@ -693,9 +715,9 @@ func TestThinkingDeltaCreatesAReasoningRow(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
 	for _, frame := range []string{
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_delta","messageId":"message-1","blockIndex":1,"textDelta":"Compare "}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_delta","messageId":"message-1","blockIndex":1,"textDelta":"the values."}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_complete","messageId":"message-1","blockIndex":1,"durationMs":8}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_delta","messageId":"message-1","blockIndex":1,"textDelta":"Compare "}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_delta","messageId":"message-1","blockIndex":1,"textDelta":"the values."}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_complete","messageId":"message-1","blockIndex":1,"durationMs":8}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}
@@ -714,7 +736,7 @@ func TestThinkingDeltaCreatesAReasoningRow(t *testing.T) {
 func TestEmptyThinkingBlockCreatesNoRow(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_complete","messageId":"message-1","blockIndex":1}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"thinking_text_complete","messageId":"message-1","blockIndex":1}}}`))
 	assert.Empty(t, sink.Messages(), "an empty thinking block has no content")
 	assert.Empty(t, sink.PersistedNotifications(), "the completion is protocol state")
 }
@@ -722,9 +744,9 @@ func TestEmptyThinkingBlockCreatesNoRow(t *testing.T) {
 func TestTurnEndReportsZeroToolUses(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"assistant_text_delta","messageId":"text-1","blockIndex":0,"textDelta":"A text-only answer."}}}`))
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"assistant_text_complete","messageId":"text-1","blockIndex":0}}}`))
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"text-turn","reason":"completed"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"assistant_text_delta","messageId":"text-1","blockIndex":0,"textDelta":"A text-only answer."}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"assistant_text_complete","messageId":"text-1","blockIndex":0}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"text-turn","reason":"completed"}}}`))
 
 	assert.Equal(t, []int{0}, agenttest.TurnToolUseCounts(t, sink.Messages()))
 }
@@ -732,11 +754,11 @@ func TestTurnEndReportsZeroToolUses(t *testing.T) {
 func TestTurnEndCountsEachNativeToolResultOnce(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	result := []byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"read-1","content":"The read result.","isError":false}}}`)
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"note.txt"}}}}}`))
+	result := []byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"read-1","content":"The read result.","isError":false}}}`)
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"note.txt"}}}}}`))
 	a.HandleOutput(result)
 	a.HandleOutput(result)
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"tool-turn","reason":"completed"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"tool-turn","reason":"completed"}}}`))
 
 	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, sink.Messages()), "a duplicate native result must not increase the count")
 }
@@ -744,8 +766,8 @@ func TestTurnEndCountsEachNativeToolResultOnce(t *testing.T) {
 func TestToolResultPersistsBeforeItsSpanCloses(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"shell-rail","name":"Execute","input":{"command":"printf result"}}}}}`))
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"shell-rail","content":"result","isError":false}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"shell-rail","name":"Execute","input":{"command":"printf result"}}}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"shell-rail","content":"result","isError":false}}}`))
 	rows := sink.Messages()
 	require.Len(t, rows, 2)
 	assert.True(t, rows[1].Closing)
@@ -759,13 +781,13 @@ func TestTurnEndToolCountResetsAndExcludesChildCalls(t *testing.T) {
 	a.HandleOutput([]byte(droidTaskCall))
 	a.HandleOutput([]byte(droidChildAvailable))
 	for _, frame := range []string{
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"reused-read","name":"Read","input":{"file_path":"child.txt"}}}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"reused-read","content":"child result","isError":false}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"child-turn","reason":"completed"}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"reused-read","name":"Read","input":{"file_path":"root.txt"}}}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"reused-read","content":"root result","isError":false}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"first-root-turn","reason":"completed"}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"second-root-turn","reason":"completed"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"reused-read","name":"Read","input":{"file_path":"child.txt"}}}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"reused-read","content":"child result","isError":false}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"child-turn","reason":"completed"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"reused-read","name":"Read","input":{"file_path":"root.txt"}}}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"reused-read","content":"root result","isError":false}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"first-root-turn","reason":"completed"}}}`,
+		`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"second-root-turn","reason":"completed"}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}

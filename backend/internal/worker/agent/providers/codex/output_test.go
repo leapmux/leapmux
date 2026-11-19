@@ -1978,12 +1978,13 @@ func TestHandleCodexOutput_MultiAgentV2NestedChildUsesItsDirectParent(t *testing
 	require.True(t, foundGrandchild)
 	assert.Equal(t, "grandchild", grandchildRow.Title)
 	assert.Equal(t, "child-of-call-parent", grandchildRow.ParentAgentID)
-	assert.Equal(t, "child-of-call-grandchild", grandchildRow.ChildAgentID)
+	assert.NotEmpty(t, grandchildRow.ChildAgentID)
+	assert.NotEqual(t, grandchildRow.ParentAgentID, grandchildRow.ChildAgentID)
 	assert.Empty(t, sink.Messages(), "nested output does not reach the root")
 
 	parent := sink.Child("child-of-call-parent")
 	assert.Empty(t, parent.Messages(), "nested output does not reach the direct parent transcript")
-	grandchild := parent.Child("child-of-call-grandchild")
+	grandchild := parent.Child(grandchildRow.ChildAgentID)
 	require.Len(t, grandchild.Messages(), 1)
 	assert.Contains(t, string(grandchild.Messages()[0].Content), "NESTED_DONE")
 }

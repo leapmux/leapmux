@@ -52,9 +52,18 @@ for await (const request of readMcpMessages()) {
       receipt.replied({ id: request.id, kind: 'result', result: reply });
       const valid = reply.action === 'accept' && object(reply.content)
         && reply.content.count === 0 && reply.content.enabled === false && reply.content.color === 'b';
-      text = confirmationOnly ? (reply.action === 'accept' ? 'MCP_CONFIRM_ACCEPTED' : reply.action === 'decline' || reply.action === 'cancel' ? 'MCP_CONFIRM_DECLINED' : 'FORM_ROUND_TRIP_FAILED') : valid ? 'FORM_ROUND_TRIP_OK'
-        : reply.action === 'decline' ? 'FORM_ROUND_TRIP_DECLINED'
-          : reply.action === 'cancel' ? 'FORM_ROUND_TRIP_CANCELLED' : 'FORM_ROUND_TRIP_FAILED';
+      if (confirmationOnly) {
+        switch (reply.action) {
+          case 'accept': text = 'MCP_CONFIRM_ACCEPTED'; break;
+          case 'decline': text = 'MCP_CONFIRM_DECLINED'; break;
+          case 'cancel': text = 'MCP_CONFIRM_CANCELLED'; break;
+          default: text = 'FORM_ROUND_TRIP_FAILED';
+        }
+      } else {
+        text = valid ? 'FORM_ROUND_TRIP_OK'
+          : reply.action === 'decline' ? 'FORM_ROUND_TRIP_DECLINED'
+            : reply.action === 'cancel' ? 'FORM_ROUND_TRIP_CANCELLED' : 'FORM_ROUND_TRIP_FAILED';
+      }
       isError = text === 'FORM_ROUND_TRIP_FAILED';
     }
     else { text = 'FORM_ROUND_TRIP_FAILED'; isError = true; }

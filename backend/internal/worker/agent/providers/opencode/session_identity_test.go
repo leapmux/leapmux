@@ -61,7 +61,7 @@ func TestACPBufferedPrimaryAgentUpdatePrecedesTheRequestedSelection(t *testing.T
 }
 
 func TestACPAdvertisedSteeringKeepsItsSessionUntilTheReply(t *testing.T) {
-	var agent *Agent
+	var agent *familyTestAgent
 	replaced := false
 	agent, _ = newOpenCodeAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
 		if method == "_provider/session/steer" && agent.SessionMuForTest().TryLock() {

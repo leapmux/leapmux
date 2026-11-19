@@ -26,7 +26,7 @@ import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { deferred } from '~/test-support/async'
 import { reportChatViewportSize } from '~/test-support/chatViewRows'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
-import { makeMessage, wrapContent } from '~/test-support/messageFactory'
+import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { installControllableResizeObserver } from '~/test-support/resizeObserverStub'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
@@ -144,6 +144,7 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
 }
 
 interface RenderRendererOptions {
+  onOpenChatImage?: NonNullable<Parameters<typeof createTileRenderer>[0]['onOpenChatImage']>
   onNewAgent?: (provider: AgentProvider) => void
   onNewTerminal?: () => void
   onNewTerminalWithShell?: (shell: string) => void
@@ -205,6 +206,9 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         tasksForRoot: () => [],
       }),
       clientId: () => 'test-client',
+      ...(options.onOpenChatImage
+        ? { onOpenChatImage: options.onOpenChatImage }
+        : {}),
       confirmLink: async () => false,
       ops: {
         agentOps: {
@@ -362,6 +366,65 @@ function createSetup(existingHarness?: ReturnType<typeof installTestBridge>): Re
     }
   })
 }
+
+describe('TileRenderer image navigation', () => {
+  it('focuses the source tile before opening its image', async () => {
+    // jsdom does not decode the PNG, so supply the loaded state before measuring it.
+    const imageComplete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true)
+    setupCleanups.push(() => imageComplete.mockRestore())
+    const s = createSetup()
+    const initial = s.layoutStore.focusedTileId()!
+    s.addAgent('other-agent', initial)
+    const sourceTile = s.layoutStore.splitTile(initial, 'horizontal')!
+    s.addAgent('image-agent', sourceTile, 'Image agent', 'image-worker')
+    const other = s.view.getAgentTab('other-agent')!
+    if (!other.tileId)
+      throw new Error('The other agent has no tile.')
+    s.layoutStore.setFocusedTile(other.tileId, s.workspaceId)
+    s.selection.setActive(other)
+    const chatStore = createChatStore()
+    chatStore.setMessages('image-agent', [
+      makeMessage({
+        id: 'image-result',
+        seq: 1n,
+        spanId: 'read-image',
+        spanType: 'Read',
+        content: rawContent({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'read-image',
+                content: [
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: 'image/png',
+                      data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1O8AAAAASUVORK5CYII=',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      }),
+    ])
+    const focusedAtOpen: Array<string | null> = []
+    const onOpenChatImage = vi.fn(() => {
+      focusedAtOpen.push(s.layoutStore.focusedTileId())
+    })
+    const view = renderRenderer(s, sourceTile, { chatStore, onOpenChatImage })
+    await reportChatViewportSize(view)
+    const image = await screen.findByRole('button', { name: 'Open image' })
+    fireEvent.click(image)
+    expect(onOpenChatImage).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'image-agent', workerId: 'image-worker' }))
+    expect(focusedAtOpen).toEqual([sourceTile])
+  })
+})
 
 describe('message contexts in tiles', () => {
   it('creates message subscriptions only for the active workspace', () => {

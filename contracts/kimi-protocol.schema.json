@@ -8,7 +8,6 @@
   "required": [
     "_readme",
     "events",
-    "origins",
     "tools",
     "displayKinds",
     "decisions",
@@ -19,11 +18,23 @@
     "modes",
     "reply",
     "todoStatuses",
-    "turnEndReasons",
     "defaultMode",
     "notificationEvents",
     "frames",
-    "interactionKinds"
+    "interactionKinds",
+    "noticeLevels",
+    "conversationRecordKinds",
+    "conversationRecordRoles",
+    "conversationItemKinds",
+    "conversationStatuses",
+    "conversationOutcomes",
+    "conversationOrigins",
+    "conversationSupplement",
+    "conversationFields",
+    "conversationMedia",
+    "conversationTurnKinds",
+    "conversationEndReasons",
+    "conversationSystemKinds"
   ],
   "$defs": {
     "table": {
@@ -141,9 +152,6 @@
     "events": {
       "$ref": "#/$defs/table"
     },
-    "origins": {
-      "$ref": "#/$defs/table"
-    },
     "tools": {
       "$ref": "#/$defs/table"
     },
@@ -174,9 +182,6 @@
     "todoStatuses": {
       "$ref": "#/$defs/table"
     },
-    "turnEndReasons": {
-      "$ref": "#/$defs/table"
-    },
     "defaultMode": {
       "description": "The key in `modes` a fresh Kimi Code session runs on. A key, not a literal, so it cannot specify a mode the table does not carry -- the generator checks the membership.",
       "type": "string",
@@ -198,6 +203,45 @@
       "$ref": "#/$defs/table"
     },
     "interactionKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "noticeLevels": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationRecordKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationRecordRoles": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationItemKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationOrigins": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationSupplement": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationFields": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationMedia": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationTurnKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationEndReasons": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationSystemKinds": {
       "$ref": "#/$defs/table"
     }
   }

@@ -103,7 +103,9 @@ func TestOutputGenerationCounterSurvivesDatabaseReopen(t *testing.T) {
 	first, err := queries.AllocateAgentOutputGeneration(t.Context(), "generation-root")
 	require.NoError(t, err)
 	stamp := sqltime.NewSQLiteTime(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
-	task := db.UpsertAgentBackgroundTaskParams{OwnerAgentID: "generation-root", RowKey: "shared", OutputGeneration: first.OutputGeneration, Seq: 1,
+	task := db.UpsertAgentBackgroundTaskParams{
+		Role:         leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+		OwnerAgentID: "generation-root", RowKey: "shared", OutputGeneration: first.OutputGeneration, Seq: 1,
 		Kind: leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_WORKFLOW, Title: "Before Worker restart", Status: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING,
 		CreatedAt: stamp, UpdatedAt: stamp}
 	_, err = queries.UpsertAgentBackgroundTask(t.Context(), task)
@@ -145,6 +147,8 @@ func TestBackgroundTaskQueriesRejectAnOlderPhysicalWriter(t *testing.T) {
 				status = leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_SUCCEEDED
 			}
 			task := db.UpsertAgentBackgroundTaskParams{
+				Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 				OwnerAgentID: "generation-root", OutputGeneration: 2, RowKey: "shared", Seq: 1,
 				Kind: leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, Title: "Replacement assignment", Status: status,
 				CreatedAt: stamp, UpdatedAt: stamp,
@@ -190,13 +194,15 @@ func TestBackgroundTaskGenerationZeroIsOnlyUnclaimedHistory(t *testing.T) {
 	require.NoError(t, allocationErr)
 	stamp := sqltime.NewSQLiteTime(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
 	rows, err := queries.UpsertAgentBackgroundTask(t.Context(), db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "generation-root", RowKey: "runtime", Seq: 1, OutputGeneration: 0,
 		Kind:   leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT,
 		Status: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING, CreatedAt: stamp, UpdatedAt: stamp,
 	})
 	require.NoError(t, err)
 	assert.Zero(t, rows, "a runtime statement cannot fabricate an unclaimed writer")
-	_, err = store.ExecContext(t.Context(), `INSERT INTO agent_background_tasks (owner_agent_id, output_generation, row_key, seq, kind, status) VALUES ('generation-root', 0, 'cloned', 1, 1, 4)`)
+	_, err = store.ExecContext(t.Context(), `INSERT INTO agent_background_tasks (owner_agent_id, output_generation, row_key, seq, kind, role, status) VALUES ('generation-root', 0, 'cloned', 1, 1, ?, 4)`, leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME)
 	require.NoError(t, err)
 	claimed, err := queries.ClaimAgentBackgroundTaskOutputGeneration(t.Context(), db.ClaimAgentBackgroundTaskOutputGenerationParams{OwnerAgentID: "generation-root", RowKey: "cloned", OutputGeneration: 1})
 	require.NoError(t, err)
@@ -216,6 +222,8 @@ func TestBackgroundTaskCloneDoesNotCopyPhysicalWriterOwnership(t *testing.T) {
 	require.NoError(t, err)
 	stamp := sqltime.NewSQLiteTime(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
 	_, err = queries.UpsertAgentBackgroundTask(t.Context(), db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "generation-root", OutputGeneration: source.OutputGeneration, RowKey: "native-workflow", Seq: 1,
 		Kind: leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_WORKFLOW, Title: "Archived workflow", Status: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING,
 		CreatedAt: stamp, UpdatedAt: stamp,

@@ -1017,7 +1017,8 @@ type agentOutputSink struct {
 	// span tracker). Guarded by childMu.
 	childMu    sync.Mutex
 	childSinks map[string]*agentOutputSink
-	// childLifetime is the cleanup authority of this child. The root mutation lock guards it.
+	// childLifetime is this child's cleanup authority. A write holds both the
+	// root mutation lock and activity mutex. A reader holds either lock.
 	childLifetime *childSinkLifetime
 	// initialUserMessage retains this transcript's opening assignment until
 	// its shared output queue completes the emptiness check and write.

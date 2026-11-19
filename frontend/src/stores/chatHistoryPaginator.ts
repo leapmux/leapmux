@@ -324,6 +324,55 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     })
   }
 
+  /**
+   * Refresh revisions missed while the watch omitted chat content. A sequence
+   * cursor cannot report a later supplement or completion at an existing sequence.
+   * Keep the loaded window and update only identities that remain in that window.
+   * The FULL watch owns the signal; pagination and scroll state stay independent.
+   */
+  async function refreshLoadedMessages(workerId: string, agentId: string, signal: AbortSignal): Promise<void> {
+    const captured = (state.messagesByAgent[agentId] ?? []).filter(message => message.seq > 0n).map(({ id, seq }) => ({ id, seq }))
+    if (signal.aborted || captured.length === 0)
+      return
+    const identities = new Map(captured.map(message => [message.id, message.seq]))
+    const tail = captured.at(-1)!.seq
+    let cursor = captured[0]!.seq - 1n
+    try {
+      while (!signal.aborted) {
+        const resp = await workerAgent.listAgentMessages(workerId, {
+          agentId,
+          anchor: MessagePageAnchor.AFTER,
+          cursorSeq: cursor,
+          limit: MESSAGE_PAGE_LIMIT,
+        }, { signal })
+        if (signal.aborted)
+          return
+        if (resp.messages.length === 0) {
+          if (resp.hasMore)
+            throw new Error('The message revision page does not advance its cursor.')
+          return
+        }
+        const current = new Map((state.messagesByAgent[agentId] ?? []).map(message => [message.id, message.seq]))
+        const updates: AgentChatMessage[] = []
+        for (const message of resp.messages) {
+          if (message.seq <= cursor)
+            throw new Error('The message revision page repeats or misorders a sequence.')
+          cursor = message.seq
+          if (identities.get(message.id) === message.seq && current.get(message.id) === message.seq)
+            updates.push(message)
+        }
+        if (updates.length > 0)
+          deps.mergeFetchedMessages(agentId, updates, 'newer')
+        if (!resp.hasMore || cursor >= tail)
+          return
+      }
+    }
+    catch (err) {
+      if (!signal.aborted)
+        throw err
+    }
+  }
+
   /** Fetch older messages before the current window. */
   async function loadOlderMessages(workerId: string, agentId: string): Promise<void> {
     if (state.fetchingOlder[agentId])
@@ -910,6 +959,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
 
   return {
     loadInitialMessages,
+    refreshLoadedMessages,
     loadOlderMessages,
     catchUpToTail,
     loadNewerPage,

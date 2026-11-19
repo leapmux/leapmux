@@ -38,7 +38,7 @@ type taskPartDaemon struct {
 	abortStatus int
 }
 
-func newTaskPartAgent(t *testing.T, pages map[string]taskPartPage) (*Agent, *agenttest.Sink, *taskPartDaemon) {
+func newTaskPartAgent(t *testing.T, pages map[string]taskPartPage) (*familyTestAgent, *agenttest.Sink, *taskPartDaemon) {
 	t.Helper()
 	sink := &agenttest.Sink{}
 	a := newOpenCodeAgentWithSink(agent.NewProviderServices(sink))

@@ -83,15 +83,15 @@ export function createOutputGate(directory: string): OutputGate {
   }
 }
 
-/** A gate, and the observation that the browser shows the output of the command that the gate holds. */
+/** A gate and the observation that the provider retained the held command output. */
 export interface GatedOutput {
   gate: OutputGate
-  /** Resolve when the browser shows the output of the running command. Reject when it never does. */
+  /** Resolve when the required output observation succeeds. Reject when it fails. */
   shown: () => Promise<void>
 }
 
 /**
- * Run `run` while a gate holds a command, and release the gate after the browser shows its output.
+ * Run `run` while a gate holds a command, and release the gate after its output observer succeeds.
  *
  * `run` starts at once and runs beside the observation, because it can need an
  * approval click while the output shows. The call releases the gate when the
@@ -105,7 +105,7 @@ export async function runWithGatedOutput<T>(gated: GatedOutput | undefined, run:
   return withCleanup(async () => {
     const [result] = await Promise.all([
       run(),
-      shown().then(() => gate.release()),
+      Promise.resolve().then(shown).then(() => gate.release()),
     ])
     return result
   }, async () => gate.release())

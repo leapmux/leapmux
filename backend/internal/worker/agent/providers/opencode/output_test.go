@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newOpenCodeAgentWithSink(sink agent.ProviderServices) *Agent {
-	a := &Agent{
+func newOpenCodeAgentWithSink(sink agent.ProviderServices) *familyTestAgent {
+	a := &familyTestAgent{
 		Base: acp.Base{
 			JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 				AgentID:      "test-agent",

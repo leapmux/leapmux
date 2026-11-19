@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiFrame, kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord, kimiConversationTurnRecord, kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
 import { resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import { kimiNeedsRequest, kimiSpanRole } from './spanRole'
@@ -16,44 +16,69 @@ function resolved(parent: Record<string, unknown>, completion?: MessageCompletio
 }
 
 describe('kimiSpanRole', () => {
-  it('opens a span with a start and closes it with a result', () => {
-    expect(kimiSpanRole(resolved(kimiToolStart('c', KIMI_TOOL.Read, { path: 'a' })))).toBe('request')
-    expect(kimiSpanRole(resolved(kimiToolResult('c', 'x')))).toBe('result')
+  const call = {
+    item_id: 'shell',
+    name: KIMI_TOOL.Bash,
+    input: { command: 'printf ok' },
+  }
+
+  it('opens only a native request and closes only a native result', () => {
+    expect(kimiSpanRole(resolved(kimiConversationToolRecord('request', call)))).toBe('request')
+    expect(kimiSpanRole(resolved(kimiConversationToolRecord('result', {
+      ...call,
+      status: 'ended',
+      outcome: 'completed',
+      output: 'ok',
+    })))).toBe('result')
   })
 
-  it('closes the span with a retained start, whichever way the turn ended', () => {
-    for (const completion of [MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR])
-      expect(kimiSpanRole(resolved(kimiToolStart('c', KIMI_TOOL.Bash, { command: 'x' }), completion)), String(completion)).toBe('result')
-    expect(kimiSpanRole(resolved(kimiToolStart('c', KIMI_TOOL.Bash, { command: 'x' }), MessageCompletion.UNSPECIFIED))).toBe('request')
+  it.each([
+    MessageCompletion.UNSPECIFIED,
+    MessageCompletion.COMPLETE,
+    MessageCompletion.INTERRUPTED,
+    MessageCompletion.ERROR,
+  ])('keeps the explicit role for worker completion %s', (completion) => {
+    expect(kimiSpanRole(resolved(kimiConversationToolRecord('request', call), completion))).toBe('request')
+    expect(kimiSpanRole(resolved(kimiConversationToolRecord('result', call), completion))).toBe('result')
   })
 
-  it('reads every other row as outside a span', () => {
-    expect(kimiSpanRole(resolved(kimiFrame(KIMI_EVENT.TurnEnded)))).toBe('other')
+  it('keeps other native rows and obsolete tool envelopes outside a span', () => {
+    expect(kimiSpanRole(resolved(kimiConversationTurnRecord({ status: 'ended', outcome: 'completed' })))).toBe('other')
+    expect(kimiSpanRole(resolved(kimiTranscriptToolFrame({ name: KIMI_TOOL.Bash, input: call.input }), MessageCompletion.INTERRUPTED))).toBe('other')
     expect(kimiSpanRole(resolved({ content: 'hi' }))).toBe('other')
   })
 })
 
-// A result states no tool name, no arguments and no display, so its row reads them from
-// the start. A start never waits for its result, also a subagent launch whose run only
-// the result reports.
 describe('kimiNeedsRequest', () => {
-  it('answers true for a result', () => {
-    expect(kimiNeedsRequest(resolved(kimiToolResult('c', 'x')))).toBe(true)
+  it('reads the earlier side for a completed result and a retained running item', () => {
+    const read = {
+      item_id: 'read',
+      name: KIMI_TOOL.Read,
+      input: { path: 'a' },
+    }
+    expect(kimiNeedsRequest(resolved(kimiConversationToolRecord('result', {
+      ...read,
+      status: 'ended',
+      outcome: 'completed',
+      output: 'x',
+    })))).toBe(true)
+    expect(kimiNeedsRequest(resolved(kimiConversationToolRecord('result', read), MessageCompletion.INTERRUPTED))).toBe(true)
   })
 
-  it('answers false for every start, also a launch and a call with empty arguments', () => {
-    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.Read, { path: 'a' })))).toBe(false)
-    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p', description: 'd' })))).toBe(false)
-    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.AgentSwarm, { description: 'd' })))).toBe(false)
-    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.TaskList, {})))).toBe(false)
+  it.each([
+    KIMI_TOOL.Agent,
+    KIMI_TOOL.AgentSwarm,
+    KIMI_TOOL.TaskList,
+    KIMI_TOOL.Read,
+  ])('reads no later rows for a %s request', (name) => {
+    expect(kimiNeedsRequest(resolved(kimiConversationToolRecord('request', { name, input: {} })))).toBe(false)
   })
 
-  // A retained start closes its call, but it states its own name and arguments.
-  it('answers false for a retained start', () => {
-    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p' }), MessageCompletion.INTERRUPTED))).toBe(false)
+  it.each([undefined, 'a.go', null])('reads no later row when request arguments are %j', (toolInput) => {
+    expect(kimiNeedsRequest(resolved(kimiConversationToolRecord('request', { name: KIMI_TOOL.Read, input: toolInput })))).toBe(false)
   })
 
-  it('answers false for a row outside a span', () => {
-    expect(kimiNeedsRequest(resolved(kimiFrame(KIMI_EVENT.TurnEnded)))).toBe(false)
+  it('reads no earlier request for a native turn', () => {
+    expect(kimiNeedsRequest(resolved(kimiConversationTurnRecord({ status: 'ended', outcome: 'completed' })))).toBe(false)
   })
 })

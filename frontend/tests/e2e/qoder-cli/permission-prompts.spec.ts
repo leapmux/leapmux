@@ -94,7 +94,13 @@ qoderTest.describe('Qoder CLI settings', () => {
     await expectNoControlBanner(page)
     expect(followUp?.body).toMatchObject({
       messages: expect.arrayContaining([
-        expect.objectContaining({ role: 'tool', tool_call_id: 'read-only', content: workingDir }),
+        expect.objectContaining({
+          role: 'tool',
+          tool_call_id: 'read-only',
+          content: [
+            { type: 'text', text: workingDir },
+          ],
+        }),
       ]),
     })
     await expect(toolRows(page).filter({ hasText: workingDir }).first()).toBeVisible()

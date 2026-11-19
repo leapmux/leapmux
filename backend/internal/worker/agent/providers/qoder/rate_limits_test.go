@@ -140,9 +140,9 @@ func newUsageAgent(t *testing.T, replies map[string][]qoderScriptedReply) (*Agen
 
 func TestQoderRefreshUsagePublishesTheQuotaWindows(t *testing.T) {
 	t.Parallel()
-	a, sink, script := newUsageAgent(t, map[string][]qoderScriptedReply{"get_usage_info": {{response: qoderUsageReply42}}})
+	a, sink, script := newUsageAgent(t, map[string][]qoderScriptedReply{"daemon.get_usage_info": {{response: qoderUsageReply42}}})
 	a.refreshUsage()
-	assert.Equal(t, []string{"get_usage_info"}, script.subtypes())
+	assert.Equal(t, []string{"daemon.get_usage_info"}, script.subtypes())
 	states := rateLimitStates(t, sink)
 	require.Len(t, states, 1)
 	assert.Equal(t, []string{"add_on_quota", "org_resource_package", "user_quota"}, sortedKeys(states[0]))
@@ -155,14 +155,14 @@ func TestQoderRefreshUsagePublishesTheQuotaWindows(t *testing.T) {
 func TestQoderRefreshUsageKeepsTheLastStateWithoutAQuota(t *testing.T) {
 	t.Parallel()
 	for name, reply := range map[string]qoderScriptedReply{
-		"no quota service answer": {response: `{"usage":null,"session":{"total_credits":3,"model_usage":{}},"usage_error":"get_usage_info failed"}`},
-		"refused request":         {refusal: "get_usage_info failed"},
+		"no quota service answer": {response: `{"usage":null,"session":{"total_credits":3,"model_usage":{}},"usage_error":"daemon.get_usage_info failed"}`},
+		"refused request":         {refusal: "daemon.get_usage_info failed"},
 		"malformed reply":         {response: `{"usage":[]}`},
 		"no payload":              {response: noPayload},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			a, sink, _ := newUsageAgent(t, map[string][]qoderScriptedReply{"get_usage_info": {reply}})
+			a, sink, _ := newUsageAgent(t, map[string][]qoderScriptedReply{"daemon.get_usage_info": {reply}})
 			a.refreshUsage()
 			assert.Empty(t, rateLimitStates(t, sink))
 		})
@@ -171,7 +171,7 @@ func TestQoderRefreshUsageKeepsTheLastStateWithoutAQuota(t *testing.T) {
 
 func TestQoderRefreshUsageClearsWindowsThatTheQuotaDropped(t *testing.T) {
 	t.Parallel()
-	a, sink, _ := newUsageAgent(t, map[string][]qoderScriptedReply{"get_usage_info": {
+	a, sink, _ := newUsageAgent(t, map[string][]qoderScriptedReply{"daemon.get_usage_info": {
 		{response: qoderUsageReply42},
 		{response: `{"usage":{"isQuotaExceeded":true,"userQuota":{"percentage":100}}}`},
 	}})
@@ -208,7 +208,7 @@ func TestQoderStartupUsageRefreshPublishesBeforeTheFirstTurn(t *testing.T) {
 	processDone := make(chan struct{})
 	sink := &agenttest.Sink{}
 	a := newOfflineAgentWithRuntime(t, sink, nil, processDone)
-	script := &qoderControlScript{agent: a, replies: map[string][]qoderScriptedReply{"get_usage_info": {{response: qoderUsageReply42}}}}
+	script := &qoderControlScript{agent: a, replies: map[string][]qoderScriptedReply{"daemon.get_usage_info": {{response: qoderUsageReply42}}}}
 	a.SetStdinForTest(script)
 	a.usageRefresh = make(chan struct{}, 1)
 	ended := make(chan struct{})
@@ -222,7 +222,7 @@ func TestQoderStartupUsageRefreshPublishesBeforeTheFirstTurn(t *testing.T) {
 	testutil.RequireEventually(t, func() bool { return len(rateLimitStates(t, sink)) == 1 }, "the startup refresh publishes the account quota")
 	states := rateLimitStates(t, sink)
 	assert.Equal(t, []string{"add_on_quota", "org_resource_package", "user_quota"}, sortedKeys(states[0]))
-	assert.Equal(t, []string{"get_usage_info"}, script.subtypes(), "no user turn requested the quota")
+	assert.Equal(t, []string{"daemon.get_usage_info"}, script.subtypes(), "no user turn requested the quota")
 
 	close(processDone)
 	ctx := testutil.DeadlineContext(t)
@@ -239,7 +239,7 @@ func TestQoderUsageRefreshLoopSendsOneRequestPerWake(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgentWithRuntime(t, sink, nil, processDone)
 	published := make(chan struct{}, 4)
-	script := &qoderControlScript{agent: a, replies: map[string][]qoderScriptedReply{"get_usage_info": {{response: qoderUsageReply42}, {response: qoderUsageReply42}}}}
+	script := &qoderControlScript{agent: a, replies: map[string][]qoderScriptedReply{"daemon.get_usage_info": {{response: qoderUsageReply42}, {response: qoderUsageReply42}}}}
 	script.beforeReply = func(string) { published <- struct{}{} }
 	a.SetStdinForTest(script)
 	a.usageRefresh = make(chan struct{}, 1)
@@ -263,7 +263,7 @@ func TestQoderUsageRefreshLoopSendsOneRequestPerWake(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the loop did not end with the process")
 	}
-	assert.Equal(t, []string{"get_usage_info", "get_usage_info"}, script.subtypes())
+	assert.Equal(t, []string{"daemon.get_usage_info", "daemon.get_usage_info"}, script.subtypes())
 }
 
 func sortedKeys(values map[string]any) []string {

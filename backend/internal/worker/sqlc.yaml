@@ -89,6 +89,10 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "BackgroundTaskKind"
+          - column: "agent_background_tasks.role"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "BackgroundTaskRole"
           - column: "agent_background_tasks.status"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

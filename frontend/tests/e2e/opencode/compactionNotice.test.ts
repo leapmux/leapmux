@@ -5,8 +5,8 @@ import { openCodeCompactionEvents } from './compactionNotice'
 
 const completed = {
   id: 'evt-native-compaction',
-  type: 'session.compacted',
-  properties: { sessionID: 'native-session' },
+  type: 'session.compaction.ended',
+  data: { sessionID: 'native-session' },
 }
 const thread = (...messages: unknown[]) => ({ type: 'notification_thread', messages })
 
@@ -14,7 +14,7 @@ describe('openCodeCompactionEvents', () => {
   it('reads the completed native event inside a stored notification thread', () => {
     const snapshot = nativeFrameSnapshot(thread({
       type: 'session.status',
-      properties: {
+      data: {
         status: { type: 'idle' },
       },
     }, completed))
@@ -30,7 +30,7 @@ describe('openCodeCompactionEvents', () => {
   it('requires both the stored row and the native event to belong to the session', () => {
     const foreign = {
       ...completed,
-      properties: { sessionID: 'other-session' },
+      data: { sessionID: 'other-session' },
     }
     const snapshot = nativeOutputSnapshot([
       {
@@ -78,17 +78,17 @@ describe('openCodeCompactionEvents', () => {
     { type: 'notification_thread', messages: null },
     { type: 'notification_thread', messages: {} },
     thread(),
-    thread(null, 0, 'session.compacted'),
-    thread({ type: 'session.compacted' }),
-    thread({ type: 'session.compacted', properties: null }),
-    thread({ type: 'session.compacted', properties: [] }),
+    thread(null, 0, 'session.compaction.ended'),
+    thread({ type: 'session.compaction.ended' }),
+    thread({ type: 'session.compaction.ended', data: null }),
+    thread({ type: 'session.compaction.ended', data: [] }),
     thread({
-      type: 'session.compacted',
-      properties: { sessionID: '' },
+      type: 'session.compaction.ended',
+      data: { sessionID: '' },
     }),
     thread({
-      type: 'session.compacted',
-      properties: { sessionID: 0 },
+      type: 'session.compaction.ended',
+      data: { sessionID: 0 },
     }),
   ])('ignores a malformed or empty frame: %j', (frame) => {
     expect(openCodeCompactionEvents(nativeFrameSnapshot(frame))).toEqual([])

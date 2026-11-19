@@ -131,6 +131,6 @@ zcodeTest('restricts the native Node executor to browser and computer use', asyn
   const node = definitions.filter(tool => tool.name === 'mcp__node_repl__js')
   expect(node).toHaveLength(1)
   expect(node[0]?.description).toContain('Browser Use and Computer Use only')
-  expect(node[0]?.description).toContain('Do not use it as a general-purpose JavaScript runtime')
+  expect(node[0]?.description).toContain('never use it for shell, file, package inspection, or data processing work')
   expect(definitions.map(tool => tool.name)).not.toContain('codemode')
 })

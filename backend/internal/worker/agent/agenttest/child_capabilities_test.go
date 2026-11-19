@@ -33,7 +33,9 @@ func (*interruptingAgent) InterruptChild(childKey string, stop agentapi.StopCont
 // steeringAgent can do both.
 type steeringAgent struct{ interruptingAgent }
 
-func (*steeringAgent) SendChildInput(string, string, []*leapmuxv1.Attachment) error  { return nil }
+func (*steeringAgent) SendChildInput(string, agentapi.ChildInput) (agentapi.ChildInputResult, error) {
+	return agentapi.ChildInputResult{StartsTurn: true}, nil
+}
 func (*steeringAgent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error { return nil }
 func (*steeringAgent) ActiveChildTurnState(string) agentapi.TurnState                { return agentapi.TurnState{} }
 

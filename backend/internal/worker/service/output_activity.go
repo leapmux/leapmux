@@ -404,8 +404,9 @@ func (h *OutputHandler) CancelHeldSettles() {
 // them takes the registry cache lock and can reach the database, so they are
 // read before the entry's own lock and never underneath it.
 type activityInputs struct {
-	activeTasks  int32
-	processAlive bool
+	registryWorking bool
+	activeTasks     int32
+	processAlive    bool
 	// childID is empty for a root, which is what selects the roll-up rule.
 	childID string
 }
@@ -422,12 +423,13 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 	if !in.processAlive {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
 	}
-	// A child's visible state uses only its registry task count.
+	// A child's visible state follows its canonical activity row.
+	// Related task outcomes cannot keep the child working.
 	// This derivation ignores the child's native turn flag and pending prompts.
 	// A registry-only child needs no turn-start signal.
 	// A child with native turns still retains that signal for its queue and retirement.
 	if in.childID != "" {
-		return idleOrWorking(in.activeTasks > 0)
+		return idleOrWorking(in.registryWorking || in.activeTasks > 0)
 	}
 	// The turn the provider reports, minus the one the reader stopped. The flag
 	// stays true until the provider answers the stop, and that answer is a whole
@@ -446,7 +448,7 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 	if len(st.pendingControl) > 0 {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
 	}
-	return idleOrWorking(turnRunning || in.activeTasks > 0)
+	return idleOrWorking(turnRunning || in.registryWorking || in.activeTasks > 0)
 }
 
 // settleCanResumeLocked answers whether a wake can undo the stop this refresh
@@ -761,58 +763,42 @@ func (h *OutputHandler) activitySnapshotFrom(agentID, rootAgentID string, rows [
 // externalActivityInputs gathers everything the derivation needs from outside
 // the entry.
 func (h *OutputHandler) externalActivityInputs(agentID, rootAgentID string, rows []bgtask.Item) activityInputs {
-	// A root counts every descendant's row, which is the roll-up its tab has
-	// always meant. A child counts only its own, because a subagent's registry
-	// row IS its run -- and counting the root's whole registry kept a finished
-	// subagent spinning for as long as any SIBLING ran.
 	childID := ""
 	if agentID != rootAgentID {
 		childID = agentID
 	}
-	activeTasks := countActiveBackgroundTasks(rows, childID)
+	// Outcomes and canonical activity are independent. Child tabs select only
+	// canonical authority, while root tabs consider the whole registry.
+	activity := backgroundTaskActivityFor(rows, childID)
+	// The cap can hide canonical activity while a related outcome remains
+	// visible. Only canonical presence permits skipping the storage fallback.
 	if childID != "" && !hasRegistryRowFor(rows, childID) {
-		// The display list holds no row for this child, and that is not yet an
-		// answer: the cap gives up its oldest ACTIVE row when the pool is full of
-		// running work, so a subagent that is still going can be missing from it.
-		// Reading that as idle drops the spinner and hides the Interrupt button on
-		// a run the user can see, which is the same failure
-		// resolveChildRegistryRow's point lookup exists to prevent for messaging.
-		//
-		// One indexed lookup, and only on the miss. A child tab the user has open
-		// is almost always in the list, so this costs nothing in the common case.
-		activeTasks = h.storedChildActiveTasks(childID)
+		activity = h.storedChildActivity(childID)
 	}
 	if childID == "" {
-		// The display cap gives up an ACTIVE row when a pool of 64 holds no
-		// finished one, and retention keeps that row running in the table. The
-		// list can no longer see it, so a root that fanned out that wide would
-		// settle -- ringing the completion sound and letting the close guard pass
-		// -- while a subagent still ran. The registry is the only thing that knows
-		// what it hid, so it is the only thing that can add it back.
-		//
-		// The CHILD path needs none of this: it already answers a missing row from
-		// the table above.
-		activeTasks += h.hiddenActiveTasks(rootAgentID)
+		// Retained hidden work must prevent an early root settle. Its activity
+		// and task count remain separate even when the display cap hides it.
+		hidden := h.hiddenBackgroundTaskActivity(rootAgentID)
+		activity.activeTasks += hidden.activeTasks
+		activity.working = activity.working || hidden.working
 	}
-	return activityInputs{
-		activeTasks: activeTasks,
-		// The feeding process. A child never owns one, so both paths ask about
-		// the root -- a child tab is busy only while the process feeding it runs.
-		processAlive: h.isProcessRunning(rootAgentID),
-		childID:      childID,
-	}
+	return activityInputs{activeTasks: activity.activeTasks, registryWorking: activity.working, processAlive: h.isProcessRunning(rootAgentID), childID: childID}
 }
 
 // hiddenActiveTasks reports how many still-running rows the display cap dropped
 // from this root's list.
 func (h *OutputHandler) hiddenActiveTasks(rootAgentID string) int32 {
+	return h.hiddenBackgroundTaskActivity(rootAgentID).activeTasks
+}
+
+func (h *OutputHandler) hiddenBackgroundTaskActivity(rootAgentID string) backgroundTaskActivity {
 	if h.queries == nil {
-		return 0
+		return backgroundTaskActivity{}
 	}
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	return cache.EvictedActiveCount()
+	return backgroundTaskActivity{activeTasks: cache.evictedActive.count(), working: cache.evictedActive.hasWorking()}
 }
 
 // isProcessRunning answers the process path through the seam, falling back to
@@ -883,55 +869,58 @@ func hasRegistryRowFor(rows []bgtask.Item, childAgentID string) bool {
 		return false
 	}
 	for i := range rows {
-		if rows[i].ChildAgentID == childAgentID {
+		if rows[i].ChildAgentID == childAgentID && rows[i].Role.IsCanonicalChildActivity() {
 			return true
 		}
 	}
 	return false
 }
 
-// storedChildActiveTasks answers the child path from the TABLE, for a child
-// whose row left the display list.
-//
-// A read failure answers 0, which costs one child tab its spinner and its
-// Interrupt button. It costs no close warning: both close guards exempt a
-// subagent tab outright, because closing one is a UI-only act that stops
-// nothing. So the trade is a missing spinner against an Interrupt button
-// offered for a run that already ended, and the first is the cheaper mistake.
-func (h *OutputHandler) storedChildActiveTasks(childAgentID string) int32 {
+type backgroundTaskActivity struct {
+	activeTasks int32
+	working     bool
+}
+
+// storedChildActivity reads canonical authority outside the display list.
+// A read failure reports idle with no tasks, which hides the child's spinner and
+// Interrupt button. It changes no close warning: closing a subagent tab stops
+// nothing, so both close guards exempt it.
+func (h *OutputHandler) storedChildActivity(childAgentID string) backgroundTaskActivity {
 	if h.queries == nil {
-		return 0
+		return backgroundTaskActivity{}
 	}
 	row, err := h.queries.GetAgentBackgroundTaskByChildAgentID(h.bgTaskCtx(), childAgentID)
 	if err != nil {
-		// ErrNoRows is the ordinary answer for an agent that owns no registry row
-		// -- every root reaches this only through the childID guard above, so a
-		// miss here really means "no such subagent run".
 		if !errors.Is(err, sql.ErrNoRows) {
 			slog.Warn("activity: read child background task", "child_agent_id", childAgentID, "error", err)
 		}
-		return 0
+		return backgroundTaskActivity{}
 	}
-	if !bgItemFromRow(row).Status.IsWorking() {
-		return 0
-	}
-	return 1
+	return backgroundTaskActivityFor([]bgtask.Item{bgItemFromRow(row)}, childAgentID)
 }
 
-// countActiveBackgroundTasks counts the pending/running rows -- every row when
-// childAgentID is empty, or that child's own otherwise. The pure half, so the
-// root/child rule is testable without a handler or a database.
-func countActiveBackgroundTasks(rows []bgtask.Item, childAgentID string) int32 {
-	var n int32
-	for i := range rows {
-		if !rows[i].Status.IsWorking() {
+// backgroundTaskActivityFor keeps actual task counts separate from working activity.
+// Child tabs select only their canonical row; root tabs consider the whole registry.
+func backgroundTaskActivityFor(rows []bgtask.Item, childAgentID string) backgroundTaskActivity {
+	var activity backgroundTaskActivity
+	for _, row := range rows {
+		if !row.Status.IsWorking() {
 			continue
 		}
-		if childAgentID == "" || rows[i].ChildAgentID == childAgentID {
-			n++
+		if childAgentID != "" && (row.ChildAgentID != childAgentID || !row.Role.IsCanonicalChildActivity()) {
+			continue
+		}
+		activity.working = true
+		if row.Role.CountsAsTask() {
+			activity.activeTasks++
 		}
 	}
-	return n
+	return activity
+}
+
+// countActiveBackgroundTasks counts task outcomes and combined child-task rows.
+func countActiveBackgroundTasks(rows []bgtask.Item, childAgentID string) int32 {
+	return backgroundTaskActivityFor(rows, childAgentID).activeTasks
 }
 
 // refreshActivity recomputes agentID's activity and broadcasts it if it changed.

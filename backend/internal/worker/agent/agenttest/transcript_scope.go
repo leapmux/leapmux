@@ -28,6 +28,24 @@ func (sink *Sink) TranscriptScopeFor(captured agent.CapturedTranscript) (agent.T
 	return &sinkTranscriptScope{writer: writer, anchor: owner}, nil
 }
 
+func (sink *Sink) HistoricalTranscriptScopeFor(captured agent.CapturedTranscript) (agent.TranscriptScope, error) {
+	content, writer := captured.FrozenContent(), captured.TranscriptWriter()
+	if writer == nil || content.Publication == nil {
+		return nil, errors.New("the captured transcript has no publication")
+	}
+	owner, valid := content.Publication.Owner().(*testTranscriptOwner)
+	if !valid || owner == nil || owner.sink != sink {
+		return nil, errors.New("the captured transcript belongs to another sink")
+	}
+	if owner.key.session == nil || owner.key.sessionID != owner.key.session.id || content.AgentSessionID != owner.key.session.id {
+		return nil, errors.New("the captured transcript has an invalid native session")
+	}
+	historical := *owner
+	historical.key.scope = &testTranscriptScope{}
+	historical.spans = nil
+	return &sinkTranscriptScope{writer: writer, anchor: &historical}, nil
+}
+
 func (scope *sinkTranscriptScope) CaptureTranscript(content agent.MessageContent, span agent.SpanInfo) (agent.CapturedTranscript, error) {
 	if content.Publication != nil {
 		return agent.CapturedTranscript{}, errors.New("the transcript scope requires uncaptured content")

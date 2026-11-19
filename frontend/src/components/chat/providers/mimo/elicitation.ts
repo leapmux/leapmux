@@ -7,7 +7,7 @@ import { MIMO_QUESTION_KEY } from './protocol'
 /**
  * An MCP server's confirmation, which MiMo asks as a question.
  *
- * MiMo HEAD (`mcp/elicitation.ts`; no release has it yet) refuses every elicitation
+ * MiMo 0.1.17 (`mcp/elicitation.ts`) refuses every elicitation
  * that asks for a value, and asks the rest as ONE question keyed `mcp_elicitation`:
  * the server as the header, the server, the message and a subtitle joined by blank
  * lines as the question, the three answers Accept, Decline and Cancel, and

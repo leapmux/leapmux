@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,7 +142,7 @@ func TestAntigravitySendChildRevivesRowOnNativeTurn(t *testing.T) {
 	})
 	require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusRunning}, false))
 	require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusIdle}, false))
-	require.NoError(t, a.SendChildInput(child.id, "continue", nil))
+	require.NoError(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "continue"}))
 	row, ok := sink.BackgroundTask(child.id)
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)

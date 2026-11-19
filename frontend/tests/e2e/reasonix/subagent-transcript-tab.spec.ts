@@ -1,11 +1,13 @@
 import { expect } from '@playwright/test'
 import { captureClipboardText } from '../helpers/clipboardCapture'
+import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
-import { chatScrollContainer, openWorkspace, sendMessage } from '../helpers/ui'
+import { openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { chatScrollContainer, messageBubbles, openWorkspace, sendMessage } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { reasonixTest } from '../reasonix-fixtures'
 import { exerciseReasonixSpawnTranscript, REASONIX_CHILD } from './childScenario'
-import { REASONIX_AGENT } from './scenarios'
+import { nativeContext, REASONIX_AGENT } from './scenarios'
 
 reasonixTest('renders Reasonix read-only reports without interpreting quoted status text', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const { provider } = REASONIX_AGENT
@@ -35,15 +37,20 @@ reasonixTest('renders Reasonix read-only reports without interpreting quoted sta
   await page.reload()
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await sendMessage(page, modelScript.prompt('Delegate the protocol example to a read-only subagent.'))
-  await modelScript.waitForSteps(start + 2)
+  await waitForNativeToolSteps(await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }), start + 2)
   const chat = chatScrollContainer(page)
-  const body = chat.getByTestId('message-bubble').filter({ hasText: 'Quoted finding' })
-  await expect(body.getByText('Agent "Read a protocol example" completed', { exact: true })).toBeVisible()
+  const body = messageBubbles(page).filter({ hasText: 'Quoted finding' })
+  await expect(await requireRegistryRow(page)).toHaveAttribute('data-status', 'succeeded')
   await expect(body).toContainText('Subagent outcome: status=failed retryable=false')
   await body.locator('..').hover()
   const copied = await captureClipboardText(page, () => body.locator('..').getByRole('button', { name: 'Copy', exact: true }).click())
   expect(copied).toBe(report)
-  await chat.getByRole('button', { name: 'Show prompt', exact: true }).click()
+  await openChildTabFromRow(page, await requireRegistryRow(page))
   await expect(chat.locator('strong').filter({ hasText: 'the example' })).toBeVisible()
 })
 

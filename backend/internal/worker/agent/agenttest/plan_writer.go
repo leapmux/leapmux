@@ -27,9 +27,9 @@ func (sink *Sink) PlanWriterFor(captured agent.CapturedTranscript) (agent.Captur
 	if !ok || owner == nil || owner.sink != sink || owner.key.session == nil || content.AgentSessionID != owner.key.sessionID || content.AgentSessionID != owner.key.session.id {
 		return nil, errors.New("the captured plan belongs to another source")
 	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if !owner.currentSessionLocked() {
+	release := sink.lockNativeSessionSource()
+	defer release()
+	if !owner.currentNativeStateSourceLocked() {
 		return nil, errors.New("the captured plan expired")
 	}
 	return &sinkPlanWriter{sink: sink, owner: owner}, nil
@@ -37,9 +37,9 @@ func (sink *Sink) PlanWriterFor(captured agent.CapturedTranscript) (agent.Captur
 
 func (writer *sinkPlanWriter) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) error {
 	sink := writer.sink
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if !writer.owner.currentSessionLocked() {
+	release := sink.lockNativeSessionSource()
+	defer release()
+	if !writer.owner.currentNativeStateSourceLocked() {
 		return errors.New("the captured plan expired")
 	}
 	sink.updatePlanLocked(content, compression, title)

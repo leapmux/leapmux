@@ -13,9 +13,8 @@ import { turnEndLabel } from '../../../turnEndLabel'
  * flag, so the worker's completion decides the interrupted label: the worker
  * marks the turn that the user stopped.
  *
- * A failed turn states the CLI's explanation in `errors`, and the divider shows
- * it as the detail block. After a stream failure, `errors` is the only place
- * where the provider's own words reach the transcript.
+ * A failed turn states the CLI's explanation in `errors`. The divider shows
+ * it unless the SDK already emitted a synthetic assistant with that explanation.
  *
  * `total_cost_usd` is always 0. The native `result` row states the turn
  * duration in `duration_ms`. The Worker adds no duration.
@@ -32,7 +31,11 @@ export function qoderResultDivider(parsed: unknown, completion?: MessageCompleti
   if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution') {
     // `stringArray`, never a cast: `errors` arrives off the wire, and a value
     // that is not a string must not reach the detail as "[object Object]".
-    const detail = stringArray(parsed.errors).join('\n').trim()
+    // SDK model usage includes its synthetic assistant when that row already carries the error.
+    const hasSyntheticAssistant = isObject(parsed.modelUsage) && isObject(parsed.modelUsage['<synthetic>'])
+    const detail = hasSyntheticAssistant
+      ? ''
+      : stringArray(parsed.errors).join('\n').trim()
     // `detail` must be absent (never '') so the shared renderer skips the block.
     return {
       label: turnEndLabel('failed', { durationMs }),

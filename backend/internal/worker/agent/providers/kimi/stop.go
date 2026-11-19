@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Kimi Code's stop.
@@ -51,6 +52,10 @@ func (a *Agent) Stop() {
 		return
 	}
 	a.NoteIntentionalStop()
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	a.cancelMediaSession(sessionID)
 	a.shutdownServer()
 	// Close the stream before Process.Stop so it cannot redial during local
 	// shutdown. Wait joins its goroutines.
@@ -135,6 +140,18 @@ func (a *Agent) closeStream() {
 		a.stream.close()
 		a.stream.wait()
 	}
+	a.Mu.Lock()
+	for _, run := range a.runs {
+		if recovery := run.conversationRecovery.Load(); recovery != nil {
+			recovery.cancel()
+		}
+	}
+	a.Mu.Unlock()
+	a.transcriptRecoveryWork.CloseAndWait()
+	a.taskRecoveryWork.CloseAndWait()
+	a.taskReportWork.CloseAndWait()
+	a.goalMetadataWork.CloseAndWait()
+	a.closeMedia()
 	if a.endpoint != nil {
 		a.endpoint.Close()
 	}
@@ -148,7 +165,7 @@ func (a *Agent) closeStream() {
 // an agent whose process exited.
 func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
+	defer a.finishDispatch()
 	a.Mu.Lock()
 	runs := make([]*kimiRun, 0, len(a.runs))
 	for _, run := range a.runs {
@@ -156,7 +173,6 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	}
 	a.turnActive = false
 	a.turnSteerable = false
-	a.manualCompactionActive = false
 	a.Mu.Unlock()
 
 	// Each run writes to its own transcript, so the order of the runs does not
@@ -166,17 +182,22 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 		if sink == nil {
 			continue
 		}
-		a.flushRun(run, sink, completion)
-		a.closeOpenTools(run, sink, completion)
+		a.settleConversationAfterExit(run, completion)
 		a.Mu.Lock()
-		childTurn := run.agentID != kimiMainAgentID && run.turnActive
+		nativeCompacting := run.compacting
+		childTurn := run.agentID != kimiMainAgentID && (run.turnActive || nativeCompacting)
 		run.turnActive = false
+		run.compacting = false
 		a.Mu.Unlock()
+		if nativeCompacting {
+			providerkit.EndCompaction(sink)
+		}
 		if childTurn {
-			if childID, linked := a.children.childOf(run.agentID); linked {
-				a.publishChildTurn(childID, false)
+			if _, linked := a.children.childOf(run.agentID); linked {
+				a.publishChildInputState(run)
 			}
 		}
+		run.childGraph.abandon()
 	}
 	a.ResetCumulativeOutput()
 	a.PublishTurnActive()

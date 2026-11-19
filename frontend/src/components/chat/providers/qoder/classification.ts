@@ -22,8 +22,11 @@ export function classifyQoderMessage(input: ClassificationInput): MessageCategor
       || subtype === QODER_SYSTEM_SUBTYPE.ApiRetry
       || subtype === QODER_SYSTEM_SUBTYPE.ModelQueueStatus
       || subtype === QODER_SYSTEM_SUBTYPE.HookResponse
+      || subtype === QODER_SYSTEM_SUBTYPE.HookDiagnostics
       || subtype === QODER_SYSTEM_SUBTYPE.AgentsMdSizeWarning))) {
-    return notification(wrapper.messages)
+    return notification(wrapper.messages, wrapper.messages.every(isEmptyHookDiagnostics)
+      ? 'hidden'
+      : 'notification')
   }
 
   if (!parent || !isObject(parent))
@@ -38,10 +41,19 @@ export function classifyQoderMessage(input: ClassificationInput): MessageCategor
     case QODER_FRAME_KIND.Result:
       return { kind: 'result_divider' }
     case QODER_FRAME_KIND.System:
+      if (isEmptyHookDiagnostics(parent))
+        return { kind: 'hidden' }
       return notification([parent])
     default:
       return { kind: 'unknown' }
   }
+}
+
+function isEmptyHookDiagnostics(message: unknown): boolean {
+  return isObject(message) && message.type === QODER_FRAME_KIND.System
+    && message.subtype === QODER_SYSTEM_SUBTYPE.HookDiagnostics
+    && message.read_status === 'complete'
+    && Array.isArray(message.diagnostics) && message.diagnostics.length === 0
 }
 
 /**

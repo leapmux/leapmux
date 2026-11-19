@@ -20,7 +20,9 @@ func TestSubagentNativeCompletionSurvivesEveryRegistryOrder(t *testing.T) {
 		t.Run(order, func(t *testing.T) {
 			t.Parallel()
 			svc, root := setupRootSink(t, "root-1")
-			childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
+			childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "native-child", Title: "Read the source"})
 			require.NoError(t, err)
 			child := root.ChildSink(childID)
 			child.UpdateSessionID("native-session")
@@ -82,7 +84,9 @@ func TestSubagentRegistryCompletionDoesNotInventTranscriptMessages(t *testing.T)
 		t.Run(bgtask.StatusWire(status), func(t *testing.T) {
 			t.Parallel()
 			svc, root := setupRootSink(t, "root-1")
-			childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
+			childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "native-child", Title: "Read the source"})
 			require.NoError(t, err)
 			require.NoError(t, root.CloseBackgroundTask("native-child", status))
 			assert.Empty(t, transcriptMessages(t, svc, childID))
@@ -96,7 +100,9 @@ func TestSubagentRegistryCompletionDoesNotInventTranscriptMessages(t *testing.T)
 func TestFinishedChildClearsReportedActivityWithoutInventingTranscript(t *testing.T) {
 	t.Parallel()
 	svc, root := setupRootSink(t, "root-1")
-	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", Title: "Read the source"})
 	require.NoError(t, err)
 	require.NoError(t, root.UpdateBackgroundTaskStatus("native-child", bgtask.StatusRunning, "Read the source"))
 	assert.Equal(t, int32(1), countActiveBackgroundTasks(svc.Output.backgroundTaskRows("root-1"), childID))

@@ -9,7 +9,7 @@ describe('qoderAutoReviewRule', () => {
     expect(matchesRequest(rule.when, {
       protocol: 'openai-chat-completions',
       body: {},
-      systemText: QODER_REVIEWER_POLICY,
+      systemText: 'You are a security monitor for an autonomous AI coding agent.\n\n## Context\nReturn shouldBlock and reason.',
       userText: 'Inspect this tool.',
     })).toBe(true)
     expect(matchesRequest(rule.when, {

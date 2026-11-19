@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,38 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+func TestCodebuddySystemUsageUpdatesContextWithoutATranscriptRow(t *testing.T) {
+	t.Parallel()
+	for _, used := range []int64{0, 42} {
+		t.Run(fmt.Sprint(used), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.HandleOutput([]byte(fmt.Sprintf(`{"type":"system","subtype":"usage_update","_meta":{"codebuddy.ai/contextUsed":%d,"codebuddy.ai/turnUsage":{"version":1,"scope":"turn","kind":"snapshot","total":{"usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}`, used)))
+			assert.Empty(t, sink.Messages())
+			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+			require.True(t, ok)
+			assert.Equal(t, map[string]any{
+				contracts.ContextUsageFieldContextTokens:            used,
+				contracts.ContextUsageFieldInputTokens:              int64(3),
+				contracts.ContextUsageFieldOutputTokens:             int64(2),
+				contracts.ContextUsageFieldCacheReadInputTokens:     int64(0),
+				contracts.ContextUsageFieldCacheCreationInputTokens: int64(0),
+			}, value)
+		})
+	}
+}
+
+func TestCodebuddySystemUsageIgnoresNegativeContextWithoutCounters(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"usage_update","_meta":{"codebuddy.ai/contextUsed":-1}}`))
+	_, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	assert.False(t, exists, "invalid metadata must not replace known usage with zero counters")
+	assert.Empty(t, sink.Messages())
+}
 
 func TestCodebuddyControlResponseReadsStyleMetadata(t *testing.T) {
 	t.Parallel()

@@ -2,6 +2,7 @@ package kimi
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,17 +62,15 @@ func TestKimiReplayedEventsStillReconcileUnsequencedInteractions(t *testing.T) {
 	rig := newKimiTestRig(t, agent.Options{})
 	rig.feed(t, approvalEvent("approval_ended_while_disconnected", map[string]any{"kind": "command", "command": "pwd"}))
 	require.Equal(t, 1, rig.sink.PublishedControlCount())
-	rig.fake.update(rig.sessionID(), func(session *fakeKapSession) {
-		session.PendingApprovals = []map[string]any{{
-			"approval_id": "approval_raised_while_disconnected", "tool_name": "Bash",
-			"tool_input_display": map[string]any{"kind": "command", "command": "pwd"},
-		}}
-	})
-	rig.agent.resyncSession(t.Context(), rig.sessionID(), true)
-	assert.Equal(t, []string{"approval_ended_while_disconnected"}, rig.sink.CanceledControls(),
-		"durable replay cannot recover the resolution of an unsequenced interaction")
+	replayed := approvalEvent("approval_raised_while_disconnected", map[string]any{"kind": "command", "command": "pwd"})
+	replayed["session_id"] = rig.sessionID()
+	finished := beginNativeKimiReconnect(t, rig, replayed)
+	waitFor(t, finished, "the native replay delivers the new pending interaction")
+	waitFor(t, func() bool { return len(rig.sink.CanceledControls()) == 1 }, "the confirmed control replay retires the resolved interaction")
+	assert.Equal(t, []string{"approval_ended_while_disconnected"}, rig.sink.CanceledControls())
 	assert.Equal(t, 2, rig.sink.PublishedControlCount())
 	assert.Equal(t, "approval_raised_while_disconnected", rig.sink.LastPublishedControl().RequestID)
+	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath(rig.sessionID(), "/snapshot")))
 }
 
 func TestKimiInteractionFramesRejectInvalidControls(t *testing.T) {
@@ -146,4 +145,20 @@ func TestKimiMissingSessionRetiresItsInteractions(t *testing.T) {
 	assert.ErrorIs(t, err, errKimiControlGone)
 	assert.Equal(t, []string{"approval_missing_session"}, rig.sink.CanceledControls(),
 		"a control whose native session disappeared must leave the user's banner")
+}
+
+func TestKimiNativeResolutionRetiresControlsBeforeChildAdoption(t *testing.T) {
+	t.Parallel()
+	for _, agentID := range []string{"main", "agent-0"} {
+		t.Run(agentID, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiConversationRig(t)
+			publishNativeKimiApproval(t, rig, agentID, "approval_1")
+			require.Len(t, rig.sink.PublishedControls(), 1)
+			raw := fmt.Sprintf(`{"type":"interaction","session_id":"session_1","agent_id":%q,"interaction_id":"approval_1","tool_call_id":"call","kind":"approval","status":"ended","outcome":"cancelled"}`, agentID)
+			rig.agent.HandleOutput([]byte(raw))
+			assert.Equal(t, []string{"approval_1"}, rig.sink.CanceledControls())
+			assert.Empty(t, rig.sink.ChildAgentIDs(), "control resolution needs no adopted transcript")
+		})
+	}
 }

@@ -3,8 +3,7 @@
   "modes": {
     "SmartApprove": "smart_approve",
     "Auto": "auto",
-    "Approve": "approve",
-    "Chat": "chat"
+    "Approve": "approve"
   },
   "defaultMode": "SmartApprove",
   "subagent": {

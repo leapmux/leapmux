@@ -49,6 +49,8 @@ func (a *Agent) ensureOneChild(parent *cascadeState, childID string, expectedRec
 	role, spawnSpan, stored, idle := record.role, record.spawnSpanID, record.stored, record.idle
 	a.Mu.Unlock()
 	childAgentID, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+
 		ProviderChildKey: childID, AgentSessionID: childID, Title: role, SpawnSpanID: spawnSpan,
 	})
 	if err != nil {
@@ -197,6 +199,8 @@ func (a *Agent) linkPendingChildSpans(parent *cascadeState) {
 			return
 		}
 		if _, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+
 			ProviderChildKey: item.id, AgentSessionID: item.id, Title: item.role, SpawnSpanID: item.span,
 		}); err != nil {
 			a.Mu.Lock()

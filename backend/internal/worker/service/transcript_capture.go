@@ -25,10 +25,14 @@ type transcriptOwnerKey struct {
 // transcriptOwner retains the existing activity authority and its native session.
 // The notification mutex protects its committed thread reference.
 type transcriptOwner struct {
-	sink             *agentOutputSink
-	activity         *agentActivity
-	scope            *activityScope
-	session          *nativeSessionFact
+	sink     *agentOutputSink
+	activity *agentActivity
+	scope    *activityScope
+	session  *nativeSessionFact
+	// Only activation resets require the exact cleanup lease as well as scope.
+	activationLease *childSinkLifetime
+	// publisherSession protects state admission without changing transcript activity.
+	publisherSession *nativeSessionFact
 	sessionID        string
 	thread           *transcriptThread
 	depth            int32
@@ -57,11 +61,12 @@ func (owner *transcriptOwner) sameLiveAuthority(other *transcriptOwner) bool {
 		return owner == other
 	}
 	return owner.sink == other.sink && owner.activity == other.activity && owner.scope == other.scope &&
-		owner.session == other.session && owner.sessionID == other.sessionID
+		owner.session == other.session && owner.sessionID == other.sessionID && owner.activationLease == other.activationLease
 }
 
 func (owner *transcriptOwner) currentLocked() bool {
-	return owner.sessionCurrentLocked() && owner.activity.scope == owner.scope
+	return owner.sessionCurrentLocked() && owner.activity.scope == owner.scope &&
+		(owner.activationLease == nil || owner.sink.childLifetime == owner.activationLease)
 }
 
 func (owner *transcriptOwner) sessionCurrentLocked() bool {
@@ -243,6 +248,7 @@ func (sink *agentOutputSink) captureMessageUnderMutation(content agent.MessageCo
 		return content
 	}
 	session := sink.currentMessageSessionFact()
+	publisherSession := sink.turnPublisherSink().currentMessageSessionFact()
 	if content.AgentSessionID == "" {
 		content.AgentSessionID = session.id
 	}
@@ -273,7 +279,7 @@ func (sink *agentOutputSink) captureMessageUnderMutation(content agent.MessageCo
 		scope.transcriptThreads[key] = thread
 	}
 	activity.mu.Unlock()
-	owner := &transcriptOwner{sink: sink, activity: activity, scope: scope, session: session, sessionID: content.AgentSessionID,
+	owner := &transcriptOwner{sink: sink, activity: activity, scope: scope, session: session, publisherSession: publisherSession, sessionID: content.AgentSessionID,
 		thread: thread}
 	content.Publication = &transcriptPublication{owner: owner.withSpanSnapshot(sink.tracker, span)}
 	return content

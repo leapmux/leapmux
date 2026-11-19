@@ -32,9 +32,13 @@ func TestRegistryNativeKeysDoNotAliasDerivedKeys(t *testing.T) {
 func TestChildSubagentReportKeepsTheExactRegistryKey(t *testing.T) {
 	t.Parallel()
 	svc, sink := setupRootSink(t, "exact-report-owner")
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: " child-key ", Title: "Spaced child"})
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: " child-key ", Title: "Spaced child"})
 	require.NoError(t, err)
-	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "child-key", Title: "Plain child"})
+	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child-key", Title: "Plain child"})
 	require.NoError(t, err)
 	require.NotEqual(t, first, second)
 	write := agent.ChildSubagentReportWrite{
@@ -74,7 +78,9 @@ func TestLookupChildIdentityAnswersNativeBytesForStoredSpellings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, sink, _, listRows := setupBgTaskTestWithService(t)
-			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: tc.key, Title: "Native child"})
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: tc.key, Title: "Native child"})
 			require.NoError(t, err)
 			rows := listRows()
 			require.Len(t, rows, 1)
@@ -102,7 +108,9 @@ func TestLookupChildIdentityKeepsStorageFailureDistinctFromAnAbsentChild(t *test
 			const rootID = "child-identity-read-failure"
 			const nativeKey = " native-child-key "
 			svc, sink := setupRootSink(t, rootID)
-			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: nativeKey, Title: "Native child"})
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: nativeKey, Title: "Native child"})
 			require.NoError(t, err)
 			row := storedRow(t, svc, rootID, bgtask.NormalizeRowKey(nativeKey))
 			identity, err := bgtask.ParseRowIdentity(row.RowKey)

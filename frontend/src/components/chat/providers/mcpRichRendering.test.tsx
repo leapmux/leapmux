@@ -1,6 +1,7 @@
+import type { OpenCodeToolContent } from './opencode/toolResults.fixtures'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
@@ -9,6 +10,7 @@ import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages } from '~/test-support/toolCallFixture'
+import { openCodeToolPart } from './opencode/toolResults.fixtures'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -54,6 +56,26 @@ function mimoAttachments(blocks: Record<string, unknown>[]): Record<string, unkn
   })
 }
 
+/** Express shared MCP media fixtures as native text and file parts. */
+function nativeOpenCodeContent(blocks: Record<string, unknown>[]): OpenCodeToolContent[] {
+  return blocks.map((block): OpenCodeToolContent => {
+    if (block.type === 'text' && typeof block.text === 'string')
+      return { type: 'text', text: block.text }
+    const resource = pickObject(block, 'resource')
+    const mime = block.type === 'image'
+      ? pickString(block, 'mimeType')
+      : pickString(resource, 'mimeType')
+    const data = block.type === 'image'
+      ? pickString(block, 'data')
+      : pickString(resource, 'blob')
+    if (mime && data)
+      return { type: 'file', mime, uri: `data:${mime};base64,${data}` }
+    if (resource && typeof resource.text === 'string')
+      return { type: 'text', text: resource.text }
+    throw new Error('The shared MCP fixture has no native text or file representation.')
+  })
+}
+
 function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
   const acpCases: RichToolCase[] = [
     {
@@ -91,7 +113,6 @@ function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
       },
     },
     ...[
-      AgentProvider.OPENCODE,
       AgentProvider.KILO,
       AgentProvider.GOOSE,
       AgentProvider.REASONIX,
@@ -213,6 +234,14 @@ function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
       },
     },
     {
+      provider: AgentProvider.OPENCODE,
+      request: openCodeToolPart('call', 'probe_echo', { query: 'native args' }, { status: 'running' }),
+      result: openCodeToolPart('call', 'probe_echo', { query: 'native args' }, {
+        status: 'completed',
+        content: nativeOpenCodeContent(blocks),
+      }),
+    },
+    {
       provider: AgentProvider.CODEX,
       request: {
         item: {
@@ -293,7 +322,10 @@ describe.each([
     const start = input(request, null, provider)
     const end = result
     const plugin = providerFor(provider)!
-    const parsed = input(end, null, provider)
+    const parsed = {
+      ...input(end, null, provider),
+      completion: MessageCompletion.COMPLETE,
+    }
     parsed.supplementalContent = supplemental
       ? {
           sessionUpdate: end.sessionUpdate,
@@ -305,11 +337,13 @@ describe.each([
     const category = plugin?.transcript.classify(parsed)
     const { container } = render(() => [
       renderMessageContent(start.parentObject, {
+        spanId: 'call',
         sources: testMessageSources({
           current: () => start,
         }),
       }, plugin?.transcript.classify(start), provider),
       renderMessageContent(end, {
+        spanId: 'call',
         sources: testMessageSources({
           current: () => parsed,
           request: () => start,
@@ -323,6 +357,8 @@ describe.each([
     // The result row reads its own supplement, which carries the stored record.
     expect(providerRowImages(provider, end, {
       category,
+      spanId: 'call',
+      completion: MessageCompletion.COMPLETE,
       request: start,
       supplementalContent: parsed.supplementalContent,
       span: {

@@ -15,7 +15,6 @@ import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { renderACPToolPair } from './testUtils'
-import '../opencode/plugin'
 import '../kilo/plugin'
 import '../goose/plugin'
 import '../reasonix/plugin'
@@ -24,14 +23,13 @@ import '../copilot/plugin'
 import '~/components/chat/providers'
 
 function renderTool(tool: Record<string, unknown>, context?: MessageContentRenderContext) {
-  const plugin = providerFor(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.KILO)!
   const category = plugin?.transcript.classify(input(tool))
-  return render(() => renderListedMessageContent(tool, context, category, AgentProvider.OPENCODE))
+  return render(() => renderListedMessageContent(tool, context, category, AgentProvider.KILO))
 }
 
 describe('acp tool rendering', () => {
   it.each([
-    [AgentProvider.OPENCODE, 'todowrite'],
     [AgentProvider.KILO, 'todowrite'],
     [AgentProvider.REASONIX, 'todo_write'],
   ])('composes the task-count header for a %s to-do pair', (provider, title) => {
@@ -64,7 +62,7 @@ describe('acp tool rendering', () => {
   })
 
   it.each(['completed'])('shows one requested diff and retains a %s edit result', async (status) => {
-    const { container } = renderACPToolPair(AgentProvider.OPENCODE, {
+    const { container } = renderACPToolPair(AgentProvider.KILO, {
       title: 'edit',
       kind: 'edit',
       rawInput: { filePath: '/project/example.ts', oldString: 'before', newString: 'after' },
@@ -130,7 +128,7 @@ describe('acp tool rendering', () => {
       ],
     }
     const message = makeMessage({
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId: 'terminal-call',
       content: rawContent(original),
       supplementalContent: rawContent({
@@ -160,7 +158,7 @@ describe('acp tool rendering', () => {
       ],
     }
     const message = makeMessage({
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId: 'terminal-call',
       content: rawContent(original),
       supplementalContent: rawContent({
@@ -176,7 +174,7 @@ describe('acp tool rendering', () => {
     expect(container.textContent).not.toContain('foreign output')
     expect(container.textContent).toContain('Terminal first')
   })
-  it('uses the common write header for OpenCode file creation', () => {
+  it('uses the common write header for Kilo file creation', () => {
     const request = {
       sessionUpdate: 'tool_call',
       toolCallId: 'write',
@@ -198,7 +196,7 @@ describe('acp tool rendering', () => {
       workingDir: '/project',
     })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('created.txt (2 lines)')
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(result))).toBe(true)
+    expect(providerFor(AgentProvider.KILO)!.transcript.needsRequest?.(input(result))).toBe(true)
   })
 
   it('uses the common file search title without quoting the glob pattern', () => {
@@ -229,7 +227,7 @@ describe('acp tool rendering', () => {
       workingDir: '/project',
     })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('*.ts src')
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(result))).toBe(true)
+    expect(providerFor(AgentProvider.KILO)!.transcript.needsRequest?.(input(result))).toBe(true)
   })
 
   it('puts the content search path below the pattern', () => {
@@ -280,7 +278,7 @@ describe('acp tool rendering', () => {
   // print the whole frame, so the assertion found `File content` inside the JSON it
   // dumped. Copilot's own paired read is covered in `copilot/toolRendering.test.tsx`.
   it.each([
-    AgentProvider.OPENCODE,
+    AgentProvider.KILO,
     AgentProvider.KILO,
     AgentProvider.GOOSE,
     AgentProvider.REASONIX,
@@ -322,8 +320,8 @@ describe('acp tool rendering', () => {
   // presentation, and an adapter can lose a header as easily as gain one. The row is
   // credited per provider in the parity matrix, so the case runs per provider.
   it.each([
-    [AgentProvider.OPENCODE, undefined],
-    [AgentProvider.OPENCODE, 'different-call'],
+    [AgentProvider.KILO, undefined],
+    [AgentProvider.KILO, 'different-call'],
     [AgentProvider.KILO, undefined],
     [AgentProvider.GOOSE, undefined],
     [AgentProvider.REASONIX, undefined],
@@ -359,7 +357,7 @@ describe('acp tool rendering', () => {
   // than for the shared path once: a result draws its name from the request, and a
   // request draws from its own frame alone, also with an empty rawInput.
   it.each([
-    AgentProvider.OPENCODE,
+    AgentProvider.KILO,
     AgentProvider.KILO,
     AgentProvider.GOOSE,
     AgentProvider.REASONIX,
@@ -386,7 +384,7 @@ describe('acp tool rendering', () => {
   // span type, the row has only its content to show, and it must show that rather than
   // a tool name it never read.
   it.each([
-    AgentProvider.OPENCODE,
+    AgentProvider.KILO,
     AgentProvider.KILO,
     AgentProvider.GOOSE,
     AgentProvider.REASONIX,
@@ -463,7 +461,7 @@ describe('acp tool rendering', () => {
     const running = renderTool(request, context())
     expect(running.container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('read')
     running.unmount()
-    const header = providerToolCall(AgentProvider.OPENCODE, result, {
+    const header = providerToolCall(AgentProvider.KILO, result, {
       request: input(request),
       role: 'result',
     })
@@ -471,8 +469,8 @@ describe('acp tool rendering', () => {
     const { container } = renderTool(request, context(header!))
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('README.md')
     expect(container.textContent).not.toContain('File content')
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(request))).toBe(false)
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(result))).toBe(true)
+    expect(providerFor(AgentProvider.KILO)!.transcript.needsRequest?.(input(request))).toBe(false)
+    expect(providerFor(AgentProvider.KILO)!.transcript.needsRequest?.(input(result))).toBe(true)
   })
 
   it('uses a protocol file location without a related-message request', () => {
@@ -489,7 +487,7 @@ describe('acp tool rendering', () => {
     }
     const { container } = renderTool(request, { premeasureMode: true, workingDir: '/project' })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('sample.ts (Line 7–)')
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(request))).toBe(false)
+    expect(providerFor(AgentProvider.KILO)!.transcript.needsRequest?.(input(request))).toBe(false)
   })
 
   it('shows statistics from the applied diff instead of a single replacement fragment', async () => {
@@ -523,7 +521,7 @@ describe('acp tool rendering', () => {
       rawInput: {},
     }
     const message = makeMessage({
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId: 'command',
       content: rawContent(original),
       supplementalContent: rawContent({
@@ -546,7 +544,7 @@ describe('acp tool rendering', () => {
       rawInput: { filePath: '/project/file.ts', oldString: 'hostBefore', newString: 'hostAfter' },
     }
     const message = makeMessage({
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId: 'edit',
       id: 'edit-result',
       seq: 2n,
@@ -564,7 +562,7 @@ describe('acp tool rendering', () => {
                 makeMessage({
                   id: 'edit-request',
                   seq: 1n,
-                  agentProvider: AgentProvider.OPENCODE,
+                  agentProvider: AgentProvider.KILO,
                   spanId: 'edit',
                   content: rawContent(request),
                 }),
@@ -579,7 +577,7 @@ describe('acp tool rendering', () => {
   })
 
   it('identifies request and result roles without arrival-order assumptions', () => {
-    const plugin = providerFor(AgentProvider.OPENCODE)!
+    const plugin = providerFor(AgentProvider.KILO)!
     expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call', toolCallId: 'edit', status: 'pending' }))).toBe('request')
     expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed' }))).toBe('result')
   })
@@ -611,7 +609,7 @@ describe('acp tool rendering', () => {
     await settleWorkerReplies()
     expect(container.textContent).toContain('firstAfter')
     expect(container.textContent).toContain('secondAfter')
-    const meta = providerToolMeta(AgentProvider.OPENCODE, tool, { spanType: 'edit' })
+    const meta = providerToolMeta(AgentProvider.KILO, tool, { spanType: 'edit' })
     expect(meta?.hasDiff).toBe(true)
     expect(meta?.copyableContent()).toContain('secondAfter')
   })

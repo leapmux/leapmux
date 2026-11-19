@@ -20,7 +20,7 @@ describe('permission tool details', () => {
         },
       },
     }
-    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.OPENCODE} request={request} answerState={createControlAnswerState()} />)
+    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.KILO} request={request} answerState={createControlAnswerState()} />)
     expect(container.querySelector('pre')?.textContent).toBe(prettifyJson(rawInput))
     expect(request.payload.params.toolCall.rawInput).toBe(rawInput)
   })
@@ -40,7 +40,7 @@ describe('permission tool details', () => {
         },
       },
     }
-    const { container } = render(() => <Content agentProvider={AgentProvider.OPENCODE} request={request} answerState={createControlAnswerState()} />)
+    const { container } = render(() => <Content agentProvider={AgentProvider.KILO} request={request} answerState={createControlAnswerState()} />)
     expect(container.textContent).toContain('Run checks')
     expect(container.textContent).toContain('npm test -- --runInBand')
   })
@@ -55,7 +55,7 @@ describe('permission tool details', () => {
         },
       },
     }
-    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.OPENCODE} request={request} answerState={createControlAnswerState()} />)
+    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.KILO} request={request} answerState={createControlAnswerState()} />)
     expect(container.textContent).toContain('const value = 42')
   })
 
@@ -75,7 +75,7 @@ describe('permission tool details', () => {
     }
     const original = JSON.stringify(request.payload)
     const message = makeMessage({
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId: 'call',
       content: rawContent({
         sessionUpdate: 'tool_call',
@@ -86,7 +86,7 @@ describe('permission tool details', () => {
     })
     const fetchSpan = vi.fn(async () => [message])
     const messageContext = testMessageContext({ fetchSpan })
-    const { container, unmount } = render(() => <ControlRequestContent agentProvider={AgentProvider.OPENCODE} request={request} messageContext={messageContext} answerState={createControlAnswerState()} />)
+    const { container, unmount } = render(() => <ControlRequestContent agentProvider={AgentProvider.KILO} request={request} messageContext={messageContext} answerState={createControlAnswerState()} />)
     await waitFor(() => expect(container.textContent).toContain('npm test -- --runInBand'))
     expect(container.textContent).toContain('Current description')
     expect(container.textContent).not.toContain('Old description')
@@ -104,7 +104,7 @@ describe('permission tool details', () => {
       messages: [
         makeMessage({
           spanId: 'call',
-          agentProvider: AgentProvider.OPENCODE,
+          agentProvider: AgentProvider.KILO,
           content: rawContent({ sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed' }),
         }),
       ],
@@ -125,7 +125,7 @@ describe('permission tool details', () => {
     }
     const fetchSpan = vi.fn(async () => messages)
     const messageContext = testMessageContext({ fetchSpan })
-    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.OPENCODE} request={request} messageContext={messageContext} answerState={createControlAnswerState()} />)
+    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.KILO} request={request} messageContext={messageContext} answerState={createControlAnswerState()} />)
     await messageContext.loadSpan({ spanId: 'call', agentSessionId: '' })
     expect(container.textContent).toContain('Permission from provider')
     expect(container.textContent).toContain('pwd')
@@ -152,7 +152,7 @@ describe('permission tool details', () => {
       throw error
     })
     const messageContext = testMessageContext({ fetchSpan })
-    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.OPENCODE} request={request} messageContext={messageContext} answerState={createControlAnswerState()} />)
+    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.KILO} request={request} messageContext={messageContext} answerState={createControlAnswerState()} />)
     await waitFor(() => expect(warn).toHaveBeenCalledWith('[controlRequestToolSpan]', 'Could not load the tool call a permission refers to', { spanId: 'call', error }))
     expect(container.textContent).toContain('Permission from provider')
     expect(container.textContent).toContain('pwd')
@@ -175,7 +175,7 @@ describe('permission tool details', () => {
         params: { toolCall },
       },
     }
-    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.OPENCODE} request={request} answerState={createControlAnswerState()} />)
+    const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.KILO} request={request} answerState={createControlAnswerState()} />)
     // The banner still stands up. A payload this build cannot read draws as itself
     // beside the header rather than as nothing, because a reader must not be asked
     // to allow an operation the row never names.

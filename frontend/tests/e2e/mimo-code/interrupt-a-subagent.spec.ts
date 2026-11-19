@@ -9,6 +9,7 @@ import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeM
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { mimoActorCancelToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { steerQueuedInput } from '../helpers/steer'
 import { openChildTabFromRow, openHeldChildTab, requireRegistryRow } from '../helpers/subagentRegistry'
 import { applyPermissionPreset, assistantBubbles, messageContents, sendMessage, tabById } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'
@@ -28,7 +29,7 @@ mimoTest('proves the unsupported native child interrupt route while its original
   })
 })
 
-mimoTest('cancels the exact native child while its parent completes normally after reload', async ({ native }) => {
+mimoTest('cancels the exact native child while its parent completes normally after reload', async ({ native }, testInfo) => {
   const { page, modelScript } = native
   await applyPermissionPreset(page, 'bypass')
   const parent = await currentNativeAgent(native)
@@ -97,7 +98,11 @@ mimoTest('cancels the exact native child while its parent completes normally aft
     }, { text: parentAnswer })
     // A native child completion notice can start another parent turn.
     await modelScript.fallback({ text: 'The parent reads its native child cancellation notice.' })
-    await sendMessage(page, modelScript.prompt(`Cancel the existing native actor ${actorId} and answer normally.`))
+    // The parent remains active while it waits for its child. Ordinary input stays queued until that child ends.
+    await steerQueuedInput(page, {
+      message: modelScript.prompt(`Cancel the existing native actor ${actorId} and answer normally.`),
+      match: 'Cancel the existing native actor',
+    })
     await expect(assistantBubbles(page).filter({ hasText: parentAnswer })).toBeVisible()
     await expect(row).toHaveAttribute('data-status', 'stopped')
     const proveOwnership = async () => {
@@ -138,6 +143,14 @@ mimoTest('cancels the exact native child while its parent completes normally aft
       await expect(assistantBubbles(page).filter({ hasText: parentAnswer })).toHaveCount(0)
     }
   }, async () => {
+    const snapshot = await readNativeMessageSnapshot(native, parent.id)
+    await testInfo.attach('mimo-parent-cancel-frames', {
+      body: JSON.stringify(snapshot.messages.map(message => ({
+        seq: String(message.seq),
+        content: nativeMessageBody(message),
+      }))),
+      contentType: 'application/json',
+    })
     await modelScript.releaseGateIfHeld(gate)
   })
 })

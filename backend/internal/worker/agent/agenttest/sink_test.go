@@ -15,6 +15,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSink_MessageKeyReadsKeepExactSessionsAndCommittedPositions(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	unknown := sink.CaptureMessage(agent.MessageContent{Original: []byte(`{"record":"unknown"}`), IdempotencyKey: "reused", Supplemental: []byte(`{"value":0}`)}, agent.SpanInfo{})
+	sink.UpdateSessionID("current")
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, unknown, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"record":"current"}`), IdempotencyKey: "reused"}, agent.SpanInfo{}))
+	row, err := sink.ReadMessageByIdempotencyKey("", "reused")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.Equal(t, int64(1), row.Seq)
+	assert.Empty(t, row.Content.AgentSessionID)
+	assert.Equal(t, "reused", row.Content.IdempotencyKey)
+	assert.JSONEq(t, `{"record":"unknown"}`, string(row.Content.Original))
+	row.Content.Original[0], row.Content.Supplemental[0] = 'x', 'x'
+	again, err := sink.ReadMessageByIdempotencyKey("", "reused")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"record":"unknown"}`, string(again.Content.Original))
+	assert.JSONEq(t, `{"value":0}`, string(again.Content.Supplemental))
+	current, err := sink.ReadMessageByIdempotencyKey("current", "reused")
+	require.NoError(t, err)
+	require.NotNil(t, current)
+	assert.Equal(t, int64(2), current.Seq)
+	assert.JSONEq(t, `{"record":"current"}`, string(current.Content.Original))
+	for _, query := range []struct{ session, key string }{{"current", ""}, {"current", "missing"}, {"missing", "reused"}} {
+		missing, err := sink.ReadMessageByIdempotencyKey(query.session, query.key)
+		require.NoError(t, err)
+		assert.Nil(t, missing)
+	}
+	sink.PersistErr = errors.New("the store refused the row")
+	content := agent.MessageContent{Original: []byte(`{"record":"retried"}`), IdempotencyKey: "retried"}
+	require.Error(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
+	missing, err := sink.ReadMessageByIdempotencyKey("current", "retried")
+	require.NoError(t, err)
+	assert.Nil(t, missing)
+	sink.PersistErr = nil
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
+	stored, err := sink.ReadMessageByIdempotencyKey("current", "retried")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, int64(4), stored.Seq, "failed attempts do not claim the key or shift its committed position")
+	noOp, err := Nop().ReadMessageByIdempotencyKey("current", "reused")
+	require.NoError(t, err)
+	assert.Nil(t, noOp)
+}
+
+func TestSink_MessageKeyReadsRefuseACorruptIndex(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{messageKeys: map[nativeMessageIdentity]int{{sessionID: "native", key: "record"}: 99}}
+	row, err := sink.ReadMessageByIdempotencyKey("native", "record")
+	require.ErrorContains(t, err, "index is invalid")
+	assert.Nil(t, row)
+}
+
 func TestSink_CapturedMessagesRetainTheirHistoricalPublication(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"message", "turn end"} {
@@ -322,7 +377,9 @@ func TestCapturedTestSinkNotificationKeepsAggregateProvenanceOnReplay(t *testing
 func TestSinkSpanOnlyCreationStaysUnlinked(t *testing.T) {
 	t.Parallel()
 	parent := &Sink{}
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "native-span-only"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "native-span-only"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	child := parent.Child(childID)
@@ -336,12 +393,18 @@ func TestSinkSpanOnlyCreationStaysUnlinked(t *testing.T) {
 func TestSinkSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
 	t.Parallel()
 	parent := &Sink{}
-	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-native-span"})
 	require.NoError(t, err)
-	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "second-native-span"})
+	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "second-native-span"})
 	require.NoError(t, err)
 	assert.NotEqual(t, first, second)
-	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-native-span"})
 	require.NoError(t, err)
 	assert.Equal(t, first, replayed)
 	assert.ElementsMatch(t, []string{first, second}, parent.ChildAgentIDs())
@@ -351,7 +414,9 @@ func TestSinkSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
 func TestSinkAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	t.Parallel()
 	parent := &Sink{}
-	spec := agent.ChildAgentSpec{SpawnSpanID: "native-adoption-span"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "native-adoption-span"}
 	childID, err := parent.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	require.NoError(t, parent.PersistChildPrompt(childID, "Inspect the native task."))
@@ -370,12 +435,15 @@ func TestSinkAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, spec.ProviderChildKey, rows[0].RowKey)
 	assert.Equal(t, childID, rows[0].ChildAgentID)
-	wrong := spec
-	wrong.ProviderChildKey = "ses-different-native-child"
-	rejected, err := parent.EnsureChildAgent(wrong)
-	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
-	assert.Empty(t, rejected)
+	sibling := spec
+	sibling.ProviderChildKey = "ses-different-native-child"
+	siblingID, err := parent.EnsureChildAgent(sibling)
+	require.NoError(t, err)
+	assert.NotEqual(t, childID, siblingID)
+	assert.Equal(t, spec.ProviderChildKey, child.nativeChildKey)
 	assert.Equal(t, before, child.Messages())
+	_, err = parent.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildTask, SpawnSpanID: spec.SpawnSpanID})
+	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused, "the shared origin cannot select one sibling")
 }
 
 func TestSinkChildCreationKeepsItsInitialNativeSession(t *testing.T) {
@@ -394,7 +462,9 @@ func TestSinkChildCreationKeepsItsInitialNativeSession(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
 			parent := &Sink{}
-			spec := agent.ChildAgentSpec{SpawnSpanID: "child-spawn", ProviderChildKey: "native-child", AgentSessionID: scenario.initial}
+			spec := agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "child-spawn", ProviderChildKey: "native-child", AgentSessionID: scenario.initial}
 			childID, err := parent.EnsureChildAgent(spec)
 			require.NoError(t, err)
 			require.NoError(t, parent.PersistChildPrompt(childID, "Native child prompt."))
@@ -496,8 +566,12 @@ func TestSinkMessageEnrichmentMatchesTheWorkerSessionAndSequenceRules(t *testing
 	require.NoError(t, err)
 	assert.False(t, changed, "a span lookup cannot enrich another native session")
 	assert.Empty(t, sink.Messages()[0].SupplementalContent)
-	// The Worker permits an exact sequence to identify an earlier session's row.
+	// An exact sequence still requires the native session that owns the row.
 	change.Seq = 1
+	changed, err = sink.EnrichMessage(change)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	change.AgentSessionID = "first-session"
 	changed, err = sink.EnrichMessage(change)
 	require.NoError(t, err)
 	assert.True(t, changed)
@@ -510,6 +584,61 @@ func TestSinkMessageEnrichmentMatchesTheWorkerSessionAndSequenceRules(t *testing
 		changed, err := sink.EnrichMessage(invalid)
 		require.NoError(t, err)
 		assert.False(t, changed)
+	}
+}
+
+func TestSinkEnrichmentReadsAndCorrectsStoredCompletion(t *testing.T) {
+	t.Parallel()
+	for _, completion := range []agent.MessageCompletion{"", agent.MessageCompletionComplete, agent.MessageCompletionInterrupted, agent.MessageCompletionError, agent.MessageCompletionFinished, "invalid"} {
+		t.Run(string(completion), func(t *testing.T) {
+			sink := &Sink{}
+			sink.UpdateSessionID("native")
+			original := []byte(`{"native":"prefix"}`)
+			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, IdempotencyKey: "item", Completion: agent.MessageCompletionComplete}, agent.SpanInfo{}))
+			changed, err := sink.EnrichMessage(agent.MessageEnrichment{Seq: 1, AgentSessionID: "native", OriginalContent: original, Completion: completion})
+			if completion == "invalid" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			expected := completion
+			if completion == "" || completion == "invalid" {
+				expected = agent.MessageCompletionComplete
+			}
+			assert.Equal(t, expected != agent.MessageCompletionComplete, changed)
+			stored, err := sink.ReadMessageByIdempotencyKey("native", "item")
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			assert.Equal(t, expected, stored.Content.Completion)
+			assert.Equal(t, original, stored.Content.Original)
+		})
+	}
+}
+
+func TestSinkEnrichmentRequiresExactNativeSessionWithoutPublication(t *testing.T) {
+	t.Parallel()
+	for _, requested := range []string{"", "current", "historical", "foreign"} {
+		t.Run("session="+requested, func(t *testing.T) {
+			sink := &Sink{}
+			sink.UpdateSessionID("historical")
+			original := []byte(`{"text":"original"}`)
+			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, agent.SpanInfo{}))
+			sink.UpdateSessionID("current")
+			changed, err := sink.EnrichMessage(agent.MessageEnrichment{
+				AgentSessionID: requested, Seq: 1, OriginalContent: original,
+				SupplementalContent: []byte(`{"text":"corrected"}`),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, requested == "historical", changed)
+			rows := sink.Messages()
+			require.Len(t, rows, 1)
+			assert.Equal(t, "historical", rows[0].AgentSessionID)
+			if requested == "historical" {
+				assert.JSONEq(t, `{"text":"corrected"}`, string(rows[0].SupplementalContent))
+			} else {
+				assert.Empty(t, rows[0].SupplementalContent)
+			}
+		})
 	}
 }
 
@@ -553,9 +682,13 @@ func TestToolResultExactReadsKeepRecordedSequenceAndSession(t *testing.T) {
 func TestSinkChildSpawnLookupRequiresTheDirectParent(t *testing.T) {
 	t.Parallel()
 	root := &Sink{}
-	firstID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-spawn"})
+	firstID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-spawn"})
 	require.NoError(t, err)
-	secondID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "second-spawn"})
+	secondID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "second-spawn"})
 	require.NoError(t, err)
 	first := root.Child(firstID)
 	for _, id := range []string{firstID, secondID} {
@@ -563,7 +696,9 @@ func TestSinkChildSpawnLookupRequiresTheDirectParent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, span, "a child cannot grant ownership of itself or its sibling")
 	}
-	nestedID, err := first.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "nested-spawn"})
+	nestedID, err := first.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "nested-spawn"})
 	require.NoError(t, err)
 	span, err := first.ChildSpawnSpan(nestedID)
 	require.NoError(t, err)
@@ -584,7 +719,9 @@ func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
 	t.Parallel()
 
 	s := &Sink{}
-	childID, err := s.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "tu-spawn", ProviderChildKey: "task-1", Title: "explore"})
+	childID, err := s.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "tu-spawn", ProviderChildKey: "task-1", Title: "explore"})
 	require.NoError(t, err)
 	require.Equal(t, "child-of-tu-spawn", childID)
 
@@ -595,7 +732,9 @@ func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
 func TestSink_EnsureChildAgentStartsTheRegistryRowRunning(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	spec := agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Reviewer"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", Title: "Reviewer"}
 	childID, err := sink.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	row, ok := sink.BackgroundTask(spec.ProviderChildKey)
@@ -617,10 +756,14 @@ func TestSink_EnsureChildAgentStartsTheRegistryRowRunning(t *testing.T) {
 func TestSink_ReviveBackgroundTaskUsesTheSharedRegistry(t *testing.T) {
 	t.Parallel()
 	root := &Sink{}
-	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "child"})
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child"})
 	require.NoError(t, err)
 	child := root.Child(childID)
-	_, err = child.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "grandchild"})
+	_, err = child.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "grandchild"})
 	require.NoError(t, err)
 	require.NoError(t, child.CloseBackgroundTask("grandchild", bgtask.StatusFailed))
 	require.NoError(t, child.ReviveBackgroundTask("grandchild"))
@@ -636,13 +779,19 @@ func TestSink_ReviveBackgroundTaskUsesTheSharedRegistry(t *testing.T) {
 func TestSink_IndependentUnlinkedChildrenKeepTheirNativeIdentity(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "native-child-a", Title: "First child"})
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "native-child-a", Title: "First child"})
 	require.NoError(t, err)
-	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "native-child-b", Title: "Second child"})
+	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "native-child-b", Title: "Second child"})
 	require.NoError(t, err)
 	require.NotEqual(t, first, second)
 	assert.ElementsMatch(t, []string{first, second}, sink.ChildAgentIDs())
-	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "native-child-a", Title: "First child"})
+	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "native-child-a", Title: "First child"})
 	require.NoError(t, err)
 	assert.Equal(t, first, replay)
 	span, err := sink.ChildSpawnSpan(first)
@@ -653,23 +802,29 @@ func TestSink_IndependentUnlinkedChildrenKeepTheirNativeIdentity(t *testing.T) {
 func TestSink_UnlinkedChildRequiresNativeIdentity(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "", Title: "Unidentified child"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "", Title: "Unidentified child"})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, sink.ChildAgentIDs())
 }
 
-func TestSink_ConflictingNativeChildKeyCannotReuseAnotherChildsSpawnSpan(t *testing.T) {
+func TestSinkConflictingNativeKeyCannotRelinkAnIdentifiedChild(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"})
+	spec := agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildTask, ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"}
+	first, err := sink.EnsureChildAgent(spec)
 	require.NoError(t, err)
-	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-b", SpawnSpanID: "spawn", Title: "Wrong child"})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
+	child := sink.Child(first)
+	require.NotNil(t, child)
+	child.nativeChildKey = "conflicting-native-key"
+	before := sink.BackgroundTasks()
+	_, err = sink.EnsureChildAgent(spec)
+	require.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Equal(t, []string{first}, sink.ChildAgentIDs())
-	_, exists := sink.BackgroundTask("native-b")
-	assert.False(t, exists)
+	assert.Equal(t, before, sink.BackgroundTasks())
+	assert.Equal(t, "conflicting-native-key", child.nativeChildKey)
 }
 
 func TestSink_ConcurrentUnlinkedNativeChildCreatesOneSink(t *testing.T) {
@@ -683,7 +838,9 @@ func TestSink_ConcurrentUnlinkedNativeChildCreatesOneSink(t *testing.T) {
 	var group sync.WaitGroup
 	for range cap(results) {
 		group.Go(func() {
-			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child"})
+			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "native-child"})
 			results <- outcome{id: id, err: err}
 		})
 	}
@@ -703,9 +860,13 @@ func TestSink_ConcurrentUnlinkedNativeChildCreatesOneSink(t *testing.T) {
 func TestSink_FirstExactSpanAttachesToAnExistingNativeChild(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", Title: "Child"})
 	require.NoError(t, err)
-	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", SpawnSpanID: "native-call", Title: "Child"})
+	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", SpawnSpanID: "native-call", Title: "Child"})
 	require.NoError(t, err)
 	assert.Equal(t, childID, replay)
 	span, err := sink.ChildSpawnSpan(childID)

@@ -271,7 +271,7 @@ describe('an ACP tool_call_update with image content', () => {
         },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read')
+    const { container } = renderToolUse(AgentProvider.KILO, toolUse, 'read')
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
   })
 
@@ -292,7 +292,7 @@ describe('an ACP tool_call_update with image content', () => {
         },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read')
+    const { container } = renderToolUse(AgentProvider.KILO, toolUse, 'read')
     expect(container.querySelector('img')).not.toBeNull()
     expect(container.textContent ?? '').toContain('read shot.png')
     expect(container.textContent ?? '').not.toContain('base64,')
@@ -530,7 +530,7 @@ describe('provider toolResultImages', () => {
   })
 
   it('an ACP update keeps wire order and falls back to the tool input path', () => {
-    const images = imagesOf(AgentProvider.OPENCODE, {
+    const images = imagesOf(AgentProvider.KILO, {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'tc-1',
       kind: 'read',
@@ -786,7 +786,7 @@ describe('opening a tool-result image', () => {
         },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', {
+    const { container } = renderToolUse(AgentProvider.KILO, toolUse, 'read', {
       images: testImageActions({ openImage: onOpenImage }),
     })
     const imageButton = [
@@ -857,7 +857,7 @@ describe('opening a tool-result image', () => {
         },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', {
+    const { container } = renderToolUse(AgentProvider.KILO, toolUse, 'read', {
       images: testImageActions({ openImage: onOpenImage }),
     })
     // Scoped to the buttons that WRAP an image: the row also carries an

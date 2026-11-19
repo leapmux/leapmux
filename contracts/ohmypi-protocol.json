@@ -1,5 +1,5 @@
 {
-  "_readme": "This contract holds the Oh My Pi RPC values that both the Go provider and TypeScript plugin read. The native command is omp --mode rpc-ui. Every JSONL frame carries a type. A dialog frame also carries a method. Both languages dispatch through those values.\n\nOh My Pi began as a Pi fork. Its events, frame shapes, and tools now differ from Pi. This contract shares no table with pi-protocol.json.\n\nThese tables hold native values:\n- events and assistantEvents identify native event types.\n- messageRoles and stopReasons identify native messages and outcomes.\n- dialogMethods and extensionMethods identify native dialog and extension operations.\n- toolNames and todoStatuses identify native tools and to-do states.\n- frameFields, askQuestion, and askOption describe native frame and question fields.\n- approvalModes holds the values accepted by --approval-mode.\n- approvalDialog holds the native approval title prefix and two choices.\n- dialogResponse holds native reply fields.\n- customTypes identifies the native message that reports a completed background job.\n- commands includes compact because both languages read its persisted response.\n- asyncJobStates identifies a native background job that still runs.\n\n\nThe Worker selects approvalModes at launch. The browser offers the same values as permission modes. The Worker uses approvalDialog to associate a dialog with its tool call. The browser displays those choices as Approve and Deny.\n\nLeapMux owns askTypes, askEnvelope, and askAnswer. It publishes one question request for the entire ask call. Oh My Pi presents each question through a separate chain of dialogs. The Worker converts the browser's single answer envelope into that native chain.\n\nLeapMux owns the incomplete-result supplement. A retained start frame keeps the final partial result beside its unchanged native bytes. An artifact ID alone identifies no filesystem path. LeapMux reads no saved text file.\n\nOther Go-only command names stay in providers/ohmypi/protocol.go. The native labels that the question bridge answers also stay there. The one-side-only contract rule permits both sets.\n\nnotificationEvents lists the frames that the Worker persists as notifications. The browser threads them as one row. A compaction start is live session state, not a row. The Worker consumes cache_warming_start and cache_warming_end.",
+  "_readme": "This contract holds the Oh My Pi RPC values that both the Go provider and TypeScript plugin read. The native command is omp --mode rpc-ui. Every JSONL frame carries a type. A dialog frame also carries a method. Both languages dispatch through those values.\n\nOh My Pi began as a Pi fork. Its events, frame shapes, and tools now differ from Pi. This contract shares no table with pi-protocol.json.\n\nThese tables hold native values:\n- events and assistantEvents identify native event types.\n- messageRoles and stopReasons identify native messages and outcomes.\n- dialogMethods and extensionMethods identify native dialog and extension operations.\n- toolNames and todoStatuses identify native tools and to-do states.\n- askArguments describes the native HTML tool arguments.\n- frameFields describes native frame fields. LeapMux owns askQuestion and askOption for the choice-form bridge.\n- approvalModes holds the values accepted by --approval-mode.\n- approvalDialog holds the native approval title prefix and two choices.\n- dialogResponse holds native reply fields.\n- customTypes identifies the native message that reports a completed background job.\n- commands includes compact because both languages read its persisted response.\n- asyncJobStates identifies a native background job that still runs.\n\n\nThe Worker selects approvalModes at launch. The browser offers the same values as permission modes. The Worker uses approvalDialog to associate a dialog with its tool call. The browser displays those choices as Approve and Deny.\n\nLeapMux owns askTypes, askEnvelope, askAnswer, askQuestion and askOption. The native ask call takes HTML. The Worker groups choice-only forms into one request and retains raw option markup. The browser extracts presentation from that markup. Option values identify bridge choices; they are not native HTML values. The Worker converts the submitted choices into the exact native dialog chain. Other forms keep the native input and editor dialogs, including their drafts and validation prompts.\n\nLeapMux owns the incomplete-result supplement. A retained start frame keeps the final partial result beside its unchanged native bytes. An artifact ID alone identifies no filesystem path. LeapMux reads no saved text file.\n\nOther Go-only command names stay in providers/ohmypi/protocol.go. The native labels that the question bridge answers also stay there. The one-side-only contract rule permits both sets.\n\nnotificationEvents lists the frames that the Worker persists as notifications. The browser threads them as one row. A compaction start is live session state, not a row. The Worker consumes cache_warming_start and cache_warming_end.\n\naskQuestion.Context retains the surrounding native form text. The exact dialog title puts that context before the question, separated by a blank line. The selected-count prefix belongs to the question after the context.",
   "events": {
     "Ready": "ready",
     "RpcChunk": "rpc_chunk",
@@ -22,6 +22,8 @@
     "ExtensionError": "extension_error",
     "AutoCompactionStart": "auto_compaction_start",
     "AutoCompactionEnd": "auto_compaction_end",
+    "ManualCompactionStart": "manual_compaction_start",
+    "ManualCompactionEnd": "manual_compaction_end",
     "AutoRetryStart": "auto_retry_start",
     "AutoRetryEnd": "auto_retry_end",
     "RetryFallbackApplied": "retry_fallback_applied",
@@ -142,12 +144,15 @@
     "Header": "header",
     "Options": "options",
     "Multi": "multi",
-    "Recommended": "recommended"
+    "AllowEmpty": "allowEmpty",
+    "AllowCustomText": "allowCustomText",
+    "InitialSelections": "initialSelections",
+    "Context": "context"
   },
   "askOption": {
     "Label": "label",
-    "Description": "description",
-    "Preview": "preview"
+    "Value": "value",
+    "Markup": "markup"
   },
   "askTypes": {
     "Request": "leapmux_ask",
@@ -180,7 +185,7 @@
   },
   "structs": {
     "OhMyPiAskOption": {
-      "doc": "OhMyPiAskOption is one option of one question of an `ask` call, in omp's own\nargument shape.",
+      "doc": "OhMyPiAskOption retains one native choice. Value identifies the choice in the bridge answer. Label keeps the native dialog text. Markup preserves the label HTML for browser extraction.",
       "table": "askOption",
       "fields": [
         {
@@ -188,19 +193,19 @@
           "type": "string"
         },
         {
-          "key": "Description",
+          "key": "Value",
           "type": "string",
           "omitempty": true
         },
         {
-          "key": "Preview",
+          "key": "Markup",
           "type": "string",
           "omitempty": true
         }
       ]
     },
     "OhMyPiAskQuestion": {
-      "doc": "OhMyPiAskQuestion is one question of an `ask` call, in omp's own argument shape.\n\n`Recommended` is a POINTER, because the first option and no recommendation are\ndifferent answers.",
+      "doc": "OhMyPiAskQuestion is one choice field derived from the native HTML form. Its flags describe the native RPC dialog semantics. InitialSelections contains bridge option values.",
       "table": "askQuestion",
       "fields": [
         {
@@ -210,6 +215,11 @@
         {
           "key": "Question",
           "type": "string"
+        },
+        {
+          "key": "Context",
+          "type": "string",
+          "omitempty": true
         },
         {
           "key": "Header",
@@ -226,14 +236,22 @@
           "omitempty": true
         },
         {
-          "key": "Recommended",
-          "type": "*int",
+          "key": "AllowEmpty",
+          "type": "bool"
+        },
+        {
+          "key": "AllowCustomText",
+          "type": "bool"
+        },
+        {
+          "key": "InitialSelections",
+          "type": "[]string",
           "omitempty": true
         }
       ]
     },
     "OhMyPiAskRequest": {
-      "doc": "OhMyPiAskRequest is the ONE control request that the worker publishes for a whole\n`ask` call.\n\nomp asks each question through its own chain of select and editor dialogs, and the\nfirst dialog arrives before the call's tool_execution_start. The request carries the\nquestions of the call, which the assistant message stated, under the id of that\nfirst dialog.",
+      "doc": "OhMyPiAskRequest publishes the choice fields of one HTML ask call under its first native dialog ID. Forms that need native input or editor metadata keep the native dialog surface.",
       "table": "askEnvelope",
       "fields": [
         {
@@ -251,7 +269,7 @@
       ]
     },
     "OhMyPiAskQuestionAnswer": {
-      "doc": "OhMyPiAskQuestionAnswer is the reader's answer to one question: the option labels\nthey chose, and the text they typed.",
+      "doc": "OhMyPiAskQuestionAnswer contains the selected bridge option values and custom text for one field.",
       "table": "askAnswer",
       "fields": [
         {
@@ -306,10 +324,26 @@
           "omitempty": true
         }
       ]
+    },
+    "OhMyPiAskArguments": {
+      "doc": "OhMyPiAskArguments retains the native HTML form and the optional tool-wrapper instruction. The core ask schema requires HTML.",
+      "table": "askArguments",
+      "fields": [
+        {
+          "key": "HTML",
+          "type": "string"
+        },
+        {
+          "key": "Instruction",
+          "type": "*string",
+          "omitempty": true
+        }
+      ]
     }
   },
   "notificationEvents": [
     "AutoCompactionEnd",
+    "ManualCompactionEnd",
     "AutoRetryStart",
     "AutoRetryEnd",
     "RetryFallbackApplied",
@@ -321,5 +355,9 @@
     "IrcMessage",
     "RpcFrameError",
     "TtsrTriggered"
-  ]
+  ],
+  "askArguments": {
+    "HTML": "html",
+    "Instruction": "i"
+  }
 }

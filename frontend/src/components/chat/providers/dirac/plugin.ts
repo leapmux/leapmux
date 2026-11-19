@@ -5,8 +5,10 @@ import { diracOutputFilePaths } from './extractors/outputFilePaths'
 import { diracToolCallAdapter } from './extractors/toolCall'
 import { diracNativeNotifications } from './notification'
 import { diracPermissionPresets } from './permissionPresets'
+import { resolveDiracMessage } from './resolveMessage'
 
 registerACPProvider({
+  resolveMessage: resolveDiracMessage,
   permissionPresets: diracPermissionPresets,
   outputFilePaths: diracOutputFilePaths,
   provider: AgentProvider.DIRAC,

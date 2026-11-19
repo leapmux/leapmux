@@ -811,6 +811,67 @@ describe('useTabCreation disposed observers', () => {
   }
 })
 
+describe('useTabCreation fallback selection', () => {
+  it.each((['file', 'image'] as const).flatMap(kind => [
+    {
+      kind,
+      changed: false,
+      vanished: false,
+      selected: 'the visible fallback',
+    },
+    {
+      kind,
+      changed: true,
+      vanished: false,
+      selected: 'another tab',
+    },
+    {
+      kind,
+      changed: true,
+      vanished: true,
+      selected: 'another tab that closes',
+    },
+  ]))('respects $selected while completing the $kind creation', async ({ kind, changed, vanished }) => {
+    const s = setup()
+    s.publisher.publish(TabType.AGENT, 'visible-source', { workerId: 'worker', position: 'a' })
+    s.publisher.publish(TabType.AGENT, 'another-tab', { workerId: 'worker', position: 'z' })
+    const source = s.view.getAgentTab('visible-source')
+    expect(source).toBeDefined()
+    if (!source)
+      throw new Error('The source tab is absent.')
+    expect(s.selection.state.activeByWorkspace.ws).toBeUndefined()
+    expect(s.selection.activeTabForWorkspace('ws')?.id).toBe(source.id)
+    const registered = deferred<{ publication: ReturnType<typeof s.publisher.receipt> }>()
+    let creation: TabCreation | undefined
+    mockRegisterPayload.mockImplementationOnce((_worker: string, request: { creation?: TabCreation }) => {
+      creation = request.creation
+      return registered.promise
+    })
+    const opened = openKind(s, kind)
+    await settle()
+    if (!creation)
+      throw new Error('The payload request contains no creation intent.')
+    // Tile's click handler records the tab that the reader already sees.
+    s.selection.setActive(changed
+      ? s.view.getAgentTab('another-tab')!
+      : source)
+    if (vanished) {
+      s.publisher.deliver([
+        tombstoneTab(s.publisher.context, TabType.AGENT, 'another-tab'),
+      ])
+    }
+    registered.resolve({
+      publication: s.publisher.publishCreation(kind === 'file'
+        ? TabType.FILE
+        : TabType.IMAGE, 'worker', creation),
+    })
+    expect(await opened).toBe(true)
+    expect(s.selection.activeTabForWorkspace('ws')?.id).toBe(vanished
+      ? source.id
+      : changed ? 'another-tab' : creation.tabId)
+  })
+})
+
 describe('useTabCreation scheduled focus', () => {
   it.each([
     'current',

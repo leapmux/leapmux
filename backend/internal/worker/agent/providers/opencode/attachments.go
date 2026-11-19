@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -93,4 +97,63 @@ func validateFamilyAudioModel(raw []byte, selectedModel string) error {
 		return fmt.Errorf("the selected model %q does not accept audio attachments through this agent; choose a Google model with audio input", selectedModel)
 	}
 	return nil
+}
+
+func validateOpenCodeAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == contracts.AttachmentMediaKindAudio {
+		// OpenCode's attachmentContent discards audio before model input, including for models that advertise audio.
+		// See packages/core/src/session/runner/to-llm-message.ts in the native source.
+		return fmt.Errorf("OpenCode does not support audio attachments: %q", attachment.Filename)
+	}
+	if attachment.Kind == contracts.AttachmentMediaKindBinary {
+		return fmt.Errorf("OpenCode does not support this binary attachment: %s", attachment.Filename)
+	}
+	return (agent.ProviderDefaults{}).ValidateAttachment(attachment)
+}
+
+// buildOpenCodePrompt validates the complete input before it encodes media.
+// Text files use the shared inline representation. Media keeps its original bytes.
+func buildOpenCodePrompt(content string, attachments []*leapmuxv1.Attachment, model *openCodeModelInfo) (openCodePrompt, error) {
+	classified := agent.ClassifyAttachments(attachments)
+	remaining := contracts.MaxMessageSize - len(content)
+	if remaining < 0 {
+		return openCodePrompt{}, fmt.Errorf("OpenCode input exceeds %d bytes", contracts.MaxMessageSize)
+	}
+	for _, attachment := range classified {
+		if err := validateOpenCodeAttachment(attachment); err != nil {
+			return openCodePrompt{}, err
+		}
+		if len(attachment.Data) > remaining {
+			return openCodePrompt{}, fmt.Errorf("OpenCode input exceeds %d bytes", contracts.MaxMessageSize)
+		}
+		remaining -= len(attachment.Data)
+		if attachment.Kind == contracts.AttachmentMediaKindText {
+			continue
+		}
+		if len(attachment.Data) == 0 {
+			return openCodePrompt{}, fmt.Errorf("media attachment %q is empty", attachment.Filename)
+		}
+		if model == nil {
+			return openCodePrompt{}, fmt.Errorf("cannot verify attachment %q because the selected OpenCode model is unknown", attachment.Filename)
+		}
+		if !slices.Contains(model.Capabilities.Input, string(attachment.Kind)) {
+			return openCodePrompt{}, fmt.Errorf("OpenCode model %q does not accept %s attachments", model.Name, attachment.Kind)
+		}
+	}
+	var blocks []string
+	if content != "" {
+		blocks = append(blocks, content)
+	}
+	request := openCodePrompt{}
+	for _, attachment := range classified {
+		if attachment.Kind == contracts.AttachmentMediaKindText {
+			blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
+			continue
+		}
+		request.Files = append(request.Files, openCodePromptFile{
+			URI: providerkit.EncodeDataURI(attachment.MIMEType, attachment.Data), Name: attachment.Filename,
+		})
+	}
+	request.Text = strings.Join(blocks, "\n\n")
+	return request, nil
 }

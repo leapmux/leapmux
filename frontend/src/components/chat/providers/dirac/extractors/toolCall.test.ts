@@ -303,24 +303,30 @@ describe('registered native Dirac command exit', () => {
 describe('registered Dirac child title fallback', () => {
   it.each([
     {
-      rawInput: { tool: 'use_subagents', prompt: 'Native child prompt.' },
+      rawInput: { tool: 'subagents', body: 'Native operation receipt' },
       title: 'Native child title',
       expected: 'Native child title',
     },
     {
-      rawInput: { tool: 'use_subagents', task_title: '', prompt: 'Native child prompt.' },
+      rawInput: { tool: 'subagents', operation: 'create', assignments: [] },
       title: 'Native child title',
       expected: 'Native child title',
     },
     {
-      rawInput: { tool: 'use_subagents', task_title: 'Native task title', prompt: 'Native child prompt.' },
+      rawInput: {
+        tool: 'subagents',
+        operation: 'create',
+        assignments: [
+          { type: 'default', task_header: 'Native task title', task_description: 'Native child prompt.' },
+        ],
+      },
       title: 'Outer title',
       expected: 'Native task title',
     },
     {
-      rawInput: { tool: 'use_subagents', prompt: 'Native child prompt.' },
+      rawInput: { tool: 'subagents', body: 'Native operation receipt' },
       title: '',
-      expected: 'use_subagents',
+      expected: 'subagents',
     },
   ])('preserves the native description fallback: %j', ({ rawInput, title, expected }) => {
     const native = {
@@ -332,12 +338,14 @@ describe('registered Dirac child title fallback', () => {
       rawInput,
     }
     const before = structuredClone(native)
-    const call = providerToolCall(AgentProvider.DIRAC, native, { spanId: 'native-child', spanType: 'use_subagents', role: 'request' })
+    const call = providerToolCall(AgentProvider.DIRAC, native, { spanId: 'native-child', spanType: 'subagents', role: 'request' })
     expect(call?.kind).toBe('agent')
     if (!call || call.kind !== 'agent')
       throw new Error('The native child fixture requires an agent call.')
     expect(call.request.description).toBe(expected)
-    expect(call.request.prompt).toBe('Native child prompt.')
+    expect(call.request.prompt).toBe(expected === 'Native task title'
+      ? 'Native child prompt.'
+      : '')
     expect(native).toEqual(before)
   })
 })

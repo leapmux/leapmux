@@ -626,7 +626,7 @@ func TestOpenCodeDescendants_TolerateAnAbsentProcess(t *testing.T) {
 
 func TestOpenCodeAnswersAQuestionThroughTheBridge(t *testing.T) {
 	t.Parallel()
-	a := &Agent{}
+	a := &familyTestAgent{}
 	opencodetest.AssertAnswersAQuestionThroughTheBridge(t, a, EventRoute, QuestionRoot,
 		func(ctx context.Context, sink agent.ControlServices, baseURL string) {
 			a.SetContextForTest(ctx)

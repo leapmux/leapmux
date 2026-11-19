@@ -22,16 +22,18 @@ const CLASSIFIER_BLOCK_RULE = 'the Auto classifier blocks the call'
 const BLOCK_REASON = 'The scripted classifier blocks this removal.'
 
 // Smart selects CodeBuddy's Auto mode. Before each call that would prompt, CodeBuddy asks a classifier on the
-// session's model, and `<block>no</block>` allows the call, so the removal runs without a question.
+// session's model, and a JSON `allow` outcome allows the call, so the removal runs without a question.
 codebuddyTest('executes the native Smart command in Auto mode before and after reload', async ({ native }) => {
   const { page, modelScript } = native
   await modelScript.rule({
     name: CLASSIFIER_RULE,
     priority: 'high',
     when: {
-      system: escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING),
+      system: `^${escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING)}`,
     },
-    respond: { text: '<block>no</block>' },
+    respond: {
+      text: JSON.stringify({ outcome: 'allow' }),
+    },
   })
   await exerciseSmartPermissions(native, {
     // The workspace opens in Bypass. Default asks before a tool, so the shortcut must change the native behavior.
@@ -55,9 +57,16 @@ codebuddyTest('runs no call that the Auto classifier blocks, and asks no questio
     name: CLASSIFIER_BLOCK_RULE,
     priority: 'high',
     when: {
-      system: escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING),
+      system: `^${escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING)}`,
     },
-    respond: { text: `<block>yes</block><reason>${BLOCK_REASON}</reason>` },
+    respond: {
+      text: JSON.stringify({
+        risk_level: 'high',
+        user_authorization: 'low',
+        outcome: 'deny',
+        rationale: BLOCK_REASON,
+      }),
+    },
   })
   await applyPermissionPreset(page, 'smart')
   await waitForSettingsIdle(page)
@@ -79,14 +88,14 @@ codebuddyTest('runs no call that the Auto classifier blocks, and asks no questio
       await waitForAgentIdle(page)
       expect(existsSync(join(target, 'keep.txt')), 'the blocked command never ran').toBe(true)
       const outcome = await nativeToolOutcome(native, await modelScript.requestAt(start + steps.length - 1), id)
-      expect(outcome.text).toContain('denied by the CodeBuddy auto mode classifier')
+      expect(outcome.text).toContain('This action was rejected due to unacceptable risk.')
       expect(outcome.text).toContain(BLOCK_REASON)
       await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
     },
   })
   const status = await modelScript.status()
-  // Stage 1 blocks, so CodeBuddy asks stage 2, which blocks too.
-  expect(status.ruleMatches[CLASSIFIER_BLOCK_RULE], 'both classifier stages decided the call').toBe(2)
+  // One native assessment refuses this action.
+  expect(status.ruleMatches[CLASSIFIER_BLOCK_RULE], 'the classifier decided the call').toBe(1)
 })
 
 // Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/514.

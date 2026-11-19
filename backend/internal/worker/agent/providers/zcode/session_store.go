@@ -69,19 +69,22 @@ func newZCodeStorageQuery(resolved *launch.Spec) zcodeNativeStorageQuery {
 		} else {
 			spec = *resolved
 		}
-		cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
-			Shell: shell, LoginShell: q.LoginShell, Launch: spec,
-			BaseArgs: []string{"app-server", "--stdio", "--prepare-storage"}, WorkingDir: q.WorkingDir,
-		})
-		// A running process supplies its finalized environment as the sole authority.
-		// Session discovery without a snapshot still needs the locator's launch variables.
+
+		// A running process supplies its finalized environment, including launch
+		// requirements and ExtraEnv overrides. Reapplying locator defaults would
+		// replace those confirmed values. Discovery without a snapshot still needs
+		// the locator requirements and the query's explicit home.
 		if q.EnvEntries == nil {
-			environment = append(environment, spec.Env...)
 			if q.HomeDir != "" {
 				environment = append(environment, "HOME="+q.HomeDir, "USERPROFILE="+q.HomeDir)
 			}
+		} else {
+			spec.Env = nil
 		}
-		cmd.Env = environment
+		cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
+			Shell: shell, LoginShell: q.LoginShell, Launch: spec,
+			BaseArgs: []string{"app-server", "--stdio", "--prepare-storage"}, WorkingDir: q.WorkingDir, Environment: environment,
+		})
 		return zcodeStorageCommand{command: cmd, delimiter: delimiter}, nil
 	}}
 }

@@ -13,7 +13,7 @@ import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchEventsViaChannel, workerAgent } from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import {
@@ -5065,6 +5065,46 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
     expect(state.agentSessionStore.getProgress('a1').output).toBeUndefined()
     expect(state.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
+  })
+
+  it('refreshes a loaded row revision when its watch returns to full delivery', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    const original = state.chatStore.getMessages('a1')[0]!
+    vi.mocked(workerAgent.listAgentMessages).mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+      messages: [
+        { ...original, completion: MessageCompletion.INTERRUPTED, supplementalRevision: 1n },
+      ],
+      hasMore: false,
+      latestSeq: 7n,
+    }))
+    const handle = state.handles[0]!
+    const emitResponse = vi.mocked(handle.handle.onEvent).mock.calls[0]?.[0]
+    const transmitted = state.transmitted.at(-1)!
+    emitResponse?.(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: handle.requestId(),
+          agentStates: transmitted.agents.map(entry => ({ agentId: entry.agentId, mode: entry.mode, replayId: entry.replayId })),
+        },
+      },
+    }))
+    await flushStream()
+    expect(state.chatStore.getMessages('a1').map(message => [
+      message.id,
+      message.seq,
+      message.completion,
+      message.supplementalRevision,
+    ]))
+      .toEqual([
+        [
+          'initial',
+          7n,
+          MessageCompletion.INTERRUPTED,
+          1n,
+        ],
+      ])
   })
 
   it('retains the transmitted cursor when live rows precede the ACK', async () => {

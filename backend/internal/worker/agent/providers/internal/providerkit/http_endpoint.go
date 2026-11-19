@@ -18,10 +18,13 @@ import (
 )
 
 // MaxEndpointResponseBytes limits one response body that HTTPEndpoint.Do reads.
-// A session snapshot with a long history is the largest reply a local agent
-// server sends, and it stays far below this. The limit stops a runaway reply
-// from exhausting the worker's memory.
+// Histories with media can exceed this limit, so callers must paginate them.
+// The limit stops a runaway reply from exhausting the worker's memory.
 const MaxEndpointResponseBytes = 64 << 20
+
+// ErrEndpointResponseTooLarge identifies a reply above MaxEndpointResponseBytes.
+// Callers can reduce a page size without retrying unrelated HTTP failures.
+var ErrEndpointResponseTooLarge = fmt.Errorf("the reply exceeds %d bytes", MaxEndpointResponseBytes)
 
 // maxErrorBodyBytes limits the part of an error reply that HTTPStatusError
 // keeps. The reason is at the start of the body, and a log line has no use for
@@ -239,7 +242,7 @@ func (e *HTTPEndpoint) DoQuery(ctx context.Context, method, path string, query u
 		return fmt.Errorf("%s %s: read the reply: %w", method, path, err)
 	}
 	if len(payload) > MaxEndpointResponseBytes {
-		return fmt.Errorf("%s %s: the reply exceeds %d bytes", method, path, MaxEndpointResponseBytes)
+		return fmt.Errorf("%s %s: %w", method, path, ErrEndpointResponseTooLarge)
 	}
 	if out == nil || len(bytes.TrimSpace(payload)) == 0 {
 		return nil

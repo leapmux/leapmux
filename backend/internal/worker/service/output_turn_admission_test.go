@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"database/sql"
 	"errors"
@@ -169,7 +171,9 @@ func TestChildSessionSetterSerializesChildRetirementAndReplacement(t *testing.T)
 	defer cancel()
 	svc, parent := setupRootSink(t, "root-held-child-session")
 	root := requireRootOutputSink(t, svc.Output, "root-held-child-session")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "held-child", ProviderChildKey: "held-native-child", Title: "Child"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "held-child", ProviderChildKey: "held-native-child", Title: "Child"})
 	require.NoError(t, err)
 	child := requireChildOutputSink(t, root, childID)
 	child.UpdateSessionID("child-original")

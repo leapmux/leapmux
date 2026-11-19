@@ -44,19 +44,8 @@ const (
 	streamingBehaviorFollowUp = "followUp"
 )
 
-// Labels that omp's `ask` tool adds to its select dialogs. The question bridge
-// answers the dialog chain with them, and the browser never sees them: it answers
-// the whole question set at once (see ask.go).
-const (
-	// askOtherOption is the last option of every question dialog. Choosing it
-	// opens an editor dialog for the reader's own text.
-	askOtherOption = "Other (type your own)"
-	// askSelectedPrefixOpen and askSelectedPrefixClose frame the count that opens
-	// the title of a multi-select dialog after its first toggle:
-	// "(2 selected) Which languages?".
-	askSelectedPrefixOpen  = "("
-	askSelectedPrefixClose = " selected) "
-)
+// askOtherOption opens an input dialog for a radio or checkbox group's custom answer.
+const askOtherOption = "Other (type your own)"
 
 // omp's subagent lifecycle statuses, from the `status` field of a
 // subagent_lifecycle frame.

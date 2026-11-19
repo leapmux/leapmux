@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"bytes"
 	"context"
 	"database/sql"
@@ -457,7 +459,9 @@ func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 	_, sink, _, readRow := setupGoalTest(t)
 	sink.UpsertGoal(activeGoal("Root objective", 10, time.Unix(1_700_000_000, 0).UTC()))
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "child-key-1", Title: "A subagent"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "child-key-1", Title: "A subagent"})
 	require.NoError(t, err)
 	childSink := sink.ChildSink(childID)
 

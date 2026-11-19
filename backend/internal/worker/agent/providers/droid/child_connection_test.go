@@ -155,9 +155,13 @@ func newDroidProcessFixture(t *testing.T, model string, extraEnv ...string) droi
 	require.NoError(t, err)
 	a := started.(*Agent)
 	t.Cleanup(a.Stop)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "droid-tool-task-1", ProviderChildKey: droidChildConnectionSessionID, Title: "Inspect the note"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: droidChildConnectionSessionID, Title: "Inspect the note"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: droidChildConnectionSessionID, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
 	}))
@@ -168,7 +172,7 @@ func TestChildSendLoadsItsOwnStreamSession(t *testing.T) {
 	fixture := newDroidProcessFixture(t, "")
 	a, logPath := fixture.root, fixture.logPath
 
-	require.NoError(t, a.SendChildInput(droidChildConnectionSessionID, "follow up", nil))
+	require.NoError(t, agenttest.SendChildInput(a, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"}))
 	require.Eventually(t, func() bool {
 		for _, call := range readDroidProcessCalls(logPath) {
 			if call.method == droidMethodAddUserMessage {
@@ -236,7 +240,7 @@ func TestConcurrentChildSendsLoadOneProcess(t *testing.T) {
 		go func() {
 			defer group.Done()
 			<-start
-			results <- fixture.root.SendChildInput(droidChildConnectionSessionID, "follow up", nil)
+			results <- agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"})
 		}()
 	}
 	close(start)
@@ -262,7 +266,7 @@ func TestConcurrentChildSendsLoadOneProcess(t *testing.T) {
 func TestChildLoadFailureReleasesTheConnectionSlot(t *testing.T) {
 	fixture := newDroidProcessFixture(t, "", "LEAPMUX_DROID_CHILD_LOAD_ERROR=1")
 	for range 2 {
-		err := fixture.root.SendChildInput(droidChildConnectionSessionID, "follow up", nil)
+		err := agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"})
 		require.ErrorContains(t, err, "load denied")
 	}
 	calls := readDroidProcessCalls(fixture.logPath)
@@ -275,7 +279,7 @@ func TestChildLoadFailureReleasesTheConnectionSlot(t *testing.T) {
 
 func TestChildProcessExitClosesTheRunningRegistryRow(t *testing.T) {
 	fixture := newDroidProcessFixture(t, "", "LEAPMUX_DROID_CHILD_EXIT_ON_ADD=1")
-	require.NoError(t, fixture.root.SendChildInput(droidChildConnectionSessionID, "follow up", nil))
+	require.NoError(t, agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"}))
 	require.Eventually(t, func() bool {
 		row, ok := fixture.sink.BackgroundTask(droidChildConnectionSessionID)
 		return ok && row.Status == bgtask.StatusFailed
@@ -306,7 +310,9 @@ func TestChildExitBeforeReviveCannotLeaveARunningRow(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(held.release) }) }
 	defer release()
 	result := make(chan error, 1)
-	go func() { result <- fixture.root.SendChildInput(droidChildConnectionSessionID, "follow up", nil) }()
+	go func() {
+		result <- agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"})
+	}()
 	select {
 	case <-held.entered:
 	case <-time.After(10 * time.Second):
@@ -331,7 +337,7 @@ func TestChildExitBeforeReviveCannotLeaveARunningRow(t *testing.T) {
 
 func TestStoppingRootRemovesChildRuntimeSettings(t *testing.T) {
 	fixture := newDroidProcessFixture(t, "custom:Droid-0")
-	require.NoError(t, fixture.root.SendChildInput(droidChildConnectionSessionID, "follow up", nil))
+	require.NoError(t, agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"}))
 	pattern := filepath.Join(fixture.home, ".factory", "leapmux-runtime-settings-*.json")
 	files, err := filepath.Glob(pattern)
 	require.NoError(t, err)
@@ -340,5 +346,5 @@ func TestStoppingRootRemovesChildRuntimeSettings(t *testing.T) {
 	files, err = filepath.Glob(pattern)
 	require.NoError(t, err)
 	assert.Empty(t, files, "Stop waits for both processes before removing their settings")
-	assert.ErrorIs(t, fixture.root.SendChildInput(droidChildConnectionSessionID, "later", nil), errAgentStopped)
+	assert.ErrorIs(t, agenttest.SendChildInput(fixture.root, droidChildConnectionSessionID, agent.ChildInput{Content: "later"}), errAgentStopped)
 }

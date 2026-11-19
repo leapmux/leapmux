@@ -123,6 +123,9 @@ type Agent struct {
 
 	// stateRefresh coalesces the get_state reads that model_changed asks for.
 	stateRefresh stateRefresher
+	// compactionCommand owns the outstanding compact receipt, even after its native end.
+	// Process.Mu protects it.
+	compactionCommand *compactionPass
 
 	// dialogDeadlines withdraws a dialog whose deadline passed. See control.go.
 	dialogDeadlines providerkit.ControlDeadlines
@@ -216,13 +219,13 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	active := a.turn.active
+	state := a.activityStateLocked()
 	a.Mu.Unlock()
-	if steer && !active {
+	if steer && !state.Active {
 		return agent.ErrNoActiveTurn
 	}
-	if !steer && active {
-		return agent.ErrAgentBusy
+	if state.Active && (!steer || !state.Steerable) {
+		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: state.Steerable}
 	}
 
 	payload := promptPayload(content, attachments)
@@ -425,7 +428,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	active := a.turn.active
+	active := a.activityStateLocked().Active
 	if active {
 		// See turnState.interruptRequested.
 		a.turn.interruptRequested = true
@@ -458,7 +461,7 @@ func (a *Agent) Stop() {
 	a.dialogDeadlines.StopAll()
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
-	active := a.turn.active
+	active := a.activityStateLocked().Active
 	a.asks.clearLocked()
 	a.Mu.Unlock()
 	if !stopped && active {
@@ -495,79 +498,121 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.PublishTurnActive()
 }
 
-// CompactContext runs the native compact command and publishes live compaction state.
-// The command sends no agent_start or agent_end. Its response supplies the stored end.
-// The input queue stays active until that response or a transport failure resolves the command.
-// The method returns after the write because compaction can take as long as a model call.
+// CompactContext requests manual compaction and keeps input behind its pending receipt.
+// Native lifecycle events supply the outcome. A response supplies a fallback
+// when this command has no observed native end.
 func (a *Agent) CompactContext() error {
+	request, err := a.startCompactionCommand()
+	if request == nil {
+		return err
+	}
+	a.flushCompactionState(request.conversation)
+	a.PublishTurnActive()
+	if err != nil {
+		return err
+	}
+	go func() {
+		frame, err := request.wait(0)
+		a.recordCompactionResult(request.pass, frame, err)
+	}()
+	return nil
+}
+
+type compactionCommandRequest struct {
+	conversation *conversation
+	pass         *compactionPass
+	wait         func(time.Duration) (json.RawMessage, error)
+}
+
+// startCompactionCommand serializes the native write with session changes.
+// The caller publishes the admitted state after this method releases sessionMu.
+func (a *Agent) startCompactionCommand() (*compactionCommandRequest, error) {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 	root := a.rootConversation()
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return nil, fmt.Errorf("agent is stopped")
 	}
-	if a.turn.active || root.compactionOpen {
+	if a.activityStateLocked().Active {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return nil, agent.ErrAgentBusy
 	}
-	root.compactionOpen = true
+	pass := &compactionPass{trigger: "manual", stage: compactionAwaitingNativeStart}
+	root.compaction, a.compactionCommand = pass, pass
+	a.queueCompactionStateLocked(root)
 	a.Mu.Unlock()
-
-	providerkit.PublishCompaction(root.sink, "manual")
-	a.armTurn(compactionTurnID)
+	request := &compactionCommandRequest{conversation: root, pass: pass}
 	wait, err := a.beginCommandFrame(contracts.OhMyPiCommandCompact, nil)
-	if err != nil {
-		a.endCompaction(root)
-		a.disarmTurn(compactionTurnID)
-		return err
+	if err == nil {
+		request.wait = wait
+		return request, nil
 	}
-	go func() {
-		frame, err := wait(0)
-		a.recordCompactionResult(frame, err)
-		a.disarmTurn(compactionTurnID)
-	}()
-	return nil
+	a.Mu.Lock()
+	if a.compactionCommand == pass {
+		a.compactionCommand = nil
+	}
+	if root.compaction == pass && pass.stage == compactionAwaitingNativeStart {
+		root.compaction = nil
+		pass.stage = compactionCommandFinished
+		a.queueCompactionStateLocked(root)
+	}
+	a.Mu.Unlock()
+	return request, err
 }
 
-// compactionTurnID arms the turn for a `compact` command. A prompt arms it under
-// its command id, which starts "leapmux-", so the two cannot collide.
-const compactionTurnID = "compaction"
-
-// recordCompactionResult persists the outcome of a `compact` command: omp's
-// response frame, or the transport failure that left no response.
-func (a *Agent) recordCompactionResult(frame json.RawMessage, err error) {
+// recordCompactionResult releases only this command's reservation. An already
+// observed native end takes precedence over the receipt, including a lost receipt.
+func (a *Agent) recordCompactionResult(pass *compactionPass, frame json.RawMessage, err error) {
 	root := a.rootConversation()
 	a.Mu.Lock()
-	if a.StoppedLocked() || a.IsDiscardingOutput() || !root.compactionOpen {
+	if a.StoppedLocked() || a.IsDiscardingOutput() {
 		a.Mu.Unlock()
 		return
 	}
-	root.compactionOpen = false
-	a.Mu.Unlock()
-	if err != nil {
-		slog.Warn("omp compact failed", "agent_id", a.AgentID(), "error", err)
-		providerkit.EndCompaction(root.sink)
-		providerkit.PersistCompactionEnded(root.sink, providerkit.CompactionEndFailed, err.Error())
+	commandOwned, current := a.compactionCommand == pass, root.compaction == pass
+	if !commandOwned && !current {
+		a.Mu.Unlock()
 		return
 	}
-	if _, persistErr := root.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: frame}); persistErr != nil {
-		slog.Error("omp persist compact response", "agent_id", a.AgentID(), "error", persistErr)
+	nativeEnded := pass.stage == compactionNativeEnded
+	if commandOwned {
+		a.compactionCommand = nil
 	}
-	providerkit.EndCompaction(root.sink)
+	if current {
+		root.compaction = nil
+		a.queueCompactionStateLocked(root)
+	}
+	pass.stage = compactionCommandFinished
+	a.Mu.Unlock()
+	if !nativeEnded {
+		if err != nil {
+			slog.Warn("omp compact failed", "agent_id", a.AgentID(), "error", err)
+			providerkit.PersistCompactionEnded(root.sink, providerkit.CompactionEndFailed, err.Error())
+		} else if _, persistErr := root.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: frame}); persistErr != nil {
+			slog.Error("omp persist compact response", "agent_id", a.AgentID(), "error", persistErr)
+		}
+	}
+	if current {
+		a.flushCompactionState(root)
+	}
+	a.PublishTurnActive()
 }
 
-// PublishTurnActive republishes the turn state from turn.active, the single
-// source. Call it after EVERY critical section that writes that field.
-//
-// It re-reads rather than taking a value, so a caller cannot publish something the
-// field does not say. Never called with a.Mu held: the sink broadcasts, and a
-// broadcast can block on a slow transport.
+// activityStateLocked combines prompt activity with maintenance and its receipt.
+// A compaction can run without an agent_start and does not accept steering.
+func (a *Agent) activityStateLocked() agent.TurnState {
+	compacting := a.compactionCommand != nil || a.root != nil && a.root.compaction != nil
+	return agent.TurnState{Active: a.turn.active || compacting, Steerable: a.turn.active && !compacting}
+}
+
+// PublishTurnActive reads the current prompt and maintenance state before publication.
+// Call it without Process.Mu because the sink can wait for a slow transport.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turn.active
+	state := a.activityStateLocked()
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishTurnStateTo(a.sink, state, seq)
 }

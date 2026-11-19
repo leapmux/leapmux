@@ -123,11 +123,13 @@ func answerFor(t *testing.T, rig *kimiTestRig, requestID, behavior string, field
 func TestKimiPublishesControlRequests(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": "I will run ls."})
+	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	native.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"assistant_message","item_id":"answer","status":"running","created_at":"2026-11-18T00:00:00Z","text":"I will run ls."}}`)
 	rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 	rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 	rig.feed(t, questionEvent("question_1"))
+	awaitKimiTestOutput(t, rig.agent.sink)
 
 	controls := rig.sink.PublishedControls()
 	require.Len(t, controls, 2, "a repeated request publishes once")
@@ -139,8 +141,11 @@ func TestKimiPublishesControlRequests(t *testing.T) {
 
 	messages := rig.sink.Messages()
 	require.NotEmpty(t, messages)
-	_, text := assembledRow(t, messages[0])
-	assert.Equal(t, "I will run ls.", text, "the text before the request is flushed above its banner")
+	view, err := decodeKimiConversationRecord(messages[0].Content)
+	require.NoError(t, err)
+	require.NotNil(t, view.item)
+	require.NotNil(t, view.item.Text)
+	assert.Equal(t, "I will run ls.", *view.item.Text, "the text before the request is flushed above its banner")
 }
 
 func TestKimiPlanReviewKeepsLeapMuxsCopyOfThePlan(t *testing.T) {
@@ -432,9 +437,8 @@ func TestKimiApprovalUsesItsNativeAgentTag(t *testing.T) {
 	assert.Equal(t, "The session's plan", rig.sink.LastPlanUpdate().Title)
 }
 
-// After a gap that the stream could not replay, the snapshot's pending
-// interactions are the truth for the session that the gap cut.
-func TestKimiReconcileControls(t *testing.T) {
+// A confirmed native replay retires only old controls absent from the current session replay.
+func TestKimiReconcileNativeControls(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
 	a := newOfflineKimiAgent(t, sink)
@@ -445,9 +449,18 @@ func TestKimiReconcileControls(t *testing.T) {
 		"question_kept":     publishedKimiControl(kimiControlQuestion, "session_1", false),
 	}
 
-	a.reconcileControls("session_1",
-		[]json.RawMessage{json.RawMessage(`not json`), json.RawMessage(`{"approval_id":""}`), json.RawMessage(`null`)},
-		[]json.RawMessage{json.RawMessage(`{"question_id":"question_kept","agent_id":"main","questions":[]}`)})
+	a.controls["approval_child"] = publishedKimiControl(kimiControlApproval, "session_1", false)
+	a.controls["approval_child"].agentID = "agent-0"
+	a.dispatchMu.Lock()
+	a.captureControlReplay("session_1")
+	replay := a.controlReplay
+	a.finishDispatch()
+	question := questionEvent("question_kept")
+	a.HandleOutput(kimiEventFrame(t, "session_1", question))
+	child := approvalEvent("approval_child", map[string]any{"kind": "command", "command": "pwd"})
+	child["agent_id"] = "agent-0"
+	a.HandleOutput(kimiEventFrame(t, "session_1", child))
+	a.finishControlReplay(replay, true)
 
 	assert.Equal(t, []string{"approval_gone"}, sink.CanceledControls(),
 		"only the request that the server resolved and nobody answered leaves the banner")
@@ -458,51 +471,8 @@ func TestKimiReconcileControls(t *testing.T) {
 		remaining = append(remaining, id)
 	}
 	a.Mu.Unlock()
-	assert.ElementsMatch(t, []string{"approval_old", "question_kept"}, remaining,
-		"a request of another session is not this snapshot's to judge")
-}
-
-func TestKimiSnapshotInteraction(t *testing.T) {
-	t.Parallel()
-
-	t.Run("an approval reads as the event that announced it", func(t *testing.T) {
-		t.Parallel()
-		item := json.RawMessage(`{"approval_id":"approval_1","tool_name":"Bash","type":"stale","sessionId":"session_old"}`)
-		event, requestID, ok := kimiSnapshotInteraction(contracts.KimiInteractionKindApproval, "session_1", item)
-		require.True(t, ok)
-		assert.Equal(t, "approval_1", requestID)
-		assert.Equal(t, contracts.KimiFrameInteraction, event.Type)
-		assert.Equal(t, kimiMainAgentID, event.AgentID, "an interaction with no agent tag is the main agent's")
-		assert.JSONEq(t, `{"type":"interaction","kind":"approval","status":"pending","interaction_id":"approval_1",`+
-			`"agent_id":"main","session_id":"session_1","request":{"tool_name":"Bash"}}`, string(event.Raw), "the snapshot projects the native interaction identity and request")
-	})
-
-	t.Run("a question keeps its agent", func(t *testing.T) {
-		t.Parallel()
-		item := json.RawMessage(`{"question_id":"question_1","agent_id":"agent-2"}`)
-		event, requestID, ok := kimiSnapshotInteraction(contracts.KimiInteractionKindQuestion, "session_1", item)
-		require.True(t, ok)
-		assert.Equal(t, "question_1", requestID)
-		assert.Equal(t, "agent-2", event.AgentID)
-	})
-
-	for name, tc := range map[string]struct {
-		eventType string
-		item      string
-	}{
-		"bytes that are not JSON":            {contracts.KimiInteractionKindApproval, `not json`},
-		"a null item":                        {contracts.KimiInteractionKindApproval, `null`},
-		"an array":                           {contracts.KimiInteractionKindApproval, `[]`},
-		"an approval with no id":             {contracts.KimiInteractionKindApproval, `{"tool_name":"Bash"}`},
-		"a question that states an approval": {contracts.KimiInteractionKindQuestion, `{"approval_id":"approval_1"}`},
-		"an id of the wrong type":            {contracts.KimiInteractionKindApproval, `{"approval_id":7}`},
-	} {
-		t.Run(name+" is refused", func(t *testing.T) {
-			t.Parallel()
-			_, _, ok := kimiSnapshotInteraction(tc.eventType, "session_1", json.RawMessage(tc.item))
-			assert.False(t, ok)
-		})
-	}
+	assert.ElementsMatch(t, []string{"approval_old", "approval_child", "question_kept"}, remaining,
+		"a replay cannot retire another session or either still-pending request")
 }
 
 func TestKimiRefusesAnAnswerItCannotPost(t *testing.T) {
@@ -592,7 +562,7 @@ func TestKimiCancelUnpublishedControlRefusesAnUnsafeID(t *testing.T) {
 
 // publishedKimiControl constructs a completed publication for state-only tests.
 func publishedKimiControl(kind kimiControlKind, sessionID string, answered bool) *kimiPendingControl {
-	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, answered: answered, ready: true, published: true, publicationDone: make(chan struct{})}
+	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, agentID: kimiMainAgentID, answered: answered, ready: true, published: true, publicationDone: make(chan struct{})}
 	pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 	return pending
 }

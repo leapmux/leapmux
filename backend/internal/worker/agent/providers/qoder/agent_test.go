@@ -1,11 +1,8 @@
 package qoder
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,14 +16,12 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-func configuredQoderAgent(t *testing.T, settings string) *Agent {
+func customCatalogQoderAgent(t *testing.T, raw string) *Agent {
 	t.Helper()
-	home := t.TempDir()
-	configDir := filepath.Join(home, ".qoder")
-	require.NoError(t, os.MkdirAll(configDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(settings), 0o600))
 	a := newOfflineAgent(t, &agenttest.Sink{})
-	a.opts.HomeDir = home
+	models, err := qoderCustomModels(json.RawMessage(raw))
+	require.NoError(t, err)
+	a.customModels = models
 	return a
 }
 
@@ -95,58 +90,53 @@ func TestAvailableModelsUpdateOffersTheModelGroup(t *testing.T) {
 	assert.Equal(t, []string{"model-a", "model-b"}, []string{model.GetOptions()[0].GetId(), model.GetOptions()[1].GetId()})
 }
 
-func TestAbsentNativeCatalogUsesConfiguredModels(t *testing.T) {
+func TestCustomCatalogRemainsWhenNativeCatalogIsEmpty(t *testing.T) {
 	t.Parallel()
-	settings := `{"providers":{"mockprov":{"models":[{"model":"first","displayName":"First Model"},{"model":"second","displayName":"Second Model"}]}}}`
-	a := configuredQoderAgent(t, settings)
+	a := customCatalogQoderAgent(t, `{"configs":[{"providerId":"mockprov","models":[{"id":"first","displayName":"First Model"},{"id":"second","displayName":"Second Model"}]}]}`)
 	a.model = "mockprov/first"
-	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","currentModel":"mockprov/first"}`))
-
-	var model *leapmuxv1.AvailableOptionGroup
+	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[],"currentModel":"mockprov/first"}`))
+	assert.Equal(t, []string{"mockprov/first", "mockprov/second"}, qoderModelIDs(a))
 	for _, group := range a.OptionGroups() {
-		if group.GetId() == agent.OptionIDModel {
-			model = group
+		if group.Id == agent.OptionIDModel {
+			assert.Equal(t, "mockprov/first", group.CurrentValue)
+			assert.Equal(t, "First Model", group.Options[0].Name)
+			assert.Equal(t, "Second Model", group.Options[1].Name)
 		}
 	}
-	require.NotNil(t, model)
-	assert.Equal(t, "mockprov/first", model.GetCurrentValue())
-	require.Len(t, model.GetOptions(), 2)
-	assert.Equal(t, []string{"mockprov/first", "mockprov/second"}, []string{model.GetOptions()[0].GetId(), model.GetOptions()[1].GetId()})
-	assert.Equal(t, []string{"First Model", "Second Model"}, []string{model.GetOptions()[0].GetName(), model.GetOptions()[1].GetName()})
 }
 
-func TestNativeCatalogOverridesConfiguredModels(t *testing.T) {
+func TestCustomCatalogComplementsNativeModels(t *testing.T) {
 	t.Parallel()
-	a := configuredQoderAgent(t, `{"providers":{"mockprov":{"models":[{"model":"first"},{"model":"second"}]}}}`)
-	a.model = "mockprov/first"
+	a := customCatalogQoderAgent(t, `{"configs":[{"providerId":"mockprov","models":[{"id":"first"},{"id":"second"}]}]}`)
 	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"native-one","displayName":"Native One","isEnabled":true},{"value":"native-two","displayName":"Native Two","isEnabled":true}],"currentModel":"native-one"}`))
-
-	var model *leapmuxv1.AvailableOptionGroup
-	for _, group := range a.OptionGroups() {
-		if group.GetId() == agent.OptionIDModel {
-			model = group
-		}
-	}
-	require.NotNil(t, model)
-	require.Len(t, model.GetOptions(), 2)
-	assert.Equal(t, []string{"native-one", "native-two"}, []string{model.GetOptions()[0].GetId(), model.GetOptions()[1].GetId()})
+	assert.Equal(t, []string{"native-one", "native-two", "mockprov/first", "mockprov/second"}, qoderModelIDs(a))
 }
 
-func TestConfiguredModelsDeduplicateAndSortProviders(t *testing.T) {
+func TestCustomModelsDeduplicateAndSortProviders(t *testing.T) {
 	t.Parallel()
-	a := configuredQoderAgent(t, `{"providers":{"zeta":{"models":[{"model":"m","displayName":"Zeta"},{"model":"m","displayName":"Duplicate"}]},"alpha":{"model":"implicit","models":[{"model":"first","displayName":"First"}]}}}`)
-	models, err := readQoderConfiguredModels(a.opts)
+	models, err := qoderCustomModels(json.RawMessage(`{"configs":[{"providerId":"zeta","models":[{"id":"m","displayName":"Zeta"},{"id":"m","displayName":"Duplicate"}]},{"providerId":"alpha","models":[{"id":"first","displayName":"First"},{"id":"implicit"}]}]}`))
 	require.NoError(t, err)
 	require.Len(t, models, 3)
 	assert.Equal(t, []string{"alpha/first", "alpha/implicit", "zeta/m"}, []string{models[0].id, models[1].id, models[2].id})
 	assert.Equal(t, "Zeta", models[2].displayName)
+	assert.Equal(t, "implicit", models[1].displayName)
 }
 
-func TestConfiguredModelsRejectOversizedSettings(t *testing.T) {
+func TestCustomCatalogRejectsMalformedReplies(t *testing.T) {
 	t.Parallel()
-	a := configuredQoderAgent(t, string(bytes.Repeat([]byte(" "), qoderSettingsLimit+1)))
-	_, err := readQoderConfiguredModels(a.opts)
-	require.ErrorContains(t, err, "exceed")
+	for _, raw := range []string{`{`, `null`, `{}`, `{"configs":null}`, `{"configs":{}}`, `{"configs":[{"providerId":1}]}`, `{"configs":[{"providerId":"p","models":[{"id":false}]}]}`} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			_, err := qoderCustomModels(json.RawMessage(raw))
+			require.Error(t, err)
+		})
+	}
+	empty, err := qoderCustomModels(json.RawMessage(`{"configs":[]}`))
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+	ignored, err := qoderCustomModels(json.RawMessage(`{"configs":[{"providerId":"","models":[{"id":"m"}]},{"providerId":"p","models":[{"id":""},{"id":"  "}]}]}`))
+	require.NoError(t, err)
+	assert.Empty(t, ignored)
 }
 
 func TestUpdateSettingsSetsTheModelOnTheRunningSession(t *testing.T) {
@@ -202,7 +192,7 @@ func userContentOrderCases() []userContentOrderCase {
 	const gifBlock = `{"type":"image","source":{"type":"base64","media_type":"image/gif","data":"R0lGODlh"}}`
 	const noteBlock = `{"type":"text","text":"<attached-file name=\"notes.txt\" mime-type=\"text/plain\">\nunique-note-42\n</attached-file>"}`
 	frame := func(content string) string {
-		return `{"type":"user","message":{"role":"user","content":` + content + `}}`
+		return `{"type":"user","session_id":"session-1","message":{"role":"user","content":` + content + `}}`
 	}
 	return []userContentOrderCase{
 		{
@@ -295,7 +285,7 @@ func TestSendInputRejectsAnUnsupportedAttachmentBeforeTheTurnStarts(t *testing.T
 	assert.False(t, active, "a rejected prompt must not start a turn")
 
 	require.NoError(t, a.SendInput("Describe this.", nil), "the next prompt must not see a busy agent")
-	assert.JSONEq(t, `{"type":"user","message":{"role":"user","content":"Describe this."}}`, sentUserFrame(t, stdin))
+	assert.JSONEq(t, `{"type":"user","session_id":"session-1","message":{"role":"user","content":"Describe this."}}`, sentUserFrame(t, stdin))
 }
 
 func TestSteerInputRejectsAnUnsupportedAttachment(t *testing.T) {

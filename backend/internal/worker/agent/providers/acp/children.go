@@ -373,6 +373,44 @@ func (b *Base) FeedChildUpdate(rowKey string, update json.RawMessage) bool {
 	return b.routeToChild(rowKey, header, update) == childRouteAccepted
 }
 
+// WithChildTranscript selects an existing native child's services while its
+// root session and route remain current. The callback captures its destination;
+// native file or network reads belong outside this callback and its locks.
+func (b *Base) WithChildTranscript(target ChildSessionTarget, capture func(agent.ProviderServices) error) error {
+	if !target.valid() || capture == nil {
+		return agent.ErrChildRouteNotReady
+	}
+	return b.WithSessionID(func(sessionID string) error {
+		if sessionID != target.RootSessionID {
+			return agent.ErrChildRouteNotReady
+		}
+		b.Mu.Lock()
+		stopped := b.StoppedLocked()
+		b.Mu.Unlock()
+		if stopped {
+			return agent.ErrChildRouteNotReady
+		}
+		child := b.childFor(target.RowKey)
+		if child == nil {
+			return agent.ErrChildRouteNotReady
+		}
+		child.feedMu.Lock()
+		defer child.feedMu.Unlock()
+		if !b.childRouteCurrent(target.RowKey, child) || child.childSink.MessageSessionID() != target.SessionID {
+			return agent.ErrChildRouteNotReady
+		}
+		return capture(child.childSink)
+	})
+}
+
+// ReviveChildRow reopens the activity of an exactly identified native child.
+// The provider calls it after observing that child's native resumed lifetime.
+func (b *Base) ReviveChildRow(target ChildSessionTarget) error {
+	return b.WithChildTranscript(target, func(services agent.ProviderServices) error {
+		return services.ReviveBackgroundTask(target.RowKey)
+	})
+}
+
 // FinishChildTurn persists the text that rowKey's child assembled before its turn ended.
 // The child transcript stays open, so a later resumed turn renders in that same transcript.
 func (b *Base) FinishChildTurn(rowKey string) {

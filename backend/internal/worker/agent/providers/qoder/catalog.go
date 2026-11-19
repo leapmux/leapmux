@@ -2,12 +2,8 @@ package qoder
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -17,88 +13,90 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-const qoderSettingsLimit = 1 << 20
+// readCustomModelCatalog reads the SDK's custom-provider catalog. The session
+// catalog lists Qoder models only, so its empty result cannot replace this list.
+func (a *Agent) readCustomModelCatalog() error {
+	result, err := a.sendControlAndWait(`{"subtype":"daemon.list_byok_configs"}`, initializeTimeout)
+	if err != nil {
+		return fmt.Errorf("read the Qoder custom model catalog: %w", err)
+	}
+	models, err := qoderCustomModels(result.RawResponse)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.customModels = models
+	a.mu.Unlock()
+	return nil
+}
 
-// readQoderConfiguredModels reads choices that a custom provider declares.
-// A native catalog replaces these choices, including when every native model is disabled.
-func readQoderConfiguredModels(opts agent.Options) (models []qoderModel, err error) {
-	root := qoderConfigRoot(opts)
-	if !filepath.IsAbs(root) {
-		root = filepath.Join(opts.WorkingDir, root)
-	}
-	file, err := os.Open(filepath.Join(root, "settings.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read qoder settings: %w", err)
-	}
-	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
-			err = closeErr
-		}
-	}()
-	raw, err := io.ReadAll(io.LimitReader(file, qoderSettingsLimit+1))
-	if err != nil {
-		return nil, fmt.Errorf("read qoder settings: %w", err)
-	}
-	if len(raw) > qoderSettingsLimit {
-		return nil, fmt.Errorf("qoder settings exceed %d bytes", qoderSettingsLimit)
-	}
-	var settings struct {
-		Providers map[string]struct {
-			Model  string `json:"model"`
-			Models []struct {
-				Model       string `json:"model"`
+func qoderCustomModels(raw json.RawMessage) ([]qoderModel, error) {
+	var catalog struct {
+		Configs *[]struct {
+			ProviderID string `json:"providerId"`
+			Models     []struct {
+				ID          string `json:"id"`
 				DisplayName string `json:"displayName"`
 			} `json:"models"`
-		} `json:"providers"`
+		} `json:"configs"`
 	}
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		return nil, fmt.Errorf("parse qoder settings: %w", err)
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return nil, fmt.Errorf("decode the Qoder custom model catalog: %w", err)
 	}
-	providerIDs := make([]string, 0, len(settings.Providers))
-	for id := range settings.Providers {
-		providerIDs = append(providerIDs, id)
+	if catalog.Configs == nil {
+		return nil, fmt.Errorf("the Qoder custom model catalog has no configs array")
 	}
-	sort.Strings(providerIDs)
+	configs := *catalog.Configs
+	sort.SliceStable(configs, func(i, j int) bool { return configs[i].ProviderID < configs[j].ProviderID })
+	var models []qoderModel
 	seen := make(map[string]bool)
-	for _, providerID := range providerIDs {
-		if strings.TrimSpace(providerID) == "" {
+	for _, config := range configs {
+		providerID := strings.TrimSpace(config.ProviderID)
+		if providerID == "" {
 			continue
 		}
-		provider := settings.Providers[providerID]
-		for _, entry := range provider.Models {
-			id := providerID + "/" + strings.TrimSpace(entry.Model)
-			if strings.TrimSpace(entry.Model) == "" || seen[id] {
+		for _, model := range config.Models {
+			modelID := strings.TrimSpace(model.ID)
+			id := providerID + "/" + modelID
+			if modelID == "" || seen[id] {
 				continue
 			}
 			seen[id] = true
-			name := strings.TrimSpace(entry.DisplayName)
+			name := strings.TrimSpace(model.DisplayName)
 			if name == "" {
-				name = strings.TrimSpace(entry.Model)
+				name = modelID
 			}
 			models = append(models, qoderModel{id: id, displayName: name})
-		}
-		if implicit := strings.TrimSpace(provider.Model); implicit != "" {
-			id := providerID + "/" + implicit
-			if !seen[id] {
-				seen[id] = true
-				models = append(models, qoderModel{id: id, displayName: implicit})
-			}
 		}
 	}
 	return models, nil
 }
 
-// qoderModel is one enabled native choice or a configured fallback before a catalog arrives.
+// qoderMergedModels keeps native choices authoritative for every ID they
+// mention, including disabled choices. Custom providers supply the remaining IDs.
+func qoderMergedModels(native []qoderModelEntry, custom []qoderModel) []qoderModel {
+	models := qoderEnabledModels(native)
+	seen := make(map[string]bool, len(native)+len(custom))
+	for _, entry := range native {
+		seen[entry.Value] = true
+	}
+	for _, model := range custom {
+		if !seen[model.id] {
+			models = append(models, model)
+			seen[model.id] = true
+		}
+	}
+	return models
+}
+
+// qoderModel is one enabled native choice or a model of a custom provider.
 type qoderModel struct {
 	id          string
 	displayName string
 	description string
 }
 
-// qoderModelsUpdate is Qoder's full model catalog and current selection.
+// qoderModelsUpdate is Qoder's account model catalog and current selection.
 type qoderModelsUpdate struct {
 	Models       []qoderModelEntry `json:"models"`
 	CurrentModel string            `json:"currentModel"`
@@ -177,7 +175,6 @@ func qoderEnabledModels(entries []qoderModelEntry) []qoderModel {
 
 // applyModelCatalog keeps a native update that arrives before the initialize caller resumes.
 func (a *Agent) applyModelCatalog(entries []qoderModelEntry, current string, initialize bool) {
-	models := qoderEnabledModels(entries)
 	a.mu.Lock()
 	if initialize && a.modelsReported {
 		a.mu.Unlock()
@@ -185,8 +182,8 @@ func (a *Agent) applyModelCatalog(entries []qoderModelEntry, current string, ini
 	}
 	changed := current != "" && current != a.model
 	if entries != nil {
-		changed = changed || !a.modelsReported || !slices.Equal(a.models, models)
-		a.models = models
+		changed = changed || !a.modelsReported || !slices.Equal(a.models, entries)
+		a.models = slices.Clone(entries)
 		a.modelsReported = true
 	}
 	if current != "" {

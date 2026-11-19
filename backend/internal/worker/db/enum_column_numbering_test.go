@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -59,6 +60,7 @@ func integerEnumColumns() []integerEnumColumn {
 		{"control_response_payloads.follow_up_kind", "UPDATE control_response_payloads SET follow_up_kind = ?1, follow_up = CASE WHEN ?1 = 0 THEN '' ELSE 'answer' END", "SELECT typeof(follow_up_kind), follow_up_kind FROM control_response_payloads", 0, 7, []int64{0, 6, 7}, false},
 		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5, nil, false},
 		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3, nil, false},
+		{"agent_background_tasks.role", "UPDATE agent_background_tasks SET role = ?", "SELECT typeof(role), role FROM agent_background_tasks", 1, 3, nil, false},
 		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8, nil, false},
 	}
 }
@@ -80,11 +82,14 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-review', 'enum-owner', 2, 'review', 'session', 1)",
 		"INSERT INTO auto_review_approval_payloads (delivery_id, message_id) VALUES ('enum-review', 'enum-message')",
 		"INSERT INTO agent_todos (agent_id, seq, content, status) VALUES ('enum-owner', 1, 'todo', 1)",
-		"INSERT INTO agent_background_tasks (owner_agent_id, output_generation, row_key, seq, kind, status) VALUES ('enum-owner', 0, 'enum-task', 1, 1, 1)",
 	} {
 		_, err := store.ExecContext(t.Context(), statement)
 		require.NoError(t, err)
 	}
+	_, err = store.ExecContext(t.Context(), "INSERT INTO agent_background_tasks (owner_agent_id,output_generation,row_key,seq,kind,role,child_agent_id,status) VALUES ('enum-owner',0,'enum-task',1,?,?,'enum-child',?)",
+		leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
+	require.NoError(t, err)
+
 	return store
 }
 
@@ -374,6 +379,12 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.BackgroundTaskKind_name),
 		},
 		{
+			column:       "agent_background_tasks.role",
+			check:        "CHECK (role BETWEEN 1 AND 3)",
+			lastAccepted: int32(leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_ACTIVITY),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.BackgroundTaskRole_name),
+		},
+		{
 			column:       "agent_background_tasks.status",
 			check:        "CHECK (status BETWEEN 1 AND 8)",
 			lastAccepted: int32(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME),
@@ -631,4 +642,27 @@ func TestTabCreationEnumColumnsMatchProto(t *testing.T) {
 	assert.Equal(t, int32(4), lastDeclaredOrdinal(t, leapmuxv1.TabType_name))
 	assert.Contains(t, declaration, "CHECK (cancel_action BETWEEN 1 AND 2)")
 	assert.Equal(t, int32(2), lastDeclaredOrdinal(t, leapmuxv1.WorktreeAction_name))
+}
+
+func TestBackgroundTaskCanonicalRolePredicatesMatchProtoOrdinals(t *testing.T) {
+	t.Parallel()
+	var ordinals []int
+	for value := range leapmuxv1.BackgroundTaskRole_name {
+		info, valid := contracts.BackgroundTaskRoleCapabilitiesFor(leapmuxv1.BackgroundTaskRole(value))
+		if valid && info.CanonicalChildActivity {
+			ordinals = append(ordinals, int(value))
+		}
+	}
+	slices.Sort(ordinals)
+	require.Len(t, ordinals, 2)
+	predicate := fmt.Sprintf("role IN (%d, %d)", ordinals[0], ordinals[1])
+	for _, file := range []string{workerMigration, filepath.Join("queries", "agent_background_tasks.sql")} {
+		content, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), predicate, "the canonical lookup and partial index must agree with role capabilities")
+	}
+	content, err := os.ReadFile(workerMigration)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "CREATE UNIQUE INDEX idx_agent_background_tasks_canonical_child")
+	assert.Contains(t, string(content), fmt.Sprintf("CHECK (child_agent_id <> '' OR role = %d)", leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME))
 }

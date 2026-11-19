@@ -2,7 +2,6 @@ package goose
 
 import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -20,7 +19,7 @@ var _ agent.ContextCompactor = (*Agent)(nil)
 func (a *Agent) CompactContext() error {
 	err := a.SendPreparedPrompt(gooseCompactCommand, nil, func(string) error {
 		a.Mu.Lock()
-		a.compactPending = true
+		a.promptOutput.compactPending = true
 		a.Mu.Unlock()
 		providerkit.PublishCompaction(a.Sink(), "manual")
 		return nil
@@ -30,28 +29,11 @@ func (a *Agent) CompactContext() error {
 	}
 	// The send failed, so no turn will end the compaction this request began.
 	a.Mu.Lock()
-	pending := a.compactPending
-	a.compactPending = false
+	pending := a.promptOutput.compactPending
+	a.promptOutput.compactPending = false
 	a.Mu.Unlock()
 	if pending && !a.PromptActive() {
 		providerkit.EndCompaction(a.Sink())
 	}
 	return err
-}
-
-// finishGoosePrompt ends what the turn held open: the goal-end rule, and the
-// manual compaction whose end Goose never frames.
-func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
-	ending := a.finishGooseGoalPrompt(err, stopped)
-	a.Mu.Lock()
-	compact := a.compactPending
-	a.compactPending = false
-	a.Mu.Unlock()
-	if compact {
-		if err == nil && !stopped {
-			providerkit.PersistCompactionEnded(a.Sink(), providerkit.CompactionEndCompleted, "")
-		}
-		providerkit.EndCompaction(a.Sink())
-	}
-	return ending
 }

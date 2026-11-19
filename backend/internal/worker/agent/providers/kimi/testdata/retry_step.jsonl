@@ -1,9 +1,12 @@
-{"type":"turn.step.started","session_id":"session_1","payload":{"type":"turn.step.started","agentId":"main","turnId":0}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"DISCARDED-ONE "}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"DISCARDED-TWO "}}
-{"type":"turn.step.retrying","session_id":"session_1","payload":{"type":"turn.step.retrying","agentId":"main","turnId":0,"failedAttempt":1,"nextAttempt":2,"maxAttempts":10,"delayMs":519.0315819438043,"errorName":"APIConnectionError","errorMessage":"terminated"}}
-{"type":"turn.step.started","session_id":"session_1","payload":{"type":"turn.step.started","agentId":"main","turnId":0}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"RETRIED-"}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"ANSWER"}}
-{"type":"turn.step.completed","session_id":"session_1","payload":{"type":"turn.step.completed","agentId":"main","turnId":0}}
-{"type":"turn.ended","session_id":"session_1","payload":{"type":"turn.ended","agentId":"main","turnId":0,"reason":"completed"}}
+{"type":"turn.started","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn":{"turn_id":"retry-turn","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}
+{"type":"item.started","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item":{"type":"assistant_message","item_id":"failed-answer","step_index":1,"created_at":"2026-11-18T00:00:00Z","text":"FAILED-ONE ","status":"running"}}
+{"type":"item.delta","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item_id":"failed-answer","field":"text","delta":"FAILED-TWO "}
+{"type":"item.ended","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item":{"type":"assistant_message","item_id":"failed-answer","step_index":1,"created_at":"2026-11-18T00:00:00Z","text":"FAILED-ONE FAILED-TWO ","status":"ended","outcome":"completed"}}
+{"type":"turn.updated","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","step":{"index":1,"outcome":"failed","started_at":"2026-11-18T00:00:00Z","ended_at":"2026-11-18T00:00:01Z","finish_reason":"error"},"retry":{"attempt":1,"next_attempt":2,"max_attempts":10,"delay_ms":0,"error":{"name":"status","message":"The stream failed."}}}
+{"type":"item.removed","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item_id":"failed-answer"}
+{"type":"turn.updated","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn"}
+{"type":"item.started","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item":{"type":"assistant_message","item_id":"retried-answer","step_index":1,"created_at":"2026-11-18T00:00:02Z","text":"RETRIED-","status":"running"}}
+{"type":"item.delta","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item_id":"retried-answer","field":"text","delta":"ANSWER"}
+{"type":"item.ended","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","item":{"type":"assistant_message","item_id":"retried-answer","step_index":1,"created_at":"2026-11-18T00:00:02Z","text":"RETRIED-ANSWER","status":"ended","outcome":"completed"}}
+{"type":"turn.updated","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn_id":"retry-turn","step":{"index":1,"outcome":"completed","started_at":"2026-11-18T00:00:02Z","ended_at":"2026-11-18T00:00:03Z","finish_reason":"end_turn"}}
+{"type":"turn.ended","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-18T00:00:00Z","turn":{"turn_id":"retry-turn","ordinal":0,"kind":"agent","status":"ended","started_at":"2026-11-18T00:00:00Z","steps":[],"outcome":"completed","ended_at":"2026-11-18T00:00:03Z"}}

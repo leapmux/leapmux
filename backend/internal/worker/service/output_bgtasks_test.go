@@ -30,7 +30,9 @@ func setupBgTaskTest(t *testing.T) (agent.ProviderServices, string, func() []db.
 func TestEnsureChildAgent_UnlinkedChildRequiresNativeIdentity(t *testing.T) {
 	t.Parallel()
 	_, sink, _, rows := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "", Title: "Unidentified child"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "", Title: "Unidentified child"})
 	require.Error(t, err)
 	assert.Empty(t, rows())
 }
@@ -39,9 +41,13 @@ func TestEnsureChildAgent_UnlinkedIdentitySurvivesMissingRegistryAndLateSpan(t *
 	t.Parallel()
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
 	ctx := context.Background()
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-a", Title: "First", Options: OptionMap{"operationPolicy": "interactive"}})
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child-a", Title: "First", Options: OptionMap{"operationPolicy": "interactive"}})
 	require.NoError(t, err)
-	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-b", Title: "Second"})
+	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child-b", Title: "Second"})
 	require.NoError(t, err)
 	require.NotEqual(t, first, second)
 	row, err := svc.Queries.GetAgentByID(ctx, first)
@@ -53,13 +59,17 @@ func TestEnsureChildAgent_UnlinkedIdentitySurvivesMissingRegistryAndLateSpan(t *
 	require.NoError(t, err)
 	svc.Output.bgtasks.Delete(ownerID)
 	restarted := newTestRootOutputSink(t, svc.Output, ownerID, row.AgentProvider)
-	replay, err := restarted.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-a", SpawnSpanID: "exact-native-call", Title: "First"})
+	replay, err := restarted.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child-a", SpawnSpanID: "exact-native-call", Title: "First"})
 	require.NoError(t, err)
 	assert.Equal(t, first, replay)
 	span, err := restarted.ChildSpawnSpan(first)
 	require.NoError(t, err)
 	assert.Equal(t, "exact-native-call", span)
-	_, err = restarted.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child-a", SpawnSpanID: "later-resume-call", Title: "First"})
+	_, err = restarted.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child-a", SpawnSpanID: "later-resume-call", Title: "First"})
 	require.NoError(t, err)
 	span, err = restarted.ChildSpawnSpan(first)
 	require.NoError(t, err)
@@ -301,9 +311,13 @@ func TestBgTask_ARunningRowsRefreshedDescriptionSurvivesAColdSeed(t *testing.T) 
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "count_to_one_hundred"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "count_to_one_hundred"})
 	require.NoError(t, err)
 	row := bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey:       "task-1",
 		Kind:         bgtask.KindSubagent,
 		ChildAgentID: childID,
@@ -482,6 +496,8 @@ func TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap(t *testing.T) {
 	// Seed MaxTasks running rows, each linked to a distinct child transcript.
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			Role: bgtask.RoleChildTask,
+
 			RowKey:       fmt.Sprintf("task-%d", i),
 			Kind:         bgtask.KindSubagent,
 			Title:        fmt.Sprintf("task %d", i),
@@ -491,6 +507,8 @@ func TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap(t *testing.T) {
 	}
 
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey:       "task-new",
 		Kind:         bgtask.KindSubagent,
 		Title:        "fresh",
@@ -522,6 +540,8 @@ func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 	// task-1: linked and oldest. task-2: unlinked, and under the old rule it
 	// the old rule evicted it in task-1's place.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "linked", ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -529,6 +549,8 @@ func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 	}))
 	for i := 3; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			Role: bgtask.RoleChildTask,
+
 			RowKey: fmt.Sprintf("task-%d", i), Kind: bgtask.KindSubagent, Title: fmt.Sprintf("t%d", i),
 			ChildAgentID: fmt.Sprintf("child-%d", i), Status: bgtask.StatusRunning,
 		}))
@@ -593,11 +615,15 @@ func TestBgTask_CapRetainsAnEvictedLinkedRow(t *testing.T) {
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			Role: bgtask.RoleChildTask,
+
 			RowKey: fmt.Sprintf("task-%d", i), Kind: bgtask.KindSubagent, Title: fmt.Sprintf("t%d", i),
 			ChildAgentID: fmt.Sprintf("child-%d", i), Status: bgtask.StatusSucceeded,
 		}))
 	}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-new", Kind: bgtask.KindSubagent, Title: "fresh",
 		ChildAgentID: "child-new", Status: bgtask.StatusRunning,
 	}))
@@ -685,13 +711,9 @@ func TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), rows[0].Status, "the surviving row keeps its final status")
 }
 
-// The losing duplicate leaves the display list, but its PERSISTED row goes only
-// when it carries no child THE WINNER ALSO CARRIES. A row that identifies a
-// transcript no other row identifies is that child's one index back to
-// (owner, row_key), and the rename is no more entitled to destroy it than
-// eviction is. Here the winner carries no child at all, so the loser holds the
-// only index and survives.
-func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
+// A combined child-task alias transfers its canonical role and link to an
+// existing destination. The one surviving row retains the destination lifecycle.
+func TestBgTask_RenameOntoOccupiedKeyTransfersCanonicalResponsibility(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -701,6 +723,8 @@ func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
 	}))
 	require.NoError(t, sink.CloseBackgroundTask("sess-stable", bgtask.StatusSucceeded))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "spawn-key", Kind: bgtask.KindSubagent, Title: "spawn",
 		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
@@ -709,13 +733,12 @@ func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
 
 	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "spawn-key",
 		"the duplicate leaves the display list either way")
-	assert.Contains(t, rowKeySet(listRows()), "spawn-key",
-		"its row is retained, because it identifies a transcript")
+	assert.NotContains(t, rowKeySet(listRows()), "spawn-key", "the target now retains canonical responsibility")
 	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
 	require.NoError(t, err, "the child keeps its index")
-	assert.Equal(t, "spawn-key", row.RowKey)
-	assert.EqualValues(t, 1, svc.Output.AgentActivitySnapshot(ownerID, ownerID).ActiveTasks,
-		"a retained working child still counts after its duplicate leaves the display")
+	assert.Equal(t, "sess-stable", row.RowKey)
+	assert.Equal(t, leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_TASK, row.Role)
+	assert.Zero(t, svc.Output.AgentActivitySnapshot(ownerID, ownerID).ActiveTasks, "the target lifecycle remains authoritative after canonical transfer")
 }
 
 // When the winner carries the SAME child as the loser, the loser is deleted
@@ -735,10 +758,14 @@ func TestBgTask_RenameOntoOccupiedKeyDropsALoserTheWinnerSupersedes(t *testing.T
 	ctx := context.Background()
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "spawn",
 		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleTaskOutcome,
+
 		RowKey: "prestart:tu-spawn", Kind: bgtask.KindSubagent,
 		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
@@ -859,6 +886,8 @@ func TestBgTask_LoadSeedsCacheFromDB(t *testing.T) {
 	}))
 	// Seed a row directly in the DB (cold-start path).
 	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "agent-1", RowKey: "seeded", Seq: 1,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "seeded row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 	})
@@ -1332,6 +1361,8 @@ func TestBgTask_SeedReclaimsFinishedSurplus(t *testing.T) {
 	now := nowMillis()
 	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
 		writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+			Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 			OwnerAgentID: "agent-1",
 			RowKey:       fmt.Sprintf("shell-%03d", i),
 			Seq:          int64(i),
@@ -1373,10 +1404,14 @@ func TestBgTask_SeedReclaimSparesLinkedRows(t *testing.T) {
 	now := nowMillis()
 	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
 		childID := ""
+		role := leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME
 		if i%2 == 0 {
 			childID = fmt.Sprintf("child-%03d", i)
+			role = leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_TASK
 		}
 		writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+			Role: role,
+
 			OwnerAgentID: ownerID,
 			RowKey:       fmt.Sprintf("task-%03d", i),
 			Seq:          int64(i),
@@ -1428,7 +1463,9 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasks+overflow)
 	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
 		rowKey := fmt.Sprintf("agent-%03d", i)
-		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: fmt.Sprintf("span-%03d", i), ProviderChildKey: rowKey, Title: "SCAN"})
+		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  fmt.Sprintf("span-%03d", i), ProviderChildKey: rowKey, Title: "SCAN"})
 		require.NoError(t, err)
 	}
 	require.Len(t, listRows(), bgtask.MaxTasks+overflow,
@@ -1487,6 +1524,8 @@ func TestBgTask_ReplayedRunningUpsertCannotResurrectARetainedRow(t *testing.T) {
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "SCAN",
 		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
@@ -1497,6 +1536,8 @@ func TestBgTask_ReplayedRunningUpsertCannotResurrectARetainedRow(t *testing.T) {
 	endedAt := storedRow(t, svc, ownerID, "task-1").EndedAt
 
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "SCAN",
 		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
 	}))
@@ -1513,7 +1554,9 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
@@ -1529,7 +1572,9 @@ func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
@@ -1553,7 +1598,9 @@ func TestBgTask_ReviveReachesARetainedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1574,7 +1621,9 @@ func TestBgTask_ReAdmittingARetainedRowHoldsTheDisplayCap(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1")
@@ -1619,7 +1668,9 @@ func TestBgTask_ANoOpMutationOnARetainedRowLeavesTheDisplayListAlone(t *testing.
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1647,7 +1698,9 @@ func TestBgTask_ANoOpMutationOnARetainedRowDeletesNothing(t *testing.T) {
 	// up retained-but-not-displayed. unlinked-1 is the NEXT finished row and
 	// carries no child, so retention does not keep it -- it is what an eviction
 	// on the re-admit path would delete from the table.
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -1739,7 +1792,9 @@ func TestBgTask_AReviveThatMatchesNothingSparesTheDisplayListForARetainedRow(t *
 	t.Parallel()
 
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	// The row is ACTIVE in the table, so the revive's UPDATE matches nothing.
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1764,7 +1819,9 @@ func TestBgTask_EnsureChildAgentFindsTheTranscriptOfARetainedRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	firstChild, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "thread-1", Title: "collab child"})
+	firstChild, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "thread-1", Title: "collab child"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("thread-1", bgtask.StatusSucceeded))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
@@ -1772,7 +1829,9 @@ func TestBgTask_EnsureChildAgentFindsTheTranscriptOfARetainedRow(t *testing.T) {
 		"the row leaves the display list")
 
 	// The re-registration: a DIFFERENT spawn span for the same provider key.
-	againChild, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "thread-1", Title: "collab child"})
+	againChild, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-2", ProviderChildKey: "thread-1", Title: "collab child"})
 	require.NoError(t, err)
 
 	assert.Equal(t, firstChild, againChild, "the row's transcript is the one that answers")
@@ -1790,7 +1849,9 @@ func TestBgTask_AReAdmittedRowSurvivesTheNextColdSeed(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)

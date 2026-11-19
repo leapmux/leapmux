@@ -323,7 +323,9 @@ func TestRemoteStreamFailureEndsOwnedWorkAndRefusesFurtherNativeInput(t *testing
 	a.rpc = remoteRPC{endpoint: endpoint}
 	a.active = true
 	a.children["native-child"] = &nativeChild{descriptor: nativeChildDescriptor{ID: "native-child", Parent: "native-root", Mode: "continuable"}, agentID: "stored-child", active: true}
-	require.NoError(t, a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "native-child", Kind: bgtask.KindSubagent, ChildAgentID: "stored-child", Status: bgtask.StatusRunning}))
+	require.NoError(t, a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:   bgtask.RoleChildTask,
+		RowKey: "native-child", Kind: bgtask.KindSubagent, ChildAgentID: "stored-child", Status: bgtask.StatusRunning}))
 	childStream := &sessionStream{sessionID: "native-child", parentSessionID: "native-root", childAgentID: "stored-child", lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
 	a.streams["child"] = childStream
 	require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"turn":1,"callId":"root-call","name":"bash","arguments":"{}"}}`)))

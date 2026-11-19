@@ -338,7 +338,9 @@ func (a *Agent) startChild(agentID, spawnSpan, title, prompt string) {
 			if owner.ctx.Err() != nil {
 				return nil
 			}
-			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpan, ProviderChildKey: agentID, Title: title})
+			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  spawnSpan, ProviderChildKey: agentID, Title: title})
 			if err != nil {
 				if errors.Is(err, agent.ErrChildIdentityRefused) {
 					slog.Warn("codewhale child identity refused", "agent_id", a.AgentID(), "child", agentID, "error", err)

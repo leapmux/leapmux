@@ -8,7 +8,7 @@ import { withExtraClients } from './helpers/multiClient'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { QUEUED_INPUT_ROW_TESTID, queuedInputRow } from './helpers/steer'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { composerEditor, focusComposer, loginViaToken, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
+import { agentTabs, composerEditor, fillComposer, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
 
 /**
@@ -416,7 +416,7 @@ test.describe('scheduled input', () => {
   test('restores the schedule of an unsent draft after a reload', async ({ page, authenticatedWorkspace, separateHubWorker }) => {
     void authenticatedWorkspace
     await scheduleNextSend(page, 300_000)
-    await composerEditor(page).fill('unsent scheduled draft')
+    await fillComposer(page, 'unsent scheduled draft')
     const userId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
     await waitForEditorDraft(page, userId, 'unsent scheduled draft')
     await page.reload()
@@ -449,7 +449,7 @@ test.describe('scheduled input', () => {
         : await page.getByTestId('schedule-send-field').inputValue()
       await page.getByTestId('schedule-send-cancel').click()
       const text = `unsaved ${clear ? 'cleared' : 'replacement'} edit`
-      await composerEditor(page).fill(text)
+      await fillComposer(page, text)
       const userId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
       await waitForEditorDraft(page, userId, text)
       await page.reload()
@@ -490,6 +490,35 @@ test.describe('scheduled input', () => {
     await expect(field).toHaveValue(original)
   })
 
+  test('saves an applied edit schedule after switching to another agent and back', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await pauseQueue(page)
+    await scheduleNextSend(page, 300_000)
+    await sendMessage(page, 'round-trip scheduled input')
+    await queuedInputRow(page, 'round-trip scheduled input').getByRole('button', { name: 'Edit', exact: true }).click()
+    await expect(composerEditor(page)).toHaveText('round-trip scheduled input')
+    await fillComposer(page, 'round-trip edited input')
+    await scheduleNextSend(page, 600_000)
+    await page.getByTestId('schedule-send-trigger').click()
+    const applied = await page.getByTestId('schedule-send-field').inputValue()
+    await page.getByTestId('schedule-send-cancel').click()
+
+    await openAgentViaUI(page)
+    await expect(composerEditor(page)).toHaveText('')
+    await agentTabs(page).first().click()
+    await expect(composerEditor(page)).toHaveText('round-trip edited input')
+    await expect(page.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled')
+    await page.locator('[data-testid="send-button"]:visible').click()
+
+    const saved = queuedInputRow(page, 'round-trip edited input')
+    await expect(saved).toContainText('Scheduled for')
+    await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(1)
+    await saved.getByRole('button', { name: 'Edit', exact: true }).click()
+    await expect(composerEditor(page)).toHaveText('round-trip edited input')
+    await page.getByTestId('schedule-send-trigger').click()
+    await expect(page.getByTestId('schedule-send-field')).toHaveValue(applied)
+  })
+
   test('keeps a scheduled message through a reload, then reschedules and clears it in an edit', async ({ page, authenticatedWorkspace, modelScript }) => {
     void authenticatedWorkspace
     // Establish a live provider session first, as the file's first test does:
@@ -514,7 +543,7 @@ test.describe('scheduled input', () => {
     await row.getByRole('button', { name: 'Edit', exact: true }).click()
     await expect(composerEditor(page)).toHaveText('scheduled hello')
     // The edit changes the text and moves the schedule; both save together.
-    await composerEditor(page).fill('scheduled hello edited')
+    await fillComposer(page, 'scheduled hello edited')
     await scheduleNextSend(page, 150_000)
     // The schedule popover held the focus; the save chord belongs to the
     // editor, so hand the focus back before pressing it.

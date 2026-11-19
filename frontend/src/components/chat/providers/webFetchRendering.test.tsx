@@ -31,9 +31,9 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
   }
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderKiloUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.KILO)
   return render(() => result)
 }
 
@@ -63,9 +63,9 @@ describe('claude WebFetch tool_result rendering', () => {
   })
 })
 
-describe('opencode fetch tool_call_update rendering', () => {
+describe('kilo fetch tool_call_update rendering', () => {
   it('renders the shared WebFetchResultBody when rawOutput carries code', async () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'fetch',
       status: 'completed',
@@ -86,7 +86,7 @@ describe('opencode fetch tool_call_update rendering', () => {
   })
 
   it('falls back to the generic text branch when no recognizable HTTP shape', async () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'fetch',
       status: 'completed',

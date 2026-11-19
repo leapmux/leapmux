@@ -1,6 +1,6 @@
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { kiloTest } from '../kilo-fixtures'
-import { readOpenCodeShellOutcome } from '../opencode/nativeShellOutcome'
+import { readOpenCodeShellOutcome } from './nativeShellOutcome'
 
 kiloTest('keeps actual native shell output and a failed command result', async ({ native }) => {
   await exerciseShellToolExecution({

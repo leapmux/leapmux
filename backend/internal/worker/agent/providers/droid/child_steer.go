@@ -20,35 +20,37 @@ var _ agent.ChildSteerer = (*Agent)(nil)
 
 // SendChildInput sends through a process loaded with the child session. A
 // running native background child makes the queue hold the message.
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
 	childID, err := a.registeredChildID(childKey)
 	if err != nil {
-		return err
+		return agent.ChildInputResult{StartsTurn: true}, err
 	}
 	a.Mu.Lock()
 	backgroundRunning := a.childTurns[childKey]
 	stopped := a.stopped
 	a.Mu.Unlock()
 	if stopped {
-		return errAgentStopped
+		return agent.ChildInputResult{StartsTurn: true}, errAgentStopped
 	}
 	if backgroundRunning {
-		return agent.ErrAgentBusy
+		return agent.ChildInputResult{StartsTurn: true}, agent.ErrAgentBusy
 	}
 	child, err := a.childConnection(childKey, childID)
 	if err != nil {
-		return err
+		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	if err := child.SendInputForSession(childKey, content, attachments); err != nil {
-		return err
+	if err := child.SendInputForSession(childKey, input.Content, input.Attachments); err != nil {
+		return agent.ChildInputResult{StartsTurn: true}, err
 	}
 	providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
 	a.resumeChildTail(childKey)
 	a.finishExitedChild(childKey, child)
-	return nil
+	return agent.ChildInputResult{
+
+		// SteerChildInput uses only an active process already bound to the child.
+		StartsTurn: true}, nil
 }
 
-// SteerChildInput uses only an active process already bound to the child.
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	if _, err := a.registeredChildID(childKey); err != nil {
 		return err

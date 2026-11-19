@@ -6,8 +6,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { chooseNativeModeWithNotice } from '../helpers/nativeModeChange'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
-import { nativeToolResultAt } from '../helpers/nativeToolExecution'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { nativeToolResult, nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, closeComposerMenus, expectNoControlBanner, expectSettingsOptionChosen, openPlusMenu, sendMessage, settingsGroupTrigger, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { qoderTest } from '../qoder-fixtures'
@@ -83,8 +82,13 @@ qoderTest.describe('Qoder CLI settings', () => {
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     expect(existsSync(file)).toBe(false)
-    expect(await nativeToolResultAt(modelScript, deniedStep + 1, 'dont-ask-mode-write'))
-      .toContain('the "Don\'t ask" permission mode does not prompt')
+    expect(nativeToolResultContent(await modelScript.requestAt(deniedStep + 1), 'dont-ask-mode-write'))
+      .toEqual([
+        {
+          type: 'text',
+          text: expect.stringContaining('the "Don\'t ask" permission mode does not prompt'),
+        },
+      ])
 
     await page.reload()
     await waitForSettingsHydrated(page)
@@ -103,8 +107,13 @@ qoderTest.describe('Qoder CLI settings', () => {
     await waitForAgentIdle(page)
     await expectNoControlBanner(page)
     expect(existsSync(file)).toBe(false)
-    expect(await nativeToolResultAt(modelScript, restoredStep + 1, 'dont-ask-mode-restored'))
-      .toContain('the "Don\'t ask" permission mode does not prompt')
+    expect(nativeToolResultContent(await modelScript.requestAt(restoredStep + 1), 'dont-ask-mode-restored'))
+      .toEqual([
+        {
+          type: 'text',
+          text: expect.stringContaining('the "Don\'t ask" permission mode does not prompt'),
+        },
+      ])
     await denyNotice.assertStored()
 
     const defaultNotice = await chooseNativeModeWithNotice(context, {

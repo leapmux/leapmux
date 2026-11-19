@@ -41,8 +41,8 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 }
 
 // SendChildInput starts a child round, or requires an explicit steer during a running round.
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChildInput(childKey, content, attachments, false)
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	return agent.ChildInputResult{StartsTurn: true}, a.sendChildInput(childKey, input.Content, input.Attachments, false)
 }
 
 // SteerChildInput delivers input to the child's current native round.
@@ -306,7 +306,9 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 	}
 	childID := ""
 	if payload.ParentToolCallID != "" {
-		id, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: payload.ParentToolCallID, ProviderChildKey: rowKey, Title: title})
+		id, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  payload.ParentToolCallID, ProviderChildKey: rowKey, Title: title})
 		if err != nil {
 			slog.Warn("omp subagent child transcript failed", "agent_id", a.AgentID(), "subagent", payload.ID, "error", err)
 		} else {
@@ -539,7 +541,9 @@ func (a *Agent) handleSubagentEvent(raw []byte) {
 			trigger = "auto"
 		}
 		a.beginCompaction(state.conv, trigger)
-	case contracts.OhMyPiEventAutoCompactionEnd:
+	case contracts.OhMyPiEventManualCompactionStart:
+		a.beginCompaction(state.conv, "manual")
+	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
 		a.persistCompactionEnd(state.conv, event)
 	case contracts.OhMyPiEventTtsrTriggered:
 		a.Mu.Lock()

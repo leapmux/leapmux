@@ -63,6 +63,7 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 	}
 	return bgtask.Item{
 		OutputGeneration: r.OutputGeneration,
+		Role:             bgtask.Role(r.Role),
 		RowKey:           r.RowKey,
 		ChildAgentID:     r.ChildAgentID,
 		ParentAgentID:    r.ParentAgentID,
@@ -103,10 +104,16 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
 			}
 			return entries, nil
 		},
-		listWorkingKeys: func(ctx context.Context, q *db.Queries, ownerID string) ([]string, error) {
-			return q.ListWorkingAgentBackgroundTaskKeys(ctx, db.ListWorkingAgentBackgroundTaskKeysParams{
-				OwnerAgentID: ownerID, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-			})
+		listWorkingEntries: func(ctx context.Context, q *db.Queries, ownerID string) ([]registryWorkingEntry[string], error) {
+			rows, err := q.ListWorkingAgentBackgroundTaskActivity(ctx, db.ListWorkingAgentBackgroundTaskActivityParams{OwnerAgentID: ownerID, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning)})
+			if err != nil {
+				return nil, err
+			}
+			entries := make([]registryWorkingEntry[string], len(rows))
+			for index, row := range rows {
+				entries[index] = registryWorkingEntry[string]{key: row.RowKey, counted: bgtask.Role(row.Role).CountsAsTask()}
+			}
+			return entries, nil
 		},
 		reclaimFinishedBelowSeq: func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error {
 			_, err := q.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
@@ -124,6 +131,7 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
 		isWorking: func(r bgtask.Item) bool {
 			return r.Status.IsWorking()
 		},
+		countsWorking: func(r bgtask.Item) bool { return r.Role.CountsAsTask() },
 		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
 			_, err := q.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
 				OwnerAgentID: ownerID,
@@ -635,10 +643,13 @@ func (h *OutputHandler) applyBackgroundTaskExit(rootID string, minimumGeneration
 // EnsureChildAgent resolves the stored child under this sink's agent.
 // Replays and Worker restarts resolve the same native child or spawn span.
 // NewRootSink in output.go specifies the registry root owner.
-// SpawnSpanID uses agents.spawn_span_id and the unique parent/span index.
-// ProviderChildKey can identify the child before its native spawn span arrives.
+// SpawnSpanID stores the parent origin, which several native children may share.
+// ProviderChildKey identifies one child even before its native origin arrives.
 // A supplied native session must match the stored child before registry changes.
 func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	if !spec.RegistryRole.IsCanonicalChildActivity() {
+		return "", fmt.Errorf("child creation requires a canonical activity role")
+	}
 	if spec.SpawnSpanID == "" && spec.ProviderChildKey == "" {
 		return "", errors.New("a child requires a native key or a spawn span")
 	}
@@ -723,12 +734,12 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 			}
 		}
 		if rowKey != "" {
-			if found && existing.ChildAgentID != "" {
+			if found && existing.ChildAgentID != "" && existing.Role == spec.RegistryRole {
 				if idx := cache.indexOf(rowKey); idx >= 0 {
 					cache.Rows[idx] = existing
 				}
 			} else if err := mutateBackgroundTaskUpsertLocked(ctx, tx, s.outputGeneration, bgtask.Upsert{
-				RowKey: rowKey, Kind: bgtask.KindSubagent, ChildAgentID: childID,
+				RowKey: rowKey, Role: spec.RegistryRole, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 				ParentAgentID: s.agentID, Title: spec.Title, Status: bgtask.StatusRunning,
 			}, &eviction); err != nil {
 				return fmt.Errorf("store the child registry linkage: %w", err)
@@ -813,17 +824,12 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 			return "", err
 		}
 	}
-	// Fallback: GetChildAgentBySpawnSpan covers a worker restart between the
-	// agent-row insert and the registry upsert. parent_agent_id for the new row
-	// is THIS sink's agentID (works for grandchild spawns too: the spawn span
-	// lives in this sink's own transcript).
-	if existing, err := reg.queries.GetChildAgentBySpawnSpan(ctx, db.GetChildAgentBySpawnSpanParams{
-		ParentAgentID: sqlString(s.agentID),
-		SpawnSpanID:   spawnSpanID,
-	}); err == nil {
-		return existing.ID, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	// The origin can identify a provisional child after a Worker restart.
+	// An exact native key must never select a different keyed sibling.
+	if existingID, err := s.childAtSpawnOrigin(ctx, reg, spec); err != nil {
 		return "", err
+	} else if existingID != "" {
+		return existingID, nil
 	}
 
 	// Create the child agent row. Copy working_dir/provider from THIS sink's
@@ -886,17 +892,41 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 				return "", fmt.Errorf("read native child after creation failed: %w", readErr)
 			}
 		}
-		// UNIQUE violation on idx_agents_spawn_span (race / replay): re-read.
-		if existing, rerr := reg.queries.GetChildAgentBySpawnSpan(ctx, db.GetChildAgentBySpawnSpanParams{
-			ParentAgentID: sqlString(s.agentID),
-			SpawnSpanID:   spawnSpanID,
-		}); rerr == nil {
-			childID = existing.ID
+		if existingID, readErr := s.childAtSpawnOrigin(ctx, reg, spec); readErr != nil {
+			return "", fmt.Errorf("resolve child after creation failed: %w", errors.Join(err, readErr))
+		} else if existingID != "" {
+			childID = existingID
 		} else {
 			return "", fmt.Errorf("create child agent: %w", err)
 		}
 	}
 	// The caller validates the resolved child before linking its registry row.
+	return childID, nil
+}
+
+// childAtSpawnOrigin returns only an unambiguous identity. A known native key
+// may adopt a provisional child, but never another keyed member of the batch.
+func (s *agentOutputSink) childAtSpawnOrigin(ctx context.Context, reg bgTaskView, spec agent.ChildAgentSpec) (string, error) {
+	if spec.SpawnSpanID == "" {
+		return "", nil
+	}
+	children, err := reg.queries.GetChildAgentsBySpawnSpan(ctx, db.GetChildAgentsBySpawnSpanParams{ParentAgentID: sqlString(s.agentID), SpawnSpanID: spec.SpawnSpanID})
+	if err != nil {
+		return "", err
+	}
+	var childID string
+	for _, child := range children {
+		if spec.ProviderChildKey != "" && child.ProviderChildKey != "" {
+			continue
+		}
+		if spec.ProviderChildKey != "" && spec.AgentSessionID != "" && child.AgentSessionID != "" && child.AgentSessionID != spec.AgentSessionID {
+			continue
+		}
+		if childID != "" && childID != child.ID {
+			return "", fmt.Errorf("the spawn origin identifies several native children: %w", agent.ErrChildIdentityRefused)
+		}
+		childID = child.ID
+	}
 	return childID, nil
 }
 
@@ -1242,6 +1272,9 @@ func (s *agentOutputSink) UpdateBackgroundTaskStatus(rowKey string, status bgtas
 }
 
 func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if err := bgtask.ValidateFinishedStatus(status); err != nil {
+		return err
+	}
 	return s.applyAndBroadcast(rowKey, func(root, key string) (registryChange, error) {
 		return s.h.applyBackgroundTaskClose(root, key, s.outputGeneration, status)
 	})
@@ -1355,8 +1388,8 @@ func (s *agentOutputSink) ReviveBackgroundTask(rowKey string) error {
 
 // RenameBackgroundTask atomically re-keys a row from oldKey to newKey under the
 // root owner, preserving status, child linkage, and final state. A no-op
-// when the old row is absent or newKey is empty. Used by ACP providers that
-// learn the stable child id only on the final update (OpenCode), so a single
+// when both rows are absent or newKey is empty. Used by ACP providers that
+// learn the stable child ID only on the final update, so a single
 // row tracks the whole lifecycle instead of a spawn row orphaned Running while
 // a separately-keyed row closes.
 //
@@ -1392,6 +1425,14 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		}
 		if sourceFound && source.OutputGeneration > s.outputGeneration || targetFound && target.OutputGeneration > s.outputGeneration {
 			return errBackgroundTaskSuperseded
+		}
+		outcomeAlias := sourceFound && targetFound && oldKey != newKey && source.Role == bgtask.RoleTaskOutcome && target.Role == bgtask.RoleTaskOutcome
+		resolvedTarget := target
+		if sourceFound && targetFound {
+			resolvedTarget, err = source.ResolveAlias(target)
+			if err != nil {
+				return err
+			}
 		}
 		if sourceFound {
 			source, _, err = claimBackgroundTaskGenerationLocked(ctx, reg, oldKey, s.outputGeneration)
@@ -1435,6 +1476,41 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 				}
 				return nil
 			}
+			if outcomeAlias {
+				if _, err := reg.deleteRowLocked(ctx, oldKey, true); err != nil {
+					return err
+				}
+				if bgTaskVisibleEqual(resolvedTarget, target) {
+					return nil
+				}
+				resolvedTarget.OutputGeneration, resolvedTarget.UpdatedAt = s.outputGeneration, nowMillis()
+				if resolvedTarget.Status.IsFinished() && resolvedTarget.EndedAt.IsZero() {
+					resolvedTarget.EndedAt = resolvedTarget.UpdatedAt
+				}
+				idx := reg.cache.indexOf(newKey)
+				if idx < 0 {
+					var err error
+					idx, err = reg.admitRowLocked(ctx, target)
+					if err != nil {
+						return err
+					}
+				}
+				return writeBackgroundTaskItemLocked(ctx, reg, s.outputGeneration, resolvedTarget, idx)
+			}
+			if resolvedTarget.Role != target.Role || resolvedTarget.ChildAgentID != target.ChildAgentID {
+				// Release the old unique canonical slot before promoting its alias, within
+				// this transaction. A refused write restores both the table and cache mirror.
+				if _, err := reg.deleteRowLocked(ctx, oldKey, true); err != nil {
+					return err
+				}
+				var eviction *backgroundTaskEviction
+				return mutateBackgroundTaskUpsertLocked(ctx, reg, s.outputGeneration, bgtask.Upsert{
+					RowKey: newKey, Role: resolvedTarget.Role, Kind: resolvedTarget.Kind, ChildAgentID: resolvedTarget.ChildAgentID,
+					ParentAgentID: resolvedTarget.ParentAgentID, GroupKey: resolvedTarget.GroupKey, GroupLabel: resolvedTarget.GroupLabel,
+					Title: resolvedTarget.Title, TitleIsCommand: resolvedTarget.TitleIsCommand, Description: resolvedTarget.Description,
+					ActiveForm: resolvedTarget.ActiveForm, Status: resolvedTarget.Status,
+				}, &eviction)
+			}
 			_, err := reg.deleteRowLocked(ctx, oldKey, sourceSuperseded)
 			return err
 		}
@@ -1448,10 +1524,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 			return errBackgroundTaskSuperseded
 		}
 		renameBgTaskRowKeyLocked(reg.cache, oldKey, newKey)
-		if _, hidden := reg.cache.evictedActive[oldKey]; hidden {
-			delete(reg.cache.evictedActive, oldKey)
-			reg.cache.evictedActive[newKey] = struct{}{}
-		}
+		reg.cache.evictedActive.rename(oldKey, newKey)
 		return nil
 	})
 	if err != nil {
@@ -1490,7 +1563,10 @@ func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, gener
 	}
 	idx := cache.indexOf(task.RowKey)
 	now := nowMillis()
-	merged := task.ToItem()
+	merged := task.ToItem().PreservingBlanksFrom(existing)
+	if err := merged.ValidateRole(); err != nil {
+		return err
+	}
 	merged.OutputGeneration, merged.UpdatedAt = generation, now
 	if found {
 		if idx >= 0 {
@@ -1528,14 +1604,22 @@ func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, gener
 	if merged.Status.IsFinished() && merged.EndedAt.IsZero() {
 		merged.EndedAt = now
 	}
+	return writeBackgroundTaskItemLocked(ctx, reg, generation, merged, idx)
+}
+
+// writeBackgroundTaskItemLocked publishes one fully resolved row to storage and
+// its cache mirror. The caller has validated identity, admitted its display slot,
+// and selected lifecycle timestamps within the registry transaction.
+func writeBackgroundTaskItemLocked(ctx context.Context, reg bgTaskView, generation int64, merged bgtask.Item, idx int) error {
+	cache := reg.cache
 	endedAt := sqltime.SQLiteNullTime{Time: merged.EndedAt, Valid: !merged.EndedAt.IsZero()}
 	rows, err := reg.queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
-		OwnerAgentID: reg.ownerID, OutputGeneration: generation, RowKey: task.RowKey, Seq: cache.nextSeq,
-		Kind: leapmuxv1.BackgroundTaskKind(merged.Kind), ChildAgentID: merged.ChildAgentID, ParentAgentID: merged.ParentAgentID,
+		OwnerAgentID: reg.ownerID, OutputGeneration: generation, RowKey: merged.RowKey, Seq: cache.nextSeq,
+		Kind: leapmuxv1.BackgroundTaskKind(merged.Kind), Role: leapmuxv1.BackgroundTaskRole(merged.Role), ChildAgentID: merged.ChildAgentID, ParentAgentID: merged.ParentAgentID,
 		GroupKey: merged.GroupKey, GroupLabel: merged.GroupLabel, Title: merged.Title,
 		TitleIsCommand: ptrconv.BoolToInt64(merged.TitleIsCommand), Description: merged.Description, ActiveForm: merged.ActiveForm,
 		Status: leapmuxv1.BackgroundTaskStatus(merged.Status), CreatedAt: sqltime.NewSQLiteTime(merged.CreatedAt),
-		UpdatedAt: sqltime.NewSQLiteTime(now), EndedAt: endedAt,
+		UpdatedAt: sqltime.NewSQLiteTime(merged.UpdatedAt), EndedAt: endedAt,
 	})
 	if err != nil {
 		return err
@@ -1543,7 +1627,7 @@ func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, gener
 	if rows == 0 {
 		return errBackgroundTaskSuperseded
 	}
-	if !found {
+	if idx < 0 {
 		cache.Rows = append(cache.Rows, merged)
 		cache.nextSeq++
 	} else {

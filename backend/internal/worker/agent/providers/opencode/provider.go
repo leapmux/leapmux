@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -12,10 +13,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// FamilyProvider is the plugin half OpenCode and Kilo share: both are
-// ACP providers, and both carry native tool-result metadata (a to-do list, see
-// todo.go) in addition to ACP plan events. Each provider embeds it in
-// a plugin type of its own, which adds where that provider keeps its sessions.
+// FamilyProvider supplies Kilo's ACP wire hooks and native daemon notices.
+// Its tool-result metadata carries the to-do list in addition to ACP plan events.
+// OpenCode uses opencodeProvider for its native protocol.
 type FamilyProvider struct{ acp.Provider }
 
 // Classify identifies native notices that share a notification thread.
@@ -66,7 +66,45 @@ func (FamilyProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 }
 
 // opencodeProvider is the wire-format plugin for OpenCode.
-type opencodeProvider struct{ FamilyProvider }
+type opencodeProvider struct{ agent.ProviderDefaults }
+
+func (opencodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	return validateOpenCodeAttachment(attachment)
+}
+
+func (opencodeProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}
+}
+
+func (opencodeProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	var frame struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		return agent.NotificationClassification{}
+	}
+	if slices.Contains(contracts.OpenCodeNativeMetadataEventMembers, frame.Type) ||
+		slices.Contains(contracts.OpenCodeNativeMetadataMessageTypeMembers, frame.Type) {
+		return agent.StatusNotification()
+	}
+	switch frame.Type {
+	case contracts.OpenCodeNativeEventRetryScheduled:
+		return agent.APIRetryNotification()
+	case contracts.OpenCodeNativeEventCompactionStarted, contracts.OpenCodeNativeEventCompactionDelta:
+		return agent.StatusNotification()
+	case contracts.OpenCodeNativeEventCompactionEnded, contracts.OpenCodeNativeEventCompactionFailed:
+		return agent.CompactionBoundaryNotification()
+	case contracts.OpenCodeNativeMessageTypeCompaction:
+		switch frame.Status {
+		case contracts.OpenCodeNativeCompactionStatusRunning:
+			return agent.StatusNotification()
+		case contracts.OpenCodeNativeCompactionStatusCompleted, contracts.OpenCodeNativeCompactionStatusFailed:
+			return agent.CompactionBoundaryNotification()
+		}
+	}
+	return agent.NotificationClassification{}
+}
 
 // ListStoredSessions reads OpenCode's own session store; see sessions.go.
 func (opencodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {

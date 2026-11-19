@@ -53,7 +53,7 @@ func (ompProvider) Classify(raw json.RawMessage) agent.NotificationClassificatio
 		return agent.NotificationClassification{}
 	}
 	switch env.Type {
-	case contracts.OhMyPiEventAutoCompactionEnd:
+	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
 		return agent.CompactionBoundaryNotification()
 	case contracts.OhMyPiEventAutoRetryStart, contracts.OhMyPiEventAutoRetryEnd:
 		return agent.APIRetryNotification()

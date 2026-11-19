@@ -1,12 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiToolResult } from '~/test-support/kimiFixtures'
 import { outputFilePathFixture } from '~/test-support/outputFilePathFixture'
 import { providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
 import '../plugin'
 
 const path = '/native/kimi/sessions/wd_project_0123456789ab/session_1/agents/main/tasks/bash-123abcde/output.log'
-const frame = kimiToolResult('native-call', 'Tool output exceeded 50000 characters; the full output was saved to a file.\ntool_name: Bash\ntool_call_id: native-call\noutput_size_chars: 60000\noutput_path: /native/kimi/sessions/wd_project_0123456789ab/session_1/agents/main/tasks/bash-123abcde/output.log\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.\n\nnative inline preview')
+const preview = 'Tool output exceeded 50000 characters; the full output was saved to a file.\ntool_name: Bash\ntool_call_id: native-call\noutput_size_chars: 60000\noutput_path: /native/kimi/sessions/wd_project_0123456789ab/session_1/agents/main/tasks/bash-123abcde/output.log\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.\n\nnative inline preview'
+function withOutput(output: unknown) {
+  return {
+    type: 'leapmux.kimi.item',
+    session_id: 'session_1',
+    agent_id: 'main',
+    turn_id: 'native-turn',
+    role: 'result',
+    item: {
+      type: 'tool_call',
+      item_id: 'native-call',
+      name: 'Bash',
+      status: 'ended',
+      outcome: 'completed',
+      created_at: '2026-11-18T00:00:00Z',
+      started_at: '2026-11-18T00:00:00Z',
+      input: { command: 'printf output' },
+      output,
+    },
+  }
+}
+const frame = withOutput(preview)
+
 const options = {
   spanId: 'native-call',
   spanType: 'Bash',
@@ -14,6 +35,29 @@ const options = {
 }
 
 describe('registered output file paths', () => {
+  it('reads the current native wall-time envelope without rewriting its preview', () => {
+    const native = withOutput(`Wall time: 0.117 seconds\n${preview}`)
+    const before = structuredClone(native)
+    expect(providerToolCall(AgentProvider.KIMI_CODE, native, options)?.outputFilePaths).toStrictEqual([path])
+    expect(native).toStrictEqual(before)
+  })
+
+  it('reads the failed native result from error under the same pointer controls', () => {
+    const native = withOutput(undefined)
+    Object.assign(native.item, { outcome: 'failed', error: `<system>ERROR: Tool execution failed.</system>\n${preview}` })
+    expect(providerToolCall(AgentProvider.KIMI_CODE, native, options)?.outputFilePaths).toStrictEqual([path])
+  })
+
+  it('reads the native tool result envelope and its owner', () => {
+    const native = withOutput(preview)
+    const before = structuredClone(native)
+    const call = providerToolCall(AgentProvider.KIMI_CODE, native, options)
+    expect(call?.outputFilePaths).toStrictEqual([path])
+    expect(native).toStrictEqual(before)
+    const foreign = { ...native, session_id: 'session_other' }
+    expect(providerToolCall(AgentProvider.KIMI_CODE, foreign, options)?.outputFilePaths ?? []).toStrictEqual([])
+  })
+
   it('attaches the native filesystem pointer without changing the native frame', () => {
     const before = JSON.stringify(frame)
     const call = providerToolCall(AgentProvider.KIMI_CODE, frame, options)
@@ -98,22 +142,19 @@ describe('native header and footer controls', () => {
     'Infinity',
   ])('refuses a malformed native character count: %s', (count) => {
     const pathsFor = outputFilePathFixture(AgentProvider.KIMI_CODE, frame, options)
-    const native = {
-      ...frame,
-      output: String(frame.output).replace('output_size_chars: 60000', `output_size_chars: ${count}`),
-    }
+    const native = withOutput(preview.replace('output_size_chars: 60000', `output_size_chars: ${count}`))
     expect(pathsFor(native)).toEqual([])
   })
 
   it('refuses duplicate fields and incomplete native header guidance', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.KIMI_CODE, frame, options)
     for (const output of [
-      String(frame.output).replace('output_size_chars: 60000', 'output_size_chars: 60000\noutput_size_chars: 60000'),
-      String(frame.output).replace('tool_call_id: native-call', 'tool_call_id: another'),
-      String(frame.output).replace('tool_name: Bash', 'tool_name: Read'),
-      String(frame.output).replace('next_step: Use Read with output_path to page through the saved output, or Grep to search it.', 'next_step: incomplete'),
+      preview.replace('output_size_chars: 60000', 'output_size_chars: 60000\noutput_size_chars: 60000'),
+      preview.replace('tool_call_id: native-call', 'tool_call_id: another'),
+      preview.replace('tool_name: Bash', 'tool_name: Read'),
+      preview.replace('next_step: Use Read with output_path to page through the saved output, or Grep to search it.', 'next_step: incomplete'),
     ]) {
-      expect(pathsFor({ ...frame, output })).toEqual([])
+      expect(pathsFor(withOutput(output))).toEqual([])
     }
   })
 
@@ -121,11 +162,8 @@ describe('native header and footer controls', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.KIMI_CODE, frame, options)
     const relative = path.slice(1)
     const footer = `native inline preview\n[Per-line truncation occurred; the complete output was saved to a file.\noutput_path: ${relative}\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.]`
-    expect(pathsFor({ ...frame, output: footer })).toEqual([relative])
-    expect(pathsFor({ ...frame, output: `${footer}\n${footer}` })).toEqual([])
-    expect(pathsFor({
-      ...frame,
-      output: footer.replace('the complete output was saved', 'only the first 60000 characters were saved'),
-    })).toEqual([])
+    expect(pathsFor(withOutput(footer))).toEqual([relative])
+    expect(pathsFor(withOutput(`${footer}\n${footer}`))).toEqual([])
+    expect(pathsFor(withOutput(footer.replace('the complete output was saved', 'only the first 60000 characters were saved')))).toEqual([])
   })
 })

@@ -339,6 +339,36 @@ describe('waitForAgentStartupViaAPI', () => {
     vi.mocked(callHub).mockRejectedValueOnce(new Error('fetch failed'))
     await expect(waitForAgentStartupViaAPI(server.hubUrl, server.adminToken, server.workerId, 'ws')).resolves.toHaveLength(1)
   })
+
+  it('allows a native startup after thirty seconds while the test still has time', async () => {
+    vi.useFakeTimers()
+    try {
+      waitLimit.ms = 60_000
+      const startedAt = Date.now()
+      workspace([
+        { tabType: 'TAB_TYPE_AGENT', tabId: 'a-1' },
+      ], () => ({
+        agents: [
+          {
+            id: 'a-1',
+            status: Date.now() - startedAt >= 31_000
+              ? AgentStatus.ACTIVE
+              : AgentStatus.STARTING,
+          },
+        ],
+      }))
+      const startup = waitForAgentStartupViaAPI(server.hubUrl, server.adminToken, server.workerId, 'ws', 1, undefined, 1_000)
+      await Promise.all([
+        expect(startup).resolves.toMatchObject([
+          { id: 'a-1', status: AgentStatus.ACTIVE },
+        ]),
+        vi.advanceTimersByTimeAsync(31_000),
+      ])
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('waitForAgentStatusViaAPI', () => {

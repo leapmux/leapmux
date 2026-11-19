@@ -14,6 +14,47 @@ function parsed(parentObject: Record<string, unknown>): ParsedMessageContent {
 }
 
 describe('ohMyPiNotificationEntry', () => {
+  it('reads each native manual compaction outcome', () => {
+    expect(ohMyPiNotificationEntry({ type: 'manual_compaction_start', mode: 'handoff' })).toEqual([])
+    expect(ohMyPiNotificationEntry({
+      type: 'manual_compaction_end',
+      aborted: false,
+      result: { tokensBefore: 0 },
+    })).toEqual([
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: { trigger: 'manual', pre: 0 },
+      },
+    ])
+    expect(ohMyPiNotificationEntry({ type: 'manual_compaction_end', aborted: true, errorMessage: 'Cancelled' })).toEqual([
+      { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+    ])
+    expect(ohMyPiNotificationEntry({
+      type: 'manual_compaction_end',
+      aborted: false,
+      skipped: true,
+      errorMessage: 'Nothing to compact',
+    })).toEqual([
+      { kind: 'compaction', phase: 'end', outcome: 'skipped' },
+    ])
+    expect(ohMyPiNotificationEntry({ type: 'manual_compaction_end', aborted: false, errorMessage: 'The summary failed' })).toEqual([
+      {
+        kind: 'compaction',
+        phase: 'end',
+        outcome: 'failed',
+        error: 'The summary failed',
+      },
+    ])
+    expect(ohMyPiNotificationEntry({ type: 'manual_compaction_end', aborted: false })).toEqual([
+      {
+        kind: 'compaction',
+        phase: 'end',
+        outcome: 'failed',
+        error: 'omp stated no result',
+      },
+    ])
+  })
   it('draws the rule names when a stream rule stops the reply', () => {
     expect(ohMyPiNotificationEntry({
       type: 'ttsr_triggered',
@@ -710,6 +751,34 @@ describe('ohMyPiNotificationEntry', () => {
 })
 
 describe('ohMyPiCompactionBoundary', () => {
+  it('refreshes the context only for a committed native manual compaction', () => {
+    expect(ohMyPiCompactionBoundary(parsed({
+      type: 'manual_compaction_end',
+      aborted: false,
+      result: { tokensBefore: 0 },
+    }))).toEqual({ trigger: 'manual', pre: 0 })
+    for (const frame of [
+      { type: 'manual_compaction_start', mode: 'handoff' },
+      {
+        type: 'manual_compaction_end',
+        aborted: true,
+        result: { tokensBefore: 12 },
+      },
+      {
+        type: 'manual_compaction_end',
+        skipped: true,
+        result: { tokensBefore: 12 },
+      },
+      {
+        type: 'manual_compaction_end',
+        errorMessage: 'Failed',
+        result: { tokensBefore: 12 },
+      },
+      { type: 'manual_compaction_end', aborted: false },
+    ]) {
+      expect(ohMyPiCompactionBoundary(parsed(frame))).toBeNull()
+    }
+  })
   it('reads a finished compaction, automatic or requested', () => {
     expect(ohMyPiCompactionBoundary(parsed({
       type: 'auto_compaction_end',

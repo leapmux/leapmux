@@ -47,7 +47,7 @@ export async function exerciseUnsupportedNativeControl(
       if (options.purpose === 'question' && options.isQuestionRequest)
         expect(options.isQuestionRequest(frame.payload), 'the provider sends no native question request').toBe(false)
       if (control?.kind === 'permission' && options.purpose === 'workspace-trust')
-        expect(control.permission.title).not.toMatch(/Trust the workspace|Do not trust/)
+        expect(control.permission.title ?? '').not.toMatch(/Trust the workspace|Do not trust/)
     }
     await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
   }

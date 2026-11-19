@@ -8,12 +8,15 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// WithOptionValue claims approvals while one native option retains its value.
+// WithOptionValue claims approvals while the effective option retains its value.
 // The callback must not wait for delivery or acquire the settings lock again.
 func (b *Base) WithOptionValue(id, value string, claim func()) {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	current := b.options.values[id]
+	if deferred, exists := b.options.deferredWrites[id]; exists {
+		current = deferred
+	}
 	if id == agent.OptionIDPermissionMode {
 		current = b.permissionMode
 	}

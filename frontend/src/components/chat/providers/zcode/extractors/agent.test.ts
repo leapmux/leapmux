@@ -12,12 +12,12 @@ const request = input({
     input: { description: 'Inspect the code', prompt: 'Read the entry points.' },
   },
 })
-const footer = (tokens = '123') => `\nagentId: agent_child (use SendMessage with to: 'agent_child' to continue this agent)\n<usage>subagent_tokens: ${tokens}\ntool_uses: 0\nduration_ms: 0</usage>`
+const footer = (tokens = '123') => `\nagentId: agent_child (use SendMessage with to: 'agent_child', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: ${tokens}\ntool_uses: 0\nduration_ms: 0</usage>`
 const launch = [
-  'Async agent launched successfully.',
-  'agentId: agent_child (internal ID - do not mention to user. Use SendMessage with to: \'agent_child\' to continue this agent.)',
-  'The agent is working in the background. You will be notified automatically when it completes.',
-  'Briefly tell the user what you launched and end your response. Do not generate any other text - agent results will arrive in a subsequent message.',
+  'Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)',
+  'agentId: agent_child (internal ID - do not mention to user. Use SendMessage with to: \'agent_child\', summary: \'<5-10 word recap>\' to continue this agent.)',
+  'The agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.',
+  'In your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running.',
 ].join('\n')
 
 function result(content: string, success = true) {
@@ -67,6 +67,16 @@ describe('zcode agent result extraction', () => {
     })
   })
 
+  it.each([
+    launch.replace('to: \'agent_child\'', 'to: \'another-child\''),
+    launch.replace('agentId: agent_child', 'agentId: '),
+    launch.replace('successfully. (', 'successfully! ('),
+    launch.split('\n').slice(0, 3).join('\n'),
+    `${launch}\nUnrecognized suffix`,
+  ])('preserves a malformed launch receipt (%s)', (text) => {
+    expect(result(text)).toMatchObject({ outcome: 'unknown', body: text, metadata: [] })
+  })
+
   it('keeps a completed report that quotes a background launch', () => {
     expect(result(launch + footer())).toMatchObject({ outcome: 'completed', body: launch })
   })
@@ -79,7 +89,7 @@ describe('zcode agent result extraction', () => {
   it('recovers a background output path from the native launch message', () => {
     const text = [
       ...launch.split('\n').slice(0, 3),
-      'Do not duplicate this agent\'s work - avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.',
+      'Do not duplicate this agent\'s work — avoid working with the same files or topics it is using.',
       'output_file: /project/agent.output',
       'Do NOT Read or tail this file via the shell tool. If the user asks for progress, say the agent is still running; you\'ll get a completion notification.',
     ].join('\n')

@@ -1,5 +1,5 @@
 import type { Schema } from '@cfworker/json-schema'
-import type { ElicitationRequest } from '../model/controlPrompt'
+import type { ElicitationFieldRule, ElicitationRequest } from '../model/controlPrompt'
 import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation'
 import { Validator } from '@cfworker/json-schema'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
@@ -24,6 +24,7 @@ export interface ElicitationField {
 
 export interface ElicitationForm {
   fields: ElicitationField[]
+  visibleFields: (values: Record<string, string>) => ElicitationField[]
   read: (values: Record<string, string>) => { content?: Record<string, unknown>, error?: string }
 }
 
@@ -95,7 +96,7 @@ export function elicitationFieldKey(key: string): string {
 }
 
 /** Build typed inputs while the validator retains the complete provider schema. */
-export function createElicitationForm(schema: unknown): ElicitationForm {
+export function createElicitationForm(schema: unknown, fieldRules: readonly ElicitationFieldRule[] = []): ElicitationForm {
   const definition = isObject(schema)
     ? schema
     : undefined
@@ -110,6 +111,7 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
     : [
         fieldFor('', {}, true),
       ]
+  const rules = new Map(fieldRules.map(rule => [rule.key, rule]))
   let validator: Validator | undefined
   let schemaError: string | undefined
   try {
@@ -118,13 +120,21 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
     // Ajv compiles schemas with new Function. The production content security policy forbids it.
     // The validator adds lookup metadata. JSON serialization also copies reactive store proxies,
     // which structuredClone rejects. The provider schema contains JSON values only.
-    validator = new Validator(JSON.parse(JSON.stringify(schema)) as Schema | boolean, '2020-12')
+    const validationSchema: Schema | boolean = JSON.parse(JSON.stringify(schema))
+    // Conditional required fields are checked against active fields below.
+    if (isObject(validationSchema) && Array.isArray(validationSchema.required))
+      validationSchema.required = validationSchema.required.filter(key => !rules.get(key)?.conditions?.length)
+    validator = new Validator(validationSchema, '2020-12')
   }
   catch {
     schemaError = 'Could not read the form schema.'
   }
   return {
     fields,
+    visibleFields(values) {
+      const { active } = readFields(fields, rules, values)
+      return active.filter(field => !rules.get(field.key)?.hidden)
+    },
     read(values) {
       if (!validator) {
         // Every path that leaves the validator unset has set `schemaError`;
@@ -132,38 +142,16 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
         return { error: schemaError ?? '' }
       }
       try {
-        const entries: [string, unknown][] = []
-        for (const field of fields) {
-          const key = elicitationFieldKey(field.key)
-          const value = values[key] ?? field.initial
-          if (value === '' && (field.type !== 'text' || (!Object.hasOwn(values, key) && !field.hasDefault)))
-            continue
-          let parsed: unknown = value
-          if (field.type !== 'text') {
-            try {
-              parsed = JSON.parse(value, (_key, value: unknown) => {
-                if (typeof value === 'number' && (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))))
-                  throw new RangeError('The number cannot be represented exactly.')
-                return value
-              })
-            }
-            catch (error) {
-              if (error instanceof RangeError)
-                return { error: `${field.label || 'Response'}: This number is too large to send without changing its value.` }
-              return { error: `${field.label || 'Response'}: Enter valid ${field.type === 'number'
-                ? 'number'
-                : 'JSON'}.` }
-            }
-          }
-          entries.push([field.key, parsed])
-        }
+        const { entries, active, error } = readFields(fields, rules, values)
+        if (error)
+          return { error }
         const content: unknown = properties
           ? Object.fromEntries(entries)
-          : entries[0]?.[1]
+          : entries.get('')
         if (!isObject(content))
           return { error: 'Enter a JSON object.' }
         for (const key of required) {
-          if (typeof key === 'string' && !Object.hasOwn(content, key))
+          if (typeof key === 'string' && active.some(field => field.key === key) && !Object.hasOwn(content, key))
             return { error: `${fields.find(field => field.key === key)?.label || key} is required.` }
         }
         const result = validator.validate(content)
@@ -184,6 +172,52 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
       }
     },
   }
+}
+
+/** Evaluate in field order so an inactive answer cannot activate a later field. */
+function readFields(fields: readonly ElicitationField[], rules: ReadonlyMap<string, ElicitationFieldRule>, values: Record<string, string>) {
+  const entries = new Map<string, unknown>()
+  const active: ElicitationField[] = []
+  let error: string | undefined
+  for (const field of fields) {
+    const conditions = rules.get(field.key)?.conditions ?? []
+    if (!conditions.every((condition) => {
+      if (!entries.has(condition.field))
+        return false
+      const value = entries.get(condition.field)
+      const equal = Array.isArray(value)
+        ? value.includes(condition.value)
+        : value === condition.value
+      return condition.comparison === 'equal'
+        ? equal
+        : !equal
+    })) {
+      continue
+    }
+    active.push(field)
+    const key = elicitationFieldKey(field.key)
+    const value = values[key] ?? field.initial
+    if (value === '' && (field.type !== 'text' || (!Object.hasOwn(values, key) && !field.hasDefault)))
+      continue
+    try {
+      const parsed: unknown = field.type === 'text'
+        ? value
+        : JSON.parse(value, (_key, value: unknown) => {
+            if (typeof value === 'number' && (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))))
+              throw new RangeError('The number cannot be represented exactly.')
+            return value
+          })
+      entries.set(field.key, parsed)
+    }
+    catch (cause) {
+      error ??= cause instanceof RangeError
+        ? `${field.label || 'Response'}: This number is too large to send without changing its value.`
+        : `${field.label || 'Response'}: Enter valid ${field.type === 'number'
+          ? 'number'
+          : 'JSON'}.`
+    }
+  }
+  return { entries, active, error }
 }
 
 /** URL interactions open only explicit HTTP or HTTPS links. */

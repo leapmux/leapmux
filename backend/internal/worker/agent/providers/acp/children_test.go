@@ -237,10 +237,14 @@ func (s *childRefusalServices) RenameBackgroundTask(from, to string) error {
 func seedRefusalChild(t *testing.T, sink *agenttest.Sink, rowKey, sessionID string) *agenttest.Sink {
 	t.Helper()
 	id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+
 		SpawnSpanID: rowKey, ProviderChildKey: rowKey, AgentSessionID: sessionID,
 	})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: rowKey, Kind: bgtask.KindSubagent, ChildAgentID: id,
 		Title: "Stored helper", Status: bgtask.StatusRunning,
 	}))
@@ -343,7 +347,9 @@ func TestChildTransientFailureKeepsTheExistingRouteAndLaterValidation(t *testing
 	t.Parallel()
 	b, _, child, services := newChildRefusalBase(t, "native-old")
 	services.setFailure(assert.AnError)
-	_, err := services.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "call-spawn", ProviderChildKey: "call-spawn"})
+	_, err := services.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "call-spawn", ProviderChildKey: "call-spawn"})
 	require.ErrorIs(t, err, assert.AnError)
 	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused)
 	validateRefusalChild(b, "call-spawn", "native-old")
@@ -605,7 +611,9 @@ func TestChildRoute_AFinishedRegistryRowOpensNoChild(t *testing.T) {
 	t.Parallel()
 	b, sink := newChildRouteBase(t)
 	// This finished row retains its child link from an earlier process.
-	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "call-old", Kind: bgtask.KindSubagent, ChildAgentID: "child-old", Status: bgtask.StatusRunning}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:   bgtask.RoleChildTask,
+		RowKey: "call-old", Kind: bgtask.KindSubagent, ChildAgentID: "child-old", Status: bgtask.StatusRunning}))
 	require.NoError(t, sink.CloseBackgroundTask("call-old", bgtask.StatusSucceeded))
 
 	for range 3 {
@@ -625,7 +633,9 @@ func TestChildRoute_AnUnknownRowIsReadAgain(t *testing.T) {
 	b, sink := newChildRouteBase(t)
 
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"early"},"_meta":{"parentToolCallId":"call-late"}}`))
-	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "call-late", Kind: bgtask.KindSubagent, ChildAgentID: "child-late", Status: bgtask.StatusRunning}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:   bgtask.RoleChildTask,
+		RowKey: "call-late", Kind: bgtask.KindSubagent, ChildAgentID: "child-late", Status: bgtask.StatusRunning}))
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"routed"},"_meta":{"parentToolCallId":"call-late"}}`))
 
 	assert.Equal(t, "early", b.TurnAssistantTextForTest().String(), "the update before the row stays in the parent")
@@ -812,7 +822,9 @@ func TestChildRoute_ARowFromBeforeARestartResolvesThroughTheRegistry(t *testing.
 	sink := &agenttest.Sink{}
 	// The row and its child exist in the registry, but no observation of THIS
 	// base created them: the worker restarted.
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "call-old", ProviderChildKey: "call-old", Title: "old helper"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "call-old", ProviderChildKey: "call-old", Title: "old helper"})
 	require.NoError(t, err)
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 
@@ -896,7 +908,9 @@ func TestChildRoute_ConcurrentFirstUpdatesShareOneConversation(t *testing.T) {
 	sink := &agenttest.Sink{}
 	// A row of a process that ran before a worker restart, so no observation of
 	// this base knows it.
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "call-old", ProviderChildKey: "call-old", Title: "old helper"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "call-old", ProviderChildKey: "call-old", Title: "old helper"})
 	require.NoError(t, err)
 	const feeds = 20
 	// Hold each update after its registry read until every update finishes that read.

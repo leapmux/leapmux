@@ -2,8 +2,8 @@ import { expect } from '@playwright/test'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS, OPENCODE_FAMILY_PLAIN_MODEL_ID } from '../helpers/mockAgentEnvironment'
 import { exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption } from '../helpers/nativeSettings'
 import { kiloTest } from '../kilo-fixtures'
-import { exercisePlanAndEffort } from '../opencode/settingsScenario'
 import { KILO_PLAN_REMINDER } from './scenarios'
+import { exercisePlanAndEffort } from './settingsScenario'
 
 kiloTest('keeps its Plan mode and effort after a turn and reload', async ({ native }) => {
   await exercisePlanAndEffort(native, 'effort', KILO_PLAN_REMINDER)

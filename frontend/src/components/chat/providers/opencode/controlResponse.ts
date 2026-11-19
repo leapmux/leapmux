@@ -1,65 +1,47 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { firstNonEmpty, joinAnswerLines, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
-import { acpControlResponseSummary } from '../acp/controlResponse'
+import { OPENCODE_NATIVE_ANSWER_FIELD, OPENCODE_NATIVE_PERMISSION_DECISION } from '~/generated/contracts/opencode-native-protocol'
+import { isObject, pickString } from '~/lib/jsonPick'
+import { joinAnswerLines, label, labeledAnswerLine } from '../../persistedControlResponse'
+import { openCodeForm } from './form'
 
-/**
- * Render an OpenCode/Kilo `question.asked` answer. A rejected answer is "Reject"; otherwise each
- * answer group renders as a "Header: v1, v2" line labeled by its request question (header else
- * question, else "Question N"), with empty answer values dropped. Null when nothing renders.
- */
-export function openCodeQuestionAnswersText(
-  request: Record<string, unknown> | undefined,
-  response: Record<string, unknown> | undefined,
-): string | null {
-  const result = pickObject(response, 'result', undefined)
-  if (result?.rejected === true)
-    return 'Reject'
-
-  const answers = Array.isArray(result?.answers)
-    ? result.answers
-    : []
-  const properties = pickObject(request, 'properties', undefined)
-  const questions = Array.isArray(properties?.questions)
-    ? properties.questions
-    : []
-
-  const lines: string[] = []
-  for (let i = 0; i < answers.length; i++) {
-    let label = `Question ${i + 1}`
-    const q = questions[i]
-    if (isObject(q)) {
-      const named = firstNonEmpty(pickString(q, 'header', ''), pickString(q, 'question', ''))
-      if (named)
-        label = named
-    }
-    const line = labeledAnswerLine(label, answers[i])
-    if (line !== null)
-      lines.push(line)
+/** Describe the resolved control answer that the Worker stores for OpenCode. */
+export function openCodeControlResponseSummary(record: PersistedControlResponse): ControlResponseSummary | null {
+  const response = record.response
+  if (!response)
+    return null
+  const decision = pickString(response, OPENCODE_NATIVE_ANSWER_FIELD.Decision)
+  switch (decision) {
+    case OPENCODE_NATIVE_PERMISSION_DECISION.Once:
+      return label('Allowed')
+    case OPENCODE_NATIVE_PERMISSION_DECISION.Always:
+      return label('Always allowed')
+    case OPENCODE_NATIVE_PERMISSION_DECISION.Reject:
+      return label('Denied')
   }
-  return joinAnswerLines(lines)
-}
-
-/**
- * True when the response alone identifies an OpenCode/Kilo `question.asked` answer -- a rejection
- * flag or an `answers` array (a permission selection has neither; it carries `result.outcome`). Lets
- * a request-gone question answer still render its lines (positionally labeled) instead of degrading.
- */
-function isOpencodeQuestionResponse(response: Record<string, unknown> | undefined): boolean {
-  const result = pickObject(response, 'result', undefined)
-  return result?.rejected === true || Array.isArray(result?.answers)
-}
-
-/**
- * OpenCode/Kilo control-response derivation: a `question.asked` answer renders its question lines;
- * anything else (a permission selection) delegates to the shared ACP path. When the pruned request
- * type is gone, the response shape still identifies a question answer, so it is recovered there --
- * labeled by position rather than the missing question headers.
- */
-export function openCodeControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
-  if (pickString(cr.request, 'type', '') === OPENCODE_EVENT.QuestionAsked || isOpencodeQuestionResponse(cr.response))
-    return labelOrNull(openCodeQuestionAnswersText(cr.request, cr.response))
-  return acpControlResponseSummary(cr)
+  if (response[OPENCODE_NATIVE_ANSWER_FIELD.Cancel] === true)
+    return label('Cancelled')
+  const answers = response[OPENCODE_NATIVE_ANSWER_FIELD.Answer]
+  if (!isObject(answers))
+    return null
+  const fields = record.request
+    ? openCodeForm(record.request)?.fields ?? []
+    : []
+  const lines = Object.entries(answers).flatMap(([key, answer]) => {
+    const field = fields.find(field => field.key === key)
+    const values = Array.isArray(answer) && answer.length > 0
+      ? answer
+      : [answer]
+    const textValues = values.map(value => typeof value === 'string' && value.trim() !== ''
+      ? value
+      : JSON.stringify(value))
+    const line = labeledAnswerLine(pickString(field, 'title') || key, textValues)
+    return line === null
+      ? []
+      : [line]
+  })
+  const text = joinAnswerLines(lines)
+  return text
+    ? label(text)
+    : label('Answered')
 }

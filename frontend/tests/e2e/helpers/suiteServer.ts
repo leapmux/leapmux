@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import type { CustomizedHubSetting } from './api'
+import type { TlsProxyHandle } from './tlsProxy'
 import { execFile, spawn } from 'node:child_process'
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -26,6 +27,7 @@ import { createMockModelServer } from './mockModelServer'
 import { stopProcess } from './process'
 import { trackProcess } from './processRegistry'
 import { hubDataDir, hubSpawnEnv, waitForHubStart } from './server'
+import { startTlsProxy } from './tlsProxy'
 
 export interface SuiteServerState {
   hubUrl: string
@@ -111,6 +113,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
   let proc: ChildProcess | undefined
   let stopped = false
   let socketDir = ''
+  let modelTLS: TlsProxyHandle | undefined
 
   const stop = async () => {
     if (stopped)
@@ -124,6 +127,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
         ? stopProcess(proc)
         : Promise.resolve(),
       mockModel.close(),
+      modelTLS?.close() ?? Promise.resolve(),
     ])
     rmSync(dataDir, { recursive: true, force: true })
     if (socketDir)
@@ -135,6 +139,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
   }
 
   try {
+    modelTLS = await startTlsProxy(`${mockModel.url}/healthz`, options.tmpDir)
     await bootstrapFirstAdmin(options.binaryPath, hubDataDir(dataDir))
     // Awaiting matters: the function runs each provider's CLI setup (Letta's
     // `backend local` / `connect`, which discover the mock's model catalog). A
@@ -144,9 +149,12 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     const mockAgent = await createMockAgentEnvironment(
       options.tmpDir,
       mockModel.url,
-      process.env.HOME
-        ? { realHomeDir: process.env.HOME }
-        : {},
+      {
+        ...(process.env.HOME
+          ? { realHomeDir: process.env.HOME }
+          : {}),
+        modelTLS: { url: modelTLS.url, certificatePath: modelTLS.certificatePath },
+      },
     )
     const log = openSync(serverLogPath, 'a')
     try {

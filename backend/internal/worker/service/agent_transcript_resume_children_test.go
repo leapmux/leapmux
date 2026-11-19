@@ -39,6 +39,8 @@ func seedArchivedChildForResume(t *testing.T, svc *Service, rootID, parentID, ch
 	}
 	stamp := sqltime.NewSQLiteTime(nowMillis())
 	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_TASK,
+
 		OwnerAgentID: rootID, RowKey: rowKey, Seq: seq,
 		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
 		ChildAgentID: childID, ParentAgentID: registryParentID,
@@ -141,6 +143,8 @@ func TestResumeRejectsBrokenArchivedChildLinkWithoutCreatingARoot(t *testing.T) 
 	require.NoError(t, err)
 	stamp := sqltime.NewSQLiteTime(nowMillis())
 	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_TASK,
+
 		OwnerAgentID: "old-root", RowKey: "broken", Seq: 1,
 		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
 		ChildAgentID: "missing-child", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),

@@ -1,10 +1,10 @@
 import { opencodeTest } from '../opencode-fixtures'
-import { OPENCODE_CHILD } from './childScenario'
+import { OPENCODE_CHILD, openCodeChildReportRule } from './childScenario'
 import { exerciseOpenCodeFamilyChildSend } from './childSend'
 
-// The Worker loads the child session into OpenCode's ACP adapter and steers it with a second prompt on that session.
-// OpenCode adds the message to the running turn, so the child's next request holds it.
+// The Worker steers the native child session with another prompt on that session.
 opencodeTest('sends a queued message into a running subagent', async ({ native }) => {
+  await native.modelScript.rule(openCodeChildReportRule('Answer the message from the child tab'))
   await exerciseOpenCodeFamilyChildSend(native, { profile: OPENCODE_CHILD, readsAfterTurn: false })
 })
 

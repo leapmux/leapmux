@@ -1,9 +1,10 @@
 import type { ToolCall } from '../../../model/toolCall'
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
-import { isObject } from '~/lib/jsonPick'
+import { KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_OUTCOME, KIMI_CONVERSATION_RECORD_ROLE, KIMI_CONVERSATION_STATUS, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { pickString } from '~/lib/jsonPick'
 import { isFilesystemPath } from '~/lib/paths'
-import { KIMI_OUTPUT_FILE_CONTENT, KIMI_OUTPUT_FILE_CONTENT_KIND, KIMI_OUTPUT_FILE_HEADER, KIMI_OUTPUT_FILE_LIMIT, KIMI_OUTPUT_FILE_POINTER, KIMI_OUTPUT_FILE_RESULT } from '../protocol'
+import { kimiConversationRow } from '../conversation'
+import { KIMI_OUTPUT_FILE_HEADER, KIMI_OUTPUT_FILE_LIMIT, KIMI_OUTPUT_FILE_POINTER } from '../protocol'
 
 interface KimiOutputPointer {
   path: string
@@ -106,23 +107,25 @@ function kimiOutputPathMatches(path: string, sessionId: string, agentId: string,
 
 /** Read the native header or footer. The producer permits relative output paths. */
 export function kimiOutputFilePaths(input: RowExtractionInput, call: ToolCall): readonly string[] {
-  const native = input.resolved.parentObject
+  const native = kimiConversationRow(input.resolved.parentObject)
   const sessionId = input.resolved.agentSessionId
-  const agentId = native?.[KIMI_OUTPUT_FILE_RESULT.AgentID]
-  const turnId = native?.[KIMI_OUTPUT_FILE_RESULT.TurnID]
-  if (input.span.role !== 'result' || native?.[KIMI_OUTPUT_FILE_RESULT.Type] !== KIMI_EVENT.ToolResult
-    || native[KIMI_OUTPUT_FILE_RESULT.ToolCallID] !== call.id || !sessionId || !/^session_[\w.-]+$/u.test(sessionId)
-    || typeof agentId !== 'string' || !/^[\w.-]+$/u.test(agentId) || agentId === '.' || agentId === '..'
-    || typeof turnId !== 'number' || !Number.isSafeInteger(turnId) || turnId < 0 || !call.name) {
+  if (input.span.role !== 'result' || native?.kind !== 'item' || native.role !== KIMI_CONVERSATION_RECORD_ROLE.Result
+    || native.item.type !== KIMI_CONVERSATION_ITEM_KIND.ToolCall || native.item.status !== KIMI_CONVERSATION_STATUS.Ended
+    || (native.item.outcome !== KIMI_CONVERSATION_OUTCOME.Completed && native.item.outcome !== KIMI_CONVERSATION_OUTCOME.Failed && native.item.outcome !== KIMI_CONVERSATION_OUTCOME.Interrupted)
+    || pickString(native.item, 'item_id') !== call.id || pickString(native.item, 'name') !== call.name || native.sessionId !== sessionId
+    || !sessionId || !/^session_[\w.-]+$/u.test(sessionId)
+    || !/^[\w.-]+$/u.test(native.agentId) || native.agentId === '.' || native.agentId === '..' || !call.name) {
     return []
   }
-  const output = native[KIMI_OUTPUT_FILE_RESULT.Output]
-  const texts = typeof output === 'string'
-    ? [output]
-    : Array.isArray(output)
-      ? output.filter(isObject).filter(part => part[KIMI_OUTPUT_FILE_CONTENT.Type] === KIMI_OUTPUT_FILE_CONTENT_KIND.Text).map(part => part[KIMI_OUTPUT_FILE_CONTENT.Text]).filter((text): text is string => typeof text === 'string')
-      : []
-  const pointer = kimiOutputPointer(texts, call.id, call.name)
+  const agentId = native.agentId
+  const output = native.item.outcome === KIMI_CONVERSATION_OUTCOME.Completed
+    ? native.item.output
+    : native.item.error
+  if (typeof output !== 'string')
+    return []
+  const text = output.replace(/^Wall time: \d+\.\d{3} seconds\n/u, '')
+    .replace(/^<system>ERROR: Tool execution failed\.<\/system>\n/u, '')
+  const pointer = kimiOutputPointer([text], call.id, call.name)
   return pointer && pointer.toolName === call.name && isFilesystemPath(pointer.path, true)
     && kimiOutputPathMatches(pointer.path, sessionId, agentId, call.id, call.name)
     ? [pointer.path]

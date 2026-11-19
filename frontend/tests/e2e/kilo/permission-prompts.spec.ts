@@ -8,7 +8,7 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { savedControlAnswer } from '../helpers/ui'
 import { kiloTest } from '../kilo-fixtures'
-import { exerciseOpenCodeFamilyDenial } from '../opencode/permissionDenial'
+import { exerciseOpenCodeFamilyDenial } from './permissionDenial'
 
 kiloTest('keeps actual file bytes unchanged until the native Allow decision', async ({ native }) => {
   await exerciseNativePermissionWrite(native, {

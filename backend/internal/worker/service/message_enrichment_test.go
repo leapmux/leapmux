@@ -21,6 +21,96 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
+func TestMessageEnrichmentCorrectsCompletionWithoutChangingTheOriginal(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "native-completion-enrichment")
+	sink.UpdateSessionID("native-session")
+	original := []byte(`{"native":"prefix"}`)
+	content := sink.CaptureMessage(agent.MessageContent{Original: original, Completion: agent.MessageCompletionComplete, IdempotencyKey: "native-item"}, agent.SpanInfo{})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
+	stored, err := sink.ReadMessageByIdempotencyKey("native-session", "native-item")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	change := agent.MessageEnrichment{Publication: content.Publication, AgentSessionID: "native-session", Seq: stored.Seq,
+		OriginalContent: original, Completion: agent.MessageCompletionInterrupted}
+	written, err := sink.EnrichMessage(change)
+	require.NoError(t, err)
+	require.True(t, written, "a completion-only correction changes rendering data")
+	row, err := svc.Queries.GetMessageByAgentIDAndSeq(t.Context(), db.GetMessageByAgentIDAndSeqParams{AgentID: "native-completion-enrichment", Seq: stored.Seq})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_INTERRUPTED, workerdb.StorageEnumValue(row.Completion))
+	assert.Equal(t, int64(1), row.SupplementalRevision)
+	decoded, err := msgcodec.Decompress(row.Content, row.ContentCompression)
+	require.NoError(t, err)
+	assert.Equal(t, original, decoded)
+	written, err = sink.EnrichMessage(change)
+	require.NoError(t, err)
+	assert.False(t, written, "a stale revision cannot apply another completion correction")
+	change.PreviousRevision = 1
+	change.Completion = "invalid-completion"
+	written, err = sink.EnrichMessage(change)
+	require.Error(t, err)
+	assert.False(t, written)
+	change.Completion = ""
+	change.SupplementalContent = []byte(`{"native":"latest"}`)
+	written, err = sink.EnrichMessage(change)
+	require.NoError(t, err)
+	require.True(t, written)
+	stored, err = sink.ReadMessageByIdempotencyKey("native-session", "native-item")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, agent.MessageCompletionInterrupted, stored.Content.Completion, "an absent correction preserves the stored completion")
+	assert.Equal(t, int64(2), stored.Revision)
+}
+
+func TestExactMessageEnrichmentSupportsTextWithoutASpan(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "native-text-enrichment")
+	sink.UpdateSessionID("native-session")
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	receipt := agent.NewTranscriptWriteReceipt()
+	original := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Captured prefix"}]}}`)
+	content := sink.CaptureMessage(agent.MessageContent{Original: original, IdempotencyKey: "native-item", WriteReceipt: receipt}, agent.SpanInfo{})
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
+	seq, stored := receipt.StoredMessageSequence()
+	require.True(t, stored)
+	change := agent.MessageEnrichment{
+		Publication: content.Publication, AgentSessionID: content.AgentSessionID, Seq: seq,
+		OriginalContent: original, SupplementalContent: []byte(`{"native_text":"Authoritative answer"}`),
+	}
+	for _, invalid := range []agent.MessageEnrichment{
+		{Publication: content.Publication, AgentSessionID: content.AgentSessionID, OriginalContent: original, SupplementalContent: change.SupplementalContent},
+		{Publication: content.Publication, AgentSessionID: content.AgentSessionID, Seq: -1, OriginalContent: original, SupplementalContent: change.SupplementalContent},
+		{Publication: content.Publication, AgentSessionID: content.AgentSessionID, Seq: 9223372036854775807, OriginalContent: original, SupplementalContent: change.SupplementalContent},
+		{Publication: content.Publication, AgentSessionID: content.AgentSessionID, Seq: seq, OriginalContent: []byte(`{"different":true}`), SupplementalContent: change.SupplementalContent},
+		{Publication: content.Publication, AgentSessionID: content.AgentSessionID, Seq: seq, OriginalContent: original, PreviousRevision: 1, SupplementalContent: change.SupplementalContent},
+	} {
+		written, err := sink.EnrichMessage(invalid)
+		require.NoError(t, err)
+		require.False(t, written)
+	}
+	written, err := sink.EnrichMessage(change)
+	require.NoError(t, err)
+	require.True(t, written, "an exact native text row can receive rendering data without a tool span")
+	row, err := svc.Queries.GetMessageByAgentIDAndSeq(t.Context(), db.GetMessageByAgentIDAndSeqParams{AgentID: "native-text-enrichment", Seq: seq})
+	require.NoError(t, err)
+	decoded, err := msgcodec.Decompress(row.Content, row.ContentCompression)
+	require.NoError(t, err)
+	require.Equal(t, original, decoded)
+	require.Empty(t, row.SpanID)
+	require.Equal(t, int64(1), row.SupplementalRevision)
+	written, err = sink.EnrichMessage(change)
+	require.NoError(t, err)
+	require.False(t, written, "the old revision cannot overwrite newer rendering data")
+	sink.UpdateSessionID("another-session")
+	foreign := sink.CaptureMessage(agent.MessageContent{Original: original}, agent.SpanInfo{})
+	change.Publication, change.AgentSessionID, change.PreviousRevision = foreign.Publication, foreign.AgentSessionID, 1
+	change.SupplementalContent = []byte(`{"native_text":"Wrong session"}`)
+	written, err = sink.EnrichMessage(change)
+	require.NoError(t, err)
+	require.False(t, written, "the same sequence and bytes do not grant another native session access")
+}
+
 func TestCapturedEnrichmentProviderPreparationCanReplaceItsPublisher(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"resolve", "extract", "paired"} {

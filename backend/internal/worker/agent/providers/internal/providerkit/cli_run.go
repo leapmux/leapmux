@@ -77,6 +77,13 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 	if info, err := os.Stat(workingDir); err != nil || !info.IsDir() {
 		workingDir = ""
 	}
+	env := FinalizeAgentEnv(append(os.Environ(), spec.Env...), agent.Options{})
+	if run.Env != nil {
+		env = run.Env(env)
+	}
+	if env == nil {
+		env = []string{}
+	}
 	cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        shell,
 		LoginShell:   run.LoginShell,
@@ -85,12 +92,8 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 		SetEnv:       run.SetEnv,
 		BaseArgs:     run.Args,
 		WorkingDir:   workingDir,
+		Environment:  env,
 	})
-	env := FinalizeAgentEnv(cmd.Environ(), agent.Options{})
-	if run.Env != nil {
-		env = run.Env(env)
-	}
-	cmd.Env = env
 	owner := procutil.PrepareProcess(cmd)
 	var stdout, stderr LimitedBuffer
 	stdout.Limit, stderr.Limit = run.MaxOutput, maxCLIStderr

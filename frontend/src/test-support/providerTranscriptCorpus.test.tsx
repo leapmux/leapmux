@@ -4,12 +4,13 @@ import { fireEvent, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { commandCodeNativeFuzzyEditRequest, commandCodeNativeFuzzyEditResult } from '~/components/chat/providers/commandcode/toolResults.fixtures'
 import { geminiNativeCommittedEdit } from '~/components/chat/providers/gemini/toolResults.fixtures'
+import { openCodeToolPart } from '~/components/chat/providers/opencode/toolResults.fixtures'
 import { MIMO_TASK_ACTION, MIMO_TASK_STATUS, MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
-import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { providerRow } from '~/test-support/toolCallFixture'
@@ -103,6 +104,15 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
   const id = `completion-${provider}`
   const output = `retained stdout from provider ${provider}`
   const command = 'printf partial'
+  if (provider === AgentProvider.OPENCODE) {
+    return [
+      frame(`${id}-request`, provider, id, 'shell', openCodeToolPart(id, 'shell', { command }, { status: 'running' })),
+      frame(`${id}-result`, provider, id, 'shell', openCodeToolPart(id, 'shell', { command }, {
+        status: 'running',
+        metadata: { output },
+      }), { completion: MessageCompletion.INTERRUPTED }),
+    ]
+  }
   const pair = provider === AgentProvider.CODEX
     ? [
         {
@@ -165,14 +175,19 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
             },
           ]
         : provider === AgentProvider.KIMI_CODE
-          // The turn ended while the call ran, so the worker stored the call's own start
-          // again as its closing row, with the output it printed before it stopped.
+          // The Worker retains the running item with a result role when the turn ends.
           ? [
-              kimiToolStart(id, 'Bash', { command }),
-              {
-                ...kimiToolStart(id, 'Bash', { command }),
+              kimiConversationToolRecord('request', {
+                item_id: id,
+                name: 'Bash',
+                input: { command },
+              }),
+              kimiConversationToolRecord('result', {
+                item_id: id,
+                name: 'Bash',
+                input: { command },
                 output,
-              },
+              }),
             ]
           : provider === AgentProvider.MIMO_CODE
             // The worker ends a cut call with its last running update, which states the
@@ -349,6 +364,18 @@ function todoFrames(provider: AgentProvider): TranscriptFrame[] {
     { content: 'Inspect the shared checklist', status: 'pending' },
   ]
   const spanId = 'todo-call'
+  if (provider === AgentProvider.OPENCODE) {
+    return [
+      frame('todo-request', provider, spanId, 'todowrite', openCodeToolPart(spanId, 'todowrite', { todos }, { status: 'running' })),
+      frame('todo-result', provider, spanId, 'todowrite', openCodeToolPart(spanId, 'todowrite', { todos }, {
+        status: 'completed',
+        content: [
+          { type: 'text', text: 'Todos updated' },
+        ],
+        metadata: { todos },
+      }), { completion: MessageCompletion.COMPLETE }),
+    ]
+  }
   let request: unknown
   let result: unknown
   let spanType: string | undefined = 'TodoWrite'
@@ -436,10 +463,23 @@ function todoFrames(provider: AgentProvider): TranscriptFrame[] {
   }
   else if (provider === AgentProvider.KIMI_CODE) {
     spanType = 'TodoList'
-    request = kimiToolStart(spanId, 'TodoList', {
-      todos: todos.map(todo => ({ title: todo.content, status: todo.status })),
+    request = kimiConversationToolRecord('request', {
+      item_id: spanId,
+      name: 'TodoList',
+      input: {
+        todos: todos.map(todo => ({ title: todo.content, status: todo.status })),
+      },
     })
-    result = kimiToolResult(spanId, 'Todos updated')
+    result = kimiConversationToolRecord('result', {
+      item_id: spanId,
+      name: 'TodoList',
+      input: {
+        todos: todos.map(todo => ({ title: todo.content, status: todo.status })),
+      },
+      status: 'ended',
+      outcome: 'completed',
+      output: 'Todos updated',
+    })
   }
   else if (provider === AgentProvider.GROK_BUILD) {
     // Grok states the tool in `_meta["x.ai/tool"]`, and the finished call states
@@ -904,6 +944,23 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
   const path = '/project/parity.ts'
   const before = 'const parityBefore = 1'
   const after = 'const parityAfter = 2'
+  if (provider === AgentProvider.OPENCODE) {
+    const input = { path, oldString: before, newString: after }
+    return [
+      frame('request', provider, 'parity-edit', 'edit', openCodeToolPart('parity-edit', 'edit', input, { status: 'running' })),
+      frame('result', provider, 'parity-edit', 'edit', openCodeToolPart('parity-edit', 'edit', input, {
+        status: 'completed',
+        content: [
+          { type: 'text', text: 'Edited file' },
+        ],
+        metadata: {
+          files: [
+            { file: path, patch: `--- ${path}\n+++ ${path}\n@@ -1 +1 @@\n-${before}\n+${after}\n` },
+          ],
+        },
+      }), { completion: MessageCompletion.COMPLETE }),
+    ]
+  }
   if (provider === AgentProvider.COMMAND_CODE) {
     const id = commandCodeNativeFuzzyEditRequest.event.toolCallId
     return [
@@ -1203,8 +1260,21 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
   }
   if (provider === AgentProvider.KIMI_CODE) {
     return [
-      frame('request', provider, 'parity-edit', 'Edit', kimiToolStart('parity-edit', 'Edit', { path, old_string: before, new_string: after }, { kind: 'diff', path })),
-      frame('result', provider, 'parity-edit', 'Edit', kimiToolResult('parity-edit', 'Saved')),
+      frame('request', provider, 'parity-edit', 'Edit', kimiConversationToolRecord('request', {
+        item_id: 'parity-edit',
+        name: 'Edit',
+        input: { path, old_string: before, new_string: after },
+        display: { kind: 'diff', path },
+      })),
+      frame('result', provider, 'parity-edit', 'Edit', kimiConversationToolRecord('result', {
+        item_id: 'parity-edit',
+        name: 'Edit',
+        input: { path, old_string: before, new_string: after },
+        display: { kind: 'diff', path },
+        status: 'ended',
+        outcome: 'completed',
+        output: 'Saved',
+      })),
     ]
   }
   if (provider === AgentProvider.AMP) {

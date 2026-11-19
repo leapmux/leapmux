@@ -1,37 +1,50 @@
+import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
-import type { PermissionOption } from '~/components/chat/model/controlPrompt'
-import { acpPermissionPrompt } from '../acp/extractControl'
+import { OPENCODE_NATIVE_EVENT, OPENCODE_NATIVE_PERMISSION_DECISION, OPENCODE_NATIVE_TOOL } from '~/generated/contracts/opencode-native-protocol'
+import { pickObject, pickString } from '~/lib/jsonPick'
 
-/**
- * The pair OpenCode itself answers with, for a request that offers no options.
- *
- * These are the daemon's real option ids -- it maps an unknown id to reject, so a
- * synthesized pair with invented ids would turn every Allow into a reject.
- */
-const DEFAULT_OPTIONS: readonly PermissionOption[] = [
-  { optionId: 'once', kind: 'allow_once', name: 'Allow' },
-  { optionId: 'reject', kind: 'reject_once', name: 'Deny' },
-]
-
-/**
- * `Provider.extractControl` for OpenCode and Kilo.
- *
- * The two daemons speak the Agent Client Protocol, so the reader is the shared one.
- * They differ in ONE thing: a permission request of theirs can carry no option list
- * at all, and the daemon still expects one of its own two ids back. The shared
- * Allow/Deny pair sends neither, so the pair is stated here instead.
- */
-export function openCodeExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
-  const permission = acpPermissionPrompt(input)
-  if (!permission)
+/** Read a native permission without importing the ACP envelope. */
+export function openCodeExtractControl({ payload }: ControlExtractionInput): ExtractedControlRequest | null {
+  if (payload.type !== OPENCODE_NATIVE_EVENT.PermissionAsked)
     return null
+  const data = pickObject(payload, 'data')
+  if (!data)
+    return null
+  const tool = pickString(data, 'action')
+  const resources = Array.isArray(data.resources)
+    ? data.resources.filter((value): value is string => typeof value === 'string')
+    : []
+  const options: PermissionOption[] = [
+    { optionId: OPENCODE_NATIVE_PERMISSION_DECISION.Once, kind: 'allow_once', name: 'Allow' },
+  ]
+  if (Array.isArray(data.save) && data.save.length > 0) {
+    options.push({
+      optionId: OPENCODE_NATIVE_PERMISSION_DECISION.Always,
+      kind: 'allow_always',
+      name: 'Always allow',
+      scope: 'project',
+    })
+  }
+  options.push({ optionId: OPENCODE_NATIVE_PERMISSION_DECISION.Reject, kind: 'reject_once', name: 'Deny' })
+  const command = tool === OPENCODE_NATIVE_TOOL.Shell
+    ? resources.join('\n')
+    : ''
+  const message = pickString(data, 'message')
+  const metadata = pickObject(data, 'metadata') ?? {}
   return {
     kind: 'permission',
-    permission: permission.options.length > 0
-      ? permission
-      : {
-          ...permission,
-          options: [...DEFAULT_OPTIONS],
-        },
+    permission: {
+      title: tool,
+      ...(command
+        ? { command }
+        : {}),
+      input: command
+        ? metadata
+        : { ...metadata, resources },
+      ...(message
+        ? { reason: message }
+        : {}),
+      options,
+    },
   }
 }

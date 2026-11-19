@@ -967,6 +967,7 @@ message BackgroundTaskItem {
   // no way to tell which it was. False is the safe answer -- prose in the
   // monospace face reads worse than a command in the normal one.
   bool title_is_command = 14;
+  BackgroundTaskRole role = 15;
 }
 
 enum BackgroundTaskKind {
@@ -974,6 +975,15 @@ enum BackgroundTaskKind {
   BACKGROUND_TASK_KIND_SUBAGENT = 1;
   BACKGROUND_TASK_KIND_SHELL = 2;
   BACKGROUND_TASK_KIND_WORKFLOW = 3;
+}
+
+// Separates task outcomes from canonical child activity. Some providers use
+// one row for both responsibilities; others report them independently.
+enum BackgroundTaskRole {
+  BACKGROUND_TASK_ROLE_UNSPECIFIED = 0;
+  BACKGROUND_TASK_ROLE_TASK_OUTCOME = 1;
+  BACKGROUND_TASK_ROLE_CHILD_TASK = 2;
+  BACKGROUND_TASK_ROLE_CHILD_ACTIVITY = 3;
 }
 
 enum BackgroundTaskStatus {

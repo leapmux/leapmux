@@ -381,10 +381,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     reportLookup(resolver.loadRequest(props.message, parsed()), requestLookup.begin, spanId, 'Cannot load the request of a tool call')
   })
 
-  // The three fields reading a row needs, built before the render context that
-  // carries them: that context's `hasOuterToolbar` getter reads the toolbar, the
-  // toolbar reads the row, and the row would otherwise read a context that does
-  // not exist yet.
+  // Build the row extraction context before the render context. The render
+  // context's `hasOuterToolbar` getter reads the toolbar, which reads the row.
   const rowContext: RowExtractionContext = {
     sources,
     get renderCache() { return props.host?.renderCache },

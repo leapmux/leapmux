@@ -383,7 +383,9 @@ func TestChildRetirementWatcherPreservesReplacementProgressOnTheWire(t *testing.
 	svc, parent := setupRootSink(t, "retirement-reentry-root")
 	svc.Output.processRunning = func(string) bool { return true }
 	root := requireRootOutputSink(t, svc.Output, "retirement-reentry-root")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child-native", Title: "Child"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "child-native", Title: "Child"})
 	require.NoError(t, err)
 	childServices := parent.ChildSink(childID)
 	child := requireChildOutputSink(t, root, childID)

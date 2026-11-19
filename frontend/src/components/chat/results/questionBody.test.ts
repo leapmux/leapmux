@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest'
 import { questionBodyMarkdown } from './questionBody'
 
 describe('questionBodyMarkdown', () => {
+  it('keeps context before the question without changing the question text', () => {
+    const questions = [
+      {
+        context: 'Deployment policy\n\nUse isolated credentials.',
+        question: 'Choose target',
+        options: [
+          { label: 'Alpha' },
+        ],
+      },
+    ]
+    expect(questionBodyMarkdown(questions)).toBe('Deployment policy\n\nUse isolated credentials.\n\nChoose target\n\n- **Alpha**')
+    expect(questions[0]?.question).toBe('Choose target')
+  })
+
   it('states the question and then its choices', () => {
     expect(questionBodyMarkdown([
       {

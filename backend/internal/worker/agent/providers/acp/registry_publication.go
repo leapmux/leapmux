@@ -27,7 +27,12 @@ func registryObservationUpsert(obs SubagentObservation, rowKey, childID, parentI
 	if kind == bgtask.KindUnspecified {
 		kind = bgtask.KindSubagent
 	}
+	role := bgtask.RoleUnspecified
+	if childID != "" {
+		role = bgtask.RoleChildTask
+	}
 	return bgtask.Upsert{
+		Role:   role,
 		RowKey: rowKey, Kind: kind, ChildAgentID: childID, ParentAgentID: parentID,
 		GroupKey: obs.GroupKey, GroupLabel: obs.GroupLabel, Title: obs.Title,
 		TitleIsCommand: obs.TitleIsCommand, ActiveForm: obs.Activity, Status: obs.Status,

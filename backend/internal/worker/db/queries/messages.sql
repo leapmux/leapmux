@@ -41,6 +41,13 @@ SELECT EXISTS (
     AND idempotency_key <> ''
 ) AS present;
 
+-- name: GetMessageByIdempotencyKey :one
+SELECT * FROM messages
+WHERE agent_id = sqlc.arg(agent_id)
+  AND agent_session_id = sqlc.arg(agent_session_id)
+  AND idempotency_key = sqlc.arg(idempotency_key)
+  AND idempotency_key <> '';
+
 -- CloneAgentMessagesForResume copies one closed Worker's transcript into the
 -- new agent before startup. A target id plus the source seq keeps the global
 -- primary key unique without making IDs grow on repeated resumes. The insert

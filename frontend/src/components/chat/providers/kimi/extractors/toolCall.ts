@@ -13,7 +13,7 @@ import type { TriggerRequest } from '../../../model/tools/trigger'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_OUTCOME, KIMI_CONVERSATION_RECORD_ROLE, KIMI_CONVERSATION_STATUS, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { parseDataImageUrl } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
@@ -21,40 +21,32 @@ import { parseMcpToolName } from '../../../model/mcpToolCall'
 import { parseReadContent } from '../../../model/readFileResult'
 import { failedResult, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
-import { retainedOutcome, retainedRowIsFinal } from '../../registry'
+import { retainedOutcome } from '../../registry'
 import { kimiQuestionsFromToolInput } from '../askUserQuestion'
-import { kimiDisplay, kimiEventData } from '../protocol'
+import { kimiConversationAcceptsView, kimiConversationRow } from '../conversation'
+import { kimiDisplay } from '../protocol'
 import { kimiToolKind } from '../toolKinds'
+import { kimiInlineImage } from './media'
 import { kimiTodoItems } from './todo'
 
 /**
  * One Kimi Code tool call, as the persisted rows state it.
- *
- * The server states a call in two events. `tool.call.started` carries the tool name,
- * the arguments and a `display` that words the call for a UI; `tool.result` carries the
- * output and nothing else -- no name, no arguments, no display. So a result row reads
- * the call's facts off its paired start.
- *
- * A turn that ended while the call ran leaves no result: the worker stores the START
- * payload again as the call's closing row, with the completion column stating how the
- * turn ended. That row is finished although its bytes are a start, and it carries the
- * output the call printed before it stopped in the fields a result states it in.
+ * Native tool frames retain the name, input and display with their output.
+ * The display copy supplies recovered output; the original frame retains its command outcome.
+ * A final completion column closes a retained running frame when its turn ends.
  */
 export interface KimiToolRow {
   toolCallId: string
   toolName: string
   args: Record<string, unknown>
   display: Record<string, unknown> | undefined
-  /**
-   * The payload that states the call's output: the `tool.result`, or a retained start
-   * that carries the output the call printed. Null while the call runs, and for a
-   * retained start that printed nothing.
-   */
+  /** The final frame or retained output. Null when no result is available. */
   result: Record<string, unknown> | null
   /** The unchanged native result supplies command outcome text after output file recovery. */
   originalResult?: Record<string, unknown> | null
   /** True for a retained start: the turn ended while the call ran. */
   retained: boolean
+  truncated: boolean
   /** True when this row is the last one of its call. */
   finished: boolean
   lifecycle: ToolCallLifecycleFacts
@@ -63,61 +55,60 @@ export interface KimiToolRow {
 /**
  * Read one tool row of a span into the facts of its call.
  *
- * `request` is the span's start row, which the store resolves separately. The row's OWN
- * bytes decide which half it is. A start row states no result: the result is a later
- * row of the span, which this row never reads.
+ * Each frame supplies its own name, input and state. A running request never reads
+ * a later result. The completion column can identify its retained closing copy.
  */
 export function kimiToolRow(
   parsed: unknown,
-  spanType: string | undefined,
-  request: unknown,
   completion: MessageCompletion | undefined,
   originalResult?: unknown,
 ): KimiToolRow | null {
-  const ownStart = kimiEventData(parsed, KIMI_EVENT.ToolCallStarted)
-  const ownResult = kimiEventData(parsed, KIMI_EVENT.ToolResult)
-  if (!ownStart && !ownResult)
+  const conversation = kimiConversationRow(parsed)
+  if (conversation?.kind !== 'item' || conversation.item[KIMI_CONVERSATION_FIELD.Type] !== KIMI_CONVERSATION_ITEM_KIND.ToolCall)
     return null
-  const retainedFinal = !!ownStart && retainedRowIsFinal(completion)
-  const start = ownStart ?? kimiEventData(request, KIMI_EVENT.ToolCallStarted)
-  const result = ownResult ?? (retainedFinal
-    ? kimiRetainedOutput(ownStart)
-    : null)
-  const toolCallId = pickString(ownStart ?? ownResult, 'toolCallId')
-  const nativeResult = kimiEventData(originalResult, KIMI_EVENT.ToolResult)
-  // The result frame states no name, and the worker stamps the call's name on every
-  // row of the span as its span type, so a result whose start is out of the loaded
-  // window still states its tool.
-  const toolName = pickString(start, 'name') || spanType || ''
-  const finished = !!ownResult || retainedFinal
+  const item = conversation.item
+  const finished = conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Result
+  const retained = finished && item[KIMI_CONVERSATION_FIELD.Status] === KIMI_CONVERSATION_STATUS.Running
+  const media = item[KIMI_CONVERSATION_FIELD.Media]
+  const hasOutput = typeof item[KIMI_CONVERSATION_FIELD.Output] === 'string'
+    || typeof item[KIMI_CONVERSATION_FIELD.Error] === 'string'
+    || (Array.isArray(media) && media.length > 0)
+  const result = finished && (!retained || hasOutput)
+    ? item
+    : null
+  const original = result
+    ? kimiConversationRow(originalResult)
+    : null
   return {
-    toolCallId,
-    toolName,
-    args: pickObject(start, 'args') ?? {},
-    display: kimiDisplay(start),
+    toolCallId: pickString(item, KIMI_CONVERSATION_FIELD.ItemID),
+    toolName: pickString(item, KIMI_CONVERSATION_FIELD.Name),
+    args: pickObject(item, KIMI_CONVERSATION_FIELD.Input) ?? {},
+    display: kimiDisplay(item),
     result,
-    originalResult: nativeResult && pickString(nativeResult, 'toolCallId') === toolCallId
-      ? nativeResult
+    originalResult: original?.kind === 'item' && kimiConversationAcceptsView(conversation, original)
+      ? original.item
       : result,
-    retained: retainedFinal,
+    retained,
+    truncated: conversation.record[KIMI_CONVERSATION_FIELD.OutputTruncated] === true,
     finished,
     lifecycle: {
-      frameStatus: 'unstated',
-      providerOutcome: result?.isError === true
+      frameStatus: !finished || retained
+        ? 'in_progress'
+        : item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Failed
+          ? 'failed'
+          : item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Interrupted
+            ? 'cancelled'
+            : 'completed',
+      providerOutcome: item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Failed
         ? 'failed'
-        : null,
-      retainedOutcome: retainedOutcome(retainedFinal ? completion : undefined),
+        : item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Interrupted
+          ? 'interrupted'
+          : null,
+      retainedOutcome: retainedOutcome(retained ? completion : undefined),
       rowFinal: finished,
-      resultFrameLanded: result !== null,
+      resultFrameLanded: finished && !retained,
     },
   }
-}
-
-/** The retained start of a call, as its result, when it carries output. */
-function kimiRetainedOutput(start: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!start || (typeof start.output !== 'string' && !Array.isArray(start.output)))
-    return null
-  return start
 }
 
 /**
@@ -143,7 +134,11 @@ export interface KimiToolFacts {
 
 /** Collect the facts of one row and settle the kind it takes. */
 export function kimiToolFacts(row: KimiToolRow): KimiToolFacts {
-  const { text, images } = kimiOutput(row.result?.output)
+  const { images, links } = kimiConversationMedia(row.result)
+  const output = kimiToolResultText(row.result)
+  const text = (output
+    ? [output, ...links]
+    : links).join('\n')
   const kind = kimiToolKind(row.toolName)
   const facts: KimiToolFacts = {
     row,
@@ -152,16 +147,54 @@ export function kimiToolFacts(row: KimiToolRow): KimiToolFacts {
     input: kimiResolvedInput(kind, row),
     displayKind: pickString(row.display, 'kind'),
     text,
-    lifecycleText: kimiOutput(row.originalResult?.output ?? row.result?.output).text,
+    lifecycleText: kimiToolResultText(row.originalResult ?? row.result),
     images,
-    failed: row.result?.isError === true,
-    truncated: row.result?.truncated === true,
+    failed: row.lifecycle.providerOutcome === 'failed',
+    truncated: row.truncated,
     resultAvailable: row.result !== null,
   }
   return {
     ...facts,
     kind: kimiReclassify(facts),
   }
+}
+
+/** The public item keeps images and other media separate from its output string. */
+function kimiConversationMedia(result: Record<string, unknown> | null): { images: ImageResultSource[], links: string[] } {
+  const images: ImageResultSource[] = []
+  const links: string[] = []
+  const media = result?.[KIMI_CONVERSATION_FIELD.Media]
+  if (!Array.isArray(media))
+    return { images, links }
+  for (const part of media) {
+    const url = pickString(part, KIMI_CONVERSATION_FIELD.URL)
+    if (!url)
+      continue
+    switch (pickString(part, KIMI_CONVERSATION_FIELD.Kind)) {
+      case 'image': {
+        const image = parseDataImageUrl(url)
+        if (image) {
+          const source = kimiInlineImage(image.mimeType, image.base64)
+          if (source)
+            images.push(source)
+        }
+        break
+      }
+      case 'audio':
+      case 'video':
+        links.push(url)
+        break
+    }
+  }
+  return { images, links }
+}
+
+/** Native conversation failures retain their text in error instead of output. */
+function kimiToolResultText(result: Record<string, unknown> | null): string {
+  const outcome = result?.[KIMI_CONVERSATION_FIELD.Outcome]
+  return pickString(result, outcome === KIMI_CONVERSATION_OUTCOME.Failed || outcome === KIMI_CONVERSATION_OUTCOME.Interrupted
+    ? KIMI_CONVERSATION_FIELD.Error
+    : KIMI_CONVERSATION_FIELD.Output)
 }
 
 /**
@@ -196,55 +229,6 @@ function kimiResolvedInput(kind: ToolKind, row: KimiToolRow): Record<string, unk
   return displayed
     ? { ...row.args, path: displayed }
     : row.args
-}
-
-/**
- * The words and the pictures a result's `output` states.
- *
- * The output is a string, or a list of content parts: text, and an image, audio or
- * video by URL. The text parts join, and an image part whose URL this build can draw
- * becomes a picture. A clip is stated by its URL alone.
- */
-export function kimiOutput(output: unknown): { text: string, images: ImageResultSource[] } {
-  if (typeof output === 'string')
-    return { text: output, images: [] }
-  if (!Array.isArray(output))
-    return { text: '', images: [] }
-  const texts: string[] = []
-  const images: ImageResultSource[] = []
-  for (const part of output) {
-    if (!isObject(part))
-      continue
-    switch (part.type) {
-      case 'text':
-        texts.push(pickString(part, 'text'))
-        break
-      case 'image_url': {
-        const url = pickString(pickObject(part, 'imageUrl'), 'url')
-        const data = parseDataImageUrl(url)
-        if (data)
-          images.push({ mimeType: data.mimeType, data: data.base64 })
-        else if (url)
-          images.push({ url })
-        break
-      }
-      case 'audio_url':
-      case 'video_url': {
-        const url = pickString(pickObject(part, part.type === 'audio_url'
-          ? 'audioUrl'
-          : 'videoUrl'), 'url')
-        if (url)
-          texts.push(url)
-        break
-      }
-      default:
-        break
-    }
-  }
-  return {
-    text: texts.join('\n'),
-    images,
-  }
 }
 
 /**
@@ -435,7 +419,7 @@ export const KIMI_TOOL_READERS: ToolCallSpecReaderTable<KimiToolFacts> = {
     // its trailer. Only a command that returned on its own succeeded.
     const exitCode = trailer
       ? Number(trailer[1])
-      : facts.failed || facts.row.retained
+      : facts.failed || facts.row.retained || facts.row.lifecycle.providerOutcome === 'interrupted'
         ? undefined
         : 0
     return {
@@ -795,23 +779,9 @@ function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result
   }
   const lines = facts.text.split('\n').map(line => line.trimEnd()).filter(line => line !== '' && !/^<system>.*<\/system>$/.test(line))
   const empty = lines.length === 0 || /^No (?:files|matches) found\.?$/i.test(lines[0] ?? '')
-  if (kind === 'glob') {
-    const filenames = empty
-      ? []
-      : lines
-    return {
-      result: {
-        filenames,
-        content: '',
-        numFiles: filenames.length,
-        numLines: 0,
-        truncated: facts.truncated,
-        fallbackContent: facts.text,
-        empty,
-      },
-    }
-  }
-  const mode = pickString(facts.input, 'output_mode')
+  const mode = kind === 'glob'
+    ? 'files_with_matches'
+    : pickString(facts.input, 'output_mode')
   if (mode === 'files_with_matches') {
     const filenames = empty
       ? []
@@ -825,7 +795,9 @@ function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result
         truncated: facts.truncated,
         fallbackContent: facts.text,
         empty,
-        mode: 'files_with_matches',
+        ...(kind === 'grep'
+          ? { mode }
+          : {}),
       },
     }
   }
@@ -986,10 +958,10 @@ function kimiQuestionResult(text: string): QuestionResult | null {
   const native = isObject(parsed)
     ? parsed
     : undefined
-  const answers = pickObject(native, 'answers')
+  const answers = pickObject(native, KIMI_CONVERSATION_FIELD.Answers)
   if (!answers)
     return null
-  const note = pickString(native, 'note').trim()
+  const note = pickString(native, KIMI_CONVERSATION_FIELD.Note).trim()
   return {
     answers: Object.entries(answers).map(([header, answer]) => ({
       header,
@@ -1012,6 +984,9 @@ export function kimiToolCall(row: KimiToolRow): ToolCall {
   const label = spec.label ?? (row.toolName || undefined)
   return createToolCall(envelope, {
     ...spec,
+    ...(facts.truncated
+      ? { truncated: true }
+      : {}),
     ...(label !== undefined
       ? { label }
       : {}),

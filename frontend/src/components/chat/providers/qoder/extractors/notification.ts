@@ -51,6 +51,24 @@ export function qoderNotificationEntry(message: Record<string, unknown>): Notifi
         : ''}` },
     ]
   }
+  if (message.subtype === QODER_SYSTEM_SUBTYPE.HookDiagnostics) {
+    const entries: NotificationEntry[] = []
+    if (Array.isArray(message.diagnostics)) {
+      for (const diagnostic of message.diagnostics) {
+        if (!isObject(diagnostic))
+          continue
+        const detail = pickString(diagnostic, 'message').trim()
+        if (!detail)
+          continue
+        const entry: Extract<NotificationEntry, { kind: 'hook' }> = { kind: 'hook', outcome: 'failed', detail }
+        assignDefined(entry, 'event', pickString(diagnostic, 'event').trim() || undefined)
+        entries.push(entry)
+      }
+    }
+    if (entries.length === 0 && (message.read_status === 'failed' || message.read_status === 'partial'))
+      entries.push({ kind: 'hook', outcome: 'failed', detail: 'Qoder could not read the hook configuration' })
+    return entries
+  }
   if (message.subtype === QODER_SYSTEM_SUBTYPE.HookResponse) {
     if (message.outcome === 'success')
       return []

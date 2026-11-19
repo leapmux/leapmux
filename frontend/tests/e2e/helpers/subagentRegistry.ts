@@ -1,3 +1,4 @@
+import type { Locator, Page } from '@playwright/test'
 /**
  * These helpers drive the background-task registry in end-to-end (E2E) tests.
  * ./goalsAndTodos.ts drives the Goals & To-dos section.
@@ -11,7 +12,7 @@
  * ./subagentRegistry.test.ts checks the locator rules and the held-child answer.
  * exerciseChildInterrupt uses this registry to open and stop a native child.
  */
-import type { Locator, Page } from '@playwright/test'
+import type { BackgroundTaskRole } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelMatcher, MockModelStep } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
@@ -27,13 +28,13 @@ import { retryUntilPass } from './retryUntilPass'
 import { AGENT_TAB_SELECTOR, tabIdSelector } from './tabSelectors'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expandSidebarSection, expectAssistantAnswer, interruptButton, sendMessage, tabById, waitForAgentIdle } from './ui'
 
-const FINAL_STATUSES = [
+const FINAL_STATUSES = new Set<string>([
   BACKGROUND_TASK_STATUS_TOKEN.Succeeded,
   BACKGROUND_TASK_STATUS_TOKEN.Failed,
   BACKGROUND_TASK_STATUS_TOKEN.Stopped,
   BACKGROUND_TASK_STATUS_TOKEN.Interrupted,
   BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome,
-] as const
+])
 
 /** Locator for the Background tasks section header (right sidebar). */
 export function backgroundTasksSection(page: Page): Locator {
@@ -52,6 +53,7 @@ export type BackgroundTaskRowKind = 'subagent' | 'shell' | 'workflow'
 /** The attributes that select background task rows. An absent field selects each value of its attribute. */
 export interface BackgroundTaskRowSelection {
   kind?: BackgroundTaskRowKind
+  role?: BackgroundTaskRole
   /** The `data-task-id` of the row. */
   taskId?: string
   /** The `data-child-agent-id` of the row of a subagent. */
@@ -72,7 +74,10 @@ function backgroundTaskRowSelector(selection: BackgroundTaskRowSelection): strin
   const childAgentId = selection.childAgentId === undefined
     ? ''
     : `[data-child-agent-id="${cssAttributeValue(selection.childAgentId)}"]`
-  return `[data-testid="bg-task-row"]${kind}${taskId}${childAgentId}`
+  const role = selection.role === undefined
+    ? ''
+    : `[data-role="${selection.role}"]`
+  return `[data-testid="bg-task-row"]${kind}${taskId}${childAgentId}${role}`
 }
 
 /**
@@ -118,6 +123,7 @@ export async function expectNoRegistryRows(page: Page, server: NativeSidebarCont
 
 export interface RowFilter {
   kind?: BackgroundTaskRowKind
+  role?: BackgroundTaskRole
   status?: string
   titleContains?: string
 }
@@ -171,8 +177,9 @@ export async function openChildTabFromRow(page: Page, row: Locator): Promise<str
     ...new Set([...before, childId]),
   ].sort()
   await row.click()
-  await expect(agentTabs).toHaveCount(expectedIds.length)
-  expect((await tabIds()).sort(), 'the row selects only its exact native child tab').toEqual(expectedIds)
+  await expect.poll(async () => (await tabIds()).sort(), {
+    message: 'the row selects only its exact native child tab',
+  }).toEqual(expectedIds)
   const childTab = page.locator(`${AGENT_TAB_SELECTOR}${tabIdSelector(childId)}:visible`)
   await expect(childTab).toBeVisible()
   await expect(childTab).toHaveAttribute('aria-selected', 'true')
@@ -514,24 +521,43 @@ const END_LABELS: Record<string, string> = {
  * A failed or stopped child still reaches a final state and must not require the Completed label.
  */
 export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<void> {
-  let settled: string | null = null
   await expect.poll(async () => {
-    const status = await row.getAttribute('data-status')
-    settled = FINAL_STATUSES.includes(status as typeof FINAL_STATUSES[number])
-      ? status
-      : null
-    return settled
-  }).not.toBeNull()
-  const label = END_LABELS[settled ?? '']
-  if (label) {
-    await expect(row.locator('[data-testid="bg-task-status-dot"]:visible')).toHaveAttribute('aria-label', label)
-    // Select one label per browser query. A title update can add or remove the secondary between separate requests.
-    const visibleLabel = row.locator(
-      '[data-testid="bg-task-secondary"]:visible, :scope:not(:has([data-testid="bg-task-secondary"]:visible)) [data-testid="bg-task-title"]:visible',
-    )
-    await expect(visibleLabel).toHaveText(label)
-    await expect(row.filter({ hasText: label })).toBeVisible()
-  }
+    await expandBackgroundTasksSection(page)
+    // Read one visible row atomically. Hydration can collapse it between separate browser calls.
+    const snapshots = await row.evaluateAll(elements => elements.map((element) => {
+      const visible = (node: Element | null): boolean => node !== null && node.isConnected
+        && node.getClientRects().length > 0 && getComputedStyle(node).visibility === 'visible'
+      const dot = element.querySelector('[data-testid="bg-task-status-dot"]')
+      const dotLabel = dot?.getAttribute('aria-label') ?? ''
+      const secondary = element.querySelector('[data-testid="bg-task-secondary"]')
+      const secondaryVisible = visible(secondary)
+      const title = element.querySelector('[data-testid="bg-task-title"]')
+      const label = secondaryVisible ? secondary : title
+      return {
+        status: element.getAttribute('data-status'),
+        dotLabel,
+        labelText: label?.textContent?.trim() ?? '',
+        visible: visible(element) && visible(dot) && (secondaryVisible || visible(title)),
+      }
+    }))
+    const snapshot = snapshots[0]
+    const status = snapshot?.status ?? ''
+    const final = FINAL_STATUSES.has(status)
+    const label = final ? END_LABELS[status] : undefined
+    return {
+      rows: snapshots.length,
+      final,
+      visible: snapshot?.visible ?? false,
+      matchingDot: label !== undefined && snapshot?.dotLabel === label,
+      matchingLabel: label !== undefined && snapshot?.labelText === label,
+    }
+  }, { message: 'the finished registry row has a visible matching status dot and label' }).toEqual({
+    rows: 1,
+    final: true,
+    visible: true,
+    matchingDot: true,
+    matchingLabel: true,
+  })
 }
 
 export interface RegistryIdentity {

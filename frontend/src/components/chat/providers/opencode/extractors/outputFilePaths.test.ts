@@ -1,107 +1,83 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { outputFilePathFixture } from '~/test-support/outputFilePathFixture'
-import { providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import '../plugin'
 
-const path = '/native/data/tool-output/tool_123abc'
 const frame = {
-  sessionUpdate: 'tool_call_update',
-  toolCallId: 'native-call',
-  status: 'completed',
-  kind: 'execute',
-  title: 'native command',
-  rawInput: {
-    command: 'printf native-preview',
+  type: 'session.tool.success',
+  data: {
+    sessionID: 'ses_1',
+    assistantMessageID: 'msg_1',
+    id: 'call_1',
+    name: 'shell',
+    input: { command: 'printf preview' },
+    content: [
+      { type: 'text', text: 'preview' },
+    ],
+    metadata: { truncated: true, outputPath: '/native/data/shell/shl_1/output' },
   },
-  content: [
-    {
-      type: 'content',
-      content: {
-        type: 'text',
-        text: 'native inline preview',
+}
+const options = { spanId: 'worker-span', agentSessionId: 'ses_1' }
+
+describe('openCodeOutputFilePaths', () => {
+  it('reads the native shell footer when v2 omits the structured pointer', () => {
+    const native = {
+      ...frame,
+      data: {
+        ...frame.data,
+        content: [
+          { type: 'text', text: 'tail\n\n[showing lines 10-20 of 20; full output saved to /native/shell/sh_1.out]' },
+        ],
+        metadata: { truncated: true, shellID: 'sh_1' },
       },
-    },
-  ],
-  rawOutput: {
-    output: 'native inline preview',
-    metadata: {
-      output: 'native inline preview',
-      exit: 0,
-      truncated: true,
-      outputPath: '/native/data/tool-output/tool_123abc',
-    },
-  },
-}
-const options = {
-  spanId: 'native-call',
-  spanType: 'bash',
-  agentSessionId: 'native-session',
-}
-
-describe('registered output file paths', () => {
-  it('attaches the native filesystem pointer without changing the native frame', () => {
-    const before = JSON.stringify(frame)
-    const call = providerToolCall(AgentProvider.OPENCODE, frame, options)
-
-    expect(call).not.toBeNull()
-    expect(call?.id).toBe('native-call')
-    expect(call?.outputFilePaths).toEqual([path])
-    expect(JSON.stringify(frame)).toBe(before)
-  })
-})
-
-describe('native path ownership and preview preservation', () => {
-  it.each([null, false, 0, -1, '', [], {}])('refuses a non-native payload without deriving a new call: %j', (payload) => {
-    const pathsFor = outputFilePathFixture(AgentProvider.OPENCODE, frame, options)
-    expect(pathsFor(payload)).toEqual([])
-  })
-
-  it('refuses another native call while the original call stays fixed', () => {
-    const pathsFor = outputFilePathFixture(AgentProvider.OPENCODE, frame, options)
-    const foreign: unknown = JSON.parse(JSON.stringify(frame).replaceAll('native-call', 'foreign-call'))
-    expect(pathsFor(foreign)).toEqual([])
-  })
-
-  it.each(['request', 'none', 'other'] as const)('supplies no file path for the %s role', (role) => {
-    const pathsFor = outputFilePathFixture(AgentProvider.OPENCODE, frame, options)
-    expect(pathsFor(frame, { role })).toEqual([])
+    }
+    expect(providerToolCall(AgentProvider.OPENCODE, native, options)?.outputFilePaths).toEqual(['/native/shell/sh_1.out'])
   })
 
   it.each([
-    'file:///native/opaque',
-    'https://example.com/result',
-    'zcode-artifact://session/id',
-    ' ',
-    'relative/output',
-    '/native/zero\0byte',
-  ])('refuses a non-filesystem pointer: %j', (invalid) => {
-    const payload: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
-    const pathsFor = outputFilePathFixture(AgentProvider.OPENCODE, frame, options)
-    expect(pathsFor(payload)).toEqual([])
-  })
-
-  it('keeps the native preview when an unrelated supplement supplies complete text', () => {
-    const forged = 'FORGED_COMPLETE_BODY'
-    const supplementalContent = {
-      sessionId: options.agentSessionId,
-      toolCallId: 'native-call',
-      toolName: options.spanType,
-      outputFile: { path, text: forged, output: forged },
-      completeOutput: {
-        path,
-        text: forged,
-        sessionId: options.agentSessionId,
-        toolCallId: 'native-call',
+    { truncated: false, shellID: 'sh_1' },
+    { truncated: true, shellID: 'other' },
+    { truncated: true },
+  ])('rejects an unverified footer for %j', (metadata) => {
+    const native = {
+      ...frame,
+      data: {
+        ...frame.data,
+        content: [
+          { type: 'text', text: 'tail\n\n[showing lines 10-20 of 20; full output saved to /native/shell/sh_1.out]' },
+        ],
+        metadata,
       },
     }
+    expect(providerToolCall(AgentProvider.OPENCODE, native, options)?.outputFilePaths).toBeUndefined()
+  })
+
+  it('attaches the native pointer without reading or changing the inline result', () => {
     const before = JSON.stringify(frame)
-    const meta = providerToolMeta(AgentProvider.OPENCODE, frame, { ...options, supplementalContent })
-    if (!meta)
-      throw new Error('The native Copy preview requires a valid tool metadata object.')
-    const quote = meta.copyableContent()
-    expect(quote).toContain('native inline preview')
-    expect(quote).not.toContain(forged)
+    const call = providerToolCall(AgentProvider.OPENCODE, frame, options)
+    expect(call?.outputFilePaths).toEqual(['/native/data/shell/shl_1/output'])
     expect(JSON.stringify(frame)).toBe(before)
+  })
+
+  it.each(['request', 'none', 'other'] as const)('omits paths from the %s side', (role) => {
+    expect(outputFilePathFixture(AgentProvider.OPENCODE, frame, options)(frame, { role })).toEqual([])
+  })
+
+  it.each([
+    'https://example.com/output',
+    'file:///output',
+    'relative/output',
+    ' ',
+    '/bad\0path',
+  ])('rejects a non-filesystem pointer %j', (outputPath) => {
+    const read = outputFilePathFixture(AgentProvider.OPENCODE, frame, options)
+    expect(read({
+      ...frame,
+      data: {
+        ...frame.data,
+        metadata: { outputPath },
+      },
+    })).toEqual([])
   })
 })

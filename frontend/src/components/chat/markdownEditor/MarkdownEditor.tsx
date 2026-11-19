@@ -8,7 +8,7 @@ import type { Draft, DraftMetadataRecord } from '~/lib/editor/draftPersistence'
 import type { LinkRange } from '~/lib/editor/linkPlugin'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
-import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
+import { children, createEffect, createMemo, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { refreshCodeHighlight } from '~/lib/editor/codeHighlightPlugin'
@@ -273,6 +273,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let disposed = false
   /** Set when the asynchronous build failed -- see the `catch` on `onMount`. */
   const [buildFailed, setBuildFailed] = createSignal(false)
+  const [draftLoading, setDraftLoading] = createSignal(false)
+  const editorDisabled = () => props.disabled === true || props.hideInput === true || draftLoading()
   // Owns the generation token that drops a read a newer swap superseded. See
   // `createDraftSwapper` for why the token lives there and not here. Declared
   // with the other per-editor state, because `onMount` runs its own initial
@@ -301,7 +303,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   const isExpanded = () => layout.contentExpanded() || props.actions?.layout === 'fullWidth'
 
   /** Compute the stored draft key, incorporating controlRequestId when present. */
-  const getDraftKey = () => {
+  const getDraftKey = createMemo(() => {
     const dk = props.draftKey
     if (dk?.key)
       return dk.key
@@ -310,7 +312,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     return dk.controlRequestId
       ? `${dk.agentId}-ctrl-${dk.controlRequestId}`
       : dk.agentId
-  }
+  })
+
+  // The key whose document the editor holds. Undefined before the first effect
+  // run, and null when that document has no draft. It moves only when a replace
+  // lands, so the debounced save, every swap save and the save at unmount write
+  // under the key that owns the text on screen.
+  let prevDraftKey: string | null | undefined
 
   /**
    * Editor wrapper sizing.
@@ -375,6 +383,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    * that only drifts.
    */
   const emitDocument = (markdown: string) => {
+    // A pending draft swap still displays the outgoing document. Its debounced
+    // report must not change the incoming host's answer or layout state.
+    if ((prevDraftKey ?? null) !== (untrack(getDraftKey) ?? null))
+      return
     onMarkdownChangeRef?.(markdown)
     onContentChangeRef?.(markdown.trim().length > 0)
   }
@@ -447,7 +459,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   const handleSend = async () => {
-    if (props.disabled || props.hideInput || !editorInstance)
+    if (editorDisabled() || !editorInstance)
       return
     // Read the caret BEFORE anything moves it: `onSendRef` can open a dialog,
     // and `replaceAll` rebuilds the document under the selection.
@@ -600,7 +612,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // decorations (placeholder, code-language labels, syntax highlight), and the
   // earlier ones ran against refs the later effects had not assigned yet.
   createEffect(() => {
-    disabledRef = props.disabled === true || props.hideInput === true
+    disabledRef = editorDisabled()
     placeholderRef = props.placeholder ?? 'Send a message...'
     disabledPlaceholderRef = props.disabledPlaceholder ?? ''
     forceDecorationUpdate()
@@ -631,12 +643,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   const draftSaveDebounce: { current: TrailingDebounced | undefined } = { current: undefined }
-  // The key whose document the editor holds. Undefined before the first effect
-  // run, and null when that document has no draft. It moves only when a replace
-  // lands, so the debounced save, every swap save and the save at unmount write
-  // under the key that owns the text on screen.
-  let prevDraftKey: string | null | undefined
-
   /**
    * Build the editor and attach everything that depends on it.
    *
@@ -738,8 +744,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           return
         readyDraft = draft
         editor.action(replaceAll(draft.content))
-        emitDocument(draft.content)
         prevDraftKey = initialReadyDraftKey ?? null
+        emitDocument(draft.content)
       })
       // Checked AGAIN, for the same reason it is checked after `buildEditor`:
       // nothing below this line would ever be torn down.
@@ -972,10 +978,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         prevDraftKey = newDraftKey
         return
       }
-      if (newDraftKey === prevDraftKey)
-        return
       if (!editorInstance)
         return
+      setDraftLoading(true)
+      props.onDocumentDraftReady?.(null)
 
       // Save current content under the previous draft key.
       if (prevDraftKey) {
@@ -1029,10 +1035,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         try {
           swapTarget.action(replaceAll(draft.content))
           restoreCursor(swapTarget, draft.cursor)
-          emitDocument(draft.content)
           prevDraftKey = newDraftKey
+          emitDocument(draft.content)
         }
-        catch { /* editor may not be ready */ }
+        catch {
+          setBuildFailed(true)
+          return
+        }
+        setBuildFailed(false)
+        setDraftLoading(false)
         // AFTER the document is replaced, never before. `AgentEditorPanel`
         // answers this by writing the queue-edit text into the editor, and the
         // replace above would then wipe what it just wrote -- the saved draft
@@ -1041,13 +1052,18 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         // it was, when the draft load was synchronous.
         notifyDocumentDraftReady?.(newDraftKey)
         notifyDraftKeyChanged?.(newDraftKey)
+      }).catch((error: unknown) => {
+        if (disposed || getDraftKey() !== newDraftKey)
+          return
+        console.error('The editor failed to load its draft.', error)
+        setBuildFailed(true)
       })
     },
   ))
 
   // Disable/enable the editor view when disabled prop changes
   createEffect(on(
-    () => props.disabled === true || props.hideInput === true,
+    editorDisabled,
     (disabled) => {
       if (editorInstance) {
         try {
@@ -1139,6 +1155,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           hidden={props.hideInput}
           ref={editorRef}
           data-testid={ids().editor}
+          aria-busy={draftLoading()}
           // Only the message composer claims it. `useShortcuts` reads it for the
           // `chatInputFocused` context, and `$mod+j` sends the chat message
           // there -- so a goal editor carrying it would send a message from

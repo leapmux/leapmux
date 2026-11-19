@@ -183,7 +183,7 @@ func TestHTTPEndpointDoRefusesAnOversizedReply(t *testing.T) {
 	endpoint, err := NewHTTPEndpoint(server.URL, nil)
 	require.NoError(t, err)
 	err = endpoint.Do(t.Context(), http.MethodGet, "/big", nil, nil)
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrEndpointResponseTooLarge)
 	assert.Contains(t, err.Error(), "exceeds")
 }
 

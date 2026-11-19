@@ -24,6 +24,11 @@ beforeEach(() => {
 afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createCodebuddyEnvironment', () => {
+  it('declares native code-mode support for both isolated models', () => {
+    createCodebuddyEnvironment(options())
+    const catalog = JSON.parse(readFileSync(join(homeDir, '.codebuddy', 'models.json'), 'utf8'))
+    expect(catalog.models.map((model: { toolMode?: string }) => model.toolMode)).toEqual(['code_mode', 'code_mode'])
+  })
   it('declares reasoning independently for each native model', () => {
     const configured = {
       ...options(),

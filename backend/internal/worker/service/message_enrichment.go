@@ -10,13 +10,17 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
 // EnrichMessage stores supplemental rendering data without changing the provider payload.
 func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
-	if change.SpanID == "" || change.Seq < 0 || change.PreviousRevision < 0 {
+	if err := agent.ValidateMessageCompletion(agent.MessageContent{Completion: change.Completion}); err != nil {
+		return false, err
+	}
+	if change.SpanID == "" && change.Seq == 0 || change.Seq < 0 || change.PreviousRevision < 0 {
 		return false, nil
 	}
 	change.OriginalContent = slices.Clone(change.OriginalContent)
@@ -73,7 +77,13 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 	if !bytes.Equal(content, change.OriginalContent) {
 		return false, nil
 	}
-	if len(row.SupplementalContent) == 0 && len(change.SupplementalContent) == 0 {
+	nextCompletion := row.Completion
+	if change.Completion != "" {
+		_, completion := agent.MessageMetadata(agent.MessageContent{Completion: change.Completion})
+		nextCompletion = workerdb.OptionalStorageEnum(completion)
+	}
+	completionChanged := workerdb.StorageEnumValue(nextCompletion) != workerdb.StorageEnumValue(row.Completion)
+	if !completionChanged && len(row.SupplementalContent) == 0 && len(change.SupplementalContent) == 0 {
 		return false, nil
 	}
 	var previous []byte
@@ -125,7 +135,7 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 		return false, err
 	}
 	// Canonical comparison ignores key order and prevents another revision for equal JSON.
-	if agent.JSONCanonicalEqual(previous, next) {
+	if agent.JSONCanonicalEqual(previous, next) && !completionChanged {
 		return false, nil
 	}
 	var todoEvent *todoevents.Event
@@ -134,6 +144,7 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 	}
 	compressed, compression := msgcodec.Compress(next)
 	prospective := row
+	prospective.Completion = nextCompletion
 	prospective.SupplementalContent, prospective.SupplementalContentCompression = compressed, compression
 	message, err := messageToProto(&prospective, s.agentProvider)
 	if err != nil {
@@ -153,7 +164,8 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 	updated, err := s.h.queries.EnrichMessageContent(ctx, db.EnrichMessageContentParams{
 		ID: row.ID, AgentID: s.agentID,
 		OriginalContent: row.Content, OriginalCompression: row.ContentCompression,
-		PreviousRevision:    change.PreviousRevision,
+		PreviousRevision: change.PreviousRevision,
+		Completion:       nextCompletion, PreviousCompletion: row.Completion,
 		SupplementalContent: compressed, SupplementalContentCompression: compression,
 		PreviousSupplementalContent:            row.SupplementalContent,
 		PreviousSupplementalContentCompression: row.SupplementalContentCompression,

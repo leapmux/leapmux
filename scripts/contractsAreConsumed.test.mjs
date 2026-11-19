@@ -223,6 +223,12 @@ function goKeyReaders(spec, table, contract, key) {
     if (iterated.length > 0)
       return iterated
   }
+  // A pin may also check vocabulary that production never reads. An explicit
+  // unread reason still applies to that test-only mention, but not a real reader.
+  if (table.goTagPin && !unreadKeys(contract).get(`${table.key}.${key}`)?.has('go')
+    && tagPinReaders(spec, table, contract).includes(key)) {
+    return [table.goTagPin]
+  }
   return [
     ...structsThatRead(contract, table.key, key).flatMap(name => mentions(goSources, `contracts.${name}`)),
     ...startupGroupReaders(spec, table, contract, key, 'go', goSources),
@@ -302,6 +308,47 @@ function tsReaders(spec, table, contract) {
     ...subsetReaders(spec, table, contract, undefined, 'ts', tsSources),
   ]
 }
+
+describe('goKeyReaders', () => {
+  const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'kimi-protocol')
+  const table = spec.tables.find(table => table.key === 'conversationFields')
+  const contract = contracts.get(spec.name)
+
+  it('recognizes the declared reflection check for one native decoder field', () => {
+    expect(goKeyReaders(spec, table, contract, 'ItemID')).toEqual([table.goTagPin])
+  })
+
+  it('keeps a test-only vocabulary check from invalidating an unread reason', () => {
+    const unread = {
+      ...contract,
+      _unread: {
+        conversationFields: {
+          ItemID: {
+            sides: ['go'],
+            why: 'The probe has no production reader for this field.',
+          },
+        },
+      },
+    }
+    expect(goKeyReaders(spec, table, unread, 'ItemID')).toEqual([])
+  })
+
+  it('retains a real production reader even when the contract excuses it', () => {
+    const unread = {
+      ...contract,
+      _unread: {
+        conversationFields: {
+          SessionID: {
+            sides: ['go'],
+            why: 'The probe incorrectly excuses a field that production reads.',
+          },
+        },
+      },
+    }
+    expect(goKeyReaders(spec, table, unread, 'SessionID')).not.toContain(table.goTagPin)
+    expect(goKeyReaders(spec, table, unread, 'SessionID').length).toBeGreaterThan(0)
+  })
+})
 
 /**
  * The keys of a `goTagPin` table that its named Go test still pins.

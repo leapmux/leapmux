@@ -37,7 +37,9 @@ func seedChildNativeSources(t *testing.T, a *Agent, id string, state *sessionSta
 func nativeHistoryChild(t *testing.T, a *Agent, sink *agenttest.Sink) (*sessionState, *agenttest.Sink) {
 	t.Helper()
 	key := museChildRowKey("session", "sub")
-	id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: key, AgentSessionID: "child"})
+	id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: key, AgentSessionID: "child"})
 	require.NoError(t, err)
 	state := &sessionState{sink: a.sink.ChildSink(id), childID: id, childKey: key, parentSessionID: "session", subagentID: "sub", items: make(map[string]*itemState), completed: make(map[string]turnCompletionState), log: newNativeLog("child"), childViewPrefix: childViewPrefixPending}
 	a.sessions["child"] = state

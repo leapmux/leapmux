@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Background task role capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "roles"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "roles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "countsAsTask",
+          "canonicalChildActivity"
+        ],
+        "properties": {
+          "countsAsTask": {
+            "type": "boolean"
+          },
+          "canonicalChildActivity": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

@@ -116,7 +116,7 @@ describe('message mark preview text', () => {
       id: 'm1',
       source: MessageSource.AGENT,
       seq: 5n,
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       contentCompression: ContentCompression.NONE,
       supplementalContentCompression: ContentCompression.NONE,
       content: new TextEncoder().encode(JSON.stringify(frame)),

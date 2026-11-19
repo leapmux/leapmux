@@ -733,7 +733,9 @@ func TestACPClearContextReleasesTheChildAgentsOfTheOutgoingRows(t *testing.T) {
 func TestACPClearContextEndsAChildThatTheRegistryResolved(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "call_old", ProviderChildKey: "call_old", Title: "Old helper"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "call_old", ProviderChildKey: "call_old", Title: "Old helper"})
 	require.NoError(t, err)
 	require.True(t, a.FeedChildUpdate("call_old", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Cut off."}}`)))
 	require.Empty(t, sink.Child("child-of-call_old").Messages(), "the text waits for the end of its segment")

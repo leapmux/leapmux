@@ -55,6 +55,8 @@ export type ACPQuestionHandling = ProviderAskUserQuestion
  */
 export interface ACPProviderOptions {
   provider: AgentProvider
+  /** Resolve a provider-owned native record before the shared ACP readers run. */
+  resolveMessage?: ProviderTranscriptCapability['resolveMessage']
   assistantTextSegments?: ProviderTranscriptCapability['assistantTextSegments']
   nativeNotifications?: ACPNativeNotifications
   /** The provider's own reading of one call, for the kind-discriminated pair. */
@@ -228,7 +230,7 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
       ...(opts.outputFilePaths
         ? { outputFilePaths: opts.outputFilePaths }
         : {}),
-      resolveMessage: resolveACPMessage,
+      resolveMessage: opts.resolveMessage ?? resolveACPMessage,
       classify: classifyACPMessage({
         ...(opts.nativeNotifications
           ? { nativeNotifications: opts.nativeNotifications }

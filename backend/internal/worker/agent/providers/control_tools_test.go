@@ -91,15 +91,10 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 	registry := Registry()
 	response := []byte(`{"response":{"request_id":"7","response":{"behavior":"deny","message":"Needs tests."}}}`)
 	request := []byte(`{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`)
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
-	} {
+	for _, provider := range acpProvidersForTest() {
+		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR {
+			continue
+		}
 		t.Run(provider.String(), func(t *testing.T) {
 			t.Parallel()
 			res := registry.Plugin(provider).ResolveControlResponse(agent.ControlResponseContext{

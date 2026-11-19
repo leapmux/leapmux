@@ -27,16 +27,21 @@ function markdownText(value: string): string {
 
 /** Read every local tool from the native list. Keep hosted tools in a separate inventory. */
 export function parseFastAgentCatalog(text: string): { tools: FastAgentCatalogTool[], hosted: string[] } {
-  if (!text.startsWith('# tools\n') || !text.includes('## MCP / local tools\n'))
+  const lines = text.split('\n')
+  const heading = lines.find(line => /^## Sent to the model \(\d+ · [^\n]+\)$/.test(line))
+  const count = heading
+    ? Number(/^## Sent to the model \((\d+) ·/.exec(heading)?.[1])
+    : 0
+  if (!text.startsWith('# tools\n') || !heading || !Number.isSafeInteger(count) || count <= 0)
     throw new Error('The native Fast Agent catalog lacks its complete tool-list headings.')
   const tools: FastAgentCatalogTool[] = []
   const hosted: string[] = []
   const sections = new Set<string>()
   let section = ''
   let current: FastAgentCatalogTool | undefined
-  for (const line of text.split('\n')) {
+  for (const line of lines) {
     if (line.startsWith('## ')) {
-      if (!['## MCP / local tools', '## Provider-managed / hosted tools'].includes(line) || sections.has(line))
+      if (![heading, '## Provider-managed / hosted tools'].includes(line) || sections.has(line))
         throw new Error('The native Fast Agent catalog contains an unknown or repeated tool section.')
       sections.add(line)
       section = line
@@ -44,7 +49,7 @@ export function parseFastAgentCatalog(text: string): { tools: FastAgentCatalogTo
       continue
     }
     const header = /^(\d+)\. \*\*((?:\\.|[^*])+)\*\*/.exec(line)
-    if (section === '## MCP / local tools' && header) {
+    if (section === heading && header) {
       if (Number(header[1]) !== tools.length + 1)
         throw new Error('The native Fast Agent catalog has an incomplete tool sequence.')
       current = {
@@ -53,10 +58,10 @@ export function parseFastAgentCatalog(text: string): { tools: FastAgentCatalogTo
       }
       tools.push(current)
     }
-    else if (section === '## MCP / local tools' && /^\d+\./.test(line)) {
+    else if (section === heading && /^\d+\./.test(line)) {
       throw new Error('The native Fast Agent catalog contains a malformed tool heading.')
     }
-    else if (section === '## MCP / local tools' && current && line.startsWith('    > ') && !line.startsWith('    > **')) {
+    else if (section === heading && current && line.startsWith('    > ') && !line.startsWith('    > **')) {
       current.description += `${current.description ? '\n' : ''}${markdownText(line.slice(6))}`
     }
     else if (section === '## Provider-managed / hosted tools' && line.startsWith('- ')) {
@@ -66,6 +71,8 @@ export function parseFastAgentCatalog(text: string): { tools: FastAgentCatalogTo
       hosted.push(markdownText(name))
     }
   }
+  if (tools.length !== count)
+    throw new Error('The native Fast Agent catalog has an incomplete declared tool inventory.')
   if (tools.length === 0 || tools.some(tool => !tool.name.trim() || !tool.description.trim()))
     throw new Error('The native Fast Agent catalog contains no complete local tool inventory.')
   if (new Set(tools.map(tool => tool.name)).size !== tools.length || new Set(hosted).size !== hosted.length)

@@ -60,6 +60,17 @@ export interface PlanChoice {
   approves: boolean
 }
 
+/** Conditions use typed earlier answers; an absent answer never matches. */
+export interface ElicitationFieldRule {
+  key: string
+  hidden?: boolean
+  conditions?: {
+    field: string
+    comparison: 'equal' | 'not-equal'
+    value: string | number | boolean
+  }[]
+}
+
 export interface ElicitationRequest {
   purpose?: 'permission'
   mode: string
@@ -68,6 +79,7 @@ export interface ElicitationRequest {
   message: string
   server?: string
   schema?: unknown
+  fieldRules?: ElicitationFieldRule[]
   url?: string
   arguments?: unknown
   argumentNotice?: string

@@ -54,7 +54,7 @@ describe('runningChild', () => {
       if (!isObject(options) || !isObject(options.spawn) || typeof options.spawn.id !== 'string')
         throw new Error('The actual Letta child setup contains no native tool call ID.')
       expect(options.spawn.name).toBe('Agent')
-      expect(options.spawn.arguments).toMatchObject({ subagent_type: 'general-purpose' })
+      expect(options.spawn.arguments).toMatchObject({ harness: 'letta', fork_context: false })
       return options.spawn.id
     })
     expect(ids[0]).not.toBe(ids[1])

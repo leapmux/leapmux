@@ -28,6 +28,15 @@ export interface OpenCodeEnvironmentOptions extends OpenCodeFamilyProviderOption
   kiloCloud: { origin: string, identityToken: string }
 }
 
+/** The reasoning variants of each mock model. */
+const REASONING_VARIANTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
 /**
  * The expiry of the mocked Kilo cloud credential, in milliseconds since the epoch: the end of 9999, so Kilo never
  * refreshes the credential during a run.
@@ -46,7 +55,7 @@ export function createOpenCodeEnvironment(options: OpenCodeEnvironmentOptions): 
     compaction: { tail_turns: 2 },
   })
   return {
-    OPENCODE_CONFIG_CONTENT: config,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(openCodeNativeConfig(options, options.mcpEchoServer)),
     OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
     KILO_CONFIG_CONTENT: config,
     KILO_DISABLE_PROJECT_CONFIG: 'true',
@@ -126,14 +135,66 @@ function openCodeFamilyProvider(provider: OpenCodeFamilyProviderOptions): Record
   }
 }
 
-/** The reasoning variants of each mock model. */
-const REASONING_VARIANTS = [
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-] as const
+/** Canonical OpenCode v2 configuration for the isolated mock profile. */
+export function openCodeNativeConfig(provider: OpenCodeFamilyProviderOptions, mcpEchoServer: McpProbeServer): Record<string, unknown> {
+  const first = provider.models[0]
+  if (!first)
+    throw new Error('The OpenCode native provider needs at least one model.')
+  return {
+    update: 'disable',
+    formatter: false,
+    lsp: false,
+    default_agent: 'build',
+    experimental: { todo: true },
+    model: { providerID: provider.providerID, model: first.id },
+    policies: [
+      { action: 'provider.use', resource: '*', effect: 'deny' },
+      { action: 'provider.use', resource: provider.providerID, effect: 'allow' },
+    ],
+    compaction: {
+      keep: { tokens: 0 },
+    },
+    mcp: {
+      servers: {
+        [mcpEchoServer.name]: {
+          type: 'local',
+          command: [mcpEchoServer.command, ...mcpEchoServer.args],
+        },
+      },
+    },
+    providers: {
+      [provider.providerID]: {
+        name: 'LeapMux E2E',
+        env: [],
+        package: '@opencode/ai/providers/openai-compatible',
+        settings: { apiKey: provider.modelKey, baseURL: provider.baseURL },
+        models: Object.fromEntries(provider.models.map(model => [
+          model.id,
+          {
+            modelID: model.id,
+            name: model.name,
+            settings: {},
+            capabilities: {
+              tools: true,
+              input: ['text', 'image', 'pdf'],
+              output: ['text'],
+            },
+            variants: model.reasoning === false
+              ? []
+              : REASONING_VARIANTS.map(id => ({
+                  id,
+                  settings: { reasoningEffort: id },
+                })),
+            cost: [
+              { input: 0, output: 0, cache: {} },
+            ],
+            limit: { context: 128_000, output: 16_000 },
+          },
+        ])),
+      },
+    },
+  }
+}
 
 /**
  * One model of the mock provider block, with each reasoning variant when the model reasons.

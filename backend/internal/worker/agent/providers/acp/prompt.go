@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -220,7 +222,25 @@ func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments [
 			return err
 		}
 	}
+	if err := b.writeDeferredOptionsBeforePrompt(sessionID); err != nil {
+		return err
+	}
 	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+}
+
+// writeDeferredOptionsBeforePrompt runs under the prompt's exclusive session
+// lease. The live settings batch cannot write during it because native writes
+// take the corresponding read lease.
+func (b *Base) writeDeferredOptionsBeforePrompt(sessionID string) error {
+	b.Mu.Lock()
+	writes := maps.Clone(b.options.deferredWrites)
+	b.Mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(writes)) {
+		if err := b.setConfigOptionForSession(sessionID, id, writes[id], nil, false); err != nil {
+			return fmt.Errorf("apply ACP option %s before the prompt: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // preparePromptBlocks keeps the provider's validation on the original bytes.

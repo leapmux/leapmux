@@ -2,6 +2,7 @@ import type { TabBusyReason } from './tabBusyProbe'
 import { create } from '@bufbuild/protobuf'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { BusyTabCloseDialog } from './BusyTabCloseDialog'
 
@@ -98,18 +99,19 @@ describe('BusyTabCloseDialog', () => {
   })
 
   describe('agent', () => {
-    it('states the turn is in progress', () => {
-      renderDialog({ kind: 'agent-turn', activeTasks: [] })
+    it('describes work without inferring an active root turn', () => {
+      renderDialog({ kind: 'agent-work', activeRows: [] })
 
-      expect(screen.getByText('This agent\'s turn is in progress. Closing the tab stops it.')).toBeTruthy()
+      expect(screen.getByText('This agent is still working. Closing the tab stops it.')).toBeTruthy()
       expect(screen.queryByTestId('busy-background-tasks')).toBeNull()
     })
 
     it('lists the active background tasks', () => {
       renderDialog({
-        kind: 'agent-turn',
-        activeTasks: [
+        kind: 'agent-work',
+        activeRows: [
           {
+            role: BackgroundTaskRole.TASK_OUTCOME,
             rowKey: 'r1',
             kind: 'subagent',
             title: 'Research the API',
@@ -117,6 +119,7 @@ describe('BusyTabCloseDialog', () => {
             status: 'running',
           },
           {
+            role: BackgroundTaskRole.TASK_OUTCOME,
             rowKey: 'r2',
             kind: 'shell',
             title: 'npm test',
@@ -133,9 +136,10 @@ describe('BusyTabCloseDialog', () => {
 
     it('uses the singular for one task', () => {
       renderDialog({
-        kind: 'agent-turn',
-        activeTasks: [
+        kind: 'agent-work',
+        activeRows: [
           {
+            role: BackgroundTaskRole.TASK_OUTCOME,
             rowKey: 'r1',
             kind: 'subagent',
             title: 'One',
@@ -154,9 +158,10 @@ describe('BusyTabCloseDialog', () => {
       // subagent kept running is the state this branch exists to keep busy, and
       // announcing it as "turn in progress" tells the user something false.
       renderDialog({
-        kind: 'agent-turn',
-        activeTasks: [
+        kind: 'agent-work',
+        activeRows: [
           {
+            role: BackgroundTaskRole.TASK_OUTCOME,
             rowKey: 'r1',
             kind: 'subagent',
             title: 'Research',
@@ -196,5 +201,37 @@ describe('BusyTabCloseDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
       expect(resolve).toHaveBeenCalledWith(true)
     })
+  })
+})
+
+describe('BusyTabCloseDialog activity roles', () => {
+  it('lists child activity separately from coordinator tasks', () => {
+    renderDialog({
+      kind: 'agent-work',
+      activeRows: [
+        {
+          rowKey: 'activity',
+          role: BackgroundTaskRole.CHILD_ACTIVITY,
+          kind: 'subagent',
+          childAgentId: 'child',
+          title: 'Child session',
+          activity: '',
+          status: 'running',
+        },
+        {
+          rowKey: 'task',
+          role: BackgroundTaskRole.TASK_OUTCOME,
+          kind: 'subagent',
+          childAgentId: 'child',
+          title: 'Coordinator task',
+          activity: '',
+          status: 'running',
+        },
+      ],
+    })
+    expect(screen.getByText('1 background task is active:')).toBeTruthy()
+    expect(screen.getByText('1 child agent is active:')).toBeTruthy()
+    expect(screen.getByTestId('busy-background-tasks').textContent).toBe('Coordinator task')
+    expect(screen.getByTestId('busy-child-activities').textContent).toBe('Child session')
   })
 })

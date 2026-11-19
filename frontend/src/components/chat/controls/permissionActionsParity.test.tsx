@@ -32,87 +32,98 @@ describe('permission action parity', () => {
   ]
 
   it.each(providers)('uses shared decision labels and retains the denial value for provider %s', async (provider) => {
-    const payload = provider === AgentProvider.CLAUDE_CODE || provider === AgentProvider.ZCODE
+    const payload = provider === AgentProvider.OPENCODE
       ? {
-          request: {
-            tool_name: 'Bash',
-            input: { command: 'pwd' },
+          type: 'permission.asked',
+          data: {
+            id: 'per_1',
+            sessionID: 'ses_1',
+            action: 'shell',
+            resources: ['pwd'],
+            save: ['pwd *'],
           },
         }
-      : provider === AgentProvider.CODEX
+      : provider === AgentProvider.CLAUDE_CODE || provider === AgentProvider.ZCODE
         ? {
-            method: 'item/commandExecution/requestApproval',
-            params: {
-              command: 'pwd',
-              availableDecisions: [
-                'accept',
-                'acceptForSession',
-                'decline',
-                'cancel',
-              ],
+            request: {
+              tool_name: 'Bash',
+              input: { command: 'pwd' },
             },
           }
-        : provider === AgentProvider.PI
+        : provider === AgentProvider.CODEX
           ? {
-              type: 'extension_ui_request',
-              id: 'request',
-              method: 'confirm',
-              title: 'Confirm command',
-              message: 'Run pwd?',
-            }
-          : provider === AgentProvider.GITHUB_COPILOT
-            ? copilotPermissionRequest({
-                kind: 'shell',
-                intention: 'Run command',
-                fullCommandText: 'pwd',
-                commands: [
-                  { identifier: 'pwd', readOnly: true },
+              method: 'item/commandExecution/requestApproval',
+              params: {
+                command: 'pwd',
+                availableDecisions: [
+                  'accept',
+                  'acceptForSession',
+                  'decline',
+                  'cancel',
                 ],
-                canOfferSessionApproval: true,
-              })
-            : provider === AgentProvider.KIMI_CODE
-              ? kimiApprovalRequest('Bash', { kind: 'command', command: 'pwd' })
-              : provider === AgentProvider.OH_MY_PI
-                ? {
-                    type: 'extension_ui_request',
-                    id: 'request',
-                    method: 'select',
-                    title: 'Allow tool: bash\nCommand: pwd',
-                    options: ['Approve', 'Deny'],
-                  }
-                : provider === AgentProvider.MIMO_CODE
+              },
+            }
+          : provider === AgentProvider.PI
+            ? {
+                type: 'extension_ui_request',
+                id: 'request',
+                method: 'confirm',
+                title: 'Confirm command',
+                message: 'Run pwd?',
+              }
+            : provider === AgentProvider.GITHUB_COPILOT
+              ? copilotPermissionRequest({
+                  kind: 'shell',
+                  intention: 'Run command',
+                  fullCommandText: 'pwd',
+                  commands: [
+                    { identifier: 'pwd', readOnly: true },
+                  ],
+                  canOfferSessionApproval: true,
+                })
+              : provider === AgentProvider.KIMI_CODE
+                ? kimiApprovalRequest('Bash', { kind: 'command', command: 'pwd' })
+                : provider === AgentProvider.OH_MY_PI
                   ? {
-                      type: 'permission.asked',
-                      properties: {
-                        id: 'per_1',
-                        sessionID: 'ses_1',
-                        permission: 'bash',
-                        patterns: ['pwd'],
-                        metadata: {},
-                        always: ['pwd *'],
-                      },
-                      request: { tool_name: 'bash', tool_use_id: 'call-1' },
+                      type: 'extension_ui_request',
+                      id: 'request',
+                      method: 'select',
+                      title: 'Allow tool: bash\nCommand: pwd',
+                      options: ['Approve', 'Deny'],
                     }
-                  : provider === AgentProvider.AMP
+                  : provider === AgentProvider.MIMO_CODE
                     ? {
-                        type: 'leapmux_amp_permission',
-                        tool_name: 'shell_command',
-                        tool_use_id: 'TU-1',
-                        input: { command: 'pwd' },
+                        type: 'permission.asked',
+                        properties: {
+                          id: 'per_1',
+                          sessionID: 'ses_1',
+                          permission: 'bash',
+                          patterns: ['pwd'],
+                          metadata: {},
+                          always: ['pwd *'],
+                        },
+                        request: { tool_name: 'bash', tool_use_id: 'call-1' },
                       }
-                    : provider === AgentProvider.CLINE
-                      ? clineApprovalRequest('run_commands', {
-                          commands: ['pwd'],
-                        })
-                      : {
-                          method: 'session/request_permission',
-                          params: {
-                            options: [
-                              { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
-                              { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
-                            ],
-                          },
+                    : provider === AgentProvider.AMP
+                      ? {
+                          type: 'leapmux_amp_permission',
+                          tool_name: 'shell_command',
+                          tool_use_id: 'TU-1',
+                          input: { command: 'pwd' },
                         }
+                      : provider === AgentProvider.CLINE
+                        ? clineApprovalRequest('run_commands', {
+                            commands: ['pwd'],
+                          })
+                        : {
+                            method: 'session/request_permission',
+                            params: {
+                              options: [
+                                { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+                                { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+                              ],
+                            },
+                          }
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const { getByRole } = render(() => (
       <ControlRequestActions

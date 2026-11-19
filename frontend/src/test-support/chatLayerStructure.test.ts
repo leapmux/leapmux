@@ -90,6 +90,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'muse/plugin.ts': './classification',
   'antigravity/plugin.ts': './classification',
   'ohmypi/plugin.ts': './classification',
+  'opencode/plugin.ts': './classification',
   'pi/plugin.ts': './classification',
   'zcode/plugin.ts': './classification',
 }

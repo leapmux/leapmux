@@ -335,7 +335,7 @@ func TestChildInput(t *testing.T) {
 	a, server := newTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 
-	assert.ErrorIs(t, a.SendChildInput(spawnSpanID, "more", nil), agent.ErrAgentBusy, "a running subagent holds the message for a steer")
+	assert.ErrorIs(t, agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "more"}), agent.ErrAgentBusy, "a running subagent holds the message for a steer")
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState(spawnSpanID))
 
 	require.NoError(t, a.SteerChildInput(spawnSpanID, "also this", nil))
@@ -348,7 +348,7 @@ func TestChildInput(t *testing.T) {
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID))
 	assert.ErrorIs(t, a.SteerChildInput(spawnSpanID, "late", nil), agent.ErrNoActiveTurn)
 
-	assert.ErrorContains(t, a.SendChildInput("call-unknown", "hello", nil), "no subagent")
+	assert.ErrorContains(t, agenttest.SendChildInput(a, "call-unknown", agent.ChildInput{Content: "hello"}), "no subagent")
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-unknown"))
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1, "only the steer reached MiMo")
 }
@@ -378,7 +378,7 @@ func TestChildInputToAnIdleSubagentIsRefused(t *testing.T) {
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
 
-	err := a.SendChildInput(spawnSpanID, "next task", nil)
+	err := agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "next task"})
 	require.ErrorIs(t, err, errSubagentIdle)
 	assert.NotErrorIs(t, err, agent.ErrAgentBusy, "no turn runs that could deliver it later")
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "nothing reached MiMo")
@@ -510,7 +510,7 @@ func TestRestoreActorLinks(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, actorID, actor.id)
 	assert.True(t, actor.closed, "the new process runs no turn of it yet")
-	assert.ErrorIs(t, a.SendChildInput(spawnSpanID, "resume the work", nil), errSubagentIdle)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "resume the work"}), errSubagentIdle)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID))
 	assert.InDelta(t, 0.25, a.usageSnapshot().costUSD, 1e-9, "the session's cost so far carries over, and only an assistant message costs")
 

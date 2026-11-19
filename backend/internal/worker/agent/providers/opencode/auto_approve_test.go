@@ -28,12 +28,12 @@ const familyPermissionOptions = `[{"optionId":"once","kind":"allow_once","name":
 // commands, or a command that leaves the sandbox. It offers no Always.
 const kiloTemporaryPermissionOptions = `[{"optionId":"once","kind":"allow_once","name":"Allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]`
 
-func newAutoApproveAgent(t *testing.T, autoApprove bool) (*Agent, *agenttest.ControlSink, *agenttest.Stdin) {
+func newAutoApproveAgent(t *testing.T, autoApprove bool) (*familyTestAgent, *agenttest.ControlSink, *agenttest.Stdin) {
 	t.Helper()
 	stdin := &agenttest.Stdin{}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	a := &Agent{}
+	a := &familyTestAgent{}
 	a.AttachPeerForTest(ctx, cancel, stdin, "test-agent", "session-1")
 	sink := &agenttest.ControlSink{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
@@ -42,7 +42,7 @@ func newAutoApproveAgent(t *testing.T, autoApprove bool) (*Agent, *agenttest.Con
 	return a, sink, stdin
 }
 
-func requestPermission(a *Agent, id int, options string) {
+func requestPermission(a *familyTestAgent, id int, options string) {
 	a.HandleOutput(fmt.Appendf(nil, `{"jsonrpc":"2.0","id":%d,"method":"session/request_permission","params":{"sessionId":"session-1","toolCall":{"toolCallId":"call-%d","title":"bash"},"options":%s}}`, id, id, options))
 }
 
@@ -52,7 +52,7 @@ func requestPermission(a *Agent, id int, options string) {
 // The agent writes its answers through one ordered queue. The barrier sends a
 // request of its own through that queue, so once that request reaches stdin,
 // each answer queued before it is there as well.
-func permissionAnswers(t *testing.T, a *Agent, stdin *agenttest.Stdin) map[string]string {
+func permissionAnswers(t *testing.T, a *familyTestAgent, stdin *agenttest.Stdin) map[string]string {
 	t.Helper()
 	previous := barrierRequestIDs(stdin)
 	sent := make(chan error, 1)

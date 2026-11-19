@@ -4,9 +4,9 @@ import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { cursorNativeToolOutput, runCursorNativeOperations } from './nativeExecutionScenario'
 import { nativeContext } from './scenarios'
-import { readInstalledCursorToolCases } from './toolCatalog'
+import { readInstalledCursorExecutionCases } from './toolCatalog'
 
-cursorTest('confirms the complete native protocol omits a general code executor', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+cursorTest('confirms the native client execution protocol omits a general code executor', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({
     page,
     modelScript,
@@ -14,10 +14,10 @@ cursorTest('confirms the complete native protocol omits a general code executor'
     workspaceId: authenticatedEmptyWorkspace.workspaceId,
   })
   await openNativeCatalogTurn(context)
-  const cases = readInstalledCursorToolCases(leapmuxServer.agentEnv)
-  expect(cases).toHaveLength(69)
-  expect(cases).toContain('shell_tool_call')
-  expect(cases.filter(name => /^(?:code_execution|js_execution|exec|eval|repl|codemode)_tool_call$/.test(name))).toEqual([])
+  const cases = readInstalledCursorExecutionCases(leapmuxServer.agentEnv)
+  expect(cases).toHaveLength(33)
+  expect(cases).toContain('shell_args')
+  expect(cases.filter(name => /^(?:code_execution|js_execution|execute|exec|eval|repl|codemode)_args$/.test(name))).toEqual([])
   const callId = 'native-cursor-catalog-shell'
   await runCursorNativeOperations(context, [
     bashToolCall(context.provider, callId, 'printf "CURSORCATALOG%s\\n" "$((40 + 2))"'),

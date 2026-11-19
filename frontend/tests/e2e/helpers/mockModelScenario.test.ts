@@ -180,6 +180,27 @@ describe('HOUSEKEEPING_RULES', () => {
     })
   })
 
+  it('answers the native OpenCode title turn without consuming content', async () => {
+    const server = await startServer()
+    await withScenario(server, [
+      { text: 'Primary answer' },
+    ], async (scenario) => {
+      const marked = scenario.prompt('Inspect the native parser.')
+      const title = await complete(server, [
+        { role: 'system', content: 'You name conversations so the user can find them later in a list of past sessions.' },
+        { role: 'user', content: `Here is the first message of the conversation:\n${marked}\nReply with only the title.` },
+      ])
+      expect(title).toBe(MOCK_SESSION_TITLE)
+      expect(await complete(server, [
+        { role: 'user', content: marked },
+      ])).toBe('Primary answer')
+      expect(await scenario.status()).toMatchObject({
+        nextStep: 1,
+        ruleMatches: { 'title-opencode-native': 1 },
+      })
+    })
+  })
+
   it('answers a JSON title prompt with a JSON object', async () => {
     const server = await startServer()
     await withScenario(server, [

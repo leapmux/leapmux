@@ -14,5 +14,5 @@ import (
 func TestOpenCodeFamilyPinsTheQuestionToolFlag(t *testing.T) {
 	opencodetest.AssertPinsTheQuestionToolFlag(t, openCodeQuestionToolEnv,
 		func(t *testing.T, envFile string) { installFakeOpenCodeACP(t, "", envFile) },
-		Start, "opencode-question-flag")
+		startFamilyTestAgent, "opencode-question-flag")
 }

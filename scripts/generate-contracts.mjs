@@ -754,6 +754,75 @@ ${blocks.join('\n\n')}
 }
 
 // ---------------------------------------------------------------------------
+// background-task-roles: task counters and canonical activity
+// ---------------------------------------------------------------------------
+
+const BACKGROUND_TASK_ROLE_MEMBERS = {
+  TaskOutcome: { proto: 'BACKGROUND_TASK_ROLE_TASK_OUTCOME', ts: 'TASK_OUTCOME' },
+  ChildTask: { proto: 'BACKGROUND_TASK_ROLE_CHILD_TASK', ts: 'CHILD_TASK' },
+  ChildActivity: { proto: 'BACKGROUND_TASK_ROLE_CHILD_ACTIVITY', ts: 'CHILD_ACTIVITY' },
+}
+
+export function checkBackgroundTaskRoles(v, enumMembers) {
+  const file = 'background-task-roles.json'
+  checkTableCoverage(file, 'roles', Object.keys(v.roles), [
+    ['enum members', BACKGROUND_TASK_ROLE_MEMBERS],
+  ])
+  mustBe(Array.isArray(enumMembers) && enumMembers.includes('BACKGROUND_TASK_ROLE_UNSPECIFIED'), file, 'BackgroundTaskRole enum members must include UNSPECIFIED')
+  const expected = new Set(enumMembers.filter(member => member !== 'BACKGROUND_TASK_ROLE_UNSPECIFIED'))
+  const declared = new Set(Object.values(BACKGROUND_TASK_ROLE_MEMBERS).map(member => member.proto))
+  mustBe(expected.size === declared.size && [...expected].every(member => declared.has(member)), file, 'roles must cover every nonzero BackgroundTaskRole enum member')
+  const combinations = new Set()
+  for (const [key, info] of Object.entries(v.roles)) {
+    mustBe(typeof info.countsAsTask === 'boolean' && typeof info.canonicalChildActivity === 'boolean', file, `roles.${key} capabilities must be boolean`)
+    mustBe(info.countsAsTask || info.canonicalChildActivity, file, `roles.${key} contributes neither task counting nor canonical child activity`)
+    const combination = `${info.countsAsTask}/${info.canonicalChildActivity}`
+    mustBe(!combinations.has(combination), file, `roles.${key} repeats another role's capabilities`)
+    combinations.add(combination)
+  }
+}
+
+export function emitGoBackgroundTaskRoles(v) {
+  const cases = Object.entries(v.roles).map(([key, info]) => `case leapmuxv1.BackgroundTaskRole_${BACKGROUND_TASK_ROLE_MEMBERS[key].proto}:
+ return BackgroundTaskRoleCapabilities{CountsAsTask: ${info.countsAsTask}, CanonicalChildActivity: ${info.canonicalChildActivity}}, true`).join('\n')
+  return `${GO_HEADER('background-task-roles.json')}package contracts
+
+import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+
+// BackgroundTaskRoleCapabilities separates task counters from canonical activity.
+type BackgroundTaskRoleCapabilities struct {
+ CountsAsTask bool
+ CanonicalChildActivity bool
+}
+
+// BackgroundTaskRoleCapabilitiesFor rejects unspecified and unknown roles.
+func BackgroundTaskRoleCapabilitiesFor(role leapmuxv1.BackgroundTaskRole) (BackgroundTaskRoleCapabilities, bool) {
+ switch role {
+ ${cases}
+ case leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_UNSPECIFIED:
+ }
+ return BackgroundTaskRoleCapabilities{}, false
+}
+`
+}
+
+export function emitTsBackgroundTaskRoles(v) {
+  const entries = Object.entries(v.roles).map(([key, info]) => `  [BackgroundTaskRole.${BACKGROUND_TASK_ROLE_MEMBERS[key].ts}]: { countsAsTask: ${info.countsAsTask}, canonicalChildActivity: ${info.canonicalChildActivity} },`).join('\n')
+  return `${TS_HEADER('background-task-roles.json')}
+import { BackgroundTaskRole } from '../proto/leapmux/v1/agent_pb'
+
+export interface BackgroundTaskRoleCapabilities {
+ readonly countsAsTask: boolean
+ readonly canonicalChildActivity: boolean
+}
+
+export const BACKGROUND_TASK_ROLE_CAPABILITIES: Readonly<Partial<Record<BackgroundTaskRole, BackgroundTaskRoleCapabilities>>> = {
+${entries}
+}
+`
+}
+
+// ---------------------------------------------------------------------------
 // worker-vocab: the worker's wire vocabulary
 // ---------------------------------------------------------------------------
 
@@ -2965,6 +3034,92 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       {
+        key: 'conversationRecordKinds',
+        frameKind: 'name',
+        goTable: 'ConversationRecordKind',
+        tsTable: 'CONVERSATION_RECORD_KIND',
+        tsType: 'KimiConversationRecordKind',
+        doc: 'Worker record kinds for public native conversation views',
+      },
+      {
+        key: 'conversationRecordRoles',
+        goTable: 'ConversationRecordRole',
+        tsTable: 'CONVERSATION_RECORD_ROLE',
+        tsType: 'KimiConversationRecordRole',
+        doc: 'the immutable purpose of an item record',
+      },
+      {
+        key: 'conversationItemKinds',
+        goTable: 'ConversationItemKind',
+        tsTable: 'CONVERSATION_ITEM_KIND',
+        tsType: 'KimiConversationItemKind',
+        doc: 'public native conversation item kinds',
+      },
+      {
+        key: 'conversationStatuses',
+        goTable: 'ConversationStatus',
+        tsTable: 'CONVERSATION_STATUS',
+        tsType: 'KimiConversationStatus',
+        doc: 'public native conversation lifecycle states',
+      },
+      {
+        key: 'conversationOutcomes',
+        goTable: 'ConversationOutcome',
+        tsTable: 'CONVERSATION_OUTCOME',
+        tsType: 'KimiConversationOutcome',
+        doc: 'public native conversation outcomes',
+      },
+      {
+        key: 'conversationSystemKinds',
+        goTable: 'ConversationSystemKind',
+        tsTable: 'CONVERSATION_SYSTEM_KIND',
+        tsType: 'KimiConversationSystemKind',
+        doc: 'public native system-item kinds',
+      },
+      {
+        key: 'conversationTurnKinds',
+        goTable: 'ConversationTurnKind',
+        tsTable: 'CONVERSATION_TURN_KIND',
+        tsType: 'KimiConversationTurnKind',
+        doc: 'public native turn kinds',
+      },
+      {
+        key: 'conversationEndReasons',
+        goTable: 'ConversationEndReason',
+        tsTable: 'CONVERSATION_END_REASON',
+        tsType: 'KimiConversationEndReason',
+        doc: 'public native reasons for ending a turn',
+      },
+      {
+        key: 'conversationOrigins',
+        goTable: 'ConversationOrigin',
+        tsTable: 'CONVERSATION_ORIGIN',
+        tsType: 'KimiConversationOrigin',
+        doc: 'public native user-message origins',
+      },
+      {
+        key: 'conversationSupplement',
+        goTable: 'ConversationSupplement',
+        tsTable: 'CONVERSATION_SUPPLEMENT',
+        tsType: 'KimiConversationSupplementField',
+        doc: 'the scoped authoritative view in provider rendering data',
+      },
+      {
+        key: 'conversationMedia',
+        goTable: 'ConversationMedia',
+        tsTable: 'CONVERSATION_MEDIA',
+        tsType: 'KimiConversationMediaField',
+        doc: 'the scoped receipt and verified bytes of recovered native images',
+      },
+      {
+        key: 'conversationFields',
+        goTable: 'ConversationField',
+        tsTable: 'CONVERSATION_FIELD',
+        tsType: 'KimiConversationField',
+        goTagPin: 'backend/internal/worker/agent/providers/kimi/conversation_tags_test.go',
+        doc: 'fields of native conversation data and its Worker record envelope',
+      },
+      {
         key: 'frames',
         frameKind: 'name',
         goTable: 'Frame',
@@ -2985,7 +3140,14 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'Event',
         tsTable: 'EVENT',
         tsType: 'KimiEvent',
-        doc: 'WebSocket event types -- the payload `type`',
+        doc: 'native WebSocket frame types and retained warning types',
+      },
+      {
+        key: 'noticeLevels',
+        goTable: 'NoticeLevel',
+        tsTable: 'NOTICE_LEVEL',
+        tsType: 'KimiSharedNoticeLevel',
+        doc: 'notice levels interpreted by both runtimes',
       },
       {
         key: 'notificationEvents',
@@ -2993,13 +3155,6 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'NotificationEvent',
         tsTable: 'NOTIFICATION_EVENT',
         doc: 'event types that the worker stores as notifications and the browser threads',
-      },
-      {
-        key: 'origins',
-        goTable: 'Origin',
-        tsTable: 'ORIGIN',
-        tsType: 'KimiOrigin',
-        doc: '`turn.started.origin.kind` values, which say who started a turn',
       },
       {
         key: 'tools',
@@ -3071,13 +3226,6 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'KimiTodoStatus',
         doc: '`TodoList` item statuses',
       },
-      {
-        key: 'turnEndReasons',
-        goTable: 'TurnEnd',
-        tsTable: 'TURN_END',
-        tsType: 'KimiTurnEndReason',
-        doc: '`turn.ended.reason` words',
-      },
     ],
   },
   {
@@ -3087,6 +3235,13 @@ export const PROVIDER_PROTOCOLS = [
     title: 'ZCode',
     // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
     tables: [
+      {
+        key: 'agentLaunch',
+        goTable: 'AgentLaunch',
+        tsTable: 'AGENT_LAUNCH',
+        tsType: 'ZCodeAgentLaunch',
+        doc: 'complete native background-agent acknowledgement grammar',
+      },
       {
         key: 'workerMetadata',
         goTable: 'WorkerMetadata',
@@ -3566,6 +3721,103 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'MiMoControlField',
         owner: 'LeapMux chose these',
         doc: 'fields for a stored control payload',
+      },
+    ],
+  },
+  {
+    name: 'opencode-native-protocol',
+    goPrefix: 'OpenCodeNative',
+    tsPrefix: 'OPENCODE_NATIVE',
+    title: 'OpenCode native protocol',
+    preamble: 'OpenCode uses its native HTTP and event protocol. These values cross the Worker and browser boundary.',
+    tables: [
+      {
+        key: 'events',
+        frameKind: 'name',
+        goTable: 'Event',
+        tsTable: 'EVENT',
+        tsType: 'OpenCodeNativeEvent',
+        doc: 'native events stored for both readers',
+      },
+      {
+        key: 'messageTypes',
+        frameKind: 'name',
+        goTable: 'MessageType',
+        tsTable: 'MESSAGE_TYPE',
+        tsType: 'OpenCodeNativeMessageType',
+        doc: 'projected message types used during recovery',
+      },
+      {
+        key: 'metadataEvents',
+        subsetOf: 'events',
+        goTable: 'MetadataEvent',
+        tsTable: 'METADATA_EVENT',
+        doc: 'metadata events routed as notifications and hidden in chat',
+      },
+      {
+        key: 'metadataMessageTypes',
+        subsetOf: 'messageTypes',
+        goTable: 'MetadataMessageType',
+        tsTable: 'METADATA_MESSAGE_TYPE',
+        doc: 'projected metadata records routed as notifications and hidden in chat',
+      },
+      {
+        key: 'partTypes',
+        frameKind: 'name',
+        goTable: 'PartType',
+        tsTable: 'PART_TYPE',
+        tsType: 'OpenCodeNativePartType',
+        doc: 'projected content part types',
+      },
+      {
+        key: 'permissionDecisions',
+        goTable: 'PermissionDecision',
+        tsTable: 'PERMISSION_DECISION',
+        tsType: 'OpenCodeNativePermissionDecision',
+        doc: 'native permission reply decisions',
+      },
+      {
+        key: 'answerFields',
+        goTable: 'AnswerField',
+        tsTable: 'ANSWER_FIELD',
+        tsType: 'OpenCodeNativeAnswerField',
+        doc: 'fields shared by typed forms and stored control answers',
+        goTagPin: 'backend/internal/worker/agent/providers/opencode/control_response_contract_test.go',
+      },
+      {
+        key: 'tools',
+        goTable: 'Tool',
+        tsTable: 'TOOL',
+        tsType: 'OpenCodeNativeTool',
+        doc: 'tool names both sides interpret',
+      },
+      {
+        key: 'toolStatuses',
+        goTable: 'ToolStatus',
+        tsTable: 'TOOL_STATUS',
+        tsType: 'OpenCodeNativeToolStatus',
+        doc: 'projected tool states interpreted by both readers',
+      },
+      {
+        key: 'compactionStatuses',
+        goTable: 'CompactionStatus',
+        tsTable: 'COMPACTION_STATUS',
+        tsType: 'OpenCodeNativeCompactionStatus',
+        doc: 'projected compaction states interpreted by both readers',
+      },
+      {
+        key: 'formFieldTypes',
+        goTable: 'FormFieldType',
+        tsTable: 'FORM_FIELD_TYPE',
+        tsType: 'OpenCodeNativeFormFieldType',
+        doc: 'typed native form fields',
+      },
+      {
+        key: 'outcomes',
+        goTable: 'Outcome',
+        tsTable: 'OUTCOME',
+        tsType: 'OpenCodeNativeOutcome',
+        doc: 'native execution and projected idle outcomes',
       },
     ],
   },
@@ -5090,6 +5342,13 @@ export const PROVIDER_PROTOCOLS = [
         doc: 'fields of a tool-execution frame that the incomplete-tool resolve reads on both sides',
       },
       {
+        key: 'askArguments',
+        goTable: 'AskArgument',
+        tsTable: 'ASK_ARGUMENT',
+        tsType: 'OhMyPiAskArgumentField',
+        doc: 'the native HTML form and optional tool-wrapper instruction',
+      },
+      {
         key: 'askQuestion',
         goTable: 'AskQuestion',
         tsTable: 'ASK_QUESTION',
@@ -5793,11 +6052,53 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Dirac',
     preamble: [
       'Dirac owns the native mode ids, config-option ids, and tool names.',
-      'The Worker preserves the original native tool result.',
+      'The Worker preserves original native tool blocks and child presentation messages.',
       'The browser reads the reported output file path beside the original preview.',
       'LeapMux reads no output file contents.',
     ].join('\n// '),
     tables: [
+      {
+        key: 'recordKinds',
+        goTable: 'RecordKind',
+        tsTable: 'RECORD_KIND',
+        tsType: 'DiracRecordKind',
+        doc: 'Worker records retaining native tasklet blocks',
+      },
+      {
+        key: 'recordRoles',
+        goTable: 'RecordRole',
+        tsTable: 'RECORD_ROLE',
+        tsType: 'DiracRecordRole',
+        doc: 'tool declaration and result roles',
+      },
+      {
+        key: 'nativeBlocks',
+        goTable: 'NativeBlock',
+        tsTable: 'NATIVE_BLOCK',
+        tsType: 'DiracNativeBlock',
+        doc: 'native API history tool block kinds',
+      },
+      {
+        key: 'recordFields',
+        goTable: 'RecordField',
+        tsTable: 'RECORD_FIELD',
+        tsType: 'DiracRecordField',
+        doc: 'native tasklet record ownership and payload fields',
+      },
+      {
+        key: 'requestContext',
+        goTable: 'RequestContext',
+        tsTable: 'REQUEST_CONTEXT',
+        tsType: 'DiracRequestContext',
+        doc: 'native request identity and completion metadata for presentation messages',
+      },
+      {
+        key: 'supplementRoots',
+        goTable: 'SupplementRoot',
+        tsTable: 'SUPPLEMENT_ROOT',
+        tsType: 'DiracSupplementRoot',
+        doc: 'current native presentation views stored separately from original bytes',
+      },
       {
         key: 'modes',
         goTable: 'Mode',
@@ -6173,9 +6474,11 @@ const GO_FIELD_TYPES = new Set([
   'string',
   'bool',
   'int',
+  'int64',
   'float64',
   '*string',
   '*int',
+  '*int64',
   'json.RawMessage',
   '[]string',
   '[]json.RawMessage',
@@ -7615,6 +7918,16 @@ const DOMAINS = [
       checkSessionInfo(s)
       out['backend/generated/contracts/session-info.go'] = emitGoSessionInfo(s)
       out['frontend/src/generated/contracts/session-info.ts'] = emitTsSessionInfo(s)
+    },
+  },
+  {
+    name: 'background-task-roles',
+    requiresDescriptor: true,
+    emit(out, read, descriptorSet) {
+      const v = read('background-task-roles')
+      checkBackgroundTaskRoles(v, enumValues(descriptorSet, 'leapmux/v1/agent.proto', 'BackgroundTaskRole'))
+      out['backend/generated/contracts/background-task-roles.go'] = emitGoBackgroundTaskRoles(v)
+      out['frontend/src/generated/contracts/background-task-roles.ts'] = emitTsBackgroundTaskRoles(v)
     },
   },
   {

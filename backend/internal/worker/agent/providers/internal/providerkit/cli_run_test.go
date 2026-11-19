@@ -1,11 +1,19 @@
 package providerkit
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAfterPreamble(t *testing.T) {
@@ -53,4 +61,36 @@ func TestLimitedBufferAppliesItsLimitThroughCopy(t *testing.T) {
 	assert.Equal(t, int64(10), n, "the copy reads the whole source, so the child never stalls")
 	assert.Equal(t, "01234", buf.String())
 	assert.True(t, buf.Truncated)
+}
+
+func TestRunCLIPreservesLaunchRequirementsWithAnExactEnvironment(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	home := t.TempDir()
+	locator := launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		return launch.Spec{Program: executable, PrefixArgs: []string{"-test.run=^TestRunCLIEnvironmentPeer$", "--"}, Env: []string{"LEAPMUX_REQUIRED_LAUNCH=required"}}, launch.Found
+	})
+	snapshot := agenttest.PlatformBootstrapEnv([]string{"HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home, "PATH=" + os.Getenv("PATH"), "LEAPMUX_CLI_ENV_PEER=1", "PRIVATE_TOKEN=snapshot-value"})
+	output, err := RunCLI(t.Context(), CLIRun{
+		Locator: locator, Label: "controlled CLI", WorkingDir: home, SetEnv: []string{"PRIVATE_TOKEN=protected-value"},
+		Env: func([]string) []string { return snapshot }, Timeout: 30 * time.Second, MaxOutput: 64 << 10,
+	})
+	require.NoError(t, err, "%s", output)
+	var observed map[string]string
+	require.NoError(t, json.Unmarshal(output, &observed))
+	assert.Equal(t, "protected-value", observed["private"])
+	assert.Equal(t, "required", observed["launch"])
+}
+
+func TestRunCLIEnvironmentPeer(t *testing.T) {
+	if os.Getenv("LEAPMUX_CLI_ENV_PEER") != "1" {
+		return
+	}
+	raw, err := json.Marshal(map[string]string{"private": os.Getenv("PRIVATE_TOKEN"), "launch": os.Getenv("LEAPMUX_REQUIRED_LAUNCH")})
+	if err != nil {
+		os.Exit(2)
+	}
+	fmt.Println(string(raw))
+	os.Exit(0)
 }

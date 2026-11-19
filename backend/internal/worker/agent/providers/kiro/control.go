@@ -48,7 +48,8 @@ func (c *controlIndex) take(toolCallID string) (string, bool) {
 
 // kiroControlCancelAnswer is what LeapMux answers when it withdraws one of
 // Kiro's own requests without a reader decision, as it does on an interrupt.
-// A question takes `dismissed`, which Kiro reads as no answer, and a form
+// A question takes `dismissed`, which its native tool reports as readiness to
+// move on. Interrupt must cancel the turn before sending that answer. A form
 // takes MCP's `cancel`.
 func kiroControlCancelAnswer(method string) any {
 	switch method {

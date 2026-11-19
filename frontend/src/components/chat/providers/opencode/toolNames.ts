@@ -1,14 +1,18 @@
-/**
- * The registry ids of the family's own tools, which arrive as the call TITLE.
- *
- * The protocol itself carries no tool name, so the title is the only place the
- * registry id appears -- and the shared build cannot read it.
- */
+import { OPENCODE_NATIVE_TOOL } from '~/generated/contracts/opencode-native-protocol'
+
+/** Native tool IDs offered by OpenCode v2. */
 export const OPENCODE_TOOL_NAMES = {
-  QUESTION: 'question',
-  TASK: 'task',
-  TODO_WRITE: 'todowrite',
-  BASH: 'bash',
-  GLOB: 'glob',
-  GREP: 'grep',
+  Edit: 'edit',
+  Glob: 'glob',
+  Grep: 'grep',
+  Question: 'question',
+  Read: 'read',
+  Shell: OPENCODE_NATIVE_TOOL.Shell,
+  Skill: 'skill',
+  Subagent: OPENCODE_NATIVE_TOOL.Subagent,
+  WebFetch: 'webfetch',
+  WebSearch: 'websearch',
+  Write: 'write',
+  Execute: 'execute',
+  TodoWrite: OPENCODE_NATIVE_TOOL.TodoWrite,
 } as const

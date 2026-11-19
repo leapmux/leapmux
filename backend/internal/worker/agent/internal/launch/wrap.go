@@ -18,13 +18,15 @@ import (
 )
 
 // WrapSpec describes how to wrap an agent binary launch inside the user's
-// login shell. Grouping the knobs as one value keeps the nine provider call sites
-// readable (named fields instead of a long positional tail like `..., nil, false,
-// dir`) and makes the next per-launch knob a new field rather than another argument
-// threaded through Wrap and the three dialect builders.
+// login shell. Grouping the settings keeps provider call sites readable and
+// keeps shell-specific construction inside this package.
 type WrapSpec struct {
 	Shell      string // the user's shell path (terminal.ShellBaseName picks the dialect)
 	LoginShell bool   // invoke the shell with interactive+login flags so profile scripts are sourced
+	// Environment supplies the shell's environment before launch requirements and
+	// private pins are added. Nil inherits the process environment. An empty
+	// non-nil slice supplies an empty environment.
+	Environment []string
 	// Launch is how to start the provider's program, as Locator.Resolve settled
 	// it. Every caller passes one, so a bundled provider's interpreter arguments and
 	// environment cannot be forgotten at a call site: this function applies both.
@@ -54,7 +56,7 @@ type WrapSpec struct {
 	// the private address of a daemon, for example. A value on cmd.Env instead
 	// reaches the shell first, and the profile can replace it. Wrap panics on a
 	// name that is not a plain identifier, because the wrapper writes the name
-	// into shell code unquoted. The value is quoted for the shell's dialect.
+	// into shell code unquoted. Values travel through temporary environment variables.
 	SetEnv []string
 	// BaseArgs are always passed to the program, after Launch.PrefixArgs.
 	BaseArgs []string
@@ -132,35 +134,41 @@ func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
 	if spec.EnvGated != nil {
 		metaPrefix = "__LEAPMUX_META_" + token + "__ "
 	}
+	environ := spec.Environment
+	if environ == nil {
+		environ = os.Environ()
+	}
+	environ = append(append([]string{}, environ...), spec.Launch.Env...)
+	prepared := prepareShellLaunch(spec, token, environ)
 	shellName := terminal.ShellBaseName(spec.Shell)
 
 	var inner, flag string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner = buildPwshCommand(spec, delimiter, metaPrefix)
+		inner = buildPwshCommand(prepared, delimiter, metaPrefix)
 		flag = "-Command"
+	case shellName == "fish":
+		inner = buildFishCommand(prepared, delimiter, metaPrefix)
+		flag = "-c"
 	case shellName == "nu":
-		inner = buildNuCommand(spec, delimiter, metaPrefix)
+		inner = buildNuCommand(prepared, delimiter, metaPrefix)
 		flag = "-c"
 	case shellName == "tcsh" || shellName == "csh":
-		inner = buildCshCommand(spec, delimiter, metaPrefix)
+		inner = buildCshCommand(prepared, delimiter, metaPrefix)
 		flag = "-c"
 	default:
-		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, and unknown shells
-		inner = buildPosixCommand(spec, delimiter, metaPrefix)
+		// bash, zsh, sh, ash, dash, ksh, xonsh, and unknown shells
+		inner = buildPosixCommand(prepared, delimiter, metaPrefix)
 		flag = "-c"
 	}
 	cmdArgs := terminal.CommandArgs(spec.Shell, spec.LoginShell, flag, inner)
 
 	cmd := exec.CommandContext(ctx, spec.Shell, cmdArgs...)
 	cmd.Dir = spec.WorkingDir
-	// Seed the environment with what the LAUNCH requires (ELECTRON_RUN_AS_NODE for
-	// ZCode's Electron-as-Node runtime). Every caller builds its own env from
-	// cmd.Environ() or cmd.Env and finishes with FinalizeAgentEnv, so seeding it here
-	// carries the requirement through all of them -- and FinalizeAgentEnv touches only
-	// the agent-identity and LEAPMUX_CONTROL_ keys, so it cannot drop one.
-	if len(spec.Launch.Env) > 0 {
-		cmd.Env = append(os.Environ(), spec.Launch.Env...)
+	// Launch requirements and private pins apply after the caller's environment.
+	// Callers can finalize cmd.Environ(), but replacing it would discard the pins.
+	if spec.Environment != nil || len(spec.Launch.Env) > 0 || len(prepared.pins) > 0 {
+		cmd.Env = prepared.pinEnvironment(environ)
 	}
 	envutil.ScrubAppImageEnv(cmd)
 	procutil.HideConsoleWindow(cmd)
@@ -172,14 +180,14 @@ func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
 // The command is always prefixed with `exec` so the shell process is
 // replaced. When spec.EnvGated is set, a conditional is emitted to check its
 // env vars at runtime.
-func buildPosixCommand(spec WrapSpec, delimiter, metaPrefix string) string {
+func buildPosixCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
 		quotedBase[i] = shellquote.POSIX.Quote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.SetEnv)
+	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.pins)
 	program := shellquote.POSIX.Quote(spec.Launch.Program)
 
 	// Simple path: no env gate. When the gate is set but its Args are empty (Claude's
@@ -214,14 +222,14 @@ func buildPosixCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 }
 
 // buildNuCommand builds the inner command string for Nushell.
-func buildNuCommand(spec WrapSpec, delimiter, metaPrefix string) string {
+func buildNuCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
 		quotedBase[i] = nuQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.SetEnv)
+	clearEnvPrefix := nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins)
 	// `^"<program>"` is Nushell's documented form for running an external
 	// command whose path holds a space.
 	program := nuQuote(spec.Launch.Program)
@@ -256,8 +264,8 @@ func buildNuCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 }
 
 // buildPwshCommand builds the inner command string for PowerShell.
-func buildPwshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
-	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.SetEnv)
+func buildPwshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
+	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.pins)
 	baseCommand := pwshInvocation(spec.Launch.Program, spec.BaseArgs)
 
 	// Preserve native exit codes and report an absent command as 127, as the
@@ -374,14 +382,14 @@ func legacyNativeArgument(argument string) string {
 //
 // The program word and the arguments use shellquote.POSIX.Quote. Both csh and tcsh accept
 // its concatenation of quoted segments and escaped literal single quotes.
-func buildCshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
+func buildCshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
 		quotedBase[i] = shellquote.POSIX.Quote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.SetEnv)
+	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins)
 	program := shellquote.POSIX.Quote(spec.Launch.Program)
 
 	// Simple path: no env gate. See buildPosixCommand.
@@ -427,40 +435,35 @@ func checkSetEnv(entries []string) {
 
 // posixSetEnv exports each entry. One export for each entry, because fish
 // takes `export` as a function of one assignment at a time.
-func posixSetEnv(entries []string) string {
+func posixSetEnv(pins []environmentPin) string {
 	var b strings.Builder
-	for _, entry := range entries {
-		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("export " + name + "=" + shellquote.POSIX.Quote(value) + " && ")
+	for _, pin := range pins {
+		b.WriteString("export " + pin.target + "=\"$" + pin.source + "\" && unset " + pin.source + " && ")
 	}
 	return b.String()
 }
 
-// cshSetEnv sets each entry the csh way. `set` touches shell variables only, so
-// `setenv` is the one that reaches the launched program.
-func cshSetEnv(entries []string) string {
+// cshSetEnv exports the value and removes its private transport variable.
+func cshSetEnv(pins []environmentPin) string {
 	var b strings.Builder
-	for _, entry := range entries {
-		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("setenv " + name + " " + shellquote.POSIX.Quote(value) + "; ")
+	for _, pin := range pins {
+		b.WriteString("setenv " + pin.target + " ${" + pin.source + ":q}; unsetenv " + pin.source + "; ")
 	}
 	return b.String()
 }
 
-func nuSetEnv(entries []string) string {
+func nuSetEnv(pins []environmentPin) string {
 	var b strings.Builder
-	for _, entry := range entries {
-		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("$env." + name + " = " + nuQuote(value) + "; ")
+	for _, pin := range pins {
+		b.WriteString("$env." + pin.target + " = $env." + pin.source + "; hide-env " + pin.source + "; ")
 	}
 	return b.String()
 }
 
-func pwshSetEnv(entries []string) string {
+func pwshSetEnv(pins []environmentPin) string {
 	var b strings.Builder
-	for _, entry := range entries {
-		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("$env:" + name + " = " + shellquote.PowerShell.Quote(value) + "; ")
+	for _, pin := range pins {
+		b.WriteString("$env:" + pin.target + " = $env:" + pin.source + "; Remove-Item -LiteralPath 'Env:" + pin.source + "' -ErrorAction SilentlyContinue; ")
 	}
 	return b.String()
 }

@@ -5,6 +5,13 @@ import (
 	"regexp"
 )
 
+const (
+	kimiFrameTaskResponse = "response"
+	kimiFrameTaskStop     = "task.stop"
+	kimiFrameTaskWatch    = "task.watch"
+	kimiFrameTaskUnwatch  = "task.unwatch"
+)
+
 // kimiPromptReply is the data of POST /sessions/{id}/prompts.
 type kimiPromptReply struct {
 	PromptID string `json:"prompt_id"`
@@ -13,11 +20,10 @@ type kimiPromptReply struct {
 
 // A queued prompt waits for a turn. A blocked prompt starts no turn.
 const (
-	kimiPromptQueued         = "queued"
-	kimiPromptBlocked        = "blocked"
-	kimiGlobalSessionID      = "__global__"
-	kimiGlobalReplayWindow   = 256
-	kimiGlobalReplayTimerTag = "kimi-global-replay"
+	kimiPromptQueued    = "queued"
+	kimiPromptBlocked   = "blocked"
+	kimiPromptRunning   = "running"
+	kimiGlobalSessionID = "__global__"
 )
 
 // Kimi Code's kap-server vocabulary that only the worker reads.
@@ -27,9 +33,8 @@ const (
 // routes, the envelope codes, the WebSocket control frames, and the fields of
 // the requests the worker sends. No browser code reads any of them.
 
-// kimiBinaryName is the program the provider launches. The legacy Python
-// kimi-cli installs a program of the same name, which is why start.go checks
-// the version before it starts the server.
+// kimiBinaryName is the program the provider launches. The provider requires
+// the native web server command, which the legacy Python kimi-cli does not offer.
 const kimiBinaryName = "kimi"
 
 const (
@@ -75,9 +80,9 @@ const (
 	kimiRouteWS       = kimiAPIPrefix + "/ws"
 )
 
-// kimiSafeID matches every id the server issues: a session, an approval, a
-// question, a task, a prompt. A route is built by joining ids, so an id outside
-// this set could reach a different route than the one the caller means.
+// kimiSafeID admits IDs used in REST routes. Conversation item IDs can contain
+// colons and do not use this validator. A route joins its IDs, so an ID outside
+// this set could reach a different route than the caller intends.
 var kimiSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // kimiCheckID refuses an id that is not one the server issues.
@@ -120,10 +125,8 @@ const (
 
 // The WebSocket control frames.
 const (
-	kimiFrameServerHello = "server_hello"
 	kimiFramePing        = "ping"
 	kimiFramePong        = "pong"
-	kimiFrameAck         = "ack"
 	kimiFrameSubscribe   = "subscribe"
 	kimiFrameUnsubscribe = "unsubscribe"
 )
@@ -171,15 +174,13 @@ const (
 	kimiActionCancel  = ":cancel"
 )
 
-// The kinds of `task.started.info`.
+// Internal task categories distinguish detached processes from coordinator tasks.
 const (
-	kimiTaskKindProcess  = "process"
-	kimiTaskKindAgent    = "agent"
-	kimiTaskKindQuestion = "question"
+	kimiTaskKindProcess = "process"
+	kimiTaskKindAgent   = "agent"
 )
 
-// The final statuses of a background task, as `task.terminated.info.status`
-// states them.
+// Native task outcomes include completed, failed, timed_out, killed, and lost.
 const (
 	kimiTaskStatusRunning   = "running"
 	kimiTaskStatusCompleted = "completed"
@@ -187,39 +188,6 @@ const (
 	kimiTaskStatusTimedOut  = "timed_out"
 	kimiTaskStatusKilled    = "killed"
 	kimiTaskStatusLost      = "lost"
-)
-
-// The `kind` words of an item of GET /sessions/{id}/tasks. The route maps the
-// task kinds onto its own words: a process is `bash`, an agent is `subagent`,
-// and a question is `tool`.
-const (
-	kimiWireTaskKindBash     = "bash"
-	kimiWireTaskKindSubagent = "subagent"
-)
-
-// The `status` words of a task item and of a subagent of the snapshot's roster.
-// The task route folds timed_out and lost into failed, and killed into
-// cancelled.
-const (
-	kimiWireStatusRunning   = "running"
-	kimiWireStatusCompleted = "completed"
-	kimiWireStatusFailed    = "failed"
-	kimiWireStatusCancelled = "cancelled"
-)
-
-// The `subagent_phase` words of the snapshot's roster that decide a subagent's
-// turn flag. A working subagent runs its turn. A queued or suspended one runs
-// none: it waits to start, or for the swarm to retry it.
-const (
-	kimiSubagentPhaseQueued    = "queued"
-	kimiSubagentPhaseWorking   = "working"
-	kimiSubagentPhaseSuspended = "suspended"
-)
-
-// The `tool.progress.update.kind` words that carry a command's output.
-const (
-	kimiProgressStdout = "stdout"
-	kimiProgressStderr = "stderr"
 )
 
 // The `goal.updated.snapshot.status` words.

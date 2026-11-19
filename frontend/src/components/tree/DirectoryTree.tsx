@@ -903,29 +903,34 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // the store holds the state of the previous key.
   let origin!: StateOrigin
   // The idle write that waits, and where its state came from.
-  let pendingWrite: { origin: StateOrigin, handle: number } | undefined
+  let pendingWrite: {
+    origin: StateOrigin
+    handle: number
+    revealPath: string
+    flavor: PathFlavor
+  } | undefined
 
   // Untracked as a whole. The cleanup of the restore effect calls this, and a
   // cleanup runs inside whichever computation disposes its owner, so a read
   // here would subscribe that computation.
-  const writeState = (to: StateOrigin) => untrack(() => {
+  const writeState = (to: StateOrigin, revealPath: string, flavor: PathFlavor) => untrack(() => {
     // The namespace moved to another account after the restore. A write now
     // would store this account's tree under the other account's key.
     if (storageAccountId() !== to.account)
       return
     // `unwrap` for the stringify speed that the comment above this section
     // measures.
-    sessionStorageSet(to.key, serializeState(unwrap(state), revealTarget(), workerFlavor()))
+    sessionStorageSet(to.key, serializeState(unwrap(state), revealPath, flavor))
   })
 
   /** Write a waiting state now, where it came from. */
   const flushPendingWrite = () => {
     if (pendingWrite === undefined)
       return
-    const { origin: to, handle } = pendingWrite
+    const { origin: to, handle, revealPath, flavor } = pendingWrite
     pendingWrite = undefined
     cancelIdle(handle)
-    writeState(to)
+    writeState(to, revealPath, flavor)
   }
   // A reload or a tab close runs no Solid cleanup, so only this listener
   // writes a waiting state then.
@@ -975,13 +980,23 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     void state.childrenCache
     void state.truncatedDirs
     listingsRevision()
-    revealTarget()
-    workerFlavor()
-    // A waiting write reads the state when it runs, so it covers this change.
-    if (pendingWrite !== undefined)
+    const revealPath = revealTarget()
+    const flavor = workerFlavor()
+    // A key change can invalidate these inputs before the restore effect runs.
+    // Keep the outgoing write's inputs until that effect flushes its own state.
+    if (untrack(storageKey) !== origin.key || untrack(account) !== origin.account)
       return
+    // Cleanup must not evaluate caller getters: a selected-path getter can
+    // reenter the computation that is disposing this tree. Capture inputs here.
+    if (pendingWrite !== undefined) {
+      pendingWrite.revealPath = revealPath
+      pendingWrite.flavor = flavor
+      return
+    }
     pendingWrite = {
       origin,
+      revealPath,
+      flavor,
       handle: requestIdle(flushPendingWrite, { timeout: PERSIST_IDLE_TIMEOUT_MS }),
     }
   })

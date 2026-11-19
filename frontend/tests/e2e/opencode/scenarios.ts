@@ -2,23 +2,27 @@ import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../hel
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseRelatedTodo } from '../helpers/relatedTodoProof'
+import { openCodeNativeToolRowId } from './nativeToolRecords'
 
 /** How an OpenCode agent opens. */
 export const OPENCODE_AGENT: ProviderAgent = { provider: AgentProvider.OPENCODE, prefix: 'opencode-e2e' }
 
 /** Build the scenario context of OpenCode. Its native protocol needs no field beyond the provider. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, OPENCODE_AGENT)
+  return managedNativeContext(fixtures, OPENCODE_AGENT, {
+    resolveToolRowId: async query => openCodeNativeToolRowId(await readNativeMessageSnapshot(fixtures, query.agentId), query.callId),
+  })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
   return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
     binaryName: 'opencode',
-    holdWhen: ['acp'],
+    holdWhen: ['serve'],
   })
 }
 

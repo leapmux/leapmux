@@ -12,12 +12,13 @@ import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource
 import { _resetTokenCache } from '~/lib/tokenCache'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
 import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
-import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { toolFrame } from '~/test-support/mimoFixtures'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../MessageBubble'
 import { commandInputCollapsed, toolInputSummary } from '../toolStyles.css'
+import { openCodeToolPart } from './opencode/toolResults.fixtures'
 import { providerFor, resolveMessageForRendering } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -217,9 +218,9 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
   ))
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderKiloUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.KILO)
   return render(() => result)
 }
 
@@ -247,16 +248,16 @@ async function settleCommandOverflowMeasure(): Promise<void> {
   await Promise.resolve()
 }
 
-/** One OpenCode execute request, reactively, through the plugin the app renders with. */
+/** One Kilo execute request, reactively, through the plugin the app renders with. */
 /**
- * Render one OpenCode execute row through the dispatcher, the way a mounted row does.
+ * Render one Kilo execute row through the dispatcher, the way a mounted row does.
  *
  * The arguments arrive as a PROPS object rather than a thunk. A case that drives
  * them from a signal gives a getter, which is how Solid hands a reactive value to
  * a function -- and the overflow guard below does exactly that: it changes the
  * command while the row is expanded, and the row must re-measure.
  */
-function renderOpenCodeUpdateCommand(props: { rawInput: Record<string, unknown> }) {
+function renderKiloUpdateCommand(props: { rawInput: Record<string, unknown> }) {
   const args = () => props.rawInput
   const category = { kind: 'tool_use' } as MessageCategory
   const parsed = () => input({
@@ -271,7 +272,7 @@ function renderOpenCodeUpdateCommand(props: { rawInput: Record<string, unknown> 
     <>
       {renderMessageContent(parsed(), {
         sources: testMessageSources({ current: parsed }),
-      }, category, AgentProvider.OPENCODE)}
+      }, category, AgentProvider.KILO)}
     </>
   ))
 }
@@ -299,8 +300,8 @@ describe('canonical command status label across providers', () => {
     expect(container.textContent ?? '').toContain('Error (exit 5)')
   })
 
-  it('renders "Error (exit 5)" for an openCode execute with exit 5', () => {
-    const { container } = renderOpenCodeUpdate({
+  it('renders "Error (exit 5)" for a Kilo execute with exit 5', () => {
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'execute',
       status: 'completed',
@@ -319,8 +320,8 @@ describe('canonical command status label across providers', () => {
     expect(container.textContent ?? '').toContain('Error (exit 5)')
   })
 
-  it('shows a Terminal badge for an openCode execute with terminal content block', () => {
-    const { container } = renderOpenCodeUpdate({
+  it('shows a Terminal badge for a Kilo execute with terminal content block', () => {
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'execute',
       status: 'completed',
@@ -345,7 +346,7 @@ describe('canonical command status label across providers', () => {
     const output = Array.from({ length: 8 }, (_, i) => `output line ${i + 1}`).join('\n')
     const [expanded, setExpanded] = createSignal(false)
 
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'execute',
       status: 'completed',
@@ -725,7 +726,7 @@ describe('command summary syntax highlighting selection stability', () => {
     const dims = mockCollapsedCommandOverflow()
     try {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
-      const { container } = renderOpenCodeUpdateCommand({
+      const { container } = renderKiloUpdateCommand({
         get rawInput() {
           return {
             command: command(),
@@ -1173,14 +1174,15 @@ describe('retained command completion', () => {
       }),
       spanType: 'bash',
     },
-    // Kimi Code sends no result for a call its turn cut off: the worker stores the
-    // call's own start again, with the output it printed before it stopped.
+    // The Worker closes the running native item with the output observed before interruption.
     {
       provider: AgentProvider.KIMI_CODE,
-      result: {
-        ...kimiToolStart('call', 'Bash', { command }),
+      result: kimiConversationToolRecord('result', {
+        item_id: 'call',
+        name: 'Bash',
+        input: { command },
         output,
-      },
+      }),
       spanType: 'Bash',
     },
     // MiMo's cut command is its last running update, which states the output so far.
@@ -1193,8 +1195,15 @@ describe('retained command completion', () => {
       }, 'call'),
       spanType: MIMO_TOOL.Bash,
     },
+    {
+      provider: AgentProvider.OPENCODE,
+      result: openCodeToolPart('call', 'shell', { command }, {
+        status: 'running',
+        metadata: { output },
+      }),
+      spanType: 'shell',
+    },
     ...[
-      AgentProvider.OPENCODE,
       AgentProvider.KILO,
       AgentProvider.GOOSE,
       AgentProvider.REASONIX,
@@ -1230,6 +1239,7 @@ describe('retained command completion', () => {
     expect(plugin?.transcript.spanRole?.(parsed)).toBe('result')
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
+      spanId: 'call',
       spanType,
       sources: testMessageSources({
         current: () => parsed,
@@ -1267,7 +1277,14 @@ describe('canonical failure word across the two routes', () => {
     },
     {
       provider: AgentProvider.KIMI_CODE,
-      result: kimiToolResult('call', `${output}\nCommand failed with exit code: 1.`, { isError: true }),
+      result: kimiConversationToolRecord('result', {
+        item_id: 'call',
+        name: 'Bash',
+        input: { command },
+        status: 'ended',
+        outcome: 'failed',
+        error: `${output}\nCommand failed with exit code: 1.`,
+      }),
       spanType: 'Bash',
     },
     // A MiMo turn that fails while a command runs ends the command with its last
@@ -1281,8 +1298,18 @@ describe('canonical failure word across the two routes', () => {
       }, 'call'),
       spanType: MIMO_TOOL.Bash,
     },
+    {
+      provider: AgentProvider.OPENCODE,
+      result: openCodeToolPart('call', 'shell', { command }, {
+        status: 'error',
+        content: [
+          { type: 'text', text: output },
+        ],
+        error: { type: 'tool.execution', message: 'Command failed' },
+      }),
+      spanType: 'shell',
+    },
     ...[
-      AgentProvider.OPENCODE,
       AgentProvider.KILO,
       AgentProvider.GOOSE,
       AgentProvider.REASONIX,
@@ -1313,6 +1340,7 @@ describe('canonical failure word across the two routes', () => {
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
+      spanId: 'call',
       spanType,
       sources: testMessageSources({
         current: () => parsed,
@@ -1429,10 +1457,12 @@ describe('retained file completion', () => {
     },
     {
       provider: AgentProvider.KIMI_CODE,
-      result: {
-        ...kimiToolStart('read', 'Read', { path: '/a.ts' }),
+      result: kimiConversationToolRecord('result', {
+        item_id: 'read',
+        name: 'Read',
+        input: { path: '/a.ts' },
         output: 'partial file output',
-      },
+      }),
     },
     {
       provider: AgentProvider.OH_MY_PI,

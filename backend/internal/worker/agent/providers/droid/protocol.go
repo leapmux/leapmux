@@ -67,6 +67,15 @@ const (
 	droidMethodSessionNotif      = "droid.session_notification"
 )
 
+// droidNotificationChildSessionSettled reports child lifecycle state without transcript content.
+const droidNotificationChildSessionSettled = "child_session_settled"
+
+// droidNotificationQueuedMessagesChanged carries native queue state, not conversation content.
+const droidNotificationQueuedMessagesChanged = "queued_messages_changed"
+
+// droidNotificationScriptOracleChanged updates the live Script tool call's oracle.
+const droidNotificationScriptOracleChanged = "script_oracle_changed"
+
 // Envelope type words.
 const (
 	droidTypeRequest      = "request"

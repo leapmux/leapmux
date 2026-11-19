@@ -328,26 +328,24 @@ SELECT sqlc.arg(new_child_id), sqlc.arg(new_parent_id), source.spawn_span_id, so
        source.goal_status, source.goal_status_detail, source.goal_created_at, source.goal_updated_at, source.created_at
 FROM agents AS source WHERE source.id = sqlc.arg(old_child_id) AND source.parent_agent_id IS NOT NULL;
 
--- GetChildAgentBySpawnSpan is the worker-restart fallback behind
--- EnsureChildAgent: re-attach a child row when the registry upsert did not
--- land before the restart. The (parent_agent_id, spawn_span_id) pair is unique
--- among children (idx_agents_spawn_span), so this is at most one row.
+-- GetChildAgentsBySpawnSpan returns every child of one native spawning call.
+-- The caller selects an exact native key or refuses an ambiguous origin.
+-- A provisional child can restore a spawn interrupted before native key adoption.
 --
 -- The spawn_span_id <> '' term repeats the index predicate, which is what makes
 -- the query eligible for that index. SQLite proves parent_agent_id = ? implies
 -- IS NOT NULL, but it cannot prove a bound parameter differs from '', so without
--- the term the plan falls back to idx_agents_parent and reads EVERY child of the
--- parent plus a table row for each -- the opposite of the single unique seek the
--- comment above promises. See partial_index_test.go.
--- name: GetChildAgentBySpawnSpan :one
+-- the term the plan falls back to idx_agents_parent and reads every child of the
+-- parent. See partial_index_test.go.
+-- name: GetChildAgentsBySpawnSpan :many
 SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ? AND spawn_span_id <> '';
 
--- GetChildAgentSpawnSpan is the reverse of GetChildAgentBySpawnSpan. It reads
+-- GetChildAgentSpawnSpan reads one child's exact parent origin. It reads
 -- the only DURABLE copy of a spawn span. A provider's own index of them is
 -- per-process, while the child row keeps its span for the life of the
 -- transcript. Claude reads it back when the CLI restarts a finished subagent.
 --
--- Scoped by parent_agent_id, exactly as GetChildAgentBySpawnSpan is. A span
+-- Scoped by parent_agent_id, exactly as GetChildAgentsBySpawnSpan is. A span
 -- belongs to the transcript that spawned the child, so an unscoped read answers
 -- for a child of another root and files a run under a span from a transcript the
 -- caller does not own. A root agent matches no parent and correctly misses.

@@ -1,6 +1,8 @@
 package zcode
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -344,7 +346,9 @@ func TestZCodeToolTranscriptEnrichesChildCallsInTheChildTranscript(t *testing.T)
 	_, err = f.db.Exec(`INSERT INTO part VALUES ('part', 'child-session', 'message', ?)`, native)
 	require.NoError(t, err)
 	f.writeOutputFile(t, "child-session")
-	childID, err := f.transcript.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child-session", AgentSessionID: "child-session", Title: "Child"})
+	childID, err := f.transcript.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "child-session", AgentSessionID: "child-session", Title: "Child"})
 	require.NoError(t, err)
 	child := f.transcript.ChildSink(childID)
 	require.Same(t, child, f.transcript.ChildSink(childID))

@@ -1,17 +1,27 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { KIMI_EVENT, KIMI_NOTIFICATION_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_RECORD_ROLE, KIMI_CONVERSATION_STATUS, KIMI_CONVERSATION_TURN_KIND, KIMI_NOTIFICATION_EVENT } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
-import { retainedRowIsFinal } from '../registry'
+import { kimiConversationRow, kimiTurnIsBlocked } from './conversation'
 import { kimiNotificationEntry } from './extractors/notification'
 import { kimiPlanText } from './extractors/plan'
 import { kimiEvent } from './protocol'
 
 /** Whether one thread entry is a Kimi Code notice. */
 function kimiNotifies(entry: unknown): boolean {
+  const conversation = kimiConversationRow(entry)
+  if (conversation?.kind === 'notice' || conversation?.kind === 'failure' || conversation?.kind === 'retry')
+    return true
+  if (conversation?.kind === 'item') {
+    const type = conversation.item[KIMI_CONVERSATION_FIELD.Type]
+    return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Origin
+      || type === KIMI_CONVERSATION_ITEM_KIND.Notification
+      || type === KIMI_CONVERSATION_ITEM_KIND.System
+      || (type === KIMI_CONVERSATION_ITEM_KIND.AssistantMessage && kimiTurnIsBlocked(conversation.turnContext))
+  }
   const event = kimiEvent(entry)
   return !!event && KIMI_NOTIFICATION_EVENT.has(event.type)
 }
@@ -35,6 +45,51 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
   if (!parent)
     return { kind: 'unknown' }
 
+  const conversation = kimiConversationRow(parent)
+  if (conversation?.kind === 'retry')
+    return notification([parent], 'hidden')
+  if (conversation?.kind === 'item') {
+    switch (conversation.item[KIMI_CONVERSATION_FIELD.Type]) {
+      case KIMI_CONVERSATION_ITEM_KIND.AssistantMessage:
+        if (kimiTurnIsBlocked(conversation.turnContext)) {
+          const notice = notification([parent], 'hidden')
+          if (notice.kind === 'notification')
+            return notice
+        }
+        return { kind: 'assistant_text' }
+      case KIMI_CONVERSATION_ITEM_KIND.Reasoning:
+        return { kind: 'assistant_thinking' }
+      case KIMI_CONVERSATION_ITEM_KIND.UserMessage:
+        return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Origin
+          ? notification([parent], 'hidden')
+          : { kind: 'user_text' }
+      case KIMI_CONVERSATION_ITEM_KIND.ToolCall:
+        if (kimiPlanText(parent) !== null) {
+          return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Request
+            ? { kind: 'assistant_plan' }
+            : { kind: 'hidden' }
+        }
+        return {
+          kind: conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Request
+            ? 'tool_use'
+            : 'tool_result',
+        }
+      default:
+        return notification([parent], 'hidden')
+    }
+  }
+  if (conversation?.kind === 'turn') {
+    if (conversation.turn[KIMI_CONVERSATION_FIELD.Kind] !== KIMI_CONVERSATION_TURN_KIND.Agent || kimiTurnIsBlocked(conversation.turn))
+      return { kind: 'hidden' }
+    return {
+      kind: conversation.turn[KIMI_CONVERSATION_FIELD.Status] === KIMI_CONVERSATION_STATUS.Ended
+        ? 'result_divider'
+        : 'hidden',
+    }
+  }
+  if (conversation?.kind === 'notice' || conversation?.kind === 'failure')
+    return notification([parent], 'hidden')
+
   const event = kimiEvent(parent)
   if (!event) {
     // A row the service layer wrote: the LeapMux-neutral `{content}` user row, or one
@@ -49,32 +104,6 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
     return { kind: 'unknown' }
   }
 
-  switch (event.type) {
-    case KIMI_EVENT.ToolCallStarted: {
-      // A retained copy of this frame is the call's RESULT: the turn ended while the
-      // call ran, so the server sent no result and the worker stored the start again.
-      const retained = retainedRowIsFinal(input.completion)
-      // The plan an `ExitPlanMode` call proposes is drawn as the plan itself. The
-      // retained copy of that start is the call's closing row, which is hidden for the
-      // same reason the result of a plan call is: the plan row already states the plan.
-      if (kimiPlanText(parent) !== null) {
-        return retained
-          ? { kind: 'hidden' }
-          : { kind: 'assistant_plan' }
-      }
-      return retained
-        ? { kind: 'tool_result' }
-        : { kind: 'tool_use' }
-    }
-    case KIMI_EVENT.ToolResult:
-      // The plan row and the answer row already state the plan and the decision, and
-      // the result repeats the whole plan for the model.
-      if (input.spanType === KIMI_TOOL.ExitPlanMode)
-        return { kind: 'hidden' }
-      return { kind: 'tool_result' }
-    case KIMI_EVENT.TurnEnded:
-      return { kind: 'result_divider' }
-  }
   if (KIMI_NOTIFICATION_EVENT.has(event.type))
     return notification([parent], 'hidden')
   // The Worker preserves unknown native events as separate message rows.

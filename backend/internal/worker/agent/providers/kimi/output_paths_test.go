@@ -9,7 +9,6 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +16,7 @@ import (
 func TestKimiNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(kimiHomeEnv, root)
-	rig := newKimiOutputPathRig(t, root)
+	rig := newKimiConversationRig(t)
 	const callID = "native-path-call"
 	const hidden = "NATIVE_EXTERNAL_TEXT_MUST_NOT_ENTER_WORKER_7841"
 	complete := strings.Repeat(hidden+"\n", 2000)
@@ -30,15 +29,26 @@ func TestKimiNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(directory), "bash-n4hig35g.json"), task, 0o600))
 	require.Greater(t, len(utf16.Encode([]rune(complete))), 50_000)
 	pointer := fmt.Sprintf("Tool output exceeded 50000 characters; the full output was saved to a file.\ntool_name: Bash\ntool_call_id: %s\noutput_size_chars: %d\noutput_size_bytes: %d\noutput_path: %s\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.\n\n[preview: chars [0, 10)]\noutput", callID, len(utf16.Encode([]rune(complete))), len(complete), path)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": callID, "name": "Bash", "args": map[string]any{}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 0, "toolCallId": callID, "update": map[string]any{"kind": "stdout", "text": complete}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": 0, "toolCallId": callID, "output": pointer})
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	item := map[string]any{"type": "tool_call", "item_id": callID, "name": "Bash", "status": "running", "stage": "executing",
+		"created_at": "2026-11-18T00:00:00Z", "started_at": "2026-11-18T00:00:00Z", "input": map[string]any{}}
+	wire, err := json.Marshal(item)
+	require.NoError(t, err)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":`+string(wire)+`}`)
+	delta, err := json.Marshal(complete)
+	require.NoError(t, err)
+	rig.conversationFrame(t, fmt.Sprintf(`{"type":"item.delta","turn_id":"t0","item_id":%q,"field":"output","delta":%s}`, callID, delta))
+	item["status"], item["outcome"], item["output"] = "ended", "completed", pointer
+	delete(item, "stage")
+	wire, err = json.Marshal(item)
+	require.NoError(t, err)
+	rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":`+string(wire)+`}`)
 	messages := rig.sink.Messages()
 	require.Len(t, messages, 2)
 	assert.NotContains(t, string(messages[1].Content), hidden)
 	assert.NotContains(t, string(messages[1].SupplementalContent), hidden, "external output text must not enter Worker storage")
-	var original map[string]any
-	require.NoError(t, json.Unmarshal(messages[1].Content, &original))
-	assert.Equal(t, pointer, original["output"])
+	record, err := decodeKimiConversationRecord(messages[1].Content)
+	require.NoError(t, err)
+	require.NotNil(t, record.item)
+	assert.JSONEq(t, fmt.Sprintf("%q", pointer), string(record.item.Output))
 }

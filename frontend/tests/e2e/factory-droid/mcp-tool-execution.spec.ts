@@ -12,7 +12,7 @@ droidTest.describe('Factory Droid MCP input form', () => {
     const echoArguments = { query: 'droid', limit: 0, tail: 'END_MCP_ARGUMENTS' }
     const server = writeMcpFormServer(createTestDirectory('droid-mcp-echo-'), 'droid-echo-server.mjs', { expectedEchoArguments: echoArguments })
     await withDroidMcpWorkspace({ page, modelScript, leapmuxServer }, { server, prefix: 'droid-mcp-echo' }, async (context) => {
-      // The Droid builder adds `call_` to the ID, and Droid can clip it, so the result reader matches the original ID.
+      // The shared builder supplies a stable native ID, which the result reader matches exactly.
       const callId = 'call-echo'
       const call = mcpToolCall(context.provider, callId, { server: server.name, tool: 'echo', input: echoArguments })
       const start = await modelScript.queue(

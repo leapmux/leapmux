@@ -1,0 +1,17 @@
+{
+  "_readme": "This contract defines task counting and canonical child activity for each BackgroundTaskRole. Protobuf owns the ordinals. Generation checks every nonzero enum member. Go and TypeScript read these same capabilities. TaskOutcome retains an independent task outcome. ChildTask combines task outcome and canonical child activity. ChildActivity controls a child without counting another task. The unspecified value has no capabilities.",
+  "roles": {
+    "TaskOutcome": {
+      "countsAsTask": true,
+      "canonicalChildActivity": false
+    },
+    "ChildTask": {
+      "countsAsTask": true,
+      "canonicalChildActivity": true
+    },
+    "ChildActivity": {
+      "countsAsTask": false,
+      "canonicalChildActivity": true
+    }
+  }
+}

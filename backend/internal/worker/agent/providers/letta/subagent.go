@@ -86,7 +86,9 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 		if native.ToolCallID != "" {
 			spawnSpanID = "letta-tool-" + native.ToolCallID
 		}
-		agentID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: native.ID, Title: title})
+		agentID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  spawnSpanID, ProviderChildKey: native.ID, Title: title})
 		if err != nil {
 			slog.Warn("letta: ensure child failed", "agent_id", a.AgentID(), "subagent_id", native.ID, "error", err)
 			return

@@ -318,14 +318,15 @@ export interface ShellToolExecutionOptions extends ToolPreparation, ShellRowOpti
   /** Run the failed command beside the successful one. The default is true. */
   includeFailure?: boolean
   /**
-   * Hold each command until the browser shows its output.
+   * Hold each command until its output observer confirms capture.
    *
    * A native shell tool can lose the output of a command that exits right after it
-   * writes (see `OutputGate`). A held command stays alive until the live view shows
-   * its output, so the tool cannot lose it. Only a provider with that defect sets
-   * this option, because the hold changes the command that the model asks for.
+   * writes (see `OutputGate`). True observes the browser. A callback observes native
+   * capture when the runtime exposes no live output. The observer must confirm
+   * that the runtime retained the bytes before the command exits. Only a provider
+   * with that defect sets this option, because the hold changes the command.
    */
-  outputGate?: boolean
+  outputGate?: boolean | ((output: string) => Promise<void>)
   /** Reload the page after the turn, and prove every row again from the stored transcript. */
   reload?: boolean
 }
@@ -457,7 +458,7 @@ export async function exerciseShellToolExecution(
   const outputFile = join(directory, 'native shell output.txt')
   expect(existsSync(outputFile)).toBe(false)
   const marker = uniqueMarker()
-  const commands = [
+  const rawCommands = [
     {
       callId: `shell-${marker}-0`,
       command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`,
@@ -480,10 +481,14 @@ export async function exerciseShellToolExecution(
   // The gate files live in the literal private tool directory. A hold that quotes its path incorrectly runs the marker
   // command, and the check of `command-expanded-marker` below finds it. Each command takes its own gate, so a provider
   // that runs the two calls one after the other releases the first before the second starts.
-  const gates = commands.map(() => options.outputGate
+  const gates = rawCommands.map(() => options.outputGate
     ? createOutputGate(directory)
     : undefined)
-  const calls = commands.map((command, index) => bashToolCall(context.provider, command.callId, gates[index]?.hold(command.command) ?? command.command))
+  const commands = rawCommands.map((command, index) => ({
+    ...command,
+    command: gates[index]?.hold(command.command) ?? command.command,
+  }))
+  const calls = commands.map(command => bashToolCall(context.provider, command.callId, command.command))
   const callPerAnswer = ONE_SHELL_CALL_PER_ANSWER.has(context.provider)
   const steps: MockModelStep[] = callPerAnswer
     ? calls.map(call => ({
@@ -494,19 +499,26 @@ export async function exerciseShellToolExecution(
       ]
   const answer = 'The native shell scenario ended.'
   const stepIndex = await context.modelScript.queue(...steps, nativeTextStep(context, answer))
-  await sendMessage(context.page, context.modelScript.prompt('Run the native shell scenario.'))
+  const outputObserver = typeof options.outputGate === 'function'
+    ? options.outputGate
+    : undefined
   const gated = commands.flatMap((command, index) => {
     const gate = gates[index]
     return gate
       ? [
           {
             gate,
-            shown: () => expect(toolRows(context.page).filter({ hasText: command.output }).first(), 'the live view shows the output of the held command').toBeVisible(),
+            shown: outputObserver
+              ? () => outputObserver(command.output)
+              : () => expect(toolRows(context.page).filter({ hasText: command.output }).first(), 'the live view shows the output of the held command').toBeVisible(),
           },
         ]
       : []
   })
-  await runWithGatedOutputs(gated, () => waitForNativeToolSteps(context, stepIndex + steps.length + 1))
+  await runWithGatedOutputs(gated, async () => {
+    await sendMessage(context.page, context.modelScript.prompt('Run the native shell scenario.'))
+    await waitForNativeToolSteps(context, stepIndex + steps.length + 1)
+  })
   const rowCommands: ShellRowCommand[] = []
   for (const [index, command] of commands.entries()) {
     // The request after a tool step holds the results of that step.

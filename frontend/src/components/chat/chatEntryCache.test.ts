@@ -382,7 +382,7 @@ function acpToolResult(id: string, seq: bigint, spanId: string): AgentChatMessag
     })),
     contentCompression: ContentCompression.NONE,
     seq,
-    agentProvider: AgentProvider.OPENCODE,
+    agentProvider: AgentProvider.KILO,
     spanId,
     spanType: 'edit',
   })

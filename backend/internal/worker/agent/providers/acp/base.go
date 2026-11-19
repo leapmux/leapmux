@@ -841,7 +841,7 @@ func (b *Base) reapplyModelAndSecondary() {
 	// raiseEffortOffNone can also change "none" to "high".
 	// A later snapshot would replace the user's stored effort with those defaults.
 	// This snapshot preserves the stored selections through a context clear.
-	storedOptions := maps.Clone(b.options.values)
+	storedOptions := b.options.selectedValues()
 	b.Mu.Unlock()
 	acpApplySetting(b.ProviderName(), b.AgentID(), "model", model, b.effectiveSetModel())
 	acpApplySetting(b.ProviderName(), b.AgentID(), sc.logKey, sec, sc.set)
@@ -977,7 +977,7 @@ func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResul
 func (b *Base) SettingsSnapshot() agentapi.SettingsApplyResult {
 	b.Mu.Lock()
 	result := agentapi.ConfirmedSettings(agentapi.CurrentOptions(b.optionGroupsLocked()))
-	unresolved := b.options.unresolved.keys()
+	unresolved := append(b.options.unresolved.keys(), slices.Collect(maps.Keys(b.options.deferredWrites))...)
 	b.Mu.Unlock()
 	// Local groups use their provider's mutex. Keep those callbacks outside Mu.
 	if b.hooks.LocalOptionGroups != nil {
@@ -2127,7 +2127,14 @@ func (b *Base) optionGroupsLocked() []*leapmuxv1.AvailableOptionGroup {
 	if group := b.secondaryOptionGroupLocked(); group != nil {
 		groups = append(groups, group)
 	}
-	return append(groups, b.options.groups...)
+	for _, group := range b.options.groups {
+		if requested, deferred := b.options.deferredWrites[group.GetId()]; deferred {
+			group = proto.CloneOf(group)
+			group.CurrentValue = requested
+		}
+		groups = append(groups, group)
+	}
+	return groups
 }
 
 // applyLocalOptions writes each changed value in a local option group from Hooks.LocalOptionGroups.
@@ -3101,15 +3108,6 @@ func parseACPConfigOptions(raw json.RawMessage) []ConfigOption {
 	return payload.ConfigOptions
 }
 
-// sendSessionRPC sends an ACP session/* request through WithSessionID.
-// It adds the current sessionId to extraParams and returns the decoded native result or protocol error.
-// Each caller therefore shares the same session lock and JSON-RPC handling.
-// A caller can use the result body to refresh options or discard it when acknowledgment suffices.
-// cancelSession sends a notification without a reply and does not use this method.
-func (b *Base) sendSessionRPC(method string, extraParams map[string]interface{}) (json.RawMessage, error) {
-	return b.sendSessionRPCObserved(method, extraParams, nil)
-}
-
 // SendSessionRPCObserved sends an ACP session/* request whose reply a provider
 // reads before its waiting caller resumes: a steer whose reply outcome changes
 // turn state, for example. The observe callback runs on the reader goroutine.
@@ -3122,38 +3120,42 @@ func (b *Base) SendSessionRPCObserved(method string, extraParams map[string]inte
 func (b *Base) sendSessionRPCObserved(method string, extraParams map[string]interface{}, observe func(json.RawMessage, error)) (json.RawMessage, error) {
 	var out json.RawMessage
 	err := b.WithSessionID(func(sessionID string) error {
-		params := make(map[string]interface{}, len(extraParams)+1)
-		params["sessionId"] = sessionID
-		for key, value := range extraParams {
-			params[key] = value
-		}
-		raw, err := json.Marshal(params)
-		if err != nil {
-			return fmt.Errorf("marshal %s params: %w", method, err)
-		}
-		var objectErr error
-		response, err := b.SendRequestObserved(method, raw, b.APITimeout(), func(result json.RawMessage, replyErr error) {
-			if replyErr == nil {
-				var object map[string]json.RawMessage
-				if json.Unmarshal(result, &object) != nil || object == nil {
-					objectErr = fmt.Errorf("ACP %s reply must be an object", method)
-					replyErr = objectErr
-				}
-			}
-			if observe != nil {
-				observe(result, replyErr)
-			}
-		})
-		if err != nil {
-			return err
-		}
-		if objectErr != nil {
-			return objectErr
-		}
-		out = response
-		return nil
+		var err error
+		out, err = b.sendOwnedSessionRPCObserved(sessionID, method, extraParams, observe)
+		return err
 	})
 	return out, err
+}
+
+// The caller holds a session lease for sessionID.
+func (b *Base) sendOwnedSessionRPCObserved(sessionID, method string, extraParams map[string]interface{}, observe func(json.RawMessage, error)) (json.RawMessage, error) {
+	params := make(map[string]interface{}, len(extraParams)+1)
+	params["sessionId"] = sessionID
+	maps.Copy(params, extraParams)
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s params: %w", method, err)
+	}
+	var objectErr error
+	response, err := b.SendRequestObserved(method, raw, b.APITimeout(), func(result json.RawMessage, replyErr error) {
+		if replyErr == nil {
+			var object map[string]json.RawMessage
+			if json.Unmarshal(result, &object) != nil || object == nil {
+				objectErr = fmt.Errorf("ACP %s reply must be an object", method)
+				replyErr = objectErr
+			}
+		}
+		if observe != nil {
+			observe(result, replyErr)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if objectErr != nil {
+		return nil, objectErr
+	}
+	return response, nil
 }
 
 // SetModelViaConfigOption writes the native wire ID and records the canonical
@@ -3276,6 +3278,14 @@ func (b *Base) setConfigOption(configID, value string) error {
 // The native process orders those later operations.
 // Do not hold b.Mu across the RPC to remove that remaining interval.
 func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func() bool) error {
+	return b.WithSessionID(func(sessionID string) error {
+		return b.setConfigOptionForSession(sessionID, configID, value, stillWanted, true)
+	})
+}
+
+// The caller holds a session lease. Applying staged settings before a prompt
+// uses the same writer with deferral disabled because the prompt is not sent yet.
+func (b *Base) setConfigOptionForSession(sessionID, configID, value string, stillWanted func() bool, deferDuringPrompt bool) error {
 	// Check the option IDs from the latest complete advertised payload, not only the values already exposed with a concrete current selection.
 	// An advertised option with an empty current value must still accept its stored preference before it appears as a group.
 	b.Mu.Lock()
@@ -3285,6 +3295,21 @@ func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func()
 	// Check the precondition under the same lock as the checks below.
 	// Another b.Mu holder then cannot invalidate it between those checks.
 	wanted := stillWanted == nil || stillWanted()
+	_, deferred := b.options.deferredWrites[configID]
+	if known && offered && wanted && deferred && deferDuringPrompt && b.options.values[configID] == value {
+		delete(b.options.deferredWrites, configID)
+		b.Mu.Unlock()
+		return nil
+	}
+	if known && offered && wanted && deferDuringPrompt && b.promptActive &&
+		b.hooks.ConfigOptionRequiresIdle != nil && b.hooks.ConfigOptionRequiresIdle(configID, value) {
+		if b.options.deferredWrites == nil {
+			b.options.deferredWrites = make(map[string]string)
+		}
+		b.options.deferredWrites[configID] = value
+		b.Mu.Unlock()
+		return nil
+	}
 	b.Mu.Unlock()
 	if !known {
 		return fmt.Errorf("unknown config option: %s", configID)
@@ -3313,7 +3338,7 @@ func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func()
 		params["type"] = configOptionTypeBoolean
 		params["value"] = value == "true"
 	}
-	resp, err := b.sendSessionRPC(MethodSessionSetConfigOption, params)
+	resp, err := b.sendOwnedSessionRPCObserved(sessionID, MethodSessionSetConfigOption, params, nil)
 	if err != nil {
 		return err
 	}
@@ -3328,6 +3353,7 @@ func (b *Base) setConfigOptionGuarded(configID, value string, stillWanted func()
 		b.options.markUnresolved(configID)
 		b.options.recordOptimistic(configID, value, b.hooks.EffortConfigID)
 	}
+	delete(b.options.deferredWrites, configID)
 	b.Mu.Unlock()
 	return nil
 }
@@ -3344,7 +3370,7 @@ func (b *Base) withOptionWriteBatch(fn func(values map[string]string, known []st
 	b.optionWriteMu.Lock()
 	defer b.optionWriteMu.Unlock()
 	b.Mu.Lock()
-	values := maps.Clone(b.options.values)
+	values := b.options.selectedValues()
 	known := b.options.known.keys()
 	b.Mu.Unlock()
 	fn(values, known)

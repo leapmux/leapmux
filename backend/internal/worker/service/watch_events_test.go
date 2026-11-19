@@ -1321,7 +1321,9 @@ func TestReplayActivityIsTheWATCHEDAgentsOwnAnswer(t *testing.T) {
 	svc.Output.processRunning = func(string) bool { return true }
 	settles := holdSettles(t, svc.Output)
 	sink := newTestRootOutputSink(t, svc.Output, "root-own", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-own", ProviderChildKey: "row-own", Title: "finished child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-own", ProviderChildKey: "row-own", Title: "finished child"})
 	require.NoError(t, err)
 	// This child is DONE while a sibling keeps running, so the two ids disagree:
 	// the child is idle and the root still rolls the sibling up.
@@ -1377,7 +1379,9 @@ func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	rootSink := newTestRootOutputSink(t, svc.Output, "root-2", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-watch", ProviderChildKey: "row-key-watch", Title: "child task"})
+	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-span-watch", ProviderChildKey: "row-key-watch", Title: "child task"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	// The root is NOT registered with the agent manager, so agentProcessRunning

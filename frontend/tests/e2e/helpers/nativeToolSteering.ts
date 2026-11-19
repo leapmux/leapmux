@@ -265,6 +265,9 @@ export interface SteerBeforeToolOptions {
   resultDividers?: number
 }
 
+/** The ordered answer to the model request that receives queued steering. */
+export const STEER_BEFORE_TOOL_ANSWER = 'The turn ended with STEEREDWORD.'
+
 /**
  * Insert a queued message into the native turn before its first tool runs.
  *
@@ -282,13 +285,14 @@ export async function exerciseSteerBeforeTool(context: NativeScenarioContext, op
         bashToolCall(context.provider, 'steer-tool', command),
       ],
     },
-    nativeTextStep(context, 'The turn ended with STEEREDWORD.'),
+    nativeTextStep(context, STEER_BEFORE_TOOL_ANSWER),
   )
   await withCleanup(async () => {
     await sendMessage(context.page, context.modelScript.prompt('Run the scripted shell command, then reply.'))
     await context.modelScript.waitForGate(gate)
     await steerQueuedInput(context.page, { message: steering, match: 'Also include the word' })
-    await context.modelScript.releaseGate(gate)
+    // A steer can cancel the held request before the release.
+    await context.modelScript.releaseGateIfHeld(gate)
   }, async () => {
     await context.modelScript.releaseGateIfHeld(gate)
   })

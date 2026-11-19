@@ -3,7 +3,6 @@ package qoder
 import (
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -20,34 +19,49 @@ const qoderSettingsTimeout = 2 * time.Second
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	model := a.model
-	models := a.models
+	models := qoderMergedModels(a.models, a.customModels)
 	modelsReported := a.modelsReported
 	effort := a.runningEffortLocked()
 	thinking := qoderThinkingValue(a.thinking)
 	outputStyleGroup := a.outputStyleGroupLocked()
 	mode := a.displayedModeLocked()
+	permissionGroup := qoderPermissionModeGroup(mode)
+	permissionGroup.Options = slices.DeleteFunc(permissionGroup.Options, func(option *leapmuxv1.AvailableOption) bool {
+		return slices.Contains(a.disabledPermissionModes, option.Id)
+	})
 	a.mu.Unlock()
-	if !modelsReported {
-		a.configuredModelsOnce.Do(func() {
-			configured, err := readQoderConfiguredModels(a.opts)
-			if err != nil {
-				slog.Warn("qoder: configured models unavailable", "agent_id", a.AgentID(), "error", err)
-				return
-			}
-			a.configuredModels = configured
-		})
-		models = a.configuredModels
-	}
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		qoderEffortGroup(effort),
 		qoderThinkingGroup(thinking),
 		outputStyleGroup,
-		qoderPermissionModeGroup(mode),
+		permissionGroup,
 	}
 	if modelGroup := qoderModelGroup(models, model, !modelsReported); modelGroup != nil {
 		groups = append([]*leapmuxv1.AvailableOptionGroup{modelGroup}, groups...)
 	}
 	return groups
+}
+
+// handlePermissionPolicy applies the SDK's restrictions to the mode picker.
+func (a *Agent) handlePermissionPolicy(raw []byte) {
+	var update struct {
+		Policy *struct {
+			DisabledModes *[]string `json:"disabledModes"`
+		} `json:"permissionPolicy"`
+	}
+	if json.Unmarshal(raw, &update) != nil || update.Policy == nil || update.Policy.DisabledModes == nil {
+		return
+	}
+	disabled := slices.Clone(*update.Policy.DisabledModes)
+	slices.Sort(disabled)
+	disabled = slices.Compact(disabled)
+	a.mu.Lock()
+	changed := !slices.Equal(disabled, a.disabledPermissionModes)
+	a.disabledPermissionModes = disabled
+	a.mu.Unlock()
+	if changed {
+		a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
+	}
 }
 
 // SettingsSnapshot returns the live option values.

@@ -6,6 +6,7 @@ import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/native
 import { nativeToolCallArguments, nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, railedRows, toolCallRow } from '../helpers/ui'
+import { codeBuddyOutputObserver } from './outputObserver'
 import { readCodeBuddyShellResult } from './shellResult'
 
 codebuddyTest.describe('CodeBuddy Code tool execution', () => {
@@ -27,9 +28,10 @@ codebuddyTest.describe('CodeBuddy Code tool execution', () => {
 })
 
 codebuddyTest('runs successful and failed native commands with their actual output', async ({ native }, testInfo) => {
-  // The CLI can close its pipes before stderr arrives. Preserve its exact empty
-  // failure record in that case, and retain the marker proof when stderr arrives.
+  // The native pipe handle discards data after process exit. Keep each command
+  // alive until its native spool retains the output, including the failed command.
   await exerciseShellToolExecution(native, {
+    outputGate: await codeBuddyOutputObserver(native),
     readResult: async (request, command) => {
       const evidence = readCodeBuddyShellResult(request, command)
       await testInfo.attach(`codebuddy-native-shell-result-${command.exitCode}`, {

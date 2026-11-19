@@ -1,77 +1,10 @@
 import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { KIMI_EVENT, KIMI_ORIGIN } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_ORIGIN, KIMI_CONVERSATION_OUTCOME, KIMI_CONVERSATION_RECORD_ROLE, KIMI_CONVERSATION_STATUS, KIMI_CONVERSATION_SYSTEM_KIND, KIMI_EVENT, KIMI_NOTICE_LEVEL } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { retryEntry } from '../../../model/notification'
-import { KIMI_GOAL_CONTINUATION, kimiEvent, kimiEventData } from '../protocol'
-
-/**
- * Why the agent started a turn by itself, per `turn.started.origin.kind`.
- *
- * The worker records such a turn because nothing else in the transcript says why the
- * agent speaks. A user turn, and a turn that follows a task notification, never reach a
- * row: the user's message and the notification already state the cause.
- *
- * A Map, for the reason `kimi/toolKinds.ts` gives: the key is a WIRE word.
- */
-const KIMI_ORIGIN_PHRASES: ReadonlyMap<string, (name: string) => string> = new Map([
-  [
-    KIMI_ORIGIN.SystemTrigger,
-    (name: string) => name === KIMI_GOAL_CONTINUATION
-      ? 'Continuing the goal'
-      : name
-        ? `Started by ${name}`
-        : 'Started by the agent',
-  ],
-  [
-    KIMI_ORIGIN.CronJob,
-    (name: string) => name
-      ? `Scheduled prompt ${name} fired`
-      : 'A scheduled prompt fired',
-  ],
-  [
-    KIMI_ORIGIN.CronMissed,
-    (name: string) => name
-      ? `Missed scheduled prompt ${name} ran late`
-      : 'A missed scheduled prompt ran late',
-  ],
-  [
-    KIMI_ORIGIN.Retry,
-    () => 'Retrying the turn',
-  ],
-  [
-    KIMI_ORIGIN.HookResult,
-    (name: string) => name
-      ? `Hook ${name} started a turn`
-      : 'A hook started a turn',
-  ],
-  [
-    KIMI_ORIGIN.SkillActivation,
-    (name: string) => name
-      ? `Skill ${name} started a turn`
-      : 'A skill started a turn',
-  ],
-  [
-    KIMI_ORIGIN.PluginCommand,
-    (name: string) => name
-      ? `Plugin command ${name} started a turn`
-      : 'A plugin command started a turn',
-  ],
-  [
-    KIMI_ORIGIN.Injection,
-    () => 'The agent received injected context',
-  ],
-  [
-    KIMI_ORIGIN.ShellCommand,
-    (name: string) => name
-      ? `Shell command ${name} started a turn`
-      : 'A shell command started a turn',
-  ],
-  [
-    KIMI_ORIGIN.CompactionSummary,
-    () => 'Continuing from the compacted context',
-  ],
-])
+import { kimiConversationRow, kimiTurnIsBlocked } from '../conversation'
+import { kimiEvent } from '../protocol'
 
 /**
  * Read one Kimi Code notification row into the shared notification model.
@@ -81,6 +14,89 @@ const KIMI_ORIGIN_PHRASES: ReadonlyMap<string, (name: string) => string> = new M
  * row of its own that states nothing it can word.
  */
 export function kimiNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
+  const conversation = kimiConversationRow(msg)
+  if (conversation?.kind === 'item' && conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Origin) {
+    const explanation = kimiConversationOriginExplanation(pickObject(conversation.item, KIMI_CONVERSATION_FIELD.Origin))
+    return explanation
+      ? [
+          { kind: 'text', text: explanation },
+        ]
+      : []
+  }
+  if (conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.Notification) {
+    const item = conversation.item
+    const message = [
+      pickString(item, KIMI_CONVERSATION_FIELD.Title),
+      pickString(item, KIMI_CONVERSATION_FIELD.Body),
+    ]
+      .filter(text => text.trim())
+      .join(': ')
+    return kimiNoticeEntries(pickString(item, KIMI_CONVERSATION_FIELD.Severity), message, '')
+  }
+  if (conversation?.kind === 'failure') {
+    const detail = pickString(conversation.failure, KIMI_CONVERSATION_FIELD.Msg).trim()
+    return [
+      {
+        kind: 'text',
+        text: `Conversation history could not be loaded${detail
+          ? `: ${detail}`
+          : ''} (code ${Number(conversation.failure[KIMI_CONVERSATION_FIELD.Code])})`,
+      },
+    ]
+  }
+  if (conversation?.kind === 'retry') {
+    const error = pickObject(conversation.retry, KIMI_CONVERSATION_FIELD.Error)
+    return [
+      retryEntry('api', {
+        attempt: Number(conversation.retry[KIMI_CONVERSATION_FIELD.NextAttempt]),
+        maxAttempts: Number(conversation.retry[KIMI_CONVERSATION_FIELD.MaxAttempts]),
+        delayMs: Number(conversation.retry[KIMI_CONVERSATION_FIELD.DelayMS]),
+        error: pickString(error, 'message').trim() || pickString(error, 'name').trim(),
+      }),
+    ]
+  }
+  if (conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.System
+    && conversation.item[KIMI_CONVERSATION_FIELD.Kind] === KIMI_CONVERSATION_SYSTEM_KIND.Compaction && conversation.item[KIMI_CONVERSATION_FIELD.Status] === KIMI_CONVERSATION_STATUS.Ended) {
+    switch (conversation.item[KIMI_CONVERSATION_FIELD.Outcome]) {
+      case KIMI_CONVERSATION_OUTCOME.Completed:
+        return [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            detail: kimiCurrentCompactionDetails(conversation.item),
+          },
+        ]
+      case KIMI_CONVERSATION_OUTCOME.Interrupted:
+        return [
+          { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+        ]
+      case KIMI_CONVERSATION_OUTCOME.Failed:
+        return [
+          { kind: 'compaction', phase: 'end', outcome: 'failed' },
+        ]
+    }
+  }
+  if (conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.AssistantMessage && kimiTurnIsBlocked(conversation.turnContext)) {
+    const hook = /^<hook_result hook_event="([^"<>\n]+)">\n([\s\S]*)\n<\/hook_result>$/.exec(pickString(conversation.item, KIMI_CONVERSATION_FIELD.Text))
+    if (hook) {
+      const detail = hook[2]?.trim()
+      return [
+        { kind: 'text', text: `Hook ${hook[1]} blocked${detail
+          ? `: ${detail}`
+          : ''}` },
+      ]
+    }
+  }
+  if (conversation?.kind === 'notice') {
+    const notice = conversation.notice
+    const message = [
+      pickString(notice, KIMI_CONVERSATION_FIELD.Title),
+      pickString(notice, KIMI_CONVERSATION_FIELD.Detail),
+    ]
+      .filter(text => text.trim())
+      .join(': ')
+    return kimiNoticeEntries(pickString(notice, KIMI_CONVERSATION_FIELD.Level), message, pickString(notice, KIMI_CONVERSATION_FIELD.Code))
+  }
   const event = kimiEvent(msg)
   if (!event)
     return []
@@ -99,61 +115,6 @@ export function kimiNotificationEntry(msg: Record<string, unknown>): Notificatio
             ]
           : []
       })
-    case KIMI_EVENT.HookResult:
-      return [
-        {
-          kind: 'hook',
-          outcome: 'blocked',
-          event: pickString(data, 'hookEvent'),
-          detail: pickString(data, 'content'),
-        },
-      ]
-    case KIMI_EVENT.TurnStarted: {
-      const origin = pickObject(data, 'origin')
-      const phrase = KIMI_ORIGIN_PHRASES.get(pickString(origin, 'kind'))
-      return phrase
-        ? [
-            {
-              kind: 'text',
-              text: phrase(pickString(origin, 'name')),
-            },
-          ]
-        : []
-    }
-    case KIMI_EVENT.TurnStepRetrying: {
-      const attempt = pickNumber(data, 'nextAttempt')
-      const maxAttempts = pickNumber(data, 'maxAttempts')
-      const delayMs = pickNumber(data, 'delayMs')
-      const error = pickString(data, 'errorMessage').trim() || pickString(data, 'errorName').trim()
-      return [
-        retryEntry('api', {
-          ...(attempt !== null
-            ? { attempt }
-            : {}),
-          ...(maxAttempts !== null
-            ? { maxAttempts }
-            : {}),
-          ...(delayMs !== null
-            ? { delayMs }
-            : {}),
-          ...(error
-            ? { error }
-            : {}),
-        }),
-      ]
-    }
-    case KIMI_EVENT.CompactionCompleted:
-      return [
-        {
-          kind: 'compaction',
-          phase: 'end',
-          detail: kimiCompactionDetails(data),
-        },
-      ]
-    case KIMI_EVENT.CompactionCancelled:
-      return [
-        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
-      ]
     case KIMI_EVENT.Warning: {
       const message = pickString(data, 'message')
       return message
@@ -162,46 +123,81 @@ export function kimiNotificationEntry(msg: Record<string, unknown>): Notificatio
           ]
         : []
     }
-    case KIMI_EVENT.Error: {
-      const message = pickString(data, 'message')
-      const code = pickString(data, 'code')
-      if (!message && !code)
-        return []
-      return [
-        {
-          kind: 'text',
-          text: code && message
-            ? `Error (${code}): ${message}`
-            : `Error: ${message || code}`,
-        },
-      ]
-    }
-    case KIMI_EVENT.TaskNotified: {
-      const title = pickString(data, 'title')
-      const body = pickString(data, 'body')
-      const text = [title, body].filter(Boolean).join(': ')
-      return text
-        ? [
-            { kind: 'text', text },
-          ]
-        : []
-    }
     default:
       return []
   }
 }
 
-/** Identify a stored start only for the shared history filter. */
-export function kimiCompactionStart(payload: Record<string, unknown>): boolean {
-  return kimiEventData(payload, KIMI_EVENT.CompactionStarted) !== null
+function kimiConversationOriginExplanation(origin: Record<string, unknown> | null): string {
+  const field = KIMI_CONVERSATION_FIELD
+  switch (origin?.[field.Kind]) {
+    case KIMI_CONVERSATION_ORIGIN.Goal:
+      return 'Continuing the goal'
+    case KIMI_CONVERSATION_ORIGIN.Retry:
+      return 'Retrying the turn'
+    case KIMI_CONVERSATION_ORIGIN.Cron: {
+      const jobId = pickString(origin, field.JobID)
+      if (origin[field.Stale] === true) {
+        return jobId
+          ? `Missed scheduled prompt ${jobId} ran late`
+          : 'A missed scheduled prompt ran late'
+      }
+      return jobId
+        ? `Scheduled prompt ${jobId} started a turn`
+        : 'A scheduled prompt started a turn'
+    }
+    case KIMI_CONVERSATION_ORIGIN.Hook: {
+      const event = pickString(origin, field.HookEvent)
+      return event
+        ? `Hook ${event} started a turn`
+        : 'A hook started a turn'
+    }
+    case KIMI_CONVERSATION_ORIGIN.Skill: {
+      const name = pickString(origin, field.Name)
+      return name
+        ? `Skill ${name} started a turn`
+        : 'A skill started a turn'
+    }
+    case KIMI_CONVERSATION_ORIGIN.PluginCommand: {
+      const plugin = pickString(origin, field.PluginID)
+      const command = pickString(origin, field.Command)
+      return plugin && command
+        ? `Plugin command ${plugin}/${command} started a turn`
+        : 'A plugin command started a turn'
+    }
+    default:
+      return ''
+  }
 }
 
-/** What a compaction states about the context it rewrote. */
-function kimiCompactionDetails(data: Record<string, unknown>): CompactionDetails {
-  const result = pickObject(data, 'result')
-  const pre = pickNumber(result, 'tokensBefore')
-  const post = pickNumber(result, 'tokensAfter')
+function kimiNoticeEntries(level: string, message: string, code: string): NotificationEntry[] {
+  if (!message.trim()) {
+    return level === KIMI_NOTICE_LEVEL.Error && code.trim()
+      ? [
+          { kind: 'text', text: `Error: ${code}` },
+        ]
+      : []
+  }
+  const prefix = level === KIMI_NOTICE_LEVEL.Error
+    ? code
+      ? `Error (${code}): `
+      : 'Error: '
+    : level === KIMI_NOTICE_LEVEL.Warning
+      ? 'Warning: '
+      : ''
+  return [
+    { kind: 'text', text: `${prefix}${message}` },
+  ]
+}
+
+function kimiCurrentCompactionDetails(item: Record<string, unknown>): CompactionDetails {
+  const pre = pickNumber(item, KIMI_CONVERSATION_FIELD.TokensBefore)
+  const post = pickNumber(item, KIMI_CONVERSATION_FIELD.TokensAfter)
+  const trigger = pickString(item, KIMI_CONVERSATION_FIELD.Trigger)
   return {
+    ...(trigger
+      ? { trigger }
+      : {}),
     ...(pre !== null
       ? { pre }
       : {}),
@@ -218,8 +214,11 @@ function kimiCompactionDetails(data: Record<string, unknown>): CompactionDetails
  * the compacted size before the next usage report arrives.
  */
 export function kimiCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
-  const data = kimiEventData(parsed.parentObject, KIMI_EVENT.CompactionCompleted)
-  return data
-    ? kimiCompactionDetails(data)
-    : null
+  const conversation = kimiConversationRow(parsed.parentObject)
+  if (conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.System
+    && conversation.item[KIMI_CONVERSATION_FIELD.Kind] === KIMI_CONVERSATION_SYSTEM_KIND.Compaction && conversation.item[KIMI_CONVERSATION_FIELD.Status] === KIMI_CONVERSATION_STATUS.Ended
+    && conversation.item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Completed) {
+    return kimiCurrentCompactionDetails(conversation.item)
+  }
+  return null
 }

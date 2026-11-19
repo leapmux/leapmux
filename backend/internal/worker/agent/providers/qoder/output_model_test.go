@@ -59,7 +59,7 @@ func TestQoderInitializeAsksForModelUpdates(t *testing.T) {
 	stdin := &qoderInitializeStdin{agent: a, reply: json.RawMessage(`{"models":[]}`)}
 	a.SetStdinForTest(stdin)
 	require.NoError(t, a.initializeStream())
-	assert.Equal(t, map[string]any{"subtype": "initialize", "supportsAvailableModelsUpdate": true}, stdin.request)
+	assert.Equal(t, map[string]any{"subtype": "initialize", "supportsAvailableModelsUpdate": true, "supportsCatalogReadyInitialize": true, "includePartialMessages": true}, stdin.request)
 }
 
 func TestQoderCatalogListsOnlyEnabledModels(t *testing.T) {
@@ -77,7 +77,7 @@ func TestQoderCatalogListsOnlyEnabledModels(t *testing.T) {
 
 func TestQoderCatalogEmptyDoesNotRestoreConfiguredModels(t *testing.T) {
 	t.Parallel()
-	a := configuredQoderAgent(t, `{"providers":{"local":{"models":[{"model":"disabled"}]}}}`)
+	a := customCatalogQoderAgent(t, `{"configs":[{"providerId":"local","models":[{"id":"disabled"}]}]}`)
 	a.model = "local/disabled"
 	a.HandleOutput([]byte(`{"type":"system","subtype":"available_models_update","models":[{"value":"local/disabled","isEnabled":false}],"currentModel":"local/disabled"}`))
 	assert.Empty(t, qoderModelIDs(a))

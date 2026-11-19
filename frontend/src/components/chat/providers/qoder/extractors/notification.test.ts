@@ -4,6 +4,23 @@ import { input } from '../../testUtils'
 import { qoderCompactionBoundary, qoderNotificationEntry } from './notification'
 
 describe('qoderNotificationEntry', () => {
+  it('keeps hook configuration errors with their native event and message', () => {
+    expect(qoderNotificationEntry({
+      type: 'system',
+      subtype: 'hook_diagnostics',
+      read_status: 'complete',
+      diagnostics: [
+        { code: 'hook_validation_error', message: 'The hook command is empty', event: 'PreToolUse' },
+      ],
+    })).toEqual([
+      {
+        kind: 'hook',
+        outcome: 'failed',
+        detail: 'The hook command is empty',
+        event: 'PreToolUse',
+      },
+    ])
+  })
   it('keeps a completed native boundary with its reported token counts', () => {
     const frame = {
       type: QODER_FRAME_KIND.System,

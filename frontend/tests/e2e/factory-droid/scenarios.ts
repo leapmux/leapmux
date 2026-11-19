@@ -10,6 +10,8 @@ import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunn
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { DROID_CHILD_SYSTEM } from './childIdentity'
 import { droidChildNoticeRule } from './childNotice'
+import { droidConversationTurns } from './conversationTurns'
+import { droidToolRowId } from './toolIdentity'
 import { readDroidToolResult } from './toolResult'
 
 /** How a Factory Droid agent opens. */
@@ -20,7 +22,11 @@ export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefi
  * The Droid test object registers the title rule of every test (`droid-fixtures.ts`), so the context registers none.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, DROID_AGENT, { readToolResult: readDroidToolResult })
+  return managedNativeContext(fixtures, DROID_AGENT, {
+    readConversationTurns: droidConversationTurns,
+    readToolResult: readDroidToolResult,
+    resolveToolRowId: query => droidToolRowId(fixtures, query),
+  })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

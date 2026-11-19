@@ -577,19 +577,19 @@ describe('codex fileChange routes through the shared diff component', () => {
 // OpenCode tool_call_update
 // ---------------------------------------------------------------------------
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderKiloUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.KILO)
   return render(() => result)
 }
 
-describe('opencode tool_call_update diff selection', () => {
+describe('kilo tool_call_update diff selection', () => {
   // `rawInput` states the file the call ASKED to change, which the row heads itself
   // with at every state of the call (invariant I7). It carries no replacement text
   // here, so it synthesizes no diff of its own and the content array stays the one
   // source of the body below.
   it('renders the diff embedded in the update content array', async () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
       status: 'completed',
@@ -611,7 +611,7 @@ describe('opencode tool_call_update diff selection', () => {
   })
 
   it('falls back to a diff synthesized from rawInput when content has no diff', async () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
       status: 'completed',
@@ -630,7 +630,7 @@ describe('opencode tool_call_update diff selection', () => {
   })
 
   it('renders text output (and no diff) when neither content nor rawInput carry diff data', () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'execute',
       status: 'completed',
@@ -648,7 +648,7 @@ describe('opencode tool_call_update diff selection', () => {
   })
 
   it('renders failure output and draws no diff when status is failed', () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
       status: 'failed',
@@ -678,7 +678,7 @@ describe('opencode tool_call_update diff selection', () => {
   // text-output branch rendered alongside the diff. The fix gates on
   // `effectiveDiff() === null`.
   it('does not duplicate text output below the diff when both are present', async () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
       status: 'completed',
@@ -713,7 +713,7 @@ describe('opencode tool_call_update diff selection', () => {
   // apart, so this pair must draw both halves however many times the message
   // was parsed.
   it('keeps the requested edit beside reported words when the result side is a re-parse of the row', async () => {
-    const parse = (content: Record<string, unknown>) => resolveMessageForRendering(parseMessageContent(makeFakeMessage(content)), AgentProvider.OPENCODE)
+    const parse = (content: Record<string, unknown>) => resolveMessageForRendering(parseMessageContent(makeFakeMessage(content)), AgentProvider.KILO)
     const request = parse({
       sessionUpdate: 'tool_call',
       toolCallId: 'unconfirmed-edit',
@@ -743,7 +743,7 @@ describe('opencode tool_call_update diff selection', () => {
         }),
       },
       { kind: 'tool_use' } as MessageCategory,
-      AgentProvider.OPENCODE,
+      AgentProvider.KILO,
     ))
     await settleWorkerReplies()
     const text = container.textContent ?? ''

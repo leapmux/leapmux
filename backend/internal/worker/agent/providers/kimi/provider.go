@@ -28,10 +28,18 @@ func (kimiProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 		return agent.NotificationClassification{}
 	}
 	switch head.Type {
-	case contracts.KimiEventTurnStepRetrying:
-		return agent.APIRetryNotification()
-	case contracts.KimiEventCompactionCompleted, contracts.KimiEventCompactionCancelled:
-		return agent.CompactionBoundaryNotification()
+	case contracts.KimiConversationRecordKindItem:
+		view, err := decodeKimiConversationRecord(raw)
+		if err == nil && view.item != nil && view.item.Type == contracts.KimiConversationItemKindSystem &&
+			view.item.SystemKind == contracts.KimiConversationSystemKindCompaction && view.item.Status == contracts.KimiConversationStatusEnded {
+			return agent.CompactionBoundaryNotification()
+		}
+		return agent.NotificationClassification{}
+	case contracts.KimiConversationRecordKindRetry:
+		if _, err := decodeKimiConversationRecord(raw); err == nil {
+			return agent.APIRetryNotification()
+		}
+		return agent.NotificationClassification{}
 	default:
 		return agent.NotificationClassification{}
 	}
@@ -84,18 +92,14 @@ func (kimiProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) er
 	return providerkit.ValidateTextAndImageAttachment(kimiAttachmentLabel, attachment)
 }
 
-// ChildCapabilities.AcceptsMessages is true: a subagent's tab sends it messages, which the
-// server runs as the subagent's next turn. See subagent.go.
-
-// ChildCapabilities.AcceptsInterrupt is true: a subagent's tab can stop its running turn.
-// See InterruptChild in subagent.go.
-
 // ListStoredSessions reads Kimi Code's own session store. See sessions.go.
 func (kimiProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return kimiStoredSessions(ctx, q)
 }
 
-// ChildCapabilities states the native child operations that this provider supports.
+// ChildCapabilities supports messages from a subagent's tab through its native queue.
 func (kimiProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
-	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}
+	// Native task addresses do not identify the current child turn.
+	// Separate registry-task controls: https://github.com/leapmux/leapmux/issues/644
+	return agent.ChildCapabilities{AcceptsMessages: true}
 }

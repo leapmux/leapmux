@@ -1,0 +1,103 @@
+{
+  "_readme": "Questions and contexts captured from Oh My Pi v18.20.0 parseHtmlForm, fieldQuestions and fieldContexts. Source commit c308970263ae13744ea15ab67302e3dac840e266. The scratch probe changes only the DOM import path and makes no agent or model request.",
+  "cases": [
+    {
+      "name": "section and earlier paragraphs",
+      "html": "<form><fieldset><legend>Deployment</legend><p>Use isolated credentials.</p><p>Choose target</p><label><input type=radio name=target value=a>Alpha</label><label><input type=radio name=target value=b>Beta</label></fieldset></form>",
+      "questions": [
+        {
+          "id": "target",
+          "question": "Choose target",
+          "context": "Deployment\n\nUse isolated credentials."
+        }
+      ]
+    },
+    {
+      "name": "trailing context",
+      "html": "<form><p>Before</p><label>Choose<select name=target><option>Alpha</option><option>Beta</option></select></label><p>After</p></form>",
+      "questions": [
+        {
+          "id": "target",
+          "question": "Choose",
+          "context": "Before\n\nAfter"
+        }
+      ]
+    },
+    {
+      "name": "native styled whitespace and hard breaks",
+      "html": "<form><p>Policy <strong> applies </strong> everywhere<br>Keep values.</p><label>Choose<select name=target><option>Alpha</option><option>Beta</option></select></label></form>",
+      "questions": [
+        {
+          "id": "target",
+          "question": "Choose",
+          "context": "Policy  applies  everywhere\nKeep values."
+        }
+      ]
+    },
+    {
+      "name": "preformatted list and table blocks",
+      "html": "<form><pre>\nraw\n code \n</pre><ul><li>One</li><li>Two</li></ul><table><tr><td>A</td><td>B</td></tr></table><label>Choose<select name=target><option>Alpha</option><option>Beta</option></select></label></form>",
+      "questions": [
+        {
+          "id": "target",
+          "question": "Choose",
+          "context": "raw\n code\n\n- One\n- Two\n\nA | B"
+        }
+      ]
+    },
+    {
+      "name": "text between options belongs to that field",
+      "html": "<form><fieldset><legend>Choose A</legend><label><input type=radio name=a value=one>One</label><p>Context for A</p><label><input type=radio name=a value=two>Two</label><p>Choose B</p><label><input type=radio name=b value=one>One</label><label><input type=radio name=b value=two>Two</label></fieldset></form>",
+      "questions": [
+        {
+          "id": "a",
+          "question": "Choose A",
+          "context": "Context for A"
+        },
+        {
+          "id": "b",
+          "question": "Choose B",
+          "context": ""
+        }
+      ]
+    },
+    {
+      "name": "another field prevents inter-option ownership",
+      "html": "<form><fieldset><legend>Choose A</legend><label><input type=radio name=a value=one>One</label><p>Choose B</p><label><input type=radio name=b value=one>One</label><label><input type=radio name=b value=two>Two</label><p>Trailing explanation</p><label><input type=radio name=a value=two>Two</label></fieldset></form>",
+      "questions": [
+        {
+          "id": "a",
+          "question": "Choose A",
+          "context": ""
+        },
+        {
+          "id": "b",
+          "question": "Choose B",
+          "context": "Trailing explanation"
+        }
+      ]
+    },
+    {
+      "name": "nested legends remain context",
+      "html": "<form><fieldset><legend>Outer</legend><fieldset><legend>Inner</legend><p>Choose</p><label><input type=radio name=target value=a>Alpha</label><label><input type=radio name=target value=b>Beta</label></fieldset></fieldset></form>",
+      "questions": [
+        {
+          "id": "target",
+          "question": "Choose",
+          "context": "Outer\n\nInner"
+        }
+      ]
+    },
+    {
+      "name": "unnamed fields do not consume context",
+      "html": "<form><p>Keep context</p><label><input type=checkbox value=yes>Unnamed</label><label>Choose<select name=target><option>Alpha</option></select></label></form>",
+      "questions": [
+        {
+          "id": "target",
+          "question": "Choose",
+          "context": "Keep context"
+        }
+      ]
+    }
+  ]
+}

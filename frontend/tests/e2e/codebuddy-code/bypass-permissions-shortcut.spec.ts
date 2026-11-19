@@ -5,12 +5,14 @@ import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { chooseSettingsOption, expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { codeBuddyOutputObserver } from './outputObserver'
 import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code settings', () => {
   codebuddyTest('offers both shortcuts and runs a native tool after Bypass', async ({ native }) => {
     const { page } = native
     await exerciseBypassPermissions(native, {
+      outputGate: await codeBuddyOutputObserver(native),
       // The workspace opens in Bypass. Default asks before a tool, so the shortcut must change the native behavior.
       prepare: async () => {
         await waitForSettingsHydrated(page, 'permissionMode')

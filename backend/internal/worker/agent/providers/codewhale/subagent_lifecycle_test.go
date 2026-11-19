@@ -227,7 +227,9 @@ func TestCodewhaleFinalTranscriptRetryDoesNotPollNativeRuns(t *testing.T) {
 	runtime := newFakeRuntime(t)
 	clock := testutil.NewQuartzMock(t)
 	a, sink := newTestAgentWithClock(t, runtime, clock)
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "final-drain", ProviderChildKey: testChildID, Title: "Finished child"})
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "final-drain", ProviderChildKey: testChildID, Title: "Finished child"})
 	require.NoError(t, err)
 	path := childTranscriptPath(a.workingDir, testChildID)
 	require.NoError(t, os.MkdirAll(path, 0o700))
@@ -269,7 +271,9 @@ func TestCodewhaleFinalOnlyPollingStopsAndRestartsForPausedChildren(t *testing.T
 	clock := testutil.NewQuartzMock(t)
 	a, _ := newTestAgentWithClock(t, runtime, clock)
 	add := func(key string, status bgtask.Status) *codewhaleChild {
-		id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-" + key, ProviderChildKey: key, Title: key})
+		id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "spawn-" + key, ProviderChildKey: key, Title: key})
 		require.NoError(t, err)
 		child := &codewhaleChild{agentID: key, childID: id, observedStatus: status, nudge: make(chan struct{}, 1), openTools: make(map[string]string)}
 		require.True(t, a.children.start(child, func(ctx context.Context, _ *codewhaleChild) { <-ctx.Done() }))

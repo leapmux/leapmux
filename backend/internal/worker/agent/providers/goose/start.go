@@ -13,20 +13,13 @@ var _ agent.StartFunc = Start
 
 // Start starts a Goose CLI ACP agent process and performs the handshake.
 //
-// The Native Commands option withholds the host terminal: Goose then runs
-// each command itself and saves long output to a file it reports, instead of
-// routing commands to the LeapMux terminal. Goose reads the capability only
-// in the initialize handshake, so a change restarts the agent.
+// Goose runs its developer commands in its own shell.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
-	nativeCommands, err := opts.Options.Bool(OptionNativeCommands)
-	if err != nil {
-		return nil, err
-	}
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: Registration(),
 		ProviderName: "goose",
 		BaseArgs:     []string{"acp"},
-		NewAgent:     func() *Agent { return &Agent{nativeCommands: nativeCommands} },
+		NewAgent:     func() *Agent { return &Agent{} },
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
 			return acp.Hooks{
@@ -57,8 +50,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ClientCapabilityMeta: map[string]any{
 					gooseSteerNamespace: map[string]any{"customNotifications": true},
 				},
-				DisableHostTerminal:    nativeCommands,
-				LocalOptionGroups:      a.nativeCommandGroups,
 				ExtraMethod:            a.handleGooseExtraMethod,
 				ToolOutputComplete:     a.clearGooseToolOutput,
 				SessionMetadataHandler: a.captureSteerRunID,

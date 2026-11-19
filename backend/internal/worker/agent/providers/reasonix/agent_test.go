@@ -399,3 +399,41 @@ func TestDefaultModel_ReasonixUsesEnvOverride(t *testing.T) {
 	t.Setenv("LEAPMUX_REASONIX_DEFAULT_MODEL", "deepseek-pro")
 	assert.Equal(t, "deepseek-pro", Registration().DefaultModel())
 }
+
+func TestStartReasonixCancelsBeforeReleasingPendingPermission(t *testing.T) {
+	installFakeReasonixCLI(t, filepath.Join(t.TempDir(), "args.txt"))
+	sink := &agenttest.ControlSink{}
+	provider, err := Start(t.Context(), agent.Options{
+		AgentID: "reasonix-cancel-order", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	}, agent.NewProviderServices(sink))
+	require.NoError(t, err)
+	a := provider.(*Agent)
+	t.Cleanup(func() { a.Stop(); _ = a.Wait() })
+	original := a.StdinForTest()
+	stdin := &agenttest.Stdin{}
+	a.SetStdinForTest(stdin)
+	defer a.SetStdinForTest(original)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{"sessionId":"reasonix-new","toolCall":{"toolCallId":"native-call","title":"Run the command","kind":"execute"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}`))
+	require.Len(t, sink.PublishedControls(), 1)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.NoError(t, a.SendNotification("test/barrier", nil))
+	cancelAt, replyAt := -1, -1
+	for index, raw := range strings.Split(strings.TrimSpace(stdin.String()), "\n") {
+		var frame struct {
+			Method string `json:"method"`
+			ID     int    `json:"id"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(raw), &frame))
+		if frame.Method == acp.MethodSessionCancel {
+			cancelAt = index
+		}
+		if frame.Method == "" && frame.ID == 77 {
+			replyAt = index
+		}
+	}
+	require.NotEqual(t, -1, cancelAt)
+	require.NotEqual(t, -1, replyAt)
+	assert.Less(t, cancelAt, replyAt, "the native model must be canceled before its permission wait resumes")
+}

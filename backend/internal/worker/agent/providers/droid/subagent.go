@@ -84,7 +84,9 @@ func (a *Agent) registerChildSession(parentSessionID string, payload []byte) str
 	if n.ToolUseID != "" {
 		spawnSpanID = "droid-tool-" + n.ToolUseID
 	}
-	childID, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: n.ChildSessionID, Title: title})
+	childID, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  spawnSpanID, ProviderChildKey: n.ChildSessionID, Title: title})
 	if err != nil {
 		slog.Warn("droid: ensure child", "session_id", n.ChildSessionID, "error", err)
 		return ""

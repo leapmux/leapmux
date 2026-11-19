@@ -1,91 +1,14 @@
 {
-  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores native event payloads and complete native interaction frames. Approvals and questions arrive through unsequenced interaction frames with nested requests. The frames and interactionKinds tables describe that envelope. The Worker removes repeated entries from global config warnings and preserves their other native fields. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns the native wire values. LeapMux owns its plan mode and permission_mode, which selects the mode after plan approval. Control answers use the unified interaction route and carry their native kind. A question dismissal sets dismissed to true. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file. The Worker also stores each entry of GET /sessions/{id}/warnings in the shape of the warning event (type, agentId, sessionId, code, message). The server publishes profile warnings before a subscription can receive them. notificationEvents lists the event types that the Worker stores as notification rows. The browser treats the same set as one notification thread. The Worker stores other unknown session events as message rows. Compaction starts and blocked compactions use the live compaction key.",
+  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs kimi web and drives its kap-server through REST and one WebSocket. Native subscriptions deliver the latest turn page and subsequent turn and item changes for each selected agent. Older turn pages come from REST. The acknowledgement precedes initial state, so input admission waits for a complete conversation snapshot. Child subscriptions include their exact native agent IDs. The Worker stores immutable conversation records with native session, agent, turn and item ownership. The optional step index is metadata. Scoped conversation supplements carry authoritative revisions while preserving the original records. Native tool items retain their name and input alongside their result. Native task outcomes remain separate from child activity. Flat agent, usage, goal, todo, task and task.list frames carry unsequenced state. Native interaction frames carry approvals and questions with nested requests. Control replies use the unified interaction route. Subscription notices and recoverable conversation failures retain their native diagnostic fields and ownership. Each delivery has its own Worker receipt because the native feed supplies no notice event ID. A recoverable conversation failure cancels older history work and holds admission until a replacement snapshot arrives. The browser reads native output headers and file pointers while preserving the preview. An explicit native tool output remains authoritative, including an empty string. The Worker fetches session media through the authenticated API and checks its media type and digest. The browser resolves scoped supplements into a display copy. Original native item fields remain intact. The native read-only configuration validator recovers startup warnings emitted before subscription. The Worker removes repeated global configuration warnings. Moonshot AI owns native values. LeapMux owns the plan value of its permission axis and permission_mode in a plan-approval reply, which selects the native permission mode after approval. Native turn outcomes and end reasons determine completion and interruption. Native public user origins retain their specific skill, plugin, scheduler and hook fields. Model-tool skill activation exposes its public request and result; private activation metadata remains with the engine. The shared tables cover vocabulary LeapMux interprets. Each unread field states which side retains its bytes without interpreting them.",
   "events": {
-    "AgentCreated": "agent.created",
-    "AgentDisposed": "agent.disposed",
-    "AgentStatusUpdated": "agent.status.updated",
-    "AssistantDelta": "assistant.delta",
-    "ThinkingDelta": "thinking.delta",
-    "ToolCallDelta": "tool.call.delta",
-    "ToolCallStarted": "tool.call.started",
-    "ToolProgress": "tool.progress",
-    "ToolResult": "tool.result",
-    "ToolListUpdated": "tool.list.updated",
-    "TurnStarted": "turn.started",
-    "TurnEnded": "turn.ended",
-    "TurnSteer": "turn.steer",
-    "TurnStepStarted": "turn.step.started",
-    "TurnStepCompleted": "turn.step.completed",
-    "TurnStepInterrupted": "turn.step.interrupted",
-    "TurnStepRetrying": "turn.step.retrying",
-    "PromptSubmitted": "prompt.submitted",
-    "PromptQueued": "prompt.queued",
-    "PromptStarted": "prompt.started",
-    "PromptSteered": "prompt.steered",
-    "PromptCompleted": "prompt.completed",
-    "PromptAborted": "prompt.aborted",
-    "CompactionStarted": "compaction.started",
-    "CompactionCompleted": "compaction.completed",
-    "CompactionBlocked": "compaction.blocked",
-    "CompactionCancelled": "compaction.cancelled",
-    "ContextSpliced": "context.spliced",
-    "ContextUndone": "context.undone",
-    "Error": "error",
     "Warning": "warning",
-    "GoalUpdated": "goal.updated",
-    "SubagentSpawned": "subagent.spawned",
-    "SubagentStarted": "subagent.started",
-    "SubagentCompleted": "subagent.completed",
-    "SubagentFailed": "subagent.failed",
-    "SubagentCancelled": "subagent.cancelled",
-    "SubagentSuspended": "subagent.suspended",
-    "TaskStarted": "task.started",
-    "TaskTerminated": "task.terminated",
-    "TaskNotified": "task.notified",
-    "BackgroundTaskStarted": "background.task.started",
-    "BackgroundTaskTerminated": "background.task.terminated",
-    "CronFired": "cron.fired",
-    "HookResult": "hook.result",
-    "McpServerStatus": "mcp.server.status",
-    "PlanRevision": "plan.revision",
-    "SkillActivated": "skill.activated",
-    "PluginCommandActivated": "plugin_command.activated",
-    "ShellStarted": "shell.started",
-    "ShellOutput": "shell.output",
-    "ShellCompleted": "shell.completed",
-    "TowerInboxSent": "tower.inbox.sent",
-    "SessionMetaUpdated": "session.meta.updated",
-    "PermissionApprovalRequested": "permission.approval.requested",
-    "PermissionApprovalResolved": "permission.approval.resolved",
-    "SessionCreated": "event.session.created",
-    "SessionArchived": "event.session.archived",
-    "SessionDeleted": "event.session.deleted",
-    "SessionWorkChanged": "event.session.work_changed",
-    "SessionStatusChanged": "event.session.status_changed",
-    "WorkspaceCreated": "event.workspace.created",
-    "WorkspaceUpdated": "event.workspace.updated",
-    "WorkspaceDeleted": "event.workspace.deleted",
-    "ConfigChanged": "event.config.changed",
     "ConfigWarning": "event.config.warning",
-    "ModelCatalogChanged": "event.model_catalog.changed",
-    "PluginChanged": "event.plugin.changed",
-    "CapabilityChanged": "event.capability.changed",
-    "UnitChanged": "event.di.unit_changed"
-  },
-  "origins": {
-    "User": "user",
-    "SkillActivation": "skill_activation",
-    "PluginCommand": "plugin_command",
-    "Injection": "injection",
-    "ShellCommand": "shell_command",
-    "CompactionSummary": "compaction_summary",
-    "SystemTrigger": "system_trigger",
-    "Task": "task",
-    "BackgroundTask": "background_task",
-    "CronJob": "cron_job",
-    "CronMissed": "cron_missed",
-    "HookResult": "hook_result",
-    "Retry": "retry"
+    "Agent": "agent",
+    "Usage": "usage",
+    "Goal": "goal",
+    "Todo": "todo",
+    "TaskList": "task.list",
+    "Task": "task"
   },
   "tools": {
     "Agent": "Agent",
@@ -167,12 +90,6 @@
     "InProgress": "in_progress",
     "Done": "done"
   },
-  "turnEndReasons": {
-    "Completed": "completed",
-    "Cancelled": "cancelled",
-    "Failed": "failed",
-    "Blocked": "blocked"
-  },
   "structs": {
     "KimiApprovalReply": {
       "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/interactions/{interaction_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision. The browser\nreads the stored reply back to word the saved answer.",
@@ -248,6 +165,177 @@
           "omitempty": true
         }
       ]
+    },
+    "KimiConversationRecord": {
+      "doc": "KimiConversationRecord is an immutable Worker view of one native conversation item, turn or notice.\nIt keeps native identities and public fields without pretending to be an upstream packet.\nLater authoritative views enrich the same stored record through conversationSupplement.",
+      "table": "conversationFields",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "AgentID",
+          "type": "string"
+        },
+        {
+          "key": "TurnID",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "TurnContext",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Role",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "OutputTruncated",
+          "type": "bool",
+          "omitempty": true
+        },
+        {
+          "key": "Item",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Turn",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Notice",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "EventCreatedAt",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "StepIndex",
+          "type": "int64",
+          "omitempty": true
+        },
+        {
+          "key": "Retry",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Failure",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "KimiConversationMediaFile": {
+      "doc": "KimiConversationMediaFile retains verified bytes recovered from the owned native media route.",
+      "table": "conversationMedia",
+      "fields": [
+        {
+          "key": "MIMEType",
+          "type": "string"
+        },
+        {
+          "key": "Data",
+          "type": "string"
+        }
+      ]
+    },
+    "KimiConversationMediaReceipt": {
+      "doc": "KimiConversationMediaReceipt binds recovered image bytes to one native tool item. It is rendering data, separate from authoritative conversation revisions.",
+      "table": "conversationMedia",
+      "fields": [
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "AgentID",
+          "type": "string"
+        },
+        {
+          "key": "TurnID",
+          "type": "string"
+        },
+        {
+          "key": "ItemID",
+          "type": "string"
+        },
+        {
+          "key": "Files",
+          "type": "map[string]#KimiConversationMediaFile"
+        }
+      ]
+    },
+    "KimiConversationTurnContext": {
+      "doc": "KimiConversationTurnContext binds an item view to its native turn without copying growing step or usage data. Tool requests never carry outcome context.",
+      "table": "conversationFields",
+      "fields": [
+        {
+          "key": "TurnID",
+          "type": "string"
+        },
+        {
+          "key": "Kind",
+          "type": "string"
+        },
+        {
+          "key": "Status",
+          "type": "string"
+        },
+        {
+          "key": "Outcome",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "EndReason",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    },
+    "KimiConversationFailure": {
+      "doc": "KimiConversationFailure retains the native identity and diagnostic fields of turns.failed. It describes a conversation subscription failure, not a model turn outcome.",
+      "table": "conversationFields",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "AgentID",
+          "type": "string"
+        },
+        {
+          "key": "EventCreatedAt",
+          "type": "string"
+        },
+        {
+          "key": "Code",
+          "type": "*int64"
+        },
+        {
+          "key": "Msg",
+          "type": "*string"
+        }
+      ]
     }
   },
   "_unread": {
@@ -264,24 +352,400 @@
         ],
         "why": "the worker writes the permission mode an approved plan switches to and applies it before it posts the decision; the browser reads the mode from the plan approval settings that the service stores beside the answer"
       }
+    },
+    "conversationFields": {
+      "Index": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "TurnNumber": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "EndedAt": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "Usage": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "Items": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker splits native history pages into individual item records. The browser never receives a turn page as a conversation record."
+      },
+      "Stage": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker reads native tool generation and execution progress. The browser reads the decoded tool input and the separate progress publications instead of these retained native fields."
+      },
+      "InputText": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker reads native tool generation and execution progress. The browser reads the decoded tool input and the separate progress publications instead of these retained native fields."
+      },
+      "Fields": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker retains native structured tool metadata. The browser reads the native display and textual tool result instead of this optional metadata map."
+      },
+      "TaskID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker correlates native task, child and interaction identities. The browser uses the resulting canonical registry and control identities instead of these native conversation references."
+      },
+      "InteractionID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker correlates native task, child and interaction identities. The browser uses the resulting canonical registry and control identities instead of these native conversation references."
+      },
+      "AgentRefs": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker correlates native task, child and interaction identities. The browser uses the resulting canonical registry and control identities instead of these native conversation references."
+      },
+      "Debug": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker retains the opaque native request diagnostics. The browser does not interpret or display the debug payload."
+      },
+      "NotificationType": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      },
+      "Source": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains notification source and fork source metadata. The browser renders the notification body or compaction outcome without interpreting these native source fields."
+      },
+      "Answer": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      },
+      "Instruction": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native system-item metadata. The browser renders compaction outcome and token counts, without interpreting the retained instructions, summary or fork metadata."
+      },
+      "CompactedCount": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native system-item metadata. The browser renders compaction outcome and token counts, without interpreting the retained instructions, summary or fork metadata."
+      },
+      "Summary": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native system-item metadata. The browser renders compaction outcome and token counts, without interpreting the retained instructions, summary or fork metadata."
+      },
+      "ForkedFrom": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native system-item metadata. The browser renders compaction outcome and token counts, without interpreting the retained instructions, summary or fork metadata."
+      },
+      "RequestID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker retains the native error diagnostics. The browser renders the error message and retry counters, without interpreting these optional error fields."
+      },
+      "StatusCode": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker retains the native error diagnostics. The browser renders the error message and retry counters, without interpreting these optional error fields."
+      },
+      "Retryable": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker retains the native error diagnostics. The browser renders the error message and retry counters, without interpreting these optional error fields."
+      },
+      "InputOther": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "InputCacheRead": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "InputCacheCreation": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "FinishReason": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates native turn and step summaries and derives completion and usage. The browser renders their outcome and duration, and reads the resulting usage state instead of these retained summaries."
+      },
+      "SwarmIndex": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker correlates native task, child and interaction identities. The browser uses the resulting canonical registry and control identities instead of these native conversation references."
+      },
+      "ID": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      },
+      "File": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      },
+      "Preview": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      },
+      "Bytes": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      },
+      "Truncated": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker validates and retains native notification metadata. The browser renders the notification title and body, without interpreting its source, answer or optional output metadata."
+      }
     }
   },
   "notificationEvents": [
-    "TurnStarted",
-    "TurnStepRetrying",
-    "CompactionCompleted",
-    "CompactionCancelled",
     "Warning",
-    "Error",
-    "TaskNotified",
-    "HookResult",
     "ConfigWarning"
   ],
   "frames": {
-    "Interaction": "interaction"
+    "Interaction": "interaction",
+    "Turns": "turns",
+    "TurnsRemoved": "turns.removed",
+    "TurnsFailed": "turns.failed",
+    "TurnStarted": "turn.started",
+    "TurnEnded": "turn.ended",
+    "TurnUpdated": "turn.updated",
+    "ItemStarted": "item.started",
+    "ItemEnded": "item.ended",
+    "ItemUpdated": "item.updated",
+    "ItemDelta": "item.delta",
+    "ItemRemoved": "item.removed",
+    "Notice": "notice"
   },
   "interactionKinds": {
     "Approval": "approval",
     "Question": "question"
+  },
+  "noticeLevels": {
+    "Info": "info",
+    "Warning": "warning",
+    "Error": "error"
+  },
+  "conversationRecordKinds": {
+    "Item": "leapmux.kimi.item",
+    "Turn": "leapmux.kimi.turn",
+    "Notice": "leapmux.kimi.notice",
+    "Retry": "leapmux.kimi.retry",
+    "Failure": "leapmux.kimi.failure"
+  },
+  "conversationRecordRoles": {
+    "Item": "item",
+    "Origin": "origin",
+    "Request": "request",
+    "Result": "result"
+  },
+  "conversationItemKinds": {
+    "UserMessage": "user_message",
+    "AssistantMessage": "assistant_message",
+    "Reasoning": "reasoning",
+    "ToolCall": "tool_call",
+    "Notification": "notification",
+    "System": "system"
+  },
+  "conversationStatuses": {
+    "Running": "running",
+    "Ended": "ended"
+  },
+  "conversationOutcomes": {
+    "Completed": "completed",
+    "Interrupted": "interrupted",
+    "Failed": "failed"
+  },
+  "conversationOrigins": {
+    "User": "user",
+    "Skill": "skill",
+    "PluginCommand": "plugin_command",
+    "Cron": "cron",
+    "Hook": "hook",
+    "Goal": "goal",
+    "Retry": "retry",
+    "System": "system"
+  },
+  "conversationSupplement": {
+    "Root": "kimi_conversation"
+  },
+  "conversationFields": {
+    "Type": "type",
+    "SessionID": "session_id",
+    "AgentID": "agent_id",
+    "TurnID": "turn_id",
+    "ItemID": "item_id",
+    "Role": "role",
+    "Item": "item",
+    "Turn": "turn",
+    "Notice": "notice",
+    "EventCreatedAt": "event_created_at",
+    "StepIndex": "step_index",
+    "Index": "index",
+    "Ordinal": "ordinal",
+    "Kind": "kind",
+    "Status": "status",
+    "Outcome": "outcome",
+    "EndReason": "end_reason",
+    "Error": "error",
+    "Retry": "retry",
+    "TurnNumber": "turn_number",
+    "StartedAt": "started_at",
+    "EndedAt": "ended_at",
+    "CreatedAt": "created_at",
+    "DurationMS": "duration_ms",
+    "Usage": "usage",
+    "Steps": "steps",
+    "Items": "items",
+    "Text": "text",
+    "Name": "name",
+    "Stage": "stage",
+    "Input": "input",
+    "InputText": "input_text",
+    "Display": "display",
+    "Output": "output",
+    "OutputTruncated": "output_truncated",
+    "Media": "media",
+    "Fields": "fields",
+    "TaskID": "task_id",
+    "InteractionID": "interaction_id",
+    "AgentRefs": "agent_refs",
+    "Note": "note",
+    "Debug": "debug",
+    "PromptIDs": "prompt_ids",
+    "Placement": "placement",
+    "Origin": "origin",
+    "Attachments": "attachments",
+    "Skills": "skills",
+    "Metadata": "metadata",
+    "NotificationID": "notification_id",
+    "Title": "title",
+    "Body": "body",
+    "Severity": "severity",
+    "NotificationType": "notification_type",
+    "Source": "source",
+    "Answer": "answer",
+    "Trigger": "trigger",
+    "Instruction": "instruction",
+    "TokensBefore": "tokens_before",
+    "TokensAfter": "tokens_after",
+    "CompactedCount": "compacted_count",
+    "Summary": "summary",
+    "ForkedFrom": "forked_from",
+    "FileID": "file_id",
+    "URL": "url",
+    "MediaType": "media_type",
+    "Size": "size",
+    "Path": "path",
+    "Args": "args",
+    "PluginID": "plugin_id",
+    "Command": "command",
+    "JobID": "job_id",
+    "Schedule": "schedule",
+    "Recurring": "recurring",
+    "CoalescedCount": "coalesced_count",
+    "Stale": "stale",
+    "HookEvent": "hook_event",
+    "Code": "code",
+    "Message": "message",
+    "RequestID": "request_id",
+    "StatusCode": "status_code",
+    "Retryable": "retryable",
+    "Attempt": "attempt",
+    "NextAttempt": "next_attempt",
+    "MaxAttempts": "max_attempts",
+    "DelayMS": "delay_ms",
+    "InputOther": "input_other",
+    "InputCacheRead": "input_cache_read",
+    "InputCacheCreation": "input_cache_creation",
+    "FinishReason": "finish_reason",
+    "SwarmIndex": "swarm_index",
+    "ID": "id",
+    "File": "file",
+    "Preview": "preview",
+    "Bytes": "bytes",
+    "Truncated": "truncated",
+    "Answers": "answers",
+    "Level": "level",
+    "Detail": "detail",
+    "TurnContext": "turn_context",
+    "Failure": "failure",
+    "Msg": "msg"
+  },
+  "conversationMedia": {
+    "Root": "kimi_media",
+    "SessionID": "session_id",
+    "AgentID": "agent_id",
+    "TurnID": "turn_id",
+    "ItemID": "item_id",
+    "Files": "files",
+    "MIMEType": "mimeType",
+    "Data": "data"
+  },
+  "conversationTurnKinds": {
+    "Agent": "agent",
+    "System": "system"
+  },
+  "conversationEndReasons": {
+    "UserCancelled": "user_cancelled",
+    "Aborted": "aborted",
+    "MaxSteps": "max_steps",
+    "Error": "error",
+    "Filtered": "filtered",
+    "Blocked": "blocked"
+  },
+  "conversationSystemKinds": {
+    "Compaction": "compaction",
+    "ForkBoundary": "fork_boundary"
   }
 }

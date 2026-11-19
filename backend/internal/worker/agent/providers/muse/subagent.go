@@ -138,7 +138,9 @@ func (a *Agent) prepareChildOrTaskLocked(params itemParams, parent *sessionState
 	created := child == nil
 	var promptErr error
 	if created {
-		id, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: item.ID, ProviderChildKey: key, AgentSessionID: item.ChildSessionID, Title: item.Objective, Options: optionmap.Map{}})
+		id, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  item.ID, ProviderChildKey: key, AgentSessionID: item.ChildSessionID, Title: item.Objective, Options: optionmap.Map{}})
 		if err != nil {
 			return nativeRegistryPlan{}, err
 		}
@@ -167,7 +169,11 @@ func (a *Agent) prepareChildOrTaskLocked(params itemParams, parent *sessionState
 	if hasFold {
 		status = workflowChildStatus(authority.child)
 	}
-	plan := nativeRegistryPlan{setupErr: promptErr, rows: []nativeRegistryRow{{upsert: bgtask.Upsert{RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, ParentAgentID: parent.childID, GroupKey: group, GroupLabel: label, Title: item.Objective, Description: item.Role, Status: status}, revive: head && !hasFold && status.IsWorking()}}}
+	role := bgtask.RoleUnspecified
+	if child.childID != "" {
+		role = bgtask.RoleChildTask
+	}
+	plan := nativeRegistryPlan{setupErr: promptErr, rows: []nativeRegistryRow{{upsert: bgtask.Upsert{Role: role, RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, ParentAgentID: parent.childID, GroupKey: group, GroupLabel: label, Title: item.Objective, Description: item.Role, Status: status}, revive: head && !hasFold && status.IsWorking()}}}
 	if promptErr == nil && (created || previous.Kind != "" && (previous.ChildSessionID != item.ChildSessionID || previous.ControlStatus != item.ControlStatus)) {
 		a.requestChildView(item.ChildSessionID)
 	}
@@ -215,8 +221,8 @@ func (a *Agent) ActiveChildTurnState(key string) agent.TurnState {
 	active := state != nil && state.childTurnActive()
 	return agent.TurnState{Active: active, Steerable: active}
 }
-func (a *Agent) SendChildInput(key, text string, attachments []*leapmuxv1.Attachment) error {
-	return a.childInput(key, text, attachments, false)
+func (a *Agent) SendChildInput(key string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	return agent.ChildInputResult{StartsTurn: true}, a.childInput(key, input.Content, input.Attachments, false)
 }
 func (a *Agent) SteerChildInput(key, text string, attachments []*leapmuxv1.Attachment) error {
 	return a.childInput(key, text, attachments, true)

@@ -91,6 +91,28 @@ describe('isOhMyPiApproval', () => {
 })
 
 describe('ohMyPiControlResponseSummary', () => {
+  it('resolves opaque bridge values to the displayed choice labels', () => {
+    const request = {
+      type: 'leapmux_ask',
+      id: 'choice-values',
+      questions: [
+        {
+          id: 'style',
+          question: 'Choose a style',
+          options: [
+            { value: '0', label: 'Beta Fast', markup: '<label><input type="radio"><strong>Beta</strong> <span>Fast</span></label>' },
+          ],
+        },
+      ],
+    }
+    expect(ohMyPiControlResponseSummary(saved(request, ohMyPiAskAnswer('choice-values', [
+      {
+        id: 'style',
+        selected: ['0'],
+        custom: '',
+      },
+    ])))).toEqual({ kind: 'label', text: 'Choose a style: Beta' })
+  })
   it('reads an approval decision', () => {
     expect(ohMyPiControlResponseSummary(saved(approval, ohMyPiValueResponse('a1', 'Approve')))).toEqual({ kind: 'label', text: 'Allow' })
     expect(ohMyPiControlResponseSummary(saved(approval, ohMyPiValueResponse('a1', 'Deny')))).toEqual({ kind: 'label', text: 'Deny' })

@@ -427,7 +427,6 @@ func zcodeSeedTestTurn(t *testing.T, a *Agent, background bool) {
 		id:                fmt.Sprintf("#turn-%d", a.turnGeneration),
 		generation:        a.turnGeneration,
 		background:        background,
-		acceptedAt:        a.Clock().Now(),
 		contentByScope:    map[string]*zcodeScopeContent{},
 		toolInvocationIDs: map[string]struct{}{},
 	}

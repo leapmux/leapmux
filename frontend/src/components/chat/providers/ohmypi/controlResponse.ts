@@ -5,6 +5,7 @@ import { OH_MY_PI_APPROVAL_DIALOG, OH_MY_PI_ASK_ANSWER, OH_MY_PI_ASK_ENVELOPE, O
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
 import { CONTROL_DECISION_WORDS, label } from '../../persistedControlResponse'
+import { ohMyPiQuestionPrompts } from './extractors/question'
 
 /**
  * The answers omp's dialogs take, as `extension_ui_response` lines on its stdin:
@@ -42,7 +43,7 @@ export function ohMyPiCancelResponse(requestId: string): OhMyPiDialogResponse {
   }
 }
 
-/** One question's answer in the bridge's envelope: the chosen labels, and the typed text. */
+/** One field's answer: selected bridge option values and custom text. */
 export interface OhMyPiAskQuestionAnswer {
   id: string
   selected: string[]
@@ -92,21 +93,20 @@ function askAnswerLines(response: Record<string, unknown>, request: Record<strin
   const answers = Array.isArray(response[OH_MY_PI_ASK_ENVELOPE.Answers])
     ? (response[OH_MY_PI_ASK_ENVELOPE.Answers] as unknown[]).filter(isObject)
     : []
-  const questions = Array.isArray(request?.[OH_MY_PI_ASK_ENVELOPE.Questions])
-    ? (request[OH_MY_PI_ASK_ENVELOPE.Questions] as unknown[]).filter(isObject)
-    : []
+  const questions = ohMyPiQuestionPrompts(request?.[OH_MY_PI_ASK_ENVELOPE.Questions])
   return answers.flatMap((answer) => {
+    const id = pickString(answer, OH_MY_PI_ASK_ANSWER.ID)
+    const question = questions.find(record => record.id === id)
+    const labels = new Map(question?.options.map(option => [option.value ?? option.label, option.label]))
     const text = [
-      stringArray(answer[OH_MY_PI_ASK_ANSWER.Selected]).join(', '),
+      stringArray(answer[OH_MY_PI_ASK_ANSWER.Selected]).map(value => labels.get(value) ?? value).join(', '),
       pickString(answer, OH_MY_PI_ASK_ANSWER.Custom),
     ]
       .filter(part => part.trim() !== '')
       .join('; ')
     if (!text)
       return []
-    const id = pickString(answer, OH_MY_PI_ASK_ANSWER.ID)
-    const question = questions.find(record => pickString(record, 'id') === id)
-    const heading = pickString(question, 'question') || id
+    const heading = question?.question || id
     return [
       heading
         ? `${heading}: ${text}`

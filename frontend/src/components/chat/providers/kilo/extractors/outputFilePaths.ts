@@ -1,8 +1,21 @@
 import type { ToolCall } from '../../../model/toolCall'
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
-import { openCodeOutputFilePaths } from '../../opencode/extractors/outputFilePaths'
+import { pickObject } from '~/lib/jsonPick'
+import { isFilesystemPath } from '~/lib/paths'
+import { parsedACPToolCall } from '../../acp/extractors/toolCall'
+import { KILO_TOOL_OUTPUT_FIELD } from '../protocol'
 
-/** Kilo uses the OpenCode family's native output metadata. */
+/** Read a declared native output path. Keep the inline output unchanged. */
 export function kiloOutputFilePaths(input: RowExtractionInput, call: ToolCall): readonly string[] {
-  return openCodeOutputFilePaths(input, call)
+  const native = parsedACPToolCall(input.resolved.parentObject)
+  if (input.span.role !== 'result' || !native || native.toolCallId !== call.id
+    || (native.status !== 'completed' && native.status !== 'failed')) {
+    return []
+  }
+  const output = pickObject(native, 'rawOutput')
+  const metadata = pickObject(output, KILO_TOOL_OUTPUT_FIELD.Metadata)
+  const path = metadata?.[KILO_TOOL_OUTPUT_FIELD.OutputPath]
+  return isFilesystemPath(path) && /[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path)
+    ? [path]
+    : []
 }

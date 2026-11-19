@@ -1,9 +1,11 @@
 import { gooseTest } from '../goose-fixtures'
-import { expectNoPlanReview } from '../helpers/unsupportedPlanMode'
-import { exerciseGoosePlanLimit } from './planLimitScenario'
+import { applyPermissionPreset, waitForSettingsIdle } from '../helpers/ui'
+import { exerciseMissingNativePlanMode, expectNoPlanReview } from '../helpers/unsupportedPlanMode'
 
-gooseTest('keeps native Chat tool refusal separate from a plan approval banner', async ({ native }) => {
+gooseTest('runs a native tool turn after a literal plan command without plan approval', async ({ native }) => {
+  await applyPermissionPreset(native.page, 'bypass')
+  await waitForSettingsIdle(native.page)
   await expectNoPlanReview(native, {
-    relatedProof: () => exerciseGoosePlanLimit(native),
+    relatedProof: () => exerciseMissingNativePlanMode(native, { reload: false }),
   })
 })

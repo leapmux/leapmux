@@ -379,11 +379,11 @@ func TestListAgentSessions_MergesTheProviderStore(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(store), 0o755))
 	sqlDB, err := sqlitedb.Open(store, sqlitedb.Config{})
 	require.NoError(t, err)
-	_, err = sqlDB.Exec(`CREATE TABLE session (
+	_, err = sqlDB.Exec(`CREATE TABLE session_v2 (
 		id text PRIMARY KEY, parent_id text, directory text NOT NULL, title text NOT NULL DEFAULT '',
 		time_created integer NOT NULL, time_updated integer, time_archived integer)`)
 	require.NoError(t, err)
-	_, err = sqlDB.Exec(`INSERT INTO session (id, directory, title, time_created, time_updated) VALUES
+	_, err = sqlDB.Exec(`INSERT INTO session_v2 (id, directory, title, time_created, time_updated) VALUES
 		('ses_cli', ?, 'Started outside LeapMux', 1000, 3000),
 		('ses_shared', ?, 'What the CLI called it', 1000, 2000)`, dir, dir)
 	require.NoError(t, err)

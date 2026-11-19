@@ -10,6 +10,34 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+func TestPermissionPolicyChangesTheOfferedModesWithoutATranscriptRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGoalAgent(t)
+	modeIDs := func() []string {
+		for _, group := range a.OptionGroups() {
+			if group.Id == agent.OptionIDPermissionMode {
+				var ids []string
+				for _, option := range group.Options {
+					ids = append(ids, option.Id)
+				}
+				return ids
+			}
+		}
+		return nil
+	}
+	require.Contains(t, modeIDs(), "auto")
+	a.HandleOutput([]byte(`{"type":"system","subtype":"permission_policy","session_id":"session-1","permissionPolicy":{"disabledModes":["auto","bypassPermissions"],"disabledModeMessages":{}}}`))
+	assert.NotContains(t, modeIDs(), "auto")
+	assert.NotContains(t, modeIDs(), "bypassPermissions")
+	assert.Contains(t, modeIDs(), "default")
+	assert.Empty(t, sink.Messages())
+	a.HandleOutput([]byte(`{"type":"system","subtype":"permission_policy","session_id":"session-1","permissionPolicy":{"disabledModes":"bad"}}`))
+	assert.NotContains(t, modeIDs(), "auto")
+	a.HandleOutput([]byte(`{"type":"system","subtype":"permission_policy","session_id":"session-1","permissionPolicy":{"disabledModes":[]}}`))
+	assert.Contains(t, modeIDs(), "auto")
+	assert.Contains(t, modeIDs(), "bypassPermissions")
+}
+
 func TestQoderChangedEffortRequiresResumeRestart(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

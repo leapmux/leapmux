@@ -3,20 +3,35 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from '~/test-support/toolVocabulary'
 import { KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { input } from '../testUtils'
+import { kimiConversationRow } from './conversation'
 
 const CALL = 'call_1'
 
-/** The paired start frame a fixture's result reads its name and arguments from. */
+/** The native opening frame paired with a complete result. */
 function request(toolName: string, args: Record<string, unknown>, display?: Record<string, unknown>): ParsedMessageContent {
-  return input(kimiToolStart(CALL, toolName, args, display), undefined, AgentProvider.KIMI_CODE)
+  return input(kimiConversationToolRecord('request', {
+    item_id: CALL,
+    name: toolName,
+    input: args,
+    display,
+  }), undefined, AgentProvider.KIMI_CODE)
 }
 
 /** A successful result for one call, with its paired start beside it. */
-function done(toolName: string, args: Record<string, unknown>, output: unknown, display?: Record<string, unknown>): ToolResultFixture {
+function done(toolName: string, args: Record<string, unknown>, output: string, display?: Record<string, unknown>, media?: Record<string, unknown>[]): ToolResultFixture {
   return {
-    payload: kimiToolResult(CALL, output),
+    payload: kimiConversationToolRecord('result', {
+      item_id: CALL,
+      name: toolName,
+      input: args,
+      display,
+      status: 'ended',
+      outcome: 'completed',
+      output,
+      media,
+    }),
     options: {
       request: request(toolName, args, display),
       spanType: toolName,
@@ -32,12 +47,8 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
     language: 'bash',
   }),
   [KIMI_TOOL.Read]: done(KIMI_TOOL.Read, { path: 'a.go' }, '1\tpackage a\n2\t\n<system>2 lines read from file.</system>', { kind: 'file_io', operation: 'read', path: '/work/a.go' }),
-  [KIMI_TOOL.ReadMediaFile]: done(KIMI_TOOL.ReadMediaFile, { path: 'a.png' }, [
-    { type: 'text', text: 'Read image a.png' },
-    {
-      type: 'image_url',
-      imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=' },
-    },
+  [KIMI_TOOL.ReadMediaFile]: done(KIMI_TOOL.ReadMediaFile, { path: 'a.png' }, 'Read image a.png', undefined, [
+    { kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=' },
   ]),
   [KIMI_TOOL.Write]: done(KIMI_TOOL.Write, { path: 'goal.txt', content: 'ok\n' }, 'Wrote 3 bytes to goal.txt', { kind: 'file_io', operation: 'write', path: '/work/goal.txt' }),
   [KIMI_TOOL.Edit]: done(KIMI_TOOL.Edit, { path: 'a.go', old_string: 'x', new_string: 'y' }, 'Edited a.go'),
@@ -91,13 +102,24 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
  */
 const ERROR_TEXT = 'The tool reported an error.'
 
-/** A FAILED result: `isError` set, and the reason as the output. */
+/** A failed public tool result carries its native error. */
 function failed(kind: ToolKind, name: string): ToolFailureFixture {
   const paired = FIXTURES[name]
   if (paired === undefined)
     throw new Error(`No successful fixture pairs with the failed frame for ${name}`)
+  const native = kimiConversationRow(paired.payload)
+  if (native?.kind !== 'item')
+    throw new Error(`The native fixture has no complete tool identity for ${name}`)
   return {
-    payload: kimiToolResult(CALL, ERROR_TEXT, { isError: true }),
+    payload: kimiConversationToolRecord('result', {
+      item_id: CALL,
+      name,
+      input: native.item.input,
+      display: native.item.display,
+      status: 'ended',
+      outcome: 'failed',
+      error: ERROR_TEXT,
+    }),
     ...(paired.options !== undefined
       ? { options: paired.options }
       : {}),

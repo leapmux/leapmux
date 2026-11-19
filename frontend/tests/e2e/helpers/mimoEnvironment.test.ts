@@ -45,8 +45,23 @@ describe('createMimoEnvironment', () => {
         type: 'local',
         command: [echoServer.command, '/srv/echo.mjs'],
       },
+      input_probe: {
+        type: 'local',
+        command: [
+          process.execPath,
+          join(env.MIMOCODE_HOME!, 'mcp-input-form.mjs'),
+        ],
+      },
     })
     expect(readFileSync(confirmationServer, 'utf8')).toContain('elicitation/create')
+  })
+
+  it.each(['form_probe', 'input_probe'])('rejects a server name that would replace a form probe: %s', (name) => {
+    expect(() => createMimoEnvironment({
+      ...provider,
+      runDirectory,
+      mcpEchoServer: { ...echoServer, name },
+    })).toThrow('distinct MCP server names')
   })
 
   it('makes each failed request fail once, and stops the title request', () => {

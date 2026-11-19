@@ -17,16 +17,25 @@ test.describe('agent input queue', () => {
       // durable queue. The Interrupt button is the Worker's turn-state signal.
       // The HOLD is what keeps it active: against the mock endpoint a long prompt
       // finishes as fast as a short one, so the turn has to be held open.
-      const start = await modelScript.queue({ text: 'A report.', gate: 'claude-code-steer-mid-turn-hold-1' })
-      modelScript.allowUnconsumed('the cleanup releases the held answer after the steer reaches the queue')
+      const start = await modelScript.queue(
+        { text: 'A report.', gate: 'claude-code-steer-mid-turn-hold-1' },
+        { text: 'STEERED' },
+      )
       await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
-      await modelScript.waitForSteps(start + 1)
+      await modelScript.waitForGate('claude-code-steer-mid-turn-hold-1')
       await expect(interruptButton(page)).toBeVisible()
 
+      const nextPrompt = 'Stop the report now and reply with the single word STEERED.'
       await steerQueuedInput(page, {
-        message: modelScript.prompt('Stop the report now and reply with the single word STEERED.'),
+        message: modelScript.prompt(nextPrompt),
         match: 'Stop the report',
       })
+      await modelScript.releaseGate('claude-code-steer-mid-turn-hold-1')
+      const request = await modelScript.requestAt(start + 1)
+      expect(request.protocol).toBe('anthropic-messages')
+      expect(nativeUserStrings(request.body).join('\n')).toContain(nextPrompt)
+      await waitForAgentIdle(page)
+      await expect(assistantBubbles(page).filter({ hasText: 'STEERED' })).toHaveCount(1)
     }, async () => {
       await finishCleanup([
         modelScript.releaseGateIfHeld('claude-code-steer-mid-turn-hold-1'),

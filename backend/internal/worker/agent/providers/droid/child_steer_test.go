@@ -135,9 +135,13 @@ func newBoundChildAgent(t *testing.T) (*Agent, *Agent, *bufferStdin, *bufferStdi
 	child.Mu.Lock()
 	child.sessionID = steerChildID
 	child.Mu.Unlock()
-	childAgentID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "droid-tool-task-1", ProviderChildKey: steerChildID, Title: "Inspect the note"})
+	childAgentID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: steerChildID, Title: "Inspect the note"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: steerChildID, Kind: bgtask.KindSubagent, ChildAgentID: childAgentID,
 		ParentAgentID: root.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
 	}))
@@ -168,7 +172,7 @@ func TestSendChildInputWritesEndOfTurn(t *testing.T) {
 	t.Parallel()
 	a, _, rootStdin, childStdin := newBoundChildAgent(t)
 
-	require.NoError(t, a.SendChildInput(steerChildID, "hello", nil))
+	require.NoError(t, agenttest.SendChildInput(a, steerChildID, agent.ChildInput{Content: "hello"}))
 	params := lastRequest(t, childStdin)
 	assert.Equal(t, steerChildID, params["sessionId"], "the message addresses the loaded child session")
 	assert.Equal(t, "hello", params["text"])
@@ -184,7 +188,7 @@ func TestSendChildInputRefusesABusyChild(t *testing.T) {
 	a, child, _, childStdin := newBoundChildAgent(t)
 	child.startTurn()
 
-	err := a.SendChildInput(steerChildID, "hello", nil)
+	err := agenttest.SendChildInput(a, steerChildID, agent.ChildInput{Content: "hello"})
 	require.ErrorIs(t, err, agent.ErrAgentBusy, "a running child refuses a new message")
 	assert.Empty(t, childStdin.frames(), "a refused message writes no request")
 	assert.True(t, a.ActiveChildTurnState(steerChildID).Steerable,
@@ -194,14 +198,18 @@ func TestSendChildInputRefusesABusyChild(t *testing.T) {
 func TestSendChildInputWaitsForAnUnboundBackgroundChild(t *testing.T) {
 	t.Parallel()
 	a, sink, rootStdin := newSteerAgent(t)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "droid-tool-task-1", ProviderChildKey: steerChildID, Title: "Inspect the note"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: steerChildID, Title: "Inspect the note"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: steerChildID, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusRunning,
 	}))
 	a.armChildTurn(steerChildID)
-	assert.ErrorIs(t, a.SendChildInput(steerChildID, "hello", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, steerChildID, agent.ChildInput{Content: "hello"}), agent.ErrAgentBusy)
 	state := a.ActiveChildTurnState(steerChildID)
 	assert.True(t, state.Active)
 	assert.False(t, state.Steerable, "the root stream cannot steer the running child")
@@ -237,7 +245,7 @@ func TestSendChildInputRefusesAnEmptyKey(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newSteerAgent(t)
 
-	err := a.SendChildInput("", "hello", nil)
+	err := agenttest.SendChildInput(a, "", agent.ChildInput{Content: "hello"})
 	require.Error(t, err, "an empty child key is refused")
 	assert.Empty(t, stdin.frames(), "a refused message writes no request")
 }
@@ -246,7 +254,7 @@ func TestChildInputRefusesAnUnregisteredSession(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newSteerAgent(t)
 	const unknown = "52af9b7b-5e82-4932-83c0-a2bf1caa2fcd"
-	assert.ErrorIs(t, a.SendChildInput(unknown, "hello", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, unknown, agent.ChildInput{Content: "hello"}), agent.ErrChildRouteNotReady)
 	a.armChildTurn(unknown)
 	assert.ErrorIs(t, a.SteerChildInput(unknown, "guide", nil), agent.ErrChildRouteNotReady)
 	assert.Empty(t, stdin.frames(), "an unregistered child cannot use the root stream")
@@ -271,7 +279,7 @@ func TestChildSessionAvailableArmsTheTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
 
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":"child-1","toolUseId":"tu-1","subagentType":"explorer","description":"Inspect the parser"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":"child-1","toolUseId":"tu-1","subagentType":"explorer","description":"Inspect the parser"}}}`))
 	assert.True(t, a.ActiveChildTurnState("child-1").Active,
 		"a spawned child starts running")
 	assert.Empty(t, sink.PersistedNotifications(), "the registry carries the child announcement")
@@ -289,7 +297,7 @@ func TestAgentTurnCompletedForAChildDisarmsTheChild(t *testing.T) {
 	row, ok := sink.BackgroundTask("child-1")
 	require.True(t, ok)
 
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
 	assert.False(t, a.ActiveChildTurnState("child-1").Active, "the child's turn ends")
 	assert.True(t, func() bool { a.Mu.Lock(); defer a.Mu.Unlock(); return a.turnActive }(),
 		"the main turn is not touched by a child's turn end")
@@ -304,7 +312,7 @@ func TestAgentTurnCompletedForTheMainSessionDisarmsTheTurn(t *testing.T) {
 	a, _, _ := newSteerAgent(t)
 	a.startTurn()
 
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
 	assert.False(t, func() bool { a.Mu.Lock(); defer a.Mu.Unlock(); return a.turnActive }(),
 		"the main turn ends")
 }
@@ -320,7 +328,7 @@ func TestSendChildInputCarriesAttachments(t *testing.T) {
 		{MimeType: "image/png", Filename: "shot.png", Data: []byte{0x89, 'P', 'N', 'G'}},
 		{MimeType: "application/pdf", Filename: "sample.pdf", Data: []byte("%PDF")},
 	}
-	require.NoError(t, a.SendChildInput(steerChildID, "hello", attachments))
+	require.NoError(t, agenttest.SendChildInput(a, steerChildID, agent.ChildInput{Content: "hello", Attachments: attachments}))
 	params := lastRequest(t, childStdin)
 	text, _ := params["text"].(string)
 	assert.Contains(t, text, "hello")

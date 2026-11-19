@@ -14,12 +14,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-var _ agent.SteerPreparer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*FamilyBase)(nil)
 
-// FamilyBase is what OpenCode and Kilo share beyond the ACP base.
+// FamilyBase supplies Kilo's ACP transport and native daemon bridge.
 //
-// Both daemons run the same two transports: the Agent Client Protocol stream that
-// carries the session, and the daemon's own HTTP server that carries the questions
+// The Agent Client Protocol stream carries the session. The daemon's HTTP server carries the questions
 // the ACP adapter drops. openCodeQuestions states why that second transport exists.
 type FamilyBase struct {
 	acp.Base

@@ -134,6 +134,8 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// ended_at/updated_at are Go-bound on the Close. Agent agent-1 (root) already
 	// exists; insert a running row then close it so ended_at is non-null.
 	writeBackgroundTaskFixture(t, queries, gendb.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "agent-1",
 		RowKey:       "bg-1",
 		Seq:          1,

@@ -129,7 +129,9 @@ func createReplayOriginTree(t *testing.T, svc *Service, rootID string, childKeys
 	require.NoError(t, root.UpsertBackgroundTask(bgtask.Upsert{RowKey: "root-shell", Kind: bgtask.KindShell, Title: "Root shell", Status: bgtask.StatusRunning}))
 	children := make([]string, 0, len(childKeys))
 	for _, key := range childKeys {
-		childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-" + key, ProviderChildKey: key, Title: key, AgentSessionID: "native-" + key})
+		childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "spawn-" + key, ProviderChildKey: key, Title: key, AgentSessionID: "native-" + key})
 		require.NoError(t, err)
 		child := root.ChildSink(childID)
 		child.UpdateSessionID("native-" + key)

@@ -2,18 +2,17 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
 import { exerciseLiveChildTranscript } from '../helpers/liveChildTranscript'
-import { childTaskAnywhere } from '../helpers/runningChildProof'
+import { childTaskInUserHistory } from '../helpers/runningChildProof'
 import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { subagentReportBubble, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { bypassToolRequests } from './scenarios'
 
 /**
  * The facts of a held ZCode child.
- * ZCode keeps the task out of the last user text of a parent turn, so a matcher at any place of that text selects
- * only the child. The Bypass preset lets the spawn run without a permission request.
+ * ZCode keeps the task out of its parent's user prompts. Match a child prompt before the native token-budget reminder. The Bypass preset lets the spawn run without a permission request.
  */
 export const ZCODE_CHILD: NativeChildProfile = {
-  childTask: childTaskAnywhere,
+  childTask: childTaskInUserHistory,
   rowTitleHoldsDescription: false,
   prepare: bypassToolRequests,
 }
@@ -26,9 +25,8 @@ export const ZCODE_CHILD: NativeChildProfile = {
 export async function exerciseZCodeChildToolTranscript(context: ManagedNativeScenarioContext): Promise<void> {
   const { page } = context
   const child = await exerciseLiveChildTranscript(context, {
-    // The child turns match on the last user text, not on the body: the second root turn carries the spawn call,
-    // whose arguments quote the child prompt, so a body matcher would answer the root with the child line. The
-    // matcher of `ZCODE_CHILD` states why a match at any place of that text selects only the child.
+    // Match actual user prompts. The parent tool arguments quote the child task,
+    // and a native token-budget reminder follows the child prompt.
     childWhen: ZCODE_CHILD.childTask('printf zcode-tool-ok'),
     childTask: 'Use Bash to run printf zcode-tool-ok, then reply with exactly ZCODE_CHILD_PONG.',
     parentTask: 'Spawn one subagent to run the shell probe, then report what it said.',

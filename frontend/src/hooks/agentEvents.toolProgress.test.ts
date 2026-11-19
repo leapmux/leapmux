@@ -668,7 +668,7 @@ describe('dropFinishedToolProgress', () => {
             content: [],
           },
         },
-        { spanId: 'toolu_A', agentProvider: AgentProvider.OPENCODE },
+        { spanId: 'toolu_A', agentProvider: AgentProvider.KILO },
       )
       const parsed = parseMessageContent(msg)
       expect(parsed.parentObject).not.toHaveProperty('sessionUpdate')

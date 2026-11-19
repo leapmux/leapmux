@@ -39,7 +39,15 @@ export function createQoderSurface(host: Pick<MockModelScriptHost, 'hasScenario'
 }
 
 const CONFIG_NAMESPACE = 'qodercli-feature-gates'
+const CONFIG_NAMESPACES = [CONFIG_NAMESPACE, 'enterprise-governance'] as const
 const CONFIG_ETAG = 'leapmux-e2e-qoder-config'
+
+/** Admit the complete namespace set of Qoder's configuration client, once each. */
+function hasQoderNamespaces(value: unknown): boolean {
+  return Array.isArray(value) && value.length === CONFIG_NAMESPACES.length
+    && new Set(value).size === CONFIG_NAMESPACES.length
+    && CONFIG_NAMESPACES.every(namespace => value.includes(namespace))
+}
 
 async function handleQoderConfiguration(request: IncomingMessage, response: ServerResponse, url: URL, options: QoderSurfaceOptions): Promise<boolean> {
   if (!options.identityToken || request.headers.authorization !== `Bearer ${options.identityToken}`) {
@@ -51,8 +59,11 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
       writeMockJSON(response, 405, { error: 'The Qoder config stream requires GET.' })
       return true
     }
-    const namespaces = url.searchParams.getAll('ns')
-    if (namespaces.length !== 1 || namespaces[0] !== CONFIG_NAMESPACE) {
+    const namespaceParameters = url.searchParams.getAll('ns')
+    const namespaces = namespaceParameters.length === 1
+      ? namespaceParameters[0]!.split(',')
+      : []
+    if (!hasQoderNamespaces(namespaces)) {
       writeMockJSON(response, 400, { error: 'The Qoder config stream requires its native namespace.' })
       return true
     }
@@ -76,7 +87,7 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
     })
     return true
   }
-  if (!isObject(body) || !Array.isArray(body.namespaces) || body.namespaces.length !== 1 || body.namespaces[0] !== CONFIG_NAMESPACE
+  if (!isObject(body) || !hasQoderNamespaces(body.namespaces)
     || !Array.isArray(body.keys) || body.keys.length !== 0 || !isObject(body.context)
     || body.context.clientType !== 'qodercli' || typeof body.context.clientVersion !== 'string' || !body.context.clientVersion.trim()
     || typeof body.context.platform !== 'string' || !body.context.platform.trim()) {
@@ -92,6 +103,7 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
   // Keep the native hardcoded policy. The fixture enables no extra feature.
   writeMockJSON(response, 200, {
     configs: {
+      'enterprise-governance': {},
       [CONFIG_NAMESPACE]: {
         prompt_policy: {
           value: {
@@ -105,47 +117,6 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
     etag: CONFIG_ETAG,
   }, { etag })
   return true
-}
-
-/** Keep both endpoint-election cache formats beside the native discovery responses. */
-export function qoderEndpointCacheRecords(origin: string, updatedAt: number): { v1: Record<string, unknown>, v2: Record<string, unknown> } {
-  const purposes = [
-    'center',
-    'inference',
-    'securityInference',
-    'openapi',
-  ]
-  const endpointSets = Object.fromEntries(purposes.map(purpose => [
-    purpose,
-    {
-      candidates: [origin],
-      selected: origin,
-    },
-  ]))
-  return {
-    v2: {
-      version: 2,
-      entries: {
-        prod: { endpointSets, updatedAt },
-      },
-    },
-    v1: {
-      version: 1,
-      entries: {
-        prod: {
-          endpoint: origin,
-          inferEndpoints: [origin],
-          securityEndpoint: origin,
-          securityEndpoints: [origin],
-          centerEndpoint: origin,
-          centerEndpoints: [origin],
-          openapiEndpoint: origin,
-          openapiEndpoints: [origin],
-          updatedAt,
-        },
-      },
-    },
-  }
 }
 
 /** Serve Qoder's native authentication, discovery, and catalog endpoints. */

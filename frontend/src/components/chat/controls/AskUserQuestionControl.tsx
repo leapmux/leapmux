@@ -325,6 +325,11 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
           const counts = () => selectionCountPhrase(q())
           return (
             <div class={styles.questionGroup} data-testid="control-question-group">
+              <Show when={q().context}>
+                {context => (
+                  <div class={styles.questionContext} data-testid="control-question-context">{context()}</div>
+                )}
+              </Show>
               <div class={styles.questionLabel}>{q().question}</div>
               <Show when={counts()}>
                 {phrase => (

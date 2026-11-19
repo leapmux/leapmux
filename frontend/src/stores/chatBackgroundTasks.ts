@@ -1,8 +1,9 @@
 import type { AgentTab } from './tab.types'
 import type { BackgroundTaskStatusToken } from '~/generated/contracts/worker-vocab'
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import { BACKGROUND_TASK_ROLE_CAPABILITIES } from '~/generated/contracts/background-task-roles'
 import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
-import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskRole, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assignDefined } from '~/lib/jsonPick'
 import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
 
@@ -19,6 +20,9 @@ import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
 // ---------------------------------------------------------------------------
 
 export interface BackgroundTaskItem {
+  role: BackgroundTaskRole
+  /** The wire ordinal when this client does not know the role. */
+  rawRole?: number
   rowKey: string
   kind: 'subagent' | 'shell' | 'workflow' | 'unknown'
   /** The wire ordinal when this client does not know the kind. */
@@ -63,12 +67,15 @@ export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): Backgrou
   const normalizedKind = normalizeBackgroundTaskKind(t.kind)
   const item: BackgroundTaskItem = {
     rowKey: t.id,
+    role: BACKGROUND_TASK_ROLE_CAPABILITIES[t.role] ? t.role : BackgroundTaskRole.UNSPECIFIED,
     kind: normalizedKind.kind,
     title: t.title,
     activity: t.activeForm,
     status: normalizeBackgroundTaskStatus(t.status),
   }
   assignDefined(item, 'rawKind', normalizedKind.rawKind)
+  if (!BACKGROUND_TASK_ROLE_CAPABILITIES[t.role] && t.role !== BackgroundTaskRole.UNSPECIFIED)
+    assignDefined(item, 'rawRole', t.role)
   assignDefined(item, 'childAgentId', t.childAgentId || undefined)
   assignDefined(item, 'parentAgentId', t.parentAgentId || undefined)
   assignDefined(item, 'groupKey', t.groupKey || undefined)
@@ -169,12 +176,12 @@ export function filterBackgroundTasksByKind(
     : items.filter(it => it.kind === filter)
 }
 
-// countActiveBackgroundTasks returns the number of pending/running rows -- the
-// figure the rail badge and the ThinkingIndicator chip render.
+// countActiveBackgroundTasks counts pending/running tasks for the rail and tab chips.
+// Activity-only child rows remain visible without counting another task.
 export function countActiveBackgroundTasks(items: BackgroundTaskItem[]): number {
   let n = 0
   for (const it of items) {
-    if (isActiveBackgroundTaskStatus(it.status))
+    if (BACKGROUND_TASK_ROLE_CAPABILITIES[it.role]?.countsAsTask && isActiveBackgroundTaskStatus(it.status))
       n++
   }
   return n
@@ -233,7 +240,7 @@ export function createTabTaskScope(deps: {
 export type TabTaskScope = ReturnType<typeof createTabTaskScope>
 
 /**
- * Whether this row owns a subagent transcript that a click can open. A shell row
+ * Whether a subagent or workflow row owns a child transcript that a click can open. A shell row
  * owns none, and a subagent whose provider never linked one owns none either.
  * Shared, so the Background tasks list and the SendMessage card cannot disagree
  * about which rows are a link.
@@ -243,7 +250,7 @@ export type TabTaskScope = ReturnType<typeof createTabTaskScope>
  * predicate depend on a component's props.
  */
 export function opensSubagentTranscript(item: BackgroundTaskItem): boolean {
-  return item.kind === 'subagent' && !!item.childAgentId
+  return (item.kind === 'subagent' || item.kind === 'workflow') && !!item.childAgentId
 }
 
 // backgroundTaskStatusLabel spells a status out in full. The row shows status as a

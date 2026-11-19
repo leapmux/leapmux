@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -172,7 +174,9 @@ func (a *Agent) ensureCodexChildRoute(threadID string) (codexChildRoute, bool) {
 	if !ok {
 		return codexChildRoute{}, false
 	}
-	childID, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnCorrelationID, ProviderChildKey: threadID, Title: title})
+	childID, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  spawnCorrelationID, ProviderChildKey: threadID, Title: title})
 	if err != nil {
 		slog.Warn("codex route child ensure failed", "thread", threadID, "error", err)
 		return codexChildRoute{}, false

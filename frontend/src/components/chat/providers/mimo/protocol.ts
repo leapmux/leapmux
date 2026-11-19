@@ -54,7 +54,7 @@ export const MIMO_FORCED_ASK_PERMISSIONS: ReadonlySet<string> = new Set(['bash_d
 
 /**
  * The `key` of the one question that MiMo asks for an MCP server's confirmation
- * (MiMo HEAD, `mcp/elicitation.ts`; no release sends it yet).
+ * (MiMo 0.1.17, `mcp/elicitation.ts`).
  */
 export const MIMO_QUESTION_KEY = {
   McpElicitation: 'mcp_elicitation',

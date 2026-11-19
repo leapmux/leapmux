@@ -190,19 +190,20 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		},
 		{
 			name:  "GetAgentBackgroundTaskByChildAgentID",
-			index: "idx_agent_background_tasks_child",
+			index: "idx_agent_background_tasks_canonical_child",
 			run: func(t *testing.T) {
 				_, err := q.GetAgentBackgroundTaskByChildAgentID(t.Context(), "child")
 				require.ErrorIs(t, err, sql.ErrNoRows)
 			},
 		},
 		{
-			name:  "GetChildAgentBySpawnSpan",
+			name:  "GetChildAgentsBySpawnSpan",
 			index: "idx_agents_spawn_span",
 			run: func(t *testing.T) {
-				_, err := q.GetChildAgentBySpawnSpan(t.Context(),
-					queries.GetChildAgentBySpawnSpanParams{ParentAgentID: sql.NullString{String: "parent", Valid: true}, SpawnSpanID: "call"})
-				require.ErrorIs(t, err, sql.ErrNoRows)
+				children, err := q.GetChildAgentsBySpawnSpan(t.Context(),
+					queries.GetChildAgentsBySpawnSpanParams{ParentAgentID: sql.NullString{String: "parent", Valid: true}, SpawnSpanID: "call"})
+				require.NoError(t, err)
+				require.Empty(t, children)
 			},
 		},
 	} {
@@ -231,6 +232,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		// this index without repeating the term. That inference is exactly what it
 		// cannot make for `<> ''`, which is why idx_agents_spawn_span needs its
 		// term spelled and this one does not.
+		"idx_agents_provisional_spawn":              "a uniqueness constraint for provisional children, enforced on write rather than read",
 		"idx_agents_parent":                         "an IS NOT NULL predicate, which an equality term already implies",
 		"idx_agents_closed_at":                      "no query filters on closed_at through this index",
 		"idx_agents_open_working_dir":               "no query filters on working_dir through this index",

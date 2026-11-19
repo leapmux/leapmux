@@ -6,7 +6,7 @@ import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalSchema, AgentGoalStatus, BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { protoGoalToStore } from '~/stores/chatGoal'
 import { motion } from '~/styles/tokens'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
@@ -176,6 +176,7 @@ describe('thinking indicator chips', () => {
 
   function bgTask(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
     return {
+      role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
       kind: over.kind ?? 'subagent',
       title: over.title ?? 'T',
       activity: over.activity ?? '',

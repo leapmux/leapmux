@@ -50,13 +50,13 @@ describe('every provider reads a shell permission the same way', () => {
     [
       AgentProvider.OPENCODE,
       {
-        params: {
-          toolCall: {
-            toolCallId: 'c',
-            kind: 'execute',
-            title: 'Run',
-            rawInput: { command: COMMAND },
-          },
+        type: 'permission.asked',
+        data: {
+          id: 'per_1',
+          sessionID: 's',
+          action: 'shell',
+          resources: [COMMAND],
+          save: [],
         },
       },
     ],
@@ -471,11 +471,18 @@ describe('who answers a permission', () => {
         params: { toolCall, options: wireOptions },
       },
     ],
-    // OpenCode and Kilo answer with their own two ids even when the request states none.
+    // Native OpenCode exposes its native decisions. Kilo supplies defaults for an option-less ACP request.
     [
       AgentProvider.OPENCODE,
       {
-        params: { toolCall },
+        type: 'permission.asked',
+        data: {
+          id: 'per_1',
+          sessionID: 's',
+          action: 'read',
+          resources: ['/a.ts'],
+          save: [],
+        },
       },
     ],
     [

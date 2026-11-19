@@ -58,7 +58,7 @@ func TestChildOperationsRefuseUnknownAndOneShotChildrenBeforeTransport(t *testin
 	a := newOfflineAgent(t, &agenttest.Sink{})
 	a.children["one-shot"] = &nativeChild{descriptor: nativeChildDescriptor{ID: "one-shot", Parent: "native-root", Mode: "one-shot"}}
 	for _, key := range []string{"", "missing", "one-shot"} {
-		assert.ErrorIs(t, a.SendChildInput(key, "message", nil), agent.ErrChildOperationUnsupported)
+		assert.ErrorIs(t, agenttest.SendChildInput(a, key, agent.ChildInput{Content: "message"}), agent.ErrChildOperationUnsupported)
 		assert.ErrorIs(t, a.SteerChildInput(key, "message", nil), agent.ErrChildOperationUnsupported)
 		assert.ErrorIs(t, a.InterruptChild(key, agent.StopContext{}), agent.ErrChildOperationUnsupported)
 	}
@@ -69,7 +69,9 @@ func TestContinuableResultAttachesOnlyItsExactFirstSpawnSpan(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	descriptor := nativeChildDescriptor{ID: "native-child", Parent: "native-root", Mode: "continuable", Label: "Native child"}
-	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
+	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
 	require.NoError(t, err)
 	a.childCatalog[descriptor.ID] = descriptor
 	a.children[descriptor.ID] = &nativeChild{descriptor: descriptor, agentID: virtualID}

@@ -22,7 +22,7 @@ beforeEach(() => {
   }))
 })
 
-const listing = '# tools\n\n## MCP / local tools\n\n1. **execute**\n    > Execute a shell command.\n    > **Args:** `command`\n\n2. **read\\_text\\_file**\n    > Read content from a text file.\n    > Returns the file contents.\n'
+const listing = '# tools\n\n## Sent to the model (2 · ~100 tokens)\n\n1. **execute**\n    > Execute a shell command.\n    > **Args:** `command`\n\n2. **read\\_text\\_file**\n    > Read content from a text file.\n    > Returns the file contents.\n'
 
 describe('sendFastAgentCatalogCommand', () => {
   const server = { hubUrl: 'http://unit.invalid', adminToken: 'private-token', workerId: 'actual-worker' }
@@ -111,10 +111,22 @@ describe('parseFastAgentCatalog', () => {
       'complete',
     ],
     [
-      listing.replace('## MCP / local tools', '## unknown'),
+      listing.replace('## Sent to the model (2 · ~100 tokens)', '## unknown'),
       'headings',
     ],
-    [`${listing}\n## MCP / local tools\n`, 'repeated'],
+    [
+      listing.replace('(2 ·', '(3 ·'),
+      'incomplete',
+    ],
+    [
+      listing.replace('(2 ·', '(1 ·'),
+      'incomplete',
+    ],
+    [
+      listing.replace('(2 ·', '(0 ·'),
+      'headings',
+    ],
+    [`${listing}\n## Sent to the model (2 · ~100 tokens)\n`, 'repeated'],
     [`${listing}\n## unknown\n`, 'unknown'],
     [`${listing}\n## Provider-managed / hosted tools\n- wrong\n`, 'malformed'],
     [`${listing}\n## Provider-managed / hosted tools\n- **same**\n- **same**\n`, 'repeats'],

@@ -15,8 +15,8 @@ qoderTest.describe('Qoder CLI plan approval', () => {
   const PLAN_FILE_CAPTURE = { planFile: '(?:create your plan at|already exists at) (\\S+?\\.md)' }
 
   function planSteps(revision: string) {
-    return [
-      {
+    return {
+      write: {
         toolCalls: [
           writeToolCall(PROVIDER, `write-plan-${revision}`, {
             path: '{{planFile}}',
@@ -25,12 +25,12 @@ qoderTest.describe('Qoder CLI plan approval', () => {
         ],
         captures: PLAN_FILE_CAPTURE,
       },
-      {
+      review: {
         toolCalls: [
           exitPlanModeFromFileToolCall(PROVIDER, `exit-plan-${revision}`, []),
         ],
       },
-    ]
+    }
   }
 
   qoderTest('reviews the plan, retains it on reject, and applies the selected mode on approve', async ({ authenticatedQoderWorkspace, page, modelScript }) => {
@@ -53,9 +53,25 @@ qoderTest.describe('Qoder CLI plan approval', () => {
     await waitForAgentIdle(page)
     await expectQoderModeChip(page, 'Plan')
 
-    const first = await modelScript.queue(...planSteps('first'))
+    const firstSteps = planSteps('first')
+    await modelScript.rule({
+      name: 'write the first requested plan',
+      when: {
+        user: 'Write the plan file, then present it for review\\.',
+        lastMessage: { role: 'user' },
+      },
+      respond: firstSteps.write,
+      once: true,
+    })
+    await modelScript.rule({
+      name: 'review the first written plan',
+      when: {
+        lastMessage: { role: 'tool', text: 'File created successfully at:' },
+      },
+      respond: firstSteps.review,
+      once: true,
+    })
     await sendMessage(page, modelScript.prompt('Write the plan file, then present it for review.'))
-    await modelScript.waitForSteps(first + 2)
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Plan Ready for Review')
@@ -69,9 +85,25 @@ qoderTest.describe('Qoder CLI plan approval', () => {
     await waitForAgentIdle(page)
     await expectQoderModeChip(page, 'Plan')
 
-    const second = await modelScript.queue(...planSteps('second'))
+    const secondSteps = planSteps('second')
+    await modelScript.rule({
+      name: 'write the requested plan revision',
+      when: {
+        user: 'Revise the plan file and present it again\\.',
+        lastMessage: { role: 'user' },
+      },
+      respond: secondSteps.write,
+      once: true,
+    })
+    await modelScript.rule({
+      name: 'review the written plan revision',
+      when: {
+        lastMessage: { role: 'tool', text: '(?:File (?:created|updated) successfully at:|has been updated)' },
+      },
+      respond: secondSteps.review,
+      once: true,
+    })
     await sendMessage(page, modelScript.prompt('Revise the plan file and present it again.'))
-    await modelScript.waitForSteps(second + 2)
     const banner2 = await waitForControlBanner(page)
     await expect(banner2).toContainText('Plan Ready for Review')
     await answerPlanReview(page, 'approve')

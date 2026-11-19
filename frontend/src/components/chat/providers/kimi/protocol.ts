@@ -1,17 +1,15 @@
-import { KIMI_EVENT, KIMI_FRAME } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_EVENT, KIMI_FRAME } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
- * Kimi vocabulary for the frontend and the common reader for stored native events.
- * The Worker stores selected native payloads and unknown session events.
- * It removes repeated global warnings and recreates profile warnings in their native event shape.
- * Each native event states its type and agentId. Worker-owned rows carry no Kimi event type.
- *
+ * Read stored notices and native control interactions.
+ * Native transcript envelopes use ./transcript.
+ * The Worker removes duplicate global warnings and recreates profile warnings in their native event shape.
  * Vocabulary that Go and TypeScript both read lives in contracts/kimi-protocol.json.
  */
 
-/** Every event type the contract lists. A row of any other type is not a Kimi event. */
-const KIMI_EVENT_TYPES: ReadonlySet<string> = new Set<string>(Object.values(KIMI_EVENT))
+/** Only profile and configuration warnings use retained event rows. */
+const KIMI_EVENT_TYPES: ReadonlySet<string> = new Set<string>([KIMI_EVENT.Warning, KIMI_EVENT.ConfigWarning])
 
 /** The agent id the main agent of a session carries. */
 export const KIMI_MAIN_AGENT = 'main'
@@ -35,22 +33,13 @@ export function kimiEvent(parsed: unknown): KimiEventRow | null {
   return { type, agentId: pickString(parsed, 'agentId') || KIMI_MAIN_AGENT, data: parsed }
 }
 
-/** The payload of one event of the given type, or null for every other row. */
-export function kimiEventData(parsed: unknown, type: string): Record<string, unknown> | null {
-  const event = kimiEvent(parsed)
-  return event && event.type === type
-    ? event.data
-    : null
-}
-
 /**
  * The `display` object of a tool call, or of an approval's `tool_input_display`.
  *
  * The server words a call for its own UI here: the command and its working directory,
- * the file operation, the plan of a plan review. It is the richest statement of a call
- * the wire carries, and the result frame repeats none of it.
+ * the file operation, the plan of a plan review. Native transcript tool frames retain it with the result.
  */
-export function kimiDisplay(data: Record<string, unknown> | null | undefined, key: 'display' | 'tool_input_display' = 'display'): Record<string, unknown> | undefined {
+export function kimiDisplay(data: Record<string, unknown> | null | undefined, key: 'display' | 'tool_input_display' = KIMI_CONVERSATION_FIELD.Display): Record<string, unknown> | undefined {
   return pickObject(data, key, undefined)
 }
 
@@ -60,18 +49,6 @@ export function kimiInteractionRequest(payload: Record<string, unknown>, kind: s
     ? pickObject(payload, 'request', undefined)
     : undefined
 }
-
-/** The `system_trigger` name a goal's continuation turn carries. */
-export const KIMI_GOAL_CONTINUATION = 'goal_continuation'
-
-/** Native fields for tool result pointers. */
-export const KIMI_OUTPUT_FILE_RESULT = {
-  Type: 'type',
-  AgentID: 'agentId',
-  TurnID: 'turnId',
-  ToolCallID: 'toolCallId',
-  Output: 'output',
-} as const
 
 /** Native fields for tool result pointers. */
 export const KIMI_OUTPUT_FILE_CONTENT = {

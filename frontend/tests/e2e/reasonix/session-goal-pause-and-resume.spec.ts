@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
-import { clearGoal, expectGoalObjective, expectGoalStatus, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
+import { clearGoal, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
 import { waitForAgentIdle } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
 import { exerciseReasonixGoalErrorResume, exerciseReasonixGoalPauseResume } from './goalScenario'
@@ -28,8 +28,10 @@ reasonixTest('accepts a goal whose native status redacts its objective', async (
     })
     await expectGoalStatus(page, 'active')
     await clearGoal(page)
+    await expectEmptyGoalCard(page)
     await modelScript.releaseGateIfHeld(gate)
     await waitForAgentIdle(page)
+    await expectEmptyGoalCard(page)
     expect((await modelScript.waitForSteps(start + 1)).unexpectedRequests).toEqual([])
   }, async () => { await modelScript.releaseGateIfHeld(gate) })
 })

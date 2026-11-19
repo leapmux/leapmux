@@ -3,6 +3,8 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, watch, wri
 import { dirname, join } from 'node:path'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 
+const OUTPUT_SIZE_RECHECK_MS = 250
+
 export interface MiMoProducerFile {
   path: string
   byteLength: number
@@ -42,6 +44,7 @@ export function observeMiMoNativeOutputSize(expected: string, previous: Readonly
   let lastFiles: MiMoProducerFile[] = []
   let failureMessage: string | undefined
   let directoryStop: (() => void) | undefined
+  let sizeRecheckTimer: ReturnType<typeof setInterval> | undefined
   let inspecting = false
   let inspectionRequested = false
   const lateCloseFailures: unknown[] = []
@@ -53,6 +56,8 @@ export function observeMiMoNativeOutputSize(expected: string, previous: Readonly
     released = true
   }
   const closeSubscriptions = () => {
+    clearInterval(sizeRecheckTimer)
+    sizeRecheckTimer = undefined
     const failures: unknown[] = []
     const stops = [
       ...subscriptions.values(),
@@ -174,6 +179,9 @@ export function observeMiMoNativeOutputSize(expected: string, previous: Readonly
       directoryStop = undefined
     }
     else {
+      // The filesystem can coalesce writes into one notification. That read
+      // can see a partial file and receive no event for its final size.
+      sizeRecheckTimer = setInterval(inspect, OUTPUT_SIZE_RECHECK_MS)
       inspect()
     }
   }

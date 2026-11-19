@@ -1106,8 +1106,8 @@ describe('resumeQueueAfterFailure', () => {
   })
 })
 
-function focusableComposer(log: string[]): PlaywrightLocator {
-  return assertingLocator('editor', log, () => true, {
+function focusableComposer(log: string[]) {
+  const editor = assertingLocator('editor', log, () => true, {
     click: async () => {
       throw new Error('The editor center is reserved for action buttons.')
     },
@@ -1120,19 +1120,31 @@ function focusableComposer(log: string[]): PlaywrightLocator {
       })
     },
   })
+  const editable = opaqueHandle<PlaywrightLocator>({})
+  const base = opaqueHandle<PlaywrightLocator>({
+    and: (other) => {
+      expect(other).toBe(editable)
+      return editor
+    },
+  })
+  const locate = (selector: string) => {
+    if (selector === '[data-testid="composer-editor"]:visible .ProseMirror')
+      return base
+    if (selector === '[contenteditable="true"]')
+      return editable
+    throw new Error(`The composer fixture has no locator for ${selector}.`)
+  }
+  return { editor, locate }
 }
 
 describe('focusComposer', () => {
   it('clicks the text block without clicking the padding reserved for actions', async () => {
     const log: string[] = []
-    const editor = focusableComposer(log)
+    const composer = focusableComposer(log)
     const page = opaqueHandle<Page>({
-      locator: (selector: string) => {
-        expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
-        return editor
-      },
+      locator: composer.locate,
     })
-    expect(await focusComposer(page)).toBe(editor)
+    expect(await focusComposer(page)).toBe(composer.editor)
     expect(log).toEqual(['editor:to.be.visible', 'editor:text-click'])
   })
 })
@@ -1140,7 +1152,7 @@ describe('focusComposer', () => {
 describe('toggleModeWithShortcut', () => {
   function modePage(chip: string) {
     const log: string[] = []
-    const editor = focusableComposer(log)
+    const composer = focusableComposer(log)
     const spinner = assertingLocator('spinner', log, expression => expression !== 'to.be.visible')
     const chips = opaqueHandle<PlaywrightLocator>({
       filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
@@ -1153,8 +1165,8 @@ describe('toggleModeWithShortcut', () => {
         press: async (key: string) => { log.push(`press ${key}`) },
       }),
       locator: (selector: string) => {
-        if (selector === '[data-testid="composer-editor"]:visible .ProseMirror')
-          return editor
+        if (selector === '[data-testid="composer-editor"]:visible .ProseMirror' || selector === '[contenteditable="true"]')
+          return composer.locate(selector)
         if (selector === '[data-testid="settings-loading-spinner"]')
           return spinner
         if (selector === '[data-testid="composer-status-bar"] [data-testid$="-trigger"]')
@@ -1598,12 +1610,9 @@ describe('answerPlanReview', () => {
 describe('enterControlFeedback', () => {
   it('focuses the visible composer and types the reason into it', async () => {
     const log: string[] = []
-    const editor = focusableComposer(log)
+    const composer = focusableComposer(log)
     const page = opaqueHandle<Page>({
-      locator: (selector: string) => {
-        expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
-        return editor
-      },
+      locator: composer.locate,
       keyboard: opaqueHandle<Page['keyboard']>({
         type: async (text: string) => {
           log.push(`type:${text}`)

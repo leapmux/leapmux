@@ -11,7 +11,13 @@
     "defaultMode",
     "configIds",
     "toolNames",
-    "notices"
+    "notices",
+    "recordKinds",
+    "recordRoles",
+    "nativeBlocks",
+    "recordFields",
+    "supplementRoots",
+    "requestContext"
   ],
   "$defs": {
     "table": {
@@ -141,6 +147,27 @@
       "$ref": "#/$defs/table"
     },
     "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "recordKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "recordRoles": {
+      "$ref": "#/$defs/table"
+    },
+    "nativeBlocks": {
+      "$ref": "#/$defs/table"
+    },
+    "recordFields": {
+      "$ref": "#/$defs/table"
+    },
+    "structs": {
+      "$ref": "#/$defs/structs"
+    },
+    "supplementRoots": {
+      "$ref": "#/$defs/table"
+    },
+    "requestContext": {
       "$ref": "#/$defs/table"
     }
   }

@@ -152,13 +152,13 @@ func TestHelperProcessGooseCLI(*testing.T) {
 			if scenario == "new-refused" {
 				return `{"code":-32000,"message":"workspace is not readable"}`, true, true
 			}
-			return `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"},{"value":"chat","name":"Chat"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false, true
+			return `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false, true
 		case acp.MethodSessionLoad:
 			if scenario == "load-refused" {
 				return `{"code":-32000,"message":"session not found"}`, true, true
 			}
 			if scenario == "load" {
-				return `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false, true
+				return `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"}]}}`, false, true
 			}
 			return "", false, false
 		case acp.MethodSessionSetConfigOption, acp.MethodSessionSetModel, acp.MethodSessionSetMode, acp.MethodSessionPrompt:
@@ -200,7 +200,7 @@ func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
 	for _, opt := range modeGroup.GetOptions() {
 		modeNames = append(modeNames, opt.GetName())
 	}
-	assert.Equal(t, []string{"Smart Approve", "Auto", "Approve", "Chat"}, modeNames)
+	assert.Equal(t, []string{"Smart Approve", "Auto", "Approve"}, modeNames)
 }
 
 func TestFallbackGooseModesPutSmartApproveFirst(t *testing.T) {
@@ -214,7 +214,7 @@ func TestFallbackGooseModesPutSmartApproveFirst(t *testing.T) {
 	for _, mode := range modes[1:] {
 		rest = append(rest, mode.GetId())
 	}
-	assert.Equal(t, []string{contracts.GooseModeAuto, contracts.GooseModeApprove, contracts.GooseModeChat}, rest)
+	assert.Equal(t, []string{contracts.GooseModeAuto, contracts.GooseModeApprove}, rest)
 }
 
 // acp.OrderModesPreferredFirst is the one ordering rule every rebuilt permission list uses,
@@ -563,20 +563,4 @@ func TestGooseToolNotificationLeavesTheUnownedTypeAlone(t *testing.T) {
 		ToolCallID: "tool-1", Meta: json.RawMessage(`{"toolNotification":{"type":"message","params":{"level":"info","logger":"goose"}}}`),
 	}), "a log line without data is claimed and dropped")
 	assert.Empty(t, sink.Messages())
-}
-
-func TestStartGooseRejectsInvalidNativeCommands(t *testing.T) {
-	installFakeGooseCLI(t, "new")
-	for _, value := range []string{"bogus", "0", "-1", "TRUE"} {
-		provider, err := Start(context.Background(), agent.Options{
-			AgentID:    "invalid-native-commands",
-			WorkingDir: t.TempDir(),
-			Shell:      testutil.TestShell(),
-			Options:    map[string]string{OptionNativeCommands: value},
-		}, agent.NewProviderServices(&agenttest.Sink{}))
-		if provider != nil {
-			provider.Stop()
-		}
-		require.ErrorContains(t, err, "must be true or false")
-	}
 }

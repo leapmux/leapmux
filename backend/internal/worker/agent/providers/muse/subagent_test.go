@@ -229,7 +229,7 @@ func TestChildCommandsKeepUncertainIdentityUntilConfirmed(t *testing.T) {
 				case "interrupt":
 					return a.InterruptChild("key", agent.StopContext{})
 				default:
-					return a.SendChildInput("key", "note", nil)
+					return agenttest.SendChildInput(a, "key", agent.ChildInput{Content: "note"})
 				}
 			}
 			require.ErrorIs(t, invoke(), agent.ErrDeliveryUncertain)
@@ -307,7 +307,7 @@ func TestChildInputValidatesBeforeNativeAdmission(t *testing.T) {
 			if tc.steer {
 				err = a.SteerChildInput("key", tc.text, attachments)
 			} else {
-				err = a.SendChildInput("key", tc.text, attachments)
+				err = agenttest.SendChildInput(a, "key", agent.ChildInput{Content: tc.text, Attachments: attachments})
 			}
 			if tc.want != nil {
 				require.ErrorIs(t, err, tc.want)
@@ -339,10 +339,10 @@ func TestChildCommandIdentityChangesWithInputAndConfirmedRefusal(t *testing.T) {
 		}
 		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"invalid input"}`)}
 	}})
-	require.ErrorIs(t, a.SendChildInput("key", "one", nil), agent.ErrDeliveryUncertain)
-	require.ErrorIs(t, a.SendChildInput("key", "two", nil), agent.ErrDeliveryUncertain)
-	require.Error(t, a.SendChildInput("key", "two", nil))
-	require.Error(t, a.SendChildInput("key", "two", nil))
+	require.ErrorIs(t, agenttest.SendChildInput(a, "key", agent.ChildInput{Content: "one"}), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, agenttest.SendChildInput(a, "key", agent.ChildInput{Content: "two"}), agent.ErrDeliveryUncertain)
+	require.Error(t, agenttest.SendChildInput(a, "key", agent.ChildInput{Content: "two"}))
+	require.Error(t, agenttest.SendChildInput(a, "key", agent.ChildInput{Content: "two"}))
 	require.Len(t, ids, 4)
 	assert.NotEqual(t, ids[0], ids[1])
 	assert.Equal(t, ids[1], ids[2])

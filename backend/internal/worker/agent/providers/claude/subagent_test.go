@@ -254,6 +254,7 @@ func TestClaude_AForwardedEnvelopeBeforeTaskStartedOpensARunningRow(t *testing.T
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "the reordered envelope opens the row the task id could not")
 	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+	assert.Equal(t, bgtask.RoleChildTask, tasks[0].Role, "the first linked row owns child activity and routing")
 	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status,
 		"the envelope that got here IS the subagent working")
 	assert.Equal(t, "child-of-tu-spawn", tasks[0].ChildAgentID,

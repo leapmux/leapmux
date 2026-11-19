@@ -1,31 +1,35 @@
 import type { AgentRun } from '../../../model/tools/agent'
 import type { ZCodeRow } from './toolCommon'
+import { ZCODE_AGENT_LAUNCH } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
 import { zcodeErrorText, zcodeExtractTool, zcodeToolInput } from './toolCommon'
 
 /** ZCode's model formatter appends this identity and usage footer to a completed agent report. */
-const RESULT_FOOTER = /\nagentId: ([^'\r\n]+) \(use SendMessage with to: '\1' to continue this agent\)\n<usage>(?:subagent_tokens: (\d+)\n)?tool_uses: (\d+)\nduration_ms: (\d+)<\/usage>$/
+const RESULT_FOOTER = /\nagentId: ([^'\r\n]+) \(use SendMessage with to: '\1', summary: '<5-10 word recap>' to continue this agent\)\n<usage>(?:subagent_tokens: (\d+)\n)?tool_uses: (\d+)\nduration_ms: (\d+)<\/usage>$/
 
-/** These lines come from ZCode's formatAgentOutputForModel serializer. */
-const LAUNCH_BACKGROUND = 'The agent is working in the background. You will be notified automatically when it completes.'
-const LAUNCH_WAIT = 'Briefly tell the user what you launched and end your response. Do not generate any other text - agent results will arrive in a subsequent message.'
-const LAUNCH_WORK = 'Do not duplicate this agent\'s work - avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.'
-const LAUNCH_OUTPUT = 'Do NOT Read or tail this file via the shell tool. If the user asks for progress, say the agent is still running; you\'ll get a completion notification.'
-
+/** Require the complete native receipt so a quoted or partial message stays visible. */
 function launchedAgent(content: string): { agentId: string, outputFile?: string } | null {
-  if (!content.startsWith('Async agent launched successfully.\n'))
+  const grammar = ZCODE_AGENT_LAUNCH
+  const lines = content.split('\n')
+  if (lines[0] !== grammar.Header || lines[2] !== grammar.Background)
     return null
-  const lines = content.split('\n', 7)
-  const identity = /^agentId: ([^'\r\n]+) \(internal ID - do not mention to user\. Use SendMessage with to: '\1' to continue this agent\.\)$/.exec(lines[1] ?? '')
-  if (!identity || lines[2] !== LAUNCH_BACKGROUND)
+  const identity = lines[1] ?? ''
+  if (!identity.startsWith(grammar.IdentityPrefix))
     return null
-  // The pattern's group is the whole id, which a match always carries.
-  const agentId = identity[1] ?? ''
-  if (lines.length === 4 && lines[3] === LAUNCH_WAIT)
+  const agentId = identity.slice(grammar.IdentityPrefix.length).split(grammar.IdentityMiddle, 1)[0] ?? ''
+  if (!agentId || /['\r\n]/.test(agentId)
+    || identity !== `${grammar.IdentityPrefix}${agentId}${grammar.IdentityMiddle}${agentId}${grammar.IdentitySuffix}`) {
+    return null
+  }
+  if (lines.length === 4 && lines[3] === grammar.Wait)
     return { agentId }
-  if (lines.length === 6 && lines[3] === LAUNCH_WORK && lines[4]?.startsWith('output_file: ') && lines[5] === LAUNCH_OUTPUT)
-    return { agentId, outputFile: lines[4]?.slice('output_file: '.length) ?? '' }
+  if (lines.length === 6 && lines[3] === grammar.Work && lines[4]?.startsWith(grammar.OutputPrefix) && lines[5] === grammar.OutputRule) {
+    const outputFile = lines[4].slice(grammar.OutputPrefix.length)
+    return outputFile
+      ? { agentId, outputFile }
+      : null
+  }
   return null
 }
 

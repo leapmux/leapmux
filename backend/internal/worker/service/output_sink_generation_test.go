@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"database/sql"
 	"io"
@@ -21,7 +23,9 @@ import (
 func TestNewRootSinkRefusalPreservesThePhysicalSource(t *testing.T) {
 	t.Parallel()
 	svc, original := setupRootSink(t, "root-generation")
-	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child"})
+	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "child"})
 	require.NoError(t, err)
 	child := original.ChildSink(childID)
 	root := requireRootOutputSink(t, svc.Output, "root-generation")
@@ -50,12 +54,16 @@ func TestNewRootSinkRejectsVirtualChildrenAndChildrenInheritTheirParent(t *testi
 	t.Parallel()
 	svc, original := setupRootSink(t, "root-generation")
 	root := requireRootOutputSink(t, svc.Output, "root-generation")
-	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child"})
+	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "child"})
 	require.NoError(t, err)
 	child := original.ChildSink(childID)
 	childOwner := child.CaptureMessage(agent.MessageContent{Original: []byte(`{"content":"Child source"}`)}, agent.SpanInfo{}).Publication.Owner().(*transcriptOwner)
 	assert.Equal(t, root.outputGeneration, childOwner.sink.outputGeneration)
-	grandchildID, err := child.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "nested-spawn", ProviderChildKey: "nested-child"})
+	grandchildID, err := child.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "nested-spawn", ProviderChildKey: "nested-child"})
 	require.NoError(t, err)
 	grandchild := child.ChildSink(grandchildID)
 	grandchildOwner := grandchild.CaptureMessage(agent.MessageContent{Original: []byte(`{"content":"Nested source"}`)}, agent.SpanInfo{}).Publication.Owner().(*transcriptOwner)
@@ -160,7 +168,9 @@ func TestChildSessionRestorationWarningsReleaseConstructionLocks(t *testing.T) {
 	for _, operation := range []string{"child services", "opening prompt"} {
 		t.Run(operation, func(t *testing.T) {
 			svc, original := setupRootSink(t, "child-restoration-source")
-			childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child", AgentSessionID: "stored-child-session"})
+			childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "spawn", ProviderChildKey: "child", AgentSessionID: "stored-child-session"})
 			require.NoError(t, err)
 			root := requireRootOutputSink(t, svc.Output, "child-restoration-source")
 			store := &failedOutputSourceStore{DBTX: svc.DB, agentID: childID}
