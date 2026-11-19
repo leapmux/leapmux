@@ -65,16 +65,60 @@ func parseQueueSchedule(value string) (*time.Time, error) {
 	return &at, nil
 }
 
+// queueAttachments copies the attachments of a request into the queue's form.
+//
+// Each attachment takes the media type that the classifier gives it, which is
+// the type that the provider receives at dispatch (NormalizeAttachments reads
+// the same classifier): a stated type in lower case, and for a type that is
+// absent or the generic application/octet-stream, the one that the classifier
+// infers from the name and the content. The queue's snapshot and the
+// transcript row then state that type too, so no client sees a type that the
+// provider does not read. The browser infers the type before it sends, and
+// the CLI leaves it to the Worker, so both clients store one answer. The
+// classification is a function of the request, so a repeated request still
+// matches the input that it repeats.
 func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachment {
 	result := make([]inputqueue.Attachment, len(attachments))
-	for i := range attachments {
+	for i, attachment := range attachments {
+		mimeType := attachment.GetMimeType()
+		if classified := agent.ClassifyAttachments([]*leapmuxv1.Attachment{attachment}); len(classified) == 1 {
+			mimeType = classified[0].MIMEType
+		}
 		result[i] = inputqueue.Attachment{
-			Filename: attachments[i].GetFilename(),
-			MimeType: attachments[i].GetMimeType(),
-			Data:     append([]byte(nil), attachments[i].GetData()...),
+			Filename: attachment.GetFilename(),
+			MimeType: mimeType,
+			Data:     append([]byte(nil), attachment.GetData()...),
 		}
 	}
 	return result
+}
+
+// refuseUnreadableAttachments applies the attachment policy of the agent's
+// provider to the attachments of a client's enqueue or edit. A file that the
+// provider cannot read then fails the request that sent it, and the refusal
+// states the file. The dispatch applies the same policy, through the same
+// NormalizeAttachments, but a refusal there fails the input in the queue, and
+// a failed first input holds every input behind it. The browser checks the
+// provider's capabilities before it sends, and the CLI cannot, because it
+// holds no provider code.
+//
+// A missing agent passes, because the queue refuses the request for it with
+// its own error.
+func (svc *Service) refuseUnreadableAttachments(agentID string, attachments []*leapmuxv1.Attachment) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, attachments); err != nil {
+		return fmt.Errorf("%w: %w", inputqueue.ErrInvalidInput, err)
+	}
+	return nil
 }
 
 // droppedInputID is the queue item id of the input that a provider dropped. It
@@ -169,8 +213,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	}
 
 	if dbAgent.ParentAgentID.Valid {
-		if item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE &&
-			item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
+		if !childInputKind(item.Kind) {
 			return inputqueue.DispatchResult{}, fmt.Errorf("subagent accepts only messages")
 		}
 		row, err := svc.queueChildRouteRow(item.AgentID)
@@ -399,10 +442,18 @@ func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.Agen
 	if !dbAgent.ParentAgentID.Valid {
 		return true
 	}
-	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE || kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
 		return a.svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages
 	}
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+}
+
+// childInputKind selects the kinds that a child agent's route delivers: a
+// message, from the user or from another agent, and control feedback.
+func childInputKind(kind leapmuxv1.AgentInputKind) bool {
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE ||
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
 func (a *agentInputQueueAdapter) PrepareSteer(agentID string) {
@@ -557,10 +608,10 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			}
 		}
 		result.Items[i] = &leapmuxv1.QueuedAgentInput{
-			Id: item.ID, Kind: item.Kind, Text: queuedInputTextPreview(item.TextPreview),
+			Id: item.ID, Kind: item.Kind, Sender: item.Sender.Proto(), Text: queuedInputTextPreview(item.TextPreview),
 			Attachments: attachments, Order: item.Position, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
-			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
+			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt, EditRefusal: item.EditRefusal,
 			ScheduledAt: queueScheduleProto(item.ScheduledAt), ReorderSegment: item.ReorderSegment,
 			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
@@ -571,7 +622,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerAgentInputRecoveryHandlers(d, svc)
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, dispatchPlain,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
 			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 				sendQueueError(sender, fmt.Errorf("%w: the worker creates question-answer inputs", inputqueue.ErrInvalidInput))
 				return
@@ -581,8 +632,18 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendQueueError(sender, err)
 				return
 			}
+			// The caller's tab, never the request, says which agent sent the
+			// input. The queue turns a user message from an agent into an
+			// agent message (see inputqueue.Store.admitNewItem).
+			from, err := svc.agentMessageSender(caller)
+			if sendQueueError(sender, err) {
+				return
+			}
+			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
+				return
+			}
 			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
-				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Text: r.GetText(),
+				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Sender: from, Text: r.GetText(),
 				Attachments:      queueAttachments(r.GetAttachments()),
 				ReclassifyOnEdit: r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 				ScheduledAt:      scheduledAt,
@@ -623,6 +684,9 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 					return
 				}
 				schedule = inputqueue.ReplaceSchedule(scheduledAt)
+			}
+			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
+				return
 			}
 			snapshot, err := svc.InputQueue.Update(bgCtx(), inputqueue.UpdateRequest{
 				AgentID:         r.GetAgentId(),
@@ -718,7 +782,8 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
 		errors.Is(err, inputqueue.ErrScheduled),
 		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrPreemptionState),
-		errors.Is(err, inputqueue.ErrScheduleOrder), errors.Is(err, inputqueue.ErrManagerStopped):
+		errors.Is(err, inputqueue.ErrScheduleOrder), errors.Is(err, inputqueue.ErrManagerStopped),
+		errors.Is(err, inputqueue.ErrAgentMessageEdit):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),
 		errors.Is(err, inputqueue.ErrItemTooLarge), errors.Is(err, inputqueue.ErrQueueAttachmentsLarge):

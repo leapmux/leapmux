@@ -19,8 +19,11 @@ import (
 // `tab list` and `tab get` read the rendered rows of workspace_tab_owned,
 // served by the WorkspaceService ListTabs and LocateTab RPCs, and join each
 // row with what its Worker reports: the title and the state.
+//
+// `tab reveal` and `tab status` reach the open frontends through the tab's
+// Worker, on its private-event stream.
 func newTabCommand() *cobra.Command {
-	return cli.Group("tab", "List, close, rename and move tabs of every type",
+	return cli.Group("tab", "List, close, rename, move and reveal tabs of every type, and set their status",
 		cli.NewLeaf(cli.Leaf{
 			Use:   "list",
 			Short: "List your tabs with their titles and states",
@@ -88,6 +91,8 @@ func newTabCommand() *cobra.Command {
 			Complete: completeTargets,
 			Run:      runTabMove,
 		}),
+		newTabRevealLeaf(),
+		newTabStatusCommand(),
 	)
 }
 

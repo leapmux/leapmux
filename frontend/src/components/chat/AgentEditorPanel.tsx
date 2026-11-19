@@ -96,6 +96,11 @@ export interface AgentEditorPanelProps {
   onRetryPendingSend?: (content: string, attachments: FileAttachment[], scheduledAt: string) => Promise<boolean>
   inputQueue?: AgentInputQueueSnapshot
   queueClientId?: string
+  /**
+   * The title of a tab that the browser holds, by its id. A queued message from
+   * another agent states its sender by the title of the sender's tab.
+   */
+  tabTitle?: (tabId: string) => string | undefined
   onBeginQueueEdit?: BeginQueueEdit
   /**
    * Save the open edit. `scheduledAt` is undefined to keep the stored
@@ -880,6 +885,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         <AgentInputQueue
           clientId={props.queueClientId ?? ''}
           queueHeadDispatch={props.agent?.queueHeadDispatch ?? QueueHeadDispatch.NONE}
+          {...(props.tabTitle !== undefined
+            ? { tabTitle: props.tabTitle }
+            : {})}
           {...(props.inputQueue !== undefined
             ? { snapshot: props.inputQueue }
             : {})}

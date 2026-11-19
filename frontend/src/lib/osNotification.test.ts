@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
-import { _resetOsNotificationDedupeForTests, notifyOs, osNotificationsAvailable } from '~/lib/osNotification'
+import { _resetOsNotificationDedupeForTests, notifyOs, osNotificationsAvailable, showDesktopNotification } from '~/lib/osNotification'
 
 vi.mock('~/components/common/Toast', () => ({
   showInfoToast: vi.fn(),
@@ -16,6 +16,7 @@ vi.mock('~/api/platformBridge', () => ({
 }))
 
 const { showInfoToast } = await import('~/components/common/Toast')
+const { isTauriApp, platformBridge } = await import('~/api/platformBridge')
 
 describe('osNotification', () => {
   beforeEach(() => {
@@ -44,7 +45,7 @@ describe('osNotification', () => {
   })
 
   it('dedupes by tag', () => {
-    localStorageSet(KEY_BROWSER_PREFS, { terminalOsNotifications: true })
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
     const notify = vi.fn()
     vi.stubGlobal('Notification', notify)
     Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
@@ -55,7 +56,7 @@ describe('osNotification', () => {
 
   it('allows the same tag again after the dedupe window', () => {
     vi.useFakeTimers()
-    localStorageSet(KEY_BROWSER_PREFS, { terminalOsNotifications: true })
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
     const notify = vi.fn()
     vi.stubGlobal('Notification', notify)
     Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
@@ -72,7 +73,7 @@ describe('osNotification', () => {
   })
 
   it('falls back to toast when Notification API is absent', () => {
-    localStorageSet(KEY_BROWSER_PREFS, { terminalOsNotifications: true })
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
     const original = globalThis.Notification
     // @ts-expect-error intentional delete for the absent-API path
     delete globalThis.Notification
@@ -84,7 +85,7 @@ describe('osNotification', () => {
   })
 
   it('calls the browser Notification API when permitted and opted in', () => {
-    localStorageSet(KEY_BROWSER_PREFS, { terminalOsNotifications: true })
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
     const notify = vi.fn()
     vi.stubGlobal('Notification', notify)
     Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
@@ -98,7 +99,7 @@ describe('osNotification', () => {
     // the 3s dedupe window must not grow the dedupe set without limit. Each
     // distinct tag should still notify (dedupe is best-effort), and the prune
     // path must stay bounded.
-    localStorageSet(KEY_BROWSER_PREFS, { terminalOsNotifications: true })
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
     const notify = vi.fn()
     vi.stubGlobal('Notification', notify)
     Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
@@ -113,5 +114,95 @@ describe('osNotification', () => {
     }).not.toThrow()
     // Every distinct tag is a first occurrence → all notify.
     expect(notify).toHaveBeenCalledTimes(1000)
+  })
+})
+
+describe('showDesktopNotification', () => {
+  beforeEach(() => {
+    localStorageSet(KEY_BROWSER_PREFS, {})
+    vi.mocked(isTauriApp).mockReturnValue(false)
+    vi.mocked(platformBridge.showNotification).mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function grantBrowserPermission() {
+    const notify = vi.fn()
+    vi.stubGlobal('Notification', notify)
+    Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
+    return notify
+  }
+
+  it('shows a browser notification with its tag when the preference is on and permission is granted', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
+    const notify = grantBrowserPermission()
+    const unavailable = vi.fn()
+
+    showDesktopNotification({ title: 'Done', body: 'All green', tag: 't' }, unavailable)
+
+    expect(notify).toHaveBeenCalledWith('Done', { body: 'All green', tag: 't' })
+    expect(unavailable).not.toHaveBeenCalled()
+  })
+
+  it('reports unavailable and shows nothing when the preference is off', () => {
+    const notify = grantBrowserPermission()
+    const unavailable = vi.fn()
+
+    showDesktopNotification({ title: 'Done', body: '' }, unavailable)
+
+    expect(notify).not.toHaveBeenCalled()
+    expect(unavailable).toHaveBeenCalledOnce()
+  })
+
+  it('reports unavailable when the permission is not granted', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
+    const notify = vi.fn()
+    vi.stubGlobal('Notification', notify)
+    Object.defineProperty(globalThis.Notification, 'permission', { value: 'default', configurable: true })
+    const unavailable = vi.fn()
+
+    showDesktopNotification({ title: 'Done', body: '' }, unavailable)
+
+    expect(notify).not.toHaveBeenCalled()
+    expect(unavailable).toHaveBeenCalledOnce()
+  })
+
+  it('reports unavailable when the browser refuses to construct one', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
+    const notify = vi.fn(() => {
+      throw new TypeError('Illegal constructor')
+    })
+    vi.stubGlobal('Notification', notify)
+    Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
+    const unavailable = vi.fn()
+
+    showDesktopNotification({ title: 'Done', body: '' }, unavailable)
+
+    expect(unavailable).toHaveBeenCalledOnce()
+  })
+
+  it('goes through the desktop app\'s own notification bridge', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
+    vi.mocked(isTauriApp).mockReturnValue(true)
+    vi.mocked(platformBridge.showNotification).mockResolvedValue(undefined)
+    const unavailable = vi.fn()
+
+    showDesktopNotification({ title: 'Done', body: 'All green', tag: 't' }, unavailable)
+    await Promise.resolve()
+
+    expect(platformBridge.showNotification).toHaveBeenCalledWith('Done', 'All green', 't')
+    expect(unavailable).not.toHaveBeenCalled()
+  })
+
+  it('reports unavailable when the desktop app refuses', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, { desktopNotifications: true })
+    vi.mocked(isTauriApp).mockReturnValue(true)
+    vi.mocked(platformBridge.showNotification).mockRejectedValue(new Error('notification permission denied'))
+    const unavailable = vi.fn()
+
+    showDesktopNotification({ title: 'Done', body: '' }, unavailable)
+    await vi.waitFor(() => expect(unavailable).toHaveBeenCalledOnce())
   })
 })

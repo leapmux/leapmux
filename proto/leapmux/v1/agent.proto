@@ -494,6 +494,23 @@ enum AgentInputKind {
   // A retryable server error, retried automatically with exponential backoff.
   // Worker-created only; external enqueue refuses it.
   AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR = 8;
+  // A message that an agent sent through `leapmux control agent send`. The
+  // Worker assigns this kind, never a caller: a user message enqueued through
+  // the control token of an agent's tab, the recipient's own included, becomes
+  // this kind, with the sender stamped from the token, so no caller can forge
+  // or drop the provenance. A call that a sibling Worker relays carries the
+  // sender that the sibling stamped from its own token (see CallSource). The agent receives it with a header that names the sender and
+  // states that it is not the operator's instruction. External enqueue refuses
+  // it as a requested kind.
+  AGENT_INPUT_KIND_AGENT_MESSAGE = 9;
+}
+
+// AgentMessageSender identifies the agent tab that sent an AGENT_MESSAGE. The
+// title stays private to the Worker and the browser, so each reader looks it
+// up by the tab id.
+message AgentMessageSender {
+  string tab_id = 1;
+  AgentProvider provider = 2;
 }
 
 enum AgentInputState {
@@ -563,6 +580,15 @@ message QueuedAgentInput {
   // mean nothing outside one snapshot. Clients compare them and never
   // calculate them, because the Worker's clock decides the groups.
   uint32 reorder_segment = 15;
+  // The agent that sent an AGENT_MESSAGE, or unset for any other kind.
+  AgentMessageSender sender = 16;
+  // Why no client can ever edit this item, such as a message whose text
+  // another agent wrote; empty when the item allows an edit. The Worker
+  // computes it from the same rule that BeginQueuedAgentInputEdit applies,
+  // and that refusal states the same text, for the reason can_steer exists. A
+  // state that passes, such as a dispatch or another client's edit, is not
+  // stated here.
+  string edit_refusal = 17;
 }
 
 // One agent's input queue. The carrier identifies the agent: the request of an

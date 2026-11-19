@@ -82,6 +82,15 @@ message OpenTerminalRequest {
     QuakeTerminalTarget quake = 8;
     TabCreation creation = 9;
   }
+
+  // A command line that the new shell runs once it is ready, as
+  // `leapmux control terminal run` sends one: the Worker pastes it and presses
+  // Enter. The Worker writes it when the shell's line editor turns on
+  // bracketed paste, or after a short wait for a shell that never does, so the
+  // command never races the shell's own start. Only a shell that this request
+  // starts runs it: a quake request that returns the directory's existing
+  // terminal ignores it. Empty runs nothing.
+  string initial_command = 10;
 }
 
 message OpenTerminalResponse {
@@ -198,6 +207,13 @@ message TerminalInfo {
   // False for an ordinary terminal tab. True for the quake terminal of
   // `working_dir` — see OpenTerminalRequest.quake.
   bool quake = 13;
+  // The exit code of a shell that has ended (status EXITED), as
+  // TerminalClosed.exit_code states it: -1 for a shell that a signal ended,
+  // or that the Worker ended when it shut down. A reader that subscribes
+  // after the exit can still learn the code. Unset while the shell runs, and
+  // when the Worker holds no record of the exit: the Worker was killed while
+  // the shell ran, so it never saw the shell end.
+  optional int32 exit_code = 14;
 }
 
 message TerminalData {
@@ -215,7 +231,10 @@ message TerminalData {
 }
 
 message TerminalClosed {
-  int32 exit_code = 1;
+  // The exit code of the shell. Unset when the Worker holds no record of the
+  // exit, such as for a terminal that never started a shell, or whose shell
+  // ended while the Worker was not running.
+  optional int32 exit_code = 1;
 }
 
 // The four messages below all report escape sequences the WORKER interpreted.

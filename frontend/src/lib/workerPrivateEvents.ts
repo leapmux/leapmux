@@ -1,19 +1,23 @@
 // Per-worker subscriber for the worker's E2EE-only
-// `WatchWorkerPrivateEvents` stream. Decoded events — `TabRenamed`,
-// `TabPayloadRegistered`, `TabPayloadRevoked` — are surfaced to the
-// caller; reconnect happens transparently. The worker emits a one-shot
-// bootstrap reply at subscribe time (one `TabPayloadRegistered` per
-// `worker_tab_payloads` row the caller owns) so a late-joining client
-// receives the full payload cache before any live events.
+// `WatchWorkerPrivateEvents` stream. Each decoded event -- a tab fact
+// (`TabRenamed`, `TabPayloadRegistered`, `TabPayloadRevoked`,
+// `TabStatusChanged`) or a command to the frontends (`QuakePanelCommand`,
+// `UserNotification`, `TabRevealCommand`) -- is surfaced to the caller;
+// reconnect happens transparently. The worker emits a one-shot bootstrap reply
+// at subscribe time (one `TabPayloadRegistered` per `worker_tab_payloads` row
+// the caller owns, and one `TabStatusChanged` per tab whose status is set) so a
+// late-joining client receives the full state before any live events.
 
 import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
+import type { TabStatusView } from '~/lib/tabStatus'
 import { channelManager } from '~/api/workerRpc'
 import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff, streamProvedHealthy } from '~/lib/retry'
 import { tabPayloadView } from '~/lib/tabPayload'
+import { tabStatusView } from '~/lib/tabStatus'
 
 const log = createLogger('workerPrivateEvents')
 
@@ -54,6 +58,33 @@ interface OpenStreamOpts {
    * against a reconnect reopening a panel the user closed.
    */
   onQuakePanelCommand?: (evt: { workingDir: string, action: QuakePanelAction }) => void
+  /**
+   * A process asked through `leapmux control notify` to show a notification.
+   * `sourceTabId` is the tab that the Worker stamped from the caller's control
+   * token, or '' for a caller in no tab.
+   *
+   * A COMMAND, like `onQuakePanelCommand`: the worker stores none, so a
+   * reconnect never replays an old one.
+   */
+  onUserNotification?: (evt: { title: string, body: string, sourceTabId: string }) => void
+  /**
+   * The Control CLI asked to show one tab that this worker hosts. A COMMAND,
+   * like `onQuakePanelCommand`.
+   */
+  onTabRevealCommand?: (evt: { tabId: string }) => void
+  /**
+   * The status of one tab changed: a status to show, or undefined when it was
+   * cleared. Fires during the bootstrap replay, once per tab whose status is
+   * set, and for each live change.
+   */
+  onTabStatusChanged?: (evt: { tabId: string, status: TabStatusView | undefined }) => void
+  /**
+   * A new stream opened, before any of its events. The worker's bootstrap then
+   * replays every status that is set, so a caller that keeps statuses drops
+   * this worker's old ones here: a status cleared while no stream ran would
+   * otherwise stay on screen.
+   */
+  onSubscribed?: () => void
 }
 
 /**
@@ -98,6 +129,14 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
         const handle = channelManager.stream(channelId, WorkerPrivateService.method.watchWorkerPrivateEvents, {})
         currentClose = () => handle.cancel()
         openedAt = Date.now()
+        // Before the message listener: the bootstrap's first frame must find
+        // the caller's state already reset.
+        try {
+          opts.onSubscribed?.()
+        }
+        catch (err) {
+          log.warn('the subscribe callback threw', { workerId: opts.workerId, err })
+        }
 
         await new Promise<void>((resolve) => {
           wakeStream = resolve
@@ -136,6 +175,24 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                 case 'quakePanelCommand': {
                   const r = evt.event.value
                   opts.onQuakePanelCommand?.({ workingDir: r.workingDir, action: r.action })
+                  break
+                }
+                case 'userNotification': {
+                  const r = evt.event.value
+                  opts.onUserNotification?.({ title: r.title, body: r.body, sourceTabId: r.sourceTabId })
+                  break
+                }
+                case 'tabRevealCommand': {
+                  const r = evt.event.value
+                  opts.onTabRevealCommand?.({ tabId: r.tabId })
+                  break
+                }
+                case 'tabStatusChanged': {
+                  const r = evt.event.value
+                  opts.onTabStatusChanged?.({
+                    tabId: r.tabId,
+                    status: tabStatusView(r.status),
+                  })
                   break
                 }
               }

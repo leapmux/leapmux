@@ -54,6 +54,8 @@ When the tab bar is too narrow, it collapses. A minimal-width bar shows a single
 
 A small dot on a tab (a **notification indicator**) means the tab has unseen activity; activating the tab clears it.
 
+A tab can also show a short **status** beside its title, such as "Running the tests", with a ring for its progress and a color for its tone. A process in the tab sets it with [`leapmux control tab status set`](/docs/using/control-cli/#telling-the-user). It goes away when the process clears it or the tab closes. Hover over it to read the whole text.
+
 ### Renaming a tab
 
 Double-click an **agent** or **terminal** tab to rename it inline. Press `Enter` to commit, `Escape` to cancel; clicking away also commits. Empty or unchanged names are ignored.

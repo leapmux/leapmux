@@ -1150,7 +1150,7 @@ describe('PreferencesDialog load failure', () => {
 
     // The browser-only row of this group survives; its two account rows do
     // not, and Appearance holds account rows ONLY, so that group drops out.
-    expect(screen.getByText('Terminal OS notifications')).toBeTruthy()
+    expect(screen.getByText('Desktop notifications')).toBeTruthy()
     expect(screen.queryByText('Turn-end sound')).toBeNull()
     expect(screen.queryByText('Turn-end volume')).toBeNull()
     expect(screen.queryByTestId('preferences-nav-appearance')).toBeNull()

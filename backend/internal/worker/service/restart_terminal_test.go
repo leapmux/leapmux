@@ -73,7 +73,7 @@ func TestLateTerminalWritesPreserveConcurrentClose(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, row.ClosedAt.Valid, "a late writer must retain the concurrent close")
 			if writer == "exit" {
-				assert.Equal(t, int64(7), row.ExitCode)
+				assert.Equal(t, recordedExit(7), row.ExitCode)
 				assert.Equal(t, "Concurrent title", row.Title)
 			} else {
 				assert.Equal(t, "Updated title", row.Title)
@@ -273,8 +273,11 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 		Cols:       80,
 		Rows:       25,
 		Screen:     persistedScreen,
-		ExitCode:   int64(exitCodeUnknown),
 	}))
+	recordTerminalExit(t, svc, id, exitCodeUnknown)
+	// recordTerminalExit writes the screen too; put the persisted one back.
+	_, err := svc.DB.ExecContext(ctx, "UPDATE terminals SET screen = ? WHERE id = ?", persistedScreen, id)
+	require.NoError(t, err)
 
 	require.False(t, svc.Terminals.HasTerminal(id), "no in-memory entry pre-restart")
 
@@ -361,7 +364,7 @@ func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) 
 
 	row, err := svc.Queries.GetTerminal(ctx, "term-race")
 	require.NoError(t, err)
-	assert.Equal(t, int64(42), row.ExitCode, "Shutdown must not overwrite the real exit code with exitCodeUnknown")
+	assert.Equal(t, recordedExit(42), row.ExitCode, "Shutdown must not overwrite the real exit code with exitCodeUnknown")
 	assert.Contains(t, string(row.Screen), "(42)", "exit handler's notice text must survive")
 	assert.NotContains(t, string(row.Screen), "Worker disconnected",
 		"Shutdown must not append the worker-disconnected notice when the exit handler already finished")
@@ -381,7 +384,7 @@ func TestPersistTerminalOnExitSavesObservedNegativeStatus(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(-1), row.ExitCode, "an observed status must replace the prior status even when it is negative")
+	assert.Equal(t, recordedExit(-1), row.ExitCode, "an observed status must replace the prior status even when it is negative")
 	assert.Equal(t, "latest title", row.Title, "the latest snapshot must not be skipped")
 }
 
@@ -398,7 +401,7 @@ func TestPersistTerminalDisconnectedKeepsItsOwnNotice(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	assert.Equal(t, recordedExit(exitCodeUnknown), row.ExitCode)
 	assert.Equal(t, 1, strings.Count(string(row.Screen), "Worker disconnected - Press Enter to restart"))
 	assert.NotContains(t, string(row.Screen), "Terminal process exited (-1)")
 	assert.False(t, svc.persistTerminalDisconnected("missing-terminal"))

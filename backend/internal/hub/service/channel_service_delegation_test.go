@@ -290,6 +290,8 @@ func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 	resolved, err := env.validator.ValidateBearer(ctx, bearer)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, authscope.ScopesToWire(resolved.Scopes), open.GetGrantedScopes())
+	assert.Equal(t, workerID, open.GetRelayWorkerId(),
+		"the open states the Worker that minted the bearer, so the target trusts the call source that it relays")
 	assert.EqualValues(t, env.channelMgr.MaxMessageSize(), open.GetMaxMessageSize())
 	assert.Equal(t, open.GetChannelId(), response.GetChannelId())
 	assert.Equal(t, userID, response.GetUserId())

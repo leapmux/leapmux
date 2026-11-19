@@ -820,8 +820,14 @@ func (s *eventStream) onTerminalEvent(fs *feedState, te *leapmuxv1.TerminalEvent
 		return s.emit(ev)
 	case *leapmuxv1.TerminalEvent_Closed:
 		track.status = leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED
-		code := e.Closed.GetExitCode()
 		ev := tabStreamEvent(kindTerminalExit, tab)
+		if e.Closed.ExitCode == nil {
+			// An unset code is an exit that the Worker holds no record of; a 0
+			// would claim a clean exit that it never saw.
+			ev.Summary = "the shell exited; the Worker holds no record of its exit code"
+			return s.emit(ev)
+		}
+		code := e.Closed.GetExitCode()
 		ev.ExitCode = &code
 		ev.Summary = fmt.Sprintf("the shell exited with code %d", code)
 		return s.emit(ev)

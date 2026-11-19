@@ -2,6 +2,7 @@ import type { MessageCompletion } from './assembledMessage'
 import type { ChatRow } from './model/row'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ERROR_MARKER, INTERRUPTION_MARKER } from './assembledMessage'
@@ -91,5 +92,62 @@ describe('renderExtractedRow', () => {
     expect(text).toContain('Turn interrupted (1.2s)')
     expect(text).not.toContain(INTERRUPTION_MARKER)
     expect(text).not.toContain(ERROR_MARKER)
+  })
+})
+
+// A message that another agent sent states its sender above its text, where the
+// user's own message states nothing, so the reader never takes it for their own.
+describe('renderExtractedRow a message from another agent', () => {
+  const sender = { tabId: 'sender-tab', provider: AgentProvider.CLAUDE_CODE }
+  const fromAgent: ChatRow = {
+    kind: 'user',
+    text: 'Run the tests',
+    attachments: [],
+    sender,
+  }
+
+  async function drawn(row: ChatRow, tabTitle?: (tabId: string) => string | undefined) {
+    const result = render(() => renderExtractedRow({ kind: 'row', row, completion: null }, tabTitle === undefined
+      ? undefined
+      : { tabTitle }))
+    await settleWorkerReplies()
+    return result
+  }
+
+  it('states the title of the sending tab and its provider above the text', async () => {
+    const { getByTestId, container } = await drawn(fromAgent, id => (id === 'sender-tab'
+      ? 'Fix flaky spec'
+      : undefined))
+    expect(getByTestId('agent-message-sender').textContent).toBe('Message from Fix flaky spec (Claude Code)')
+    expect(getByTestId('agent-message-sender').querySelector('svg')).not.toBeNull()
+    expect(container.textContent).toContain('Run the tests')
+  })
+
+  it('states the tab id when the browser holds no title for the sender', async () => {
+    const { getByTestId } = await drawn(fromAgent, () => undefined)
+    expect(getByTestId('agent-message-sender').textContent).toBe('Message from sender-tab (Claude Code)')
+  })
+
+  it('states the tab id when the row draws outside a host that holds tabs', async () => {
+    const { getByTestId } = await drawn(fromAgent)
+    expect(getByTestId('agent-message-sender').textContent).toBe('Message from sender-tab (Claude Code)')
+  })
+
+  it('states the sender of a message of attachments alone', async () => {
+    const { getByTestId, container } = await drawn({
+      ...fromAgent,
+      text: '',
+      attachments: [
+        { filename: 'log.txt' },
+      ],
+    })
+    expect(getByTestId('agent-message-sender')).toBeTruthy()
+    expect(container.textContent).toContain('log.txt')
+  })
+
+  it('states no sender on the user\'s own message', async () => {
+    const { queryByTestId, container } = await drawn({ kind: 'user', text: 'Run the tests', attachments: [] }, () => 'Fix flaky spec')
+    expect(queryByTestId('agent-message-sender')).toBeNull()
+    expect(container.textContent).toContain('Run the tests')
   })
 })

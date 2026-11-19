@@ -1,24 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { requestTerminalOsNotifications } from './terminalNotifications'
+import { requestDesktopNotifications } from './desktopNotifications'
 
 // The OS permission prompt is the one dependency the ON path turns on.
 const requestPermission = vi.hoisted(() => vi.fn<() => Promise<boolean>>())
 vi.mock('~/lib/osNotification', () => ({ requestOsNotificationPermission: requestPermission }))
 
 /**
- * The ON path of the terminal-OS-notifications toggle. The permission flow
+ * The ON path of the desktop-notifications toggle. The permission flow
  * had no coverage: the toggle shipped as an inline async callback, so the
  * only way to reach it was a full component render against the real
  * PreferencesProvider.
  */
-describe('requestTerminalOsNotifications', () => {
+describe('requestDesktopNotifications', () => {
   beforeEach(() => {
     requestPermission.mockReset()
   })
 
   it('stores true when the user grants permission', async () => {
     requestPermission.mockResolvedValue(true)
-    await expect(requestTerminalOsNotifications()).resolves.toBe(true)
+    await expect(requestDesktopNotifications()).resolves.toBe(true)
     expect(requestPermission).toHaveBeenCalledTimes(1)
   })
 
@@ -26,7 +26,7 @@ describe('requestTerminalOsNotifications', () => {
     // The branch that matters: showing the toggle ON with no OS permission
     // behind it would promise notifications that can never arrive.
     requestPermission.mockResolvedValue(false)
-    await expect(requestTerminalOsNotifications()).resolves.toBe(false)
+    await expect(requestDesktopNotifications()).resolves.toBe(false)
     expect(requestPermission).toHaveBeenCalledTimes(1)
   })
 
@@ -37,6 +37,6 @@ describe('requestTerminalOsNotifications', () => {
   // flip the toggle back on.
   it('propagates a rejected permission request to its caller', async () => {
     requestPermission.mockRejectedValue(new Error('permission API unavailable'))
-    await expect(requestTerminalOsNotifications()).rejects.toThrow('permission API unavailable')
+    await expect(requestDesktopNotifications()).rejects.toThrow('permission API unavailable')
   })
 })

@@ -25,7 +25,7 @@ type codexProvider struct {
 func (codexProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
 		if !codexAudioMIME(attachment.MIMEType) {
-			return fmt.Errorf("codex does not support audio format %q", attachment.MIMEType)
+			return fmt.Errorf("codex does not support audio format %q: %s", attachment.MIMEType, attachment.Filename)
 		}
 		if len(attachment.Data) == 0 {
 			return fmt.Errorf("audio attachment %q is empty", attachment.Filename)

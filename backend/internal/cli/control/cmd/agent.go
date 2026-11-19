@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -17,7 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
-	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 func newAgentCommand() *cobra.Command {
@@ -51,9 +52,21 @@ func newAgentCommand() *cobra.Command {
 			Use:     "open",
 			Mutates: true,
 			Short:   "Start a new agent in a new tab",
+			Long: `Start a new agent in a new tab.
+
+--resume continues an earlier session of the provider in the new tab. "agent
+sessions" lists the sessions that it takes, for the same --provider, --worker
+and --dir.
+
+--request-id makes a retry safe. A second run with the same request id and
+the same arguments opens no second agent: it prints the agent that the first
+run opened, and it queues the --message no second time. A run with the same
+request id and other arguments fails with conflict.`,
 			Examples: []cli.Example{
 				{Comment: "Start an agent beside this tab and keep its id.", Command: `A=$(leapmux control agent open --provider claude --message "Run the tests" -q)`},
 				{Comment: "Start an agent in a new git worktree.", Command: "leapmux control agent open --worktree fix-flaky-spec --base main"},
+				{Comment: "Continue an earlier session that \"agent sessions\" lists.", Command: "leapmux control agent open --provider claude --resume 4f6c1e0a-9b7d-4c2e-8f3a-2d5b6c7e8f90"},
+				{Comment: "Open an agent that a retry of the same command does not open twice.", Command: `leapmux control agent open --provider codex --message "Review the diff" --request-id nightly-review-2026-11-19`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				fs.String("provider", "", `agent provider; when neither this flag nor the variable gives one, the only provider that the worker offers; "leapmux control agent providers" lists them`)
@@ -63,7 +76,8 @@ func newAgentCommand() *cobra.Command {
 				fs.String("permission-mode", "", "permission mode")
 				fs.String("title", "", "tab title (default: the worker picks one)")
 				fs.String("message", "", "a first message that the agent receives once it starts")
-				fs.String("resume", "", "resume this earlier session of the provider")
+				fs.String("resume", "", `resume this earlier session of the provider; "agent sessions" lists them`)
+				addRequestIDFlag(fs)
 				addWorkingDirFlag(fs, "working directory of the agent")
 				addGitSetupFlags(fs)
 				addPlacementFlags(fs)
@@ -74,28 +88,64 @@ func newAgentCommand() *cobra.Command {
 			Use:     "send <agent> [text]",
 			Short:   "Send a message to an agent, and optionally wait for its reply",
 			Mutates: true,
-			Long: `Send a message to an agent.
+			Long: fmt.Sprintf(`Send a message to an agent.
 
 The text is the second argument, "-" to read it from stdin, or --file. A
 message that starts with "-" needs "--" before it, so that a misspelled flag
 never reaches the agent as text.
 
 The agent's input queue holds the message until the agent reads it.
+"agent queue list" shows the queue.
+
+A message that a process in an agent tab sends reaches the recipient as that
+agent's message, not as the user's. The recipient reads it after a line that
+states the sending agent and that the message is not from its operator, and
+LeapMux shows the sender beside it. The Worker states the sender from the
+tab's own credentials, so no flag sets or hides it. A message that an agent
+sends to itself, such as a reminder that --at holds, reaches it as its own
+message too. A message from a terminal tab, or from outside LeapMux, reaches
+the agent as the user's.
+
+--attach attaches a file, once for each file. A message with an attachment
+needs no text. The CLI refuses a file that it cannot read, and a message
+whose text and attachments hold more than %d MiB together. The Worker infers
+the type of each file from its name and its content, and it refuses a file
+that the agent's provider cannot read with invalid_argument. The error
+states the file.
+
+--at holds the message in the queue until a time:
+  - An RFC 3339 time with its offset, such as 2026-11-20T09:00:00+09:00 or
+    2026-11-20T00:00:00Z. The CLI assumes no time zone, so a time without an
+    offset fails.
+  - "+" and a duration from now, such as +10m or +1h30m.
+The time must lie in the future. The result states it in UTC.
+
+--request-id makes a retry safe. A second run with the same request id, the
+same agent and the same message queues nothing new, and with --wait it
+prints the reply to the message of the first run. A run with the same
+request id and another message fails with conflict. A retry needs --at as an
+RFC 3339 time, because a duration from now differs on each run.
 
 With --wait, the command first refuses to send to an agent that waits for an
 answer to a permission prompt, and exits 5. Otherwise it sends the message,
 waits until the agent settles after it, and prints the agent's last reply as
 the transcript shows it, or every reply with --all. It exits 6 when the agent
 stops at a prompt after the message, or when --timeout passes. The output
-then says whether the message is still queued.`,
+then says whether the message is still queued.`, contracts.MaxAgentInputItemBytes/(1024*1024)),
 			Examples: []cli.Example{
 				{Command: `leapmux control agent send 87a19d5f "Run the tests"`},
 				{Comment: "Send the contents of a file.", Command: "leapmux control agent send 87a19d5f --file prompt.md"},
 				{Comment: "Send a message that starts with a dash.", Command: `leapmux control agent send 87a19d5f -- "-v is the verbose flag"`},
 				{Comment: "Ask a question and print the answer.", Command: `leapmux control agent send 87a19d5f "Which tests fail?" --wait --timeout 30m`},
+				{Comment: "Attach a screenshot and a log.", Command: `leapmux control agent send 87a19d5f "Why does the page look like this?" --attach screenshot.png --attach console.log`},
+				{Comment: "Send the message in ten minutes.", Command: `leapmux control agent send 87a19d5f "Check the deploy" --at +10m`},
+				{Comment: "Send a message that a retry of the same command does not send twice.", Command: `leapmux control agent send 87a19d5f "Run the release checklist" --request-id release-2026-11-19`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				fs.String("file", "", `read the message from this file ("-" reads stdin)`)
+				fs.StringArray("attach", nil, "attach this file; repeat it for more than one")
+				fs.String("at", "", "hold the message until this time: an RFC 3339 time with its offset, or + and a duration from now, such as +10m")
+				addRequestIDFlag(fs)
 				fs.Bool("wait", false, "wait until the agent settles after the message, then print its last reply")
 				fs.Bool("all", false, "with --wait, print every reply after the message, not only the last one")
 				fs.Duration("timeout", 0, "with --wait, stop waiting after this long, such as 90s or 30m; 0 waits without a limit")
@@ -266,6 +316,8 @@ An agent cannot answer its own requests.`,
 			Complete: completeTargets,
 			Run:      runAgentInterrupt,
 		}),
+		newAgentClearCommand(),
+		newAgentCompactCommand(),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "set <agent>",
 			Short:   "Change an agent's model, effort, permission mode or another option",
@@ -286,6 +338,10 @@ An agent cannot answer its own requests.`,
 		cli.NewLeaf(cli.Leaf{
 			Use:   "messages [agent]",
 			Short: "Print an agent's messages, or follow new ones (default: this agent)",
+			Long: `Print an agent's messages, or follow new ones.
+
+A message that another agent sent prints its sender after its source, and
+--json states the sender as sender.`,
 			Examples: []cli.Example{
 				{Command: "leapmux control agent messages 87a19d5f"},
 				{Comment: "Print new messages as they arrive, one JSON envelope per line.", Command: "leapmux control agent messages 87a19d5f --follow --json"},
@@ -304,6 +360,7 @@ An agent cannot answer its own requests.`,
 			Complete: completeTargets,
 			Run:      runAgentMessages,
 		}),
+		newAgentQueueCommand(),
 		cli.NewLeaf(cli.Leaf{
 			Use:   "providers",
 			Short: "List the agent providers that a worker offers",
@@ -314,6 +371,7 @@ An agent cannot answer its own requests.`,
 			Flags: addWorkerFlag,
 			Run:   runAgentProviders,
 		}),
+		newAgentSessionsCommand(),
 	)
 }
 
@@ -393,8 +451,11 @@ func groupAgentsByWorker(targets []tabTarget) (groups []workerAgents, agentIDs [
 // nothing else to report.
 type agentResult struct {
 	ID string `json:"id"`
-	// InputID is the id of the message that the agent queued.
+	// InputID is the id of the input that the agent queued.
 	InputID string `json:"input_id,omitempty"`
+	// ScheduledAt is the UTC time before which the agent does not read the
+	// input, for a message that --at holds.
+	ScheduledAt string `json:"scheduled_at,omitempty"`
 }
 
 // runAgentSend forwards a user message to the agent. The Worker queues it,
@@ -413,7 +474,7 @@ func runAgentSend(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	text, err := inputText(inv, "text")
+	spec, err := readSendSpec(inv, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -436,16 +497,16 @@ func runAgentSend(inv *cli.Invocation) (any, error) {
 	if err := maybePreflightWorker(bounded.ctx, s.c, got.WorkerID); err != nil {
 		return nil, err
 	}
-	inputID := id.Generate()
+	inputID := requestScopedID(spec.requestID, requestScopeAgentSend, got.ID)
 	if !wait {
-		if err := enqueueUserMessage(s.ctx, s.c, got, inputID, text); err != nil {
-			return nil, err
+		if _, err := enqueueUserMessage(s.ctx, s.c, got, inputID, spec.message); err != nil {
+			return nil, withRequestIDHint(err, spec.requestID)
 		}
-		return agentResult{ID: got.ID, InputID: inputID}, nil
+		return agentResult{ID: got.ID, InputID: inputID, ScheduledAt: spec.message.scheduledAt}, nil
 	}
-	result, outcome, err := sendAndWait(s, got, text, inputID, boolFlag(inv, "all"), timeout)
+	result, outcome, err := sendAndWait(s, got, spec.message, inputID, boolFlag(inv, "all"), timeout)
 	if err != nil {
-		return nil, err
+		return nil, withRequestIDHint(err, spec.requestID)
 	}
 	if outcome == replyWaitSettled {
 		return result, nil

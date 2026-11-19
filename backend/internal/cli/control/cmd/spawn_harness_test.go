@@ -312,6 +312,17 @@ func writeProtoResponse(w channel.ResponseWriter, resp proto.Message) {
 //
 // Each configure function adjusts the router before the server starts, for a
 // test that needs a part of it the arguments do not state.
+// spawnTabSources describes the spawning tab agent-1 as the Worker's service
+// does, so a call that the router relays to a sibling Worker carries its
+// source, as it does in production.
+type spawnTabSources struct{}
+
+func (spawnTabSources) DescribeCallSource(_ context.Context, tabID string) (*leapmuxv1.CallSource, error) {
+	return &leapmuxv1.CallSource{TabId: tabID, Agent: &leapmuxv1.CallSourceAgent{
+		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Title: "Spawning agent",
+	}}, nil
+}
+
 func startSpawnIPC(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher, configure ...func(*controlipc.Router)) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -324,6 +335,7 @@ func startSpawnIPC(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatc
 		UserID:          userid.MustNew("u-spawn"),
 		Hub:             hub,
 		LocalDispatcher: disp,
+		Sources:         spawnTabSources{},
 	}
 	for _, apply := range configure {
 		apply(router)

@@ -245,7 +245,7 @@ leapmux control workspace delete 9f3kQ2aB
 
 ## `leapmux control tab`
 
-List, close, rename and move tabs of every type.
+List, close, rename, move and reveal tabs of every type, and set their status.
 
 ### `leapmux control tab list`
 
@@ -360,6 +360,96 @@ leapmux control tab move 87a19d5f --workspace "title:Release 1.4"
 leapmux control tab move 87a19d5f --before 4cbb3f34
 ```
 
+### `leapmux control tab reveal`
+
+Show a tab in every LeapMux window that you have open: each window switches
+to the tab's workspace, and the tab becomes the active tab of its tile, as a
+click on the tab in the sidebar does.
+
+Nothing stores the reveal. Which tab a window shows stays the window's own
+state, so a window that you open later shows what it showed before, and a
+window that does not know the tab yet ignores the command.
+
+This command changes state.
+
+```text
+leapmux control tab reveal <tab> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+
+```sh
+leapmux control tab reveal 87a19d5f
+
+# Bring the tab that runs this command into view.
+leapmux control tab reveal self
+```
+
+## `leapmux control tab status`
+
+Show or remove a short status beside a tab's title.
+
+### `leapmux control tab status set`
+
+Show a short status beside a tab's title, in the tab bar and in the sidebar of
+every LeapMux window that you have open. A window that you open later shows it
+too. A new status replaces the old one.
+
+--progress adds a progress ring, from 0 to 100. Without it, the status shows
+no progress. --tone colors the status: neutral (the default), success,
+warning or error.
+
+The status stays until "tab status clear" removes it, the tab closes, or the
+tab's Worker stops. The Worker refuses a text that is too long, and states the
+limit.
+
+This command changes state.
+
+```text
+leapmux control tab status set <tab> <text> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<text>` | A short text, such as "Running the tests", or "-" to read it from standard input. |
+
+| Flag | Description |
+|---|---|
+| `--progress int` | how far the work is, from 0 to 100 (default: no progress) |
+| `--tone string` | the color of the status (one of: neutral, success, warning, error; default: neutral) |
+
+```sh
+leapmux control tab status set self "Running the tests"
+
+# Report how far the work is.
+leapmux control tab status set 87a19d5f "Migrating rows" --progress 40
+
+# Mark the tab when the work fails.
+leapmux control tab status set self "Tests failed" --tone error
+```
+
+### `leapmux control tab status clear`
+
+Remove the status of a tab.
+
+This command changes state.
+
+```text
+leapmux control tab status clear <tab> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+
+```sh
+leapmux control tab status clear self
+leapmux control tab status clear 87a19d5f
+```
+
 ## `leapmux control agent`
 
 Start, message, watch and configure coding agents.
@@ -410,6 +500,15 @@ leapmux control agent get 87a19d5f --options
 
 Start a new agent in a new tab.
 
+--resume continues an earlier session of the provider in the new tab. "agent
+sessions" lists the sessions that it takes, for the same --provider, --worker
+and --dir.
+
+--request-id makes a retry safe. A second run with the same request id and
+the same arguments opens no second agent: it prints the agent that the first
+run opened, and it queues the --message no second time. A run with the same
+request id and other arguments fails with conflict.
+
 This command changes state.
 
 ```text
@@ -424,7 +523,8 @@ leapmux control agent open [flags]
 | `--permission-mode string` | permission mode |
 | `--title string` | tab title (default: the worker picks one) |
 | `--message string` | a first message that the agent receives once it starts |
-| `--resume string` | resume this earlier session of the provider |
+| `--resume string` | resume this earlier session of the provider; "agent sessions" lists them |
+| `--request-id string` | an id of your choice that makes a retry safe: a second run with the same id and the same arguments creates nothing new |
 | `--dir string` | working directory of the agent (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--worktree string` | create a git worktree on this new branch and start in it |
 | `--use-worktree string` | start in this existing git worktree |
@@ -445,6 +545,12 @@ A=$(leapmux control agent open --provider claude --message "Run the tests" -q)
 
 # Start an agent in a new git worktree.
 leapmux control agent open --worktree fix-flaky-spec --base main
+
+# Continue an earlier session that "agent sessions" lists.
+leapmux control agent open --provider claude --resume 4f6c1e0a-9b7d-4c2e-8f3a-2d5b6c7e8f90
+
+# Open an agent that a retry of the same command does not open twice.
+leapmux control agent open --provider codex --message "Review the diff" --request-id nightly-review-2026-11-19
 ```
 
 ### `leapmux control agent send`
@@ -456,6 +562,36 @@ message that starts with "-" needs "--" before it, so that a misspelled flag
 never reaches the agent as text.
 
 The agent's input queue holds the message until the agent reads it.
+"agent queue list" shows the queue.
+
+A message that a process in an agent tab sends reaches the recipient as that
+agent's message, not as the user's. The recipient reads it after a line that
+states the sending agent and that the message is not from its operator, and
+LeapMux shows the sender beside it. The Worker states the sender from the
+tab's own credentials, so no flag sets or hides it. A message that an agent
+sends to itself, such as a reminder that --at holds, reaches it as its own
+message too. A message from a terminal tab, or from outside LeapMux, reaches
+the agent as the user's.
+
+--attach attaches a file, once for each file. A message with an attachment
+needs no text. The CLI refuses a file that it cannot read, and a message
+whose text and attachments hold more than 10 MiB together. The Worker infers
+the type of each file from its name and its content, and it refuses a file
+that the agent's provider cannot read with invalid_argument. The error
+states the file.
+
+--at holds the message in the queue until a time:
+  - An RFC 3339 time with its offset, such as 2026-11-20T09:00:00+09:00 or
+    2026-11-20T00:00:00Z. The CLI assumes no time zone, so a time without an
+    offset fails.
+  - "+" and a duration from now, such as +10m or +1h30m.
+The time must lie in the future. The result states it in UTC.
+
+--request-id makes a retry safe. A second run with the same request id, the
+same agent and the same message queues nothing new, and with --wait it
+prints the reply to the message of the first run. A run with the same
+request id and another message fails with conflict. A retry needs --at as an
+RFC 3339 time, because a duration from now differs on each run.
 
 With --wait, the command first refuses to send to an agent that waits for an
 answer to a permission prompt, and exits 5. Otherwise it sends the message,
@@ -478,6 +614,9 @@ leapmux control agent send <agent> [text] [flags]
 | Flag | Description |
 |---|---|
 | `--file string` | read the message from this file ("-" reads stdin) |
+| `--attach string` | attach this file; repeat it for more than one (repeatable) |
+| `--at string` | hold the message until this time: an RFC 3339 time with its offset, or + and a duration from now, such as +10m |
+| `--request-id string` | an id of your choice that makes a retry safe: a second run with the same id and the same arguments creates nothing new |
 | `--wait` | wait until the agent settles after the message, then print its last reply |
 | `--all` | with --wait, print every reply after the message, not only the last one |
 | `--timeout duration` | with --wait, stop waiting after this long, such as 90s or 30m; 0 waits without a limit (default: 0s) |
@@ -493,6 +632,15 @@ leapmux control agent send 87a19d5f -- "-v is the verbose flag"
 
 # Ask a question and print the answer.
 leapmux control agent send 87a19d5f "Which tests fail?" --wait --timeout 30m
+
+# Attach a screenshot and a log.
+leapmux control agent send 87a19d5f "Why does the page look like this?" --attach screenshot.png --attach console.log
+
+# Send the message in ten minutes.
+leapmux control agent send 87a19d5f "Check the deploy" --at +10m
+
+# Send a message that a retry of the same command does not send twice.
+leapmux control agent send 87a19d5f "Run the release checklist" --request-id release-2026-11-19
 ```
 
 ### `leapmux control agent wait`
@@ -716,6 +864,63 @@ leapmux control agent interrupt <agent> [flags]
 leapmux control agent interrupt 87a19d5f
 ```
 
+### `leapmux control agent clear`
+
+Clear an agent's context. The command queues a clear. When the agent reads
+it, the Worker stops the agent's process and starts the provider again in a
+fresh session, in the same tab. The transcript keeps the earlier messages.
+
+The clear waits in the agent's input queue behind the inputs before it, and
+it waits for the current turn to end, so it never cuts off a reply. "agent
+queue list" shows it, and "agent queue remove" takes it back while it waits.
+A clear also restarts an agent whose start failed.
+
+A subagent refuses a clear.
+
+This command changes state.
+
+```text
+leapmux control agent clear <agent> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+
+```sh
+leapmux control agent clear 87a19d5f
+
+# Clear the context, then give the agent its next task.
+leapmux control agent clear 87a19d5f && leapmux control agent send 87a19d5f "Review the diff of the last commit"
+```
+
+### `leapmux control agent compact`
+
+Ask an agent to compact its context: the provider replaces the conversation
+so far with a summary, which frees room in the context window. The command
+queues the request. A provider without a compaction command of its own
+receives "/compact" as a message.
+
+The request waits in the agent's input queue behind the inputs before it,
+and it waits for the current turn to end. "agent queue list" shows it, and
+"agent queue remove" takes it back while it waits.
+
+A subagent refuses a compaction.
+
+This command changes state.
+
+```text
+leapmux control agent compact <agent> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+
+```sh
+leapmux control agent compact 87a19d5f
+```
+
 ### `leapmux control agent set`
 
 Change an agent's model, effort, permission mode or another option.
@@ -746,7 +951,10 @@ leapmux control agent set 87a19d5f --option sandbox=workspace-write
 
 ### `leapmux control agent messages`
 
-Print an agent's messages, or follow new ones (default: this agent).
+Print an agent's messages, or follow new ones.
+
+A message that another agent sent prints its sender after its source, and
+--json states the sender as sender.
 
 ```text
 leapmux control agent messages [agent] [flags]
@@ -770,6 +978,160 @@ leapmux control agent messages 87a19d5f
 leapmux control agent messages 87a19d5f --follow --json
 ```
 
+## `leapmux control agent queue`
+
+List, remove and reorder the inputs that wait for an agent, and pause or resume its queue.
+
+### `leapmux control agent queue list`
+
+List the inputs that wait in an agent's input queue, first to last: the
+messages that "agent send" sent, the clears and the compactions.
+
+A message that a process in another agent's tab sent is an agent_message.
+FROM states the agent that sent it, and --json states it as sender.
+
+Each input has a state:
+  - queued: the input waits for its turn.
+  - dispatching: the agent reads the input now.
+  - awaiting_echo: the agent took the input into its running turn, and
+    LeapMux waits for the agent to confirm it.
+  - failed: the input did not reach the agent. The error states why.
+  - delivery_uncertain: the input may not have reached the agent.
+
+The queue holds while it is paused, while its first input failed or may not
+have reached the agent, and while LeapMux has its first input open in an
+editor. The result states a pause and its reason, and the command states
+each other cause on stderr.
+
+-q prints the id of each input.
+
+```text
+leapmux control agent queue list [agent] [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+
+```sh
+leapmux control agent queue list 87a19d5f
+
+# Print the queue as data, with the reorder segment of each input.
+leapmux control agent queue list 87a19d5f --json
+```
+
+### `leapmux control agent queue remove`
+
+Remove an input from an agent's input queue. The agent never reads it.
+
+An input that the agent already reads stays: the command fails with
+conflict. A removal also ends an edit of the input that LeapMux has open.
+
+This command changes state.
+
+```text
+leapmux control agent queue remove <agent> <input> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<input>` | A queued input's id, as "agent queue list" prints it, or a unique prefix of it. |
+
+```sh
+leapmux control agent queue remove 87a19d5f 3kQ9xZ1b
+
+# Remove every input that waits.
+for i in $(leapmux control agent queue list 87a19d5f -q); do leapmux control agent queue remove 87a19d5f "$i"; done
+```
+
+### `leapmux control agent queue move`
+
+Move an input to another place in an agent's input queue. --before, --first
+or --last gives the place.
+
+An input moves only among the inputs of its reorder segment, as in LeapMux:
+  - The inputs that the agent reads as soon as it can form one segment, and
+    the inputs that --at holds until one time form another. An input never
+    moves past an input of another time.
+  - An input that the agent already reads is locked. It stays in its place,
+    and the inputs on its two sides form two segments.
+--first and --last mean the first and the last place of the segment. "agent
+queue list --json" states the segment of each input as reorder_segment.
+
+This command changes state.
+
+```text
+leapmux control agent queue move <agent> <input> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<input>` | A queued input's id, as "agent queue list" prints it, or a unique prefix of it. |
+
+| Flag | Description |
+|---|---|
+| `--before string` | move the input before this input, as an id or a unique prefix |
+| `--first` | move the input to the first place of its segment |
+| `--last` | move the input to the last place of its segment |
+
+```sh
+# Move an input before another one.
+leapmux control agent queue move 87a19d5f 3kQ9xZ1b --before 9Lm2Pq7c
+
+# Make an input the next one that the agent reads.
+leapmux control agent queue move 87a19d5f 3kQ9xZ1b --first
+```
+
+### `leapmux control agent queue pause`
+
+Pause an agent's input queue. The agent finishes its current turn, and then
+reads no queued input until the queue resumes. New inputs still join the
+queue.
+
+LeapMux pauses a queue by itself too: when you interrupt the agent, when the
+agent stops, and when an input does not reach the agent. "agent queue list"
+states why a queue is paused.
+
+This command changes state.
+
+```text
+leapmux control agent queue pause <agent> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+
+```sh
+leapmux control agent queue pause 87a19d5f
+```
+
+### `leapmux control agent queue resume`
+
+Resume an agent's input queue, whatever paused it, so that the agent reads
+the next input when it can.
+
+A failed input keeps its failure. While the first input failed, or while
+LeapMux has it open in an editor, the queue still holds, and the command
+says so on stderr. Remove the failed input with "agent queue remove", or
+retry it in LeapMux.
+
+This command changes state.
+
+```text
+leapmux control agent queue resume <agent> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+
+```sh
+leapmux control agent queue resume 87a19d5f
+```
+
 ### `leapmux control agent providers`
 
 List the agent providers that a worker offers.
@@ -785,6 +1147,41 @@ leapmux control agent providers [flags]
 ```sh
 leapmux control agent providers
 leapmux control agent providers --worker name:build-box
+```
+
+### `leapmux control agent sessions`
+
+List the earlier sessions of a provider in one directory, newest first: the
+sessions that "agent open --resume" continues with the same --provider,
+--worker and --dir.
+
+The Worker lists the sessions that LeapMux started and the sessions that the
+provider's own store holds, such as a session that you started in a terminal.
+It leaves out each session that an open agent runs, because a second process
+on one session damages the session. It returns only the newest sessions, up
+to a limit of its own.
+
+A session's title is empty when the provider stores none.
+
+```text
+leapmux control agent sessions [flags]
+```
+
+| Flag | Description |
+|---|---|
+| `--provider string` | agent provider; when neither this flag nor the variable gives one, the only provider that the worker offers (default: $LEAPMUX_CONTROL_AGENT_PROVIDER) |
+| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--dir string` | the directory that the sessions ran in (default: $LEAPMUX_CONTROL_WORKING_DIR) |
+
+```sh
+# List the sessions of this tab's provider in this tab's directory.
+leapmux control agent sessions
+
+# List the Claude Code sessions of a directory on another worker.
+leapmux control agent sessions --provider claude --worker name:build-box --dir ~/src/app
+
+# Keep the id of the newest session, for agent open --resume.
+S=$(leapmux control agent sessions --provider claude -q | head -1)
 ```
 
 ## `leapmux control terminal`
@@ -826,7 +1223,18 @@ leapmux control terminal get 4cbb3f34
 
 ### `leapmux control terminal open`
 
-Open a new terminal in a new tab.
+Open a new terminal in a new tab. Without --workspace and --tile, the new
+tab opens beside the tab that runs leapmux.
+
+--command runs a command line in the new shell once the shell is ready: the
+Worker pastes the command and presses Enter, as "terminal run" does. The
+shell is ready when its line editor turns on bracketed paste, which zsh, fish
+and bash 5.1 or later do. A shell that never does, such as sh, gets the
+command after a short wait. Only the new shell runs the command, so a restart
+of the terminal does not run it again. The command line is the value of
+--command, or "-" to read it from stdin. --command does not wait for the
+program to finish: read its output with "terminal read", or wait with
+"terminal wait".
 
 This command changes state.
 
@@ -836,6 +1244,7 @@ leapmux control terminal open [flags]
 
 | Flag | Description |
 |---|---|
+| `--command string` | run this command line once the shell is ready, as "terminal run" runs one ("-" reads stdin) |
 | `--shell string` | shell to start (default: the worker's default shell) |
 | `--start-dir string` | directory the shell starts in (default: --dir) |
 | `--title string` | tab title (default: the worker picks one) |
@@ -859,6 +1268,9 @@ T=$(leapmux control terminal open -q)
 
 # Open a terminal in a new git worktree.
 leapmux control terminal open --worktree try-fix --dir ~/src/app
+
+# Run the tests in a new terminal, then print the exit code of its shell.
+T=$(leapmux control terminal open -q --command 'make test; exit') && leapmux control terminal wait "$T" --exit
 ```
 
 ### `leapmux control terminal send`
@@ -998,6 +1410,74 @@ leapmux control terminal read 4cbb3f34 --scrollback --lines 200
 
 # Page through the retained bytes with their colors.
 leapmux control terminal read 4cbb3f34 --raw | less -R
+```
+
+### `leapmux control terminal wait`
+
+Wait until a terminal meets one condition, then print what met it:
+
+  - --exit waits until the shell of the terminal ends, and prints its exit
+    code.
+  - --text waits until a line of the terminal holds the text.
+  - --regex waits until a line of the terminal matches the regular
+    expression, in RE2 syntax.
+
+The CLI replays the output of the terminal through the emulator of "terminal
+read", so a line is the text that the terminal shows: an escape sequence, or
+a text that arrives in two parts, cannot break a match. The match is per
+line. A line that the terminal wraps at its width counts as one line, and it
+loses its trailing blanks, as "terminal read" prints it, so ^ and $ match at
+its ends. The command prints the line that matched. When several lines match
+at once, it prints the lowest one.
+
+The text that the screen shows when the wait begins counts, so a wait for a
+text that the terminal already shows ends at once. Each line that appears
+later counts too, even one that scrolls off the screen before the CLI reads
+it. The scrollback from before the wait does not count. To wait for the
+output of a new command only, clear the screen first, or wait for a line that
+the command line itself does not show. In the second example, the echoed
+command line holds "echo DONE", and only the line of the output matches
+'^DONE$'.
+
+The command exits 0 when the condition holds. It exits 6 when the wait ended
+without it: --timeout passed, the shell ended before the terminal showed the
+text, or the shell failed to start. --json prints the status of the terminal
+in each case, and the exit code of the shell once it ended.
+
+--exit ends at once for a shell that ended before the wait began, and prints
+its exit code, which the Worker keeps. When the Worker holds no record of the
+code, because it was killed while the shell ran, the command prints no exit
+code, says so on stderr, and still exits 0. --exit refuses the terminal that
+runs the command, because its shell cannot end while the wait runs in it.
+
+"leapmux control events --kind terminal" prints the bells, the titles, the
+notifications, the progress reports and the exits of terminals as they
+happen.
+
+```text
+leapmux control terminal wait <terminal> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+
+| Flag | Description |
+|---|---|
+| `--exit` | wait until the shell of the terminal ends, and print its exit code |
+| `--text string` | wait until a line of the terminal holds this text |
+| `--regex string` | wait until a line of the terminal matches this regular expression, in RE2 syntax |
+| `--timeout duration` | stop waiting after this long, such as 90s or 10m; 0 waits without a limit (default: 0s) |
+
+```sh
+# Wait until the shell ends, and keep its exit code.
+CODE=$(leapmux control terminal wait 4cbb3f34 --exit)
+
+# Run the tests, then wait for the line that the last command prints.
+leapmux control terminal run 4cbb3f34 'make test; echo DONE' && leapmux control terminal wait 4cbb3f34 --regex '^DONE$' --timeout 10m
+
+# Wait until a server reports that it listens, for 2 minutes at most.
+leapmux control terminal wait 4cbb3f34 --text 'Listening on' --timeout 2m
 ```
 
 ### `leapmux control terminal resize`
@@ -1806,6 +2286,115 @@ leapmux control events --kind agent.request --limit 1 --json
 
 # Watch every terminal, with a heartbeat that shows the stream runs.
 leapmux control events --kind terminal --heartbeat 30s
+```
+
+### `leapmux control notify`
+
+Show a notification in every LeapMux window that you have open: a toast with
+the title and the body. While a window is hidden, it also shows a desktop
+notification, when "Desktop notifications" is on in Preferences.
+
+The notification names the tab that runs the command, so you see which agent
+or terminal sent it. Nothing stores a notification: a window that you open
+later does not show it.
+
+The command goes to the Worker of the tab that runs it. Outside a tab, pass
+--worker. A window hears a Worker only while one of your tabs runs on that
+Worker. A notification sent from outside a tab names no tab.
+
+The Worker refuses a title or a body that is too long, and states the limit.
+
+This command changes state.
+
+```text
+leapmux control notify <title> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<title>` | A short title, such as "Tests passed". |
+
+| Flag | Description |
+|---|---|
+| `--body string` | more text below the title ("-" reads stdin) |
+| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+
+```sh
+leapmux control notify "Tests passed"
+
+# Say what failed, with the last lines of the log.
+tail -n 5 build.log | leapmux control notify "Build failed" --body -
+
+# Notify through another Worker from outside a tab.
+leapmux control notify "Deploy finished" --body "v1.4.2 is live" --worker name:build-box
+```
+
+### `leapmux control rpc`
+
+Call one procedure of the hub or of a Worker, and print its response. Use it
+for a call that no other command makes.
+
+The request is protobuf JSON: the second argument, "-" to read it from
+standard input, or {} when the command line omits it. The command refuses a
+field that the request type does not declare, before it sends anything. The
+response prints as protobuf JSON with the field names of the .proto files,
+indented. --json prints it as the data of one envelope instead. A field that
+holds its default value does not print, as protobuf JSON states.
+
+The command bypasses every guard of the other commands. It refuses no call
+on the tab that runs it, checks no agent turn in progress, and validates no
+id in the request. The hub or the Worker receives the request as you write
+it, so a call that changes state takes effect at once.
+
+The procedures are the methods of the services in proto/leapmux/v1. A
+procedure of a hub service runs on the hub. A procedure of a Worker service
+needs --worker, the Worker that serves the call. A procedure that streams
+does not run here. "leapmux control events" prints the events of agents and
+terminals, and "leapmux control agent messages --follow" prints the messages
+of an agent.
+
+Inside a LeapMux tab, the socket of the tab relays these hub procedures
+alone:
+  - leapmux.v1.UserCRDT/GetMaterialized
+  - leapmux.v1.UserCRDT/SubmitOps
+  - leapmux.v1.UserCRDT/UpdatePresence
+  - leapmux.v1.WorkerManagementService/GetWorker
+  - leapmux.v1.WorkerManagementService/ListWorkers
+  - leapmux.v1.WorkspaceService/CreateWorkspace
+  - leapmux.v1.WorkspaceService/DeleteWorkspace
+  - leapmux.v1.WorkspaceService/GetWorkspace
+  - leapmux.v1.WorkspaceService/ListTabs
+  - leapmux.v1.WorkspaceService/ListWorkspaces
+  - leapmux.v1.WorkspaceService/LocateTab
+  - leapmux.v1.WorkspaceService/LocateTile
+  - leapmux.v1.WorkspaceService/RenameWorkspace
+
+Pass --hub &lt;url&gt; to call another hub procedure with your own login.
+
+This command changes state.
+
+```text
+leapmux control rpc <procedure> [request] [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<procedure>` | The procedure, as "&lt;service&gt;/&lt;method&gt;", such as leapmux.v1.WorkspaceService/ListTabs. The "leapmux.v1." prefix and a leading "/" are optional. |
+| `[request]` | The request in protobuf JSON, or "-" to read it from standard input. Without it, the request is {}. |
+
+| Flag | Description |
+|---|---|
+| `--worker string` | the Worker that serves a Worker procedure: an id, a unique id prefix, "name:&lt;name&gt;" or "self" |
+
+```sh
+# List the tabs of one workspace.
+leapmux control rpc leapmux.v1.WorkspaceService/ListTabs '{"workspace_ids": ["87a19d5f-4838-4e34-9f0f-56130f0a62b1"]}'
+
+# Read one agent from the Worker of this tab.
+leapmux control rpc leapmux.v1.WorkerAgentService/ListAgents '{"tab_ids": ["4cbb3f34-3c1e-4f0e-9a51-2a6a3b1f0d7e"]}' --worker self
+
+# Send the request that a file holds, and print the response as one JSON envelope.
+leapmux control rpc WorkerTerminalService/ListAvailableShells - --worker name:build-box --json < request.json
 ```
 
 ## `leapmux control admin`

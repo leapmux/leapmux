@@ -164,7 +164,7 @@ func TestEventMapping_EveryTerminalEventHasADecision(t *testing.T) {
 		kind  string
 	}{
 		"data":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("ls\n")}}}, ""},
-		"closed":        {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: 3}}}, kindTerminalExit},
+		"closed":        {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: int32Ptr(3)}}}, kindTerminalExit},
 		"status_change": {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY}}}, kindTerminalStatus},
 		"bell":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}}}, kindTerminalBell},
 		"notification":  {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Notification{Notification: &leapmuxv1.TerminalNotification{Body: "done"}}}, kindTerminalNotification},
@@ -457,7 +457,7 @@ func TestEventMapping_TerminalEvents(t *testing.T) {
 	} {
 		d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Progress{Progress: p}})
 	}
-	d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: 0}}})
+	d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: int32Ptr(0)}}})
 	status(leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "")
 	status(leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, "zsh: not found")
 
@@ -487,6 +487,19 @@ func TestEventMapping_TerminalEvents(t *testing.T) {
 	assert.Equal(t, &progressReport{State: "error", Percent: 42}, got[7].Progress)
 	assert.Equal(t, &progressReport{}, got[10].Progress)
 	assert.Equal(t, "zsh: not found", got[12].Error)
+}
+
+// An exit with no code on record prints no exit code: 0 would claim a clean
+// exit that the Worker never saw.
+func TestEventMapping_TerminalExitWithoutARecordedCode(t *testing.T) {
+	d := newDirectStream(t)
+	d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{}}})
+
+	got := d.events(t)
+	require.Len(t, got, 1)
+	assert.Equal(t, kindTerminalExit, got[0].Kind)
+	assert.Nil(t, got[0].ExitCode)
+	assert.Equal(t, "the shell exited; the Worker holds no record of its exit code", got[0].Summary)
 }
 
 // A tab that a Worker refused to watch prints one stream.unavailable for

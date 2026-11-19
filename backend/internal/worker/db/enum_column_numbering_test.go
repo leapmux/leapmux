@@ -23,6 +23,10 @@ import (
 // The hub store checks its schema with the same method.
 const workerMigration = "migrations/00001_initial.sql"
 
+// agentMessageOrdinal is the AgentInputKind ordinal that the sender tie CHECKs
+// of agent_input_queue_items spell as a literal.
+const agentMessageOrdinal = int64(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE)
+
 type integerEnumColumn struct {
 	label, update, read string
 	minimum, maximum    int64
@@ -50,7 +54,14 @@ func integerEnumColumns() []integerEnumColumn {
 		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5, nil, false},
 		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil, false},
 		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil, false},
-		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 8, nil, false},
+		// The tie CHECKs demand a sender exactly when the kind is an agent
+		// message, so the update writes the sender from the same bound
+		// parameter (?1 appears three times). A range refusal then cannot hide
+		// behind a tie refusal.
+		{"agent_input_queue_items.kind", fmt.Sprintf("UPDATE agent_input_queue_items SET kind = ?1, sender_tab_id = CASE WHEN ?1 = %[1]d THEN 'enum-sender' ELSE '' END, sender_provider = CASE WHEN ?1 = %[1]d THEN %[2]d ELSE NULL END", agentMessageOrdinal, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, agentMessageOrdinal, nil, false},
+		// A provider needs a sender tab and the agent-message kind beside it,
+		// and NULL needs neither, so the update writes all three from ?1.
+		{"agent_input_queue_items.sender_provider", fmt.Sprintf("UPDATE agent_input_queue_items SET sender_provider = ?1, sender_tab_id = CASE WHEN ?1 IS NULL THEN '' ELSE 'enum-sender' END, kind = CASE WHEN ?1 IS NULL THEN 1 ELSE %d END", agentMessageOrdinal), "SELECT typeof(sender_provider), sender_provider FROM agent_input_queue_items", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil, true},
 		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil, false},
 		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil, false},
 		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil, false},
@@ -248,6 +259,45 @@ func TestFollowUpTieCheckTiesTextToKind(t *testing.T) {
 	assert.NoError(t, err, "no follow-up input must remain valid")
 }
 
+// The two tie CHECKs bind the sender of a queued input to its kind: an agent
+// message must state the tab that sent it, and an input of any other kind must
+// state no sender. The first CHECK spells AGENT_INPUT_KIND_AGENT_MESSAGE as a
+// literal, so this test also ties the literal to the proto ordinal.
+func TestAgentMessageSenderTieCheck(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 1, strings.Count(statementsOfMigration(t), fmt.Sprintf("CHECK ((kind = %d) = (sender_tab_id <> ''))", agentMessageOrdinal)),
+		"the tie CHECK's literal is the AGENT_INPUT_KIND_AGENT_MESSAGE ordinal")
+	assert.Equal(t, 1, strings.Count(statementsOfMigration(t), "CHECK ((sender_tab_id = '') = (sender_provider IS NULL))"))
+
+	store := integerEnumStore(t)
+	update := func(kind int64, tabID string, provider any) error {
+		_, err := store.ExecContext(t.Context(),
+			"UPDATE agent_input_queue_items SET kind = ?, sender_tab_id = ?, sender_provider = ?", kind, tabID, provider)
+		return err
+	}
+	claude := int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	userMessage := int64(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)
+
+	assert.ErrorContains(t, update(agentMessageOrdinal, "", nil), "CHECK constraint failed", "an agent message with no sender must fail")
+	assert.ErrorContains(t, update(agentMessageOrdinal, "sender-tab", nil), "CHECK constraint failed", "a sender tab with no provider must fail")
+	assert.ErrorContains(t, update(agentMessageOrdinal, "", claude), "CHECK constraint failed", "a provider with no sender tab must fail")
+	assert.ErrorContains(t, update(userMessage, "sender-tab", claude), "CHECK constraint failed", "a user message must state no sender")
+	assert.NoError(t, update(agentMessageOrdinal, "sender-tab", claude), "an agent message with its sender must remain valid")
+	assert.NoError(t, update(userMessage, "", nil), "a user message with no sender must remain valid")
+
+	// The sender's title belongs to the sender: a row with no sender holds no
+	// title, and a sender without a title (an agent that the user never named)
+	// is valid.
+	setTitle := func(title string) error {
+		_, err := store.ExecContext(t.Context(), "UPDATE agent_input_queue_items SET sender_title = ?", title)
+		return err
+	}
+	assert.ErrorContains(t, setTitle("Fix flaky spec"), "CHECK constraint failed", "a title with no sender must fail")
+	require.NoError(t, update(agentMessageOrdinal, "sender-tab", claude))
+	assert.NoError(t, setTitle("Fix flaky spec"), "an agent message keeps its sender's title")
+	assert.NoError(t, setTitle(""), "a sender with no title must remain valid")
+}
+
 func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) {
 	t.Parallel()
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
@@ -322,9 +372,15 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.kind",
-			check:        "CHECK (kind BETWEEN 1 AND 8)",
-			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR),
+			check:        "CHECK (kind BETWEEN 1 AND 9)",
+			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+		},
+		{
+			column:       "agent_input_queue_items.sender_provider",
+			check:        "CHECK (sender_provider BETWEEN 1 AND 31)",
+			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
 		},
 		{
 			column:       "control_response_payloads.follow_up_kind",
@@ -421,8 +477,9 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ContentCompression_name),
 		},
 		{
-			// agents is the one table that stores a provider: a message and a
-			// control answer report the provider of their agent.
+			// agents stores the provider of each agent: a message and a control
+			// answer report the provider of their agent. The sender_provider
+			// entry above is the one copy, of the agent that sent a message.
 			column:       "agents.agent_provider",
 			check:        "CHECK (agent_provider BETWEEN 1 AND 31)",
 			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI),

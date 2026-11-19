@@ -402,6 +402,58 @@ describe('extractChatRow user content', () => {
     }
   })
 
+  // The Worker states the sender of a message from another agent in the row's
+  // metadata, which no provider reads. The shared entry adds it after every
+  // provider's extraction, so a provider cannot drop it.
+  describe('a message from another agent', () => {
+    const sender = { tabId: 'sender-tab', provider: AgentProvider.CLAUDE_CODE }
+    const metadata = {
+      [MESSAGE_METADATA_FIELD.AgentMessageSender]: { tabId: 'sender-tab', provider: 'AGENT_PROVIDER_CLAUDE_CODE' },
+    }
+    const withMetadata = (provider: AgentProvider): ResolvedMessageContent => ({
+      ...parsed({ content: 'Run the tests' }, provider),
+      messageMetadata: metadata,
+    })
+    const registered = Object.values(AgentProvider)
+      .filter((value): value is AgentProvider => typeof value === 'number' && pluginFor(value) !== undefined)
+
+    it('states the sender for a provider that has no plugin', () => {
+      expect(rowOf(extractChatRow(undefined, withMetadata(AgentProvider.UNSPECIFIED), { kind: 'user_content' })))
+        .toEqual({
+          kind: 'user',
+          text: 'Run the tests',
+          attachments: [],
+          sender,
+        })
+    })
+
+    it('states the sender for every registered provider', () => {
+      expect(registered.length).toBeGreaterThan(20)
+      for (const provider of registered) {
+        expect(rowOf(extractChatRow(provider, withMetadata(provider), { kind: 'user_content' })), AgentProvider[provider])
+          .toEqual({
+            kind: 'user',
+            text: 'Run the tests',
+            attachments: [],
+            sender,
+          })
+      }
+    })
+
+    it('states no sender on a user row without the metadata', () => {
+      expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed({ content: 'Run the tests' }, AgentProvider.CODEX), { kind: 'user_content' })))
+        .toEqual({ kind: 'user', text: 'Run the tests', attachments: [] })
+    })
+
+    it('adds no sender to a row that is not a message', () => {
+      const resolved = {
+        ...parsed({ content: '  ' }),
+        messageMetadata: metadata,
+      }
+      expect(rowOf(extractChatRow(undefined, resolved, { kind: 'user_content' }))).toEqual({ kind: 'hidden' })
+    })
+  })
+
   it('reports a registered provider that reads no row for its user frame as unsupported', () => {
     const plugin = pluginFor(AgentProvider.CLAUDE_CODE)
     if (!plugin)

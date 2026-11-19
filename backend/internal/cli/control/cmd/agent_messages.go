@@ -208,6 +208,9 @@ type agentMessage struct {
 	CreatedAt string `json:"created_at,omitempty"`
 	Source    string `json:"source,omitempty"`
 	Provider  string `json:"provider,omitempty"`
+	// Sender is the agent tab that sent the message, on the user row of a
+	// message from another agent.
+	Sender *messageSender `json:"sender,omitempty"`
 	// PreviousSeq marks a live reseq broadcast (notification-thread
 	// consolidation), which re-emits an already-seen id at a new higher
 	// seq. It is a MOVE from that older seq, so a --follow consumer can
@@ -230,8 +233,12 @@ type agentMessage struct {
 }
 
 // TextLine prints the message as "#<seq> <source>: <content>", with the
-// content compacted to one line.
+// content compacted to one line. A message from another agent states its
+// sender after the source: "#12 user from agent 87a19d5f (Claude Code): ...".
 func (m agentMessage) TextLine() string {
+	if m.Sender != nil {
+		return fmt.Sprintf("#%d %s from %s: %s", m.Seq, m.Source, m.Sender.TextValue(), contentSummary(m.Content))
+	}
 	return fmt.Sprintf("#%d %s: %s", m.Seq, m.Source, contentSummary(m.Content))
 }
 
@@ -285,6 +292,7 @@ func renderAgentMessage(m *leapmuxv1.AgentChatMessage) agentMessage {
 		CreatedAt:    m.GetCreatedAt(),
 		Source:       enumToken(m.GetSource()),
 		Provider:     agentProviderName(m.GetAgentProvider()),
+		Sender:       messageSenderOfRow(m),
 		PreviousSeq:  m.GetPreviousSeq(),
 		Depth:        m.GetDepth(),
 		ParentSpanID: m.GetParentSpanId(),

@@ -40,7 +40,7 @@ The user categories, in navigation order:
 | **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode keeps **Password** alone and hides the other four rows. |
 | **Apps** | The apps feature in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
-| **Notifications** | Turn-end sound and volume, terminal OS notifications. |
+| **Notifications** | Turn-end sound and volume, desktop notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
 | **Terminal** | Terminal renderer, and the Quake terminal's position, size, animation and background opacity. |
 | **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
@@ -143,9 +143,9 @@ Plays a notification sound when a coding agent finishes a turn: **None** or **Di
 
 A 0–100% slider (built-in default 100%), shown unless the sound is **None** on both this device and the account. A dual-tier setting.
 
-### Terminal OS notifications
+### Desktop notifications
 
-Whether terminal alerts raise OS-level notifications (browser-only; the browser asks for notification permission when you enable it). Off by default.
+Whether LeapMux raises desktop notifications: for terminal alerts (OSC 9 / 777 / 99), and, while LeapMux is hidden, for `leapmux control notify`. It is browser-only; the browser asks for notification permission when you enable it. Off by default.
 
 ## Chat & Composer
 

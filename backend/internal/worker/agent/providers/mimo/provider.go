@@ -23,7 +23,7 @@ type mimoProvider struct {
 func (mimoProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
 		if !slices.Contains(contracts.MiMoAudioMIMEMembers, attachment.MIMEType) {
-			return fmt.Errorf("the MiMo Code agent does not accept audio format %q", attachment.MIMEType)
+			return fmt.Errorf("the MiMo Code agent does not accept audio format %q: %s", attachment.MIMEType, attachment.Filename)
 		}
 		if len(attachment.Data) == 0 {
 			return fmt.Errorf("the audio attachment %q is empty", attachment.Filename)

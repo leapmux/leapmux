@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -411,11 +412,15 @@ func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
 		// returns only after that handler persisted the row, so the exit code
 		// read here is the final one rather than a stale zero, and the repeat is
 		// a repeat rather than a contradiction.
+		// A terminal that never spawned a shell has no exit on record, and its
+		// TerminalClosed states no code rather than a 0 that no shell returned.
+		closed := &leapmuxv1.TerminalClosed{}
+		if exitCode.Valid {
+			closed.ExitCode = ptrconv.Ptr(int32(exitCode.Int64))
+		}
 		svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
-			Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{
-				ExitCode: int32(exitCode),
-			}},
+			Event:      &leapmuxv1.TerminalEvent_Closed{Closed: closed},
 		})
 	}
 }

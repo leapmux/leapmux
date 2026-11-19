@@ -58,7 +58,8 @@
         "PlanApprovalSettings",
         "ToolOutcome",
         "TodoSnapshot",
-        "AutoReviewApprovals"
+        "AutoReviewApprovals",
+        "AgentMessageSender"
       ],
       "properties": {
         "DurationMs": {
@@ -94,6 +95,10 @@
           "pattern": "^[a-z][a-z0-9_]*$"
         },
         "AutoReviewApprovals": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "AgentMessageSender": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]*$"
         }

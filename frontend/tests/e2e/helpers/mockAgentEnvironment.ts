@@ -316,9 +316,17 @@ export async function createMockAgentEnvironment(
   ])
     mkdirSync(directory, { recursive: true })
 
-  // macOS zsh's system login profile rebuilds PATH. Reapply the private shims
-  // after that profile, so Junie's `security` probe cannot reach the keychain.
-  const privatePath = `export PATH=${quotePosixShellArgument(cliShimsDir)}:"$PATH"\n`
+  // macOS zsh's system login profile rebuilds PATH: path_helper moves every
+  // system directory first. Reapply the private shims after that profile, so
+  // Junie's `security` probe cannot reach the keychain. Reapply the directory of
+  // the Worker's own CLI too: a `leapmux` that the developer installed in a
+  // system directory would otherwise run in an agent's tool instead of the
+  // binary under test.
+  const privatePath = [
+    `export PATH=${quotePosixShellArgument(cliShimsDir)}:"$PATH"`,
+    'if [[ -n $LEAPMUX_CONTROL_CLI ]]; then export PATH="$(dirname -- "$LEAPMUX_CONTROL_CLI"):$PATH"; fi',
+    '',
+  ].join('\n')
   for (const file of ['.zshrc', '.zlogin'])
     writeFileSync(join(homeDir, file), privatePath, { mode: 0o600 })
 

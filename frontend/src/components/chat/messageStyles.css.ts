@@ -560,3 +560,23 @@ export const attachmentItem = style({
   gap: 'var(--space-1)',
   color: 'var(--muted-foreground)',
 })
+
+// The line above a message that another agent sent: the sending agent's icon and
+// the title of its tab. One line that ends in an ellipsis, so a title that the
+// browser resolves after the row measured never changes the row's height.
+export const agentMessageSender = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  minWidth: 0,
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  marginBottom: 'var(--space-2)',
+})
+
+export const agentMessageSenderText = style({
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})

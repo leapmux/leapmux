@@ -408,7 +408,7 @@ type unreachableSibling struct {
 	controlipc.CrossWorkerClient
 }
 
-func (unreachableSibling) CallInner(context.Context, string, userid.UserID, string, []byte) ([]byte, error) {
+func (unreachableSibling) CallInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	return nil, connect.NewError(connect.CodeUnavailable, "worker is offline")
 }
 

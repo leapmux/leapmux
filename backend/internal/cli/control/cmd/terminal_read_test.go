@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -220,6 +221,57 @@ func TestRenderScreen_RefusesASizeItCannotRender(t *testing.T) {
 	narrow := render(t, screenOf(1, 3, "abc"), screenReadOptions{})
 	assert.Equal(t, []string{"ab", "c"}, narrow.Lines)
 	assert.EqualValues(t, 1, narrow.Cols)
+}
+
+// renderSize is the one size check of `terminal read` and `terminal wait`.
+// Both commands refuse the same sizes with the same message, and only the
+// read adds its hint, because only the read has --raw.
+func TestRenderSize(t *testing.T) {
+	for name, tc := range map[string]struct {
+		info       *leapmuxv1.TerminalInfo
+		cols, rows int
+		refusal    string
+	}{
+		"a common size":    {info: screenOf(80, 24, ""), cols: 80, rows: 24},
+		"one cell":         {info: screenOf(1, 1, ""), cols: 1, rows: 1},
+		"no columns":       {info: screenOf(0, 24, ""), refusal: "the worker reports no size for terminal term-1"},
+		"no rows":          {info: screenOf(80, 0, ""), refusal: "the worker reports no size for terminal term-1"},
+		"too many columns": {info: screenOf(maxTerminalDimension+1, 1, ""), refusal: "terminal term-1 is 10001 columns by 1 rows, too large to render"},
+		"too many rows":    {info: screenOf(1, maxTerminalDimension+1, ""), refusal: "terminal term-1 is 1 columns by 10001 rows, too large to render"},
+		"too many cells":   {info: screenOf(1000, 5000, ""), refusal: "too large to render"},
+		// One column keeps the rows and the scrollback under the cap of the
+		// cells, so only the limit of one side applies.
+		"the most rows": {info: screenOf(1, maxTerminalDimension, ""), cols: 1, rows: maxTerminalDimension},
+		// The product of the two sides would overflow, and the check of each
+		// side refuses the size before the product is computed.
+		"the largest values of the fields": {info: screenOf(math.MaxUint32, math.MaxUint32, ""), refusal: "too large to render"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cols, rows, err := renderSize(tc.info)
+			if tc.refusal == "" {
+				require.NoError(t, err)
+				assert.Equal(t, tc.cols, cols)
+				assert.Equal(t, tc.rows, rows)
+				return
+			}
+			e := cli.FromError(err)
+			require.NotNil(t, e)
+			assert.Equal(t, cli.CodeInternal, e.Code)
+			assert.Contains(t, e.Message, tc.refusal)
+			assert.Empty(t, e.Hints, "a refusal without hints carries none")
+			assert.Zero(t, cols)
+			assert.Zero(t, rows)
+
+			_, _, hinted := renderSize(tc.info, "first", "second")
+			assert.Equal(t, []string{"first", "second"}, cli.FromError(hinted).Hints)
+
+			_, readErr := renderScreen(tc.info, screenReadOptions{})
+			_, waitErr := newScreenWatch(tc.info, func(string) bool { return false })
+			assert.Equal(t, e.Message, cli.FromError(readErr).Message, "terminal read refuses the size alike")
+			assert.Equal(t, e.Message, cli.FromError(waitErr).Message, "terminal wait refuses the size alike")
+			assert.Equal(t, []string{rawScreenHint}, cli.FromError(readErr).Hints)
+		})
+	}
 }
 
 func TestRenderedScreen_Forms(t *testing.T) {

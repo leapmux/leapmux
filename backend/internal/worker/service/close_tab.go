@@ -691,6 +691,13 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 			slog.Warn("close agent: list descendants failed", "agent", agentID, "err", derr)
 			childDescendants = nil
 		}
+		// The row stays open, but the tab and its subagent tabs close, and a
+		// status belongs to the tab. This branch skips applyTabCloseEffects,
+		// so it clears the statuses itself.
+		svc.TabStatuses.forgetClosed(newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID))
+		for _, id := range childDescendants {
+			svc.TabStatuses.forgetClosed(newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, id, userID))
+		}
 		return &leapmuxv1.CloseTabResponse{DescendantAgentIds: childDescendants}
 	}
 	// A cold start can hold the lifecycle lock while its provider handshake
@@ -754,7 +761,11 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 		linkPolicy,
 		func() { svc.stopTerminalTabForClose(userID, terminalID, dbTerm, termErr == nil, action, linkPolicy) },
 		func() (bool, error) {
-			retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID))
+			key := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID)
+			retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, key)
+			// As the agent and payload closes do, so every tab type publishes
+			// what its close changed through the one funnel.
+			svc.applyTabCloseEffects(bgCtx(), key, retirement)
 			return retirement.RetiredLiveRow, err
 		},
 	)

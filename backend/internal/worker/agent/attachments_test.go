@@ -48,6 +48,21 @@ func TestClassifyAttachmentsInfersFLACAndAAC(t *testing.T) {
 	}
 }
 
+// The default policy refuses an audio attachment by its file name. The queue
+// shows the refusal as the error of the failed input, and `agent send --wait`
+// prints it, so the reader learns which file to remove.
+func TestProviderDefaultsRefuseAudioByTheFileName(t *testing.T) {
+	t.Parallel()
+	err := (ProviderDefaults{}).ValidateAttachment(ClassifiedAttachment{Filename: "voice memo.wav", MIMEType: "audio/wav", Data: []byte{0}, Kind: contracts.AttachmentMediaKindAudio})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "voice memo.wav")
+	assert.Contains(t, err.Error(), "audio")
+
+	for _, kind := range []contracts.AttachmentMediaKind{contracts.AttachmentMediaKindText, contracts.AttachmentMediaKindImage, contracts.AttachmentMediaKindPdf, contracts.AttachmentMediaKindBinary} {
+		assert.NoError(t, (ProviderDefaults{}).ValidateAttachment(ClassifiedAttachment{Filename: "file", Kind: kind}), kind)
+	}
+}
+
 func TestClassifyAttachmentsInfersOfficeDocuments(t *testing.T) {
 	t.Parallel()
 	for filename, mime := range map[string]string{

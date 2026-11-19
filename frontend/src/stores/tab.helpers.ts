@@ -881,12 +881,24 @@ export function terminalProgressIndeterminate(tab: Tab): boolean {
   return isTerminalTab(tab) && tab.progressState === TerminalProgress_State.INDETERMINATE
 }
 
-/** CSS custom property + title for the tab OSC progress bar. */
-export function terminalProgressBarProps(tab: Tab): { style: { '--progress-percent': string }, title: string } {
+/** The OSC 9;4 progress of a terminal tab, as its progress bar draws and states it. */
+export interface TerminalProgressView {
+  /** How far the bar fills, from 0 to 100. */
+  percent: number
+  /** True when the terminal reports work of no known percent. */
+  indeterminate: boolean
+  /** The progress in words: the percent, or "In progress". */
+  label: string
+}
+
+/** The progress that the tab's OSC progress bar draws and states. */
+export function terminalProgressView(tab: Tab): TerminalProgressView {
   const percent = Math.max(0, Math.min(100, terminalProgressPercent(tab)))
+  const indeterminate = terminalProgressIndeterminate(tab)
   return {
-    style: { '--progress-percent': `${percent}%` },
-    title: terminalProgressIndeterminate(tab)
+    percent,
+    indeterminate,
+    label: indeterminate
       ? 'In progress'
       : `${percent}%`,
   }

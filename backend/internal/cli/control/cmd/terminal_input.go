@@ -136,23 +136,45 @@ type terminalRunResult struct {
 
 // runTerminalRun sends a command line as a paste, then the Enter key.
 func runTerminalRun(inv *cli.Invocation) (any, error) {
-	command := inv.Arg("command")
-	if command == "-" {
-		data, err := io.ReadAll(inv.Stdin)
-		if err != nil {
-			return nil, cli.Wrap(cli.CodeInternal, err, "read stdin")
-		}
-		command = string(data)
-	}
-	command = strings.TrimRight(command, "\r\n")
-	if strings.TrimSpace(command) == "" {
-		return nil, cli.Usagef("the command is empty")
+	command, err := readCommandLine(inv, inv.Arg("command"), "the command")
+	if err != nil {
+		return nil, err
 	}
 	id, err := sendTerminalInput(inv, &leapmuxv1.SendInputRequest{Data: []byte(command), Paste: true, Keys: []string{"enter"}})
 	if err != nil {
 		return nil, err
 	}
 	return terminalRunResult{ID: id, Command: command}, nil
+}
+
+// readCommandLine reads one command line for `terminal run` and for
+// `terminal open --command`: text, or standard input when text is "-". It
+// drops the line endings at the end, because the Worker presses Enter itself,
+// and it refuses a command that holds nothing else. name states the source of
+// the command in that refusal, such as "--command".
+func readCommandLine(inv *cli.Invocation, text, name string) (string, error) {
+	if text == "-" {
+		data, err := io.ReadAll(inv.Stdin)
+		if err != nil {
+			return "", cli.Wrap(cli.CodeInternal, err, "read stdin")
+		}
+		text = string(data)
+	}
+	text = strings.TrimRight(text, "\r\n")
+	if strings.TrimSpace(text) == "" {
+		return "", cli.Usagef("%s is empty", name)
+	}
+	return text, nil
+}
+
+// initialCommandOf reads --command of `terminal open`: the command line that
+// the new shell runs once it is ready. It returns "" when the command line
+// gives none.
+func initialCommandOf(inv *cli.Invocation) (string, error) {
+	if !inv.Changed("command") {
+		return "", nil
+	}
+	return readCommandLine(inv, stringFlag(inv, "command"), "--command")
 }
 
 // sendTerminalInput sends req to the terminal that the command line selects,

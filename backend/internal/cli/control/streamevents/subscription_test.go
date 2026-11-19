@@ -2134,7 +2134,7 @@ func TestSubscription_DropsTerminalNotificationsByDefault(t *testing.T) {
 		tr.pushFrame(frame)
 	}
 	tr.pushFrame(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
-		TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: 2}},
+		TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: proto.Int32(2)}},
 	}}})
 
 	require.Len(t, got, 1, "only the exit passes")

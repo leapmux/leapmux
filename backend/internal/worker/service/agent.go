@@ -839,11 +839,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.RetryAgentTurnResponse{})
 		})
 
-	// WatchWorkerPrivateEvents streams this worker's private tab events
-	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked, QuakePanelCommand)
-	// over the existing E2EE channel. The bootstrap-replay sends one
-	// TabPayloadRegistered per worker_tab_payloads row the caller owns before
-	// any live events.
+	// WatchWorkerPrivateEvents streams this worker's private events (every
+	// case of WorkerPrivateEvent) over the existing E2EE channel. The
+	// bootstrap-replay sends one TabPayloadRegistered per worker_tab_payloads
+	// row the caller owns, and one TabStatusChanged per tab whose status is
+	// set, before any live events (see privateEventsSnapshot).
 	//
 	// SnapshotAndSubscribe drives the stream lifetime off a cancellable
 	// context bound to the stream's correlation id (via BindStream). An
@@ -875,11 +875,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 					// frame during a slow/large snapshot must retire the stream
 					// rather than wait for a SQLite lock, a wait with no
 					// practical limit (`sqlitedb.Open`).
-					snapshot, err := svc.TabPayloads.SnapshotForOwner(ctx, owner)
-					if err != nil {
-						return nil
-					}
-					return snapshot
+					return svc.privateEventsSnapshot(ctx, owner)
 				},
 				func(evt *leapmuxv1.WorkerPrivateEvent) error {
 					// Per-EVENT-KIND gates, mirroring the partition WatchEvents
@@ -4274,14 +4270,40 @@ func callerReadsTabType(caller channel.Caller, tabType leapmuxv1.TabType) bool {
 	return !governed || caller.Allows(scope)
 }
 
+// tabViewEventVisible reports whether caller may see an event that acts on the
+// view of one tab of kind tabType: it needs workspace:read, as a notification
+// does, and the read scope of the tab's kind, as a TabRenamed does, because a
+// status text is the same kind of data as a title.
+//
+// The Worker always states the kind, so an event without one comes from a bug.
+// It fails closed instead of reading as a kind that no scope governs.
+func tabViewEventVisible(caller channel.Caller, tabType leapmuxv1.TabType) bool {
+	return tabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED &&
+		caller.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ) &&
+		callerReadsTabType(caller, tabType)
+}
+
 // privateEventVisible reports whether this stream's caller may see one
 // private event. A FILE payload rides the stream's own file:read floor; a tab
 // rename and an IMAGE payload are governed by the scope of the tab KIND they
 // name, exactly as WatchEvents partitions its agent and terminal sections.
 //
+// A notification, a reveal and a tab status act on the user's view of the
+// workspace, as the RPCs that send them (which take workspace:write) do, so
+// workspace:read governs all three. A reveal and a status also name one tab,
+// so the scope of its kind governs them too (see tabViewEventVisible).
+//
 // A payload this binary cannot parse fails closed. It cannot state its kind,
 // so it cannot state which scope governs it.
 func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEvent) bool {
+	switch event := evt.GetEvent().(type) {
+	case *leapmuxv1.WorkerPrivateEvent_UserNotification:
+		return caller.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ)
+	case *leapmuxv1.WorkerPrivateEvent_TabRevealCommand:
+		return tabViewEventVisible(caller, event.TabRevealCommand.GetTabType())
+	case *leapmuxv1.WorkerPrivateEvent_TabStatusChanged:
+		return tabViewEventVisible(caller, event.TabStatusChanged.GetTabType())
+	}
 	if renamed := evt.GetTabRenamed(); renamed != nil {
 		return callerReadsTabType(caller, renamed.GetTabType())
 	}

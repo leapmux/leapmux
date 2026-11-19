@@ -2,8 +2,8 @@ import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ControlResponseSummary } from './model/controlResponse'
-import type { UserMessageAttachment } from './model/row'
-import type { ExpandableMarkdownRenderContext, MarkdownRenderContext, MessageUiRenderContext } from './renderContext'
+import type { AgentMessageSender, UserMessageAttachment } from './model/row'
+import type { ExpandableMarkdownRenderContext, MarkdownRenderContext, MessageUiRenderContext, UserMessageRenderContext } from './renderContext'
 import Braces from 'lucide-solid/icons/braces'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -11,12 +11,14 @@ import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
+import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { inlineFlex } from '~/styles/shared.css'
+import { agentMessageSenderLabel } from './agentMessageSender'
 import { MarkdownPrefetch, MarkdownText } from './MarkdownText'
-import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
+import { agentMessageSender, agentMessageSenderText, attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD } from './persistedControlResponse'
 import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay } from './safeTextDisplay'
@@ -164,20 +166,44 @@ export function PlanExecutionMessage(props: { text: string, context?: Expandable
 }
 
 /**
+ * The line above a message that another agent sent, where the user's own message
+ * states nothing: the sending agent's icon and the title of its tab. It tells the
+ * reader that the agent read this message as another agent's, not as the user's.
+ */
+function AgentMessageSenderLine(props: { sender: AgentMessageSender, context?: UserMessageRenderContext | undefined }): JSX.Element {
+  return (
+    <div class={agentMessageSender} data-testid="agent-message-sender">
+      <AgentProviderIcon provider={props.sender.provider} size={12} />
+      <span class={agentMessageSenderText}>{agentMessageSenderLabel(props.sender, props.context?.tabTitle)}</span>
+    </div>
+  )
+}
+
+/**
  * Provider-neutral renderer for user messages persisted as
  * `{"content":"...", "attachments":[...]}` by the LeapMux service layer.
  * Used by Claude, Codex, Pi, and every ACP-based provider
  * (OpenCode/Cursor/Goose/Kilo/Copilot/Reasonix) so no plugin has to reinvent
  * attachment + markdown rendering. Renders nothing when the parsed body has
- * no usable text or attachments.
+ * no usable text or attachments. A message that another agent sent states its
+ * sender above its body.
  */
-export function UserContentMessage(props: { text: string, attachments: UserMessageAttachment[], context?: MarkdownRenderContext }): JSX.Element {
+export function UserContentMessage(props: {
+  text: string
+  attachments: UserMessageAttachment[]
+  /** The agent that sent the message, or absent for the user's own message. */
+  sender?: AgentMessageSender | undefined
+  context?: UserMessageRenderContext
+}): JSX.Element {
   const hasText = (): boolean => props.text.trim().length > 0
   const hasAttachments = (): boolean => props.attachments.length > 0
   const hasAny = (): boolean => hasText() || hasAttachments()
 
   return (
     <Show when={hasAny()}>
+      <Show when={props.sender} keyed>
+        {sender => <AgentMessageSenderLine sender={sender} context={props.context} />}
+      </Show>
       <Show when={hasAttachments()}>
         <div class={attachmentList}>
           <For each={props.attachments}>

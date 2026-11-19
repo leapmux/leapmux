@@ -136,6 +136,43 @@ type selfEncoding struct{}
 
 func (selfEncoding) MarshalJSON() ([]byte, error) { return []byte(`{"kind":"custom"}`), nil }
 
+// valuedCell is an object whose text form is one line.
+type valuedCell struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+func (c valuedCell) TextValue() string { return c.Name + " (" + c.Kind + ")" }
+
+type valuedRow struct {
+	ID   string      `json:"id" table:"ID"`
+	From *valuedCell `json:"from,omitempty" table:"FROM"`
+}
+
+func TestPrinterResultPrintsATextValuerInOneCell(t *testing.T) {
+	p, out, _ := newTestPrinter(FormatText, false)
+	require.NoError(t, p.Result(map[string][]valuedRow{"rows": {
+		{ID: "1", From: &valuedCell{Name: "agent 87a19d5f", Kind: "Claude Code"}},
+		{ID: "2"},
+	}}))
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	require.Len(t, lines, 3)
+	assert.Equal(t, []string{"1", "agent", "87a19d5f", "(Claude", "Code)"}, strings.Fields(lines[1]))
+	assert.Equal(t, []string{"2", "-"}, strings.Fields(lines[2]), "an absent value prints a dash")
+}
+
+func TestPrinterResultPrintsATextValuerOnItsKeyLine(t *testing.T) {
+	p, out, _ := newTestPrinter(FormatText, false)
+	require.NoError(t, p.Result(valuedRow{ID: "1", From: &valuedCell{Name: "a", Kind: "b"}}))
+	assert.Equal(t, "id:   1\nfrom: a (b)\n", out.String())
+}
+
+func TestPrinterResultEncodesATextValuerAsItsFieldsInJSON(t *testing.T) {
+	p, out, _ := newTestPrinter(FormatJSON, false)
+	require.NoError(t, p.Result(valuedRow{ID: "1", From: &valuedCell{Name: "a", Kind: "b"}}))
+	assert.JSONEq(t, `{"data":{"id":"1","from":{"name":"a","kind":"b"}}}`, out.String())
+}
+
 func TestPrinterResultUsesATextRenderer(t *testing.T) {
 	p, out, _ := newTestPrinter(FormatText, false)
 	require.NoError(t, p.Result(rendered("raw\x1b[0m bytes")))

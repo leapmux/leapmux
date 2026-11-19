@@ -84,8 +84,17 @@ Run a command in a new terminal and read its screen:
 
 ```sh
 T=$(leapmux control terminal open -q)
-leapmux control terminal run "$T" 'make test'
+leapmux control terminal run "$T" 'make test; echo DONE'
+leapmux control terminal wait "$T" --regex '^DONE$' --timeout 15m
 leapmux control terminal read "$T" --lines 40
+```
+
+Show the user what you work on, and tell them when you are done:
+
+```sh
+leapmux control tab status set self "Running the tests" --progress 40
+leapmux control tab status clear self
+leapmux control notify "Tests passed" --body "All 412 tests pass"
 ```
 
 See what runs where:

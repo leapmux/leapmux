@@ -231,8 +231,16 @@ type setupConfig struct {
 	remoteIPC      ControlIPCFactory
 	rewriteQuery   func(string) string
 	clock          quartz.Clock
+	terminalClock  quartz.Clock
 	maxMessageSize int
 	registry       *agent.Registry
+}
+
+// withTerminalClock builds the Service's terminal Manager on clock, so a test
+// drives the timers of each terminal it spawns: the fallback wait of an initial
+// command, and the reader drain after an exit.
+func withTerminalClock(clock quartz.Clock) setupOption {
+	return func(c *setupConfig) { c.terminalClock = clock }
 }
 
 // withRegistry builds the Service's agent manager over r instead of the full
@@ -361,13 +369,17 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *testService
 	if registry == nil {
 		registry = testRegistry
 	}
+	var terminalOptions []terminal.ManagerOption
+	if cfg.terminalClock != nil {
+		terminalOptions = append(terminalOptions, terminal.WithClock(cfg.terminalClock))
+	}
 	svc := New(Config{
 		ResolveTabPublication: fixtureResolveTabPublication, PublishTab: fixturePublishTab, CancelTabPublication: fixtureCancelTabPublication, WorkerID: "worker-1",
 		DB:        sqlDB,
 		Channels:  chmgr,
 		Send:      func(*leapmuxv1.ConnectRequest) error { return nil },
 		Agents:    agent.NewManager(registry, nil),
-		Terminals: terminal.NewManager(),
+		Terminals: terminal.NewManager(terminalOptions...),
 		HomeDir:   t.TempDir(),
 		DataDir:   t.TempDir(),
 		// The test channel above is opened as "user-1", so make that the
@@ -1030,14 +1042,14 @@ func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
 	exitTerminalAndWait(t, svc, d, terminalID, " 42")
 	testutil.AssertEventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && row.ExitCode == 42
+		return err == nil && row.ExitCode == recordedExit(42)
 	}, "exit handler must persist exit_code=42")
 
 	svc.Shutdown()
 
 	dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(42), dbTerm.ExitCode,
+	assert.Equal(t, recordedExit(42), dbTerm.ExitCode,
 		"Shutdown must not clobber the natural exit code of an already-exited terminal")
 }
 
@@ -1067,7 +1079,7 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 	// actually processed input.
 	testutil.AssertEventually(t, func() bool {
 		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && dbTerm.ExitCode == 0
+		return err == nil && dbTerm.ExitCode == recordedExit(0)
 	}, "expected clean exit (exit_code=0) to be persisted")
 
 	testutil.AssertEventually(t, func() bool {
@@ -1664,7 +1676,7 @@ func TestShutdownRetainsOutputWrittenAfterDisconnectNotice(t *testing.T) {
 	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
 	require.NoError(t, err)
 	assert.Contains(t, string(row.Screen), marker, "shutdown must persist the screen after its reader drains")
-	assert.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	assert.Equal(t, recordedExit(exitCodeUnknown), row.ExitCode)
 	assert.Equal(t, 1, bytes.Count(row.Screen, []byte("Press Enter to restart")))
 }
 
@@ -1718,7 +1730,7 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 	}
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	require.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	require.Equal(t, recordedExit(exitCodeUnknown), row.ExitCode)
 	wantCode, command := int64(42), "exit 42"
 	if runtime.GOOS == "windows" {
 		wantCode, command = 0, "exit"
@@ -1740,7 +1752,7 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 	}
 	row, err = svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, wantCode, row.ExitCode, "a shutdown notice must not replace an observed natural exit code")
+	assert.Equal(t, recordedExit(wantCode), row.ExitCode, "a shutdown notice must not replace an observed natural exit code")
 }
 
 // A hung-up terminal whose shell answers the hang-up signal with its own exit
@@ -1782,7 +1794,7 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 
 	assert.Eventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && row.ExitCode == exitCodeUnknown
+		return err == nil && row.ExitCode == recordedExit(exitCodeUnknown)
 	}, 5*time.Second, 10*time.Millisecond,
 		"the sweep's sentinel must stay the row's exit code")
 	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
@@ -1815,7 +1827,7 @@ func TestTerminalExitPersistsARowThatTheSweepSkipped(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(7), row.ExitCode,
+	assert.Equal(t, recordedExit(7), row.ExitCode,
 		"an exit the sweep skipped must persist its real exit code")
 	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
 	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),

@@ -2,7 +2,8 @@
 -- Initial records retain the existing shell and quake kind on conflict.
 -- A terminal keeps both properties for its entire lifetime.
 -- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
-INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
+-- A record states no exit code: only SaveTerminalExit records one.
+INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, is_quake, closed_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(working_dir),
@@ -12,7 +13,6 @@ VALUES (
   sqlc.arg(cols),
   sqlc.arg(rows),
   sqlc.arg(screen),
-  sqlc.arg(exit_code),
   sqlc.arg(is_quake),
   -- Initial records can carry a persisted closed state.
   sqlc.narg(closed_at)
@@ -24,7 +24,6 @@ ON CONFLICT (id) DO UPDATE SET
   cols            = excluded.cols,
   rows            = excluded.rows,
   screen          = excluded.screen,
-  exit_code       = excluded.exit_code,
   closed_at       = excluded.closed_at;
 
 -- name: GetTerminal :one
@@ -50,6 +49,12 @@ UPDATE terminals SET title = ? WHERE id = ?;
 -- BLOB that this caller never looks at.
 -- name: GetTerminalExitCode :one
 SELECT exit_code FROM terminals WHERE id = ?;
+
+-- ForgetTerminalExitCode clears the exit code of a terminal's previous shell
+-- just before a new shell spawns, so a Worker that is killed while the new
+-- shell runs holds no record of an exit rather than the old shell's code.
+-- name: ForgetTerminalExitCode :exec
+UPDATE terminals SET exit_code = NULL WHERE id = ?;
 
 -- GetTerminalID is the existence probe behind requireTerminalID: it answers
 -- sql.ErrNoRows for an unknown id while reading two narrow columns, so the
@@ -223,7 +228,8 @@ WHERE is_quake = 0 AND working_dir IN (sqlc.slice('working_dirs'));
 -- Initial records retain the existing shell and quake kind on conflict.
 -- A terminal keeps both properties for its entire lifetime.
 -- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
-INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
+-- A record states no exit code: only SaveTerminalExit records one.
+INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, is_quake, closed_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(working_dir),
@@ -233,7 +239,6 @@ VALUES (
   sqlc.arg(cols),
   sqlc.arg(rows),
   sqlc.arg(screen),
-  sqlc.arg(exit_code),
   sqlc.arg(is_quake),
   -- Initial records can carry a persisted closed state.
   sqlc.narg(closed_at)

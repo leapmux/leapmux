@@ -67,6 +67,11 @@ type ScreenBuffer struct {
 	full    bool
 	total   int64 // Total bytes ever written (monotonic within a PTY session).
 	tracker modeTracker
+	// bracketedPasteSet closes at the next DECSET 2004 in the output.
+	// nextBracketedPasteSet creates it, and Write closes it and clears the
+	// slot, so the next caller waits for the sequence after that one. Nil
+	// while nothing waits.
+	bracketedPasteSet chan struct{}
 }
 
 // NewScreenBuffer creates a new screen buffer.
@@ -102,6 +107,10 @@ func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 	// bytes would hold.
 	sb.tracker.beginChunk()
 	sb.tracker.feed(data)
+	if sb.tracker.chunkBracketedPasteSet && sb.bracketedPasteSet != nil {
+		close(sb.bracketedPasteSet)
+		sb.bracketedPasteSet = nil
+	}
 	signals := sb.tracker.drainSignals()
 	sb.total += int64(len(data))
 	// Writes larger than the ring would overwrite themselves; only the
@@ -167,6 +176,21 @@ func (sb *ScreenBuffer) InputModes() terminput.Modes {
 		ApplicationCursorKeys: sb.tracker.appCursorKeys,
 		BracketedPaste:        sb.tracker.bracketedPaste,
 	}
+}
+
+// nextBracketedPasteSet returns a channel that closes when the output next
+// turns bracketed paste on (DECSET 2004). A mode that is already on does not
+// count: only a sequence that a Write after this call carries does. A restart
+// hands this buffer to the next shell, and the mode of the shell before it
+// then cannot close the channel. Every caller before the next such sequence
+// shares one channel.
+func (sb *ScreenBuffer) nextBracketedPasteSet() <-chan struct{} {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	if sb.bracketedPasteSet == nil {
+		sb.bracketedPasteSet = make(chan struct{})
+	}
+	return sb.bracketedPasteSet
 }
 
 // TotalBytes returns the cumulative byte count ever written to this buffer.
@@ -411,6 +435,15 @@ type Options struct {
 	// they land last, after TERM is set, and the directory of
 	// LEAPMUX_CONTROL_CLI goes first on PATH.
 	ExtraEnv []string
+	// InitialCommand is a command line that the shell of this spawn runs once
+	// it is ready. The terminal sends it as `leapmux control terminal run`
+	// sends one: the command as a paste, then the Enter key, in one write.
+	// startInitialCommand states when the shell is ready. Empty runs nothing.
+	//
+	// The service's RestartTerminal handler builds its Options from the
+	// terminal's row, which holds no command, so a restart that the user asks
+	// for does not run the command again.
+	InitialCommand string
 }
 
 // spawnEnv builds the environment a terminal's login shell is started with,
@@ -540,6 +573,11 @@ func startWithScreenBuffer(
 		childSideClosedCh: make(chan struct{}),
 	}
 
+	// Before the reader starts, so the shell's first DECSET 2004 cannot pass
+	// before the wait for it exists.
+	if opts.InitialCommand != "" {
+		t.startInitialCommand(opts.InitialCommand)
+	}
 	go func() {
 		t.readOutput()
 		close(t.readDoneCh)
@@ -828,6 +866,36 @@ func (t *Terminal) IsExited() bool {
 	default:
 		return false
 	}
+}
+
+// ExitCode returns the exit code of the shell and true once the shell exited:
+// -1 for a shell that a signal ended. It returns false while the shell runs.
+//
+// waitForExit writes exitCode before it closes exitCh, so a read after the
+// close sees the final value.
+func (t *Terminal) ExitCode() (int, bool) {
+	select {
+	case <-t.exitCh:
+		return t.exitCode, true
+	default:
+		return 0, false
+	}
+}
+
+// isStopped reports whether Stop ran.
+func (t *Terminal) isStopped() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopped
+}
+
+// sendInput encodes in for the modes that the program in the terminal enabled,
+// and writes the result to the PTY in one write.
+func (t *Terminal) sendInput(in terminput.Input) error {
+	if t.IsExited() {
+		return fmt.Errorf("terminal exited: %s", t.id)
+	}
+	return t.SendInput(in.Encode(t.screenBuf.InputModes()))
 }
 
 // ID returns the terminal's ID.

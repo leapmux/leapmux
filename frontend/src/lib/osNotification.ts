@@ -48,7 +48,44 @@ export async function requestOsNotificationPermission(): Promise<boolean> {
 }
 
 function prefEnabled(): boolean {
-  return loadBrowserPrefs().terminalOsNotifications === true
+  return loadBrowserPrefs().desktopNotifications === true
+}
+
+/**
+ * Show a desktop notification, when the user turned desktop notifications on
+ * and the platform shows one. Calls `onUnavailable` instead when it cannot: the
+ * preference is off, the permission is missing, the API is absent, or the
+ * platform refused. The desktop app shows it through its own notification
+ * plugin, and a browser through the Notification API.
+ *
+ * A notification with a `tag` replaces an earlier one with the same tag where
+ * the platform supports tags, as browsers do.
+ */
+export function showDesktopNotification(opts: { title: string, body: string, tag?: string }, onUnavailable: () => void): void {
+  if (!prefEnabled()) {
+    onUnavailable()
+    return
+  }
+  if (isTauriApp()) {
+    void platformBridge.showNotification(opts.title, opts.body, opts.tag).catch(onUnavailable)
+    return
+  }
+  if (!osNotificationsAvailable() || Notification.permission !== 'granted') {
+    onUnavailable()
+    return
+  }
+  try {
+    const notification = new Notification(opts.title, {
+      body: opts.body,
+      ...(opts.tag !== undefined
+        ? { tag: opts.tag }
+        : {}),
+    })
+    void notification
+  }
+  catch {
+    onUnavailable()
+  }
 }
 
 /**
@@ -74,33 +111,7 @@ export function notifyOs(opts: { title: string, body: string, tag?: string }): v
     recentTags.set(opts.tag, now)
   }
 
-  if (!prefEnabled()) {
-    showInfoToast(message)
-    return
-  }
-
-  if (isTauriApp()) {
-    void platformBridge.showNotification(opts.title, opts.body, opts.tag).catch(() => {
-      showInfoToast(message)
-    })
-    return
-  }
-  if (!osNotificationsAvailable() || Notification.permission !== 'granted') {
-    showInfoToast(message)
-    return
-  }
-  try {
-    const notification = new Notification(opts.title, {
-      body: opts.body,
-      ...(opts.tag !== undefined
-        ? { tag: opts.tag }
-        : {}),
-    })
-    void notification
-  }
-  catch {
-    showInfoToast(message)
-  }
+  showDesktopNotification(opts, () => showInfoToast(message))
 }
 
 /** Test helper: clear dedupe set. */

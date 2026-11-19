@@ -96,19 +96,11 @@ func findControlRequest(agentID string, requests []*leapmuxv1.AgentControlReques
 	if handle == "" {
 		return nil, cli.Usagef("the request handle is empty")
 	}
-	var matches []*leapmuxv1.AgentControlRequest
-	for _, r := range requests {
-		if r.GetClaimToken() == handle {
-			return r, nil
-		}
-		if strings.HasPrefix(r.GetClaimToken(), handle) {
-			matches = append(matches, r)
-		}
+	request, matches, found := lookupByIDPrefix(requests, handle, (*leapmuxv1.AgentControlRequest).GetClaimToken)
+	if found {
+		return request, nil
 	}
-	switch len(matches) {
-	case 1:
-		return matches[0], nil
-	case 0:
+	if len(matches) == 0 {
 		return nil, cli.Newf(cli.CodeNotFound, "agent %s has no pending request %s", agentID, handle).
 			WithHint("list its requests with \"leapmux control agent requests %s\"", agentID)
 	}

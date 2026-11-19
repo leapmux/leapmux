@@ -1,5 +1,7 @@
 /// <reference types="vitest/globals" />
 import type { TabPayloadView } from '~/lib/tabPayload'
+import type { TabStatusView } from '~/lib/tabStatus'
+import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
@@ -19,6 +21,10 @@ interface OpenedStream {
   onTabPayloadRegistered: (evt: { tabId: string, payload: TabPayloadView }) => void
   onTabPayloadRevoked: (evt: { tabId: string }) => void
   onQuakePanelCommand: (evt: { workingDir: string, action: QuakePanelAction }) => void
+  onUserNotification: (evt: { title: string, body: string, sourceTabId: string }) => void
+  onTabRevealCommand: (evt: { tabId: string }) => void
+  onTabStatusChanged: (evt: { tabId: string, status: TabStatusView | undefined }) => void
+  onSubscribed: () => void
   closed: boolean
 }
 
@@ -43,6 +49,10 @@ const mockOpen = vi.fn((o: Record<string, unknown>) => {
     onTabPayloadRegistered: o.onTabPayloadRegistered as OpenedStream['onTabPayloadRegistered'],
     onTabPayloadRevoked: o.onTabPayloadRevoked as OpenedStream['onTabPayloadRevoked'],
     onQuakePanelCommand: o.onQuakePanelCommand as OpenedStream['onQuakePanelCommand'],
+    onUserNotification: o.onUserNotification as OpenedStream['onUserNotification'],
+    onTabRevealCommand: o.onTabRevealCommand as OpenedStream['onTabRevealCommand'],
+    onTabStatusChanged: o.onTabStatusChanged as OpenedStream['onTabStatusChanged'],
+    onSubscribed: o.onSubscribed as OpenedStream['onSubscribed'],
     closed: false,
   }
   opened.push(rec)
@@ -55,9 +65,15 @@ vi.mock('~/lib/workerPrivateEvents', () => ({
   openWorkerPrivateEventStream: (o: Record<string, unknown>) => mockOpen(o),
 }))
 
+// The toast and the desktop notification have their own tests; these assert
+// what the stream hands them.
+const showUserNotification = vi.hoisted(() => vi.fn())
+vi.mock('~/lib/userNotification', () => ({ showUserNotification }))
+
 beforeEach(() => {
   opened.length = 0
   mockOpen.mockClear()
+  showUserNotification.mockClear()
 })
 afterEach(() => setCRDTBridge(null))
 
@@ -81,16 +97,20 @@ describe('useWorkerPrivateStreams', () => {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
     const quakeStore = createTestQuakeStore(stores.view)
+    const revealTab = vi.fn<(tab: Tab) => void>()
     return {
       harness,
       ...stores,
       quakeStore,
+      revealTab,
       run: () => useWorkerPrivateStreams({
         acceptsEarlyMetadata,
         state: () => getCRDTBridge()?.speculativeState() ?? null,
         view: stores.view,
         metadata: stores.metadata,
         quakeStore,
+        tabStatuses: stores.statuses,
+        revealTab,
       }),
     }
   }
@@ -576,6 +596,8 @@ describe('useWorkerPrivateStreams retired tabs', () => {
           view: stores.view,
           metadata: stores.metadata,
           quakeStore: createTestQuakeStore(stores.view),
+          tabStatuses: stores.statuses,
+          revealTab: () => {},
         })
         await flush()
         const stream = firstOpened()
@@ -617,6 +639,8 @@ describe('useWorkerPrivateStreams cleared Worker register', () => {
           view: stores.view,
           metadata: stores.metadata,
           quakeStore: createTestQuakeStore(stores.view),
+          tabStatuses: stores.statuses,
+          revealTab: () => {},
         })
         await flush()
         const stream = firstOpened()
@@ -657,6 +681,8 @@ describe('useWorkerPrivateStreams creation ownership', () => {
           view: stores.view,
           metadata: stores.metadata,
           quakeStore: createTestQuakeStore(stores.view),
+          tabStatuses: stores.statuses,
+          revealTab: () => {},
         })
         await flush()
         if (kind === 'payload') {
@@ -686,6 +712,8 @@ describe('useWorkerPrivateStreams creation ownership', () => {
         view: stores.view,
         metadata: stores.metadata,
         quakeStore: createTestQuakeStore(stores.view),
+        tabStatuses: stores.statuses,
+        revealTab: () => {},
       })
       await flush()
       const stream = firstOpened()
@@ -715,6 +743,8 @@ describe('useWorkerPrivateStreams creation ownership', () => {
           view: stores.view,
           metadata: stores.metadata,
           quakeStore: createTestQuakeStore(stores.view),
+          tabStatuses: stores.statuses,
+          revealTab: () => {},
         })
         await flush()
         const stream = opened.find(stream => stream.workerId === 'w1')!
@@ -742,6 +772,8 @@ describe('useWorkerPrivateStreams account generation', () => {
           view: stores.view,
           metadata: stores.metadata,
           quakeStore: createTestQuakeStore(stores.view),
+          tabStatuses: stores.statuses,
+          revealTab: () => {},
         })
         await flush()
         const original = firstOpened()
@@ -766,6 +798,299 @@ describe('useWorkerPrivateStreams account generation', () => {
         dispose()
         setStorageAccountForTests(TEST_USER_ID)
       }
+    })
+  })
+
+  // The replaced stream and its replacement address the same worker, so a
+  // late subscribe or clear from the old one would reach the new one's
+  // statuses through the shared worker id.
+  it('keeps the statuses of the new stream from the callbacks of the stream it replaced', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const harness = installTestBridge({ workspaceId: WS })
+        const stores = createTestTabStores(WS)
+        createCanonicalTabPublisher(harness).publish(TabType.AGENT, 'a1', { workerId: 'w1' })
+        const revealTab = vi.fn<(tab: Tab) => void>()
+        useWorkerPrivateStreams({
+          acceptsEarlyMetadata: () => false,
+          state: () => getCRDTBridge()?.speculativeState() ?? null,
+          view: stores.view,
+          metadata: stores.metadata,
+          quakeStore: createTestQuakeStore(stores.view),
+          tabStatuses: stores.statuses,
+          revealTab,
+        })
+        await flush()
+        const original = firstOpened()
+
+        const replacement = installTestBridge({ userId: 'account-b', workspaceId: WS })
+        createCanonicalTabPublisher(replacement).publish(TabType.AGENT, 'a1', { workerId: 'w1' })
+        setStorageAccountForTests('account-b')
+        await flush()
+        const current = opened.at(-1)!
+        expect(original.closed).toBe(true)
+        expect(current).not.toBe(original)
+        expect(current.workerId).toBe('w1')
+
+        const running: TabStatusView = { text: 'Running the tests', progressPercent: 40, tone: 'warning' }
+        current.onSubscribed()
+        current.onTabStatusChanged({ tabId: 'a1', status: running })
+        expect(stores.statuses.get('a1')).toEqual(running)
+
+        original.onSubscribed()
+        original.onTabStatusChanged({ tabId: 'a1', status: undefined })
+        original.onTabStatusChanged({
+          tabId: 'a1',
+          status: { text: 'Obsolete', progressPercent: undefined, tone: 'error' },
+        })
+        original.onUserNotification({ title: 'Obsolete', body: '', sourceTabId: 'a1' })
+        original.onTabRevealCommand({ tabId: 'a1' })
+        expect(stores.statuses.get('a1')).toEqual(running)
+        expect(showUserNotification).not.toHaveBeenCalled()
+        expect(revealTab).not.toHaveBeenCalled()
+      }
+      finally {
+        dispose()
+        setStorageAccountForTests(TEST_USER_ID)
+      }
+    })
+  })
+})
+
+describe('useWorkerPrivateStreams commands and statuses', () => {
+  const running: TabStatusView = { text: 'Running the tests', progressPercent: 40, tone: 'warning' }
+
+  /** Mount with an agent tab a1 on w1 and an agent tab a2 on w2. */
+  function mountTwoWorkers() {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    const publisher = createCanonicalTabPublisher(harness)
+    publisher.publish(TabType.AGENT, 'a1', { workerId: 'w1' })
+    publisher.publish(TabType.AGENT, 'a2', { workerId: 'w2' })
+    stores.metadata.patch('a1', { title: 'Builder' })
+    const revealTab = vi.fn<(tab: Tab) => void>()
+    useWorkerPrivateStreams({
+      acceptsEarlyMetadata: () => false,
+      state: () => getCRDTBridge()?.speculativeState() ?? null,
+      view: stores.view,
+      metadata: stores.metadata,
+      quakeStore: createTestQuakeStore(stores.view),
+      tabStatuses: stores.statuses,
+      revealTab,
+    })
+    const streamOf = (workerId: string) => {
+      const stream = opened.find(o => o.workerId === workerId && !o.closed)
+      if (!stream)
+        throw new Error(`expected an open stream for ${workerId}`)
+      return stream
+    }
+    return {
+      harness,
+      stores,
+      publisher,
+      revealTab,
+      streamOf,
+    }
+  }
+
+  it('shows a notification with the title of the tab that sent it', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w1').onUserNotification({ title: 'Tests passed', body: 'All 42', sourceTabId: 'a1' })
+        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Tests passed', body: 'All 42', sourceTabTitle: 'Builder' })
+      }
+      finally { dispose() }
+    })
+  })
+
+  it.each([
+    ['no source', ''],
+    ['a source this client does not know', 'unknown'],
+    // a2 lives on w2, so a w1 event cannot mean it: a FILE id is unique only
+    // within a user.
+    ['a source on another worker', 'a2'],
+  ])('shows a notification with %s, without a tab title', async (_name, sourceTabId) => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w1').onUserNotification({ title: 'Deploy started', body: '', sourceTabId })
+        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Deploy started', body: '', sourceTabTitle: undefined })
+      }
+      finally { dispose() }
+    })
+  })
+
+  // The words come from the same label the tab strip draws, so an untitled tab
+  // still names itself.
+  it('states the display label of a known source tab that has no title', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w2').onUserNotification({ title: 'Tests passed', body: '', sourceTabId: 'a2' })
+        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Tests passed', body: '', sourceTabTitle: 'Agent' })
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('reveals a tab that this client knows on that worker', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w2').onTabRevealCommand({ tabId: 'a2' })
+        expect(s.revealTab).toHaveBeenCalledOnce()
+        expect(s.revealTab.mock.calls[0]![0]).toMatchObject({ id: 'a2', workerId: 'w2', workspaceId: WS })
+      }
+      finally { dispose() }
+    })
+  })
+
+  it.each([
+    ['an unknown tab', 'unknown'],
+    ['a tab of another worker', 'a2'],
+  ])('ignores a reveal of %s', async (_name, tabId) => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w1').onTabRevealCommand({ tabId })
+        expect(s.revealTab).not.toHaveBeenCalled()
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('applies, replaces and clears a status, and the joined tab shows it', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        const stream = s.streamOf('w1')
+        stream.onTabStatusChanged({ tabId: 'a1', status: running })
+        expect(s.stores.view.getAgentTab('a1')?.tabStatus).toEqual(running)
+
+        const done: TabStatusView = { text: 'Done', progressPercent: undefined, tone: 'success' }
+        stream.onTabStatusChanged({ tabId: 'a1', status: done })
+        expect(s.stores.view.getAgentTab('a1')?.tabStatus).toEqual(done)
+
+        stream.onTabStatusChanged({ tabId: 'a1', status: undefined })
+        expect(s.stores.statuses.get('a1')).toBeUndefined()
+        expect(s.stores.view.getAgentTab('a1')?.tabStatus).toBeUndefined()
+      }
+      finally { dispose() }
+    })
+  })
+
+  // A script that opens a tab and sets its status at once can beat the CRDT
+  // operation that adds the tab.
+  it('keeps a status that arrives before its tab, and the tab shows it when it arrives', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w1').onTabStatusChanged({ tabId: 'later', status: running })
+        expect(s.stores.statuses.get('later')).toEqual(running)
+
+        s.publisher.publish(TabType.TERMINAL, 'later', { workerId: 'w1' })
+        await flush()
+        expect(s.stores.view.getTerminalTab('later')?.tabStatus).toEqual(running)
+      }
+      finally { dispose() }
+    })
+  })
+
+  it.each([
+    ['a closed tab', 'closed'],
+    ['a tab of another worker', 'a2'],
+  ])('ignores a status of %s', async (_name, tabId) => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        s.publisher.publish(TabType.AGENT, 'closed', { workerId: 'w1' })
+        await flush()
+        s.publisher.deliver([
+          tombstoneTab(s.publisher.context, TabType.AGENT, 'closed'),
+        ])
+        await flush()
+        s.streamOf('w1').onTabStatusChanged({ tabId, status: running })
+        expect(s.stores.statuses.get(tabId)).toBeUndefined()
+      }
+      finally { dispose() }
+    })
+  })
+
+  // A set from w1 for a2 is refused above, but a clear is not: dropping a
+  // status is never wrong.
+  it('applies a clear to a tab that would take no status from that worker', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w2').onTabStatusChanged({ tabId: 'a2', status: running })
+        s.streamOf('w1').onTabStatusChanged({ tabId: 'a2', status: undefined })
+        expect(s.stores.statuses.get('a2')).toBeUndefined()
+      }
+      finally { dispose() }
+    })
+  })
+
+  // The bootstrap of the new stream replays every status that is still set, so
+  // one cleared while no stream ran must not survive the reconnect.
+  it('drops a worker\'s statuses when its stream subscribes again, and keeps the other worker\'s', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w1').onTabStatusChanged({ tabId: 'a1', status: running })
+        s.streamOf('w2').onTabStatusChanged({ tabId: 'a2', status: running })
+
+        s.streamOf('w1').onSubscribed()
+        expect(s.stores.statuses.get('a1')).toBeUndefined()
+        expect(s.stores.statuses.get('a2')).toEqual(running)
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('drops a worker\'s statuses when its stream closes', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        const w2 = s.streamOf('w2')
+        w2.onTabStatusChanged({ tabId: 'a2', status: running })
+        s.streamOf('w1').onTabStatusChanged({ tabId: 'a1', status: running })
+
+        // a2 was the last tab on w2, so its stream closes.
+        s.publisher.deliver([
+          tombstoneTab(s.publisher.context, TabType.AGENT, 'a2'),
+        ])
+        await flush()
+        expect(w2.closed).toBe(true)
+        expect(s.stores.statuses.get('a2')).toBeUndefined()
+        expect(s.stores.statuses.get('a1')).toEqual(running)
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('ignores commands and statuses retained after stream disposal', async () => {
+    await createRoot(async (dispose) => {
+      const s = mountTwoWorkers()
+      await flush()
+      const stream = s.streamOf('w1')
+      dispose()
+      stream.onTabStatusChanged({ tabId: 'a1', status: running })
+      stream.onUserNotification({ title: 'Late', body: '', sourceTabId: '' })
+      stream.onTabRevealCommand({ tabId: 'a1' })
+      expect(s.stores.statuses.get('a1')).toBeUndefined()
+      expect(showUserNotification).not.toHaveBeenCalled()
+      expect(s.revealTab).not.toHaveBeenCalled()
     })
   })
 })

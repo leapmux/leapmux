@@ -359,6 +359,14 @@ func (d *Dispatcher) invoke(ctx context.Context, caller Caller, req *leapmuxv1.I
 			_ = w.SendError(int32(codes.Internal), "internal error")
 		}
 	}()
+	// A relayed call states the tab of the sibling Worker that made it. The
+	// caller takes it here, at the one choke point of every dispatch, so no
+	// handler reads a source that this check did not admit.
+	caller, err := caller.withSource(req.GetSource())
+	if err != nil {
+		_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+		return
+	}
 	h.fn(ctx, caller, req, w)
 }
 

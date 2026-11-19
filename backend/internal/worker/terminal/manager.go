@@ -317,11 +317,7 @@ func (m *Manager) SendInput(terminalID string, in terminput.Input) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrTerminalNotFound, terminalID)
 	}
-	if t.IsExited() {
-		return fmt.Errorf("terminal exited: %s", terminalID)
-	}
-
-	return t.SendInput(in.Encode(t.screenBuf.InputModes()))
+	return t.sendInput(in)
 }
 
 // Resize changes a terminal's dimensions.
@@ -474,6 +470,36 @@ func (m *Manager) IsRunning(terminalID string) bool {
 	defer m.mu.RUnlock()
 	t, ok := m.currentTerminalLocked(terminalID)
 	return ok && !t.IsExited()
+}
+
+// ShellStatus is what a Manager knows about the shell of one terminal.
+type ShellStatus struct {
+	// Held reports whether the Manager holds the terminal. The other fields
+	// are zero when it does not.
+	Held bool
+	// Running reports whether the shell runs.
+	Running bool
+	// ExitCode is the exit code of a shell that ended: -1 for a shell that a
+	// signal ended. It is zero while the shell runs.
+	ExitCode int
+}
+
+// ShellStatus reads the shell of the terminal that the Manager holds now. The
+// fields come from one terminal, so they describe one shell even while a
+// restart replaces it.
+//
+// The Manager knows the exit code as soon as the shell ends, before the exit
+// handler persists it. A reader that pairs a status with an exit code takes
+// both from here.
+func (m *Manager) ShellStatus(terminalID string) ShellStatus {
+	m.mu.RLock()
+	t, ok := m.currentTerminalLocked(terminalID)
+	m.mu.RUnlock()
+	if !ok {
+		return ShellStatus{}
+	}
+	code, exited := t.ExitCode()
+	return ShellStatus{Held: true, Running: !exited, ExitCode: code}
 }
 
 // WaitForExit blocks until the terminal's exit-handler goroutine has

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
-import { showStickyWarnToast, showWarnToast, showWarnToastUnlessDisconnected, showWarnToastWithLoggedCause } from './Toast'
+import { NOTIFICATION_TOAST_MS, showNotificationToast, showStickyWarnToast, showWarnToast, showWarnToastUnlessDisconnected, showWarnToastWithLoggedCause } from './Toast'
 
 // The toast host is a runtime global the design system installs; jsdom has no
 // such thing, so stand in for it and record what each helper asked for.
@@ -137,6 +137,52 @@ describe('showStickyWarnToast', () => {
 
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(mounted.isConnected).toBe(false)
+  })
+})
+
+describe('showNotificationToast', () => {
+  it('shows the title, the body and the tab that sent it', () => {
+    showNotificationToast({ title: 'Build failed', body: 'error: 3 tests failed\nFAIL ./cli', sourceTabTitle: 'Builder' })
+
+    expect(shown).toHaveLength(1)
+    const el = shown[0]!.el
+    expect(el.querySelector('.toast-title')?.textContent).toBe('Build failed')
+    expect(el.querySelector('.toast-body')?.textContent).toBe('error: 3 tests failed\nFAIL ./cli')
+    expect(el.querySelector('.toast-source')?.textContent).toBe('From Builder')
+  })
+
+  // Text from a process must never become markup.
+  it('renders every part as text', () => {
+    showNotificationToast({ title: '<b>bold</b>', body: '<img src=x onerror=alert(1)>', sourceTabTitle: '<i>tab</i>' })
+
+    const el = shown[0]!.el
+    expect(el.querySelector('b, img, i')).toBeNull()
+    expect(el.querySelector('.toast-title')?.textContent).toBe('<b>bold</b>')
+  })
+
+  it('leaves out an empty body and an unknown source', () => {
+    showNotificationToast({ title: 'Deploy started', body: '', sourceTabTitle: undefined })
+
+    const el = shown[0]!.el
+    expect(el.querySelector('.toast-title')?.textContent).toBe('Deploy started')
+    expect(el.querySelector('.toast-body')).toBeNull()
+    expect(el.querySelector('.toast-source')).toBeNull()
+  })
+
+  // Long enough to notice from another window, and not sticky: a script that
+  // notifies in a loop must not bury the screen in toasts that need a click.
+  it('outlasts an ordinary toast and dismisses itself', () => {
+    showNotificationToast({ title: 'Done', body: '', sourceTabTitle: undefined })
+
+    expect(shown[0]!.duration).toBe(NOTIFICATION_TOAST_MS)
+    expect(NOTIFICATION_TOAST_MS).toBeGreaterThan(3000)
+  })
+
+  it('stacks two notifications with the same title', () => {
+    showNotificationToast({ title: 'Done', body: '', sourceTabTitle: undefined })
+    showNotificationToast({ title: 'Done', body: '', sourceTabTitle: undefined })
+
+    expect(shown).toHaveLength(2)
   })
 })
 

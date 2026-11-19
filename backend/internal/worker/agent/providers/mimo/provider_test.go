@@ -208,7 +208,9 @@ func TestMiMoAudioAttachmentPolicy(t *testing.T) {
 		assert.ErrorContains(t, provider.ValidateAttachment(attachment), "empty", mime)
 	}
 	for _, mime := range []string{"", "audio/aac", "audio/webm", "audio/not-real", "application/zip"} {
-		assert.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, Filename: "recording", MIMEType: mime, Data: []byte{0, 255}}), mime)
+		// The failed input shows the refusal, and an input can hold several
+		// files, so the refusal states the file.
+		assert.ErrorContains(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, Filename: "recording", MIMEType: mime, Data: []byte{0, 255}}), "recording", mime)
 	}
 }
 

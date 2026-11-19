@@ -27,9 +27,18 @@ type LocalDispatcher interface {
 // The delegation bearer applies to one user and minting worker. The channel pool key contains the target and user.
 // CallInner returns an error that the sibling worker's handler answers in-band as a *channelwire.RPCError, which keeps its code.
 // StreamInner supplies a controller for revisions and cancellation on the dedicated stream channel.
+// Each method takes the whole request, so a relayed call carries the CallSource
+// of the tab that made it.
 type CrossWorkerClient interface {
-	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error)
-	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error
+	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error)
+	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error
+}
+
+// CallSources describes a tab of this Worker as the source of a call. The
+// router asks it for each call that it relays from a tab to a sibling Worker,
+// which holds no row for the tab (see service.Service.DescribeCallSource).
+type CallSources interface {
+	DescribeCallSource(ctx context.Context, tabID string) (*leapmuxv1.CallSource, error)
 }
 
 // HubClient sends hub requests for the spawning user with a delegation token.
@@ -71,9 +80,13 @@ type Router struct {
 	UserID          userid.UserID
 	LocalDispatcher LocalDispatcher
 	CrossWorker     CrossWorkerClient
-	Hub             HubClient
-	HubStreams      HubStreamer
-	Streams         LocalStreams
+	// Sources describes the tab of a token for a call that the router relays
+	// to a sibling Worker. A relay from a tab fails without it, rather than
+	// reach the sibling as the user's own call.
+	Sources    CallSources
+	Hub        HubClient
+	HubStreams HubStreamer
+	Streams    LocalStreams
 	// StreamCancellers maps the IPC stream's client_request_id to a
 	// streamCancelEntry. StreamInner stores the entry when its stream starts
 	// and removes it in a defer when the call returns, on every path, a
@@ -99,7 +112,11 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		if r.CrossWorker == nil {
 			return nil, connect.Errorf(connect.CodeUnimplemented, "cross-worker client not configured")
 		}
-		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, bare, payload)
+		req, err := r.relayRequest(ctx, info, bare, payload)
+		if err != nil {
+			return nil, err
+		}
+		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, req)
 		// The sibling's handler answered the call with an error. Keep it
 		// in-band with its code, as dispatchLocal keeps a local handler's: the
 		// caller reads a Connect error as a failure to reach the worker.
@@ -123,6 +140,32 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 	default:
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}
+}
+
+// relayRequest builds the request that the router relays to a sibling Worker:
+// the call, and the tab of the token that made it, as this Worker describes
+// the tab. The sibling holds no row for the tab, and it trusts the source
+// because the Hub states that this Worker opened the channel (see
+// ChannelOpenRequest.relay_worker_id).
+//
+// A token of no tab, such as a quake terminal's, states no source. A tab that
+// this Worker cannot describe fails the call: a relay without its source
+// would reach the sibling as the user's own call, which is the forgery that
+// the source exists to prevent.
+func (r *Router) relayRequest(ctx context.Context, info TokenInfo, method string, payload []byte) (*leapmuxv1.InnerRpcRequest, error) {
+	req := &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}
+	if info.TabID == "" {
+		return req, nil
+	}
+	if r.Sources == nil {
+		return nil, connect.Errorf(connect.CodeInternal, "the worker cannot describe the calling tab, so it relays no call from it")
+	}
+	source, err := r.Sources.DescribeCallSource(ctx, info.TabID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "describe the calling tab for the other worker: "+err.Error()).WithCause(err)
+	}
+	req.Source = source
+	return req, nil
 }
 
 // relayError preserves the Connect error code of a failure to reach the hub or a
@@ -171,7 +214,7 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 	collector := &responseCollector{}
 	r.withLocalStream(info, func(streamID string) {
 		collector.streamID = streamID
-		r.LocalDispatcher.DispatchWith(ctx, r.caller(), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
+		r.LocalDispatcher.DispatchWith(ctx, r.caller(info), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 	})
 	return collector.toResponse()
 }
@@ -215,7 +258,11 @@ func (r *Router) streamInner(ctx context.Context, info TokenInfo, method string,
 		if r.CrossWorker == nil {
 			return connect.Errorf(connect.CodeUnimplemented, "cross-worker client not configured")
 		}
-		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, bare, payload, func(m *leapmuxv1.InnerStreamMessage) {
+		req, err := r.relayRequest(streamCtx, info, bare, payload)
+		if err != nil {
+			return err
+		}
+		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, req, func(m *leapmuxv1.InnerStreamMessage) {
 			_ = onMsg(m)
 		}, func(ctrl channel.StreamController) {
 			if !entry.bind(ctrl) {
@@ -249,8 +296,12 @@ func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string,
 	r.withLocalStream(info, func(streamID string) {
 		collector = newStreamCollector(ctx, streamID, onMsg)
 		collector.entry = entry
-		r.LocalDispatcher.DispatchWith(ctx, r.caller(), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
+		r.LocalDispatcher.DispatchWith(ctx, r.caller(info), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 		collector.wait()
+		// The HTTP handler closes the stream once this returns. close waits
+		// for a frame that a broadcaster still forwards and refuses every
+		// later one, so no Send reaches a stream that the handler closes.
+		collector.close()
 	})
 	return collector.outcome()
 }
@@ -366,6 +417,11 @@ func (c *responseCollector) toResponse() *leapmuxv1.InnerRpcResponse {
 // streamCollector forwards stream frames and waits for completion or context cancellation.
 // claim gives one caller ownership of the result. settle records that result before it releases wait.
 // The result mutex also protects readers that return through context cancellation before settle finishes.
+//
+// A Worker broadcasts each event from its own goroutine, so several frames can
+// arrive at once, and one can arrive while the stream ends. forward hands them
+// to onMsg one at a time, because a connect stream takes one Send at a time,
+// and close refuses every frame after the stream ended.
 type streamCollector struct {
 	ctx      context.Context
 	onMsg    func(*leapmuxv1.InnerStreamMessage) error
@@ -378,7 +434,15 @@ type streamCollector struct {
 
 	mu  sync.Mutex
 	err error
+
+	// sendMu serializes the calls of onMsg, and closed refuses a frame once
+	// streamLocal hands the stream back to its HTTP handler.
+	sendMu sync.Mutex
+	closed bool
 }
+
+// errStreamClosed reports a frame that arrived after its stream ended.
+var errStreamClosed = errors.New("the stream ended")
 
 func newStreamCollector(ctx context.Context, streamID string, onMsg func(*leapmuxv1.InnerStreamMessage) error) *streamCollector {
 	return &streamCollector{
@@ -427,7 +491,7 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 	// An empty response carries only the completion signal.
 	var outcome error
 	if len(resp.GetPayload()) > 0 {
-		outcome = c.onMsg(&leapmuxv1.InnerStreamMessage{
+		outcome = c.forward(&leapmuxv1.InnerStreamMessage{
 			Payload: resp.GetPayload(),
 			End:     true,
 		})
@@ -448,7 +512,7 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	if c.ctx.Err() != nil {
 		return c.ctx.Err()
 	}
-	err := c.onMsg(m)
+	err := c.forward(m)
 
 	// End and error frames complete the collector, as SendResponse and SendError do.
 	streamErr := channelwire.ErrorOf(m.GetError())
@@ -463,6 +527,25 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 		}
 	}
 	return err
+}
+
+// forward hands m to the stream, one frame at a time. It refuses a frame
+// that arrives after close.
+func (c *streamCollector) forward(m *leapmuxv1.InnerStreamMessage) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.closed {
+		return errStreamClosed
+	}
+	return c.onMsg(m)
+}
+
+// close refuses every later frame. It takes the send lock, so it returns only
+// after a frame in flight finished, and the caller may then close the stream.
+func (c *streamCollector) close() {
+	c.sendMu.Lock()
+	c.closed = true
+	c.sendMu.Unlock()
 }
 
 func (c *streamCollector) ChannelID() string   { return c.streamID }
@@ -548,6 +631,13 @@ func tokenIdentitySegment(info TokenInfo) string {
 // which is already the authority every scope subdivides. Saying so explicitly
 // rather than leaving the zero value is what keeps every other construction
 // fail-closed -- see channel.LocalAgentCaller.
-func (r *Router) caller() channel.Caller {
-	return channel.LocalAgentCaller(r.UserID)
+//
+// The caller also carries the tab of the token that made the call, so a
+// handler can stamp it as provenance (see channel.Caller.SourceTabID). The
+// token store, not the request, supplies it, so a process cannot claim
+// another tab.
+func (r *Router) caller(info TokenInfo) channel.Caller {
+	c := channel.LocalAgentCaller(r.UserID)
+	c.SourceTabID = info.TabID
+	return c
 }

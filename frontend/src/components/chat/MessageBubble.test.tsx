@@ -61,6 +61,55 @@ describe('MessageBubble category', () => {
   })
 })
 
+// The whole path of a message from another agent: the Worker's stored row with
+// the sender in its metadata, the shared extraction, and the line that states
+// the sender by the title that the host resolves.
+describe('MessageBubble a message from another agent', () => {
+  const fromAgent = (provider: AgentProvider) => makeMsg({
+    source: MessageSource.USER,
+    agentProvider: provider,
+    content: rawContent({ content: 'Run the tests' }),
+    supplementalContent: rawContent({
+      metadata: {
+        [MESSAGE_METADATA_FIELD.AgentMessageSender]: { tabId: 'sender-tab', provider: 'AGENT_PROVIDER_CLAUDE_CODE' },
+      },
+    }),
+  })
+
+  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.OPENCODE])('states the sender by the title that the host resolves, in a transcript of provider %s', async (provider) => {
+    const tabTitle = vi.fn((tabId: string) => (tabId === 'sender-tab'
+      ? 'Fix flaky spec'
+      : undefined))
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={fromAgent(provider)} host={{ tabTitle }} />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    expect(screen.getByTestId('agent-message-sender')).toHaveTextContent('Message from Fix flaky spec (Claude Code)')
+    expect(screen.getByTestId('message-content')).toHaveTextContent('Run the tests')
+    expect(screen.getByTestId('message-bubble')).toHaveAttribute('data-role', 'user')
+    expect(tabTitle).toHaveBeenCalledWith('sender-tab')
+  })
+
+  it('states no sender on the user\'s own message', () => {
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble
+          message={makeMsg({
+            source: MessageSource.USER,
+            content: rawContent({ content: 'Run the tests' }),
+          })}
+          host={{
+            tabTitle: () => 'Fix flaky spec',
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByTestId('agent-message-sender')).toBeNull()
+  })
+})
+
 describe('standalone MCP result actions', () => {
   const output = Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n')
   it.each([

@@ -16,15 +16,17 @@ import (
 )
 
 // scriptedStreamChannel stands in for the dedicated channel of one cross-worker
-// stream. SendRPCNoWait answers the request the way a sibling worker would: it
-// hands frames to the stream handler and response to the response handler, on
-// a goroutine of its own, as tunnel.Channel's dispatcher does.
+// stream. SendRequestNoWait records the request and answers it the way a
+// sibling worker would: it hands frames to the stream handler and response to
+// the response handler, on a goroutine of its own, as tunnel.Channel's
+// dispatcher does.
 type scriptedStreamChannel struct {
 	ctx      context.Context
 	frames   []*leapmuxv1.InnerStreamMessage
 	response *leapmuxv1.InnerRpcResponse
 
 	mu                  sync.Mutex
+	sent                *leapmuxv1.InnerRpcRequest
 	unregisteredStream  bool
 	unregisteredPending bool
 }
@@ -37,7 +39,10 @@ func (*scriptedStreamChannel) SendStreamRequest(context.Context, uint64, []byte)
 
 func (*scriptedStreamChannel) CancelStream(context.Context, uint64) error { return nil }
 
-func (c *scriptedStreamChannel) SendRPCNoWait(_ context.Context, _ string, _ []byte, handlers tunnel.RPCHandlers) (uint64, error) {
+func (c *scriptedStreamChannel) SendRequestNoWait(_ context.Context, req *leapmuxv1.InnerRpcRequest, handlers tunnel.RPCHandlers) (uint64, error) {
+	c.mu.Lock()
+	c.sent = req
+	c.mu.Unlock()
 	go func() {
 		for _, frame := range c.frames {
 			handlers.Stream(frame)
@@ -82,7 +87,7 @@ func (r *frameRecorder) recorded() []*leapmuxv1.InnerStreamMessage {
 func runScriptedStream(t *testing.T, ch *scriptedStreamChannel) ([]*leapmuxv1.InnerStreamMessage, error) {
 	t.Helper()
 	recorder := &frameRecorder{}
-	err := runStream(testutil.DeadlineContext(t), ch, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, recorder.onMsg, nil)
+	err := runStream(testutil.DeadlineContext(t), ch, watchRequest(), recorder.onMsg, nil)
 	ch.mu.Lock()
 	assert.True(t, ch.unregisteredStream, "the stream releases its stream handler")
 	assert.True(t, ch.unregisteredPending, "the stream releases its response handler")
@@ -154,9 +159,28 @@ func TestRunStream_EndsWhenTheCallerGivesUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := runStream(ctx, ch, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, func(*leapmuxv1.InnerStreamMessage) {
+	err := runStream(ctx, ch, watchRequest(), func(*leapmuxv1.InnerStreamMessage) {
 		t.Error("a stream that sent nothing forwards nothing")
 	}, nil)
 
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// watchRequest is the request of a WatchEvents stream with no payload.
+func watchRequest() *leapmuxv1.InnerRpcRequest {
+	return &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure}
+}
+
+// A relayed stream sends the request that the router built, its source
+// included, so the sibling stamps the tab that opened the stream.
+func TestRunStream_SendsTheRequestWithItsSource(t *testing.T) {
+	end := &leapmuxv1.InnerStreamMessage{End: true}
+	ch := &scriptedStreamChannel{ctx: t.Context(), frames: []*leapmuxv1.InnerStreamMessage{end}}
+	req := watchRequest()
+	req.Source = &leapmuxv1.CallSource{TabId: "agent-1"}
+
+	require.NoError(t, runStream(testutil.DeadlineContext(t), ch, req, func(*leapmuxv1.InnerStreamMessage) {}, nil))
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	assert.Same(t, req, ch.sent)
 }

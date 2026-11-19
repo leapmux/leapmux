@@ -2,6 +2,7 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "leapmux/v1/access.proto";
+import "leapmux/v1/agent.proto";
 import "leapmux/v1/scope.proto";
 
 // ChannelService manages end-to-end encrypted channels between Frontend and Worker.
@@ -118,6 +119,15 @@ message ChannelOpenRequest {
   // narrow app to full authority: the failure is loud and immediate, and the
   // alternative is silent and total.
   repeated Scope granted_scopes = 5;
+  // The Worker that minted the delegation bearer which opened this channel.
+  // Only a Worker process holds such a bearer, and it opens a channel to a
+  // sibling Worker to relay the calls of the processes in its tabs. Empty for
+  // every other credential.
+  //
+  // It arrives over the authenticated Hub-to-Worker stream, on the same terms
+  // as user_id, so the Worker trusts an InnerRpcRequest.source on such a
+  // channel and refuses one on any other.
+  string relay_worker_id = 6;
 }
 
 // Worker -> Hub: response to channel open request.
@@ -250,6 +260,27 @@ message RekeyReject {
 message InnerRpcRequest {
   string method = 1;  // The procedure path, e.g. "/leapmux.v1.WorkerAgentInputService/EnqueueAgentInput"
   bytes payload = 2;  // Serialized protobuf for the specific method
+  // The tab whose process made the call, when a sibling Worker relays it.
+  // Every other client leaves it unset; a Worker refuses it on a channel whose
+  // ChannelOpenRequest stated no relay_worker_id.
+  CallSource source = 3;
+}
+
+// CallSource is the tab whose process made a call, as the Worker that hosts
+// the tab states it. The Worker reads the tab from the control token of the
+// process, so the process cannot choose it.
+message CallSource {
+  string tab_id = 1;
+  // The agent of the tab. Unset for a terminal tab.
+  CallSourceAgent agent = 2;
+}
+
+// CallSourceAgent is the agent that made a call: its provider and its title
+// when the call was made. A receiving Worker holds no row for an agent of a
+// sibling Worker, so the relaying Worker states both.
+message CallSourceAgent {
+  AgentProvider provider = 1;
+  string title = 2;
 }
 
 // The error an inner RPC answered with. `code` is a google.rpc.Code value;

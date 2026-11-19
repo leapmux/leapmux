@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -77,40 +78,51 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 
 	term := db.Terminal{ID: "term-1"}
 
+	// The row holds the exit code of an earlier shell in every case. Only
+	// EXITED reports it.
+	term.ExitCode = recordedExit(5)
+
 	// 1. Registry STARTING.
 	terminalHandle := beginForTest(t, &svc.TerminalStartup.startupCore, "term-1")
 	require.NotNil(t, terminalHandle)
-	status, errStr, _ := svc.deriveTerminalStatus(&term)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, status)
-	assert.Empty(t, errStr)
+	state := svc.deriveTerminalStatus(&term)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, state.status)
+	assert.Empty(t, state.startupError)
+	assert.Nil(t, state.exitCode, "a shell that is starting has no exit code")
 
 	// 2. Registry STARTUP_FAILED wins over DB column.
 	term.StartupError = "stale db error"
 	svc.TerminalStartup.fail(terminalHandle, "registry error")
-	status, errStr, _ = svc.deriveTerminalStatus(&term)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
-	assert.Equal(t, "registry error", errStr)
+	state = svc.deriveTerminalStatus(&term)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, state.status)
+	assert.Equal(t, "registry error", state.startupError)
+	assert.Nil(t, state.exitCode, "a shell that failed to start has no exit code")
 
 	// 3. Registry cleared, no live shell → DB column drives STARTUP_FAILED.
 	svc.TerminalStartup.cancelAndClear("term-1", keepWorktreeOnClose)
-	status, errStr, _ = svc.deriveTerminalStatus(&term)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
-	assert.Equal(t, "stale db error", errStr)
+	state = svc.deriveTerminalStatus(&term)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, state.status)
+	assert.Equal(t, "stale db error", state.startupError)
+	assert.Nil(t, state.exitCode)
 
-	// 4. No registry, no DB column, no live shell → EXITED.
+	// 4. No registry, no DB column, no live shell → EXITED, with the exit code
+	// of the row, because the manager does not hold the terminal.
 	term.StartupError = ""
-	status, errStr, _ = svc.deriveTerminalStatus(&term)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
-	assert.Empty(t, errStr)
+	state = svc.deriveTerminalStatus(&term)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, state.status)
+	assert.Empty(t, state.startupError)
+	require.NotNil(t, state.exitCode)
+	assert.Equal(t, int32(5), *state.exitCode)
 
 	// 5. No registry, no DB column, a live shell → READY.
 	require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{
 		ID: "term-1", Shell: testutil.TestShell(), WorkingDir: t.TempDir(), Cols: 80, Rows: 24,
 	}, func([]byte, int64, []terminal.Signal) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, "term-1")
-	status, errStr, _ = svc.deriveTerminalStatus(&term)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, status)
-	assert.Empty(t, errStr)
+	state = svc.deriveTerminalStatus(&term)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, state.status)
+	assert.Empty(t, state.startupError)
+	assert.Nil(t, state.exitCode, "a running shell has no exit code")
 }
 
 // ---------------------------------------------------------------------------
@@ -438,9 +450,10 @@ func TestListTerminals_ReportsThePersistedStartupErrorOfAnExitedShellTheManagerH
 	// answers must agree.
 	row, err := svc.Queries.GetTerminal(ctx, id)
 	require.NoError(t, err)
-	status, startupError, _ := svc.deriveTerminalStatus(&row)
-	assert.Equal(t, info.GetStatus().String(), status.String())
-	assert.Equal(t, info.GetStartupError(), startupError)
+	state := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, info.GetStatus().String(), state.status.String())
+	assert.Equal(t, info.GetStartupError(), state.startupError)
+	assert.Nil(t, info.ExitCode, "a terminal that failed to restart reports no exit code")
 }
 
 // A running shell proves that the last startup of its terminal succeeded:
@@ -459,10 +472,11 @@ func TestDeriveTerminalStatus_ALiveShellIsReadyOverAPersistedStartupError(t *tes
 	require.NoError(t, err)
 	row.StartupError = "stale failure"
 
-	status, startupError, startupMessage := svc.deriveTerminalStatus(&row)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), status.String())
-	assert.Empty(t, startupError, "a live shell must suppress a stale persisted error")
-	assert.Empty(t, startupMessage)
+	state := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), state.status.String())
+	assert.Empty(t, state.startupError, "a live shell must suppress a stale persisted error")
+	assert.Empty(t, state.startupMessage)
+	assert.Nil(t, state.exitCode)
 }
 
 // TestDeriveAgentStatus_ActiveClearsLingeringDBError verifies that once a
@@ -530,9 +544,43 @@ func TestDeriveTerminalStatus_AnExitedShellTheManagerStillHoldsIsExited(t *testi
 
 	row, err := svc.Queries.GetTerminal(ctx, "exited-in-manager")
 	require.NoError(t, err)
-	status, startupError, _ := svc.deriveTerminalStatus(&row)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
-	assert.Empty(t, startupError)
+	// The row can hold the code of an earlier shell: the exit handler of the
+	// shell that the manager holds has not persisted its own code here.
+	row.ExitCode = recordedExit(42)
+	state := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, state.status)
+	assert.Empty(t, state.startupError)
+	shell := svc.Terminals.ShellStatus("exited-in-manager")
+	require.True(t, shell.Held)
+	require.False(t, shell.Running)
+	require.NotNil(t, state.exitCode)
+	assert.Equal(t, int32(shell.ExitCode), *state.exitCode, "the manager's record of the shell wins over the row")
+}
+
+// The manager knows the exit code of a shell as soon as it exits, before the
+// exit handler persists it. A reader in that window reads the code of the
+// shell, not the zero that the row still holds.
+func TestDeriveTerminalStatus_TheExitCodeOfAShellComesFromTheManager(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("cmd.exe under ConPTY does not pass `exit N` to its exit code; see TestRestartTerminal_HappyPath")
+	}
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+	// startTestTerminal installs no exit handler, so the row keeps exit code 0
+	// for good: it stands for a handler that has not run yet.
+	startTestTerminal(t, svc, ctx, "exit-nine")
+	sendShellLine(t, d, "exit-nine", []byte("exit 9"+testutil.TestShellEnter()))
+	svc.Terminals.WaitForExit("exit-nine")
+
+	row, err := svc.Queries.GetTerminal(ctx, "exit-nine")
+	require.NoError(t, err)
+	require.Zero(t, row.ExitCode, "precondition: no exit handler persisted the code")
+	state := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, state.status)
+	require.NotNil(t, state.exitCode)
+	assert.Equal(t, int32(9), *state.exitCode)
 }
 
 // A live shell reads READY, and a terminal the manager does not hold reads
@@ -545,14 +593,16 @@ func TestDeriveTerminalStatus_ReadyWhileTheShellRunsAndExitedWithoutAShell(t *te
 	startTestTerminal(t, svc, ctx, "running")
 	row, err := svc.Queries.GetTerminal(ctx, "running")
 	require.NoError(t, err)
-	status, _, _ := svc.deriveTerminalStatus(&row)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, status)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, svc.deriveTerminalStatus(&row).status)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID: "no-shell", WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte{},
 	}))
+	recordTerminalExit(t, svc, "no-shell", -1)
 	row, err = svc.Queries.GetTerminal(ctx, "no-shell")
 	require.NoError(t, err)
-	status, _, _ = svc.deriveTerminalStatus(&row)
-	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
+	state := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, state.status)
+	require.NotNil(t, state.exitCode)
+	assert.Equal(t, int32(-1), *state.exitCode, "a terminal the manager does not hold reports the code of its row")
 }

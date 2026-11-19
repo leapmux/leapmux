@@ -51,8 +51,12 @@ type Factory struct {
 	WorkerID    string
 	Dispatcher  *channel.Dispatcher
 	CrossWorker *crossworker.Client
-	HubBridge   HubBridge
-	HubStreams  HubStreamer
+	// Sources is the worker service.Service wearing its DescribeCallSource
+	// hat. The router asks it to describe the calling tab of each call that
+	// it relays to a sibling Worker.
+	Sources    CallSources
+	HubBridge  HubBridge
+	HubStreams HubStreamer
 	// Streams is the worker service.Service wearing its ReleaseLocalStream
 	// hat. The router uses it to retire the event subscriptions a local-IPC
 	// dispatch leaves behind.
@@ -310,6 +314,7 @@ func (f *Factory) newRouter(userID userid.UserID) *Router {
 		UserID:          userID,
 		LocalDispatcher: dispatcherAdapter{f.Dispatcher},
 		CrossWorker:     crossWorkerAdapter{f.CrossWorker},
+		Sources:         f.Sources,
 		Hub:             hubBridgeAdapter{f.HubBridge},
 		HubStreams:      f.HubStreams,
 		Streams:         f.Streams,
@@ -330,18 +335,18 @@ func (a dispatcherAdapter) DispatchWith(ctx context.Context, caller channel.Call
 // crossWorkerAdapter satisfies CrossWorkerClient.
 type crossWorkerAdapter struct{ c *crossworker.Client }
 
-func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	if a.c == nil {
 		return nil, errors.New("cross-worker client not configured")
 	}
-	return a.c.CallInner(ctx, targetWorkerID, userID, method, payload)
+	return a.c.CallInner(ctx, targetWorkerID, userID, req)
 }
 
-func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	if a.c == nil {
 		return errors.New("cross-worker client not configured")
 	}
-	return a.c.StreamInner(ctx, targetWorkerID, userID, method, payload, onMsg, bindCtrl)
+	return a.c.StreamInner(ctx, targetWorkerID, userID, req, onMsg, bindCtrl)
 }
 
 // hubBridgeAdapter satisfies HubClient. The user id is forwarded verbatim --

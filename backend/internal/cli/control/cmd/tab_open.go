@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // The creation commands -- `agent open`, `terminal open` and `file open` --
@@ -183,6 +184,10 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	requestID, err := requestIDOf(inv)
+	if err != nil {
+		return nil, err
+	}
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
@@ -222,11 +227,12 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 			SessionID:      stringFlag(inv, "resume"),
 			GitSetup:       setup,
 			Position:       p.Position,
+			RequestID:      requestID,
 		})
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, withRequestIDHint(err, requestID)
 	}
 	return openedTab{
 		ID:                    result.Agent.GetId(),
@@ -244,6 +250,10 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 // ownership as `agent open`.
 func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	setup, err := gitSetup(inv)
+	if err != nil {
+		return nil, err
+	}
+	initialCommand, err := initialCommandOf(inv)
 	if err != nil {
 		return nil, err
 	}
@@ -266,15 +276,16 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	err = withWorkerChannel(s.ctx, s.c, p.WorkerID, func(w workerCall) error {
 		var err error
 		result, err = openTerminalAndAddTab(s.ctx, s.c, w, openTerminalArgs{
-			WorkspaceID:   p.WorkspaceID,
-			WorkerID:      p.WorkerID,
-			TileID:        p.TileID,
-			WorkingDir:    workingDir(inv),
-			Shell:         stringFlag(inv, "shell"),
-			ShellStartDir: stringFlag(inv, "start-dir"),
-			Title:         stringFlag(inv, "title"),
-			GitSetup:      setup,
-			Position:      p.Position,
+			WorkspaceID:    p.WorkspaceID,
+			WorkerID:       p.WorkerID,
+			TileID:         p.TileID,
+			WorkingDir:     workingDir(inv),
+			Shell:          stringFlag(inv, "shell"),
+			ShellStartDir:  stringFlag(inv, "start-dir"),
+			Title:          stringFlag(inv, "title"),
+			GitSetup:       setup,
+			InitialCommand: initialCommand,
+			Position:       p.Position,
 		})
 		return err
 	})
@@ -358,7 +369,7 @@ func runFileOpen(inv *cli.Invocation) (any, error) {
 	// "the file tab inherits the context it was opened from" the UI path
 	// sends. Run from outside a LeapMux tab it is empty, and the worker
 	// falls back to the file's own directory.
-	creation, err := resolveTabCreation(cc.ctx, cc.c, p.WorkspaceID, resolvedTileID, p.Position)
+	creation, err := resolveTabCreation(cc.ctx, cc.c, id.Generate(), p.WorkspaceID, resolvedTileID, p.Position)
 	if err != nil {
 		return nil, err
 	}

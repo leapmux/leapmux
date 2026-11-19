@@ -483,11 +483,15 @@ func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply 
 }
 
 func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
-	// The classifier rewrites a slash command into its own kind, so the test
-	// must see the kind the store will store, not the one the client sent.
-	kind := m.store.Classify(input.Kind, input.Text)
-	// The store refuses an automatic-retry kind for every agent.
-	if err := m.refuseUnacceptedKind(input.AgentID, kind); err != nil {
+	// The classifier rewrites a slash command into its own kind, and a sender
+	// turns a user message into an agent message, so the test must see the
+	// kind the store will store, not the one the client sent. The store asks
+	// the same rules again inside its transaction.
+	admitted, err := m.store.admitNewItem(input)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	if err := m.refuseUnacceptedKind(input.AgentID, admitted.Kind); err != nil {
 		return Snapshot{}, false, err
 	}
 	// mutateAndDrain can refuse before it calls the store, and then nothing was

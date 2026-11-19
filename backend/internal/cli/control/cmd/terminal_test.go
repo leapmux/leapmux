@@ -183,3 +183,43 @@ func TestTerminalRowOf_StatusIsTheOnlyLifecycleKey(t *testing.T) {
 		assert.Equalf(t, name, got["status"], "status %s", status)
 	}
 }
+
+// A terminal whose shell ended states the exit code, 0 included. A record
+// without the field states none, and the result then has no exit_code key.
+func TestTerminalRowOf_StatesTheExitCode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		code *int32
+		want any
+	}{
+		"a code":                              {int32Ptr(3), float64(3)},
+		"a zero code":                         {int32Ptr(0), float64(0)},
+		"a shell that a signal ended":         {int32Ptr(-1), float64(-1)},
+		"a shell that runs, or an old Worker": {nil, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			info := &leapmuxv1.TerminalInfo{TerminalId: "term-1", Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, ExitCode: tc.code}
+			got := jsonMap(t, terminalRowOf(info))
+			code, present := got["exit_code"]
+			assert.Equal(t, tc.want != nil, present)
+			assert.Equal(t, tc.want, code)
+		})
+	}
+
+	// The row keeps a copy, so a later change of the record changes nothing.
+	info := &leapmuxv1.TerminalInfo{ExitCode: int32Ptr(3)}
+	row := terminalRowOf(info)
+	*info.ExitCode = 9
+	assert.Equal(t, int32Ptr(3), row.ExitCode)
+	assert.Nil(t, exitCodeOf(nil))
+}
+
+// `terminal get` prints the exit code that the Worker reports.
+func TestTerminalGetOverIPC_PrintsTheExitCode(t *testing.T) {
+	id := fullTestID("term-1")
+	w := &terminalWorker{info: &leapmuxv1.TerminalInfo{TerminalId: id, Cols: 80, Rows: 24, Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, ExitCode: int32Ptr(2)}}
+	startTerminalWorker(t, w, id)
+
+	data := runControl(t, "terminal", "get", id).Data(t)
+	assert.Equal(t, "exited", data["status"])
+	assert.Equal(t, float64(2), data["exit_code"])
+}

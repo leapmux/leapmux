@@ -281,3 +281,20 @@ func TestNotificationJournalPreservesRenderingSourcesAndRejectsMetadataInjection
 	require.NoError(t, err)
 	assert.Equal(t, "0", string(fields["provider"]))
 }
+
+// Only the input queue states the sender of an agent message, through the
+// stored supplement of the row that it writes. A row from any other writer
+// that claims a sender is refused, and the queue's own path still writes one.
+func TestIncomingMetadataCannotClaimAnAgentMessageSender(t *testing.T) {
+	t.Parallel()
+	claim := []byte(`{"` + contracts.MessageMetadataFieldAgentMessageSender + `":{"tabId":"forged"}}`)
+	assert.ErrorContains(t, ValidateIncomingMessageMetadata(claim), "reserved "+contracts.MessageMetadataFieldAgentMessageSender)
+	_, err := EncodeMessageSupplement(MessageContent{Metadata: claim})
+	assert.ErrorContains(t, err, "reserved "+contracts.MessageMetadataFieldAgentMessageSender)
+
+	parsed, err := ParseStoredMessageSupplement(nil)
+	require.NoError(t, err)
+	stored, err := parsed.WithMetadataMember(contracts.MessageMetadataFieldAgentMessageSender, []byte(`{"tabId":"sender"}`))
+	require.NoError(t, err, "the queue's own path records the sender")
+	assert.JSONEq(t, `{"metadata":{"`+contracts.MessageMetadataFieldAgentMessageSender+`":{"tabId":"sender"}}}`, string(stored))
+}

@@ -95,6 +95,14 @@ var (
 	// nor followed a turn that ended.
 	ErrPreemptionState = errors.New("queue state does not permit preemption")
 	ErrManagerStopped  = errors.New("agent input queue is stopped")
+	// ErrAgentMessageEdit refuses an edit of an agent message. Its text is what
+	// the sending agent wrote, and the recipient reads it under that agent's
+	// name, so an edit would put the user's words in the agent's mouth. The
+	// user deletes the message and sends one of their own instead. A browser
+	// shows this text as the reason that a queue row offers no edit (see
+	// editRefusal), and an agent can send a message to itself, so the text
+	// claims no other agent.
+	ErrAgentMessageEdit = errors.New("an agent wrote this message, so it cannot be edited; delete it and send your own")
 	// ErrPlannedRestart refuses an explicit dispatch while the Worker replaces
 	// the agent process. The durable pause_owner records the restart, so the
 	// refusal survives a Worker restart that leaves the marker behind.
@@ -155,6 +163,40 @@ type Attachment struct {
 	Data     []byte
 }
 
+// AgentSender is the agent tab that sent an AGENT_MESSAGE. The Worker reads it
+// from the control token of the caller's tab, or from the sender that a
+// sibling Worker states for a call that it relays, never from the request, so
+// no caller can forge it.
+//
+// The input keeps copies of the sender's provider and title, because the
+// sender's row can be purged while the message waits, and the row of a sender
+// on a sibling Worker is never here. The title is the one that the sender had
+// when it sent the message; the header that the recipient reads states it.
+type AgentSender struct {
+	TabID    string
+	Provider leapmuxv1.AgentProvider
+	Title    string
+}
+
+// Proto returns the sender as the wire states it, or nil for no sender.
+func (s *AgentSender) Proto() *leapmuxv1.AgentMessageSender {
+	if s == nil {
+		return nil
+	}
+	return &leapmuxv1.AgentMessageSender{TabId: s.TabID, Provider: s.Provider}
+}
+
+// sameSender reports whether two optional senders identify one tab. A
+// repeated request must come from the same tab as the input it repeats. The
+// title names the sender but does not identify it, so a tab that the user
+// renamed between a request and its retry is still the same sender.
+func sameSender(a, b *AgentSender) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.TabID == b.TabID && a.Provider == b.Provider
+}
+
 type AttachmentMetadata struct {
 	Filename string
 	MimeType string
@@ -191,6 +233,10 @@ func (item OrderingMetadata) requiresContextReplacement() bool {
 // ItemMetadata adds the complete row metadata to its ordering projection.
 type ItemMetadata struct {
 	OrderingMetadata
+	// Sender is the agent tab that sent an AGENT_MESSAGE, and nil for every
+	// other kind. The schema ties the two, so a stored item cannot hold one
+	// without the other.
+	Sender           *AgentSender
 	TargetMode       string
 	ReclassifyOnEdit bool
 	Error            string
@@ -241,6 +287,22 @@ type SnapshotItem struct {
 	// It excludes the one head that REPLACES the turn, because the store already
 	// dispatches that one through the running turn.
 	CanPreempt bool
+	// EditRefusal is the text of the error that refuses every edit of this
+	// item (see editRefusal), or "" when the item allows an edit. It states a
+	// rule of the item, never a state that passes, such as a dispatch.
+	EditRefusal string
+}
+
+// editRefusal returns the error that refuses every edit of an item of kind,
+// or nil when the kind allows one. It is the one statement of the rule:
+// BeginEdit applies it, and the snapshot states its text in
+// SnapshotItem.EditRefusal, so a client never offers an edit that the Worker
+// refuses, and needs no rule of its own to say why.
+func editRefusal(kind leapmuxv1.AgentInputKind) error {
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
+		return ErrAgentMessageEdit
+	}
+	return nil
 }
 
 type Snapshot struct {
@@ -297,9 +359,14 @@ type UpdateRequest struct {
 }
 
 type NewItem struct {
-	ID               string
-	AgentID          string
-	Kind             leapmuxv1.AgentInputKind
+	ID      string
+	AgentID string
+	Kind    leapmuxv1.AgentInputKind
+	// Sender is the agent tab whose control token enqueued the input, or nil
+	// when no agent did: the browser, a terminal tab, the CLI outside a tab,
+	// and every input that the Worker creates itself. A user message from a
+	// sender becomes an agent message (see admitNewItem).
+	Sender           *AgentSender
 	Text             string
 	TargetMode       string
 	PrepareContext   bool

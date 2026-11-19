@@ -151,19 +151,45 @@ func (r renderedScreen) RenderText(w io.Writer) error {
 	return nil
 }
 
+// rawScreenHint points a read that cannot render the screen at the bytes that
+// the Worker retains.
+const rawScreenHint = "pass --raw to print the bytes that it retains"
+
+// renderSize returns the size at which the emulator lays out the screen of
+// info. It refuses a terminal that reports no size, and a terminal too large
+// to render: wider or taller than maxTerminalDimension, or with more than
+// maxRenderedCells cells, the scrollback included. Each refusal carries hints.
+//
+// `terminal read` and `terminal wait` both replay a screen, so both check its
+// size here.
+func renderSize(info *leapmuxv1.TerminalInfo, hints ...string) (cols, rows int, err error) {
+	id := info.GetTerminalId()
+	c, r := info.GetCols(), info.GetRows()
+	var refusal *cli.Error
+	switch {
+	case c == 0 || r == 0:
+		refusal = cli.Newf(cli.CodeInternal, "the worker reports no size for terminal %s, so its screen has no layout", id)
+	// The product is computed only when both sides are within
+	// maxTerminalDimension, so it cannot overflow.
+	case c > maxTerminalDimension || r > maxTerminalDimension ||
+		(int(r)+contracts.TerminalScrollbackLines)*int(c) > maxRenderedCells:
+		refusal = cli.Newf(cli.CodeInternal, "terminal %s is %d columns by %d rows, too large to render", id, c, r)
+	default:
+		return int(c), int(r), nil
+	}
+	for _, hint := range hints {
+		refusal = refusal.WithHint("%s", hint)
+	}
+	return 0, 0, refusal
+}
+
 // renderScreen replays the retained bytes of info through the emulator at the
 // size that info reports, and reads the text of its rows.
 func renderScreen(info *leapmuxv1.TerminalInfo, opts screenReadOptions) (screen renderedScreen, err error) {
 	id := info.GetTerminalId()
-	cols, rows := info.GetCols(), info.GetRows()
-	if cols == 0 || rows == 0 {
-		return renderedScreen{}, cli.Newf(cli.CodeInternal, "the worker reports no size for terminal %s, so its screen has no layout", id).
-			WithHint("pass --raw to print the bytes that it retains")
-	}
-	if cols > maxTerminalDimension || rows > maxTerminalDimension ||
-		(int(rows)+contracts.TerminalScrollbackLines)*int(cols) > maxRenderedCells {
-		return renderedScreen{}, cli.Newf(cli.CodeInternal, "terminal %s is %d columns by %d rows, too large to render", id, cols, rows).
-			WithHint("pass --raw to print the bytes that it retains")
+	cols, rows, err := renderSize(info, rawScreenHint)
+	if err != nil {
+		return renderedScreen{}, err
 	}
 	// The bytes come from whatever the program printed, and the emulator is a
 	// young port. A panic on a sequence that it mishandles fails this one
@@ -172,18 +198,18 @@ func renderScreen(info *leapmuxv1.TerminalInfo, opts screenReadOptions) (screen 
 		if r := recover(); r != nil {
 			screen = renderedScreen{}
 			err = cli.Newf(cli.CodeInternal, "the terminal emulator failed on the screen of terminal %s: %v", id, r).
-				WithHint("pass --raw to print the bytes that it retains")
+				WithHint("%s", rawScreenHint)
 		}
 	}()
-	term := xterm.New(xterm.WithCols(int(cols)), xterm.WithRows(int(rows)), xterm.WithScrollback(contracts.TerminalScrollbackLines))
+	term := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(contracts.TerminalScrollbackLines))
 	defer term.Dispose()
 	if _, writeErr := term.Write(info.GetScreen()); writeErr != nil {
 		return renderedScreen{}, cli.Wrap(cli.CodeInternal, writeErr, fmt.Sprintf("replay the screen of terminal %s", id))
 	}
 	return renderedScreen{
 		ID:              id,
-		Cols:            cols,
-		Rows:            rows,
+		Cols:            info.GetCols(),
+		Rows:            info.GetRows(),
 		ScreenEndOffset: info.GetScreenEndOffset(),
 		AlternateScreen: term.IsAltBufferActive(),
 		// The cursor stands past the last column after the program wrote

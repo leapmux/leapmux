@@ -2767,6 +2767,30 @@ describe('agent editor panel queue commands', () => {
     expect(onSteerQueueItem).not.toHaveBeenCalled()
   })
 
+  // The panel hands its title lookup to the queue, which states the sender of a
+  // message from another agent by the title of the sender's tab.
+  it('states the sender of a queued agent message by the title that the panel resolves', () => {
+    renderQueuePanel({
+      inputQueue: create(AgentInputQueueSnapshotSchema, {
+        items: [
+          {
+            id: 'from-agent',
+            text: 'Run the tests',
+            kind: AgentInputKind.AGENT_MESSAGE,
+            state: AgentInputState.QUEUED,
+            sender: { tabId: 'sender-tab', provider: AgentProvider.CLAUDE_CODE },
+            editRefusal: 'an agent wrote this message, so it cannot be edited; delete it and send your own',
+          },
+        ],
+      }),
+      tabTitle: tabId => (tabId === 'sender-tab'
+        ? 'Fix flaky spec'
+        : undefined),
+    })
+
+    expect(screen.getByTestId('queued-input-sender-from-agent')).toHaveTextContent('Message from Fix flaky spec (Claude Code)')
+  })
+
   // An agent that states no dispatch reads as NONE, so neither action shows
   // even for a head the Worker marks steerable and preemptable.
   it('offers neither action for an agent that states no head dispatch', () => {

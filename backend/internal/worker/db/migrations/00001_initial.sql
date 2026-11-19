@@ -38,9 +38,11 @@ CREATE TABLE agents (
     -- option_groups: cached catalog of every configuration axis reported by the
     -- agent process (model/effort/permission/etc.), as a JSON array.
     option_groups    TEXT NOT NULL DEFAULT '[]',
-    -- An AgentProvider ordinal. agents is the only table that stores it.
+    -- An AgentProvider ordinal. agents stores the provider of each agent.
     -- messages identifies its agent through agent_id; control_response_answers
-    -- reads the provider from agents. A virtual child stores its parent's provider.
+    -- reads the provider from agents. The one copy elsewhere is
+    -- agent_input_queue_items.sender_provider, which records the provider of
+    -- an agent that sent a message. A virtual child stores its parent's provider.
     -- An unset provider is 0 and fails the CHECK.
     -- CreateAgent binds the column rather than relying on the default.
     agent_provider   INTEGER NOT NULL DEFAULT 1
@@ -317,7 +319,20 @@ CREATE TABLE agent_input_queue_items (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     order_index     INTEGER NOT NULL CHECK (order_index > 0),
     -- AgentInputKind ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 8),
+    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 9),
+    -- The agent tab that sent an AGENT_MESSAGE, which the Worker stamps from
+    -- the caller's control token, or from the sender that a sibling Worker
+    -- states for a call that it relays. Empty for every other kind. The
+    -- provider is an AgentProvider ordinal, NULL exactly when the tab id is
+    -- empty. The provider and the title are copies, kept because the sender's
+    -- row can be purged while the message waits, and the row of a sender on a
+    -- sibling Worker is never here. The title is the one that the sender had
+    -- when it sent the message, and it may be empty.
+    sender_tab_id   TEXT NOT NULL DEFAULT '',
+    sender_provider INTEGER
+        CHECK (sender_provider IS NULL OR typeof(sender_provider) = 'integer')
+        CHECK (sender_provider BETWEEN 1 AND 31),
+    sender_title    TEXT NOT NULL DEFAULT '',
     text            TEXT NOT NULL DEFAULT '',
     target_mode     TEXT NOT NULL DEFAULT '',
     prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
@@ -337,7 +352,15 @@ CREATE TABLE agent_input_queue_items (
     reserved_seq    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_seq >= 0),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(agent_id, order_index)
+    UNIQUE(agent_id, order_index),
+    -- An item has a sender exactly when it is an agent message, so no writer
+    -- can store an agent message that names nobody, or a sender on an input
+    -- that the user wrote. The literal 9 is AGENT_INPUT_KIND_AGENT_MESSAGE;
+    -- a CHECK cannot bind a parameter, and TestAgentMessageSenderTieCheck pins
+    -- the ordinal.
+    CHECK ((kind = 9) = (sender_tab_id <> '')),
+    CHECK ((sender_tab_id = '') = (sender_provider IS NULL)),
+    CHECK (sender_tab_id <> '' OR sender_title = '')
 );
 CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
     ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';
@@ -498,7 +521,12 @@ CREATE TABLE terminals (
     cols          INTEGER NOT NULL DEFAULT 80,
     rows          INTEGER NOT NULL DEFAULT 25,
     screen        BLOB NOT NULL DEFAULT x'',
-    exit_code     INTEGER NOT NULL DEFAULT 0,
+    -- The exit code of the terminal's last shell, NULL while the Worker holds
+    -- no record of an exit: no shell ended yet, a new shell started (the
+    -- Worker clears it just before each spawn), or the Worker was killed
+    -- while the shell ran and so never saw it end. A 0 here is an exit that
+    -- the Worker saw, never a default.
+    exit_code     INTEGER,
     startup_error TEXT NOT NULL DEFAULT '',
     workspace_archived INTEGER NOT NULL DEFAULT 0,
     -- 0 for an ordinary terminal tab. 1 for a QUAKE terminal -- the shell

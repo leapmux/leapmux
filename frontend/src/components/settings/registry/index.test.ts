@@ -603,7 +603,7 @@ describe('buildBrowserReset', () => {
   it('resets default-off tiers to false (delete the opt-in key)', () => {
     for (const action of buildBrowserReset(fake as unknown as PreferencesState))
       action.reset()
-    expect(fake.setTerminalOsNotifications).toHaveBeenCalledWith(false)
+    expect(fake.setDesktopNotifications).toHaveBeenCalledWith(false)
     expect(fake.setShowHiddenMessages).toHaveBeenCalledWith(false)
   })
 

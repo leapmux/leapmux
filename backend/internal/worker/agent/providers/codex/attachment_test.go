@@ -117,6 +117,11 @@ func TestCodexAudioValidationRejectsEmptyAndUnrelatedBinary(t *testing.T) {
 	for _, mime := range []string{"audio/flac", "application/zip", "application/octet-stream", ""} {
 		require.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, MIMEType: mime, Data: []byte{0, 1}}))
 	}
+	// The failed input shows the refusal, and an input can hold several
+	// files, so the refusal states the file.
+	err := provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, MIMEType: "audio/flac", Filename: "tone.flac", Data: []byte{0, 1}})
+	require.ErrorContains(t, err, "tone.flac")
+	require.ErrorContains(t, err, "audio/flac")
 }
 
 func TestCodexAudioModelValidation(t *testing.T) {

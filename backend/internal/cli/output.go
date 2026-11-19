@@ -126,6 +126,14 @@ type TextLiner interface {
 	TextLine() string
 }
 
+// TextValuer is a field value with a one-line text form: the cell that a
+// table prints for it, and the value of its "key: value" line. Implement it
+// for a small object that a table must show in one cell, such as the sender
+// of a message. Its JSON form stays what its fields encode.
+type TextValuer interface {
+	TextValue() string
+}
+
 // writeEnvelope writes {"<key>": v} as one line of compact JSON.
 func writeEnvelope(w io.Writer, key string, v any) error {
 	raw, err := json.Marshal(map[string]any{key: v})

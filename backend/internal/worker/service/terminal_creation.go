@@ -189,7 +189,12 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 		Screen:        []byte{},
 		IsQuake:       isQuake,
 	}
-	runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: plan}, Options: terminal.Options{ID: terminalID, Shell: shell, WorkingDir: plan.PlannedWorkingDir, ShellStartDir: shellStartDir, Cols: uint16(cols), Rows: uint16(rows)}, Title: terminalTitle}
+	// The initial command travels in the runtime, so a creation that a later
+	// request or a Worker restart resumes runs it in the shell that the
+	// resumed startup spawns. adoptExistingQuakeTerminal answered before this
+	// line for a quake terminal that already runs, so that terminal never
+	// receives the command.
+	runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: plan}, Options: terminal.Options{ID: terminalID, Shell: shell, WorkingDir: plan.PlannedWorkingDir, ShellStartDir: shellStartDir, Cols: uint16(cols), Rows: uint16(rows), InitialCommand: r.GetInitialCommand()}, Title: terminalTitle}
 	var persistErr error
 	if op == nil {
 		persistErr = svc.Queries.UpsertTerminal(bgCtx(), params)

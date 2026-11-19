@@ -41,6 +41,8 @@ func NewCommand() *cobra.Command {
 		newLayoutCommand(),
 		newWorkerCommand(),
 		newEventsCommand(),
+		newNotifyCommand(),
+		newRPCCommand(),
 		newAdminCommand(),
 	)
 	root.Long = `Control LeapMux from a script or from an agent.

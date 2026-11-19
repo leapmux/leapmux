@@ -64,6 +64,8 @@ type fakeCrossWorker struct {
 	callTarget  string
 	callMethod  string
 	callPayload []byte
+	callSource  *leapmuxv1.CallSource
+	calls       int
 	resp        []byte
 	respErr     error
 	// bindCtrl, when set, is handed to the router's bindCtrl callback so
@@ -74,16 +76,22 @@ type fakeCrossWorker struct {
 	hold <-chan struct{}
 }
 
-func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte) ([]byte, error) {
+func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.callTarget, f.callMethod, f.callPayload = target, method, payload
+	f.record(target, req)
 	return f.resp, f.respErr
 }
 
-func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+// record keeps the request of one call. The caller holds mu.
+func (f *fakeCrossWorker) record(target string, req *leapmuxv1.InnerRpcRequest) {
+	f.callTarget, f.callMethod, f.callPayload, f.callSource = target, req.GetMethod(), req.GetPayload(), req.GetSource()
+	f.calls++
+}
+
+func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	f.mu.Lock()
-	f.callTarget, f.callMethod, f.callPayload = target, method, payload
+	f.record(target, req)
 	hold := f.hold
 	ctrl := f.bindCtrl
 	resp := f.resp
@@ -1418,11 +1426,11 @@ type framesCrossWorker struct {
 	err    error
 }
 
-func (*framesCrossWorker) CallInner(context.Context, string, userid.UserID, string, []byte) ([]byte, error) {
+func (*framesCrossWorker) CallInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	return nil, errors.New("framesCrossWorker serves streams only")
 }
 
-func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ string, _ []byte, onMsg func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController)) error {
+func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController)) error {
 	for _, frame := range f.frames {
 		onMsg(frame)
 	}

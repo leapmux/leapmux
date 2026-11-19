@@ -60,6 +60,8 @@ type controlInput struct {
 
 // resolveControlInput validates every approval-linked input before dispatch.
 // Feedback receives a fixed prefix so its text cannot become a native slash command.
+// A message from another agent receives the header that names its sender (see
+// agentMessageText), and that prefix keeps its text from a slash command too.
 func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAgent db.Agent) (controlInput, error) {
 	resolved := controlInput{text: item.Text}
 	sources, err := svc.Queries.GetControlResponseSourcesForInput(bgCtx(), db.GetControlResponseSourcesForInputParams{
@@ -90,6 +92,11 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 		resolved.text = "The user rejected the request. Their feedback follows:\n\n" + item.Text
+	}
+	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
+		if resolved.text, err = agentMessageText(item); err != nil {
+			return controlInput{}, err
+		}
 	}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		if resolved.source == nil {

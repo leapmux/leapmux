@@ -56,6 +56,12 @@ type modeTracker struct {
 	chunkBell       bool
 	chunkNotifCount int
 	droppedNotifs   int
+	// chunkBracketedPasteSet records that the current chunk turned bracketed
+	// paste on (DECSET 2004), whatever the mode was before. A line editor sends
+	// that sequence each time it starts to read a command line, so it marks a
+	// shell that is ready for input. beginChunk resets it, and
+	// ScreenBuffer.Write reads it after feed.
+	chunkBracketedPasteSet bool
 
 	kittyPending map[string]*kittyPending
 	kittyDropped map[string]struct{}
@@ -116,6 +122,7 @@ func (t *modeTracker) beginChunk() {
 	t.chunkBell = false
 	t.chunkNotifCount = 0
 	t.droppedNotifs = 0
+	t.chunkBracketedPasteSet = false
 }
 
 // drainSignals returns signals observed during the current chunk and clears
@@ -294,6 +301,9 @@ func (t *modeTracker) applyMode(code int, set bool) {
 		t.altScreen = set
 	case 2004:
 		t.bracketedPaste = set
+		if set {
+			t.chunkBracketedPasteSet = true
+		}
 	case 1000:
 		setOrClearSlot(&t.mouseTrack, mouseTrackX10, mouseTrackOff, set)
 	case 1002:

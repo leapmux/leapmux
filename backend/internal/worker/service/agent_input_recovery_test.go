@@ -220,7 +220,15 @@ func staleFirstInputPreparation(launch int) func(call int) error {
 // makes, including the replacements that input recovery launches.
 func newInputRecoveryService(t *testing.T, prepareFor func(launch int) func(call int) error) (*Service, *recoveryStarts) {
 	t.Helper()
-	svc, _, _ := setupTestService(t)
+	svc, _, starts := newInputRecoveryFixture(t, prepareFor)
+	return svc, starts
+}
+
+// newInputRecoveryFixture is newInputRecoveryService that also returns the
+// dispatcher, for a test that drives the service through its RPCs.
+func newInputRecoveryFixture(t *testing.T, prepareFor func(launch int) func(call int) error) (*Service, *testServiceDispatcher, *recoveryStarts) {
+	t.Helper()
+	svc, dispatcher, _ := setupTestService(t)
 	// Recovery tests exercise the production exit cleanup as well as launch.
 	svc.Agents.SetOnExit(svc.HandleAgentProcessExit)
 	t.Cleanup(func() {
@@ -239,7 +247,7 @@ func newInputRecoveryService(t *testing.T, prepareFor func(launch int) func(call
 	}
 	svc.startAgentFn = wrap
 	svc.startBackgroundAgentFn = wrap
-	return svc, starts
+	return svc, dispatcher, starts
 }
 
 // seedRecoveryAgent creates an open root agent row with a stored native

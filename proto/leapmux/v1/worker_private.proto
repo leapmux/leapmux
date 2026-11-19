@@ -53,6 +53,37 @@ service WorkerPrivateService {
   rpc SetQuakePanel(SetQuakePanelRequest) returns (SetQuakePanelResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
   }
+
+  // Notify asks every one of the caller's frontends to show a notification:
+  // a toast in each open LeapMux window, and a desktop notification where the
+  // user allowed them. Like SetQuakePanel it stores nothing, so a frontend
+  // that is not open never shows it. The Worker stamps the tab that sent it
+  // from the caller's control token, so the notification states where it came
+  // from. Emits UserNotification.
+  //
+  // It acts on the user's workspace view and changes no stored state, so it
+  // takes the workspace write scope, as the commands that open and close tabs
+  // do.
+  rpc Notify(NotifyRequest) returns (NotifyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+
+  // RevealTab asks every one of the caller's frontends to show one tab that
+  // this worker hosts: its workspace, its tile and the tab itself become
+  // active. It stores nothing: which tab a client shows stays client-local,
+  // as the active tab of a tile is. Emits TabRevealCommand.
+  rpc RevealTab(RevealTabRequest) returns (RevealTabResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+
+  // SetTabStatus sets or clears the status of one tab that this worker hosts:
+  // a short text, with an optional progress and tone, that the tab shows
+  // beside its title. The Worker keeps it in memory until the tab closes or
+  // the Worker stops, and the bootstrap of WatchWorkerPrivateEvents replays
+  // each status that is set. Emits TabStatusChanged.
+  rpc SetTabStatus(SetTabStatusRequest) returns (SetTabStatusResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
 }
 
 // WatchWorkerPrivateEventsRequest is deliberately empty: the worker the
@@ -66,6 +97,9 @@ message WorkerPrivateEvent {
     TabPayloadRegistered tab_payload_registered = 2;
     TabPayloadRevoked    tab_payload_revoked    = 3;
     QuakePanelCommand    quake_panel_command    = 4;
+    UserNotification     user_notification      = 5;
+    TabRevealCommand     tab_reveal_command     = 6;
+    TabStatusChanged     tab_status_changed     = 7;
   }
 }
 
@@ -207,3 +241,87 @@ message SetQuakePanelRequest {
 }
 
 message SetQuakePanelResponse {}
+
+message NotifyRequest {
+  // A short title. Required.
+  string title = 1;
+  // More text below the title. Optional.
+  string body = 2;
+}
+
+// NotifyResponse states the notification that the Worker published: the title
+// and the body as the Worker stored them, without the white space at either
+// end.
+message NotifyResponse {
+  string title = 1;
+  string body = 2;
+}
+
+// UserNotification asks each frontend to show a notification. Like a
+// QuakePanelCommand it is live-only: a reconnect never replays it, so a
+// notification that no frontend was open for is not shown later.
+message UserNotification {
+  string title = 1;
+  string body = 2;
+  // The tab whose process sent the notification, which the Worker stamps from
+  // the caller: the tab of its control token, or the tab that a sibling Worker
+  // states for a call that it relays (see CallSource). Empty when the caller
+  // runs in no tab, such as the CLI on a laptop.
+  string source_tab_id = 3;
+}
+
+message RevealTabRequest {
+  string tab_id = 1;
+}
+
+message RevealTabResponse {}
+
+// TabRevealCommand asks each frontend to show one tab. Like a
+// QuakePanelCommand it is live-only.
+message TabRevealCommand {
+  string tab_id = 1;
+  // The kind of the tab. The Worker sends the event only to a subscriber that
+  // may read tabs of this kind, as it does for a TabRenamed.
+  TabType tab_type = 2;
+}
+
+message SetTabStatusRequest {
+  string tab_id = 1;
+  // The new status, or unset to clear the status.
+  TabStatus status = 2;
+}
+
+// SetTabStatusResponse states the status that the Worker stored, or no status
+// after a clear.
+message SetTabStatusResponse {
+  TabStatus status = 1;
+}
+
+// TabStatus is what a tab shows beside its title while a process reports
+// work on it.
+message TabStatus {
+  // A short text, such as "Running the tests". Required.
+  string text = 1;
+  // How far the work is, from 0 to 100, when the reporter knows it.
+  optional uint32 progress_percent = 2;
+  TabStatusTone tone = 3;
+}
+
+// The tone of a tab's status. Unspecified is neutral.
+enum TabStatusTone {
+  TAB_STATUS_TONE_UNSPECIFIED = 0;
+  TAB_STATUS_TONE_SUCCESS = 1;
+  TAB_STATUS_TONE_WARNING = 2;
+  TAB_STATUS_TONE_ERROR = 3;
+}
+
+// TabStatusChanged reports the status of one tab. The bootstrap of
+// WatchWorkerPrivateEvents sends one for each tab whose status is set.
+message TabStatusChanged {
+  string tab_id = 1;
+  // The kind of the tab. The Worker sends the event only to a subscriber that
+  // may read tabs of this kind, as it does for a TabRenamed.
+  TabType tab_type = 2;
+  // Unset when the status was cleared.
+  TabStatus status = 3;
+}

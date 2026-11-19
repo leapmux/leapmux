@@ -1,5 +1,6 @@
 import type { AgentTab, FileTab, ImageTab, Tab, TerminalTab } from './tab.types'
 import type { TabMetadataStore } from './tabMetadata.store'
+import type { TabStatusStore } from './tabStatus.store'
 import type { TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { Projection, RenderedTab } from '~/lib/crdt'
 import { createMemo, mapArray } from 'solid-js'
@@ -13,8 +14,9 @@ import { decodeDisplayMode, decodeFileDiffBase, decodeFileViewMode } from './tab
  * The join.
  *
  * A `Tab` is not stored anywhere — it is assembled per tick from the CRDT
- * projection (identity and placement) and `tabMetadata` (everything the CRDT
- * does not carry). Consumers get the same `Tab` shape they always did.
+ * projection (identity and placement), `tabMetadata` (everything the CRDT
+ * does not carry) and the tab status store (the status a process reports).
+ * Consumers get the same `Tab` shape they always did.
  *
  * This replaces `reconcileFromProjection`: with no second copy there is nothing
  * to drop, add or sync, and a tab cannot drift from the projection because it
@@ -45,6 +47,12 @@ export interface CreateTabViewOpts {
    */
   state: () => UserCrdtState | null
   metadata: TabMetadataStore
+  /**
+   * The status each tab shows beside its title. Its own store rather than a
+   * metadata field, because a status can arrive before its tab does; see
+   * `createTabStatusStore`.
+   */
+  statuses: TabStatusStore
   /**
    * Terminals that exist on a WORKER but not in the CRDT: the shells behind the
    * quake panels. They belong to a working DIRECTORY rather than to a tile, so
@@ -396,6 +404,7 @@ export function createTabView(opts: CreateTabViewOpts) {
       workingDir: m.workingDir,
       createdAt: m.createdAt,
       gitToplevel: m.gitToplevel,
+      tabStatus: opts.statuses.get(r.tabId),
     }
     switch (r.tabType) {
       case TabType.AGENT:

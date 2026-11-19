@@ -20,7 +20,7 @@ import { isMac } from '~/lib/shortcuts/platform'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { themeLabel, THEMES } from '~/styles/themes'
 import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar } from './bindings'
-import { requestTerminalOsNotifications } from './terminalNotifications'
+import { requestDesktopNotifications } from './desktopNotifications'
 
 const log = createLogger('settingsRegistry')
 
@@ -366,15 +366,15 @@ export const browserSettings: BrowserSettingDecl[] = [
     bind: prefs => dualScalar(prefs.dual.turnEndSoundVolume),
   },
   {
-    id: 'notifications.terminalOsNotifications',
+    id: 'notifications.desktopNotifications',
     category: 'notifications',
-    label: 'Terminal OS notifications',
-    help: 'Show desktop notifications for terminal alerts (OSC 9 / 777 / 99).',
+    label: 'Desktop notifications',
+    help: 'Show desktop notifications for terminal alerts (OSC 9 / 777 / 99). While LeapMux is hidden, also show one for each leapmux control notify.',
     scope: 'browser',
     control: { kind: 'toggle' },
     sentinel: 'default-off',
     bind: (prefs) => {
-      const read = prefs.terminalOsNotifications
+      const read = prefs.desktopNotifications
       const write = (v: boolean) => {
         if (!v) {
           // Turning OFF stores false and must NOT prompt. The branch is
@@ -382,10 +382,10 @@ export const browserSettings: BrowserSettingDecl[] = [
           // permission the user is in the act of switching off is prompt
           // fatigue, and a denied origin answers from its own sticky
           // decision, which would flip the toggle back on.
-          prefs.setTerminalOsNotifications(false)
+          prefs.setDesktopNotifications(false)
           return
         }
-        // The ON path asks the OS, and `requestTerminalOsNotifications`
+        // The ON path asks the OS, and `requestDesktopNotifications`
         // holds that call so it stays testable without a render.
         //
         // The `.catch` is required. `browserToggle.set` returns void, so
@@ -393,18 +393,18 @@ export const browserSettings: BrowserSettingDecl[] = [
         // report the failure: a rejected permission request left the
         // toggle ON with nothing behind it, and the rejection went
         // unhandled.
-        void requestTerminalOsNotifications()
+        void requestDesktopNotifications()
           .then((granted) => {
-            prefs.setTerminalOsNotifications(granted)
+            prefs.setDesktopNotifications(granted)
           })
           .catch((err: unknown) => {
             log.warn('notification permission request failed', err)
-            prefs.setTerminalOsNotifications(false)
+            prefs.setDesktopNotifications(false)
           })
       }
       return browserToggle(read, write)
     },
-    resetBrowser: prefs => prefs.setTerminalOsNotifications(false),
+    resetBrowser: prefs => prefs.setDesktopNotifications(false),
   },
 
   // --- Chat ---

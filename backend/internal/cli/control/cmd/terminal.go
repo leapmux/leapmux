@@ -43,11 +43,14 @@ func newTerminalCommand() *cobra.Command {
 			Use:     "open",
 			Mutates: true,
 			Short:   "Open a new terminal in a new tab",
+			Long:    terminalOpenLong,
 			Examples: []cli.Example{
 				{Comment: "Open a terminal beside this tab and keep its id.", Command: "T=$(leapmux control terminal open -q)"},
 				{Comment: "Open a terminal in a new git worktree.", Command: "leapmux control terminal open --worktree try-fix --dir ~/src/app"},
+				{Comment: "Run the tests in a new terminal, then print the exit code of its shell.", Command: `T=$(leapmux control terminal open -q --command 'make test; exit') && leapmux control terminal wait "$T" --exit`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
+				fs.String("command", "", `run this command line once the shell is ready, as "terminal run" runs one ("-" reads stdin)`)
 				fs.String("shell", "", "shell to start (default: the worker's default shell)")
 				fs.String("start-dir", "", "directory the shell starts in (default: --dir)")
 				fs.String("title", "", "tab title (default: the worker picks one)")
@@ -105,6 +108,7 @@ func newTerminalCommand() *cobra.Command {
 			Complete: completeTargets,
 			Run:      runTerminalRead,
 		}),
+		newTerminalWaitLeaf(),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "resize <terminal> <cols> <rows>",
 			Short:   "Resize a terminal",
@@ -141,6 +145,20 @@ func newTerminalCommand() *cobra.Command {
 		),
 	)
 }
+
+// terminalOpenLong is the help of `terminal open`.
+const terminalOpenLong = `Open a new terminal in a new tab. Without --workspace and --tile, the new
+tab opens beside the tab that runs leapmux.
+
+--command runs a command line in the new shell once the shell is ready: the
+Worker pastes the command and presses Enter, as "terminal run" does. The
+shell is ready when its line editor turns on bracketed paste, which zsh, fish
+and bash 5.1 or later do. A shell that never does, such as sh, gets the
+command after a short wait. Only the new shell runs the command, so a restart
+of the terminal does not run it again. The command line is the value of
+--command, or "-" to read it from stdin. --command does not wait for the
+program to finish: read its output with "terminal read", or wait with
+"terminal wait".`
 
 // runTerminalList lists the terminal tabs with their titles and states.
 func runTerminalList(inv *cli.Invocation) (any, error) {
@@ -179,6 +197,7 @@ type terminalRow struct {
 	ScreenEndOffset int64      `json:"screen_end_offset"`
 	StartupError    string     `json:"startup_error,omitempty"`
 	StartupMessage  string     `json:"startup_message,omitempty"`
+	ExitCode        *int32     `json:"exit_code,omitempty"`
 	Git             *gitStatus `json:"git,omitempty"`
 }
 
@@ -195,8 +214,20 @@ func terminalRowOf(t *leapmuxv1.TerminalInfo) terminalRow {
 		ScreenEndOffset: t.GetScreenEndOffset(),
 		StartupError:    t.GetStartupError(),
 		StartupMessage:  t.GetStartupMessage(),
+		ExitCode:        exitCodeOf(t),
 		Git:             gitStatusOf(t.GetGitStatus()),
 	}
+}
+
+// exitCodeOf returns the exit code that a record of a terminal states, or nil
+// when it states none: the shell has not ended, or the Worker holds no record
+// of the exit. The result is a copy, so it shares no memory with the record.
+func exitCodeOf(t *leapmuxv1.TerminalInfo) *int32 {
+	if t == nil || t.ExitCode == nil {
+		return nil
+	}
+	code := t.GetExitCode()
+	return &code
 }
 
 // terminalInfo reads the Worker's record of the terminal t. It reuses

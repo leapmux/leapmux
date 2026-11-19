@@ -1,0 +1,59 @@
+package service
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+)
+
+// A client retries an enqueue whose answer it never received with the same
+// input id, as the browser's composer and `leapmux control agent send
+// --request-id` do. The Worker takes the repeat as the same input: it answers
+// with the queue that holds the one input, and it adds nothing. A repeat with
+// other content is a conflict, so a reused id never replaces a message.
+func TestEnqueueAgentInput_ARepeatedRequestIsOneInput(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher := setupInputQueueRPCService(t)
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	request := &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "request-derived-id", Text: "Run the tests",
+		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ScheduledAt: "2099-01-02T03:04:05.000Z",
+	}
+	var revisions []uint64
+	for range 3 {
+		writer := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, request, writer)
+		require.Empty(t, writer.errors)
+		response := decodeQueueResponse(t, writer, &leapmuxv1.EnqueueAgentInputResponse{})
+		require.Len(t, response.GetSnapshot().GetItems(), 1, "each answer holds the one input")
+		assert.Equal(t, "request-derived-id", response.GetSnapshot().GetItems()[0].GetId())
+		revisions = append(revisions, response.GetSnapshot().GetRevision())
+	}
+	assert.Equal(t, revisions[0], revisions[1], "a repeat changes nothing")
+	assert.Equal(t, revisions[0], revisions[2])
+
+	for name, changed := range map[string]*leapmuxv1.EnqueueAgentInputRequest{
+		"another text":     {AgentId: "agent-1", InputId: "request-derived-id", Text: "Run the linter", Kind: request.GetKind(), ScheduledAt: request.GetScheduledAt()},
+		"another schedule": {AgentId: "agent-1", InputId: "request-derived-id", Text: request.GetText(), Kind: request.GetKind(), ScheduledAt: "2099-01-02T03:04:06.000Z"},
+	} {
+		writer := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, changed, writer)
+		require.Len(t, writer.errors, 1, name)
+		assert.Contains(t, writer.errors[0].message, "conflicts", name)
+	}
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, "Run the tests", snapshot.Items[0].TextPreview, "a conflicting repeat never replaces the input")
+}

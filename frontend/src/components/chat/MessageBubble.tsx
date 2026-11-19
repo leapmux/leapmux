@@ -200,6 +200,11 @@ export interface MessageBubbleHost {
    * The control stays hidden while the agent cannot accept approval.
    */
   onApproveAutoReviewDenial?: ((messageId: string, reviewId: string) => Promise<void>) | undefined
+  /**
+   * The title of a tab that the browser holds, by its id. A message from another
+   * agent states its sender by the title of the sender's tab.
+   */
+  tabTitle?: ((tabId: string) => string | undefined) | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
   localDiffView?: ('unified' | 'split') | undefined
   /** Set the per-message diff view override. */
@@ -604,6 +609,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         : undefined
     },
     toolProgress,
+    get tabTitle() { return props.host?.tabTitle },
     get headerExpansionPending() { return headerLookup.pending() },
     get hasPendingPreview() { return props.host?.pendingRowOpen?.() === true },
     get pendingPreviewExpandable() {

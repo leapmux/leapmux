@@ -11,7 +11,7 @@ import { createLogger } from '~/lib/logger'
 import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { elicitationResponseSummary } from './controls/elicitationResponse'
-import { leapmuxUserRow } from './leapmuxRows'
+import { leapmuxUserRow, withAgentMessageSender } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
 import { approvedReviewIdsOf, withApprovedReviews } from './model/notification'
 import { normalizeOutputFilePaths } from './model/outputFilePaths'
@@ -186,7 +186,7 @@ export function extractChatRow(
     if (category.kind === 'user_content' && !plugin) {
       const userRow = leapmuxUserRow(parsed.parentObject)
       return userRow
-        ? row(userRow)
+        ? row(withAgentMessageSender(userRow, rowMetadata(parsed)))
         : unsupported()
     }
     const extract = plugin?.transcript.extractRow
@@ -221,6 +221,10 @@ export function extractChatRow(
     const extracted = extract(input)
     if (!extracted)
       return unsupported()
+    // The Worker states the sender of a message that another agent sent in the
+    // row's metadata, which no provider reads.
+    if (extracted.kind === 'user')
+      return row(withAgentMessageSender(extracted, rowMetadata(parsed)))
     const outputFilePaths = plugin?.transcript.outputFilePaths
     if (extracted.kind !== 'tool' || !outputFilePaths)
       return row(extracted)

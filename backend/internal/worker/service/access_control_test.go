@@ -355,6 +355,15 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 				Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
 			}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, func() proto.Message {
+			return &leapmuxv1.NotifyRequest{Title: "Build finished", Body: "All tests passed"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, func() proto.Message {
+			return &leapmuxv1.RevealTabRequest{TabId: "agent-1"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, func() proto.Message {
+			return &leapmuxv1.SetTabStatusRequest{TabId: "agent-1", Status: &leapmuxv1.TabStatus{Text: "Running the tests"}}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, func() proto.Message {
 			return &leapmuxv1.RegisterTabPayloadRequest{Creation: &leapmuxv1.TabCreation{TabId: "tab-1"}, Payload: fileTabPayload("/tmp/x", "")}
 		}},

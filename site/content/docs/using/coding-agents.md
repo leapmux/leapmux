@@ -139,6 +139,16 @@ waits for.
 
 An item already on its way to the agent cannot be moved, reordered around, or deleted.
 
+### Messages from other agents
+
+An agent can send another agent a message with `leapmux control agent send`. The message reaches the recipient as that agent's message, never as yours:
+
+- The recipient reads the message after one line that states the sending agent and its provider, and that the message is not from its operator.
+- The transcript shows the sending agent's icon and the title of its tab above the message, and the queue row shows them in place of the kind.
+- **Edit** is disabled on such a row, because the text is the other agent's. **Delete**, the moves and **Steer** work as they do for your own messages.
+
+LeapMux takes the sender from the credentials of the sending agent's tab, so an agent cannot claim to be another agent or pass its words off as yours. This holds for an agent on another Worker too.
+
 ### Scheduling a send
 
 The calendar button beside **Send** schedules the composer's next message:
@@ -328,6 +338,9 @@ leapmux control agent list
 # Send a message to an agent, then follow its reply as it arrives
 leapmux control agent send <agent> "Refactor the auth module"
 leapmux control agent messages <agent> --follow
+
+# Inside an agent's tab, a message reaches the other agent as this agent's message
+leapmux control agent send <agent> "Review the diff in the fix-auth branch"
 
 # Send a message, wait until the agent settles, and print its last reply
 leapmux control agent send <agent> "Which tests fail?" --wait --timeout 30m

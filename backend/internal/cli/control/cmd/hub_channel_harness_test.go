@@ -109,6 +109,8 @@ func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.Loc
 // catch-all, so a new procedure under test goes here.
 var harnessWorkerProcedures = []string{
 	leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
+	leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure,
+	leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure,
 	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure,
 	leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
 	leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure,

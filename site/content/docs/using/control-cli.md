@@ -303,6 +303,8 @@ Three guards refuse a command that would lose work the caller may not mean to lo
 | Busy tab | `tab_busy_refused` | `--allow-busy` | `tab close` of an agent in the middle of a turn, or of a terminal with a process running |
 | Last tab of a worktree | `usage` | `--worktree keep\|push\|discard` | `tab close` of the last tab of a git worktree or branch, until you say what happens to it |
 
+`rpc` bypasses all three guards; see [Calling a procedure directly](#calling-a-procedure-directly).
+
 The self-target guard does not fire for `--with-tabs move`, because the tabs survive the move. It also does not fire inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), which has no tab to protect. Closing the *last* tab in the panel's working directory still ends the panel's shell, including one you type the command into.
 
 ## Worker key pins
@@ -326,10 +328,20 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
 ### Agents
 
 - `agent list` and `agent get` print each agent's state (`idle`, `working`, `waiting_for_user`), model, effort and git state. `agent get --options` also prints every option group with its choices.
-- `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`. `--wait` waits for the reply; see [Waiting for agents](#waiting-for-agents).
+- `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`. `--wait` waits for the reply; see [Waiting for agents](#waiting-for-agents). Three flags shape the message:
+  - `--attach <file>` attaches a file. Repeat it for more files. A message with an attachment needs no text. The CLI refuses a file that it cannot read, more than 100 files, and a message whose text and files hold more than 10 MiB together. The Worker infers the type of each file from its name and its content, and it refuses a file that the agent's provider cannot read with `invalid_argument`. The error states the file.
+  - `--at <time>` holds the message in the queue until a time: an RFC 3339 time with its offset, such as `2026-11-20T09:00:00+09:00` or `2026-11-20T00:00:00Z`, or `+` and a duration from now, such as `+10m` or `+1h30m`. The CLI assumes no time zone, so a time without an offset fails with `usage`, and so does a time that has passed. The result states the time in UTC as `scheduled_at`.
+  - `--request-id <id>` makes a retry safe; see [Safe retries](#safe-retries).
+- **A message that an agent sends states its sender.** A message that a process in an agent tab sends with `agent send` reaches the recipient as that agent's message, not as yours. The recipient reads it after one line that states the sending agent and that the message is not from its operator: `[Message from agent "Release captain" (Claude Code), not from your operator]`. The Worker reads the sender from the credentials of the tab, so no flag sets or hides it. A message from a terminal tab, or from outside LeapMux, reaches the agent as yours.
+  - An agent can send a message to itself, such as a reminder that `--at` holds. The message reaches the agent as its own, never as yours.
+  - From an agent tab, the Worker takes a message, a clear and a compaction. It refuses every other input kind with `invalid_argument`, through `control rpc` too.
+  - A message to an agent on another Worker states its sender too: the sending Worker relays the call with its tab, and the Hub tells the other Worker which Worker relayed it.
+  - The header states the title that the sending tab had when it sent the message.
+- `agent sessions` lists the earlier sessions that `agent open --resume <session>` continues: the sessions of one provider in one directory, newest first. `--provider`, `--worker` and `--dir` default as they do for `agent open`, so the list is what the same `agent open` accepts. The list holds the sessions that LeapMux started and the sessions that the provider's own store holds, such as a session that you started in a terminal. It leaves out a session that an open agent runs, because two processes on one session damage it. `-q` prints the ids alone.
+- `agent clear <agent>` queues a clear. When the agent reads it, the Worker stops the agent's process and starts the provider again in a fresh session, in the same tab. The transcript keeps the earlier messages, and a clear also restarts an agent whose start failed. `agent compact <agent>` queues a compaction: the provider replaces the conversation so far with a summary, to free room in the context window. A provider without a compaction command of its own receives `/compact` as a message. Both wait in the input queue behind the inputs before them and for the end of the current turn, as a `/clear` or a `/compact` that you type in the browser does. A subagent refuses both with `invalid_argument`.
 - `agent wait <agent>...` waits until each agent reaches a state; see [Waiting for agents](#waiting-for-agents).
 - `agent requests`, `agent approve`, `agent deny` and `agent answer` list and answer the permission prompts, plans and questions that agents wait on; see [Answering prompts](#answering-prompts).
-- `agent messages` prints the most recent page by default (`--anchor latest`). `--anchor oldest` prints the first messages in history. `--anchor before --cursor-seq N` prints the page older than seq N, and `--anchor after --cursor-seq N` the page newer than it. Messages always come back in ascending seq. `--follow` prints the page and then each new message as it arrives, and reconnects after a transient drop. It accepts only `--anchor latest` and `--anchor after`.
+- `agent messages` prints the most recent page by default (`--anchor latest`). `--anchor oldest` prints the first messages in history. `--anchor before --cursor-seq N` prints the page older than seq N, and `--anchor after --cursor-seq N` the page newer than it. Messages always come back in ascending seq. `--follow` prints the page and then each new message as it arrives, and reconnects after a transient drop. It accepts only `--anchor latest` and `--anchor after`. A message from another agent states its sender: the text form prints `from agent 87a19d5f (Claude Code)` after the source, and `--json` adds `sender` with `tab_id` and `provider`.
 - `agent set` changes the model, the effort, the permission mode, and any provider option with `--option key=value`. A provider that can apply a change to the running process applies it at once (Claude Code and Codex do for most settings). Another change restarts the agent. See [Coding Agents](/docs/using/coding-agents/) for the settings of each provider.
 
 ### Waiting for agents
@@ -366,6 +378,39 @@ An agent asks the user through a control request: a permission prompt, a plan to
 - **The Worker checks each answer against the prompt**, as it does for the browser, and fails a wrong one with `invalid_argument`. A request that the agent withdrew, or that another client answered first, fails with `conflict`.
 - **An agent cannot answer its own requests.** The command fails with `usage`: the user answers them.
 
+### The input queue
+
+Each agent has an input queue. A message that `agent send` sends, a clear and a compaction wait in it until the agent reads them. The browser shows the same queue above the composer.
+
+- **`agent queue list [agent]`** lists the inputs, first to last, with the kind, the state and the start of the text of each. `--json` adds the attachments, the error of a failed input, and the `reorder_segment` of each input. `-q` prints the ids alone. A message from another agent has the kind `agent_message`. The `FROM` column states its sender, and `--json` states it as `sender`. The browser offers no edit of such a message, because its text is the other agent's: remove it instead.
+
+| State | Meaning |
+| --- | --- |
+| `queued` | The input waits for its turn. |
+| `dispatching` | The agent reads the input now. |
+| `awaiting_echo` | The agent took the input into its running turn, and LeapMux waits for the agent to confirm it. |
+| `failed` | The input did not reach the agent. `error` states why. |
+| `delivery_uncertain` | The input may not have reached the agent. |
+
+- **The queue holds** while it is paused, while its first input failed or may not have reached the agent, and while the browser has its first input open in an editor. The result states a pause with `paused` and `pause_reason` (`manual`, `interrupted`, `agent_stopped`, `delivery_failed`, `delivery_uncertain`, `store_fault` or `process_recovery`). `agent queue list` and `agent queue resume` state each other cause on stderr.
+- **`agent queue remove <agent> <input>`** takes an input out of the queue, so the agent never reads it. `<input>` is an id or a unique prefix of one.
+- **`agent queue move <agent> <input>`** moves an input, with `--before <input>`, `--first` or `--last`. An input moves only inside its reorder segment, as in the browser:
+  - The inputs that the agent reads as soon as it can form one segment, and the inputs that `--at` holds until one time form another.
+  - An input that the agent already reads (`dispatching` or `awaiting_echo`) is locked. It stays in its place, and the inputs on its two sides form two segments. A move or a removal of a locked input fails with `conflict`, and so does a move to another segment.
+  - `--first` and `--last` mean the first and the last place of the segment.
+- **`agent queue pause <agent>`** stops the agent from reading queued inputs after its current turn. New inputs still join the queue. **`agent queue resume <agent>`** resumes the queue, whatever paused it. LeapMux pauses a queue by itself too: when you interrupt the agent, when the agent stops, and when an input does not reach the agent. A failed input keeps its failure after a resume: remove it, or retry it in the browser.
+- A removal or a move does not wait for an edit in the browser. A removal of the input that a browser edits ends that edit.
+
+### Safe retries
+
+A script that loses the answer of `agent send` or `agent open`, for a timeout or a dropped connection, cannot tell whether the command took effect. `--request-id <id>` makes a second run safe:
+
+- **`agent send ... --request-id <id>`**: a second run with the same request id, the same agent and the same message queues nothing new, and it prints the result of the first run. With `--wait`, it waits for the message of the first run, or prints its reply when the agent answered already.
+- **`agent open ... --request-id <id>`**: a second run with the same request id and the same arguments opens no second agent. It prints the agent that the first run opened, and it does not queue `--message` again.
+- **A request id belongs to one request.** A run with the same request id and other arguments fails with `conflict`, and nothing changes. Give each request its own id, such as a job name and a date: `--request-id nightly-review-2026-11-19`. A request id of `agent send` belongs to one agent, and one of `agent open` to one Worker.
+- **A retry needs `--at` as an RFC 3339 time**, because a duration from now gives another time on each run. The CLI refuses `--at +10m` with `--request-id`.
+- **The Worker keeps no record of a removed input.** After someone removed the message from the queue, a retry queues it again.
+
 ### Terminals
 
 - `terminal send <terminal> [text]` types the text as it is, with no Enter added. `--file` sends the bytes of a file, such as escape sequences.
@@ -375,6 +420,9 @@ An agent asks the user through a control request: a permission prompt, a plan to
   - An unknown name, or a modifier that a terminal cannot send with the key, such as `ctrl-enter`, fails with `usage`, and nothing is sent.
 - `--paste` sends the text as the browser sends a paste. Each line ending becomes a carriage return. When the program enabled bracketed paste, the text arrives between the paste markers, so the program inserts it instead of running each line. A paste end marker inside the text is removed, so the text cannot end its own paste.
 - `terminal run <terminal> <command>` pastes the command line and presses Enter in one request, so no other input can arrive between them: `leapmux control terminal run 9c02 'make test'`. It does not wait for the command to finish.
+- `terminal open --command <command>` opens a terminal whose new shell runs the command line once the shell is ready. The Worker pastes it and presses Enter, as `terminal run` does. The shell is ready when its line editor turns on bracketed paste, which zsh, fish and bash 5.1 or later do. A shell that never does, such as `sh`, gets the command after a short wait. `--command -` reads the command line from stdin. A restart of the terminal does not run the command again. The command does not wait for the program to finish: `T=$(leapmux control terminal open -q --command 'make test; exit') && leapmux control terminal wait "$T" --exit`.
+- `terminal get` prints `exit_code` once the shell ended.
+- `terminal wait <terminal>` waits until the shell ends or the terminal shows a text; see [Waiting for terminals](#waiting-for-terminals).
 - `terminal read [terminal]` prints what the terminal shows, as plain text. It replays the bytes that the Worker retains through a Go port of xterm.js at the terminal's size, so the text matches the browser.
   - Each row loses its trailing blanks, and the empty rows at the end of the screen do not print.
   - `--scrollback` adds the lines above the screen: at most 1000, and only those that the retained bytes still hold. A full-screen program on the alternate screen has none.
@@ -382,6 +430,35 @@ An agent asks the user through a control request: a permission prompt, a plan to
   - `--json` adds `cursor`, whose row and column count from 0 at the top left of the screen, and `alternate_screen`.
   - `--raw` prints the retained bytes with their escape sequences, for `less -R`.
 - `terminal quake open|close|toggle` show and hide a working directory's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every browser you have open. They store nothing: a browser that is not open never hears the request. A browser with no tab in that directory ignores it, because it has no workspace to open the panel in. Opening a panel that has no shell yet creates one. Hiding it never ends the shell. `--dir` and `--worker` default to the calling tab's, so inside a panel, `leapmux control terminal quake close` hides the panel you typed it into.
+
+### Waiting for terminals
+
+`terminal wait` watches the terminal through the Worker. It never polls. Give it one condition.
+
+- **`terminal wait <terminal> --exit`** waits until the shell ends, and prints its exit code alone, so `code=$(leapmux control terminal wait "$T" --exit)` keeps it. A shell that a signal ended reports `-1`, and so does a shell that the Worker ended when it shut down.
+  - A shell that ended before the wait began ends the wait at once, and the command prints the exit code that the Worker kept. When the Worker holds no record of the code, because it was killed while the shell ran, the command prints no code, says so on stderr, and still exits `0`.
+  - `--exit` refuses the terminal that runs the command with `usage`, because its shell cannot end while the wait runs in it.
+- **`terminal wait <terminal> --text <text>`** and **`--regex <pattern>`** wait until a line of the terminal holds the text, or matches the RE2 pattern, and print that line.
+  - The CLI replays the output through the emulator of `terminal read`, so it matches what the browser shows. An escape sequence, or a text that arrives in two chunks, cannot break a match.
+  - The match is per line. A line that the terminal wraps at its width counts as one line, and it loses its trailing blanks, so `^` and `$` match at its ends. When several lines match at once, the command prints the lowest one.
+  - The text that the screen shows when the wait begins counts, so a wait for a text that is already there ends at once. Each line that appears later counts too, even one that scrolls off the screen at once. The scrollback from before the wait does not count.
+  - To wait for the output of a new command only, clear the screen first, or match a line that the echoed command line does not hold: after `terminal run "$T" 'make test; echo DONE'`, wait with `--regex '^DONE$'`.
+- **The command prints its result even when the condition did not hold, and exits `6`**: `--timeout` passed, the shell ended before the terminal showed the text, or the shell failed to start. `--json` prints `status`, `reached`, and `exit_code` once the shell ended. A terminal that closes during the wait fails with `not_found` and exits `6`.
+- `leapmux control events --kind terminal` prints the exits, bells, titles, notifications and progress reports of every terminal as they happen.
+
+### Telling the user
+
+Three commands reach every LeapMux window that you have open, through the Worker's encrypted event stream. A window hears a Worker only while one of your tabs runs on that Worker.
+
+- `notify <title>` shows a toast in each window: the title, the `--body` text below it, and the tab that ran the command. While a window is hidden, it also shows a desktop notification, when **Desktop notifications** is on in [Settings](/docs/using/settings/#desktop-notifications). `--body -` reads the body from standard input: `tail -n 5 build.log | leapmux control notify "Build failed" --body -`. Nothing stores a notification, so a window that you open later does not show it.
+  - The command goes to the Worker of the tab that runs it. Outside a tab, pass `--worker`.
+  - The Worker names the tab from the control token of the tab's socket, so a process cannot claim another tab. With `--worker`, the tab's own Worker relays the notification and states the tab. A notification sent from outside a tab names no tab.
+  - The Worker refuses an empty title, a title over 256 bytes and a body over 4096 bytes with `invalid_argument`.
+- `tab reveal <tab>` brings a tab into view in each window: the window switches to the tab's workspace, and the tab becomes the active tab of its tile, as a click on the tab in the sidebar does. Nothing stores the reveal, and a window that does not know the tab yet ignores it. A tab that its Worker does not host, such as a closed one, fails with `not_found`.
+- `tab status set <tab> <text>` shows a short status beside the tab's title, in the tab bar and in the sidebar. `--progress N` adds a ring that fills from 0 to 100, and `--tone` colors the status: `neutral` (the default), `success`, `warning` or `error`. A new status replaces the old one whole, and `tab status clear <tab>` removes it.
+  - The Worker keeps the status in memory until you clear it, the tab closes, or the Worker stops. A window that you open later shows it too.
+  - The text holds at most 128 bytes; the Worker refuses a longer one with `invalid_argument`. The tab bar cuts a long text, and the tooltip shows the whole text and the progress.
+- A window shows a reveal and a status only to a credential that may read tabs of that kind: `agent:read` for an agent tab, `terminal:read` for a terminal tab, beside `workspace:read`.
 
 ### Files and git
 
@@ -451,6 +528,22 @@ To follow an agent's chat, use `agent messages --follow` instead.
 
 `layout watch` prints the raw changes of the layout instead, and `agent messages --follow` prints an agent's chat.
 
+### Calling a procedure directly
+
+`rpc <procedure> [request]` calls one procedure of the Hub or of a Worker by its name, for a call that no other command makes. It reads the request as protobuf JSON and prints the response the same way.
+
+```bash
+leapmux control rpc leapmux.v1.WorkspaceService/ListTabs '{"workspace_ids": ["'"$WS"'"]}'
+leapmux control rpc leapmux.v1.WorkerAgentService/ListAgents '{"tab_ids": ["'"$A"'"]}' --worker self --json
+```
+
+- The procedures are the methods of the services in `proto/leapmux/v1`. The `leapmux.v1.` prefix is optional. An unknown name fails with `usage` and suggests the closest names, and shell completion lists every procedure.
+- The request is the second argument, `-` for standard input, or `{}` when you give none. A field that the request type does not declare fails with `usage` before anything is sent. The response uses the field names of the `.proto` files, and a field that holds its default value does not print.
+- A Worker procedure needs `--worker`, the Worker that serves it. It never defaults to the Worker of the calling tab.
+- A procedure that streams, such as `WatchEvents`, fails with `usage`. Use `events` or `agent messages --follow`.
+- Inside a LeapMux tab, the socket of the tab relays a fixed set of Hub procedures, which `rpc --help` lists. Another Hub procedure fails with `usage`; pass `--hub <url>` to call it with your own login.
+- **`rpc` bypasses every guard of the other commands.** It refuses no call on the calling tab, checks no busy agent, and validates no id in the request, so a call that changes state takes effect at once.
+
 ## End-to-end examples
 
 ### Drive an agent from your laptop
@@ -505,6 +598,44 @@ leapmux control events --kind agent.request --json |
 # Wait for the next prompt of any agent, then read it in full.
 ev=$(leapmux control events --kind agent.request --limit 1 --json)
 leapmux control agent requests "$(jq -r .data.tab_id <<<"$ev")"
+```
+
+### Run a command in a terminal and wait for it
+
+```bash
+T=$(leapmux control terminal open -q)
+leapmux control terminal run "$T" 'make test; echo DONE'
+# The echoed command line holds "echo DONE"; only the output line matches.
+leapmux control terminal wait "$T" --regex '^DONE$' --timeout 15m
+leapmux control terminal read "$T" --lines 40
+
+# Or end the shell with the status of the command, and keep that status.
+leapmux control terminal run "$T" 'make build; exit $?'
+code=$(leapmux control terminal wait "$T" --exit)
+```
+
+### Retry a message safely
+
+```bash
+# Retry while the Worker is unreachable (status 7), with one request id.
+for attempt in 1 2 3; do
+  leapmux control agent send "$A" "Run the release checklist" --request-id "release-$(date +%F)" && break
+  [ $? -eq 7 ] || exit 1
+  sleep 5
+done
+```
+
+### Report progress from a script
+
+```bash
+leapmux control tab status set self "Running the tests" --progress 0
+if make test > test.log 2>&1; then
+  leapmux control tab status set self "Tests passed" --tone success
+  leapmux control notify "Tests passed"
+else
+  leapmux control tab status set self "Tests failed" --tone error
+  tail -n 5 test.log | leapmux control notify "Tests failed" --body -
+fi
 ```
 
 ### A script that runs inside an agent

@@ -2,7 +2,7 @@ import { requestOsNotificationPermission } from '~/lib/osNotification'
 
 /**
  * Ask the OS for notification permission, and give the value the
- * terminal-OS-notifications toggle should then store.
+ * desktop-notifications toggle should then store.
  *
  * Only the ON path comes here. Declining leaves the preference off rather
  * than showing it on with nothing behind it. Turning the toggle OFF stores
@@ -16,6 +16,6 @@ import { requestOsNotificationPermission } from '~/lib/osNotification'
  * through a render would need the real PreferencesProvider, whose onMount
  * reloads settings over the network.
  */
-export async function requestTerminalOsNotifications(): Promise<boolean> {
+export async function requestDesktopNotifications(): Promise<boolean> {
   return requestOsNotificationPermission()
 }

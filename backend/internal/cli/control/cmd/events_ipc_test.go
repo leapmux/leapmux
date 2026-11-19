@@ -204,22 +204,22 @@ type siblingWorkers struct {
 	workers map[string]*eventsWorker
 }
 
-func (s siblingWorkers) CallInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte) ([]byte, error) {
+func (s siblingWorkers) CallInner(_ context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	w := s.workers[target]
-	if w == nil || method != leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
-		return nil, fmt.Errorf("unexpected call %s on %s", method, target)
+	if w == nil || req.GetMethod() != leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
+		return nil, fmt.Errorf("unexpected call %s on %s", req.GetMethod(), target)
 	}
-	return proto.Marshal(w.listAgents(payload))
+	return proto.Marshal(w.listAgents(req.GetPayload()))
 }
 
-func (s siblingWorkers) StreamInner(ctx context.Context, target string, _ userid.UserID, method string, payload []byte,
+func (s siblingWorkers) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
 	onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController),
 ) error {
 	w := s.workers[target]
-	if w == nil || method != leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure {
-		return fmt.Errorf("unexpected stream %s on %s", method, target)
+	if w == nil || req.GetMethod() != leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure {
+		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
 	}
-	w.serveWatch(ctx, payload,
+	w.serveWatch(ctx, req.GetPayload(),
 		func(m *leapmuxv1.InnerStreamMessage) error {
 			onMsg(m)
 			return nil

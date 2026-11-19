@@ -16,6 +16,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 
 	"github.com/leapmux/leapmux/internal/terminput"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -552,7 +553,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// in between pairs the flag of the old, exited shell with a registry that
 		// no longer holds the startup, so the reply would say EXITED over a shell
 		// that runs. A shell that exits in between disagrees the other way.
-		// IsRunning, read last, states the terminal closest to the reply.
+		// The read of ShellStatus, last, states the terminal closest to the
+		// reply, and it gives the exit code of the same shell.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
@@ -566,7 +568,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				// startup_error or is_quake flag to read for it.
 				row = &db.Terminal{ID: e.ID}
 			}
-			status, startupError, startupMessage := svc.deriveTerminalStatus(row)
+			state := svc.deriveTerminalStatus(row)
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      e.ID,
 				Cols:            e.Meta.Cols,
@@ -576,11 +578,12 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				WorkingDir:      e.Meta.WorkingDir,
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
-				Status:          status,
-				StartupError:    startupError,
-				StartupMessage:  startupMessage,
+				Status:          state.status,
+				StartupError:    state.startupError,
+				StartupMessage:  state.startupMessage,
 				Quake:           row.IsQuake,
 				GitStatus:       gitStatuses[e.ID],
+				ExitCode:        state.exitCode,
 			}
 			terminals = append(terminals, ti)
 		}
@@ -590,7 +593,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				continue
 			}
 			seen[ts.ID] = true
-			status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
+			state := svc.deriveTerminalStatus(&ts)
 			// DB-persisted screen is just the bytes; the backend has no
 			// live ring for this terminal (PTY exited or worker
 			// restarted), so the "end offset" equals the screen
@@ -606,11 +609,12 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				WorkingDir:      ts.WorkingDir,
 				ShellStartDir:   ts.ShellStartDir,
 				Title:           ts.Title,
-				Status:          status,
-				StartupError:    startupError,
-				StartupMessage:  startupMessage,
+				Status:          state.status,
+				StartupError:    state.startupError,
+				StartupMessage:  state.startupMessage,
 				Quake:           ts.IsQuake,
 				GitStatus:       gitStatuses[ts.ID],
+				ExitCode:        state.exitCode,
 			}
 			terminals = append(terminals, ti)
 		}
@@ -800,6 +804,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		opts.Rows = rows
 	}
 
+	svc.forgetTerminalExitCode(terminalID)
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
 	// Post-spawn fetch: closed_at detects a CloseTab that landed
@@ -915,6 +920,7 @@ func (svc *Service) runTerminalRestart(
 	svc.TerminalStartup.setMessage(terminalID, shellMsg)
 	svc.broadcastTerminalStarting(terminalID, shellMsg, gs)
 
+	svc.forgetTerminalExitCode(terminalID)
 	startErr := svc.Terminals.RestartTerminal(ctx, opts, fallbackOffset, outputFn, exitFn)
 
 	// Detect a CloseTab that landed during the PTY spawn: if
@@ -999,6 +1005,26 @@ func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cau
 	svc.failStartup(gm, cause, svc.terminalStartupCallbacks(terminalID, h))
 }
 
+// forgetTerminalExitCode clears the exit code that the row holds for the
+// terminal's previous shell, just before a new shell spawns. Until the new
+// shell ends and its exit handler records a code, the row then holds no
+// record, so a Worker that is killed while the new shell runs never reports
+// the old shell's code for it.
+//
+// It runs BEFORE the spawn, not after it: a shell that exits at once can
+// record its own code before a later clear, which would erase it. Nothing of
+// the old shell can write after it either, because both callers start only
+// once the old shell's exit handler finished (RestartTerminal refuses until
+// ExitHandlerFinished, and startTerminalProcess waits for the exit).
+//
+// A failed clear leaves the old code in place, which only a Worker crash can
+// ever report, so it does not stop the start.
+func (svc *Service) forgetTerminalExitCode(terminalID string) {
+	if err := svc.Queries.ForgetTerminalExitCode(bgCtx(), terminalID); err != nil {
+		slog.Warn("failed to clear the exit code of the previous shell", "terminal_id", terminalID, "error", err)
+	}
+}
+
 // persistTerminalStartupError writes (or clears when errMsg is "") the
 // terminals.startup_error column so the startup panel survives a worker
 // restart that wipes the in-memory registry.
@@ -1078,11 +1104,25 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 	return byID
 }
 
-// deriveTerminalStatus computes (status, startupError, startupMessage)
-// for a terminal. It is the ONE statement of the terminal status rule:
-// ListTerminals, the WatchEvents replay and the status after a startup all read
-// it, so they cannot report different states for one terminal. The priority
-// order:
+// terminalState is the state of a terminal, as deriveTerminalStatus states it.
+// Each field beside status is set only for the status that it belongs to, so a
+// reader copies every field as it is and needs no case for a status.
+type terminalState struct {
+	status leapmuxv1.TerminalStatus
+	// startupError is set only for STARTUP_FAILED.
+	startupError string
+	// startupMessage is set only for STARTING.
+	startupMessage string
+	// exitCode is set only for EXITED, and only when the Worker holds a record
+	// of the exit: the exit code of the shell that ended, as
+	// TerminalClosed.exit_code states it.
+	exitCode *int32
+}
+
+// deriveTerminalStatus computes the state of a terminal. It is the ONE
+// statement of the terminal status rule: ListTerminals, the WatchEvents replay
+// and the status after a startup all read it, so they cannot report different
+// states for one terminal. The priority order:
 //  1. in-memory startup registry — STARTING / STARTUP_FAILED while a
 //     startup is in flight or has just failed. The current phase
 //     message is surfaced so a WatchEvents subscriber that arrived
@@ -1093,45 +1133,60 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 //     startup_error beside a running shell is therefore stale, such as a
 //     row read before the success cleared the column. deriveAgentStatus
 //     puts a running agent before its persisted error for the same reason.
-//     "Runs" is IsRunning, not HasTerminal: the manager keeps an exited
-//     terminal until RestartTerminal or RemoveTerminal, so holding the
-//     terminal does not mean its shell still runs.
+//     "Runs" is ShellStatus.Running, not ShellStatus.Held: the manager keeps
+//     an exited terminal until RestartTerminal or RemoveTerminal, so holding
+//     the terminal does not mean its shell still runs.
 //  3. persisted startup_error column — surfaces a prior failure across
 //     worker restarts (the in-memory registry is wiped on restart) and after
 //     the registry evicts a failure (failedEntryTTL). A failed restart keeps
 //     the stopped previous shell in the manager, so this case covers a
 //     terminal that the manager holds too.
 //  4. EXITED: no startup owns the status, no shell runs, and no failure is
-//     persisted.
+//     persisted. The exit code comes from the manager when it holds the
+//     terminal, because the manager knows the code before the exit handler
+//     persists it. Otherwise the row states it: the worker restarted after
+//     the shell ended, and the exit handler persisted the code before that.
+//     A row with no code states none: the worker never saw this shell end,
+//     because each spawn clears the code first (forgetTerminalExitCode).
 //
-// startupError is empty unless the status is STARTUP_FAILED, and
-// startupMessage is empty unless it is STARTING. derivedTerminalStatusEvent and
-// ListTerminals copy all three into the reply and rely on that.
-func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
+// One read of the manager answers both "does the shell run?" and "with which
+// code did it end?", so the status and the exit code describe one shell even
+// while a restart replaces it.
+func (svc *Service) deriveTerminalStatus(t *db.Terminal) terminalState {
 	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
-		return sup, errStr, msg
+		return terminalState{status: sup, startupError: errStr, startupMessage: msg}
 	}
-	if svc.Terminals.IsRunning(t.ID) {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
+	shell := svc.Terminals.ShellStatus(t.ID)
+	if shell.Running {
+		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY}
 	}
 	if t.StartupError != "" {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError, ""
+		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, startupError: t.StartupError}
 	}
-	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "", ""
+	// int32 as makeTerminalExitFn converts the code for TerminalClosed, so the
+	// two report one value for one exit. A row with no code states no exit
+	// code: the Worker never saw this shell end.
+	var exitCode *int32
+	if t.ExitCode.Valid {
+		exitCode = ptrconv.Ptr(int32(t.ExitCode.Int64))
+	}
+	if shell.Held {
+		exitCode = ptrconv.Ptr(int32(shell.ExitCode))
+	}
+	return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, exitCode: exitCode}
 }
 
 // derivedTerminalStatusEvent builds the status change that deriveTerminalStatus
-// states for t. deriveTerminalStatus sets startupError only for STARTUP_FAILED
-// and startupMessage only for STARTING, so one status change carries all three
-// as they are, and a new status needs no case here.
+// states for t. A status change carries no exit code: TerminalClosed reports
+// the exit of a shell, and ListTerminals reports it to a reader that missed it.
 func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal) *leapmuxv1.TerminalEvent {
-	status, startupError, startupMessage := svc.deriveTerminalStatus(t)
+	state := svc.deriveTerminalStatus(t)
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: t.ID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
-			Status:         status,
-			StartupError:   startupError,
-			StartupMessage: startupMessage,
+			Status:         state.status,
+			StartupError:   state.startupError,
+			StartupMessage: state.startupMessage,
 		}},
 	}
 }
@@ -1395,7 +1450,7 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 			TerminalId: tid,
 			Event: &leapmuxv1.TerminalEvent_Closed{
 				Closed: &leapmuxv1.TerminalClosed{
-					ExitCode: int32(exitCode),
+					ExitCode: ptrconv.Ptr(int32(exitCode)),
 				},
 			},
 		})

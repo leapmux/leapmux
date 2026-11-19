@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -57,11 +59,55 @@ func (s *Store) now() time.Time {
 	return s.clock.Now().UTC()
 }
 
-// Classify answers the kind that this text takes. The Manager asks BEFORE it
-// calls a mutation, so it can refuse a kind the agent cannot accept without a
-// database read inside the mutation's own write transaction.
-func (s *Store) Classify(kind leapmuxv1.AgentInputKind, text string) leapmuxv1.AgentInputKind {
-	return s.classifier.Classify(kind, text)
+// admitNewItem settles the kind that a new input takes, and refuses an input
+// that its caller may not enqueue. It is the one statement of these rules: the
+// Manager asks it BEFORE it calls a mutation, so it can refuse a kind the agent
+// cannot accept without a database read inside the mutation's own write
+// transaction, and enqueue asks it again inside that transaction.
+//
+// The classifier first turns an exact slash command into its own kind. An
+// input from an agent tab then follows the rules of provenance:
+//
+//   - A user message becomes an agent message that keeps its sender, so the
+//     recipient reads it under the sender's name and never as the operator's
+//     instruction. It is not reclassified on an edit, because nobody edits it
+//     (see BeginEdit).
+//   - A clear or a compaction carries no words of the sender, so it keeps its
+//     kind and drops the sender. Its text must be the command itself: the
+//     Worker sends that text to a provider that cannot compact natively, and
+//     any other text would reach the agent as an unmarked instruction.
+//   - Every other kind is refused. Control feedback and a plan execution
+//     reach the agent as the user's own words, and the Worker creates them
+//     itself.
+//
+// No caller may request an agent message: only a sender makes one.
+func (s *Store) admitNewItem(input NewItem) (NewItem, error) {
+	if input.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
+		return NewItem{}, fmt.Errorf("%w: the Worker marks a message from an agent itself; send a user message", ErrInvalidInput)
+	}
+	input.Kind = s.classifier.Classify(input.Kind, input.Text)
+	// Only the Worker creates automatic-retry items, through scheduleAutoRetry.
+	// An enqueue of one would race the retry cycle's own upsert.
+	if IsAutoRetryKind(input.Kind) {
+		return NewItem{}, fmt.Errorf("%w: the Worker schedules automatic retries", ErrInvalidInput)
+	}
+	if input.Sender == nil {
+		return input, nil
+	}
+	switch input.Kind {
+	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE:
+		input.Kind = leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE
+		input.ReclassifyOnEdit = false
+		return input, nil
+	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT:
+		if s.classifier.Classify(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, input.Text) != input.Kind {
+			return NewItem{}, fmt.Errorf("%w: a clear or a compaction from an agent carries its command alone, such as /clear or /compact", ErrInvalidInput)
+		}
+		input.Sender = nil
+		return input, nil
+	default:
+		return NewItem{}, fmt.Errorf("%w: an agent can send a message, a clear or a compaction, and no other input", ErrInvalidInput)
+	}
 }
 
 // KindAfterEdit answers the kind that an existing item takes once its text
@@ -88,7 +134,7 @@ func (s *Store) KindAfterEdit(ctx context.Context, agentID, inputID, newText str
 
 func validKind(kind leapmuxv1.AgentInputKind) bool {
 	return kind >= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE &&
-		kind <= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+		kind <= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE
 }
 
 func validateIdentity(value string) bool {
@@ -136,9 +182,18 @@ func ValidateContent(kind leapmuxv1.AgentInputKind, text string, attachments []A
 	return nil
 }
 
+// steerableInputKind selects the kinds that the model can take inside a running
+// turn. An agent message is one: a steer changes when the recipient reads it,
+// and the header that names its sender reaches the provider either way.
 func steerableInputKind(kind leapmuxv1.AgentInputKind) bool {
+	return messageKind(kind) || IsAutoRetryKind(kind) || controlReplyKind(kind)
+}
+
+// messageKind selects the kinds whose text is a message to the agent: the
+// user's own, and one that another agent sent.
+func messageKind(kind leapmuxv1.AgentInputKind) bool {
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
-		IsAutoRetryKind(kind) || controlReplyKind(kind)
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE
 }
 
 // controlReplyKind reports whether the input is the user's reply to a control
@@ -172,11 +227,13 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
 		return Snapshot{}, false, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
 	}
-	input.Kind = s.classifier.Classify(input.Kind, input.Text)
-	// Only the Worker creates automatic-retry items, through scheduleAutoRetry.
-	// An enqueue of one would race the retry cycle's own upsert.
-	if IsAutoRetryKind(input.Kind) {
-		return Snapshot{}, false, fmt.Errorf("%w: the Worker schedules automatic retries", ErrInvalidInput)
+	if input.Sender != nil && (!validateIdentity(input.Sender.TabID) ||
+		input.Sender.Provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
+		return Snapshot{}, false, fmt.Errorf("%w: the sender needs a tab ID and a provider", ErrInvalidInput)
+	}
+	input, err := s.admitNewItem(input)
+	if err != nil {
+		return Snapshot{}, false, err
 	}
 	if err := ValidateContent(input.Kind, input.Text, input.Attachments); err != nil {
 		return Snapshot{}, false, err
@@ -208,7 +265,8 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		return Snapshot{}, false, err
 	}
 	if found {
-		if existing.Kind != input.Kind || existing.Text != input.Text || existing.TargetMode != input.TargetMode ||
+		if existing.Kind != input.Kind || !sameSender(existing.Sender, input.Sender) ||
+			existing.Text != input.Text || existing.TargetMode != input.TargetMode ||
 			existing.PrepareContext != input.PrepareContext || existing.ReclassifyOnEdit != input.ReclassifyOnEdit ||
 			!schedulesEqual(existing.ScheduledAt, input.ScheduledAt) ||
 			!bytes.Equal(existing.SourcePayload, input.SourcePayload) ||
@@ -277,6 +335,11 @@ func (s *Store) BeginEdit(ctx context.Context, agentID, inputID, clientID string
 	}
 	if !found {
 		return Snapshot{}, "", nil, ErrNotFound
+	}
+	// The one gate of every edit: Update needs the edit ownership that only
+	// this method grants.
+	if err := editRefusal(item.Kind); err != nil {
+		return Snapshot{}, "", nil, err
 	}
 	if lockedInputState(item.State) {
 		return Snapshot{}, "", nil, ErrConflict
@@ -1314,6 +1377,9 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 			return AcceptedTranscript{}, fmt.Errorf("encode the automatic retry source: %w", err)
 		}
 	}
+	if supplemental, err = withAgentMessageSender(supplemental, item.Sender); err != nil {
+		return AcceptedTranscript{}, err
+	}
 	compressed, compression := msgcodec.Compress(content)
 	supplementalContent, supplementalCompression := []byte(nil), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
 	if len(supplemental) > 0 {
@@ -1324,7 +1390,7 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 		return AcceptedTranscript{}, err
 	}
 	mark := leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED
-	if item.ReclassifyOnEdit || item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
+	if item.ReclassifyOnEdit || messageKind(item.Kind) {
 		mark = leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE
 	} else if controlReplyKind(item.Kind) {
 		mark = leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE
@@ -1340,7 +1406,7 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, COALESCE(?, X''), ?)`,
 		item.ID, item.AgentID, seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		compressed, compression, inputIdempotencyKey(NewItem{
-			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Text: item.Text,
+			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Sender: item.Sender, Text: item.Text,
 			TargetMode: item.TargetMode, PrepareContext: item.PrepareContext,
 			ReclassifyOnEdit: item.ReclassifyOnEdit, ScheduledAt: item.ScheduledAt,
 			SourcePayload: item.SourcePayload, Attachments: attachments,
@@ -1354,6 +1420,27 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
 		CreatedAt: item.CreatedAt,
 	}, nil
+}
+
+// withAgentMessageSender records the sender of an agent message in the Worker
+// metadata of its transcript row, beside whatever supplement the dispatcher
+// resolved. The browser and the CLI read it there, so a reload shows who sent
+// the message as the live row does. The value is the AgentMessageSender
+// message in its protobuf JSON form, which each reader decodes with its
+// generated code. A nil sender leaves the supplement as it is.
+func withAgentMessageSender(supplemental []byte, sender *AgentSender) ([]byte, error) {
+	if sender == nil {
+		return supplemental, nil
+	}
+	encoded, err := protojson.Marshal(sender.Proto())
+	if err != nil {
+		return nil, fmt.Errorf("encode the sender of the agent message: %w", err)
+	}
+	parsed, err := agent.ParseStoredMessageSupplement(supplemental)
+	if err != nil {
+		return nil, fmt.Errorf("read the supplement of the agent message: %w", err)
+	}
+	return parsed.WithMetadataMember(contracts.MessageMetadataFieldAgentMessageSender, encoded)
 }
 
 // HoldForEcho retains an accepted steer without reserving or writing its transcript row.
@@ -2328,11 +2415,12 @@ func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttac
 	var kind, state int32
 	var version int64
 	var scheduled sqltime.SQLiteNullTime
+	var sender storedSender
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, agent_id, kind, text, target_mode, prepare_context, reclassify_on_edit, order_index,
+		SELECT id, agent_id, kind, sender_tab_id, sender_provider, sender_title, text, target_mode, prepare_context, reclassify_on_edit, order_index,
 			scheduled_at, source_payload, state, error, edit_owner, version, reserved_seq, created_at, updated_at
 		FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID).Scan(
-		&item.ID, &item.AgentID, &kind, &item.Text, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order,
+		&item.ID, &item.AgentID, &kind, &sender.tabID, &sender.provider, &sender.title, &item.Text, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order,
 		&scheduled, &item.SourcePayload, &state, &item.Error,
 		&item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2342,6 +2430,7 @@ func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttac
 		return StoredItem{}, nil, false, err
 	}
 	item.Kind = leapmuxv1.AgentInputKind(kind)
+	item.Sender = sender.value()
 	item.State = leapmuxv1.AgentInputState(state)
 	item.Version = uint64(version)
 	item.ScheduledAt = scheduled.Ptr()
@@ -2449,7 +2538,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 	snapshot.Revision = uint64(revision)
 	snapshot.PauseReason = workerdb.StorageEnumValue(reason)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, kind,
+		SELECT id, kind, sender_tab_id, sender_provider, sender_title,
 			CASE WHEN length(text) > ? THEN substr(text, 1, ?) || '…' ELSE text END,
 			target_mode, prepare_context, reclassify_on_edit, order_index, scheduled_at, state, error, edit_owner, version, reserved_seq, created_at, updated_at
 		FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`,
@@ -2463,12 +2552,17 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 		var kind, state int32
 		var version int64
 		var scheduled sqltime.SQLiteNullTime
+		var sender storedSender
 		item.AgentID = agentID
-		if err := rows.Scan(&item.ID, &kind, &item.TextPreview, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order, &scheduled, &state, &item.Error, &item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &kind, &sender.tabID, &sender.provider, &sender.title, &item.TextPreview, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order, &scheduled, &state, &item.Error, &item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			_ = rows.Close()
 			return Snapshot{}, err
 		}
 		item.Kind = leapmuxv1.AgentInputKind(kind)
+		item.Sender = sender.value()
+		if refusal := editRefusal(item.Kind); refusal != nil {
+			item.EditRefusal = refusal.Error()
+		}
 		item.State = leapmuxv1.AgentInputState(state)
 		item.Version = uint64(version)
 		item.ScheduledAt = scheduled.Ptr()
@@ -2746,16 +2840,46 @@ func insertQueuedItem(ctx context.Context, tx *sql.Tx, input NewItem) error {
 		return err
 	}
 	created := nowText()
+	sender := newStoredSender(input.Sender)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_input_queue_items
-		(id, agent_id, order_index, kind, text, target_mode, prepare_context, reclassify_on_edit, scheduled_at, source_payload, state, version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		input.ID, input.AgentID, orderIndex, input.Kind, input.Text, input.TargetMode, input.PrepareContext, input.ReclassifyOnEdit,
+		(id, agent_id, order_index, kind, sender_tab_id, sender_provider, sender_title, text, target_mode, prepare_context, reclassify_on_edit, scheduled_at, source_payload, state, version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		input.ID, input.AgentID, orderIndex, input.Kind, sender.tabID, sender.provider, sender.title, input.Text, input.TargetMode, input.PrepareContext, input.ReclassifyOnEdit,
 		sqltime.NewSQLiteNullTime(input.ScheduledAt), ptrconv.OrEmpty(input.SourcePayload),
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, created, created); err != nil {
 		return normalizeConstraintError(err)
 	}
 	return nil
+}
+
+// storedSender is the sender of an input as its three columns hold it: an
+// empty tab id, a NULL provider and an empty title state that no agent sent
+// the input.
+type storedSender struct {
+	tabID    string
+	provider sql.Null[leapmuxv1.AgentProvider]
+	title    string
+}
+
+func newStoredSender(sender *AgentSender) storedSender {
+	if sender == nil {
+		return storedSender{}
+	}
+	return storedSender{
+		tabID:    sender.TabID,
+		provider: sql.Null[leapmuxv1.AgentProvider]{V: sender.Provider, Valid: true},
+		title:    sender.Title,
+	}
+}
+
+// value returns the sender that the columns hold, or nil for none. The schema
+// ties the columns, so a row never holds a provider or a title without a tab.
+func (s storedSender) value() *AgentSender {
+	if s.tabID == "" {
+		return nil
+	}
+	return &AgentSender{TabID: s.tabID, Provider: s.provider.V, Title: s.title}
 }
 
 // schedulesEqual compares two optional instants by instant, not by pointer or
@@ -2791,17 +2915,23 @@ func transcriptContent(item StoredItem, attachments []Attachment) ([]byte, error
 // inputIdempotencyKey includes the input identity and content. A changed retry
 // gets a different key and conflicts with the existing message identifier.
 // The schedule and the retry source payload are content too: the same input
-// id re-sent with a different schedule must not reuse the accepted row.
+// id re-sent with a different schedule must not reuse the accepted row. So is
+// the sender: the same input id sent from another agent's tab is another input.
 func inputIdempotencyKey(input NewItem) string {
 	type idempotencyAttachment struct {
 		Filename string `json:"filename"`
 		MimeType string `json:"mime_type"`
 		Data     []byte `json:"data"`
 	}
+	type idempotencySender struct {
+		TabID    string                  `json:"tab_id"`
+		Provider leapmuxv1.AgentProvider `json:"provider"`
+	}
 	type idempotencyPayload struct {
 		ID               string                   `json:"id"`
 		AgentID          string                   `json:"agent_id"`
 		Kind             leapmuxv1.AgentInputKind `json:"kind"`
+		Sender           *idempotencySender       `json:"sender,omitempty"`
 		Text             string                   `json:"text"`
 		TargetMode       string                   `json:"target_mode"`
 		PrepareContext   bool                     `json:"prepare_context"`
@@ -2819,8 +2949,12 @@ func inputIdempotencyKey(input NewItem) string {
 		text := timefmt.Format(*input.ScheduledAt)
 		scheduled = &text
 	}
+	var sender *idempotencySender
+	if input.Sender != nil {
+		sender = &idempotencySender{TabID: input.Sender.TabID, Provider: input.Sender.Provider}
+	}
 	data, err := json.Marshal(idempotencyPayload{
-		ID: input.ID, AgentID: input.AgentID, Kind: input.Kind, Text: input.Text,
+		ID: input.ID, AgentID: input.AgentID, Kind: input.Kind, Sender: sender, Text: input.Text,
 		TargetMode: input.TargetMode, PrepareContext: input.PrepareContext,
 		ReclassifyOnEdit: input.ReclassifyOnEdit, ScheduledAt: scheduled,
 		SourcePayload: input.SourcePayload, Attachments: attachments,

@@ -375,6 +375,7 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 		WorkerID:      p.WorkerID,
 		Dispatcher:    dispatcher,
 		CrossWorker:   cwClient,
+		Sources:       svc,
 		HubBridge:     hubBridge,
 		HubStreams:    hubStreams,
 		Streams:       svc,

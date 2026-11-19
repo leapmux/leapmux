@@ -77,6 +77,7 @@ var (
 	timeType       = reflect.TypeFor[time.Time]()
 	rawMessageType = reflect.TypeFor[json.RawMessage]()
 	marshalerType  = reflect.TypeFor[json.Marshaler]()
+	textValuerType = reflect.TypeFor[TextValuer]()
 )
 
 func isNil(v any) bool {
@@ -114,6 +115,8 @@ func toNode(v reflect.Value) node {
 			return node{}
 		}
 		return node{kind: nodeScalar, scalar: t.UTC().Format(time.RFC3339)}
+	case v.Type().Implements(textValuerType):
+		return node{kind: nodeScalar, scalar: v.Interface().(TextValuer).TextValue()}
 	case v.Type() == rawMessageType:
 		return jsonNode(v.Bytes())
 	case v.Type().Implements(marshalerType):

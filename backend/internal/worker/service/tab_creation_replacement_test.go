@@ -239,11 +239,15 @@ func TestCreationReplacement_TerminalRPCWaitsForTheOriginalCheckpoint(t *testing
 			svc := h.svc
 			const id = "restart-creation"
 			testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
+			// Wrap the start that New wired, so a replacement runs the
+			// production start.
+			production := svc.startTerminalFn
+			require.NotNil(t, production, "New wires the terminal start")
 			svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, output terminal.OutputHandler, exit terminal.ExitHandler) error {
 				if initialFailure {
 					return errors.New("original shell failed")
 				}
-				if err := svc.startTerminalProcess(ctx, opts, output, exit); err != nil {
+				if err := production(ctx, opts, output, exit); err != nil {
 					return err
 				}
 				if err := svc.Terminals.SendInput(id, terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}); err != nil {

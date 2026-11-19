@@ -66,7 +66,7 @@ export function makeFakePrefs() {
     setRevealAfterDownload: vi.fn(),
     setShowComposerStatusBar: vi.fn(),
     setDirectoryPickerShowHidden: vi.fn(),
-    setTerminalOsNotifications: vi.fn(),
+    setDesktopNotifications: vi.fn(),
     setShowHiddenMessages: vi.fn(),
   }
 }

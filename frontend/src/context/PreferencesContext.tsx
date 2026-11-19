@@ -193,9 +193,12 @@ export interface PreferencesState {
   directoryPickerShowHidden: () => boolean
   setDirectoryPickerShowHidden: (value: boolean) => void
 
-  /** Browser-level terminal OSC desktop notifications (default off). */
-  terminalOsNotifications: () => boolean
-  setTerminalOsNotifications: (value: boolean) => void
+  /**
+   * Browser-level desktop notifications (default off): terminal OSC alerts,
+   * and `leapmux control notify` while the page is hidden.
+   */
+  desktopNotifications: () => boolean
+  setDesktopNotifications: (value: boolean) => void
 
   /**
    * Every dual-tier preference, addressed by name.
@@ -652,7 +655,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   const [expandAgentThoughts, setExpandAgentThoughts] = createBrowserToggle('expandAgentThoughts', true)
   const [showHiddenMessages, setShowHiddenMessages] = createBrowserToggle('showHiddenMessages', false)
   const [revealAfterDownload, setRevealAfterDownload] = createBrowserToggle('revealAfterDownload', true)
-  const [terminalOsNotifications, setTerminalOsNotifications] = createBrowserToggle('terminalOsNotifications', false)
+  const [desktopNotifications, setDesktopNotifications] = createBrowserToggle('desktopNotifications', false)
   const [showComposerStatusBar, setShowComposerStatusBar] = createBrowserToggle('showComposerStatusBar', true)
 
   // A stored value is UNTRUSTED. `localStorageGet` casts rather than
@@ -1339,8 +1342,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setPreferredExternalAppId,
       directoryPickerShowHidden,
       setDirectoryPickerShowHidden,
-      terminalOsNotifications,
-      setTerminalOsNotifications,
+      desktopNotifications,
+      setDesktopNotifications,
       showComposerStatusBar,
       setShowComposerStatusBar,
 

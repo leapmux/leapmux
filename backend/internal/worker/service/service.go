@@ -98,6 +98,9 @@ type Service struct {
 	beforeAgentCloseTeardownFn func(string)
 	// beforeWorktreeRemovalFn controls the final removal boundary in tests.
 	beforeWorktreeRemovalFn func()
+	// afterTabStatusSetFn runs between SetTabStatus's set and its second read
+	// of the tab in tests, so a test can close the tab inside that window.
+	afterTabStatusSetFn func()
 	// afterPayloadPersistenceFn pauses payload creation before Hub publication in tests.
 	afterPayloadPersistenceFn func(context.Context)
 	// afterWorktreeBranchProbeFn controls the branch-selection boundary in tests.
@@ -148,15 +151,18 @@ type Service struct {
 	AgentStartup    *startupRegistry[leapmuxv1.AgentStatus]
 	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
 
-	// PrivateEvents is the worker-local pub/sub for E2EE-only events
-	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked). Always
-	// non-nil after New.
+	// PrivateEvents is the worker-local pub/sub for the E2EE-only events of
+	// WorkerPrivateEvent (see PrivateEventsBus). Always non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
 	// TabPayloads persists (user_id, tab_id) -> TabPayload for every
 	// payload-backed tab kind (FILE, IMAGE). Always non-nil after New.
 	// The hub never sees these rows; clients fetch payloads over E2EE.
 	TabPayloads *TabPayloadStore
+
+	// TabStatuses holds, in memory, the status that a process reported for
+	// each hosted tab through SetTabStatus. Always non-nil after New.
+	TabStatuses *TabStatusStore
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
 	// them to finish before DB/data-dir teardown. Close handlers must
@@ -680,6 +686,7 @@ func New(cfg Config) *Service {
 		svc.SetRegisteredBy(seed)
 	}
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents, &svc.worktreeLifecycle)
+	svc.TabStatuses = NewTabStatusStore(svc.PrivateEvents)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.creations = newTabCreationCoordinator(svc)
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
@@ -737,7 +744,10 @@ func New(cfg Config) *Service {
 	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
-	svc.startTerminalFn = svc.Terminals.StartTerminal
+	// startTerminalProcess, not Terminals.StartTerminal: a creation that
+	// resumes a terminal whose stopped shell the manager still holds must
+	// restart it, and StartTerminal refuses an id that the manager holds.
+	svc.startTerminalFn = svc.startTerminalProcess
 	svc.createAgentRecordFn = func(ctx context.Context, q *db.Queries, p db.CreateAgentParams) error { return q.CreateAgent(ctx, p) }
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
 	svc.sendControlResponseFn = func(agentID string, content []byte) error {
@@ -1451,7 +1461,7 @@ func (svc *Service) saveTerminalExit(tid string, exitCode int, snapshot terminal
 	}
 	// A concurrent close and a renamed title remain authoritative.
 	params := db.SaveTerminalExitParams{
-		ID: tid, Cols: int64(snapshot.Cols), Rows: int64(snapshot.Rows), Screen: snapshot.screen, ExitCode: int64(exitCode),
+		ID: tid, Cols: int64(snapshot.Cols), Rows: int64(snapshot.Rows), Screen: snapshot.screen, ExitCode: sql.NullInt64{Int64: int64(exitCode), Valid: true},
 		Title: snapshot.Title, PreviousTitle: snapshot.previousTitle,
 	}
 	if err := svc.Queries.SaveTerminalExit(bgCtx(), params); err != nil {
@@ -1721,6 +1731,7 @@ func registerAllWithGuards(d *channel.Dispatcher, svc *Service) map[string]metho
 	registerAgentHandlers(ownerOnly, svc)
 	registerAgentSessionHandlers(ownerOnly, svc)
 	registerCloseTabHandler(ownerOnly, svc)
+	registerWorkerPrivateCommandHandlers(ownerOnly, svc)
 	registerCleanupHandlers(ownerOnly, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	tunnels := registerTunnelHandlers(ownerOnly)

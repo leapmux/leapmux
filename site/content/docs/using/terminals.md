@@ -81,6 +81,8 @@ leapmux control terminal open \
 
 `--shell` is optional — leaving it empty uses the Worker's default shell. `--start-dir` defaults to the working directory. See [`terminal open`](/docs/reference/control-commands/#leapmux-control-terminal-open) for the full flag set, including the placement flags.
 
+`--command` runs a command line in the new shell once the shell is ready: `leapmux control terminal open --dir /home/me/project --command 'make test'`. The Worker pastes the command and presses Enter when the shell's line editor turns on bracketed paste, or after a short wait for a shell that never does. A restart of the terminal does not run the command again.
+
 {{< callout type="info" >}}
 Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
 {{< /callout >}}
@@ -344,6 +346,8 @@ Restored output is replayed byte-for-byte, so full-screen apps redraw correctly.
 ### When a shell exits
 
 When the shell process exits, the Worker writes a notice into the screen so you can see it and so it persists. The notice reports that the terminal process exited, gives its exit code, and tells you that Enter restarts the shell.
+
+The Worker keeps the exit code, so `leapmux control terminal wait <terminal> --exit` prints it even after the shell ended, and `terminal get` reports it as `exit_code`. A Worker that was killed while the shell ran never saw it end, so it reports no exit code for that shell.
 
 If the Worker was disconnected or forcibly shut down, the exit code is unknown. The notice then reports the disconnected Worker instead of an exit code, and it offers the same restart.
 
