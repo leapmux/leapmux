@@ -10,6 +10,7 @@ const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
 const MONITOR_TEST = 'node scripts/run-bun-tests.mjs ci-monitor --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
+const TAR_READER_BUILD = 'GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" go build -o .tmp/leapmux-test-tar-reader{{if eq OS "windows"}}.exe{{end}} ./scripts/test-support/tar-reader.go'
 const CI_RESULTS_TEST = 'node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs ./scripts/test-results-tar.test.mjs ./scripts/test-support/tar-reader.test.mjs'
 const CACHE_NATIVE_TEST = 'node scripts/run-bun-tests.mjs cache-native --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
 const fixtures = []
@@ -118,6 +119,7 @@ describe('native CI validation', () => {
     '',
     'frontend-native',
     'ci-monitor',
+    'tar-reader-build',
     'ci-results',
     'backend',
     'desktop-go',
@@ -152,8 +154,10 @@ describe('native CI validation', () => {
     let index = 0
     // Retain the production orchestration. Replace compilation with a recorder
     // so the fixture can fail each test command without native toolchains.
-    // test-cache-native keeps its `task:` reference, which the fixture's
-    // Taskfile resolves to its own definition below.
+    // Keep the build and cache task calls and give each a recorded stage.
+    selected['build-test-tar-reader'] = {
+      cmds: ['bun record.mjs tar-reader-build'],
+    }
     selected['test-cache-native'] = {
       cmds: ['bun record.mjs cache-native'],
     }
@@ -179,11 +183,13 @@ describe('native CI validation', () => {
     })
     expect(result.error).toBeUndefined()
     expect(result.status === 0, result.stdout + result.stderr).toBe(failure === '')
-    // test-desktop-run contributes two recorded commands (Go and Rust), so
-    // the recorded order of the whole run is the stage list with the
-    // cache-native stage inserted after it.
+    const resultsStage = stages.indexOf('ci-results')
+    // Build the reader before the archive tests. Check the cache after
+    // test-desktop-run contributes its Go and Rust test stages.
     const recorded = [
-      ...stages.slice(0, -1),
+      ...stages.slice(0, resultsStage),
+      'tar-reader-build',
+      ...stages.slice(resultsStage, -1),
       'cache-native',
       ...stages.slice(-1),
     ]
@@ -219,9 +225,11 @@ describe('native CI validation', () => {
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
     expect(native).toContain('cd frontend && bun run test scripts/ tests/e2e/helpers/')
     expect(native).toContain(MONITOR_TEST)
+    expect(native).toContain(TAR_READER_BUILD)
     expect(native).toContain(CI_RESULTS_TEST)
+    expect(native.indexOf(TAR_READER_BUILD)).toBeLessThan(native.indexOf(CI_RESULTS_TEST))
     expect(native).toContain(CACHE_NATIVE_TEST)
-    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CI_RESULTS_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|run-bun-tests|bun run (?:lint|typecheck)|bun test|renovate/)
+    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== TAR_READER_BUILD && cmd !== CI_RESULTS_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|run-bun-tests|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     // The no-Docker run tests every package. The container tests skip themselves.
     const backend = native.find(cmd => cmd.includes('cd backend && node ../scripts/run-go-tool.mjs gotestsum'))

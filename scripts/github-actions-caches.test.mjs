@@ -1621,31 +1621,34 @@ describe('cache native setup', () => {
     for (const pkg of aptPackages.split(' ')) expect(steps[install].run).toContain(pkg)
   })
 
-  it('uses the primary Ubuntu archive before setting up the amd64 runner', () => {
-    const { steps } = yaml('.github/workflows/ci.yaml').jobs.linux
-    const archive = steps.find(step => step.name === 'Use the primary Ubuntu APT archive')
-    const setup = steps.find(step => step.uses === './.github/actions/setup-build')
-    expect(archive?.if).toBe('matrix.arch == \'amd64\'')
-    expect(steps.indexOf(archive)).toBeLessThan(steps.indexOf(setup))
-
+  it('limits APT downloads and installs only after successful downloads', () => {
     const dir = fixture()
-    const mirrors = join(dir, 'apt-mirrors.txt')
     const bin = join(dir, 'bin')
     mkdirSync(bin)
     const sudo = join(bin, 'sudo')
-    writeFileSync(sudo, '#!/bin/sh\n[ "$1" = install ] && [ "$5" = "$FIXTURE_APT_MIRRORS" ] || exit 1\nexec "$@"\n')
+    writeFileSync(sudo, `#!/bin/sh
+printf '%s\\n' "$*"
+if [ "$1" = timeout ]; then exit "$APT_FETCH_STATUS"; fi
+`)
     chmodSync(sudo, 0o755)
-    const script = archive.run.replace('/etc/apt/apt-mirrors.txt', '"$FIXTURE_APT_MIRRORS"')
-    expect(script).not.toContain('/etc/apt/apt-mirrors.txt')
-    const env = { RUNNER_TEMP: dir, FIXTURE_APT_MIRRORS: mirrors }
-    const absent = runShell(script, dir, env, bin)
-    expect(absent.status, absent.stderr).toBe(0)
-    expect(existsSync(mirrors)).toBe(false)
+    const env = {
+      CI_APT_HELPER: join(root, 'scripts', 'ci-apt.sh'),
+      APT_FETCH_STATUS: '0',
+    }
+    const apt = 'apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15'
+    const update = runShell('bash "$CI_APT_HELPER" update', dir, env, bin)
+    expect(update.status, update.stderr).toBe(0)
+    expect(update.stdout).toBe(`timeout --kill-after=15s 3m ${apt} update --error-on=any\n`)
+    const script = 'bash "$CI_APT_HELPER" install fish nushell'
+    const download = `timeout --kill-after=15s 10m ${apt} install --download-only -y --no-install-recommends fish nushell\n`
+    const installed = runShell(script, dir, env, bin)
+    expect(installed.status, installed.stderr).toBe(0)
+    expect(installed.stdout).toBe(`${download}apt-get install --no-download -y --no-install-recommends fish nushell\n`)
+    const timedOut = runShell(script, dir, { ...env, APT_FETCH_STATUS: '124' }, bin)
+    expect(timedOut.status).toBe(124)
+    expect(timedOut.stdout).toBe(download)
 
-    writeFileSync(mirrors, 'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\n')
-    const present = runShell(script, dir, env, bin)
-    expect(present.status, present.stderr).toBe(0)
-    expect(readFileSync(mirrors, 'utf8')).toBe('https://archive.ubuntu.com/ubuntu/\n')
+    expect(raw('.github/workflows/ci.yaml')).not.toContain('apt-mirrors.txt')
   })
 
   it('installs shells only for the native tests and caches Homebrew downloads', () => {

@@ -180,10 +180,11 @@ runs:
       shell: bash
       env:
         SETUP_CACHE_HASH: ${{ hashFiles('.github/actions/setup-build/action.yaml') }}
+        APT_INSTALL_HASH: ${{ hashFiles('scripts/ci-apt.sh') }}
         SETUP_DESKTOP: ${{ inputs.setup-desktop }}
         TEST_SHELLS: ${{ inputs.test-shells }}
       run: |
-        apt_hash="$(node - "$SETUP_CACHE_HASH" "$SETUP_DESKTOP" "$TEST_SHELLS" <<'JS'
+        apt_hash="$(node - "$SETUP_CACHE_HASH" "$APT_INSTALL_HASH" "$SETUP_DESKTOP" "$TEST_SHELLS" <<'JS'
         const { createHash } = require('node:crypto')
         const packageSets = JSON.stringify(process.argv.slice(2))
         process.stdout.write(createHash('sha256').update(packageSets).digest('hex'))
@@ -246,7 +247,7 @@ runs:
     - name: Update APT package indexes
       if: runner.os == 'Linux' && (inputs.setup-desktop == 'true' || inputs.test-shells == 'true')
       shell: bash
-      run: sudo apt-get -o Acquire::Retries=3 update
+      run: bash scripts/ci-apt.sh update
 
     - name: Install Tauri system dependencies
       if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
@@ -258,7 +259,7 @@ runs:
       # See https://github.com/tauri-apps/tauri/issues/4642 and
       # https://gstreamer.freedesktop.org/documentation/installing/on-linux.html.
       run: |
-        sudo apt-get install -y --no-install-recommends \
+        bash scripts/ci-apt.sh install \
           libwebkit2gtk-4.1-dev \
           libgtk-3-dev \
           libayatana-appindicator3-dev \
@@ -285,7 +286,7 @@ runs:
       if: runner.os == 'Linux' && inputs.test-shells == 'true'
       shell: bash
       run: |
-        sudo apt-get install -y --no-install-recommends busybox csh fish ksh nushell tcsh xonsh zsh
+        bash scripts/ci-apt.sh install busybox csh fish ksh nushell tcsh xonsh zsh
         # Ubuntu ships the Ash applet in busybox without a separate ash binary.
         shell_bin="$RUNNER_TEMP/leapmux-test-shells"
         mkdir -p "$shell_bin"
