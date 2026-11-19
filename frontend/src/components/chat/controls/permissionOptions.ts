@@ -191,11 +191,15 @@ export function resolvePermissionOption(
  * A remembered slot uses the native option's duration label because it can store a rule.
  * That label must remain visible even when the group selects Once.
  * A plain label on a remembered slot would conceal the lasting rule.
+ * A refusal that also ends the agent's turn reads Cancel, because Deny would
+ * hide that the agent does nothing more.
  */
 export function decisionLabel(layout: PermissionOptionLayout, polarity: 'allow' | 'reject'): string {
   const slot = polarity === 'allow'
     ? layout.positive
     : layout.negative
+  if (polarity === 'reject' && slot?.endsTurn)
+    return 'Cancel'
   const rememberKind = polarity === 'allow'
     ? KIND_ALLOW_ALWAYS
     : KIND_REJECT_ALWAYS

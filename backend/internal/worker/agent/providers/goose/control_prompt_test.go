@@ -58,7 +58,7 @@ func TestReadControlRequest_GooseReadsTheOptionsOfAPermission(t *testing.T) {
 		Title: "Run",
 		Options: []*leapmuxv1.PermissionOption{
 			{OptionId: "once", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow once"},
-			{OptionId: acp.CancelOptionID, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Cancel"},
+			{OptionId: acp.CancelOptionID, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Cancel", EndsTurn: true},
 		},
 	}), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Run"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"}]}}`)))
 

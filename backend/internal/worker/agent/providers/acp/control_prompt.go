@@ -13,7 +13,8 @@ import (
 // CancelOptionID is the option that LeapMux adds to a permission whose
 // runtime offers options but no reject option. The protocol still accepts a
 // refusal there, as the `cancelled` outcome, and the option is how a client
-// chooses it. The id carries a prefix that no runtime's option id uses.
+// chooses it. That outcome cancels the prompt turn, so the option ends the
+// turn. The id carries a prefix that no runtime's option id uses.
 const CancelOptionID = "leapmux:cancel"
 
 // permissionParams reads the params of a session/request_permission. Each
@@ -164,6 +165,7 @@ func WithRefusal(options []*leapmuxv1.PermissionOption) []*leapmuxv1.PermissionO
 		OptionId: CancelOptionID,
 		Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
 		Name:     "Cancel",
+		EndsTurn: true,
 	})
 }
 

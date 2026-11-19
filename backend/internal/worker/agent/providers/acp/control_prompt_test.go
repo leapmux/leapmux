@@ -96,6 +96,7 @@ func TestReadControlRequest_DropsAnOptionThatStatesNoKindAndReadsEachField(t *te
 	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER, options[1].GetKind())
 	assert.Equal(t, "defer", options[2].GetName(), "an unknown kind labels an option that states no name")
 	assert.Equal(t, CancelOptionID, options[3].GetOptionId())
+	assert.True(t, options[3].GetEndsTurn(), "the cancelled outcome cancels the prompt turn")
 	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, options[3].GetKind())
 }
 

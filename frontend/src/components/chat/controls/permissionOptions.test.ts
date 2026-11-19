@@ -419,6 +419,26 @@ describe('decisionLabel', () => {
     expect(decisionLabel(layout, 'reject')).toBe('Deny')
   })
 
+  // Codex's cancel and the base protocol's cancelled outcome refuse the call and
+  // stop the turn. Deny would hide that the agent does nothing more.
+  it('names a refusal that ends the turn Cancel', () => {
+    const layout = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('cancel', 'reject_once', 'Cancel'),
+        endsTurn: true,
+      },
+    ])
+    expect(decisionLabel(layout, 'reject')).toBe('Cancel')
+    expect(decisionLabel(layout, 'allow')).toBe('Allow')
+
+    const declining = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      option('decline', 'reject_once', 'Decline'),
+    ])
+    expect(decisionLabel(declining, 'reject'), 'a refusal of the call alone keeps the shared word').toBe('Deny')
+  })
+
   it('states the duration when a slot holds a remember option with no scope group', () => {
     // The agent offered no once variant, so the button is the only place the
     // duration can appear; a plain "Allow" would grant a permanent permission

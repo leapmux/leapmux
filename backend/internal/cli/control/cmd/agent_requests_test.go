@@ -279,6 +279,25 @@ request c2 of agent ag-1: dialog (the agent does not wait for it; answered, pend
            Line two.
 `, renderRequests(t, unreadable, answered), "a value of several lines continues under its first line")
 	})
+	t.Run("a refusal that ends the turn", func(t *testing.T) {
+		cancel := &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{
+			Title: "Bash",
+			Options: []*leapmuxv1.PermissionOption{
+				{OptionId: "accept", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow"},
+				{OptionId: "cancel", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Cancel", EndsTurn: true},
+			},
+		}}}
+		assert.Equal(t, `request c1 of agent ag-1: permission
+  title: Bash
+  options:
+    1  allow_once                   Allow
+    2  reject_once (ends the turn)  Cancel
+`, renderRequests(t, pendingRequest("c1", cancel)))
+		row := controlRequestRowOf("ag-1", pendingRequest("c1", cancel))
+		encoded, err := json.Marshal(row.Permission.Options)
+		require.NoError(t, err)
+		assert.JSONEq(t, `[{"n":1,"id":"accept","kind":"allow_once","name":"Allow"},{"n":2,"id":"cancel","kind":"reject_once","name":"Cancel","ends_turn":true}]`, string(encoded))
+	})
 	t.Run("question context and default", func(t *testing.T) {
 		extras := extrasQuestion()
 		extras.Context = "The build runs nightly.\nIt keeps a week of logs."

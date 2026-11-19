@@ -112,6 +112,9 @@ type permissionOptionView struct {
 	// Scope is how far an "allow_always" reaches: "session", "workspace",
 	// "project" or "user", when the provider states it.
 	Scope string `json:"scope,omitempty"`
+	// EndsTurn reports a refusal that also ends the agent's turn, rather than
+	// refusing only this call.
+	EndsTurn bool `json:"ends_turn,omitempty"`
 }
 
 // planView asks to approve a plan.
@@ -328,11 +331,12 @@ func permissionViewOf(p *leapmuxv1.PermissionPrompt) *permissionView {
 	}
 	for i, option := range p.GetOptions() {
 		view.Options = append(view.Options, permissionOptionView{
-			N:     i + 1,
-			ID:    option.GetOptionId(),
-			Kind:  permissionOptionKindToken(option.GetKind()),
-			Name:  option.GetName(),
-			Scope: enumToken(option.GetScope()),
+			N:        i + 1,
+			ID:       option.GetOptionId(),
+			Kind:     permissionOptionKindToken(option.GetKind()),
+			Name:     option.GetName(),
+			Scope:    enumToken(option.GetScope()),
+			EndsTurn: option.GetEndsTurn(),
 		})
 	}
 	return view
@@ -516,6 +520,9 @@ func (p *permissionView) writeText(w *bytes.Buffer) {
 		kind := option.Kind
 		if option.Scope != "" {
 			kind += " (" + option.Scope + ")"
+		}
+		if option.EndsTurn {
+			kind += " (ends the turn)"
 		}
 		rows = append(rows, []string{fmt.Sprint(option.N), kind, option.Name})
 	}

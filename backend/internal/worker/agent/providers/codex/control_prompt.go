@@ -450,7 +450,10 @@ func codexWordDecision(word string) codexDecisionChoice {
 	case codexDecisionDecline:
 		option.Kind, option.Name = leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, codexLabelDeny
 	default:
+		// Codex reads cancel as a refusal that also stops the turn: the agent
+		// does nothing more until the user's next message.
 		option.Kind, option.Name = leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, codexLabelCancel
+		option.EndsTurn = true
 	}
 	encoded, err := json.Marshal(word)
 	if err != nil {

@@ -23,6 +23,11 @@ export interface PermissionOption {
    * option name, which can hold the text of the call.
    */
   scope?: PermissionScope
+  /**
+   * Choosing the option also ends the agent's turn, rather than refusing only
+   * this call. The decision button names such a refusal Cancel.
+   */
+  endsTurn?: boolean
 }
 
 export const KIND_ALLOW_ALWAYS = ACP_PERMISSION_KIND.AllowAlways

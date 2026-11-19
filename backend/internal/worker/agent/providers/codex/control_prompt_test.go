@@ -196,7 +196,7 @@ func TestCodexReadControlRequest_AnUnreadableRequestOffersAcceptAndCancel(t *tes
 
 	want := []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 	}
 	for _, payload := range []string{`{}`, `not json`, `{"method":7,"params":"invalid"}`} {
 		requireCodexOptions(t, want, []byte(payload))
@@ -561,7 +561,7 @@ func TestCodexReadControlRequest_OffersEachDecisionAsAnOption(t *testing.T) {
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
 		{OptionId: "decline", Kind: kindRejectOnce, Name: "Deny"},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 		{OptionId: "acceptForSession", Kind: kindAllowAlways, Name: "Allow for Session", Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_SESSION},
 		{OptionId: "applyNetworkPolicyAmendment:4", Kind: kindAllowAlways, Name: "Allow Host & Remember: example.com"},
 	}, codexDecisionsPayload(t, "accept", "decline", "cancel", "acceptForSession", map[string]any{
@@ -645,11 +645,11 @@ func TestCodexReadControlRequest_OffersOnlyTheDecisionsThatCodexOffers(t *testin
 
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "decline", Kind: kindRejectOnce, Name: "Deny"},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 	}, codexDecisionsPayload(t, "decline", "cancel"))
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 	}, codexDecisionsPayload(t, "accept", "cancel"))
 }
 
@@ -662,7 +662,7 @@ func TestCodexReadControlRequest_AddsCancelToAListThatRefusesNothing(t *testing.
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
 		{OptionId: "acceptForSession", Kind: kindAllowAlways, Name: "Allow for Session", Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_SESSION},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 	}, codexDecisionsPayload(t, "accept", "acceptForSession"))
 }
 
@@ -685,7 +685,7 @@ func TestCodexReadControlRequest_AddsAcceptWhenAnUnknownDecisionMayApprove(t *te
 	// An intact list that refuses only gains no approval.
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "decline", Kind: kindRejectOnce, Name: "Deny"},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 	}, codexDecisionsPayload(t, "decline", "cancel"))
 }
 
@@ -718,7 +718,7 @@ func TestCodexReadControlRequest_AnEmptyOrUnknownListOffersAcceptAndCancel(t *te
 
 	want := []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
-		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
 	}
 	requireCodexOptions(t, want, codexRequestPayload(t, contracts.CodexMethodCommandExecutionRequestApproval, map[string]any{"command": "pwd"}))
 	requireCodexOptions(t, want, codexDecisionsPayload(t))

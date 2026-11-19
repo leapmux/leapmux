@@ -37,7 +37,8 @@
             {
               "optionId": "cancel",
               "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
-              "name": "Cancel"
+              "name": "Cancel",
+              "endsTurn": true
             }
           ]
         },

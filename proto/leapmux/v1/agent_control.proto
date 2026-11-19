@@ -79,6 +79,10 @@ message PermissionOption {
   string name = 3;
   // How far an always-allow reaches, when the provider knows it.
   PermissionScope scope = 4;
+  // Choosing the option also ends the agent's turn: the runtime stops the
+  // work that asked, rather than refusing only this call. A client names
+  // such a refusal Cancel, not Deny.
+  bool ends_turn = 5;
 }
 
 enum PermissionOptionKind {

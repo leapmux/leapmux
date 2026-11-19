@@ -163,6 +163,8 @@ function permissionOptionFromWire(wire: WirePermissionOption): PermissionOption 
   const scope = SCOPES[wire.scope]
   if (scope)
     option.scope = scope
+  if (wire.endsTurn)
+    option.endsTurn = true
   return option
 }
 
