@@ -73,7 +73,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	// credential, and another browser session.
 	otherBearer := env.bearerFor(t)
 	otherTokenID := tokenIDOf(t, otherBearer)
-	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
 	require.NoError(t, err)
 
 	_, err = env.client.ChangePassword(bearerReq(ctx, &leapmuxv1.ChangePasswordRequest{
@@ -83,7 +83,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 
 	// The password really changed, so nothing below passes because the
 	// mutation quietly did nothing.
-	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// THE regression, read from the store where no cache can mask it.

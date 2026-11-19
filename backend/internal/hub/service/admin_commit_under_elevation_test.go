@@ -87,7 +87,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 			},
 			landed: func(t *testing.T, env *adminUserEnv, _, subjectUsername string) bool {
 				t.Helper()
-				_, _, _, err := auth.Login(context.Background(), env.st,
+				_, _, err := auth.Login(context.Background(), env.st,
 					hubtestutil.TestSecretHasher(), subjectUsername, adminCommitResetPassword, auth.DefaultSessionDuration)
 				return err == nil
 			},

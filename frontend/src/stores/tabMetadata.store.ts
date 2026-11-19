@@ -5,7 +5,7 @@ import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { batch, createEffect, createMemo, getOwner, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
-import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId, storageAccountUserId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { assignDefined } from '~/lib/jsonPick'
 import { sameKeys } from '~/lib/sameKeys'
@@ -720,10 +720,14 @@ export function useMetadataSweep(
   metadata: TabMetadataStore,
   onRetire?: (tabIds: ReadonlySet<string>) => void,
 ): void {
+  // The CRDT state names its tenant in RAW Hub user ids; the store tracks the
+  // composed STORAGE account its rows live under. The memo compares the two in
+  // one domain -- the user id the store's account names -- because "this state
+  // is these rows' account" can never hold between a raw id and an account.
   const liveTabIdSet = createMemo<{ userId: string, live: Set<string> } | null>(
     () => {
       const state = crdtState()
-      return state && state.userId === metadata.state.userId
+      return state && state.userId === storageAccountUserId(metadata.state.userId)
         ? {
             userId: state.userId,
             live: liveTabIds(state),

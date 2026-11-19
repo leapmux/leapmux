@@ -1,11 +1,12 @@
 import type { Component } from 'solid-js'
 import type { BrowserAuthFlow } from '~/lib/browserAuth'
-import { useNavigate } from '@solidjs/router'
+import { useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onCleanup, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { runBrowserAuth } from '~/lib/browserAuth'
 import { formatErrorMessage } from '~/lib/errors'
 import { followDestination, postSignInDestination } from '~/lib/postAuthNavigate'
+import { stringParam } from '~/lib/searchParam'
 import * as styles from './BrowserSignIn.css'
 
 /**
@@ -16,6 +17,7 @@ import * as styles from './BrowserSignIn.css'
  */
 export const BrowserSignIn: Component = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const auth = useAuth()
   const [phase, setPhase] = createSignal<'idle' | 'waiting'>('idle')
   const [failure, setFailure] = createSignal('')
@@ -40,10 +42,13 @@ export const BrowserSignIn: Component = () => {
         return
       }
 
-      // Adopt the session the sidecar's jar already holds.
-      const result2 = await auth.adoptBrowserSignIn()
+      // Adopt the session the sidecar's jar already holds. The redirect rides
+      // the sign-in, because a sign-in that recovers hands the navigation to
+      // SignInRecoveryGate, which reads the redirect from there.
+      const redirect = stringParam(searchParams.redirect)
+      const result2 = await auth.adoptBrowserSignIn({ redirect })
       if (result2.outcome === 'adopted') {
-        followDestination(navigate, postSignInDestination(result2.verificationRequired, undefined))
+        followDestination(navigate, postSignInDestination(result2.verificationRequired, redirect))
       }
       // Every other outcome: sign-in recovery or a newer operation owns the state.
     }

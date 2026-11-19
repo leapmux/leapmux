@@ -95,7 +95,7 @@ func TestCompleteUserProtoDegradesTheLinkReadForAnAccountWithAPassword(t *testin
 
 	report := signInReport(context.Background(), failingLinksStore{st}, user, nil, nil)
 	require.NotNil(t, report.GetUser(), "a degraded projection is still a projection")
-	assert.Nil(t, report.GetElevationExpiresAt(), "a fresh sign-in carries no elevation")
+	assert.Nil(t, report.GetElevationExpiresAt(), "a report built with no elevation carries none")
 }
 
 // A passkey count that fails is not a fact about the account, so the step-up

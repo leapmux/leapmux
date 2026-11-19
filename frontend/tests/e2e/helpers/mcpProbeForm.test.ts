@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useControlResponseHandling } from '~/components/chat/controlResponseHandling'
 import { createControlAnswerState } from '~/components/chat/controls/types'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { accountStorageKey, flushStorageWrites, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccountForTests } from '~/lib/browserStorage'
+import { accountStorageKey, flushStorageWrites, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
 import { afterLineIndent } from '~/lib/regexp'
 import { requestInstanceId } from '~/stores/control.store'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
@@ -23,6 +23,11 @@ import { nativeToolResult } from './nativeToolResult'
 
 /** The browser and model steps of a round trip, in order. */
 const trip = vi.hoisted(() => ({ events: [] as string[], body: 'FORM_ROUND_TRIP_OK', resultCallId: 'probe-call' }))
+
+// The hub the fake context reports, and the storage account the app composes
+// for the test user on it: the hub origin and the user id, not the bare id.
+const HUB_URL = 'http://hub.test'
+const TEST_ACCOUNT = storageAccountFor(new URL(HUB_URL).origin, TEST_USER_ID)
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   sendMessage: async (_page: unknown, text: string) => { trip.events.push(`send ${text}`) },
@@ -40,6 +45,13 @@ vi.mock('./providerToolCalls', () => ({
 // The saved control answer is on the asynchronous storage tier, which keeps no
 // in-memory mirror, so the round trips below need a database.
 useTestStorage()
+
+// The shared helper points the namespace at the bare user id. This file models
+// the app, which stores under the (hub, user) account, so the hook below
+// replaces it. Registered after the helper's, so it runs after.
+beforeEach(() => {
+  setStorageAccountForTests(TEST_ACCOUNT)
+})
 
 /**
  * Each test of `source` that reloads the page after `fillMcpProbeForm` with no
@@ -295,7 +307,7 @@ describe('the saved answers of the probe form', () => {
     // No await since the click: the write waits in the queue, as it does when
     // the reload starts a few milliseconds after the click.
     resetBrowserStorageForTests()
-    setStorageAccountForTests(TEST_USER_ID)
+    setStorageAccountForTests(TEST_ACCOUNT)
     first.unmount()
 
     await mountForm()
@@ -346,7 +358,7 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
         ? {
             v: { choices: SAVED_FORM_CHOICES },
           }
-        : [`${accountStorageKey(TEST_USER_ID, PREFIX_CONTROL_STATE)}agent-1`],
+        : [`${accountStorageKey(TEST_ACCOUNT, PREFIX_CONTROL_STATE)}agent-1`],
     })
     const modelScript = {
       prompt: (text: string) => text,
@@ -373,7 +385,7 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
       providerAgent: { provider: AgentProvider.GOOSE, prefix: 'native-e2e' },
       workspaceId: 'workspace',
       leapmuxServer: {
-        hubUrl: '',
+        hubUrl: HUB_URL,
         adminToken: '',
         workerId: '',
         ...(adminUserId === undefined

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopFetch, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -1156,5 +1156,123 @@ describe('openExternalUrl', () => {
 
     expect(invoked).toEqual([])
     expect(openSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('getCapabilities', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    resetPlatformRuntimeState()
+  })
+
+  afterEach(() => {
+    clearMocks()
+    resetPlatformRuntimeState()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  // A capability the shell has not confirmed stays false, so no local-only
+  // feature shows before the runtime state answers.
+  it('reports every local capability false before the shell answers, under Tauri', () => {
+    expect(getCapabilities()).toEqual({
+      mode: 'tauri-desktop-distributed',
+      tunnels: false,
+      appControl: false,
+      windowControl: false,
+      systemPermissions: false,
+      localSolo: false,
+    })
+  })
+})
+
+describe('platformBridge connectDistributed', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    resetPlatformRuntimeState()
+  })
+
+  afterEach(() => {
+    clearMocks()
+    resetPlatformRuntimeState()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('reads the runtime state again after the command succeeds', async () => {
+    let runtimeStateReads = 0
+    const commands: string[] = []
+    mockIPC((cmd) => {
+      commands.push(cmd)
+      if (cmd === 'connect_distributed')
+        return undefined
+      if (cmd === 'get_runtime_state') {
+        runtimeStateReads++
+        return runtimeStateReads === 1
+          // The state before the connect: the launcher, not yet connected.
+          ? {
+              shellMode: 'launcher',
+              connected: false,
+              hubUrl: '',
+              capabilities: getCapabilities(),
+            }
+          : {
+              shellMode: 'distributed',
+              connected: true,
+              hubUrl: 'https://hub.example',
+              capabilities: {
+                mode: 'tauri-desktop-distributed',
+                tunnels: false,
+                appControl: true,
+                windowControl: true,
+                systemPermissions: true,
+                localSolo: false,
+              },
+            }
+      }
+      return undefined
+    })
+
+    await platformBridge.getRuntimeState()
+    expect(runtimeStateReads).toBe(1)
+
+    await platformBridge.connectDistributed('https://hub.example')
+
+    // The command alone would leave the pre-connect state cached; the refresh
+    // is what makes the connected Hub observable here.
+    expect(runtimeStateReads).toBe(2)
+    expect(desktopHub()).toEqual({ kind: 'remote', url: 'https://hub.example' })
+
+    // The first runtime-state read starts the sidecar log listener on a
+    // floating import chain; let it land before the mock goes away.
+    await vi.waitFor(() => expect(commands).toContain('plugin:event|listen'))
+  })
+})
+
+describe('platformBridge startBrowserAuth', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('starts each ceremony kind through its own command', async () => {
+    const invoked: string[] = []
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return { ceremonyId: 'c-1', authorizeUrl: 'https://hub.example/authorize' }
+    })
+
+    await expect(platformBridge.startBrowserAuth('sign-in')).resolves.toEqual({
+      ceremonyId: 'c-1',
+      authorizeUrl: 'https://hub.example/authorize',
+    })
+    await expect(platformBridge.startBrowserAuth('step-up')).resolves.toEqual({
+      ceremonyId: 'c-1',
+      authorizeUrl: 'https://hub.example/authorize',
+    })
+
+    expect(invoked).toEqual(['start_browser_sign_in', 'start_browser_step_up'])
   })
 })

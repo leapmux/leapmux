@@ -1,7 +1,7 @@
 import type { AsyncLocalKey, SyncLocalKey } from '~/lib/browserStorage'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
-import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storageAccountFor, storageAccountUserId, storedKeyFor } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
@@ -331,6 +331,24 @@ describe('browserStorage', () => {
         .toEqual({ diffView: 'unified' })
     })
 
+    // Two hubs behind one origin can hold the same user id. The account is the
+    // (hub, user) pair, so each hub keeps its own namespace: a value stored for
+    // one is absent from the other, and nothing that the first wrote reaches
+    // the second.
+    it('keeps two hubs that hold the same user id in separate namespaces', () => {
+      const hubA = storageAccountFor('https://hub-a.example', 'user-x')
+      const hubB = storageAccountFor('https://hub-b.example', 'user-x')
+
+      setStorageAccountForTests(hubA)
+      localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
+
+      setStorageAccountForTests(hubB)
+      expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
+
+      setStorageAccountForTests(hubA)
+      expect(localStorageGet(KEY_BROWSER_PREFS)).toEqual({ diffView: 'split' })
+    })
+
     it('refuses an empty id, which names no account', () => {
       expect(() => setStorageAccountForTests('')).toThrow(/Invalid storage account id/)
     })
@@ -603,6 +621,69 @@ describe('localStorageDropPrefix', () => {
 
   it('accepts an empty matching family', async () => {
     await expect(localStorageDropPrefix(`${PREFIX_EDITOR_DRAFT}absent-`)).resolves.toBeUndefined()
+  })
+})
+
+describe('storageAccountFor', () => {
+  // The account joins its two halves with `/`, and the stored key joins the
+  // account with `:`. A pair whose parts contain a delimiter must still map to
+  // an account of its own: `('a/b', 'c')` and `('a', 'b/c')` must never share
+  // one, or one hub's namespace opens onto another's.
+  it('separates every pair whose halves contain a delimiter', () => {
+    const pairs: Array<[[string, string], [string, string]]> = [
+      [
+        ['a/b', 'c'],
+        ['a', 'b/c'],
+      ],
+      [
+        ['a:b', 'c'],
+        ['a', 'b:c'],
+      ],
+      [
+        ['a%b', 'c'],
+        ['a', 'b%c'],
+      ],
+    ]
+    for (const [[hub1, user1], [hub2, user2]] of pairs) {
+      const account1 = storageAccountFor(hub1, user1)
+      const account2 = storageAccountFor(hub2, user2)
+      expect(account1, `${hub1}|${user1} vs ${hub2}|${user2}`).not.toBe(account2)
+
+      const key1 = accountStorageKey(account1, KEY_BROWSER_PREFS)
+      const key2 = accountStorageKey(account2, KEY_BROWSER_PREFS)
+      expect(key1.startsWith(key2), `${key1} vs ${key2}`).toBe(false)
+      expect(key2.startsWith(key1), `${key2} vs ${key1}`).toBe(false)
+    }
+  })
+})
+
+describe('storageAccountUserId', () => {
+  // The inverse of `storageAccountFor`. The account percent-encodes BOTH
+  // halves, so the only `/` left in it is the separator and its tail decodes
+  // back to the user id the pair was composed from -- whatever delimiters that
+  // id itself carries.
+  it('recovers the user id of an account whose halves contain delimiters', () => {
+    const pairs: Array<[string, string]> = [
+      ['https://hub.example', 'user-x'],
+      ['a/b', 'c'],
+      ['a', 'b/c'],
+      ['a:b', 'c'],
+      ['a%b', 'c'],
+    ]
+    for (const [hub, userId] of pairs) {
+      expect(storageAccountUserId(storageAccountFor(hub, userId))).toBe(userId)
+    }
+  })
+
+  // `setStorageAccountForTests` writes a bare Hub user id as the account -- the
+  // form whose account IS its user id. It carries no separator and no encoding,
+  // so it names itself.
+  it('returns a bare user id unchanged', () => {
+    expect(storageAccountUserId('usertest')).toBe('usertest')
+  })
+
+  it('names no user when there is no account', () => {
+    expect(storageAccountUserId(null)).toBeNull()
   })
 })
 

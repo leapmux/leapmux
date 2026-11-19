@@ -370,9 +370,9 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 	env := setup(t)
 	apiToken := env.seedAPIToken(t)
 	delegationToken := env.seedDelegationToken(t)
-	sessionToken, _, _, err := auth.Login(context.Background(), env.st, hubtestutil.TestSecretHasher(), "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	loginResult, _, err := auth.Login(context.Background(), env.st, hubtestutil.TestSecretHasher(), "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	sessionID := hubtestutil.SessionIDFromCookie(t, sessionToken)
+	sessionID := hubtestutil.SessionIDFromCookie(t, loginResult.Token)
 
 	_, err = env.st.APITokens().Revoke(context.Background(), apiToken)
 	require.NoError(t, err)

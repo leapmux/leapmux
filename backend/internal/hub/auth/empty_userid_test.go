@@ -137,13 +137,13 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// requires it to state a contract: a session must never be
 				// written for an id that names no user -- that row would then
 				// authenticate as blank on every subsequent request.
-				_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), zero, auth.DefaultSessionDuration)
+				_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), zero, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
 				require.Error(t, err, "a zero UserID must not create a session")
 				// Control, per this test's own contract: without it the case
 				// passes if CreateSession ever starts erroring for an unrelated
 				// reason (a schema change, a newly-required column), proving
 				// nothing about the zero id.
-				_, err = auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), ownerID, auth.DefaultSessionDuration)
+				_, err = auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), ownerID, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
 				require.NoError(t, err, "control: a real user's session is created")
 			case "WorkerCanUse":
 				w, ok, err := auth.WorkerCanUse(ctx, st, worker.ID, ownerID)

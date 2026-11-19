@@ -5,6 +5,7 @@ import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup } from 'solid-js'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { storageAccountUserId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt'
 import { sameKeys } from '~/lib/sameKeys'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
@@ -80,16 +81,22 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
   createEffect(() => {
     const workers = workerSnapshot()
     const owner = opts.metadata.state.userId
+    // The CRDT state names its tenant in RAW Hub user ids, while `owner` is the
+    // composed STORAGE account the metadata rows live under. The two must be
+    // narrowed to one domain before they can be compared: `owner` stays the
+    // account identity for "has the metadata account moved?", `ownerTenant` is
+    // the tenant identity for "does the CRDT state belong to these rows?".
+    const ownerTenant = storageAccountUserId(owner)
     const generation = opts.metadata.state.accountGeneration
     const canonicalOwner = opts.state()?.userId
-    if (owner !== streamOwner || generation !== streamGeneration || canonicalOwner !== owner) {
+    if (owner !== streamOwner || generation !== streamGeneration || canonicalOwner !== ownerTenant) {
       for (const close of privateStreamCleanups.values())
         close()
       privateStreamCleanups.clear()
       streamOwner = owner
       streamGeneration = generation
     }
-    if (!owner || canonicalOwner !== owner)
+    if (!owner || canonicalOwner !== ownerTenant)
       return
 
     // No workers at all means no tab anywhere is hosted -- logout, or an empty
@@ -115,7 +122,7 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
         continue
       let active = true
       const isCurrent = () => active && opts.metadata.state.userId === owner
-        && opts.metadata.state.accountGeneration === generation && opts.state()?.userId === owner
+        && opts.metadata.state.accountGeneration === generation && opts.state()?.userId === ownerTenant
       const acceptsMetadata = (tabId: string, type: TabType) => {
         if (!isCurrent())
           return false

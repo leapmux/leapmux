@@ -43,6 +43,15 @@ vi.mock('~/lib/systemInfo', () => ({
   isCaptchaEnabled: () => false,
 }))
 
+// Remote-Hub mode: the ceremonies HubPage gates run in the system browser.
+const ceremoniesInBrowser = vi.hoisted(() => vi.fn<() => boolean>(() => false))
+vi.mock('~/lib/hubSite', () => ({
+  ceremoniesRunInBrowser: () => ceremoniesInBrowser(),
+  openHubPage: vi.fn(),
+  hubPageUrl: vi.fn(),
+  hubOrigin: vi.fn(),
+}))
+
 /**
  * Renders AuthGuard inside a REAL router so the redirects it performs are
  * observable, and records every navigation it causes.
@@ -85,6 +94,7 @@ describe('AuthGuard', () => {
     mockSoloAccess.mockReturnValue(SoloAccess.UNSPECIFIED)
     mockBootstrapError.mockReturnValue(null)
     mockRetryBootstrap.mockClear()
+    ceremoniesInBrowser.mockReturnValue(false)
     setSystemInfoLoaded(true)
     setLoadFailure(null)
   })
@@ -112,6 +122,23 @@ describe('AuthGuard', () => {
     expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
     // A blocking screen, not a redirect: there is nowhere to send them.
     expect(navigations).toEqual([])
+  })
+
+  // A remote-Hub-mode visitor on a hub whose account holds no password sets
+  // that password in the BROWSER: a session created inside the app would not
+  // be one the handoff issued. The continue view renders, and the password
+  // form never mounts.
+  it('renders the continue-in-browser view for a remote hub without a password', async () => {
+    mockUser.mockReturnValue(null)
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(false)
+    mockSoloAccess.mockReturnValue(SoloAccess.PASSWORD_SETUP)
+    ceremoniesInBrowser.mockReturnValue(true)
+
+    renderGuard()
+
+    expect(await screen.findByText('Continue in your browser')).toBeInTheDocument()
+    expect(screen.queryByTestId('password-setup-gate')).not.toBeInTheDocument()
   })
 
   it('leaves a signed-in TCP visitor alone after setup', () => {

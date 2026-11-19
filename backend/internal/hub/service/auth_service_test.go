@@ -358,7 +358,7 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 		ID: userID, Username: "oauthonly", PasswordHash: password.PlaceholderHash,
 		DisplayName: "OAuth Only", FirstCredentialExempt: false,
 	}))
-	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour)
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour, auth.SignInProvedNoFactor)
 	require.NoError(t, err)
 
 	for _, p := range []struct {
@@ -489,7 +489,7 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 		ID: userID, Username: "haslink", PasswordHash: password.PlaceholderHash,
 		DisplayName: "Has Link", FirstCredentialExempt: true,
 	}))
-	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour)
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour, auth.SignInProvedNoFactor)
 	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub", ClientID: "cid",
@@ -731,10 +731,12 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 }
 
 // TestAuthService_ChangePassword_NeedsElevatedSession pins the gate on the
-// cookie path end to end: a fresh sign-in is NOT enough to change the
-// password. The session must prove a factor first, and the refusal is
-// FailedPrecondition -- the frontend reads Unauthenticated as "signed out"
-// and would discard the session the user is about to elevate.
+// cookie path end to end: a session that holds no step-up window cannot
+// change the password, and the refusal is FailedPrecondition -- the frontend
+// reads Unauthenticated as "signed out" and would discard the session the
+// user is about to elevate. The sign-in writes the five-minute window a
+// proven factor earns; the setup drops it, so what the refusal measures is
+// the gate rather than that window.
 func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	t.Parallel()
 
@@ -748,6 +750,13 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 	token := sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie"))
+	admin, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+	_, err = st.Sessions().DropElevation(context.Background(), store.DropSessionElevationParams{
+		SessionID: hubtestutil.SessionIDFromCookie(t, token),
+		UserID:    userid.MustNew(admin.ID),
+	})
+	require.NoError(t, err)
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
@@ -767,7 +776,7 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	// The password did not change: the old one still authenticates.
-	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
 	require.NoError(t, err, "a refused change must leave the password alone")
 }
 
@@ -1005,14 +1014,13 @@ func TestEmailVerificationRule_UnverifiedBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 in the DB.
 
-	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "unverified", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "unverified", "testpass", auth.DefaultSessionDuration)
 
 	// Try UpdateProfile — the verification restriction must block it.
-	_, err = userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
+	_, err := userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
 		Username:    "unverified",
 		DisplayName: "Updated",
-	}, token))
+	}, sess.Token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -1024,14 +1032,13 @@ func TestEmailVerificationRule_AdminExempt(t *testing.T) {
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
 	// Verify the admin can still call protected RPCs.
-	adminToken, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
 
 	// Admin should be able to call UpdateProfile even with email_verified=0.
-	_, err = userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
+	_, err := userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
 		Username:    "admin",
 		DisplayName: "Admin Updated",
-	}, adminToken))
+	}, session.Token))
 	require.NoError(t, err)
 }
 
@@ -1054,15 +1061,14 @@ func TestEmailVerificationRule_ConfigOff_NotBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 — but the restriction is OFF.
 
-	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "nogate", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "nogate", "testpass", auth.DefaultSessionDuration)
 
 	// Unverified user should be able to call UpdateProfile when the restriction
 	// is off.
-	_, err = userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
+	_, err := userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
 		Username:    "nogate",
 		DisplayName: "Updated",
-	}, token))
+	}, session.Token))
 	require.NoError(t, err)
 }
 
@@ -1165,12 +1171,11 @@ func TestEmailVerificationRule_LogoutAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "logoutgating", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "logoutgating", "testpass", auth.DefaultSessionDuration)
 
 	// Logout should be allowed for unverified users.
 	callCtx, callInfo := connect.NewClientContext(context.Background())
-	_, err = authClient.Logout(authedReq(callCtx, &leapmuxv1.LogoutRequest{}, token))
+	_, err := authClient.Logout(authedReq(callCtx, &leapmuxv1.LogoutRequest{}, session.Token))
 	require.NoError(t, err)
 
 	// Verify the cookie is cleared.
@@ -1197,15 +1202,14 @@ func TestEmailVerificationRule_RequestEmailChangeAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "emailchangegate", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "emailchangegate", "testpass", auth.DefaultSessionDuration)
 
 	// RequestEmailChange should be allowed for unverified users
 	// (it should not return PermissionDenied from the verification
 	// interceptor).
-	_, err = userClient.RequestEmailChange(authedReq(context.Background(), &leapmuxv1.RequestEmailChangeRequest{
+	_, err := userClient.RequestEmailChange(authedReq(context.Background(), &leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "newemail@example.com",
-	}, token))
+	}, session.Token))
 	// The RPC may succeed or fail for business logic reasons, but should NOT
 	// be blocked by the verification interceptor (no PermissionDenied).
 	if err != nil {
@@ -1395,10 +1399,11 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	assert.True(t, auth.EmailVerificationFactsFromUser(dbUser).Satisfied(true))
 }
 
-// TestLoginReportsTheCompleteProjectionAndNoElevation pins the SessionReport a
-// sign-in returns: the same complete projection GetCurrentUser builds, linked
-// providers included, and no elevation, because a fresh sign-in grants none.
-func TestLoginReportsTheCompleteProjectionAndNoElevation(t *testing.T) {
+// TestLoginReportsTheCompleteProjectionAndTheSignInWindow pins the
+// SessionReport a sign-in returns: the same complete projection GetCurrentUser
+// builds, linked providers included, and the five-minute window the sign-in
+// wrote, reported as elevation_expires_at five minutes ahead.
+func TestLoginReportsTheCompleteProjectionAndTheSignInWindow(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1422,7 +1427,75 @@ func TestLoginReportsTheCompleteProjectionAndNoElevation(t *testing.T) {
 	assert.Equal(t, "gh", report.GetUser().GetOauthProviders()[0].GetId())
 	assert.True(t, report.GetUser().GetPasswordSet())
 	assert.NotNil(t, report.GetEmailVerification(), "the verification outcome rides the report")
-	assert.Nil(t, report.GetElevationExpiresAt(), "a fresh sign-in carries no elevation")
+	require.NotNil(t, report.GetElevationExpiresAt(), "a sign-in that proved a factor reports the window it wrote")
+	assert.WithinDuration(t, time.Now().Add(auth.FreshAuthenticationWindow), report.GetElevationExpiresAt().AsTime(), time.Minute,
+		"the deadline is the five-minute window the sign-in wrote")
+}
+
+// A sign-up proves a factor, so it reports the window it wrote exactly as a
+// login does. Both branches mint their own session -- the verification-required
+// branch needs one the user can call VerifyEmail with -- so both are driven
+// here: each holds its own CreateSession call and its own report, and a branch
+// that dropped the deadline would read as "no window" to a client that shows
+// the fresh-authentication deadline.
+func TestSignUpReportsTheSignInWindow(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name             string
+		seed             authTestSeed
+		email            string
+		wantVerification bool
+	}{
+		{name: "plain", seed: enableSignup, email: "new@example.com"},
+		{name: "with verification required", seed: func(t *testing.T, set *settings.Manager) {
+			enableSignup(t, set)
+			enableEmailVerification(t, set)
+		}, email: "unverified@example.com", wantVerification: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client, _, _ := setupAuthTestServer(t, testConfig(), tc.seed)
+			resp, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
+				Username:    "newuser",
+				Password:    "newpass123",
+				DisplayName: "New User",
+				Email:       tc.email,
+			})
+			require.NoError(t, err)
+			// Without this the subtests would silently share one branch, and
+			// the second CreateSession call site would go unexercised.
+			require.Equal(t, tc.wantVerification,
+				resp.GetSessionReport().GetEmailVerification().GetVerificationRequired(),
+				"this subtest must take the branch it names")
+			report := resp.GetSessionReport()
+			require.NotNil(t, report.GetElevationExpiresAt(), "a sign-up that proved a factor reports the window it wrote")
+			assert.WithinDuration(t, time.Now().Add(auth.FreshAuthenticationWindow), report.GetElevationExpiresAt().AsTime(), time.Minute,
+				"the deadline is the five-minute window the sign-up wrote")
+		})
+	}
+}
+
+// An OAuth completion proves no factor: the provider never re-authenticated,
+// so the session holds no window and the report must say so. The field is
+// optional on the wire and its absence is the answer -- a zero deadline here
+// would tell the user their session is elevated.
+func TestCompleteOAuthSignupReportsNoElevationDeadline(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
+
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "bobuser",
+		DisplayName: "Bob User",
+	}))
+	require.NoError(t, err)
+	assert.Nil(t, resp.GetSessionReport().GetElevationExpiresAt(),
+		"an OAuth completion proved no factor, so the report carries no deadline")
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
@@ -2063,9 +2136,11 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, usernames.Admin, loginResp.GetSessionReport().GetUser().GetUsername())
 	// The passkey sign-in reports the complete projection, as GetCurrentUser
-	// does: the stored passkey count, and no elevation for a fresh session.
+	// does: the stored passkey count, and the five-minute window the sign-in
+	// wrote.
 	assert.Equal(t, int32(1), loginResp.GetSessionReport().GetUser().GetPasskeyCount())
-	assert.Nil(t, loginResp.GetSessionReport().GetElevationExpiresAt())
+	require.NotNil(t, loginResp.GetSessionReport().GetElevationExpiresAt(), "a sign-in that proved a factor reports the window it wrote")
+	assert.WithinDuration(t, time.Now().Add(auth.FreshAuthenticationWindow), loginResp.GetSessionReport().GetElevationExpiresAt().AsTime(), time.Minute)
 }
 
 // An administrator never waits behind a pending verification row, so their
@@ -2342,8 +2417,7 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 		Email:                 "mistpyed@example.com",
 		FirstCredentialExempt: true,
 	}))
-	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "mistyped", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "mistyped", "testpass", auth.DefaultSessionDuration)
 
 	// Rung one: the email gate admits the change, and the elevation gate
 	// refuses it. The refusal must be the one a step-up prompt can clear --
@@ -2351,7 +2425,7 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	callCtx, callInfo := connect.NewClientContext(ctx)
 	_, err = userClient.RequestEmailChange(authedReq(callCtx, &leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "mistyped@example.com",
-	}, token))
+	}, session.Token))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
 		"an unverified account must reach the elevation gate, not the email gate")
@@ -2362,7 +2436,7 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	// gate -- a remedy the user could not act on.
 	_, err = userClient.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
-	}, token))
+	}, session.Token))
 	require.NoError(t, err, "an unverified user must be able to prove the factor their remedy needs")
 
 	// Rung three: the change lands. The corrected address goes to
@@ -2370,7 +2444,7 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	// account's own.
 	_, err = userClient.RequestEmailChange(authedReq(ctx, &leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "mistyped@example.com",
-	}, token))
+	}, session.Token))
 	require.NoError(t, err)
 
 	user, err := st.Users().GetByID(ctx, userID)

@@ -16,17 +16,22 @@
 import type { Locator } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { elevateSessionViaAPI, listMyAPITokensViaAPI, signUpViaAPI } from './helpers/api'
+import { dropElevationViaAPI, elevateSessionViaAPI, listMyAPITokensViaAPI, signUpViaAPI } from './helpers/api'
 import { openPreferencesAs } from './helpers/preferences'
 import { answerElevationPrompt, elevationPrompt, openAccountSettings, openAppAs } from './helpers/ui'
 
 const APP_HOME_URL_RE = /\/$/
 const PASSWORD = 'password123'
 
-/** A fresh account plus its session cookie. */
+/** A fresh account plus its session cookie, holding no elevation window. */
 async function freshAccount(hubUrl: string, prefix: string): Promise<string> {
   const username = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`
-  return signUpViaAPI(hubUrl, username, PASSWORD, 'Elevation User', `${username}@test.local`)
+  const cookie = await signUpViaAPI(hubUrl, username, PASSWORD, 'Elevation User', `${username}@test.local`)
+  // A sign-up opens a five-minute window, so the hub would accept every
+  // sensitive action below with no prompt at all. The cases here drive the
+  // prompt, so they start with none.
+  await dropElevationViaAPI(hubUrl, cookie)
+  return cookie
 }
 
 /** Ask the Account panel `prefs` to change the password to `password`. The caller asserts the outcome. */

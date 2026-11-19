@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,20 @@ type persistedCookie struct {
 	Expires  *time.Time `json:"expires,omitempty"`
 	Secure   bool       `json:"secure,omitempty"`
 	HTTPOnly bool       `json:"http_only,omitempty"`
+}
+
+// equal reports whether the two records hold the same cookie values. The
+// expiry compares by instant: the field is a pointer, so struct equality
+// would report a cookie with an expiry as changed whenever it is re-set.
+func (pc persistedCookie) equal(other persistedCookie) bool {
+	if pc.Name != other.Name || pc.Value != other.Value || pc.Path != other.Path ||
+		pc.Secure != other.Secure || pc.HTTPOnly != other.HTTPOnly {
+		return false
+	}
+	if pc.Expires == nil || other.Expires == nil {
+		return pc.Expires == nil && other.Expires == nil
+	}
+	return pc.Expires.Equal(*other.Expires)
 }
 
 // sessionFile is the on-disk form of a session record.
@@ -151,7 +166,7 @@ func (j *persistentJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		}
 		k := cookieKey(c)
 		pc := fromHTTP(c)
-		if old, ok := j.record[k]; ok && old == pc {
+		if old, ok := j.record[k]; ok && old.equal(pc) {
 			continue
 		}
 		j.record[k] = pc
@@ -202,6 +217,15 @@ func (j *persistentJar) persistLocked() {
 	for _, pc := range j.record {
 		cookies = append(cookies, pc)
 	}
+	// Sorted by name and path so one record always marshals to the same
+	// bytes: the record is a map, and iteration order would otherwise make
+	// the unchanged check below re-write the file.
+	sort.Slice(cookies, func(a, b int) bool {
+		if cookies[a].Name != cookies[b].Name {
+			return cookies[a].Name < cookies[b].Name
+		}
+		return cookies[a].Path < cookies[b].Path
+	})
 	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: cookies}, "", "  ")
 	if err != nil {
 		slog.Warn("session jar: cannot encode session record; keeping cookies in memory only", "error", err)

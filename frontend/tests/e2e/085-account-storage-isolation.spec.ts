@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { accountStorageKeyPrefix, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ } from '../../src/lib/browserStorage'
+import { accountStorageKeyPrefix, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, storageAccountFor } from '../../src/lib/browserStorage'
 import { test } from './fixtures'
 import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { storageKeys } from './helpers/storage'
@@ -33,7 +33,8 @@ test.describe('account storage isolation', () => {
     await openAppAs(page, leapmuxServer.adminToken)
     await overrideThemeOnThisDevice(page, 'nord')
 
-    const adminPrefix = accountStorageKeyPrefix(leapmuxServer.adminUserId)
+    const adminAccount = storageAccountFor(new URL(leapmuxServer.hubUrl).origin, leapmuxServer.adminUserId)
+    const adminPrefix = accountStorageKeyPrefix(adminAccount)
     // POLLED. Storage writes behind, so the rows the sign-in produced reach the
     // database a moment after the UI settles.
     await expect.poll(async () => (await leapmuxKeys(page)).some(k => k.startsWith(adminPrefix)))

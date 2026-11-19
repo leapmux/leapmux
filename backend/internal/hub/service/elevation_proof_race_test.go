@@ -80,8 +80,8 @@ func setupProofTestUser(t *testing.T) *proofTestUser {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{ID: uid, Username: "proofuser", PasswordHash: hash, FirstCredentialExempt: true}))
-	token, _, _, err := auth.Login(t.Context(), st, hubtestutil.TestSecretHasher(), "proofuser", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "proofuser", "testpass", auth.DefaultSessionDuration)
+	token := sess.Token
 	info, err := auth.ValidateToken(t.Context(), st, hubtestutil.TestSecretHasher(), token)
 	require.NoError(t, err)
 	key, err := keystore.GenerateKey()

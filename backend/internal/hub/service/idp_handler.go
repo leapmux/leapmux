@@ -407,7 +407,8 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 		// Without this the provider silently reuses its own session, the
 		// browser returns in a fraction of a second, and the "step-up" proved
 		// nothing.
-		ForceReauthentication: purpose == store.OAuthStatePurposeReauth,
+		ForceReauthentication: purpose == store.OAuthStatePurposeReauth ||
+			(purpose == leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_LOGIN && isConsentRoute(redirectURI)),
 	})
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -808,7 +809,20 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
+	// A provider sign-in for a consent route proves a factor when the account
+	// elevates only through a provider: the re-authentication stage asked the
+	// provider for a fresh authentication, so the sign-in counts as a proof.
+	proof := auth.SignInProvedNoFactor
+	if isConsentRoute(redirectURI) {
+		user, userErr := h.store.Users().GetByID(ctx, userID)
+		if userErr == nil {
+			providerOnly, provErr := accountElevatesOnlyThroughAProvider(ctx, h.store, user)
+			if provErr == nil && providerOnly {
+				proof = auth.SignInProvedFactor
+			}
+		}
+	}
+	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), proof, auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 	})
 	if sessionErr != nil {

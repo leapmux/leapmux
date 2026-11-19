@@ -5,7 +5,7 @@
 
 -- name: CreateUserSession :exec
 INSERT INTO user_sessions (
-    id, secret_hash, user_id, expires_at, user_agent, ip_address, issued_to_client, auth_generation
+    id, secret_hash, user_id, expires_at, user_agent, ip_address, issued_to_client, auth_generation, elevation_proven_at, elevation_expires_at
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(secret_hash),
@@ -14,7 +14,9 @@ INSERT INTO user_sessions (
     sqlc.arg(user_agent),
     sqlc.arg(ip_address),
     sqlc.narg(issued_to_client),
-    (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
+    (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id)),
+    sqlc.narg(elevation_proven_at),
+    sqlc.narg(elevation_expires_at)
 );
 
 -- name: GetUserSessionByID :one

@@ -31,6 +31,7 @@ import {
   getWorkerId,
   hubRefusal,
   hubSettingsDrift,
+  listCustomizedHubSettingsViaAPI,
   listOnlineWorkerIDsViaAPI,
   listWorkersViaAPI,
   loginViaAPI,
@@ -526,6 +527,56 @@ describe('resetHubSettingsViaAPI', () => {
   })
 })
 
+describe('listCustomizedHubSettingsViaAPI', () => {
+  it('lists the customized settings through one request when the hub accepts', async () => {
+    const requests = recordedRequests(() => Response.json({
+      values: [
+        { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
+        { key: 'signup_enabled', valueJson: 'true', customized: false },
+      ],
+    }))
+    await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session')).resolves.toEqual([
+      { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' },
+    ])
+    expect(requests.map(request => request.method)).toEqual([
+      'AdminSettingsService/ListSettings',
+    ])
+  })
+
+  // A write needs an elevated session, and so does a read after the step-up
+  // rule landed. The helper elevates on the MARKER alone, then lists once
+  // more: its session is shared with every later cleanup call, so a password
+  // check on each run would cost the whole suite.
+  it('elevates and lists once more when the hub refuses with the elevation marker', async () => {
+    let listCalls = 0
+    const requests = recordedRequests((method) => {
+      if (method !== 'AdminSettingsService/ListSettings')
+        return Response.json({})
+      listCalls++
+      if (listCalls > 1) {
+        return Response.json({
+          values: [
+            { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
+          ],
+        })
+      }
+      return new Response('{"code":"failed_precondition"}', {
+        status: 403,
+        headers: { 'Leapmux-Elevation-Required': '1' },
+      })
+    })
+    await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session', 'secret')).resolves.toEqual([
+      { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' },
+    ])
+    expect(requests.map(request => request.method)).toEqual([
+      'AdminSettingsService/ListSettings',
+      'UserService/ElevateSession',
+      'AdminSettingsService/ListSettings',
+    ])
+    expect(requests[1]!.body).toEqual({ currentPassword: 'secret' })
+  })
+})
+
 describe('test channel initialization', () => {
   it('closes only the selected hub and creates a fresh manager on reuse', async () => {
     const otherClose = vi.fn()
@@ -974,6 +1025,13 @@ describe('elevatedAdminSessionViaAPI', () => {
           captcha: { payload: 'solved-captcha', honeypot: '' },
         },
       ],
+      // A sign-in opens a five-minute window, so the session drops it first
+      // and the elevation below is the one the helper promises.
+      [
+        'UserService/DropElevation',
+        'leapmux-session=own',
+        {},
+      ],
       [
         'UserService/ElevateSession',
         'leapmux-session=own',
@@ -987,7 +1045,9 @@ describe('elevatedAdminSessionViaAPI', () => {
       ? new Response('{}', {
           headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' },
         })
-      : new Response('{"code":"permission_denied"}', { status: 403 }))
+      : method === 'UserService/DropElevation'
+        ? Response.json({})
+        : new Response('{"code":"permission_denied"}', { status: 403 }))
     await expect(elevatedAdminSessionViaAPI(hubUrl)).rejects.toThrow('elevateSessionViaAPI failed')
   })
 })

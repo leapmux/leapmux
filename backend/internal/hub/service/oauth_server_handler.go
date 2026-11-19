@@ -188,6 +188,26 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 	}
 }
 
+// consentRoutePaths lists the paths that consentLeg serves with GET: the two
+// pages a redirect can land on before a consent. RegisterRoutes and
+// isConsentRoute read this one list.
+var consentRoutePaths = []string{"/oauth/authorize", "/oauth/device"}
+
+// isConsentRoute reports whether a redirect URI lands on a consent route.
+// A provider sign-in for a consent route needs a fresh authentication, so
+// the account does not make two provider round trips before a consent.
+//
+// The comparison is exact on the path: a query or a fragment does not
+// change the page the route serves, and a longer path is a different page,
+// so /oauth/authorizeX is not the consent route /oauth/authorize is.
+func isConsentRoute(redirect string) bool {
+	path := redirect
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	return slices.Contains(consentRoutePaths, path)
+}
+
 // RegisterRoutes mounts the authorization server on the mux.
 func (h *OAuthServerHandler) RegisterRoutes(mux *http.ServeMux) {
 	// RFC 8414 and RFC 9728 metadata. Both are anonymous by design: a client

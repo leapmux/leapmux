@@ -4,7 +4,7 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import { setStorageAccountForTests } from '~/lib/browserStorage'
+import { setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
 import { getCRDTBridge, setCRDTBridge, setTabWorkerId, tombstoneTab } from '~/lib/crdt'
 import { useMetadataSweep } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
@@ -117,6 +117,31 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
 
       expect(opened.map(o => o.workerId).sort()).toEqual(['w1', 'w2'])
+      dispose()
+    })
+  })
+
+  it('opens a stream when the metadata account is composed around the state\'s raw Hub user id', async () => {
+    // The metadata store tracks the STORAGE account -- `hub/user` -- while
+    // `UserCrdtState.userId` keeps the raw Hub user id `bootstrap` copies off
+    // `UserMaterialized`. The open gate compares the state's id against the
+    // metadata account to decide the CRDT state is these rows' account, so it
+    // must take the user id the account names: the two values themselves never
+    // match, and no stream ever opens.
+    setStorageAccountForTests(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+    await createRoot(async (dispose) => {
+      const s = mount()
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
+      s.run()
+      await flush()
+
+      expect(opened.map(o => o.workerId)).toEqual(['w1'])
       dispose()
     })
   })

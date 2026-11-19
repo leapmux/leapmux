@@ -661,6 +661,28 @@ export function storageAccountFor(hub: string, userId: string): string {
   return `${encodeURIComponent(hub)}/${encodeURIComponent(userId)}`
 }
 
+/**
+ * The Hub user id a storage account names — the inverse of `storageAccountFor`.
+ *
+ * `storageAccountFor` composes `encodeURIComponent(hub) + '/' + encodeURIComponent(userId)`,
+ * and `encodeURIComponent` emits no `/`, so the last `/` separates the pair and
+ * its tail decodes back to the user id. `setStorageAccountForTests` writes a
+ * bare Hub user id as the account — the form whose account IS its user id — so
+ * an account with no separator names itself, undecoded.
+ *
+ * Use it wherever a value in the CRDT's identity domain (`UserCrdtState.userId`,
+ * the raw `user_id` the Hub reports) meets a storage account. The two never
+ * compare equal: the account carries the Hub origin and is percent-encoded.
+ */
+export function storageAccountUserId(account: string | null): string | null {
+  if (account === null)
+    return null
+  const separator = account.lastIndexOf('/')
+  return separator === -1
+    ? account
+    : decodeURIComponent(account.slice(separator + 1))
+}
+
 /** The stored key for a `device`-scoped `name`. */
 function deviceStorageKey(name: string): string {
   return `${NAMESPACE}${name}`

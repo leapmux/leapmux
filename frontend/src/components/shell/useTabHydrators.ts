@@ -6,6 +6,7 @@ import { createComputed, createEffect, createMemo, createSignal, onCleanup, untr
 import { workerAgent, workerPrivate, workerTerminal } from '~/api/workerRpc'
 import { TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { resolveSettingsTabFields } from '~/hooks/agentEvents'
+import { storageAccountUserId } from '~/lib/browserStorage'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { tabPayloadView } from '~/lib/tabPayload'
@@ -115,6 +116,11 @@ export interface TabHydrators {
  * update) don't re-walk the tab list.
  */
 export interface UseTabHydratorsOpts {
+  /**
+   * The raw Hub user id the session authenticates as; undefined until it
+   * resolves. NOT the composed storage account `metadata.state.userId` tracks,
+   * which is why `isCurrent` narrows one to the other before comparing.
+   */
   userId: () => string | undefined
   view: TabView
   metadata: TabMetadataStore
@@ -167,7 +173,8 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
     })
     current = untrack(() => createAccountTabHydrators(opts, () =>
       alive && opts.userId() === account && opts.view.ownerUserId() === account
-      && opts.metadata.state.userId === account && opts.metadata.state.accountGeneration === accountGeneration))
+      && storageAccountUserId(opts.metadata.state.userId) === account
+      && opts.metadata.state.accountGeneration === accountGeneration))
   })
   return {
     reaskWorkerTerminals: workerId => current?.reaskWorkerTerminals(workerId),

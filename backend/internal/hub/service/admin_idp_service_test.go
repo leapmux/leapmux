@@ -51,7 +51,7 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 }
 
 // setupAdminOAuthTestUnelevated builds the same environment with a session
-// that proved no factor. It is what the gate tests use.
+// that holds no step-up window. It is what the gate tests use.
 func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 	t.Helper()
 
@@ -70,8 +70,7 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 		IsAdmin:               true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
 	require.NoError(t, err)
 
@@ -91,7 +90,7 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 		client:  leapmuxv1connect.NewAdminIdPServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:      st,
 		ks:      ks,
-		token:   session,
+		token:   session.Token,
 		adminID: admin.ID,
 		cache:   cache,
 	}
@@ -461,16 +460,15 @@ func TestAdminIdPService_EvictsTheProviderCache(t *testing.T) {
 }
 
 // unelevatedSession signs the same administrator in a SECOND time and returns
-// that session, which proved no factor.
+// that session with the sign-in window dropped, which is the state a user is
+// in once the step-up window has expired.
 //
-// A second session rather than a drop on the first: the elevation lives on the
-// session row, so this is the state a user reaches by opening the app in
-// another browser, and the fixture's own seeding writes stay admitted.
+// A second session rather than a drop on the first: the elevation lives on
+// the session row, so this leaves the fixture's own seeding writes admitted.
 func (e *adminOAuthEnv) unelevatedSession(t *testing.T) string {
 	t.Helper()
-	session, _, _, err := auth.Login(context.Background(), e.st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	return session
+	session, _ := hubtestutil.LoginWithoutWindow(t, e.st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
+	return session.Token
 }
 
 // TestAdminIdPService_WritesNeedAProvenFactor drives every write verb on

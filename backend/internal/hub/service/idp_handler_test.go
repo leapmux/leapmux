@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -1362,6 +1363,163 @@ func assertNoCallbackSession(t *testing.T, response *http.Response) {
 	for _, cookie := range response.Cookies() {
 		assert.NotEqual(t, auth.CookieName, cookie.Name)
 		assert.NotEqual(t, auth.SecureCookieName, cookie.Name)
+	}
+}
+
+// --- A provider sign-in for a consent route asks for a fresh authentication ---
+//
+// The redirect decides two things the account cannot: whether the provider is
+// asked to re-authenticate, and whether that re-authentication counts as the
+// factor the session's window stands on. A consent route needs a fresh
+// authentication so a provider-only account does not make two provider round
+// trips before a consent -- and for that account the re-authentication IS the
+// proof. An account that holds a password proves its factor locally instead,
+// so its provider sign-in opens no window.
+
+// linkedProviderUser creates an account whose identity the stub issuer will
+// assert, and links it. withPassword is the production write that makes the
+// account hold a password; without it the account holds none and the provider
+// is its only credential.
+func linkedProviderUser(t *testing.T, st store.Store, providerID, subject, email string, withPassword bool) string {
+	t.Helper()
+	ctx := t.Context()
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "provideruser" + userID[:6], DisplayName: "Provider User",
+		Email: email, EmailVerified: true,
+		PasswordHash: password.PlaceholderHash,
+	}))
+	if withPassword {
+		hash, err := password.Hash("theirpass")
+		require.NoError(t, err)
+		require.NoError(t, st.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{ID: userID, PasswordHash: hash}))
+	}
+	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+		UserID: userid.MustNew(userID), ProviderID: providerID, ProviderSubject: subject,
+	}))
+	return userID
+}
+
+// beginLogin walks the sign-in start leg and returns the flow's state, its
+// browser binding cookie, and the provider URL the leg sent the browser to.
+// beginReauth is the re-authentication leg's twin.
+func beginLogin(t *testing.T, server *httptest.Server, providerID, redirect string) (string, *http.Cookie, *url.URL) {
+	t.Helper()
+	target := server.URL + "/auth/idp/" + providerID + "/login"
+	if redirect != "" {
+		target += "?redirect=" + url.QueryEscape(redirect)
+	}
+	resp, err := noRedirectClient().Get(target)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	authURL, err := resp.Location()
+	require.NoError(t, err)
+	state := authURL.Query().Get("state")
+	require.NotEmpty(t, state)
+	return state, oauthNonceCookie(t, resp, state), authURL
+}
+
+// callbackSessionRow reads the session the callback's Set-Cookie carries.
+func callbackSessionRow(t *testing.T, st store.Store, response *http.Response) *store.UserSession {
+	t.Helper()
+	var token string
+	for _, c := range response.Cookies() {
+		if (c.Name == auth.CookieName || c.Name == auth.SecureCookieName) && c.Value != "" && c.MaxAge >= 0 {
+			token = c.Value
+		}
+	}
+	require.NotEmpty(t, token, "the callback must sign the user in")
+	row, err := st.Sessions().GetByID(t.Context(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
+	require.NoError(t, err)
+	return row
+}
+
+func TestOAuthLogin_ConsentRouteForcesARePromptAndStampsTheWindow(t *testing.T) {
+	t.Parallel()
+
+	server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	const subject = "consent-route-subject"
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "consent-route@example.com", subject)
+	linkedProviderUser(t, st, providerID, subject, "consent-route@example.com", false)
+
+	state, nonce, authURL := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+	// Without the prompt the provider silently reuses its own session, the
+	// browser returns in a fraction of a second, and the sign-in proved
+	// nothing. max_age is the half a conforming provider must enforce.
+	assert.Equal(t, "login", authURL.Query().Get("prompt"))
+	assert.Equal(t, strconv.Itoa(int(huboauth.ReauthMaxAge.Seconds())), authURL.Query().Get("max_age"),
+		"the wire value comes from the exported constant, not a literal")
+
+	resp := completeCallback(t, server, providerID, state, nonce)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	row := callbackSessionRow(t, st, resp)
+	assert.NotNil(t, row.ElevationProvenAt,
+		"the round trip is the proof for an account whose only credential is the provider")
+	assert.NotNil(t, row.ElevationExpiresAt, "the proof grants the session the fresh window")
+}
+
+func TestOAuthLogin_ConsentRouteForAnAccountThatHoldsAPasswordStampsNoWindow(t *testing.T) {
+	t.Parallel()
+
+	server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	const subject = "password-holder-subject"
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "password-holder@example.com", subject)
+	linkedProviderUser(t, st, providerID, subject, "password-holder@example.com", true)
+
+	state, nonce, _ := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+	resp := completeCallback(t, server, providerID, state, nonce)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	row := callbackSessionRow(t, st, resp)
+	assert.Nil(t, row.ElevationProvenAt,
+		"an account that holds a password proves its factor locally, so its provider sign-in opens no window")
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+func TestOAuthLogin_ANonConsentRoutePromptsNothingAndStampsNoWindow(t *testing.T) {
+	t.Parallel()
+
+	server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	const subject = "plain-login-subject"
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "plain-login@example.com", subject)
+	linkedProviderUser(t, st, providerID, subject, "plain-login@example.com", false)
+
+	state, nonce, authURL := beginLogin(t, server, providerID, "/")
+	assert.Empty(t, authURL.Query().Get("prompt"), "an ordinary login must not force a re-prompt")
+	assert.Empty(t, authURL.Query().Get("max_age"),
+		"the maximum authentication age rides the same re-authentication the prompt asks for")
+
+	resp := completeCallback(t, server, providerID, state, nonce)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	row := callbackSessionRow(t, st, resp)
+	assert.Nil(t, row.ElevationProvenAt, "nothing was re-authenticated, so nothing was proven")
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+// The consent routes are the exact paths the consent leg serves. A longer
+// path is a different page and /oauth/token is not a consent at all, so
+// neither may ask the provider for a fresh authentication or open a window.
+func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
+	t.Parallel()
+
+	for _, redirect := range []string{"/oauth/authorizeX", "/oauth/token"} {
+		t.Run(redirect, func(t *testing.T) {
+			t.Parallel()
+			server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+			const subject = "near-miss-subject"
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "near-miss@example.com", subject)
+			linkedProviderUser(t, st, providerID, subject, "near-miss@example.com", false)
+
+			state, nonce, authURL := beginLogin(t, server, providerID, redirect)
+			assert.Empty(t, authURL.Query().Get("prompt"), "a near-miss path is not a consent route")
+			assert.Empty(t, authURL.Query().Get("max_age"), "a near-miss path is not a consent route")
+
+			resp := completeCallback(t, server, providerID, state, nonce)
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			row := callbackSessionRow(t, st, resp)
+			assert.Nil(t, row.ElevationProvenAt, "a near-miss path is not a consent route")
+			assert.Nil(t, row.ElevationExpiresAt)
+		})
 	}
 }
 

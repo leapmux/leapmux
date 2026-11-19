@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -203,6 +204,56 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 			row.ElevationExpiresAt, ceiling)
 		assert.WithinDuration(t, ceiling, *row.ElevationExpiresAt, time.Second,
 			"the slide must reach the ceiling, not stop short of it or collapse to the anchor")
+	})
+
+	// The cap counts from the SIGN-IN, not from the last slide. Five slides
+	// each ask for now + ElevationWindow and walk the deadline through
+	// t0+2h4m, t0+4h, t0+5h50m and t0+7h40m. The last request reaches past
+	// the ceiling and lands on t0+8h exactly -- ElevationMaxTotal measured
+	// from elevation_proven_at -- not the t0+9h30m it asked for.
+	t.Run("the cap counts from the sign-in", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "elev-cap-signin")
+		sess := SeedSession(t, st, user.ID)
+		t0 := now()
+
+		// The pair a factor sign-in writes: t0 and t0 plus five minutes.
+		_, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
+			SessionID:          sess.ID,
+			UserID:             userid.MustNew(user.ID),
+			ElevationProvenAt:  t0,
+			ElevationExpiresAt: t0.Add(5 * time.Minute),
+		}, t0)
+		require.NoError(t, err)
+
+		slides := []struct{ at, want time.Time }{
+			{t0.Add(4 * time.Minute), t0.Add(2*time.Hour + 4*time.Minute)},
+			{t0.Add(2 * time.Hour), t0.Add(4 * time.Hour)},
+			{t0.Add(3*time.Hour + 50*time.Minute), t0.Add(5*time.Hour + 50*time.Minute)},
+			{t0.Add(5*time.Hour + 40*time.Minute), t0.Add(7*time.Hour + 40*time.Minute)},
+			{t0.Add(7*time.Hour + 30*time.Minute), t0.Add(8 * time.Hour)},
+		}
+		for _, slide := range slides {
+			n, err := st.Sessions().SlideElevation(ctx, store.SlideSessionElevationParams{
+				SessionID:      sess.ID,
+				UserID:         userid.MustNew(user.ID),
+				WindowDeadline: slide.at.Add(auth.ElevationWindow),
+			}, slide.at)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, n, "the slide at %s must write the row it clamps", slide.at)
+
+			row, err := st.Sessions().GetByID(ctx, sess.ID, slide.at)
+			require.NoError(t, err)
+			require.NotNil(t, row.ElevationExpiresAt)
+			assert.WithinDuration(t, slide.want, *row.ElevationExpiresAt, time.Second,
+				"deadline after a slide at %s", slide.at)
+		}
+
+		row, err := st.Sessions().GetByID(ctx, sess.ID, slides[len(slides)-1].at)
+		require.NoError(t, err)
+		require.NotNil(t, row.ElevationProvenAt)
+		assert.WithinDuration(t, t0, *row.ElevationProvenAt, time.Second,
+			"the anchor must stay the sign-in: the cap is measured from it")
 	})
 
 	t.Run("the slide is monotone and never resurrects a lapsed window", func(t *testing.T) {

@@ -184,8 +184,7 @@ func setupAdminUserTestUnelevatedWithStore(t *testing.T, st store.Store) *adminU
 		EmailVerified: true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
@@ -215,7 +214,7 @@ func setupAdminUserTestUnelevatedWithStore(t *testing.T, st store.Store) *adminU
 	return &adminUserEnv{
 		client:      leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:          st,
-		token:       session,
+		token:       session.Token,
 		adminID:     admin.ID,
 		validator:   tv,
 		revocations: revocations,
@@ -369,8 +368,7 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       []byte("hash"),
 	}))
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
 
 	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 		User: service.SelectUserByUsername("admin"),
@@ -474,6 +472,24 @@ func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
 	assert.NotEmpty(t, issuedDefault.GetAccessToken())
 }
 
+// TestAdminUserService_IssueAPITokenRecordsItsCeremony pins the issuance the
+// mint writes: the administrator ceremony, distinct from the two OAuth
+// exchanges, so a swapped constant fails here.
+func TestAdminUserService_IssueAPITokenRecordsItsCeremony(t *testing.T) {
+	env := setupAdminUserTest(t)
+	ctx := context.Background()
+
+	issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
+		User:             service.SelectUserByID(env.adminID),
+		InstallationName: "admin-cli",
+	}, env.token))
+	require.NoError(t, err)
+
+	row, err := env.st.APITokens().GetByID(ctx, issued.GetTokenId())
+	require.NoError(t, err)
+	assert.Equal(t, store.APITokenIssuanceAdmin, row.Issuance)
+}
+
 // TestAdminUserService_UpdateUser_EmailRules covers the two rules the RPC
 // reproduces that no test pinned after the offline verbs were deleted.
 //
@@ -550,8 +566,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 		Username: "admin", PasswordHash: hash, DisplayName: "Admin", FirstCredentialExempt: true, IsAdmin: true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
@@ -573,7 +588,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	return &adminUserEnv{
 		client:    leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:        st,
-		token:     session,
+		token:     session.Token,
 		adminID:   admin.ID,
 		validator: tv,
 	}
@@ -997,8 +1012,8 @@ func TestAdminUserService_ListUserSessions_SelectsOneUserAndPages(t *testing.T) 
 
 func TestAdminUserService_SessionListsCarryNoSessionSecret(t *testing.T) {
 	env := setupAdminUserTest(t)
-	second, _, _, err := auth.Login(t.Context(), env.st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
+	second := session.Token
 	all, err := env.client.ListSessions(authedReq(t.Context(), &leapmuxv1.ListSessionsRequest{Page: &leapmuxv1.PageRequest{Limit: 1}}, env.token))
 	require.NoError(t, err)
 	oneUser, err := env.client.ListUserSessions(authedReq(t.Context(), &leapmuxv1.ListUserSessionsRequest{
@@ -1504,6 +1519,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 			callCtx, info := connect.NewClientContext(ctx)
 			err = call(callCtx, env, issued.GetAccessToken())
 			require.Error(t, err, "a bearer must not create durable new authority")
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 			assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
 				"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
 		})
@@ -1740,8 +1756,7 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 	require.NoError(t, err)
 	userID := created.GetUser().GetId()
 
-	session, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), username, oldPassword, auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), username, oldPassword, auth.DefaultSessionDuration)
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
@@ -1772,7 +1787,7 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 		userID:           userID,
 		username:         username,
 		oldPassword:      oldPassword,
-		session:          session,
+		session:          session.Token,
 		apiTokenID:       apiTokenID,
 		delegationID:     delegationID,
 		beforeGeneration: before.AuthGeneration,
@@ -1808,7 +1823,7 @@ func TestAdminUserService_ResetPassword_Selector(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.NoError(t, err, "a refused reset must not have touched the password")
 }
 
@@ -1828,9 +1843,9 @@ func TestAdminUserService_ResetPassword_ByIDAndByUsername(t *testing.T) {
 	assert.Equal(t, env.userID, byID.GetUserId())
 	assert.Equal(t, env.username, byID.GetUsername())
 
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.Error(t, err, "the old password must stop working")
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-id-password", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-id-password", auth.DefaultSessionDuration)
 	require.NoError(t, err, "the new password must work")
 
 	byUsername, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
@@ -1839,9 +1854,9 @@ func TestAdminUserService_ResetPassword_ByIDAndByUsername(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, env.userID, byUsername.GetUserId())
 
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-id-password", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-id-password", auth.DefaultSessionDuration)
 	assert.Error(t, err, "the previous password must stop working too")
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-username-password", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-username-password", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
 
@@ -1868,7 +1883,7 @@ func TestAdminUserService_ResetPassword_RefusesAPasswordThePolicyRefuses(t *test
 		})
 	}
 
-	_, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
+	_, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.NoError(t, err, "a refused password must not have replaced the stored one")
 	assert.Empty(t, env.revocations.recorded(),
 		"a refused reset must not tear a credential down either")
@@ -1957,7 +1972,7 @@ func TestAdminUserService_ResetPassword_SetsAPasswordForAnOAuthOnlyUser(t *testi
 	updated, err := env.st.Users().GetByID(ctx, oauthUser.ID)
 	require.NoError(t, err)
 	assert.True(t, updated.FirstCredentialExempt, "the reset must mark the account as having a password")
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "dave", "first-password", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "dave", "first-password", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
 
@@ -2017,7 +2032,7 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 
 	// Not irreversible: the caller chose the new password and logs in again
 	// with it. This is what makes the missing force flag correct.
-	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "admin", "brand-new-adminpass", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "admin", "brand-new-adminpass", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
 

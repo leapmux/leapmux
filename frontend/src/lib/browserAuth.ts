@@ -33,9 +33,11 @@ export async function runBrowserAuth(
     _rejectResult = reject
   })
 
+  // `onEvent` hands the callback the emitted payload -- the fields of
+  // `BrowserAuthResultEvent`, as the shell forwards them. The Tauri event
+  // envelope is unwrapped upstream, so `args[0]` IS the result here.
   const handleEvent = (...args: unknown[]): void => {
-    const event = args[0] as { payload: { ceremonyId: string, ok: boolean, failure: string } }
-    const p = event.payload
+    const p = args[0] as { ceremonyId: string, ok: boolean, failure: string }
     if (ownCeremonyId !== null && p.ceremonyId !== ownCeremonyId)
       return
     if (ownCeremonyId === null) {

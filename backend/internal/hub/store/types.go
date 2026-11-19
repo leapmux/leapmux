@@ -859,6 +859,10 @@ type CreateSessionParams struct {
 	// IssuedToClient names the built-in app this session is issued to through
 	// the browser handoff. Empty stores NULL.
 	IssuedToClient string
+	// ElevationProvenAt and ElevationExpiresAt carry the sign-in window when
+	// the sign-in proved a factor. Both nil means no window.
+	ElevationProvenAt  *time.Time
+	ElevationExpiresAt *time.Time
 }
 
 type TouchSessionParams struct {

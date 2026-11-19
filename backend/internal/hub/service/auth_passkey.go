@@ -102,11 +102,11 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx), auth.SignInProvedFactor)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-	resp := &leapmuxv1.FinishPasskeyLoginResponse{SessionReport: s.loginSessionReport(ctx, user)}
+	resp := &leapmuxv1.FinishPasskeyLoginResponse{SessionReport: s.loginSessionReport(ctx, user, session.Elevation)}
 	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil
 }
@@ -254,7 +254,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx), auth.SignInProvedFactor)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -263,7 +263,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 			Required:              verificationRequired,
 			EmailSent:             emailSent,
 			NextResendAvailableAt: nextResend,
-		}), nil),
+		}), elevationTimestamp(session.Elevation)),
 	}
 	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil

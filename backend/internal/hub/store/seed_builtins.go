@@ -8,7 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 )
 
-// SeedBuiltIns seeds the two registrations this build ships with, and
+// SeedBuiltIns seeds the three registrations this build ships with, and
 // reconciles them on every later boot.
 //
 // It is the ONE writer of a built-in's constant fields. The values live in

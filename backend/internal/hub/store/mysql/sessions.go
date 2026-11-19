@@ -54,13 +54,15 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		conn := tx.(*mysqlStore).conn
 		return conn.queryError(conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-			SecretHash:     p.SecretHash,
-			ID:             p.ID,
-			UserID:         p.UserID.String(),
-			ExpiresAt:      sqltime.NewMySQLTime(p.ExpiresAt),
-			UserAgent:      p.UserAgent,
-			IpAddress:      p.IPAddress,
-			IssuedToClient: sqlutil.NullNonEmpty(p.IssuedToClient),
+			SecretHash:         p.SecretHash,
+			ID:                 p.ID,
+			UserID:             p.UserID.String(),
+			ExpiresAt:          sqltime.NewMySQLTime(p.ExpiresAt),
+			UserAgent:          p.UserAgent,
+			IpAddress:          p.IPAddress,
+			IssuedToClient:     sqlutil.NullNonEmpty(p.IssuedToClient),
+			ElevationProvenAt:  sqltime.NewMySQLNullTime(p.ElevationProvenAt),
+			ElevationExpiresAt: sqltime.NewMySQLNullTime(p.ElevationExpiresAt),
 		}))
 	})
 }

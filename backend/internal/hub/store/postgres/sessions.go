@@ -51,13 +51,15 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
 	return (&pgStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*pgStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-			SecretHash:     p.SecretHash,
-			ID:             p.ID,
-			UserID:         p.UserID.String(),
-			ExpiresAt:      pgtime.New(p.ExpiresAt),
-			UserAgent:      p.UserAgent,
-			IpAddress:      p.IPAddress,
-			IssuedToClient: pgtype.Text{String: p.IssuedToClient, Valid: p.IssuedToClient != ""},
+			SecretHash:         p.SecretHash,
+			ID:                 p.ID,
+			UserID:             p.UserID.String(),
+			ExpiresAt:          pgtime.New(p.ExpiresAt),
+			UserAgent:          p.UserAgent,
+			IpAddress:          p.IPAddress,
+			IssuedToClient:     pgtype.Text{String: p.IssuedToClient, Valid: p.IssuedToClient != ""},
+			ElevationProvenAt:  pgtime.NewNull(p.ElevationProvenAt),
+			ElevationExpiresAt: pgtime.NewNull(p.ElevationExpiresAt),
 		}))
 	})
 }

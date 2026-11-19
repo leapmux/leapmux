@@ -235,14 +235,6 @@ func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.S
 		"verify your email or link an OAuth provider before setting this account's first password or passkey")
 }
 
-// firstCredentialAuthFreshness limits how long after an authentication a
-// session may START attaching the account's FIRST lasting credential.
-//
-// Five minutes is a re-sign-in, not a work session: long enough to complete
-// an identity provider that asks for a second factor, short enough that a
-// cookie captured earlier in the day is already stale.
-const firstCredentialAuthFreshness = 5 * time.Minute
-
 // ceremonyGrace is the slack the FINISH leg of a passkey registration adds
 // to BOTH freshness rules.
 //
@@ -371,7 +363,7 @@ type stepUpParams struct {
 // be. It is the whole first-credential rule the leg applies, so a caller
 // cannot apply the window and forget the grace.
 func (p stepUpParams) firstCredentialWindow() time.Duration {
-	return firstCredentialAuthFreshness + p.grace
+	return auth.FreshAuthenticationWindow + p.grace
 }
 
 // elevationInstant is the instant this leg evaluates the elevation window

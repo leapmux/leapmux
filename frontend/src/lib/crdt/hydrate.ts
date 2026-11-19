@@ -5,6 +5,7 @@ import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { fromBinary } from '@bufbuild/protobuf'
 import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { storageAccountUserId } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
 import { applyChunk, isChunkKind, parseHeader } from './checkpointChunks'
 import {
@@ -277,6 +278,10 @@ function validateCheckpoint(userId: string, read: CheckpointRead): HydrationPayl
   // the same way. Wipe rather than merely skip: a row keyed under this user but
   // carrying another user's state is corrupt by construction.
   //
+  // The row key is the composed STORAGE account (`hub/user`), while `user_id`
+  // keeps the raw Hub user id `bootstrap` copies off `UserMaterialized`, so the
+  // tenant to check against is the one the key names -- not the key itself.
+  //
   // A MISSING user_id is corrupt too, and is checked by the same comparison
   // rather than short-circuited past it. Guarding with `state.userId &&` would
   // admit the one blob that names no tenant at all -- the only record here whose
@@ -285,7 +290,7 @@ function validateCheckpoint(userId: string, read: CheckpointRead): HydrationPayl
   // produces one: `newState(userId)` seeds even the cold-start manager, a
   // bootstrap copies `materialized.userId`, and a checkpoint is only ever
   // written once a watermark exists, which requires one of those two.
-  if (state.userId !== userId) {
+  if (state.userId !== storageAccountUserId(userId)) {
     return null
   }
 

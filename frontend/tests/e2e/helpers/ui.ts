@@ -12,7 +12,7 @@ import { hasOptions } from '../../../src/components/chat/settingsGroups'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import { LocateTabResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
+import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER, storageAccountFor } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { markdownToPlainText } from '../../../src/lib/markdownPlainText'
 import { callHub, SESSION_COOKIE_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
@@ -1303,7 +1303,7 @@ export async function getBrowserPref(page: Page, userId: string, field: string):
  * Use the supplied account ID and accountStorageKey. Scanning for a similar key could read another account after multiple logins.
  */
 export async function getBrowserPrefValue(page: Page, userId: string, field: string): Promise<unknown> {
-  const row = await readEntry(page, accountStorageKey(userId, KEY_BROWSER_PREFS))
+  const row = await readEntry(page, accountStorageKey(storageAccountFor(pageHubUrl(page), userId), KEY_BROWSER_PREFS))
   const prefs = row?.v
   if (prefs == null || typeof prefs !== 'object')
     return null
@@ -1321,7 +1321,7 @@ export async function getBrowserPrefValue(page: Page, userId: string, field: str
  * PreferencesContext rejects a numeric value stored as a string and uses the default instead.
  */
 export async function setInitialBrowserPref(page: Page, userId: string, field: string, value: unknown) {
-  const storedKey = accountStorageKey(userId, KEY_BROWSER_PREFS)
+  const storedKey = accountStorageKey(storageAccountFor(pageHubUrl(page), userId), KEY_BROWSER_PREFS)
   const existing = await readEntry(page, storedKey)
   const prefs = (existing?.v != null && typeof existing.v === 'object')
     ? { ...existing.v as Record<string, unknown> }
@@ -1806,7 +1806,7 @@ export async function waitForEditorDraft(page: Page, userId: string, text: strin
     throw new Error('A stored editor draft check requires nonempty text.')
   await waitForStoredEntry(
     page,
-    accountStorageKey(userId, PREFIX_EDITOR_DRAFT),
+    accountStorageKey(storageAccountFor(pageHubUrl(page), userId), PREFIX_EDITOR_DRAFT),
     value => editorDraftContainsText(value, text),
     `the editor draft "${text}" must be persisted before the reload`,
   )
@@ -1833,7 +1833,7 @@ export async function waitForFilesSortOrder(
 ) {
   await waitForStoredEntry(
     page,
-    accountStorageKey(userId, `${PREFIX_FILES_SORT_ORDER}${workerId}:`),
+    accountStorageKey(storageAccountFor(pageHubUrl(page), userId), `${PREFIX_FILES_SORT_ORDER}${workerId}:`),
     value => isObject(value) && value.key === expected.key && value.direction === expected.direction,
     `the sort order ${expected.key}/${expected.direction} must be persisted before the reload`,
   )

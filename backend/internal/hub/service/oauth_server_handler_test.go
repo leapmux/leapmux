@@ -142,8 +142,19 @@ func (c *recordingBearerCloser) closed(tokenID string) bool {
 
 func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	t.Helper()
+	return setupAPIAuthWithStore(t, nil)
+}
+
+// setupAPIAuthWithStore runs the standard setup with the store wrapped before
+// the handler sees it, so one test can fail a store call and read the answer
+// the HTTP surface gives for it. wrap may be nil for the plain store.
+func setupAPIAuthWithStore(t *testing.T, wrap func(store.Store) store.Store) *apiAuthEnv {
+	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
+	if wrap != nil {
+		st = wrap(st)
+	}
 	hubtestutil.CreateTestAdmin(t, st)
 
 	pepper := []byte("0123456789abcdef0123456789abcdef")
@@ -208,9 +219,8 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 // that depend on `requireSession` see an authenticated browser session.
 func (e *apiAuthEnv) adminCookie(t *testing.T) *http.Cookie {
 	t.Helper()
-	tok, _, _, err := auth.Login(context.Background(), e.store, hubtestutil.TestSecretHasher(), hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	return &http.Cookie{Name: auth.CookieName, Value: tok}
+	session, _ := hubtestutil.LoginWithoutWindow(t, e.store, hubtestutil.TestSecretHasher(), hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	return &http.Cookie{Name: auth.CookieName, Value: session.Token}
 }
 
 // elevate stamps a live elevation window on the session the cookie specifies,
@@ -336,6 +346,29 @@ func TestAPIAuth_LocalRedirect_HappyPath(t *testing.T) {
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err)
 	assert.Equal(t, env.userID, info.ID.String())
+}
+
+// TestAPIAuth_AuthorizationCodeExchangeRecordsItsCeremony pins the issuance
+// the authorization-code mint writes: each of the three mint sites records
+// its own ceremony, and a swapped constant fails here.
+func TestAPIAuth_AuthorizationCodeExchangeRecordsItsCeremony(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	code, verifier := issueLocalRedirectCode(t, env)
+	resp, err := exchangeAuthorizationCode(env.server.URL, code, verifier)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var token struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&token))
+	require.NotEmpty(t, token.TokenID)
+	row, err := env.store.APITokens().GetByID(t.Context(), token.TokenID)
+	require.NoError(t, err)
+	assert.Equal(t, store.APITokenIssuanceAuthorizationCode, row.Issuance)
 }
 
 func TestAPIAuth_LocalRedirect_RejectsNonLoopback(t *testing.T) {
@@ -627,6 +660,43 @@ func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err)
 	assert.Equal(t, env.userID, info.ID.String())
+}
+
+// TestAPIAuth_DeviceCodeExchangeRecordsItsCeremony is the device-code twin of
+// the authorization-code pin: the mint must record the device-code issuance
+// on the row.
+func TestAPIAuth_DeviceCodeExchangeRecordsItsCeremony(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"installation_name": {"server-1"}})
+
+	approveResp, err := postForm(env.server.URL+"/oauth/device", url.Values{
+		"user_code": {userCode}, "decision": {"allow"},
+	}, cookie)
+	require.NoError(t, err)
+	defer func() { _ = approveResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, approveResp.StatusCode)
+
+	env.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
+	successResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {oauthapp.ControlCLIClientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = successResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, successResp.StatusCode)
+
+	var token struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(successResp.Body).Decode(&token))
+	require.NotEmpty(t, token.TokenID)
+	row, err := env.store.APITokens().GetByID(t.Context(), token.TokenID)
+	require.NoError(t, err)
+	assert.Equal(t, store.APITokenIssuanceDeviceCode, row.Issuance)
 }
 
 func TestAPIAuth_DeviceCode_SlowDown_OnRapidPoll(t *testing.T) {
@@ -3088,4 +3158,338 @@ type countedDelegationReads struct {
 func (s countedDelegationReads) GetByID(ctx context.Context, id string) (*store.DelegationToken, error) {
 	s.count.Add(1)
 	return s.DelegationTokenStore.GetByID(ctx, id)
+}
+
+// The desktop handoff's sign-in page: the sign-in variant of the consent
+// screen. It asks to sign the desktop in AS the account -- the handoff mints a
+// Hub session -- so it offers no permission list at all.
+func TestAPIAuth_DesktopAuthorize_ShowsTheSignInPage(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	page := bodyOf(t, resp)
+	assert.Contains(t, page, "Sign in to LeapMux Desktop?")
+	assert.Contains(t, page, "It will act as you")
+	assert.NotContains(t, page, "It would be able to:", "the sign-in page lists no permissions")
+	assert.NotContains(t, page, "It asks for no permissions",
+		"the sign-in page never says it asks for nothing; it asks to sign in")
+}
+
+// The desktop registration states NO scope, so a request that asks for one is
+// refused by the scope check before any page renders.
+func TestAPIAuth_DesktopAuthorize_RefusesAScope(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID}, "scope": {"file:read"}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	dest, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, "invalid_scope", dest.Query().Get("error"))
+}
+
+// The session code exchange for leapmux-desktop: 200, a session cookie,
+// the body {"signed_in": true}, a row with issued_to_client, and a session
+// with no elevation pair.
+func TestSessionCodeExchange_IssuesSession(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	ctx := context.Background()
+
+	verifier, challenge := pkceVerifierAndChallenge()
+	state := id.Generate()
+	redirect := "http://127.0.0.1:54321/callback"
+
+	// Consent for leapmux-desktop.
+	authClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	form := url.Values{
+		"client_id":             {oauthapp.DesktopClientID},
+		"response_type":         {"code"},
+		"code_challenge_method": {"S256"},
+		"redirect_uri":          {redirect},
+		"state":                 {state},
+		"code_challenge":        {challenge},
+		"decision":              {"allow"},
+		"installation_name":     {"laptop"},
+	}
+	req, _ := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := authClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	code := loc.Query().Get("code")
+	require.NotEmpty(t, code)
+
+	// Exchange.
+	exchangeResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {oauthapp.DesktopClientID},
+		"redirect_uri":  {redirect},
+		"code":          {code},
+		"code_verifier": {verifier},
+	})
+	require.NoError(t, err)
+	defer func() { _ = exchangeResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, exchangeResp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(exchangeResp.Body).Decode(&body))
+	assert.Equal(t, true, body["signed_in"])
+
+	// A session cookie was set.
+	found := false
+	for _, c := range exchangeResp.Cookies() {
+		if c.Name == auth.CookieName && c.Value != "" {
+			found = true
+		}
+	}
+	assert.True(t, found, "the exchange sets a session cookie")
+
+	// The row carries a minted session.
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	assert.NotEmpty(t, row.MintedSessionID, "the exchange records the minted session")
+
+	// The session has no elevation pair.
+	sess, err := env.store.Sessions().GetByID(ctx, row.MintedSessionID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Nil(t, sess.ElevationExpiresAt, "a fresh session carries no elevation")
+}
+
+// desktopSessionCode walks the desktop consent and returns the one-shot code
+// plus the PKCE verifier its exchange must present.
+func desktopSessionCode(t *testing.T, env *apiAuthEnv) (code, verifier string) {
+	t.Helper()
+	cookie := env.elevatedAdminCookie(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	form := url.Values{
+		"client_id":             {oauthapp.DesktopClientID},
+		"response_type":         {"code"},
+		"code_challenge_method": {"S256"},
+		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
+		"state":                 {id.Generate()},
+		"code_challenge":        {challenge},
+		"decision":              {"allow"},
+		"installation_name":     {"laptop"},
+	}
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := noRedirectClient().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	code = loc.Query().Get("code")
+	require.NotEmpty(t, code)
+	return code, verifier
+}
+
+// exchangeSessionCode redeems a desktop session code at /oauth/token.
+func exchangeSessionCode(t *testing.T, env *apiAuthEnv, code, verifier string) *http.Response {
+	t.Helper()
+	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {oauthapp.DesktopClientID},
+		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+		"code":          {code},
+		"code_verifier": {verifier},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// sessionCodeExchangeBody decodes one exchange's JSON answer.
+func sessionCodeExchangeBody(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	return body
+}
+
+// issuedSessionCookie returns the session cookie an exchange response set.
+func issuedSessionCookie(t *testing.T, resp *http.Response) *http.Cookie {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if c.Name == auth.CookieName && c.Value != "" {
+			return c
+		}
+	}
+	t.Fatal("the exchange must set a session cookie")
+	return nil
+}
+
+// A session code presented twice is the RFC 6749 section 4.1.2 case: a second
+// presentation means the code reached somebody who should not hold it, so the
+// session the first exchange minted is presumed compromised and revoked. The
+// cookie it issued must stop authenticating, or the remedy would leave the
+// attacker's real prize live.
+func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env)
+
+	// An RPC with a session cookie, through the interceptor a real client
+	// hits. The same call runs again after the replay, so the assertion reads
+	// the revocation rather than only the store row.
+	callRPC := func(token string) error {
+		callCtx, info := connect.NewClientContext(context.Background())
+		info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+		_, err := env.probe.client.ListWorkspaces(callCtx, &leapmuxv1.ListWorkspacesRequest{})
+		return err
+	}
+
+	first := exchangeSessionCode(t, env, code, verifier)
+	require.Equal(t, http.StatusOK, first.StatusCode, "the first exchange must sign the desktop in")
+	assert.Equal(t, true, sessionCodeExchangeBody(t, first)["signed_in"])
+	issued := issuedSessionCookie(t, first)
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	require.Equal(t, hubtestutil.SessionIDFromCookie(t, issued.Value), row.MintedSessionID,
+		"the exchange must record the session it minted")
+
+	require.NoError(t, callRPC(issued.Value),
+		"precondition: the issued session authenticates before the replay")
+
+	second := exchangeSessionCode(t, env, code, verifier)
+	assert.Equal(t, http.StatusBadRequest, second.StatusCode)
+	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, second)["error"])
+
+	_, err = env.store.Sessions().GetByID(ctx, row.MintedSessionID, time.Now().UTC())
+	assert.ErrorIs(t, err, store.ErrNotFound,
+		"the replay must revoke the session the code already minted")
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(callRPC(issued.Value)),
+		"the issued cookie must stop authenticating the moment the session is revoked")
+}
+
+// Two exchanges of one session code at the same time: exactly one signs the
+// desktop in and the other answers invalid_grant -- never a 500, which would
+// tell the caller to retry a code that is already spent. The winner's session
+// is revoked on the same RFC 6749 rule the sequential replay takes.
+func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env)
+
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+				"grant_type":    {service.GrantTypeAuthorizationCode},
+				"client_id":     {oauthapp.DesktopClientID},
+				"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+				"code":          {code},
+				"code_verifier": {verifier},
+			})
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			_ = resp.Body.Close()
+			statuses <- resp.StatusCode
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(statuses)
+	got := make([]int, 0, 2)
+	for status := range statuses {
+		got = append(got, status)
+	}
+	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, got,
+		"one code signs in once; the loser is invalid_grant and never a 500")
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	require.NotEmpty(t, row.MintedSessionID, "the winner must have minted a session")
+	_, err = env.store.Sessions().GetByID(ctx, row.MintedSessionID, time.Now().UTC())
+	assert.ErrorIs(t, err, store.ErrNotFound,
+		"the losing presentation revokes the session the code already minted")
+}
+
+// A wrong verifier proves nothing, so the exchange must mint no session. The
+// shape check passes -- 43 unreserved characters -- and only the S256
+// comparison fails, which is the case a stolen code with no verifier reaches.
+func TestSessionCodeExchange_WrongVerifierIssuesNoSession(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, _ := desktopSessionCode(t, env)
+
+	resp := exchangeSessionCode(t, env, code, strings.Repeat("v", 43))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, resp)["error"])
+	assertNoCallbackSession(t, resp)
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	assert.Empty(t, row.MintedSessionID, "a failed proof must mint no session")
+}
+
+// passwordSignInCookie signs in with the bootstrap password, so the session
+// carries the FreshAuthenticationWindow the sign-in wrote. adminCookie drops
+// that window on purpose: the gate tests must start from a session with none.
+func passwordSignInCookie(t *testing.T, env *apiAuthEnv) *http.Cookie {
+	t.Helper()
+	session, _, err := auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(),
+		hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	return &http.Cookie{Name: auth.CookieName, Value: session.Token}
+}
+
+// The consent gate reads the window, and a password sign-in writes one. The
+// user is at the keyboard having just proved the factor, so the consent page
+// must render rather than bounce them to prove it again.
+func TestConsent_APasswordSignInOpensTheConsentPageDirectly(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	cookie := passwordSignInCookie(t, env)
+
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+startQuery(nil).Encode(), cookie)
+	body := bodyOf(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	assert.Empty(t, resp.Header.Get("Location"), "a fresh sign-in must not bounce the user to /elevate")
+	assert.Contains(t, body, "Authorize LeapMux control CLI?",
+		"the consent page is what a current window admits")
+}
+
+// Six minutes later the five-minute window the sign-in wrote has closed, and
+// no other proof was given. The same request must bounce to /elevate exactly
+// as a session with no window does.
+func TestConsent_SixMinutesAfterTheSignInBouncesToElevate(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	cookie := passwordSignInCookie(t, env)
+	moveElevationPairBack(t, env.store, cookie.Value, env.userID, 6*time.Minute)
+
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+startQuery(nil).Encode(), cookie)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, "/elevate", loc.Path,
+		"an expired sign-in window is exactly what the elevate step exists to restore")
 }

@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
 import { test } from './fixtures'
-import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
+import { deletePasskeyResponse, deletePasskeyViaAPI, dropElevationViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import {
   answerElevationPrompt,
   elevationPrompt,
@@ -137,9 +137,11 @@ test.describe('Passkey authentication', () => {
     const before = await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)
     expect(before.length).toBeGreaterThan(0)
 
-    // A SECOND session for the same account: freshly signed in, and so
-    // never elevated. It must not be able to delete the passkey.
+    // A SECOND session for the same account: freshly signed in, then the
+    // sign-in window dropped, so it holds no elevation at all. It must not be
+    // able to delete the passkey.
     const freshCookie = await loginViaAPI(leapmuxServer.hubUrl, username, password)
+    await dropElevationViaAPI(leapmuxServer.hubUrl, freshCookie)
     const refusal = await deletePasskeyResponse(leapmuxServer.hubUrl, freshCookie, before[0]!.id)
     expect(refusal.ok).toBe(false)
     // The MARKER, not the status. Both refusals the hub can give here are

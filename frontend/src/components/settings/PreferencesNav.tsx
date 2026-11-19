@@ -98,19 +98,18 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
         <li class={menuSectionHeader}>PREFERENCES</li>
         {sectionItems(userGroups())}
       </Show>
-      <Show when={adminGroups().length > 0}>
+      <Show when={adminGroups().length > 0 || props.onUnlockAdmin}>
         <li class={menuSectionHeader}>ADMINISTRATION</li>
         {sectionItems(adminGroups())}
-      </Show>
-      <Show when={props.onUnlockAdmin && adminGroups().length === 0}>
-        <li class={menuSectionHeader}>ADMINISTRATION</li>
-        <DropdownMenuCheckableItem
-          kind="radio"
-          label="Unlock administration..."
-          checked={false}
-          data-testid="preferences-nav-unlock-admin"
-          onSelect={() => props.onUnlockAdmin?.()}
-        />
+        <Show when={props.onUnlockAdmin}>
+          <DropdownMenuCheckableItem
+            kind="radio"
+            label="Unlock administration..."
+            checked={false}
+            data-testid="preferences-nav-unlock-admin"
+            onSelect={() => props.onUnlockAdmin?.()}
+          />
+        </Show>
       </Show>
     </DropdownMenu>
   )
@@ -173,7 +172,15 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
             </>
           )}
         </For>
-        <Show when={props.onUnlockAdmin && adminGroups().length === 0}>
+        <Show when={props.onUnlockAdmin}>
+          {/* The entry ends the ADMINISTRATION section. With no admin group
+            above it, the section header (and its rule) renders here instead. */}
+          <Show when={adminGroups().length === 0}>
+            <Show when={userGroups().length > 0}>
+              <hr class={styles.navSeparator} aria-hidden="true" />
+            </Show>
+            <div class={styles.navDivider} role="separator" aria-label="Administration">ADMINISTRATION</div>
+          </Show>
           <button
             type="button"
             class={styles.navButton}

@@ -171,6 +171,7 @@ export const AppShell: Component = () => {
     ownClientId,
   } = useCrdtRuntime({
     userId: () => storageAccount(),
+    hubUserId: userId,
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
     activeClient,
     // Created/renamed/deleted events on the user WS stream refresh the sidebar

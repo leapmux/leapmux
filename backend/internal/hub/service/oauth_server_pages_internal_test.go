@@ -44,12 +44,38 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 			CodeChallenge:    payload,
 			Scope:            payload,
 			InstallationName: payload,
+			StepUpRaw:        payload,
 		}, "")
 		assertNoInjection(t, w.Body.String())
 		// The value still reaches the page -- escaped, not dropped. A page that
 		// silently lost the state or the challenge would break the flow rather
 		// than secure it.
 		assert.Contains(t, w.Body.String(), "&lt;script&gt;")
+	})
+
+	// The step-up variant of the same page. Its identity slots come from the
+	// api_tokens or user_sessions row, and `step_up` itself is request-supplied
+	// text riding the hidden input back to the POST.
+	t.Run("consent page for a step-up", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		writePage(w, 200, consentPageTmpl, consentPageData{
+			App:              appDisplayData{ClientID: payload, Name: payload, Monogram: payload},
+			Username:         payload,
+			RedirectLabel:    payload,
+			Permissions:      []scopeCategoryView{{Label: payload, Entries: []scopeEntryView{{Token: payload, Sentence: payload}}}},
+			RedirectURI:      payload,
+			ClientID:         payload,
+			State:            payload,
+			CodeChallenge:    payload,
+			Scope:            payload,
+			InstallationName: payload,
+			StepUpRaw:        payload,
+			StepUp:           &deviceCredential{Name: payload, Added: payload},
+		}, "")
+		assertNoInjection(t, w.Body.String())
+		assert.Contains(t, w.Body.String(), "&lt;script&gt;")
+		assert.NotContains(t, w.Body.String(), "It asks to use your account",
+			"a step-up must never read as an authorization that issues something")
 	})
 
 	t.Run("device page", func(t *testing.T) {

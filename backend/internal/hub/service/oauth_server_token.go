@@ -312,8 +312,11 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 	w http.ResponseWriter, r *http.Request, row *store.OAuthAuthorizationCode, app *store.OAuthClient,
 ) {
 	userInfo, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
-		Store:     h.store,
-		Validator: h.validator,
+		Store:         h.store,
+		Validator:     h.validator,
+		ReadCookie:    true,
+		SessionHasher: h.sessionHasher,
+		SecureCookies: h.secureCookies(r.Context()),
 	})
 	if err != nil && !errors.Is(err, auth.ErrHTTPUnauthenticated) {
 		writeInternalError(w, "step-up authentication failed", err)
@@ -354,9 +357,14 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 			return fmt.Errorf("consume authorization code: %w", err)
 		}
 		if row.StepUpSessionID != "" {
-			if _, _, err := elevateSessionRow(r.Context(), tx, row.StepUpSessionID, uid, h.now().UTC()); err != nil {
+			_, live, err := elevateSessionRow(r.Context(), tx, row.StepUpSessionID, uid, h.now().UTC())
+			if err != nil {
 				stampErr = err
 				return err
+			}
+			if !live {
+				stampErr = errElevationSessionEnded
+				return errElevationSessionEnded
 			}
 		} else {
 			if err := h.elevateGrantedToken(r.Context(), tx, row.StepUpTokenID, uid); err != nil {
@@ -371,7 +379,10 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 			return
 		}
-		if stampErr != nil {
+		// Only the two no-row refusals answer invalid_grant. Every other
+		// stamp error is a credential the Hub cannot read, which section 6.5
+		// answers 500 for.
+		if errors.Is(stampErr, errElevationSessionEnded) || errors.Is(stampErr, errElevationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that credential is no longer available")
 			return
 		}
@@ -397,7 +408,7 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 			return fmt.Errorf("consume authorization code: %w", err)
 		}
 		sess, err := auth.CreateSession(r.Context(), tx, h.sessionHasher, grantUID,
-			settings.SessionDuration(h.snapshot(r.Context())),
+			settings.SessionDuration(h.snapshot(r.Context())), auth.SignInProvedNoFactor,
 			auth.SessionMeta{
 				UserAgent:      app.ClientName + " on " + row.InstallationName,
 				IssuedToClient: app.ClientID,

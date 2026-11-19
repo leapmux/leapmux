@@ -478,6 +478,7 @@ CREATE TABLE api_tokens (
     -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
     -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
     -- 3 administrator. No DEFAULT: every mint states it.
+    -- TestEnumColumnChecksMatchTheirProtoRanges checks the range.
     issuance                      INTEGER NOT NULL CHECK (issuance BETWEEN 1 AND 3),
     secret_hash                   BYTEA NOT NULL,
     refresh_hash                  BYTEA,

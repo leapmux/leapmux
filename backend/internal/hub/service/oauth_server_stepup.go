@@ -243,3 +243,21 @@ func (h *OAuthServerHandler) grantCredential(ctx context.Context, tokenID string
 		Revoked: row.RevokedAt != nil,
 	}, nil
 }
+
+// sessionCredential identifies, for the consent page, the session a `step_up`
+// names. It reads the user_sessions row -- the hub's OWN record: the label the
+// browser handoff stored and the moment the row was created. A session that is
+// already gone returns nil; see grantCredential.
+func (h *OAuthServerHandler) sessionCredential(ctx context.Context, sessionID string) (*deviceCredential, error) {
+	sess, err := h.store.Sessions().GetByID(ctx, sessionID, h.now().UTC())
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &deviceCredential{
+		Name:  sess.UserAgent,
+		Added: sess.CreatedAt.UTC().Format(credentialAddedLayout),
+	}, nil
+}

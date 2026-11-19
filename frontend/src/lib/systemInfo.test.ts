@@ -5,6 +5,10 @@ import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/system
 import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getBackendBuildInfo, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot, soloPasswordSet, systemInfoLoadFailure } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
+// Remote-Hub mode is what makes the passkey ceremonies run in the system
+// browser. A hoisted state the tests flip, not a mock-return, so a
+// `vi.clearAllMocks` in a neighbouring describe cannot leave it behind.
+const desktopHubState = vi.hoisted(() => ({ hub: null as null | { kind: 'solo' } | { kind: 'remote', url: string } }))
 vi.mock('~/api/clients', () => ({
   systemClient: {
     getSystemInfo: (...args: unknown[]) => mockGetSystemInfo(...args),
@@ -16,7 +20,7 @@ vi.mock('~/api/clients', () => ({
 
 vi.mock('~/api/platformBridge', () => ({
   desktopFetch: vi.fn(),
-  desktopHub: () => null,
+  desktopHub: () => desktopHubState.hub,
   getCapabilities: () => ({
     mode: 'web',
     tunnels: false,
@@ -380,6 +384,7 @@ describe('passkeyBlocker', () => {
   const originalSecureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext')
 
   afterEach(() => {
+    desktopHubState.hub = null
     if (originalCredential)
       Object.defineProperty(globalThis, credentialKey, originalCredential)
     else
@@ -388,6 +393,21 @@ describe('passkeyBlocker', () => {
       Object.defineProperty(window, 'isSecureContext', originalSecureContext)
     else
       Reflect.deleteProperty(window, 'isSecureContext')
+  })
+
+  // Remote-Hub mode: the bundled app cannot run a WebAuthn ceremony, so the
+  // remedy is the browser. The answer comes FIRST -- before any page or hub
+  // fact -- because every other blocker would name a remedy the app cannot
+  // act on.
+  it('returns needs-browser in remote-Hub mode, whatever the page and the hub report', async () => {
+    desktopHubState.hub = { kind: 'remote', url: 'https://hub.example' }
+    setWebAuthnAPI(true)
+    setSecureContext(true)
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ passkeyEnabled: true }))
+    await loadSystemInfo(true)
+
+    expect(passkeyBlocker()).toBe('needs-browser')
+    expect(passkeysUsableHere()).toBe(false)
   })
 
   it('reports no blocker when both parties agree', async () => {

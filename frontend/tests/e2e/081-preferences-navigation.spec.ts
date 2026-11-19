@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
+import { elevateSessionViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import { openPreferencesAs } from './helpers/preferences'
 import { expectDialogStaysOpen, openAppAs, openSettingsAt, PLATFORM_MOD } from './helpers/ui'
 
@@ -19,6 +20,10 @@ test.describe('Preferences navigation', () => {
   })
 
   test('walks categories through the tab list', async ({ page, leapmuxServer }) => {
+    // The ADMINISTRATION categories load only in a session that holds a
+    // current window, and the shared session's may have lapsed since the
+    // suite elevated it.
+    await elevateSessionViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, TEST_ADMIN_PASSWORD)
     const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'appearance')
 
     await dialog.getByTestId('preferences-nav-notifications').click()

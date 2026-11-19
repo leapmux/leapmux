@@ -43,9 +43,9 @@ func TestAssertFirstCredentialAuthIsFresh_AdmitsARecentSignIn(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
-	require.NoError(t, assertFirstCredentialAuthIsFresh(freshUserInfo("s-1", now), now, firstCredentialAuthFreshness))
+	require.NoError(t, assertFirstCredentialAuthIsFresh(freshUserInfo("s-1", now), now, auth.FreshAuthenticationWindow))
 	require.NoError(t, assertFirstCredentialAuthIsFresh(
-		freshUserInfo("s-1", now.Add(-firstCredentialAuthFreshness+time.Second)), now, firstCredentialAuthFreshness),
+		freshUserInfo("s-1", now.Add(-auth.FreshAuthenticationWindow+time.Second)), now, auth.FreshAuthenticationWindow),
 		"just inside the window is still a recent sign-in")
 }
 
@@ -55,13 +55,13 @@ func TestAssertFirstCredentialAuthIsFresh_RefusesAStaleSession(t *testing.T) {
 	now := time.Now().UTC()
 
 	err := assertFirstCredentialAuthIsFresh(
-		freshUserInfo("s-1", now.Add(-firstCredentialAuthFreshness-time.Second)), now, firstCredentialAuthFreshness)
+		freshUserInfo("s-1", now.Add(-auth.FreshAuthenticationWindow-time.Second)), now, auth.FreshAuthenticationWindow)
 	require.Error(t, err, "a cookie older than the window must not attach a first credential")
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "sign in again")
 
 	// A day-old cookie is the actual attack shape.
-	err = assertFirstCredentialAuthIsFresh(freshUserInfo("s-1", now.Add(-24*time.Hour)), now, firstCredentialAuthFreshness)
+	err = assertFirstCredentialAuthIsFresh(freshUserInfo("s-1", now.Add(-24*time.Hour)), now, auth.FreshAuthenticationWindow)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -87,7 +87,7 @@ func TestAssertFirstCredentialAuthIsFresh_RefusesABearer(t *testing.T) {
 				Credential:      cred,
 				AuthenticatedAt: now, // Freshly minted, and still refused.
 			}
-			err := assertFirstCredentialAuthIsFresh(info, now, firstCredentialAuthFreshness)
+			err := assertFirstCredentialAuthIsFresh(info, now, auth.FreshAuthenticationWindow)
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 			assert.Contains(t, err.Error(), "from a browser")
@@ -103,17 +103,17 @@ func TestAssertFirstCredentialAuthIsFresh_RefusesAnUnknownCredential(t *testing.
 
 	now := time.Now().UTC()
 
-	require.Error(t, assertFirstCredentialAuthIsFresh(nil, now, firstCredentialAuthFreshness))
+	require.Error(t, assertFirstCredentialAuthIsFresh(nil, now, auth.FreshAuthenticationWindow))
 
 	zeroCredential := &auth.UserInfo{ID: userid.MustNew("u-1"), AuthenticatedAt: now}
-	require.Error(t, assertFirstCredentialAuthIsFresh(zeroCredential, now, firstCredentialAuthFreshness))
+	require.Error(t, assertFirstCredentialAuthIsFresh(zeroCredential, now, auth.FreshAuthenticationWindow))
 
 	// A session whose row carries no creation time is unreadable, not fresh.
 	noTimestamp := &auth.UserInfo{
 		ID:         userid.MustNew("u-1"),
 		Credential: auth.SessionCredential("s-1"),
 	}
-	err := assertFirstCredentialAuthIsFresh(noTimestamp, now, firstCredentialAuthFreshness)
+	err := assertFirstCredentialAuthIsFresh(noTimestamp, now, auth.FreshAuthenticationWindow)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sign in again")
 }
@@ -127,7 +127,7 @@ func TestAssertFirstCredentialAuthIsFresh_ToleratesClockSkew(t *testing.T) {
 
 	now := time.Now().UTC()
 	assert.NoError(t, assertFirstCredentialAuthIsFresh(
-		freshUserInfo("s-1", now.Add(2*time.Second)), now, firstCredentialAuthFreshness))
+		freshUserInfo("s-1", now.Add(2*time.Second)), now, auth.FreshAuthenticationWindow))
 }
 
 // TestStepUpMutationAuth_FirstCredentialRequiresFreshAuth exercises the
@@ -386,9 +386,9 @@ func TestFirstCredentialAdmittedAtBeginSurvivesFinish(t *testing.T) {
 
 	signedInAt := time.Now().UTC()
 	// The user opens the dialog with a second of the entry window left.
-	beginAt := signedInAt.Add(firstCredentialAuthFreshness - time.Second)
+	beginAt := signedInAt.Add(auth.FreshAuthenticationWindow - time.Second)
 	require.NoError(t,
-		assertFirstCredentialAuthIsFresh(freshUserInfo("s-1", signedInAt), beginAt, firstCredentialAuthFreshness),
+		assertFirstCredentialAuthIsFresh(freshUserInfo("s-1", signedInAt), beginAt, auth.FreshAuthenticationWindow),
 		"precondition: Begin admits this session")
 
 	// The biometric prompt takes as long as the hub still accepts the

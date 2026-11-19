@@ -5,19 +5,14 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './helpers/api'
-import { openSettingsAt } from './helpers/ui'
+import { answerElevationPrompt, loginViaToken, openSettingsAt } from './helpers/ui'
+
+const APP_HOME_URL_RE = /\/$/
 
 test.describe('425-admin-requires-step-up', () => {
   test('an administrator whose window was dropped sees the unlock entry and no prompt', async ({ page, leapmuxServer }) => {
     const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
-    await page.context().addCookies([
-      {
-        name: 'leapmux-session',
-        value: cookie.replace('leapmux-session=', ''),
-        domain: new URL(leapmuxServer.hubUrl).hostname,
-        path: '/',
-      },
-    ])
+    await loginViaToken(page, cookie)
     await page.goto(`${leapmuxServer.hubUrl}/?prefs=admin`)
 
     await expect(page.getByTestId('preferences-nav-unlock-admin')).toBeVisible()
@@ -26,23 +21,15 @@ test.describe('425-admin-requires-step-up', () => {
 
   test('selecting the unlock entry opens the prompt and reveals admin groups after unlock', async ({ page, leapmuxServer }) => {
     const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
-    await page.context().addCookies([
-      {
-        name: 'leapmux-session',
-        value: cookie.replace('leapmux-session=', ''),
-        domain: new URL(leapmuxServer.hubUrl).hostname,
-        path: '/',
-      },
-    ])
+    await loginViaToken(page, cookie)
     await page.goto(`${leapmuxServer.hubUrl}/?prefs=admin`)
 
     await page.getByTestId('preferences-nav-unlock-admin').click()
     await expect(page.getByText('Verify your identity')).toBeVisible()
 
-    await page.getByLabel(/password/i).fill(TEST_ADMIN_PASSWORD)
-    await page.getByRole('button', { name: /verify/i }).click()
+    await answerElevationPrompt(page, TEST_ADMIN_PASSWORD)
 
-    await expect(page.locator('[data-testid^="preferences-nav-"]').first()).toBeVisible()
+    await expect(page.getByTestId('preferences-nav-admin-general')).toBeVisible()
   })
 
   test('an administrator who signed in through the page sees admin groups at once', async ({ page, leapmuxServer }) => {
@@ -51,9 +38,9 @@ test.describe('425-admin-requires-step-up', () => {
     await page.getByLabel(/password/i).fill(TEST_ADMIN_PASSWORD)
     await page.getByRole('button', { name: /sign in/i }).click()
 
-    await page.waitForURL(/\/$/, { timeout: 30000 })
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
     await openSettingsAt(page, 'admin-general')
 
-    await expect(page.locator('[data-testid^="preferences-nav-"]').first()).toBeVisible()
+    await expect(page.getByTestId('preferences-nav-admin-general')).toBeVisible()
   })
 })

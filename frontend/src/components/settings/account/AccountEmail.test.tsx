@@ -19,6 +19,10 @@ const mockOpenUserAdoption = vi.fn(() => {
   callOrder.push('open')
   return mockAdopt
 })
+const mockOpenHubPage = vi.fn()
+// Remote-Hub mode replaces the resend control with the browser remedy. A
+// default of `false` keeps every other case on the in-app control.
+const mockCeremoniesRunInBrowser = vi.fn(() => false)
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -40,6 +44,12 @@ vi.mock('~/lib/systemInfo', async () => {
   const m = await import('~/test-support/systemInfoMock')
   return m.systemInfoMock
 })
+
+vi.mock('~/lib/hubSite', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/hubSite')>(),
+  ceremoniesRunInBrowser: () => mockCeremoniesRunInBrowser(),
+  openHubPage: (...args: unknown[]) => mockOpenHubPage(...args),
+}))
 
 const verified = {
   id: 'user-1',
@@ -306,6 +316,7 @@ describe('AccountEmail draft', () => {
 describe('AccountEmail verification', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCeremoniesRunInBrowser.mockReturnValue(false)
     resetSystemInfoMock()
     setSystemInfoMock({ emailEnabled: true })
     mockUser.mockReturnValue(unverified)
@@ -313,6 +324,18 @@ describe('AccountEmail verification', () => {
     mockResendVerificationEmail.mockResolvedValue({
       emailVerification: { verificationEmailSent: true },
     })
+  })
+
+  // Remote-Hub mode: the captcha and the resend cannot run at the bundled
+  // origin, so the control is replaced by the browser remedy.
+  it('offers the browser remedy instead of the resend control when the ceremonies run in the browser', async () => {
+    mockCeremoniesRunInBrowser.mockReturnValue(true)
+    renderRouted()
+
+    expect(await screen.findByText(/verify this address in your browser/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resend code' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
+    expect(mockOpenHubPage).toHaveBeenCalledWith('/verify-email')
   })
 
   it('offers a resend for an unverified address', async () => {

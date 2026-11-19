@@ -74,7 +74,7 @@ func TestDeletePasskey_RefusesWhenTheLockedCountNoLongerNeedsAPassword(t *testin
 	require.False(t, user.FirstCredentialExempt, "precondition: the account holds no password")
 
 	doomed := seedRacePasskey(t, st, user.ID, "Only One")
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	n, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{

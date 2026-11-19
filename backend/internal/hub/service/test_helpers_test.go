@@ -16,8 +16,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 var ptrTime = ptrconv.Ptr[time.Time]
@@ -169,4 +171,27 @@ func enableEmailVerification(t *testing.T, set *settings.Manager) {
 func setSessionDuration(t *testing.T, set *settings.Manager, d time.Duration) {
 	t.Helper()
 	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(d/time.Second)))
+}
+
+// moveElevationPairBack shifts a session's stored elevation pair into the
+// past, so a test reaches "the window has expired" without waiting. Both
+// halves move together: the pair is written and read as a unit, and a lone
+// deadline moved back would leave a proven anchor in the future -- a shape
+// the hub never stores and one the absolute cap would then measure from.
+func moveElevationPairBack(t *testing.T, st store.Store, token, userID string, d time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	sessionID := hubtestutil.SessionIDFromCookie(t, token)
+	row, err := st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	require.NoError(t, err)
+	require.NotNil(t, row.ElevationProvenAt, "the session must hold a window to move")
+	require.NotNil(t, row.ElevationExpiresAt)
+	n, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
+		SessionID:          sessionID,
+		UserID:             userid.MustNew(userID),
+		ElevationProvenAt:  row.ElevationProvenAt.Add(-d),
+		ElevationExpiresAt: row.ElevationExpiresAt.Add(-d),
+	}, time.Now().UTC())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n, "the session must exist and belong to this user")
 }

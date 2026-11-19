@@ -13,6 +13,29 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
+// LoginWithoutWindow signs in through auth.Login and then drops the
+// FreshAuthenticationWindow the sign-in wrote, so the test gets the session
+// shape the codebase had before A10: a session with no elevation pair.
+//
+// Every test that signs in through the RPC and does not exercise the sign-in
+// window uses this helper, so the assertion measures the behavior behind the
+// gate rather than the window itself.
+func LoginWithoutWindow(t *testing.T, st store.Store, hasher auth.SecretHasher, username, password string, lifetime time.Duration) (auth.CreatedSession, *store.User) {
+	t.Helper()
+	session, user, err := auth.Login(context.Background(), st, hasher, username, password, lifetime)
+	require.NoError(t, err)
+	owner, ok := userid.New(user.ID)
+	require.True(t, ok, "a session owner id must be non-empty")
+	n, err := st.Sessions().DropElevation(context.Background(), store.DropSessionElevationParams{
+		SessionID: session.ID,
+		UserID:    owner,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n, "the session must exist to drop its elevation")
+	session.Elevation = auth.Elevation{}
+	return session, user
+}
+
 // ElevateSession stamps a live step-up window on one session row, so a test
 // can reach a surface the elevation gate guards without running a ceremony.
 //

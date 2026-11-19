@@ -248,3 +248,76 @@ func TestSessionStoreUnchangedCookieSetOneWrite(t *testing.T) {
 	assert.Equal(t, info1.ModTime(), info2.ModTime(),
 		"the same cookie twice must produce one write")
 }
+
+// An unchanged cookie must not rewrite the file, expiry or not. The expiry
+// is a *time.Time, so comparing the records structurally compares pointers
+// and would call this cookie changed on every re-set.
+func TestSessionStoreUnchangedCookieWithExpirySetOneWrite(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example")
+	path := filepath.Join(dir, sessionFileName(base))
+
+	expires := time.Now().Add(time.Hour).UTC()
+	sf := sessionFile{
+		HubURL:  base.String(),
+		Cookies: []persistedCookie{{Name: "sid", Value: "abc123", Path: "/", Expires: &expires}},
+	}
+	// The compact form differs from the writer's own indented form, so a
+	// rewrite changes these bytes even though the cookie values are the same.
+	data, err := json.Marshal(sf)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, atomicfile.WriteFile(path, data, 0o600))
+
+	j := openPersistentJar(base, dir)
+	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "abc123", Path: "/", Expires: expires}})
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, data, got, "an unchanged cookie must not rewrite the session file")
+}
+
+// The record is a map, so marshalling it in iteration order would give a
+// different byte sequence on every write. The cookies are sorted by name and
+// path first, so the same record always writes the same bytes.
+func TestSessionStoreCookieFileOrderIsStable(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example")
+	j := openPersistentJar(base, dir)
+
+	j.SetCookies(base, []*http.Cookie{
+		{Name: "y", Value: "v", Path: "/"},
+		{Name: "a", Value: "v", Path: "/z"},
+		{Name: "sid", Value: "v", Path: "/deep"},
+		{Name: "m", Value: "v", Path: "/"},
+		{Name: "a", Value: "v", Path: "/"},
+		{Name: "x", Value: "v", Path: "/"},
+		{Name: "sid", Value: "v", Path: "/"},
+		{Name: "q", Value: "v", Path: "/"},
+		{Name: "w", Value: "v", Path: "/"},
+		{Name: "b", Value: "v", Path: "/"},
+		{Name: "v", Value: "v", Path: "/"},
+		{Name: "a", Value: "v", Path: "/deep/deeper"},
+	})
+
+	path := filepath.Join(dir, sessionFileName(base))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var sf sessionFile
+	require.NoError(t, json.Unmarshal(data, &sf))
+	want := []persistedCookie{
+		{Name: "a", Value: "v", Path: "/"},
+		{Name: "a", Value: "v", Path: "/deep/deeper"},
+		{Name: "a", Value: "v", Path: "/z"},
+		{Name: "b", Value: "v", Path: "/"},
+		{Name: "m", Value: "v", Path: "/"},
+		{Name: "q", Value: "v", Path: "/"},
+		{Name: "sid", Value: "v", Path: "/"},
+		{Name: "sid", Value: "v", Path: "/deep"},
+		{Name: "v", Value: "v", Path: "/"},
+		{Name: "w", Value: "v", Path: "/"},
+		{Name: "x", Value: "v", Path: "/"},
+		{Name: "y", Value: "v", Path: "/"},
+	}
+	assert.Equal(t, want, sf.Cookies, "the session file must hold the cookies sorted by name and path")
+}

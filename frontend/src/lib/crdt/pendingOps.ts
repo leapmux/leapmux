@@ -336,10 +336,11 @@ export class PendingOpsManager {
   private readonly pendingOwnEchoBatchIds = new Set<string>()
 
   constructor(
-    // Seeds the pre-bootstrap placeholder state only, and is deliberately NOT
-    // retained as a field: bootstrap() replaces confirmedState wholesale with
-    // the hub's UserMaterialized, so a kept copy would be a second tenancy key
-    // nothing reads and that could only drift from state.userId.
+    // The RAW Hub user id (see `newState`), which seeds the pre-bootstrap
+    // placeholder state only and is deliberately NOT retained as a field:
+    // bootstrap() replaces confirmedState wholesale with the hub's
+    // UserMaterialized, so a kept copy would be a second tenancy key nothing
+    // reads and that could only drift from state.userId.
     userId: string,
     public readonly clock: HLCClock,
     notify?: () => void,

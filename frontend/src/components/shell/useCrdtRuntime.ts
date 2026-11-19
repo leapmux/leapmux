@@ -39,8 +39,18 @@ const log = createLogger('useCrdtRuntime')
  * the stores reach the submitter through the bridge, not by reference.
  */
 export interface UseCrdtRuntimeOpts {
-  /** Authenticated user id; empty until the session restores. */
+  /**
+   * The storage account (hub + user id) that keys the checkpoint store; empty
+   * until the session restores. NOT the identity the Hub reports.
+   */
   userId: () => string
+  /**
+   * The authenticated user id the Hub reports on each frame; empty until the
+   * session restores. `useUserEvents` compares it against every frame's
+   * `user_id`, so it must stay the raw id — a storage account here refuses
+   * every `UserMaterialized` frame and the CRDT never bootstraps.
+   */
+  hubUserId: () => string
   /** Which workspace new ops are attributed to. Read live by the bridge. */
   getWorkspaceId: () => string | null
   /**
@@ -179,11 +189,16 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   // disposal, which the counter never covered at all.
 
   /**
-   * Construct a manager for `uid`. One definition so the hydrate path and the
+   * Construct the manager. One definition so the hydrate path and the
    * hydrate-failure fallback cannot be given different constructor arguments.
    */
-  function makeManager(uid: string): PendingOpsManager {
-    return new PendingOpsManager(uid, new HLCClock(ownClientId()), bumpPending)
+  function makeManager(): PendingOpsManager {
+    // The constructor seeds `UserCrdtState.userId`, whose domain is the RAW Hub
+    // user id -- what `bootstrap` copies off `UserMaterialized` and what the
+    // checkpoint header persists. NOT `opts.userId()`, which is the composed
+    // STORAGE account that keys the checkpoint store: seeding that would put
+    // two identity domains in one field, split at bootstrap.
+    return new PendingOpsManager(opts.hubUserId(), new HLCClock(ownClientId()), bumpPending)
   }
 
   /**
@@ -426,7 +441,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // live was safe only because the re-mint's signal write happens to run this
     // effect's cleanup synchronously first -- a scheduling property, not an
     // invariant, and not one a future refactor would know it was relying on.
-    const coldStart = (): void => installObserverAndManager(makeManager(uid), uid, clientId, undefined)
+    const coldStart = (): void => installObserverAndManager(makeManager(), uid, clientId, undefined)
     try {
       if (payload && hydrateInto(uid, clientId, payload))
         return
@@ -455,7 +470,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
    * the caller then cold-starts.
    */
   function hydrateInto(uid: string, clientId: string, payload: HydrationPayload): boolean {
-    const mgr = makeManager(uid)
+    const mgr = makeManager()
     try {
       mgr.hydrate(payload)
     }
@@ -590,7 +605,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   // known. The hook stays live across workspace switches; per-
   // workspace stores slice the materialized state instead.
   const userEvents = useUserEvents({
-    userId: () => opts.userId(),
+    userId: () => opts.hubUserId(),
     activeClient: opts.activeClient,
     pending: () => pendingMgr(),
     // Gate the WS open on hydration so the resume cursor resolves against

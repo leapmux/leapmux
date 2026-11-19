@@ -62,12 +62,12 @@ describe('hubSite', () => {
 
     it('throws for a protocol-relative path', () => {
       desktopHubMock.mockReturnValue({ kind: 'remote', url: 'https://hub.example.com' })
-      expect(() => hubPageUrl('//evil')).toThrow()
+      expect(() => hubPageUrl('//evil')).toThrow('unsafe Hub page path: //evil')
     })
 
     it('throws for a path with a control byte', () => {
       desktopHubMock.mockReturnValue({ kind: 'remote', url: 'https://hub.example.com' })
-      expect(() => hubPageUrl('/\t/evil')).toThrow()
+      expect(() => hubPageUrl('/\t/evil')).toThrow('unsafe Hub page path: /\t/evil')
     })
   })
 

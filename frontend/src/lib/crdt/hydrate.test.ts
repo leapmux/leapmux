@@ -5,6 +5,7 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NodeRecordSchema, TabRecordSchema, UserCrdtStateSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { storageAccountFor } from '~/lib/browserStorage'
 import { createOpLogAppender } from '~/test-support/opLog'
 import { fullCheckpointDelta, serializeHeader } from './checkpointChunks'
 import {
@@ -380,6 +381,33 @@ describe('loadHydrationState', () => {
 
     expect(await loadHydrationState('u', CLIENT)).toBeNull()
     expect(await loadHydrationState('u', CLIENT)).toBeNull()
+  })
+
+  it('hydrates a checkpoint keyed by a COMPOSED storage account when the blob names the raw Hub user id', async () => {
+    // `storageAccountFor` composes the account that keys the checkpoint store
+    // as `hub/user`, while `UserCrdtState.userId` keeps the raw Hub user id
+    // `bootstrap` copies off `UserMaterialized`. The tenant check compares the
+    // blob against the key, so it must take the user id the key names -- or it
+    // refuses and wipes a good checkpoint on every reload.
+    const account = storageAccountFor('https://hub.example.com', 'user-1')
+    const source = stateOf('user-1', 5n)
+    await seed(account, CLIENT, source)
+
+    const payload = await loadHydrationState(account, CLIENT)
+    expect(payload).not.toBeNull()
+    expect(payload!.state.userId).toBe('user-1')
+    expect(payload!.state).toEqual(source)
+  })
+
+  it('still refuses a COMPOSED-key checkpoint whose blob names a different raw Hub user id', async () => {
+    // The raw-id comparison must not weaken the tenant check into "any row
+    // under this key is mine": a blob naming another user is corrupt by
+    // construction, whoever wrote it there.
+    const account = storageAccountFor('https://hub.example.com', 'user-1')
+    await seed(account, CLIENT, stateOf('other-user', 5n))
+
+    expect(await loadHydrationState(account, CLIENT)).toBeNull()
+    expect(await loadHydrationState(account, CLIENT)).toBeNull()
   })
 
   // The epoch two lines below this check has always been range-checked; the

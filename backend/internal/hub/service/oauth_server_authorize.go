@@ -132,11 +132,19 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 	req.scopes = scopes
 	req.installation = normalizeInstallationName(values.Get("installation_name"))
 	if stepUpRaw := values.Get("step_up"); stepUpRaw != "" {
-		target, stepUpErr := h.parseStepUpTarget(r.Context(), stepUpRaw, app, user)
+		target, stepUpErr := h.parseStepUpTarget(r.Context(), stepUpRaw, values.Get("scope"), app, user)
 		if stepUpErr != nil {
 			return req, *stepUpErr, true, false
 		}
 		req.stepUp = target
+		// A step-up asks for nothing: it verifies a credential the account
+		// already holds and widens no grant. The grant therefore stays EMPTY
+		// -- the default grant belongs to an ISSUANCE -- and the requester's
+		// installation label is dropped, because the page identifies the
+		// credential from the hub's own record and shows no requester-chosen
+		// text.
+		req.scopes = authscope.ScopeSet{}
+		req.installation = ""
 	}
 	return req, oauthErrorResponse{}, false, true
 }
@@ -144,9 +152,14 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 // parseStepUpTarget validates a `step_up` parameter and resolves the
 // credential it names. Every failure is redirectable with `access_denied`.
 func (h *OAuthServerHandler) parseStepUpTarget(
-	ctx context.Context, raw string, app *store.OAuthClient, user *auth.UserInfo,
+	ctx context.Context, raw, scope string, app *store.OAuthClient, user *auth.UserInfo,
 ) (stepUpTarget, *oauthErrorResponse) {
 	var target stepUpTarget
+	// A step-up asks for nothing. A request that also carries a scope is
+	// refused rather than accepted with a grant riding along on the target.
+	if scope != "" {
+		return target, oauthStepUpBody("step_up must not ask for a scope")
+	}
 	if strings.HasPrefix(raw, oauthapp.StepUpSessionPrefix) {
 		id := strings.TrimPrefix(raw, oauthapp.StepUpSessionPrefix)
 		if id == "" {
@@ -204,13 +217,18 @@ func oauthStepUpBody(description string) *oauthErrorResponse {
 // The page cannot run script: its enforced Content-Security-Policy has no hash
 // and no nonce, which is why a passkey ceremony is impossible HERE and the
 // elevation check bounces to the SPA's /elevate route instead.
+//
+// It renders one of the consent screen's three variants: the sign-in of an app
+// whose authorization mints a Hub session, the step-up that verifies a
+// credential the account already holds (identified from the hub's own record),
+// or the ordinary permission consent.
 func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	req, body, redirectable, ok := h.parseAuthorizeRequest(r, user, r.URL.Query())
 	if !ok {
 		h.writeAuthorizationFailure(w, r, req, body, redirectable)
 		return
 	}
-	writePage(w, http.StatusOK, consentPageTmpl, consentPageData{
+	data := consentPageData{
 		App:              appDisplay(req.app),
 		Username:         user.Username,
 		RedirectLabel:    redirectLabel(req.registeredURI, req.redirectURI),
@@ -221,7 +239,33 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 		CodeChallenge:    req.codeChallenge,
 		Scope:            req.scopes.String(),
 		InstallationName: req.installation,
-	}, redirectFormActionSource(req.redirectURI))
+		StepUpRaw:        r.URL.Query().Get("step_up"),
+	}
+	var stepUp *deviceCredential
+	var stepUpErr error
+	switch {
+	case req.stepUp.sessionID != "":
+		stepUp, stepUpErr = h.sessionCredential(r.Context(), req.stepUp.sessionID)
+	case req.stepUp.tokenID != "":
+		stepUp, stepUpErr = h.grantCredential(r.Context(), req.stepUp.tokenID)
+	}
+	if stepUpErr != nil {
+		writeInternalError(w, "step-up credential lookup failed", stepUpErr)
+		return
+	}
+	if req.stepUp != (stepUpTarget{}) {
+		if stepUp == nil {
+			// The row vanished between the parse and this read. The page stays
+			// the step-up variant -- the request still VERIFIES something -- and
+			// identifies nothing rather than falling back to a page that asks
+			// for an authorization.
+			stepUp = &deviceCredential{}
+		}
+		data.StepUp = stepUp
+	} else {
+		data.SignIn = oauthapp.IssuesSession(req.app.ClientID)
+	}
+	writePage(w, http.StatusOK, consentPageTmpl, data, redirectFormActionSource(req.redirectURI))
 }
 
 // writeAuthorizationFailure answers a rejected authorization.

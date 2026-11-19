@@ -3,6 +3,7 @@ import { createSignal, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { reportDesktopShellRefusals, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
+import { promptForElevation, setElevationPrompter } from '~/lib/elevationPrompt'
 import { accountWireDescriptors } from '~/test-support/accountSchema'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
@@ -13,6 +14,9 @@ const listSettings = vi.hoisted(() => vi.fn().mockResolvedValue({ descriptors: [
 const updateSettings = vi.hoisted(() => vi.fn())
 const isAdmin = vi.hoisted(() => vi.fn(() => false))
 const solo = vi.hoisted(() => vi.fn(() => false))
+// Solo over local IPC: the hub asks for no step-up and reports no deadline, so
+// the dialog unlocks the administration settings with no window at all.
+const autoAuthenticated = vi.hoisted(() => vi.fn(() => false))
 const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
 
 vi.mock('~/api/clients', () => ({
@@ -71,6 +75,7 @@ vi.mock('~/lib/systemInfo', async importOriginal => ({
   ...(await importOriginal<typeof import('~/lib/systemInfo')>()),
   isSoloMode: () => solo(),
   isDesktopApp: () => desktop(),
+  isAutoAuthenticated: () => autoAuthenticated(),
 }))
 
 function renderDialog(category = 'appearance') {
@@ -79,6 +84,45 @@ function renderDialog(category = 'appearance') {
       <PreferencesDialog category={category} onCategory={() => {}} onClose={() => {}} />
     </PreferencesProvider>
   ))
+}
+
+/** A deadline two hours out: `isElevationCurrent` reads it as a live window. */
+function inTwoHours() {
+  return {
+    seconds: BigInt(Math.floor(Date.now() / 1000) + 7200),
+    nanos: 0,
+  }
+}
+
+/** The one hub key several describes below need: a session-duration integer. */
+function adminGeneralSettings() {
+  return {
+    descriptors: [
+      {
+        key: 'session_duration_seconds',
+        category: 'general',
+        title: 'Session duration',
+        summary: '',
+        order: 10,
+        hiddenInSolo: false,
+        restart: false,
+        fields: [
+          {
+            name: '',
+            label: 'Session duration',
+            help: '',
+            kind: 2,
+            enumValues: [],
+            unit: 'seconds',
+            secret: false,
+            placeholder: '',
+            min: 300n,
+          },
+        ],
+      },
+    ],
+    values: [],
+  }
 }
 
 beforeEach(() => {
@@ -99,12 +143,14 @@ beforeEach(() => {
   isAdmin.mockReturnValue(false)
   solo.mockReturnValue(false)
   desktop.mockReturnValue(false)
+  autoAuthenticated.mockReturnValue(false)
   elevationExpiresAt.mockReturnValue(undefined)
   resetDesktopShellStatusForTests()
 })
 
 afterEach(() => {
   cleanup()
+  setElevationPrompter(null)
 })
 
 // The desktop shell can refuse what the account already stored: a Linux
@@ -183,6 +229,8 @@ describe('PreferencesDialog admin restriction', () => {
 
   it('shows the administration groups only to admins', async () => {
     isAdmin.mockReturnValue(true)
+    // A current window, so the administration settings load on open.
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -237,6 +285,7 @@ describe('PreferencesDialog admin restriction', () => {
   // a fresh editor.
   it('keeps an open admin editor mounted through an account re-read', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -278,6 +327,7 @@ describe('PreferencesDialog admin restriction', () => {
 
   it('marks admin groups that hold restart-class settings', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -313,6 +363,7 @@ describe('PreferencesDialog admin restriction', () => {
   // nothing in it that needs a restart, so saying so would be false.
   it('neither marks nor warns when the only restart row is hidden', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     solo.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [
@@ -390,6 +441,7 @@ describe('PreferencesDialog admin restriction', () => {
 
   it('renders the restart warning on restart groups', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -426,6 +478,77 @@ describe('PreferencesDialog admin restriction', () => {
     })
     renderDialog('admin-advanced')
     await waitFor(() => expect(screen.getByText('Changes in this group apply after a hub restart.')).toBeTruthy())
+  })
+})
+
+// The administration settings load only when the session holds a window (or
+// the hub asks for no step-up at all). The dialog otherwise offers the unlock
+// entry, so opening Preferences never opens an unrequested step-up prompt.
+describe('PreferencesDialog admin unlock', () => {
+  it('sends no call and offers the unlock entry when the window has lapsed', async () => {
+    isAdmin.mockReturnValue(true)
+    renderDialog()
+
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-unlock-admin')).toBeTruthy())
+    expect(screen.getByText('ADMINISTRATION')).toBeTruthy()
+    expect(listSettings).not.toHaveBeenCalled()
+  })
+
+  it('loads on open and offers no entry when the window is current', async () => {
+    isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    listSettings.mockResolvedValue(adminGeneralSettings())
+    renderDialog('admin-general')
+
+    await waitFor(() => expect(listSettings).toHaveBeenCalled())
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
+    await waitFor(() => expect(screen.getByText('Session duration')).toBeTruthy())
+  })
+
+  // Solo over local IPC: the hub asks for no step-up and reports no deadline,
+  // so a missing deadline does not mean a lapsed window here.
+  it('loads on open and offers no entry for an auto-authenticated administrator', async () => {
+    isAdmin.mockReturnValue(true)
+    autoAuthenticated.mockReturnValue(true)
+    listSettings.mockResolvedValue(adminGeneralSettings())
+    renderDialog('admin-general')
+
+    await waitFor(() => expect(listSettings).toHaveBeenCalled())
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
+    await waitFor(() => expect(screen.getByText('Session duration')).toBeTruthy())
+  })
+
+  // The transport opens the step-up prompt on the hub's refusal and rethrows
+  // the refusal when the user dismisses it (one `false` covers a dismissal and
+  // an absent prompter). The dialog must say why the load failed and keep the
+  // entry, so the user can ask again.
+  it('keeps the unlock entry and shows the refusal after the user dismisses the prompt', async () => {
+    setElevationPrompter(async () => false)
+    listSettings.mockImplementation(async () => {
+      if (!(await promptForElevation()))
+        throw new Error('permission denied: this action requires a recent sign-in')
+      return { descriptors: [], values: [] }
+    })
+    isAdmin.mockReturnValue(true)
+    renderDialog()
+
+    fireEvent.click(await screen.findByTestId('preferences-nav-unlock-admin'))
+    const alert = await waitFor(() => {
+      const found = screen.getAllByRole('alert').find(el => el.getAttribute('data-variant') === 'error')
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(alert.textContent).toContain('requires a recent sign-in')
+    expect(screen.getByTestId('preferences-nav-unlock-admin')).toBeTruthy()
+  })
+
+  it('offers no entry and sends no call for a plain user', async () => {
+    renderDialog()
+
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
+    expect(screen.queryByText('ADMINISTRATION')).toBeNull()
+    expect(listSettings).not.toHaveBeenCalled()
   })
 })
 
@@ -545,6 +668,7 @@ describe('PreferencesDialog solo mode', () => {
 
   it('hides administration groups that have no visible rows', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     solo.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [
@@ -743,6 +867,7 @@ describe('PreferencesDialog load failure', () => {
   // broken" and "you are not an admin".
   it('states a failed admin load instead of silently showing no admin groups', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockRejectedValue(new Error('hub unavailable'))
     renderDialog()
 
@@ -759,6 +884,7 @@ describe('PreferencesDialog load failure', () => {
 
   it('says nothing when the load succeeds', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     renderDialog()
     await waitFor(() => expect(listSettings).toHaveBeenCalled())
     expect(screen.queryAllByRole('alert').filter(el => el.getAttribute('data-variant') === 'error')).toEqual([])
@@ -875,6 +1001,7 @@ describe('PreferencesDialog search index', () => {
   // panel that does not show the row.
   it('omits a row whose dependsOn condition does not hold', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [captchaDescriptor],
       values: [
@@ -901,6 +1028,7 @@ describe('PreferencesDialog search index', () => {
 
   it('includes the same row once its condition holds', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [captchaDescriptor],
       values: [
@@ -1000,6 +1128,7 @@ describe('a hub-setting write keeps the row it came from', () => {
   // flips a toggle with Space lost focus to the document body.
   it('does not re-create the control the user just used', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
       values: [
@@ -1035,6 +1164,7 @@ describe('a hub-setting write keeps the row it came from', () => {
 describe('a hub setting a read-time rule overrides', () => {
   it('edits the configured value and notes the enforced one', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
       // Nothing stored, so the code default is what an edit replaces; dev
@@ -1055,6 +1185,7 @@ describe('a hub setting a read-time rule overrides', () => {
 
   it('drops the note once the configured value is the enforced one', async () => {
     isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
       values: [
@@ -1116,41 +1247,6 @@ describe('PreferencesDialog section order', () => {
  * every hub-settings write.
  */
 describe('PreferencesDialog verified-session state', () => {
-  const inTwoHours = () => ({
-    seconds: BigInt(Math.floor(Date.now() / 1000) + 7200),
-    nanos: 0,
-  })
-
-  function adminGeneralSettings() {
-    return {
-      descriptors: [
-        {
-          key: 'session_duration_seconds',
-          category: 'general',
-          title: 'Session duration',
-          summary: '',
-          order: 10,
-          hiddenInSolo: false,
-          restart: false,
-          fields: [
-            {
-              name: '',
-              label: 'Session duration',
-              help: '',
-              kind: 2,
-              enumValues: [],
-              unit: 'seconds',
-              secret: false,
-              placeholder: '',
-              min: 300n,
-            },
-          ],
-        },
-      ],
-      values: [],
-    }
-  }
-
   it('shows it on an administration group while the session is verified', async () => {
     isAdmin.mockReturnValue(true)
     elevationExpiresAt.mockReturnValue(inTwoHours())
@@ -1166,6 +1262,10 @@ describe('PreferencesDialog verified-session state', () => {
     listSettings.mockResolvedValue(adminGeneralSettings())
 
     renderDialog('admin-general')
+    // With no window the administration settings load only after the unlock
+    // entry. The group then shows, and still without the verified-session
+    // state.
+    fireEvent.click(await screen.findByTestId('preferences-nav-unlock-admin'))
     await waitFor(() => expect(screen.getByText('Session duration')).toBeTruthy())
     expect(screen.queryByTestId('elevation-status')).toBeNull()
   })

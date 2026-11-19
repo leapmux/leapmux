@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { freshAdminSessionViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import { openPreferencesAs } from './helpers/preferences'
-import { answerElevationPrompt, elevationPrompt, openSettingsAt } from './helpers/ui'
+import { answerElevationPrompt, elevationPrompt, loginViaToken, openSettingsAt } from './helpers/ui'
 
 test.describe('Preferences administration groups', () => {
   test('admin sees the administration groups and can change session duration', async ({ page, leapmuxServer }) => {
@@ -135,33 +135,41 @@ test.describe('Preferences administration groups', () => {
  * after they do.
  */
 test.describe('administration settings need a verified session', () => {
-  test('prompts on the first write and applies it once the user verifies', async ({ page, leapmuxServer }) => {
+  test('prompts on the unlock entry and applies the first write with no second prompt', async ({ page, leapmuxServer }) => {
     // A FRESH admin session: the fixture elevates the worker's shared
-    // `adminToken`, so the gate under test would never refuse it.
-    const dialog = await openPreferencesAs(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl), 'admin-general')
+    // `adminToken`, so the gate under test would never refuse it. Deep-link
+    // admin-general so the dialog reads that category from the address once
+    // the settings land; `openSettingsAt` with no category never clicks the
+    // admin tab E9 hides while the window is absent.
+    await loginViaToken(page, await freshAdminSessionViaAPI(leapmuxServer.hubUrl))
+    await page.goto(`${leapmuxServer.hubUrl}/?prefs=admin-general`)
+    const dialog = await openSettingsAt(page)
 
+    // With no current window the administration settings are not loaded at
+    // all: the deep-linked category is absent and the unlock entry is the
+    // only administration affordance.
+    await expect(dialog.getByTestId('preferences-nav-unlock-admin')).toBeVisible()
+    await expect(dialog.getByTestId('elevation-status')).toHaveCount(0)
+
+    await dialog.getByTestId('preferences-nav-unlock-admin').click()
+    // The hub refuses the un-elevated ListSettings; the transport prompts.
+    await answerElevationPrompt(page, TEST_ADMIN_PASSWORD)
+
+    // The requested category shows once the settings land, because the
+    // dialog reads the category from the address.
     const row = dialog.locator('[data-setting-id="session_duration_seconds"]')
     await expect(row).toBeVisible()
-    // Nothing is verified yet, so the panel carries no verified-session state.
-    await expect(dialog.getByTestId('elevation-status')).toHaveCount(0)
+    await expect(dialog.getByTestId('elevation-status')).toBeVisible()
 
     const input = row.locator('input[type="number"]')
     await input.fill('7200')
     await input.press('Enter')
 
-    // The hub refuses the un-elevated session; the transport prompts.
-    await answerElevationPrompt(page, TEST_ADMIN_PASSWORD)
-
-    // The refused write ran again and succeeded, with no second click.
+    // The write ran inside the window the unlock granted: no second prompt.
     await expect(row.getByText('Customized')).toBeVisible()
     await expect(elevationPrompt(page)).toHaveCount(0)
 
-    // And the panel now says the session is verified, at the TOP of the group
-    // -- the state used to live inside one account editor, so no
-    // ADMINISTRATION panel ever showed it.
-    await expect(dialog.getByTestId('elevation-status')).toBeVisible()
-
-    // A SECOND write in the same window: no second prompt.
+    // A SECOND write in the same window: no second prompt either.
     await dialog.locator('[data-testid="setting-reset-session_duration_seconds"]').click()
     await expect(input).toHaveValue('604800')
     await expect(elevationPrompt(page)).toHaveCount(0)

@@ -31,7 +31,7 @@ var SQLTruncateTableOrder = []string{
 // TruncateStatement is the DELETE one table needs to be emptied between tests.
 //
 // It exists for the ONE table whose rows are not all test data. Every store
-// open seeds oauth_clients with the two registrations this build ships
+// open seeds oauth_clients with the three registrations this build ships
 // (store.SeedBuiltIns) -- their fields are constants of the build, and
 // api_tokens.client_id is a NOT NULL foreign key onto them -- so a plain
 // DELETE leaves every later insert failing the constraint. It is the same

@@ -91,7 +91,7 @@ func TestUnlinkOAuthProvider_ReadsTheProviderListOutsideTheLock(t *testing.T) {
 		}))
 	}
 
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
 	require.NoError(t, err)
 	now := time.Now().UTC()
 

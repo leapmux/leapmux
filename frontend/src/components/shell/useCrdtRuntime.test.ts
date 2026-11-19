@@ -7,7 +7,7 @@ import { channelManager } from '~/api/workerRpc'
 import { CLOSE_REASON_TOO_MANY_CONNECTIONS } from '~/generated/contracts/wire'
 import { UserCrdtStateSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { KEY_CLIENT_ID, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_CLIENT_ID, sessionStorageSet, storageAccountFor } from '~/lib/browserStorage'
 import { PendingOpsManager } from '~/lib/crdt'
 import { fullCheckpointDelta } from '~/lib/crdt/checkpointChunks'
 import { CHECKPOINT_OP_LOG_THRESHOLD } from '~/lib/crdt/checkpointRecorder'
@@ -49,6 +49,10 @@ const userEventsSpy = vi.hoisted(() => ({
   // Captured so a test can fire the two list-change events the hook reports.
   onWorkersChanged: null as null | (() => void),
   onWorkspaceLifecycleChanged: null as null | (() => void),
+  // Captured so a test can assert WHICH identity the runtime hands the hook.
+  // `useUserEvents` compares it against each frame's raw `user_id`, so a
+  // storage account here refuses every frame the hub sends.
+  userId: null as null | (() => string),
 }))
 vi.mock('./useUserEvents', () => ({
   useUserEvents: (opts: {
@@ -56,11 +60,13 @@ vi.mock('./useUserEvents', () => ({
     onFatalClose?: (info: { code: number, reason: string }) => void
     onWorkersChanged?: () => void
     onWorkspaceLifecycleChanged?: () => void
+    userId: () => string
   }) => {
     userEventsSpy.ready = opts.ready ?? (() => true)
     userEventsSpy.onFatalClose = opts.onFatalClose ?? null
     userEventsSpy.onWorkersChanged = opts.onWorkersChanged ?? null
     userEventsSpy.onWorkspaceLifecycleChanged = opts.onWorkspaceLifecycleChanged ?? null
+    userEventsSpy.userId = opts.userId
     return {
       bootstrapped: () => false,
       clock: () => null,
@@ -192,12 +198,13 @@ async function settleUntilAsync(until: () => Promise<boolean>): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-function mountRuntime(userId: () => string) {
+function mountRuntime(userId: () => string, hubUserId: () => string = userId) {
   let dispose = () => {}
   const runtime = createRoot((d) => {
     dispose = d
     return useCrdtRuntime({
       userId,
+      hubUserId,
       getWorkspaceId: () => 'ws-1',
       activeClient: createActiveClientStore(),
       onWorkspaceLifecycleChanged: () => {},
@@ -275,6 +282,7 @@ describe('useCrdtRuntime hydration gate', () => {
     _resetCheckpointStoreForTest()
     opLog.reset()
     userEventsSpy.ready = null
+    userEventsSpy.userId = null
     recorderSpy.options = []
     recorderSpy.instances = []
     recorderSpy.failNextConstruction = false
@@ -494,6 +502,7 @@ describe('useCrdtRuntime hydration gate', () => {
         dispose = d
         return useCrdtRuntime({
           userId: uid,
+          hubUserId: uid,
           getWorkspaceId: () => 'ws-1',
           activeClient: createActiveClientStore(),
           onWorkspaceLifecycleChanged: () => {},
@@ -942,6 +951,7 @@ describe('useCrdtRuntime fatal close', () => {
     _resetCheckpointStoreForTest()
     opLog.reset()
     userEventsSpy.ready = null
+    userEventsSpy.userId = null
     userEventsSpy.onFatalClose = null
     toastSpy.sticky = []
     toastSpy.warn = []
@@ -1022,6 +1032,7 @@ describe('useCrdtRuntime worker list changes', () => {
     _resetCheckpointStoreForTest()
     opLog.reset()
     userEventsSpy.ready = null
+    userEventsSpy.userId = null
     userEventsSpy.onWorkersChanged = null
     userEventsSpy.onWorkspaceLifecycleChanged = null
   })
@@ -1038,6 +1049,7 @@ describe('useCrdtRuntime worker list changes', () => {
       dispose = d
       useCrdtRuntime({
         userId: () => 'user-a',
+        hubUserId: () => 'user-a',
         getWorkspaceId: () => 'ws-1',
         activeClient: createActiveClientStore(),
         ...callbacks,
@@ -1058,5 +1070,110 @@ describe('useCrdtRuntime worker list changes', () => {
     expect(onWorkersChanged).toHaveBeenCalledTimes(2)
     expect(onWorkspaceLifecycleChanged).not.toHaveBeenCalled()
     dispose()
+  })
+})
+
+describe('useCrdtRuntime hub identity', () => {
+  beforeEach(() => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+    sessionStorageSet(KEY_CLIENT_ID, CLIENT)
+    _resetCheckpointStoreForTest()
+    opLog.reset()
+    userEventsSpy.ready = null
+    userEventsSpy.userId = null
+  })
+
+  afterEach(() => {
+    _resetCheckpointStoreForTest()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  // The `userId` option is the (hub, user) ACCOUNT that keys the checkpoint
+  // store. `useUserEvents` compares its identity against each frame's raw
+  // `user_id`, so handing it the account refuses every UserMaterialized frame
+  // and the CRDT never bootstraps.
+  it('hands useUserEvents the hub user id, not the storage account', () => {
+    const account = storageAccountFor('https://hub.example', 'user-a')
+    const { dispose } = mountRuntime(() => account, () => 'user-a')
+
+    expect(userEventsSpy.userId).not.toBeNull()
+    expect(userEventsSpy.userId!()).toBe('user-a')
+    dispose()
+  })
+
+  // `newState` seeds the pre-bootstrap placeholder from the manager's
+  // constructor argument, and that field is `UserCrdtState.userId` -- the raw
+  // Hub user id `bootstrap` then overwrites from `UserMaterialized`. Handing the
+  // constructor the composed storage account puts two identities in one field,
+  // split at bootstrap.
+  it('seeds state.userId with the raw Hub user id, not the composed storage account', async () => {
+    const account = storageAccountFor('https://hub.example', 'user-a')
+    const { runtime, dispose } = mountRuntime(() => account, () => 'user-a')
+    await settleUntil(() => userEventsSpy.ready!())
+
+    expect(runtime.crdtState()!.userId).toBe('user-a')
+    dispose()
+  })
+
+  // The checkpoint store is keyed by the composed account, while the blob's
+  // `UserCrdtState.userId` keeps the raw Hub user id. Seeding the blob with the
+  // KEY is a shape no live bootstrap writes -- `bootstrap` copies
+  // `materialized.userId` -- and it hides the comparison behind it.
+  it('replays a COMPOSED-key checkpoint whose blob names the raw Hub user id', async () => {
+    const account = storageAccountFor('https://hub.example', 'user-a')
+    await writeCheckpointAndTruncateOpLog(account, CLIENT, fullCheckpointDelta(seededState('user-a')), WM, 1n)
+    const { runtime, dispose } = mountRuntime(() => account, () => 'user-a')
+    await settleUntil(() => userEventsSpy.ready!())
+
+    const state = runtime.crdtState()
+    expect(state).not.toBeNull()
+    expect(state!.userId).toBe('user-a')
+    expect(Object.keys(state!.workspaces)).toContain('ws-1')
+    dispose()
+  })
+
+  // Two hubs behind one origin can hold the same user id. The account is the
+  // (hub, user) pair, so each hub keeps its own checkpoint: hydration of one
+  // must install that hub's state and leave the other's row alone.
+  it('keeps one checkpoint per hub when two hubs share a user id', async () => {
+    const accountA = storageAccountFor('https://hub-a.example', 'user-x')
+    const accountB = storageAccountFor('https://hub-b.example', 'user-x')
+    // The blob names the RAW Hub user id -- `bootstrap` copies it off
+    // `UserMaterialized` -- while the row is keyed by the composed (hub, user)
+    // account. Both rows therefore name the same tenant, and only the key keeps
+    // the two hubs' checkpoints apart.
+    await writeCheckpointAndTruncateOpLog(accountA, CLIENT, fullCheckpointDelta(seededState('user-x')), WM, 1n)
+    await writeCheckpointAndTruncateOpLog(
+      accountB,
+      CLIENT,
+      fullCheckpointDelta(create(UserCrdtStateSchema, {
+        userId: 'user-x',
+        workspaces: {
+          'ws-2': { workspaceId: 'ws-2' },
+        },
+        maxHlc: WM,
+        currentEpoch: 1n,
+      })),
+      WM,
+      1n,
+    )
+
+    const first = mountRuntime(() => accountA, () => 'user-x')
+    await settleUntil(() => userEventsSpy.ready!())
+    const stateA = first.runtime.crdtState()
+    expect(stateA).not.toBeNull()
+    expect(Object.keys(stateA!.workspaces)).toContain('ws-1')
+    expect(Object.keys(stateA!.workspaces)).not.toContain('ws-2')
+    first.dispose()
+
+    const second = mountRuntime(() => accountB, () => 'user-x')
+    await settleUntil(() => userEventsSpy.ready!())
+    const stateB = second.runtime.crdtState()
+    expect(stateB).not.toBeNull()
+    expect(Object.keys(stateB!.workspaces)).toContain('ws-2')
+    expect(Object.keys(stateB!.workspaces)).not.toContain('ws-1')
+    second.dispose()
   })
 })

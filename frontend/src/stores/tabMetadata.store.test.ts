@@ -5,7 +5,8 @@ import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetadata.store'
 
 /**
@@ -594,6 +595,40 @@ describe('tabMetadata', () => {
           title: 'shell',
           screen: new Uint8Array(1024),
         })
+        await flush()
+        expect(m.get('t1')?.title).toBe('shell')
+
+        setState({ tabs: {} })
+        await flush()
+        expect(m.get('t1')).toBeUndefined()
+        expect(retired).toEqual(['t1'])
+
+        dispose()
+      })
+    })
+
+    it('retires rows when the storage account is composed around the state\'s raw Hub user id', async () => {
+      // The store tracks the STORAGE account -- `hub/user`, the namespace its
+      // rows live in -- while `UserCrdtState.userId` keeps the raw Hub user id
+      // `bootstrap` copies off `UserMaterialized`. The memo compares the two to
+      // decide whether the CRDT state is these rows' account, so it must take
+      // the user id the account names: the two values themselves never match,
+      // and no row is ever retired.
+      setStorageAccountForTests(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        expect(m.state.userId).toBe(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+        const [state, setState] = createSignal<SweepState>({
+          tabs: { t1: {} },
+        })
+        const retired: string[] = []
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: TEST_USER_ID, ...value } as never
+            : null
+        }, m, ids => retired.push(...ids))
+        m.patch('t1', { title: 'shell' })
         await flush()
         expect(m.get('t1')?.title).toBe('shell')
 

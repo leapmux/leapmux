@@ -63,7 +63,7 @@ func setupAppService(t *testing.T) *appEnv {
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(ctx))
 
-	newUser := func(username string, isAdmin bool) (id, session string) {
+	newUser := func(username string, isAdmin bool) (id, token string) {
 		t.Helper()
 		hash, err := password.Hash("password123")
 		require.NoError(t, err)
@@ -72,9 +72,8 @@ func setupAppService(t *testing.T) *appEnv {
 			FirstCredentialExempt: true, IsAdmin: isAdmin,
 		})
 		require.NoError(t, err)
-		token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), username, "password123", auth.DefaultSessionDuration)
-		require.NoError(t, err)
-		return u.ID, token
+		sess, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), username, "password123", auth.DefaultSessionDuration)
+		return u.ID, sess.Token
 	}
 	adminID, adminSession := newUser("admin", true)
 	userID, userSession := newUser("plain", false)
@@ -712,8 +711,8 @@ func (e *appEnv) newPlainUser(t *testing.T, username string) (id, session string
 		Username: username, PasswordHash: hash, DisplayName: username, FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
-	token, _, _, err := auth.Login(ctx, e.store, hubtestutil.TestSecretHasher(), username, "password123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, e.store, hubtestutil.TestSecretHasher(), username, "password123", auth.DefaultSessionDuration)
+	token := sess.Token
 	// ELEVATED, like the two sessions setupAppService builds. The elevation
 	// gate runs before the ownership rung, so a stranger with no window is
 	// refused for the window and never reaches the answer these tests measure
@@ -794,12 +793,13 @@ func TestAppService_WritesNeedAProvenFactor(t *testing.T) {
 	app := env.registerApp(t, env.admin, "gate-app", nil)
 	clientID := app.GetApp().GetClientId()
 
-	// A SECOND session for the same administrator, deliberately not elevated.
-	// A fresh login rather than a dropped window, because that is the state a
-	// person is actually in: signed in for hours, with the step-up window long
-	// expired.
-	plain, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "admin", "password123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	// A SECOND session for the same administrator, deliberately not
+	// elevated: a fresh sign-in with the window it wrote dropped, so no
+	// proven factor stands behind these calls. A separate session rather
+	// than a drop on the fixture's, so the elevated seeding writes already
+	// made stay admitted.
+	sess, _ := hubtestutil.LoginWithoutWindow(t, env.store, hubtestutil.TestSecretHasher(), "admin", "password123", auth.DefaultSessionDuration)
+	plain := sess.Token
 
 	refused := map[string]func() error{
 		"RegisterApp": func() error {

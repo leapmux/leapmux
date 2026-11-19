@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -95,11 +96,21 @@ func committedUserProto(ctx context.Context, st store.Store, user *store.User, c
 	return userProto
 }
 
+// elevationTimestamp converts an Elevation to the proto timestamp a
+// SessionReport carries. A zero Elevation yields nil, which the proto
+// omits.
+func elevationTimestamp(e auth.Elevation) *timestamppb.Timestamp {
+	if e.IsZero() {
+		return nil
+	}
+	return timestamppb.New(e.ExpiresAt)
+}
+
 // signInReport builds the SessionReport a SUCCESSFUL sign-in returns. The
 // sign-in's main work -- the account, the session, the cookie -- already
 // committed, so a failed projection leaves user absent (see
-// committedUserProto). elevation is nil for a fresh sign-in, which grants no
-// elevation.
+// committedUserProto). elevation carries the deadline the sign-in granted,
+// and is nil when the sign-in granted none.
 func signInReport(
 	ctx context.Context, st store.Store, user *store.User,
 	verification *leapmuxv1.EmailVerificationStatus, elevation *timestamppb.Timestamp,

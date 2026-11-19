@@ -1,7 +1,7 @@
 import type { Locator } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
-import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { accountStorageKey, PREFIX_CONTROL_STATE, storageAccountFor } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getUserId } from './api'
 import { waitForStoredEntry } from './storage'
@@ -16,13 +16,15 @@ function validateQuestionPageIndex(pageIndex: number | undefined): void {
 /** Reload only after durable storage contains the answer, then verify its original owner and value. */
 async function restoreQuestionAfterStoredState(
   context: ManagedNativeScenarioContext,
-  waitForState: (identity: { agentId: string, userId: string }) => Promise<void>,
+  waitForState: (identity: { agentId: string, userId: string, account: string }) => Promise<void>,
   assertRestored: (banner: Locator) => Promise<void>,
 ): Promise<void> {
   const agentId = await controlAgentId(controlBanner(context.page))
   const server = context.leapmuxServer
   const userId = server.adminUserId ?? await getUserId(server.hubUrl, server.adminToken)
-  await waitForState({ agentId, userId })
+  // The account is the (hub, user) pair the app stores under.
+  const account = storageAccountFor(new URL(server.hubUrl).origin, userId)
+  await waitForState({ agentId, userId, account })
   await context.page.reload()
   const restored = await waitForControlBanner(context.page)
   expect(await controlAgentId(restored), 'the restored question belongs to the original agent').toBe(agentId)
@@ -37,10 +39,10 @@ export async function restoreQuestionSelection(context: ManagedNativeScenarioCon
   const value = await selected.inputValue()
   if (!value)
     throw new Error('The selected question option has no native value.')
-  await restoreQuestionAfterStoredState(context, async ({ agentId, userId }) => {
+  await restoreQuestionAfterStoredState(context, async ({ agentId, account }) => {
     await waitForStoredEntry(
       context.page,
-      accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`),
+      accountStorageKey(account, `${PREFIX_CONTROL_STATE}${agentId}:`),
       stored => isObject(stored) && isObject(stored.selections)
         && (pageIndex === undefined
           ? Object.values(stored.selections).some(values => Array.isArray(values) && values.includes(value))
@@ -58,10 +60,10 @@ export async function restoreQuestionEmptySelection(context: ManagedNativeScenar
   if (!label)
     throw new Error('An empty-selection proof requires an option label.')
   await expect(banner.getByTestId(`question-option-${label}`).locator('input')).not.toBeChecked()
-  await restoreQuestionAfterStoredState(context, async ({ agentId, userId }) => {
+  await restoreQuestionAfterStoredState(context, async ({ agentId, account }) => {
     await waitForStoredEntry(
       context.page,
-      accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`),
+      accountStorageKey(account, `${PREFIX_CONTROL_STATE}${agentId}:`),
       stored => isObject(stored) && isObject(stored.selections)
         && Array.isArray(stored.selections[pageIndex]) && stored.selections[pageIndex].length === 0,
       'the empty selection reaches durable storage before reload',
@@ -77,12 +79,12 @@ export async function restoreQuestionTextDraft(context: ManagedNativeScenarioCon
   if (!text.trim())
     throw new Error('A question draft proof requires nonempty text.')
   await expect(composerEditor(context.page)).toHaveText(text)
-  await restoreQuestionAfterStoredState(context, async ({ agentId, userId }) => {
+  await restoreQuestionAfterStoredState(context, async ({ agentId, userId, account }) => {
     await waitForEditorDraft(context.page, userId, text)
     if (pageIndex !== undefined) {
       await waitForStoredEntry(
         context.page,
-        accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`),
+        accountStorageKey(account, `${PREFIX_CONTROL_STATE}${agentId}:`),
         stored => isObject(stored) && stored.currentPage === pageIndex,
         'the question page reaches durable storage before reload',
       )

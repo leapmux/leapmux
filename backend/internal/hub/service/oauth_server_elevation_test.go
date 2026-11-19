@@ -333,8 +333,8 @@ func TestCLIConsent_AdminScopeRefusedForANonAdministrator(t *testing.T) {
 	ctx := context.Background()
 
 	plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
-	token, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
+	token := sess.Token
 	cookie := &http.Cookie{Name: auth.CookieName, Value: token}
 	now := env.now()
 	n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
@@ -379,8 +379,8 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 	elevatedPlainUser := func(t *testing.T, env *apiAuthEnv) *http.Cookie {
 		t.Helper()
 		plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
-		token, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
-		require.NoError(t, err)
+		sess, _ := hubtestutil.LoginWithoutWindow(t, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
+		token := sess.Token
 		now := env.now()
 		n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
 			SessionID:          hubtestutil.SessionIDFromCookie(t, token),

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
-import { accountStorageKey, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storageAccountFor, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storageAccountFor, storageAccountId, storedKeyFor } from '~/lib/browserStorage'
 import { deferred, settle, untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
@@ -68,12 +68,15 @@ vi.mock('~/api/workerRpc', () => ({
 // A default resolution: closePooledChannels chains .catch onto the result, and
 // a test that never states a tunnel outcome must not crash the auth effect.
 const mockResetTunnels = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+// The connected Hub's identity, which `hubOrigin` derives the storage account
+// from. Null is the browser (and solo) case; a remote-Hub-mode test replaces it.
+const mockDesktopHub = vi.hoisted(() => vi.fn<() => { kind: 'solo' } | { kind: 'remote', url: string } | null>(() => null))
 vi.mock('~/api/platformBridge', () => ({
   // `~/api/transport` imports `desktopFetch` and `isTauriApp` from the same
   // module at load time, so the factory must provide them alongside the bridge
   // under test.
   desktopFetch: vi.fn(),
-  desktopHub: () => null,
+  desktopHub: () => mockDesktopHub(),
   getCapabilities: () => ({
     mode: 'web',
     tunnels: false,
@@ -2085,5 +2088,82 @@ describe('AuthContext storage namespace', () => {
     expect(auth().bootstrapError()).toBeNull()
     expect(error).toHaveBeenCalled()
     error.mockRestore()
+  })
+})
+
+describe('adoptBrowserSignIn', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockPasswordSetupGate.mockReturnValue(false)
+    mockDesktopHub.mockReturnValue(null)
+  })
+
+  afterEach(() => {
+    document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+  })
+
+  it('adopts the user the account read returns', async () => {
+    const auth = await bootSignedOut()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    const result = await auth().adoptBrowserSignIn()
+
+    expect(result).toEqual({ outcome: 'adopted', verificationRequired: false })
+    expect(auth().user()?.username).toBe('alice')
+    expect(auth().loading()).toBe(false)
+  })
+
+  // The handoff SUCCEEDED; only the account read failed. Recovery owns the
+  // state from there, and the call resolves instead of rejecting.
+  it('resolves recovering and starts sign-in recovery when the account read fails', async () => {
+    const auth = await bootSignedOut()
+    mockGetCurrentUser.mockRejectedValue(new ConnectError('down', Code.Unavailable))
+
+    const result = await auth().adoptBrowserSignIn()
+
+    expect(result.outcome).toBe('recovering')
+    expect(auth().signInRecovery()).not.toBeNull()
+    expect(auth().loading()).toBe(false)
+    expect(auth().user()).toBeNull()
+  })
+
+  it('resolves superseded and adopts nothing when a newer sign-in lands during the read', async () => {
+    const auth = await bootSignedOut()
+    const read = deferred<unknown>()
+    mockGetCurrentUser.mockReturnValue(read.promise)
+    mockLogin.mockReturnValue(deferred<unknown>().promise)
+
+    const adopt = auth().adoptBrowserSignIn()
+    // A second sign-in during the read supersedes the first.
+    void auth().login('bob', 'pw')
+    read.resolve({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    expect((await adopt).outcome).toBe('superseded')
+    expect(auth().user()).toBeNull()
+  })
+
+  // A storage account is a Hub and a user, so the namespace follows the
+  // connected Hub's origin and not the bundled page's.
+  it('keys the storage account to the Hub origin in remote mode', async () => {
+    mockDesktopHub.mockReturnValue({ kind: 'remote', url: 'https://hub.example.com' })
+    const auth = await bootSignedOut()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    await auth().adoptBrowserSignIn()
+
+    expect(storageAccountId()).toBe(storageAccountFor('https://hub.example.com', 'u1'))
   })
 })

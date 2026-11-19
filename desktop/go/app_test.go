@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -230,6 +232,53 @@ func TestConnectDistributedRollsBackWhenConfigSaveFails(t *testing.T) {
 	require.Nil(t, app.connection)
 	require.Empty(t, app.config.Mode)
 	require.Empty(t, app.config.HubURL)
+}
+
+// TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedRequest
+// pins the wiring inside ConnectDistributed: the proxy that commits takes the
+// PERSISTENT jar over sessionsDir(), so a session file left by the previous run
+// reaches the first proxied request. A regression that passes a fresh in-memory
+// jar instead silently drops the persisted session on every restart.
+func TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedRequest(t *testing.T) {
+	setTestHome(t)
+
+	var mu sync.Mutex
+	var proxiedCookie string
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The probe shares the server; only the proxied request is under test.
+		if r.URL.Path == "/first" {
+			mu.Lock()
+			proxiedCookie = r.Header.Get("Cookie")
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(hub.Close)
+
+	// A session file for this Hub's origin, as the run before a restart leaves it.
+	base := mustParse(t, hub.URL)
+	dir := sessionsDir()
+	require.NotEmpty(t, dir)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	data, err := json.Marshal(sessionFile{
+		HubURL:  base.String(),
+		Cookies: []persistedCookie{{Name: "sid", Value: "abc123", Path: "/"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, atomicfile.WriteFile(filepath.Join(dir, sessionFileName(base)), data, 0o600))
+
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	require.NoError(t, app.ConnectDistributed(context.Background(), hub.URL))
+
+	resp, _, err := app.ProxyHTTP(context.Background(), http.MethodGet, "/first", nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "sid=abc123", proxiedCookie,
+		"the first proxied request must carry the stored session cookie")
 }
 
 type recordingSoloInstance struct {

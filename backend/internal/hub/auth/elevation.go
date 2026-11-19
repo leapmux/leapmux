@@ -20,6 +20,27 @@ import (
 // open over lunch is no longer elevated.
 const ElevationWindow = 2 * time.Hour
 
+// FreshAuthenticationWindow is how long a sign-in that proved a factor
+// counts as fresh authentication. A sensitive action inside this window
+// passes without a step-up, and the first such action slides the ordinary
+// ElevationWindow forward from the sign-in instant.
+const FreshAuthenticationWindow = 5 * time.Minute
+
+// SignInProof states whether a sign-in proved a factor. CreateSession
+// refuses the zero value so a forgotten write fails instead of silently
+// granting no window.
+type SignInProof int
+
+const (
+	// SignInProvedNoFactor is a sign-in that proved no factor, such as an
+	// OAuth handoff or a provider sign-in without re-authentication.
+	SignInProvedNoFactor SignInProof = 1
+	// SignInProvedFactor is a sign-in that proved a factor: a password, a
+	// passkey, or a provider sign-in for a consent route that asked for
+	// fresh authentication.
+	SignInProvedFactor SignInProof = 2
+)
+
 // ElevationMaxTotal caps the total life of ONE elevation, measured from the
 // instant the factor was proven rather than from the last slide.
 //

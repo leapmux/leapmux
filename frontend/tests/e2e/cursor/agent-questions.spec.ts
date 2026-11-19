@@ -1,6 +1,6 @@
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
-import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { accountStorageKey, PREFIX_CONTROL_STATE, storageAccountFor } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { cursorTest } from '../cursor-fixtures'
 import { getUserId } from '../helpers/api'
@@ -133,7 +133,8 @@ cursorTest('repairs invalid saved navigation and hidden text before answering a 
   await restoreQuestionSelection(native, banner, 'Green')
   const agentId = await controlAgentId(await waitForControlBanner(page))
   const userId = server.adminUserId ?? await getUserId(server.hubUrl, server.adminToken)
-  const prefix = accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`)
+  const account = storageAccountFor(new URL(server.hubUrl).origin, userId)
+  const prefix = accountStorageKey(account, `${PREFIX_CONTROL_STATE}${agentId}:`)
   const keys = (await storageKeys(page)).filter(key => key.startsWith(prefix))
   expect(keys).toHaveLength(1)
   const key = keys[0]!

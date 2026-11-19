@@ -55,11 +55,10 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	token, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	sessionID := hubtestutil.SessionIDFromCookie(t, token)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
+	sessionID := hubtestutil.SessionIDFromCookie(t, sess.Token)
 
-	_, err = env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
+	_, err := env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
 		Id: sessionID,
 	}, env.token))
 	require.NoError(t, err)
@@ -196,8 +195,7 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	_, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
