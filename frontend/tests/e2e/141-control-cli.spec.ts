@@ -21,18 +21,22 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { cliAgentOpen, mintCLITokenForAdmin } from './helpers/cli'
 import { withExtraClients } from './helpers/multiClient'
-import { expectAgentTabCount, loginViaToken, openWorkspace, tabById } from './helpers/ui'
+import { expectAgentTabCount, loginViaToken, openTerminalViaUI, openWorkspace, tabById } from './helpers/ui'
 
 test.describe('control CLI live broadcast', () => {
-  test('single browser observes CLI-driven agent open', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('uses the same generated ID format for browser and CLI creation', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     const { workspaceId } = authenticatedWorkspace
     const cli = await mintCLITokenForAdmin(leapmuxServer)
     await expectAgentTabCount(page, 1)
+
+    const terminalID = await openTerminalViaUI(page)
+    expect(terminalID).toMatch(/^[a-z0-9]{48}$/i)
 
     // The CLI invokes Worker creation. Canonical-HLC-tagged CrdtOp batches
     // arrive on /ws/userevents. useUserEvents passes them to
     // pendingOps.consumeRemote, then the projection and joined view render the tab.
     const newAgentID = await cliAgentOpen(cli, { workspaceId, workerId: leapmuxServer.workerId })
+    expect(newAgentID).toMatch(/^[a-z0-9]{48}$/i)
     await expect(tabById(page, newAgentID)).toBeVisible()
     await expectAgentTabCount(page, 2)
   })
