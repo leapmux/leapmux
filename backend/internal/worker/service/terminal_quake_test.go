@@ -1115,16 +1115,15 @@ func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
 	waitForTerminalSpawn(t, svc, terminalID, "spawn")
-	// The latch goes down first, so the shell's own exit -- which is what
-	// would normally close the row -- is refused, and the row survives with a
-	// dead shell: the state a restart inherits.
+	// Begin shutdown before stopping the shell. Its exit handler must leave
+	// the row open for the next Worker to reconcile.
 	svc.lifecycleMu.Lock()
 	svc.shuttingDown.Store(true)
 	svc.lifecycleMu.Unlock()
 	svc.Output.SetShuttingDown()
-	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(terminalID) }, "shell exit")
-	svc.Terminals.WaitForExit(terminalID)
+	svc.Terminals.StopTerminal(terminalID)
+	require.NoError(t, svc.Terminals.WaitForExitContext(testutil.DeadlineContext(t), terminalID))
+	require.True(t, svc.Terminals.IsExited(terminalID))
 	<-svc.Cleanup.DoneChan()
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
