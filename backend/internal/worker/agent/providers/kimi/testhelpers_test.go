@@ -776,6 +776,26 @@ func (f *fakeKap) defaultSubscribeCode(sub fakeKapSubscribe) int {
 	return kimiCodeOK
 }
 
+// holdConversationPage pauses the fake server before it sends one agent's page.
+func (f *fakeKap) holdConversationPage(t *testing.T, agentID string) func() {
+	t.Helper()
+	released := make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	t.Cleanup(release)
+	f.mu.Lock()
+	f.beforeConversation = func(_ fakeKapSubscribe, candidate string) {
+		if candidate != agentID {
+			return
+		}
+		select {
+		case <-released:
+		case <-t.Context().Done():
+		}
+	}
+	f.mu.Unlock()
+	return release
+}
+
 // --- the agent under test ---
 
 // kimiTestRig is one agent connected to a fake server.
@@ -933,6 +953,13 @@ func adoptNativeKimiChild(t *testing.T, a *Agent, nativeID string) string {
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
 	require.Eventually(t, cond, 30*time.Second, 2*time.Millisecond, msg)
+}
+
+// waitForKimiTestConversationPage joins the native snapshot before injecting live events.
+func waitForKimiTestConversationPage(t *testing.T, a *Agent, agentID string) {
+	t.Helper()
+	run := a.run(agentID)
+	waitFor(t, func() bool { return run.conversationRecovery.Load() == nil }, "the initial conversation page for "+agentID+" is applied")
 }
 
 // options builds an option map.

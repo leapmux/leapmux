@@ -129,6 +129,7 @@ func TestKimiNativeTodoSurvivesPendingChildCleanup(t *testing.T) {
 	rig := newKimiServiceTestRig(t)
 	native := &kimiOutputRig{agent: rig.agent}
 	seedKimiTodoPublicChild(t, native)
+	waitForKimiTestConversationPage(t, rig.agent, "agent-0")
 	native.startPublicTurn(t, "agent-0", "child", 0)
 	child, linked := rig.agent.children.get("agent-0")
 	require.True(t, linked)
@@ -195,15 +196,19 @@ func TestKimiNativeTodoPreservesFeedOrderAcrossStorageFailure(t *testing.T) {
 func TestKimiNativeTodoPreservesIdleAncestorAuthority(t *testing.T) {
 	t.Parallel()
 	rig := newKimiServiceTestRig(t)
+	releaseParentPage := rig.fake.holdConversationPage(t, "agent-0")
 	native := &kimiOutputRig{agent: rig.agent}
 	seedKimiTodoPublicChild(t, native)
+	releaseParentPage()
+	waitForKimiTestConversationPage(t, rig.agent, "agent-0")
 	native.startPublicTurn(t, "agent-0", "parent", 0)
 	native.conversationAgentFrame(t, "agent-0", `{"type":"item.started","turn_id":"parent","item":{"type":"tool_call","item_id":"nested","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"prompt":"Review nested work.","description":"Nested child"},"agent_refs":[{"agent_id":"agent-1","role":"child"}]}}`)
-	native.startPublicTurn(t, "agent-1", "nested", 0)
 	parent, linked := rig.agent.children.get("agent-0")
 	require.True(t, linked)
 	child, linked := rig.agent.children.get("agent-1")
 	require.True(t, linked)
+	waitForKimiTestConversationPage(t, rig.agent, "agent-1")
+	native.startPublicTurn(t, "agent-1", "nested", 0)
 	_, err := rig.database.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER hold_parent_close BEFORE UPDATE ON agent_background_tasks WHEN NEW.row_key = 'session_1/agent-0' AND NEW.status <> %d BEGIN SELECT RAISE(ABORT, 'parent close held'); END`, bgtask.StatusRunning))
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = rig.database.ExecContext(t.Context(), "DROP TRIGGER IF EXISTS hold_parent_close") })

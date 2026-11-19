@@ -2,9 +2,11 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { expectRegistryRow, expectRowBecomesFinal } from './helpers/subagentRegistry'
 
+const sectionHeader = '<div data-testid="section-header-background_tasks">Background tasks</div>'
+
 test('matches background task filters on each row before its nested content', async ({ page }) => {
   await page.setContent(`
-    <div data-testid="section-header-background_tasks">Background tasks</div>
+    ${sectionHeader}
     <div id="shell-decoy" data-testid="bg-task-row" data-kind="shell" data-status="running">
       Shell task <span data-kind="subagent" data-status="succeeded">nested child label</span>
     </div>
@@ -27,7 +29,7 @@ test('matches background task filters on each row before its nested content', as
 
 test('accepts distinct success and unknown-outcome rows as final', async ({ page }) => {
   await page.setContent(`
-    <div data-testid="section-header-background_tasks">Background tasks</div>
+    ${sectionHeader}
     <div id="success" data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
       <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>
       <span data-testid="bg-task-secondary">Succeeded</span>
@@ -45,6 +47,7 @@ test('accepts distinct success and unknown-outcome rows as final', async ({ page
 
 test('refuses a wrong status-dot label when the task title contains the expected end label', async ({ page }) => {
   await page.setContent(`
+    ${sectionHeader}
     <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
       <span data-testid="bg-task-title">Succeeded task</span>
       <span data-testid="bg-task-status-dot" aria-label="Failed">●</span>
@@ -52,11 +55,12 @@ test('refuses a wrong status-dot label when the task title contains the expected
     </div>
   `)
   const row = page.locator('[data-testid="bg-task-row"]:visible')
-  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow('aria-label')
+  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow('"matchingDot": false')
 })
 
 test('refuses a wrong end-line label when the title and status dot contain the expected label', async ({ page }) => {
   await page.setContent(`
+    ${sectionHeader}
     <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
       <span data-testid="bg-task-title">Succeeded task</span>
       <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>
@@ -64,11 +68,12 @@ test('refuses a wrong end-line label when the title and status dot contain the e
     </div>
   `)
   const row = page.locator('[data-testid="bg-task-row"]:visible')
-  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow('toHaveText')
+  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow('"matchingLabel": false')
 })
 
 test('accepts the canonical title when the repeated end line is absent', async ({ page }) => {
   await page.setContent(`
+    ${sectionHeader}
     <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
       <span data-testid="bg-task-title">Succeeded</span>
       <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>
@@ -81,6 +86,7 @@ test('accepts the canonical title when the repeated end line is absent', async (
 
 test('checks the secondary when a longer title contains the canonical word', async ({ page }) => {
   await page.setContent(`
+    ${sectionHeader}
     <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
       <span data-testid="bg-task-title">Succeeded task</span>
       <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>

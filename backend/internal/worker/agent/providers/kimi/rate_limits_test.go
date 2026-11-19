@@ -54,9 +54,14 @@ const kimiTestPlanWindows = `{
 func newKimiPlanRig(t *testing.T) *kimiTestRig {
 	t.Helper()
 	fake, server := newFakeKap(t)
+	return connectKimiPlanRig(t, fake, server.URL)
+}
+
+func connectKimiPlanRig(t *testing.T, fake *fakeKap, url string) *kimiTestRig {
+	t.Helper()
 	fake.models = append(fake.models, kimiTestManagedModel())
 	fake.usage = kimiTestPlanUsage()
-	return connectKimiTestRig(t, fake, server.URL, agent.Options{Options: options(agent.OptionIDModel, kimiTestManagedModelID)})
+	return connectKimiTestRig(t, fake, url, agent.Options{Options: options(agent.OptionIDModel, kimiTestManagedModelID)})
 }
 
 // kimiRateLimitStates returns the rate-limit values of each session-info
@@ -216,7 +221,11 @@ func TestKimiUsageRefreshKeepsTheLastWindowsWhenTheReadFails(t *testing.T) {
 // Main turn completion refreshes account usage; a child completion does not.
 func TestKimiUsageRefreshFollowsNativeTurnCompletion(t *testing.T) {
 	t.Parallel()
-	rig := newKimiPlanRig(t)
+	fake, server := newFakeKap(t)
+	releasePage := fake.holdConversationPage(t, kimiMainAgentID)
+	rig := connectKimiPlanRig(t, fake, server.URL)
+	releasePage()
+	waitForKimiTestConversationPage(t, rig.agent, kimiMainAgentID)
 	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
 	before := len(rig.fake.requestsTo("GET " + kimiRouteManagedUsage))
 	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
@@ -225,8 +234,7 @@ func TestKimiUsageRefreshFollowsNativeTurnCompletion(t *testing.T) {
 	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), before+1)
 	assert.JSONEq(t, kimiTestPlanWindows, lastKimiRateLimitState(t, rig.sink))
 	childID := adoptNativeKimiChild(t, rig.agent, "agent-0")
-	child := rig.agent.run("agent-0")
-	waitFor(t, func() bool { return child.conversationRecovery.Load() == nil }, "the child initial page precedes its completion")
+	waitForKimiTestConversationPage(t, rig.agent, "agent-0")
 	native.conversationAgentFrame(t, "agent-0", `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 	native.conversationAgentFrame(t, "agent-0", `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 	rows := rig.sink.Child(childID).Messages()
@@ -234,7 +242,6 @@ func TestKimiUsageRefreshFollowsNativeTurnCompletion(t *testing.T) {
 	assert.True(t, rows[0].TurnEnd)
 	waitForKimiUsageRead(t, rig)
 	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), before+1, "a child completion does not refresh the account")
-
 }
 
 func TestKimiUsageRefreshFollowsTheModel(t *testing.T) {
