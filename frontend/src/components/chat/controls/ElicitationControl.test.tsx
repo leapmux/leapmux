@@ -86,7 +86,12 @@ describe('shared elicitation control', () => {
         required: ['details'],
       },
       fieldRules: [
-        { key: 'details', conditions: [{ field: 'choice', comparison: 'equal', value: 'yes' }] },
+        {
+          key: 'details',
+          conditions: [
+            { field: 'choice', comparison: 'equal', value: 'yes' },
+          ],
+        },
         { key: 'count', hidden: true },
       ],
     }))

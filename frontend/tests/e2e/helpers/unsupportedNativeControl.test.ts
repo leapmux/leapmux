@@ -191,7 +191,10 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     harness.frames = [
       {
         payload: { method: 'permission' },
-        prompt: { kind: 'permission', permission: { command: 'printf proof', options: [] } },
+        prompt: {
+          kind: 'permission',
+          permission: { command: 'printf proof', options: [] },
+        },
       },
     ]
     await exerciseUnsupportedControlThroughPermission(context(), {
@@ -206,7 +209,10 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
     harness.frames = [
       {
         payload: { method: 'permission' },
-        prompt: { kind: 'permission', permission: { title, options: [] } },
+        prompt: {
+          kind: 'permission',
+          permission: { title, options: [] },
+        },
       },
     ]
     await expect(exerciseUnsupportedControlThroughPermission(context(), {

@@ -20,10 +20,10 @@ func TestJSONStringify(t *testing.T) {
 			want:  "\"a\u2028b\u2029c\"",
 		},
 		"an escaped backslash before u2028 stays escaped": {value: `\u2028`, want: `"\\u2028"`},
-		"other escapes stay escaped": {value: "tab\t\"quote\"\nline", want: `"tab\t\"quote\"\nline"`},
-		"a list keeps its order":     {value: []any{"tool", "item", 3}, want: `["tool","item",3]`},
-		"a map sorts its keys":       {value: map[string]string{"b": "2", "a": "1"}, want: `{"a":"1","b":"2"}`},
-		"no trailing newline":        {value: true, want: `true`},
+		"other escapes stay escaped":                      {value: "tab\t\"quote\"\nline", want: `"tab\t\"quote\"\nline"`},
+		"a list keeps its order":                          {value: []any{"tool", "item", 3}, want: `["tool","item",3]`},
+		"a map sorts its keys":                            {value: map[string]string{"b": "2", "a": "1"}, want: `{"a":"1","b":"2"}`},
+		"no trailing newline":                             {value: true, want: `true`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

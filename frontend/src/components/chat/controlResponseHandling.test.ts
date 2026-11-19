@@ -92,7 +92,9 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>, answerState = 
 
 describe('questions with selected answers only', () => {
   /** One multiple-choice question whose runtime selects option '0' by itself. */
-  function nativeDefaultQuestion(requestId: string, fields: Partial<ControlRequest>, options = [{ value: '0', label: 'Alpha' }]): ControlRequest {
+  function nativeDefaultQuestion(requestId: string, fields: Partial<ControlRequest>, options = [
+    { value: '0', label: 'Alpha' },
+  ]): ControlRequest {
     return questionRequest(requestId, [
       {
         id: 'style',

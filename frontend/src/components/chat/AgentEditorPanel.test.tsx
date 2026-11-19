@@ -1208,6 +1208,25 @@ describe('agent editor panel pending questions', () => {
             },
           ],
         },
+        // The prompt that the Worker reads from the native form. It drops the
+        // default '2', which no option offers.
+        prompt: {
+          kind: 'question',
+          questions: [
+            {
+              id: 'langs',
+              question: 'Languages',
+              multiSelect: true,
+              allowEmpty: true,
+              allowCustomText: true,
+              initialSelections: ['0'],
+              options: [
+                { value: '0', label: 'Go' },
+                { value: '1', label: 'Rust' },
+              ],
+            },
+          ],
+        },
       })
     })
     renderPanel({ controlStore, agentProvider: AgentProvider.OH_MY_PI, onSendMessage: send })

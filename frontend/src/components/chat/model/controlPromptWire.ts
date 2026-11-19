@@ -277,7 +277,9 @@ function fieldConditionFromWire(wire: WireElicitationFieldCondition): FieldCondi
   }
   if (!comparison || (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean'))
     return []
-  return [{ field: wire.field, comparison, value }]
+  return [
+    { field: wire.field, comparison, value },
+  ]
 }
 
 const DIALOG_VARIANTS: Partial<Record<DialogVariant, DialogPrompt['variant']>> = {
