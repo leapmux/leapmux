@@ -207,31 +207,16 @@ func cshQuote(value string) string {
 	return quoted.String()
 }
 
-func cshLookupSetup(nativeOnly bool) string {
-	if nativeOnly {
-		return ""
+// Tcsh has a which builtin. BSD csh has no equivalent that sees the live
+// aliases and PATH together. Read the alias and then search the shell's path.
+func cshLookup(name string, includeAlias bool) string {
+	setup := "set __lm_name = " + cshQuote(name) + "\nset __lm_kind = missing\n"
+	if includeAlias {
+		setup += "if ( \"`alias $__lm_name`\" != '' ) set __lm_kind = alias\n"
 	}
-	// Csh has no functions. A private alias shares the lookup and keeps its
-	// result in the launch shell. The single-line if defers the source call
-	// until the child removes the aliases for source and which.
-	body := "set __lm_kind = missing; set __lm_path = ''; set __lm_alias = '';" +
-		" set __lm_alias = \"`alias $__lm_name`\";" +
-		" if ( \"$__lm_alias\" != '' ) set __lm_kind = alias;" +
-		" if ( \"$__lm_kind\" == missing ) set __lm_path = \"`/usr/bin/printf 'which %s\\n' \"$__lm_name\" | ( unalias which; unalias $__lm_name; unalias source; if ( 1 ) source /dev/stdin )`\";" +
-		" if ( \"$__lm_kind\" == missing && -f \"$__lm_path\" && -x \"$__lm_path\" ) set __lm_kind = external"
-	return "alias __leapmux_lookup " + cshQuote(body) + "\n"
-}
-
-func cshLookup(name string) string {
-	return "set __lm_name = " + cshQuote(name) + "\n__leapmux_lookup\n"
-}
-
-// Native interpreter names are data. Check files without sourcing code that
-// contains the name.
-func cshNativeProbe(name, present, absent string) string {
-	source := fmt.Sprintf(`set __lm_kind = missing
+	return setup + `
 set __lm_path = ''
-if ( $?path ) then
+if ( "$__lm_kind" == missing && $?path ) then
 foreach __lm_directory ( $path:q )
 if ( "$__lm_directory" == '' ) set __lm_directory = .
 set __lm_path = "$__lm_directory/$__lm_name"
@@ -241,18 +226,17 @@ break
 endif
 end
 endif
-if ( "$__lm_kind" == external ) then
+`
+}
+
+func cshNativeProbe(name, present, absent string) string {
+	return cshLookup(name, false) + fmt.Sprintf(`if ( "$__lm_kind" == external ) then
 if ( "$__lm_path" !~ /* ) set __lm_path = "$cwd/$__lm_path"
 '/bin/echo' '%s:'"$__lm_path"
 else
 '/bin/echo' '%s'
 endif
 `, present, absent)
-	// Sourcing a stream keeps Csh's loop parser consistent in -c and -ic.
-	// The fixed source cannot reinterpret the interpreter name as shell code.
-	return "set __lm_name = " + cshQuote(name) + "\n" +
-		"'/usr/bin/printf' '%b' " + cshQuote(strings.ReplaceAll(source, "\n", "\\n")) +
-		" | ( unalias source; if ( 1 ) source /dev/stdin )\n"
 }
 
 const nuLookupSetup = `
@@ -331,7 +315,7 @@ func lookupSetup(shell string, nativeOnly bool) string {
 	case shell == "xonsh":
 		return xonshLookupSetup
 	case isCsh(shell):
-		return cshLookupSetup(nativeOnly)
+		return ""
 	default:
 		return posixProtocolSetup(shell) + posixLookupSetup(shell)
 	}
@@ -433,7 +417,7 @@ func commandProbeResult(shell, name, prefix string, nativeOnly bool) string {
 		if nativeOnly {
 			return cshNativeProbe(name, present, absent)
 		}
-		return cshLookup(name) + fmt.Sprintf("if ( \"$__lm_kind\" != missing ) then\n'/bin/echo' '%s'\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
+		return cshLookup(name, true) + fmt.Sprintf("if ( \"$__lm_kind\" != missing ) then\n'/bin/echo' '%s'\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
 	default:
 		setup := "__leapmux_lookup " + quoted + " " + mode + "\n"
 		if !nativeOnly {

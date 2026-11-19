@@ -125,6 +125,7 @@ const activeRoots = {
   rustTarget: (env, workspace) => join(workspaceRoot(env, workspace), 'desktop', 'rust', 'target'),
   dockerGoBuild: env => join(requireEnv(env, 'RUNNER_TEMP'), 'docker-go-build'),
   aptArchives: env => optionalEnv(env, 'LEAPMUX_APT_ARCHIVE_DIR') ?? '/var/cache/apt/archives',
+  homebrewDownloads: env => join(requireEnv(env, 'HOMEBREW_CACHE'), 'downloads'),
   tauriCache: env => requireEnv(env, 'RUNNER_OS') === 'macOS'
     ? null
     : tauriCache(env),
@@ -158,6 +159,7 @@ const prefixBuilders = {
   'docker-go': env => `docker-go-build-${CACHE_SNAPSHOT_VERSION}-${dockerArch(env)}-go${requireEnv(env, 'GOLANG_VERSION')}-`,
   'site-go': env => `site-go-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-go${requireEnv(env, 'GOLANG_VERSION')}-`,
   'apt-packages': osArchPrefix('apt'),
+  'homebrew-downloads': osArchPrefix('homebrew-downloads'),
   'tauri-tools': osArchPrefix('tauri'),
   'cli-tools': osArchPrefix('cli-tools'),
   'spinners': osPrefix('spinners'),
@@ -426,7 +428,7 @@ const CACHE_POLICIES = {
     population: POPULATION_ACTIVATE_THEN_PRODUCE,
     trim: TRIM_APT,
     writerScope: WRITER_SCOPE_ANY,
-    writers: 'Any Linux desktop job after a successful prerequisite installation and trim.',
+    writers: 'Any Linux setup job after a successful prerequisite installation and trim.',
     keyedByWeek: true,
     hashSegment: 'required',
     // Every job that restores also publishes after its installation, so the
@@ -440,6 +442,28 @@ const CACHE_POLICIES = {
         mode: 'merge',
         clearOnWriterMiss: false,
         active: activeRoots.aptArchives,
+      },
+    ],
+  },
+  'homebrew-downloads': {
+    kind: 'homebrew-downloads',
+    category: 'tool',
+    description: 'Packages downloaded by Homebrew while installing the native test shells.',
+    population: POPULATION_ACTIVATE_THEN_PRODUCE,
+    trim: TRIM_NONE,
+    writerScope: WRITER_SCOPE_ANY,
+    writers: 'Any macOS test job after a successful shell installation.',
+    keyedByWeek: true,
+    hashSegment: 'required',
+    fallback: 'none',
+    roots: [
+      {
+        name: 'downloads',
+        type: 'tree',
+        required: true,
+        mode: 'replace',
+        clearOnWriterMiss: true,
+        active: activeRoots.homebrewDownloads,
       },
     ],
   },

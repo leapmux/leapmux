@@ -547,6 +547,42 @@ func TestProfileCommandCshLookupPreservesTheSelectedWrappersAliases(t *testing.T
 	}
 }
 
+func TestProfileCandidateCshRunsAnExecutableFromTheProfilePath(t *testing.T) {
+	const candidate = "leapmux-profile-csh-executable"
+	shells := []string{"csh", "tcsh"}
+	if _, err := exec.LookPath("bsd-csh"); err == nil {
+		shells = append(shells, "bsd-csh")
+	}
+	for _, name := range shells {
+		t.Run(name, func(t *testing.T) {
+			shell := requireProfileShell(t, name, name)
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			executable := filepath.Join(home, candidate)
+			testutil.WriteExecutable(t, executable, "#!/bin/sh\nprintf 'external ready\\n'\nread -r line\nprintf '%s\\n' \"$line\"\nexit 37\n")
+			profile := ".cshrc"
+			if name == "tcsh" {
+				profile = ".tcshrc"
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(home, profile), []byte("set path = ("+cshQuote(home)+")\n"), 0o600))
+
+			path, result := ProgramPath(t.Context(), shell, true, candidate)
+			require.Equal(t, ProbeYes, result)
+			require.Equal(t, executable, path)
+			require.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, true, candidate))
+			cmd, delimiter, _ := wrapTestCommand(t, t.Context(), WrapSpec{
+				Shell: shell, LoginShell: true, Launch: ShellCommands("leapmux-missing-csh-executable", candidate),
+			})
+			cmd.Stdin = strings.NewReader("input from Worker\n")
+			output, err := cmd.Output()
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit, "%s", output)
+			require.Equal(t, 37, exit.ExitCode())
+			require.Equal(t, "\n"+delimiter+"\nexternal ready\ninput from Worker\n", string(output))
+		})
+	}
+}
+
 func TestProfileCandidateStopsWhenPosixEnvironmentSetupFails(t *testing.T) {
 	const name = "leapmux_profile_readonly"
 	for _, operation := range []string{"strip", "pin"} {
@@ -643,8 +679,8 @@ func logUnixProfileShell(t *testing.T, shell string, login bool) {
 	executable, err := filepath.EvalSymlinks(shell)
 	require.NoError(t, err)
 	version, versionErr := exec.Command(shell, "--version").CombinedOutput()
-	if versionErr != nil && filepath.Base(executable) == "busybox" {
-		version, versionErr = exec.Command(executable).CombinedOutput()
+	if filepath.Base(executable) == "busybox" {
+		version, versionErr = exec.Command(executable, "--help").CombinedOutput()
 	}
 	identity, _, _ := strings.Cut(strings.TrimSpace(string(version)), "\n")
 	// Some sh implementations expose no version flag. Record the hash of the

@@ -181,7 +181,11 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	case shell == "xonsh":
 		script = buildXonshCommand(shellSpec, prepared)
 	case isCsh(shell):
-		script = buildCshCommand(shellSpec, prepared)
+		var err error
+		script, err = prepared.writeCshInvocation(buildCshCommand(shellSpec, prepared))
+		if err != nil {
+			return nil, err
+		}
 	default:
 		script = buildPosixCommand(shell, shellSpec, prepared)
 	}
@@ -210,6 +214,23 @@ func (p *PreparedLaunch) makeInvocationDirectory(prefix string) (string, error) 
 	}
 	p.closeFiles = sync.OnceValue(func() error { return os.RemoveAll(dir) })
 	return dir, nil
+}
+
+const cshInvocationPrefix = "if ( 1 ) source "
+
+// BSD csh prints continuation prompts for multiline -ic commands. Source a
+// file in the profile-loaded shell so the provider keeps clean output and stdin.
+func (p *PreparedLaunch) writeCshInvocation(script string) (string, error) {
+	dir, err := p.makeInvocationDirectory("leapmux-csh-launch-")
+	if err != nil {
+		return "", fmt.Errorf("create the C shell invocation directory: %w", err)
+	}
+	path := filepath.Join(dir, "invocation.csh")
+	if err := os.WriteFile(path, []byte(script+"\n"), 0o600); err != nil {
+		return "", errors.Join(fmt.Errorf("write the C shell invocation: %w", err), p.Close())
+	}
+	// A single-line if calls the builtin without expanding a source alias.
+	return cshInvocationPrefix + cshQuote(path), nil
 }
 
 func (p *PreparedLaunch) writeNuInvocations(spec WrapSpec) (map[string]nuInvocationFiles, error) {
@@ -380,6 +401,8 @@ func posixEnvCondition(vars []string) string {
 // creates a shell variable, never an environment one, so it does not reach the agent.
 const cshEnvGateVar = "_leapmux_env_gate"
 
+const cshVariableNameLimit = 30
+
 // cshEnvSeed builds the csh lines that set cshEnvGateVar to 1 when any of vars is set
 // AND non-empty -- the same question POSIX asks with `[ -n "$VAR" ]`.
 //
@@ -390,11 +413,21 @@ const cshEnvGateVar = "_leapmux_env_gate"
 // the read after the guard, which is why each variable costs a three-line block.
 func cshEnvSeed(vars []string) string {
 	var b strings.Builder
+	var longKeys []string
 	fmt.Fprintf(&b, "set %s = 0\n", cshEnvGateVar)
 	for _, v := range vars {
+		if len(v) > cshVariableNameLimit {
+			longKeys = append(longKeys, v)
+			continue
+		}
 		fmt.Fprintf(&b, "if ( $?%s ) then\n", v)
 		fmt.Fprintf(&b, "if ( \"$%s\" != \"\" ) set %s = 1\n", v, cshEnvGateVar)
 		b.WriteString("endif\n")
+	}
+	if len(longKeys) != 0 {
+		// BSD csh can export longer names but cannot expand them with $name.
+		fmt.Fprintf(&b, "if ( { '/bin/sh' '-c' %s } ) set %s = 1\n",
+			cshQuote(posixEnvCondition(longKeys)), cshEnvGateVar)
 	}
 	return b.String()
 }

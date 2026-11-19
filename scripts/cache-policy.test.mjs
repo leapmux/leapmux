@@ -40,7 +40,7 @@ describe('cache snapshot core', () => {
     })
     it('defines one policy for every supported kind', () => {
       const kinds = cacheKinds()
-      expect(kinds).toHaveLength(13)
+      expect(kinds).toHaveLength(14)
       for (const kind of kinds) {
         const policy = cachePolicy(kind)
         expect(policy.kind).toBe(kind)
@@ -55,6 +55,7 @@ describe('cache snapshot core', () => {
         'cli-tools',
         'docker-go',
         'go-modules',
+        'homebrew-downloads',
         'native-go',
         'native-rust',
         'renovate-re2',
@@ -215,6 +216,10 @@ describe('cache snapshot core', () => {
           { hash, week: '2027-W01' },
         ],
         [
+          'homebrew-downloads',
+          { hash, week: '2027-W01' },
+        ],
+        [
           'tauri-tools',
           { hash },
         ],
@@ -283,6 +288,7 @@ describe('cache snapshot core', () => {
         'cli-tools',
         'spinners',
         'apt-packages',
+        'homebrew-downloads',
         'tauri-tools',
       ])
         expect(restoreKeys(kind, { hash }, linux)).toBeNull()
@@ -398,6 +404,18 @@ describe('cache snapshot core', () => {
       expect(re2.map(root => root.name)).toEqual(['re2-node', 'task-checksum', 'task-record'])
       expect(re2.every(root => root.type === 'file')).toBe(true)
       expect(re2[2].active).toEndWith(join('/', '.task', 'artifacts', taskArtifactRecordName('build-renovate-re2')))
+    })
+
+    it('uses only the configured Homebrew download directory', () => {
+      const macos = { ...linux, RUNNER_OS: 'macOS', RUNNER_ARCH: 'ARM64' }
+      expect(() => activeRootsFor('homebrew-downloads', macos, '/work')).toThrow('HOMEBREW_CACHE')
+      const env = { ...macos, HOMEBREW_CACHE: '/runner/temp/leapmux-homebrew' }
+      const roots = activeRootsFor('homebrew-downloads', env, '/work')
+      expect(roots.map(root => root.active)).toEqual([
+        join(env.HOMEBREW_CACHE, 'downloads'),
+      ])
+      expect(cacheKey('homebrew-downloads', { hash, week: '2027-W01' }, env))
+        .toBe(`homebrew-downloads-${CACHE_SNAPSHOT_VERSION}-macOS-ARM64-${hash}-2027-W01`)
     })
 
     it('skips the Tauri root on macOS and refuses a required root that the runner cannot provide', () => {

@@ -1602,15 +1602,87 @@ describe('cache native setup', () => {
     const index = name => steps.findIndex(step => step.name === name || step.id === name)
     const prepare = index('Prepare the APT package cache')
     const restore = index('Restore the APT package snapshot')
+    const source = index('Configure the Nushell APT repository')
+    const update = index('Update APT package indexes')
     const install = index('Install Tauri system dependencies')
+    const installShells = index('Install Linux test shells')
     const save = steps.findIndex(step => step.name === 'Save the APT package snapshot')
     expect(restore).toBeGreaterThan(prepare)
     expect(install).toBeGreaterThan(restore)
+    expect(source).toBeGreaterThan(restore)
+    expect(update).toBeGreaterThan(source)
+    expect(install).toBeGreaterThan(update)
     expect(save).toBeGreaterThan(install)
+    expect(installShells).toBeGreaterThan(update)
+    expect(save).toBeGreaterThan(installShells)
     expect(steps[save].uses).toBe('./.github/actions/save-cache-snapshot')
     expect(steps[save].if).toContain('steps.apt-restore.outputs.save-required == \'true\'')
     expect(steps[save].with.key).toBe(expression('steps.apt-restore.outputs.cache-key'))
     for (const pkg of aptPackages.split(' ')) expect(steps[install].run).toContain(pkg)
+  })
+
+  it('installs shells only for the native tests and caches Homebrew downloads', () => {
+    const setup = yaml('.github/actions/setup-build/action.yaml')
+    expect(setup.inputs['test-shells'].default).toBe('false')
+    const enabledJobs = []
+    for (const file of workflowFiles) {
+      for (const { jobName, step } of jobSteps(yaml(file))) {
+        if (step.uses === './.github/actions/setup-build' && step.with?.['test-shells'] === 'true')
+          enabledJobs.push(`${file}:${jobName}`)
+      }
+    }
+    expect(enabledJobs.sort()).toEqual([
+      '.github/workflows/ci.yaml:linux',
+      '.github/workflows/ci.yaml:macos',
+      '.github/workflows/ci.yaml:windows',
+    ])
+
+    const steps = setup.runs.steps
+    const locate = steps.find(step => step.name === 'Locate the Homebrew download cache')
+    const restore = steps.find(step => step.id === 'homebrew-restore')
+    const install = steps.find(step => step.name === 'Install macOS test shells')
+    const save = steps.find(step => step.name === 'Save the Homebrew download snapshot')
+    const required = steps.find(step => step.name === 'Require the native test shells')
+    const condition = 'runner.os == \'macOS\' && inputs.test-shells == \'true\''
+    for (const step of [locate, restore, install]) expect(step.if).toBe(condition)
+    expect(save.if).toBe(`${condition} && steps.homebrew-restore.outputs.save-required == 'true'`)
+    let priorIndex = -1
+    for (const step of [
+      locate,
+      restore,
+      install,
+      save,
+      required,
+    ]) {
+      const index = steps.indexOf(step)
+      expect(index).toBeGreaterThan(priorIndex)
+      priorIndex = index
+    }
+    expect(restore.with).toEqual({
+      kind: 'homebrew-downloads',
+      key: expression('steps.tool-keys.outputs.homebrew'),
+      writer: 'true',
+    })
+    expect(save.with).toEqual({
+      kind: 'homebrew-downloads',
+      key: expression('steps.homebrew-restore.outputs.cache-key'),
+    })
+    const dir = fixture()
+    const located = runShell(locate.run, dir, { RUNNER_TEMP: dir })
+    expect(located.status, located.stderr).toBe(0)
+    const brewCache = fields(outputFile(dir, 'environment')).HOMEBREW_CACHE
+    expect(existsSync(join(brewCache, 'downloads'))).toBe(true)
+
+    for (const [os, shells] of [
+      ['Linux', 'bash,zsh,sh,ash,dash,ksh,fish,csh,tcsh,nu,xonsh,pwsh'],
+      ['macOS', 'bash,zsh,sh,dash,ksh,fish,csh,tcsh,nu,xonsh,pwsh'],
+      ['Windows', 'powershell,pwsh,git-bash'],
+    ]) {
+      const dir = fixture()
+      const result = runShell(required.run, dir, { RUNNER_OS: os })
+      expect(result.status, result.stderr).toBe(0)
+      expect(fields(outputFile(dir, 'environment')).LEAPMUX_REQUIRE_PROFILE_SHELLS).toBe(shells)
+    }
   })
 
   it('saves the Tauri and spinner snapshots after a complete packaging build', () => {
@@ -1985,7 +2057,12 @@ describe('cache workflow execution', () => {
       [
         '.github/actions/setup-build/action.yaml',
         'tool-keys',
-        { apt: 'apt-packages', tauri: 'tauri-tools', spinners: 'spinners' },
+        {
+          apt: 'apt-packages',
+          homebrew: 'homebrew-downloads',
+          tauri: 'tauri-tools',
+          spinners: 'spinners',
+        },
       ],
       [
         '.github/actions/setup-cli-tools/action.yaml',
@@ -2023,6 +2100,24 @@ describe('cache workflow execution', () => {
         expect(fields(outputFile(dir, 'environment')).LEAPMUX_CLI_TOOLS_KEY).toBe(output.key)
       }
     }
+  })
+
+  it('isolates APT downloads by the enabled package sets', () => {
+    const step = actionSteps('.github/actions/setup-build/action.yaml').find(entry => entry.id === 'tool-keys')
+    const keys = (desktop, shells) => {
+      const dir = fixture()
+      tauriLockfile(dir, '2.12.4')
+      const result = execute(step, dir, environment(dir), {
+        inputs: { 'setup-desktop': desktop, 'test-shells': shells },
+      })
+      expect(result.status, result.stderr).toBe(0)
+      return fields(outputFile(dir))
+    }
+    const desktop = keys('true', 'false')
+    const shells = keys('false', 'true')
+    const both = keys('true', 'true')
+    expect(new Set([desktop.apt, shells.apt, both.apt]).size).toBe(3)
+    expect(both.homebrew).toBe(shells.homebrew)
   })
 
   it('refuses a second tool set in one job and accepts the same tool set again', () => {

@@ -157,6 +157,20 @@ func TestEnvironmentPinNamesAvoidEveryEnvironmentNamespace(t *testing.T) {
 	assert.Equal(t, []string{"original=value", "__LEAPMUX_PIN_test_0__=secret", "__LEAPMUX_PIN_test_1_=target"}, prepared.pinEnvironment([]string{"original=value"}))
 }
 
+func TestCshPinNamesStayWithinTheVariableLimitAfterCollisions(t *testing.T) {
+	t.Parallel()
+	spec := WrapSpec{Shell: "bsd-csh", SetEnv: []string{"PRIVATE_TOKEN=secret"}}
+	const token = "profilelaunch"
+	first := prepareShellLaunch(spec, token, nil).pins[0].source
+	second := prepareShellLaunch(spec, token, []string{strings.ToUpper(first) + "=occupied"}).pins[0].source
+	third := prepareShellLaunch(spec, token, []string{first + "=occupied", second + "=occupied"}).pins[0].source
+	for _, source := range []string{first, second, third} {
+		assert.Regexp(t, shellIdentifier, source)
+		assert.LessOrEqual(t, len(source), 30)
+	}
+	assert.Len(t, map[string]bool{first: true, second: true, third: true}, 3)
+}
+
 func TestFishPinnedEnvironmentAndConditionalArguments(t *testing.T) {
 	t.Parallel()
 	shell, err := exec.LookPath("fish")

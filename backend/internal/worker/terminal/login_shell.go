@@ -29,7 +29,11 @@ func ShellBaseName(p string) string {
 	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
 		base = p[i+1:]
 	}
-	return strings.TrimSuffix(strings.ToLower(base), ".exe")
+	name := strings.TrimSuffix(strings.ToLower(base), ".exe")
+	if name == "bsd-csh" {
+		return "csh"
+	}
+	return name
 }
 
 // LoginShellArgs returns the flags needed to start the given shell as an

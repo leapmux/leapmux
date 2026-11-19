@@ -121,20 +121,21 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "echo' '"+delimiter+"'")
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, "echo' '"+delimiter+"'")
 	// `unsetenv`, not `unset`: csh's `unset` removes a SHELL variable, so the key would
 	// survive into the launched agent's environment.
-	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
-	assert.NotContains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec 'claude'")
+	assert.Contains(t, script, "unsetenv CLAUDECODE")
+	assert.NotContains(t, script, "unset CLAUDECODE")
+	assert.Contains(t, script, "exec 'claude'")
 	// csh's own conditional. `[ -n "$VAR" ]` on an unset name is a hard error there
 	// ("VAR: Undefined variable."), which killed every env-gated launch.
-	assert.NotContains(t, cmd.Args[2], `[ -n "$`)
-	assert.Contains(t, cmd.Args[2], "endif")
-	assert.Contains(t, cmd.Args[2], "if ( $?LEAPMUX_TEST_GATE_B ) then")
+	assert.NotContains(t, script, `[ -n "$`)
+	assert.Contains(t, script, "endif")
+	assert.Contains(t, script, "if ( $?LEAPMUX_TEST_GATE_B ) then")
 	// The guard and the read it guards must be on SEPARATE lines: csh substitutes a
 	// whole line's variables before it evaluates any of that line.
-	assert.NotContains(t, cmd.Args[2], `$?LEAPMUX_TEST_GATE_B && `)
+	assert.NotContains(t, script, `$?LEAPMUX_TEST_GATE_B && `)
 }
 
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
@@ -155,9 +156,10 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 	assert.Equal(t, "/bin/csh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
-	assert.NotContains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec 'claude'")
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, "unsetenv CLAUDECODE")
+	assert.NotContains(t, script, "unset CLAUDECODE")
+	assert.Contains(t, script, "exec 'claude'")
 }
 
 // A csh launch with no probe emits no conditional at all, so the simple path must stay
@@ -168,9 +170,10 @@ func TestBuildShellWrappedCommand_Csh_NoProbeEmitsNoConditional(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"app-server", "--stdio"}, nil, "/tmp",
 	)
 	assert.Empty(t, meta)
-	assert.True(t, strings.HasSuffix(cmd.Args[2],
-		"unsetenv CLAUDECODE; '/bin/echo' ''\n'/bin/echo' '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'"))
-	assert.NotContains(t, cmd.Args[2], "then")
+	script := renderedWrapScript(t, cmd)
+	assert.True(t, strings.HasSuffix(script,
+		"unsetenv CLAUDECODE; '/bin/echo' ''\n'/bin/echo' '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'\n"))
+	assert.NotContains(t, script, "then")
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {

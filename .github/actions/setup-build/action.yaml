@@ -66,6 +66,10 @@ inputs:
       its build cache remain active because prepare-backend compiles sqlc.
     required: false
     default: 'true'
+  test-shells:
+    description: Install and require the shells exercised by the native provider tests.
+    required: false
+    default: 'false'
   monitor-resources:
     description: >
       Start the optional CI resource monitor inside this setup, before the
@@ -175,9 +179,18 @@ runs:
       id: tool-keys
       shell: bash
       env:
-        APT_CACHE_HASH: ${{ hashFiles('.github/actions/setup-build/action.yaml') }}
+        SETUP_CACHE_HASH: ${{ hashFiles('.github/actions/setup-build/action.yaml') }}
+        SETUP_DESKTOP: ${{ inputs.setup-desktop }}
+        TEST_SHELLS: ${{ inputs.test-shells }}
       run: |
-        apt="$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$APT_CACHE_HASH" --week "$CACHE_WEEK")"
+        apt_hash="$(node - "$SETUP_CACHE_HASH" "$SETUP_DESKTOP" "$TEST_SHELLS" <<'JS'
+        const { createHash } = require('node:crypto')
+        const packageSets = JSON.stringify(process.argv.slice(2))
+        process.stdout.write(createHash('sha256').update(packageSets).digest('hex'))
+        JS
+        )"
+        apt="$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$apt_hash" --week "$CACHE_WEEK")"
+        homebrew="$(node scripts/cache-snapshot.mjs key --kind homebrew-downloads --hash "$SETUP_CACHE_HASH" --week "$CACHE_WEEK")"
         # The Tauri CLI decides which bundler tools Tauri downloads into its
         # cache, so the resolved CLI version keys the tool archive.
         tauri_cli_hash="$(node scripts/tauri-cli-version.mjs --hash)"
@@ -185,6 +198,7 @@ runs:
         spinners="$(node scripts/cache-snapshot.mjs key --kind spinners --week "$CACHE_WEEK")"
         {
           echo "apt=$apt"
+          echo "homebrew=$homebrew"
           echo "tauri=$tauri"
           echo "spinners=$spinners"
         } >> "$GITHUB_OUTPUT"
@@ -193,7 +207,7 @@ runs:
       # Keep the downloaded .deb files after each install, and let the
       # snapshot restore into the archive directory. apt keeps only partial/
       # owned by _apt, and `lock` belongs to root.
-      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
+      if: runner.os == 'Linux' && (inputs.setup-desktop == 'true' || inputs.test-shells == 'true')
       shell: bash
       run: |
         sudo rm -f /etc/apt/apt.conf.d/docker-clean
@@ -203,18 +217,36 @@ runs:
     - name: Restore the APT package snapshot
       # Only the package files. The `lock` file and `partial/` belong to root
       # and _apt, and `tar` failed with "Permission denied" on them, so the
-      # whole archive never saved. Any Linux desktop job may publish a
+      # whole archive never saved. Any Linux setup job may publish a
       # replacement, because the trim rule selects exactly the packages of
       # the successful installation. Every job is therefore a writer and
       # passes no fallback: a missed exact key downloads the package set
       # again, which the weekly key already accepted as its cost.
       id: apt-restore
-      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
+      if: runner.os == 'Linux' && (inputs.setup-desktop == 'true' || inputs.test-shells == 'true')
       uses: ./.github/actions/build-output-cache
       with:
         kind: apt-packages
         key: ${{ steps.tool-keys.outputs.apt }}
         writer: 'true'
+
+    - name: Configure the Nushell APT repository
+      # Ubuntu 24.04 uses the upstream repository for Nushell.
+      # See https://www.nushell.sh/book/installation.html.
+      if: runner.os == 'Linux' && inputs.test-shells == 'true'
+      shell: bash
+      run: |
+        curl --fail --silent --show-error --location --retry 3 \
+          https://apt.fury.io/nushell/gpg.key --output "$RUNNER_TEMP/nushell.asc"
+        gpg --batch --yes --dearmor --output "$RUNNER_TEMP/nushell.gpg" "$RUNNER_TEMP/nushell.asc"
+        sudo install -D -m 0644 "$RUNNER_TEMP/nushell.gpg" /etc/apt/keyrings/fury-nushell.gpg
+        printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/fury-nushell.gpg] https://apt.fury.io/nushell/ /' > "$RUNNER_TEMP/fury-nushell.list"
+        sudo install -m 0644 "$RUNNER_TEMP/fury-nushell.list" /etc/apt/sources.list.d/fury-nushell.list
+
+    - name: Update APT package indexes
+      if: runner.os == 'Linux' && (inputs.setup-desktop == 'true' || inputs.test-shells == 'true')
+      shell: bash
+      run: sudo apt-get -o Acquire::Retries=3 update
 
     - name: Install Tauri system dependencies
       if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
@@ -226,7 +258,6 @@ runs:
       # See https://github.com/tauri-apps/tauri/issues/4642 and
       # https://gstreamer.freedesktop.org/documentation/installing/on-linux.html.
       run: |
-        sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           libwebkit2gtk-4.1-dev \
           libgtk-3-dev \
@@ -250,12 +281,66 @@ runs:
           gstreamer1.0-gtk3 \
           gstreamer1.0-pulseaudio
 
+    - name: Install Linux test shells
+      if: runner.os == 'Linux' && inputs.test-shells == 'true'
+      shell: bash
+      run: |
+        sudo apt-get install -y --no-install-recommends busybox csh fish ksh nushell tcsh xonsh zsh
+        # Ubuntu ships the Ash applet in busybox without a separate ash binary.
+        shell_bin="$RUNNER_TEMP/leapmux-test-shells"
+        mkdir -p "$shell_bin"
+        ln -sf /usr/bin/busybox "$shell_bin/ash"
+        printf '%s\n' "$shell_bin" >> "$GITHUB_PATH"
+
     - name: Save the APT package snapshot
-      if: runner.os == 'Linux' && inputs.setup-desktop == 'true' && steps.apt-restore.outputs.save-required == 'true'
+      if: runner.os == 'Linux' && (inputs.setup-desktop == 'true' || inputs.test-shells == 'true') && steps.apt-restore.outputs.save-required == 'true'
       uses: ./.github/actions/save-cache-snapshot
       with:
         kind: apt-packages
         key: ${{ steps.apt-restore.outputs.cache-key }}
+
+    - name: Locate the Homebrew download cache
+      if: runner.os == 'macOS' && inputs.test-shells == 'true'
+      shell: bash
+      run: |
+        brew_cache="$RUNNER_TEMP/leapmux-homebrew"
+        mkdir -p "$brew_cache/downloads"
+        printf 'HOMEBREW_CACHE=%s\n' "$brew_cache" >> "$GITHUB_ENV"
+
+    - name: Restore the Homebrew download snapshot
+      id: homebrew-restore
+      if: runner.os == 'macOS' && inputs.test-shells == 'true'
+      uses: ./.github/actions/build-output-cache
+      with:
+        kind: homebrew-downloads
+        key: ${{ steps.tool-keys.outputs.homebrew }}
+        writer: 'true'
+
+    - name: Install macOS test shells
+      if: runner.os == 'macOS' && inputs.test-shells == 'true'
+      shell: bash
+      env:
+        HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      run: brew install fish nushell xonsh zsh
+
+    - name: Save the Homebrew download snapshot
+      if: runner.os == 'macOS' && inputs.test-shells == 'true' && steps.homebrew-restore.outputs.save-required == 'true'
+      uses: ./.github/actions/save-cache-snapshot
+      with:
+        kind: homebrew-downloads
+        key: ${{ steps.homebrew-restore.outputs.cache-key }}
+
+    - name: Require the native test shells
+      if: inputs.test-shells == 'true'
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in
+          Linux) shells=bash,zsh,sh,ash,dash,ksh,fish,csh,tcsh,nu,xonsh,pwsh ;;
+          macOS) shells=bash,zsh,sh,dash,ksh,fish,csh,tcsh,nu,xonsh,pwsh ;;
+          Windows) shells=powershell,pwsh,git-bash ;;
+          *) printf 'Unsupported test runner %s\n' "$RUNNER_OS" >&2; exit 1 ;;
+        esac
+        printf 'LEAPMUX_REQUIRE_PROFILE_SHELLS=%s\n' "$shells" >> "$GITHUB_ENV"
 
     - name: Setup Go
       # The built-in cache is off because it combines GOMODCACHE and GOCACHE. Its post step

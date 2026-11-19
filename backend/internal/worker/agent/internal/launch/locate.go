@@ -165,6 +165,15 @@ func validNativeProgramName(name string) bool {
 const maxCommandProbeOutput = 1 << 20
 
 func runShellProbe(ctx context.Context, shellPath string, loginShell bool, script string) string {
+	if isCsh(terminal.ShellBaseName(shellPath)) {
+		scriptFiles := &PreparedLaunch{}
+		var err error
+		script, err = scriptFiles.writeCshInvocation(script)
+		if err != nil {
+			return ""
+		}
+		defer func() { _ = scriptFiles.Close() }()
+	}
 	cmd, err := newShellCommand(ctx, shellPath, loginShell, script, os.TempDir(), nil)
 	if err != nil && !pathFallbackAllowed(ctx) {
 		return ""

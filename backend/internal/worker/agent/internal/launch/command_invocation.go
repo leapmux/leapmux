@@ -245,9 +245,6 @@ func nuLaunchArguments(spec WrapSpec, delimiter, metaPrefix string) string {
 func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	ordered := len(prepared.candidates) != 0
 	var script strings.Builder
-	if ordered {
-		script.WriteString(cshLookupSetup(false))
-	}
 	script.WriteString(cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
 	if ordered {
 		script.WriteString("\nset __lm_chosen = 0\nset __lm_status = 127\n")
@@ -285,7 +282,7 @@ func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	}
 	for _, name := range prepared.candidates {
 		script.WriteString("if ( ! $__lm_chosen ) then\n")
-		script.WriteString(cshLookup(name))
+		script.WriteString(cshLookup(name, true))
 		script.WriteString("if ( \"$__lm_kind\" != missing ) then\nset __lm_chosen = 1\n")
 		// Save the command status before Tcsh leaves the conditional.
 		writeInvocation("\n", func(arguments string) string {

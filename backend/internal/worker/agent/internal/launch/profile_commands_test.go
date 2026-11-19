@@ -125,7 +125,12 @@ func renderedWrapScript(t *testing.T, cmd *exec.Cmd) string {
 	script := cmd.Args[len(cmd.Args)-1]
 	path, found := bashInvocationPath(t, script)
 	if !found {
-		return script
+		quotedPath, sourcedCsh := strings.CutPrefix(script, cshInvocationPrefix)
+		if !sourcedCsh {
+			return script
+		}
+		require.True(t, strings.HasPrefix(quotedPath, "'") && strings.HasSuffix(quotedPath, "'"))
+		path = strings.NewReplacer("'\\''", "'", "\\!", "!").Replace(quotedPath[1 : len(quotedPath)-1])
 	}
 	file, err := os.ReadFile(path)
 	require.NoError(t, err)
