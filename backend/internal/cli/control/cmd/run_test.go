@@ -37,6 +37,15 @@ func runControlText(t *testing.T, args ...string) cliOutcome {
 	return runControlIn(t, "", args...)
 }
 
+// testHubArgs selects the fake Hub explicitly. An empty URL leaves the flag
+// out so a dual-transport test can exercise the local tab socket.
+func testHubArgs(url string) []string {
+	if url == "" {
+		return nil
+	}
+	return []string{"--hub", url}
+}
+
 // runControlIn runs `leapmux control <args...>` with stdin as its input.
 // Each run builds a new tree, so no flag value survives from one run to
 // the next.

@@ -29,7 +29,8 @@ func openTerminalOnFakeWorker(t *testing.T, start func(*testing.T, *recordingHub
 	hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
 	dispatcher := &creationPublicationDispatcher{}
 	hubFlag := start(t, hub, dispatcher)
-	base := []string{"terminal", "open", "--hub", hubFlag, "--workspace", "ws-1", "--tile", "root-1", "--worker", "worker-A", "--dir", "/src/app", "--json"}
+	base := []string{"terminal", "open", "--workspace", "ws-1", "--tile", "root-1", "--worker", "worker-A", "--dir", "/src/app", "--json"}
+	base = append(base, testHubArgs(hubFlag)...)
 	o := runControlIn(t, stdin, append(base, args...)...)
 	return o, hub, dispatcher.recorded()
 }

@@ -82,7 +82,7 @@ func execute(t *testing.T, root *cobra.Command, args ...string) (int, string, st
 	return code, stdout.String(), stderr.String()
 }
 
-func TestExpandCommandPath(t *testing.T) {
+func TestInspectCommandLine_ExpandsTheCommandPath(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
@@ -103,7 +103,7 @@ func TestExpandCommandPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := testTree(&[]testInvocation{})
 			prepare(root)
-			got, err := ExpandCommandPath(root, tc.args)
+			got, _, err := inspectCommandLine(root, tc.args)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 		})
@@ -112,7 +112,7 @@ func TestExpandCommandPath(t *testing.T) {
 	t.Run("an ambiguous prefix fails with the candidates", func(t *testing.T) {
 		root := testTree(&[]testInvocation{})
 		prepare(root)
-		_, err := ExpandCommandPath(root, []string{"wor"})
+		_, _, err := inspectCommandLine(root, []string{"wor"})
 		e := FromError(err)
 		assert.Equal(t, CodeUsage, e.Code)
 		assert.Equal(t, `ambiguous command "wor" for "tool"; it matches: workspace, worker`, e.Message)
@@ -121,7 +121,7 @@ func TestExpandCommandPath(t *testing.T) {
 	t.Run("an unknown name suggests the close one", func(t *testing.T) {
 		root := testTree(&[]testInvocation{})
 		prepare(root)
-		_, err := ExpandCommandPath(root, []string{"workspce"})
+		_, _, err := inspectCommandLine(root, []string{"workspce"})
 		e := FromError(err)
 		assert.Equal(t, CodeUsage, e.Code)
 		assert.Equal(t, `unknown command "workspce" for "tool"`, e.Message)
@@ -313,6 +313,43 @@ func TestExecute_PrintsAFailureOnceInTheFormatAskedFor(t *testing.T) {
 	assert.Equal(t, "usage", env.Error.Code)
 	assert.Equal(t, `unknown command "xyz" for "tool"`, env.Error.Message)
 	assert.Contains(t, stderr, "error: usage: ", "a person watching the terminal still reads the failure")
+}
+
+func TestExecute_ReadsJSONFailureFormatAsAFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		json bool
+	}{
+		{name: "last flag disables JSON", args: []string{"send", "--json", "--json=false"}},
+		{name: "last flag enables JSON", args: []string{"send", "--json=false", "--json"}, json: true},
+		{name: "case insensitive boolean", args: []string{"send", "--json=TRUE"}, json: true},
+		{name: "numeric boolean", args: []string{"send", "--json=1"}, json: true},
+		{name: "inherited flag value", args: []string{"send", "--hub", "--json"}},
+		{name: "local flag value after a positional", args: []string{"worker", "key", "unexpected", "--name", "--json"}},
+		{name: "flag value before a misspelled command", args: []string{"--hub", "--json", "workspce"}},
+		{name: "flag after a parse failure", args: []string{"send", "t", "--bogus", "--json"}, json: true},
+		{name: "flag before the terminator", args: []string{"send", "--json", "--"}, json: true},
+		{name: "literal after the terminator", args: []string{"worker", "list", "--", "--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen []testInvocation
+			code, stdout, stderr := execute(t, testTree(&seen), tc.args...)
+			assert.Equal(t, ExitUsage, code)
+			assert.Empty(t, seen)
+			assert.Equal(t, 1, strings.Count(stderr, "error: usage:"))
+			if tc.json {
+				var envelope struct {
+					Error *Error `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(stdout), &envelope))
+				require.NotNil(t, envelope.Error)
+				assert.Equal(t, CodeUsage, envelope.Error.Code)
+			} else {
+				assert.Empty(t, stdout)
+			}
+		})
+	}
 }
 
 func TestExecute_PassesAnExitStatusThroughUnprinted(t *testing.T) {

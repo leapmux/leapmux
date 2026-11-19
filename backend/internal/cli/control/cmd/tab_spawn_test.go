@@ -236,7 +236,8 @@ func TestTabCreationCLI_PublishesFilePresentationWithTheEncryptedPayload(t *test
 			dispatcher := &creationPublicationDispatcher{}
 			hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
 			hubFlag := transport.start(t, hub, dispatcher)
-			o := runControl(t, "file", "open", "/private/report.txt", "--hub", hubFlag, "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", "--dir", "/private", "--display-mode", "source", "--view-mode", "head", "--first")
+			args := []string{"file", "open", "/private/report.txt", "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", "--dir", "/private", "--display-mode", "source", "--view-mode", "head", "--first"}
+			o := runControl(t, append(args, testHubArgs(hubFlag)...)...)
 			require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
 			data := o.Data(t)
 			assert.Equal(t, "hub-rank", data["position"])
@@ -264,7 +265,8 @@ func TestTabCreationCLI_RejectsAnUnknownPresentationBeforeCalls(t *testing.T) {
 					dispatcher := &creationPublicationDispatcher{}
 					hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
 					hubFlag := transport.start(t, hub, dispatcher)
-					o := runControl(t, "file", "open", "/private/report.txt", "--hub", hubFlag, "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", flag, "2", "--first")
+					args := []string{"file", "open", "/private/report.txt", "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", flag, "2", "--first"}
+					o := runControl(t, append(args, testHubArgs(hubFlag)...)...)
 					f := o.requireFailure(t, "usage")
 					assert.Contains(t, f.Message, flag+" must be one of")
 					assert.Empty(t, hub.called())
@@ -285,7 +287,8 @@ func TestTabCreationCLI_PreservesPresentationValues(t *testing.T) {
 					dispatcher := &creationPublicationDispatcher{}
 					hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
 					hubFlag := transport.start(t, hub, dispatcher)
-					args := []string{"file", "open", "/private/report.txt", "--hub", hubFlag, "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", "--first"}
+					args := []string{"file", "open", "/private/report.txt", "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", "--first"}
+					args = append(args, testHubArgs(hubFlag)...)
 					if display != "" {
 						args = append(args, "--display-mode", display)
 					}

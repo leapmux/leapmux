@@ -225,6 +225,8 @@ func TestControlRejectsExplicitBlankTargetsBeforeCalling(t *testing.T) {
 		{name: "whitespace", args: []string{"tab", "move", " \t", "--tile", "other"}},
 		{name: "variadic", args: []string{"agent", "wait", fullTestID("first"), ""}},
 		{name: "placement", args: []string{"terminal", "open", "--workspace="}},
+		{name: "hub empty", args: []string{"tab", "rename", "self", "Changed", "--hub="}},
+		{name: "hub whitespace", args: []string{"tab", "get", "--hub", " \t"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hub, disp := startSelfRenameIPC(t)

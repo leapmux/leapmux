@@ -27,10 +27,12 @@ func TestAgentOpenOverIPC_ARetryWithTheRequestIDRepeatsTheFirstRequest(t *testin
 			hub, dispatcher := &recordingHub{workers: workerRows("worker-A"), materialized: state}, &creationPublicationDispatcher{}
 			hubFlag := transport.start(t, hub, dispatcher)
 			open := func(extra ...string) map[string]any {
-				return runControl(t, append([]string{
-					"agent", "open", "--hub", hubFlag, "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
+				args := []string{
+					"agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
 					"--worker", "worker-A", "--dir", "/src/app", "--message", "Review the diff",
-				}, extra...)...).Data(t)
+				}
+				args = append(args, testHubArgs(hubFlag)...)
+				return runControl(t, append(args, extra...)...).Data(t)
 			}
 
 			first := open("--request-id", "review-1")

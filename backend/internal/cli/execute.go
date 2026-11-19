@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -18,12 +19,12 @@ const abbreviationNote = "Any command name can be shortened as far as it stays u
 
 // Execute runs root with args and returns the exit status of the process.
 //
-// It expands each abbreviated command name first (see ExpandCommandPath),
+// It expands each abbreviated command name first (see inspectCommandLine),
 // so the rule for a short form is the same at every level. Every failure,
 // from a flag that does not parse to a refusal of the hub, reaches the
 // caller as one error, and Execute prints it once.
 func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	err := Run(ctx, root, args, stdin, stdout, stderr)
+	jsonErrors, err := run(ctx, root, args, stdin, stdout, stderr)
 	if err == nil {
 		return ExitOK
 	}
@@ -32,7 +33,7 @@ func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.R
 		return status.Code
 	}
 	printer := &Printer{Out: stdout, Err: stderr}
-	if wantsJSON(args) {
+	if jsonErrors {
 		printer.Format = FormatJSON
 	}
 	e := FromError(err)
@@ -43,16 +44,21 @@ func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.R
 // Run runs root with args, as Execute does, and returns the error of the
 // command instead of printing it. A command's result still prints.
 func Run(ctx context.Context, root *cobra.Command, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	_, err := run(ctx, root, args, stdin, stdout, stderr)
+	return err
+}
+
+func run(ctx context.Context, root *cobra.Command, args []string, stdin io.Reader, stdout, stderr io.Writer) (jsonErrors bool, err error) {
 	prepare(root)
-	expanded, err := ExpandCommandPath(root, args)
+	expanded, jsonErrors, err := inspectCommandLine(root, args)
 	if err != nil {
-		return err
+		return jsonErrors, err
 	}
 	root.SetArgs(expanded)
 	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	return root.ExecuteContext(ctx)
+	return jsonErrors, root.ExecuteContext(ctx)
 }
 
 // prepare applies the settings that every command of the tree shares. It is
@@ -124,36 +130,21 @@ func walk(cmd *cobra.Command, fn func(*cobra.Command)) {
 	}
 }
 
-// wantsJSON reports whether the command line asks for JSON. Execute reads it
-// before the flags parse, so a command line that fails to parse still reports
-// its failure in the format it asked for.
-func wantsJSON(args []string) bool {
-	for _, a := range args {
-		if a == "--" {
-			return false
-		}
-		if a == "--json" || a == "--json=true" {
-			return true
-		}
-	}
-	return false
-}
-
 // shellCompletionRequests are the hidden commands that a completion script
 // runs. Their last argument is the word being completed, so it is not
 // expanded.
 var shellCompletionRequests = []string{cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd}
 
-// ExpandCommandPath replaces each abbreviated command name in args with the
-// full name.
+// inspectCommandLine expands abbreviations and finds the requested error
+// format even when a command name or flag fails to parse.
 //
 // The rule is the same at every level of the tree. A name that matches a
 // command or an alias exactly wins, even when it is also the prefix of
 // another name. Otherwise a prefix that matches exactly one command resolves
 // to it, and a prefix that matches more than one fails with the candidates.
-// Flags are skipped with their values, so a flag can stand anywhere. The walk
-// stops at the first argument of a runnable command and at "--".
-func ExpandCommandPath(root *cobra.Command, args []string) ([]string, error) {
+// Flags are skipped with their values. Once a leaf or an invalid command
+// name ends path expansion, the scan still reads flags up to "--".
+func inspectCommandLine(root *cobra.Command, args []string) (expanded []string, jsonErrors bool, pathError error) {
 	out := slices.Clone(args)
 	start, end := 0, len(out)
 	if len(out) > 0 && slices.Contains(shellCompletionRequests, out[0]) {
@@ -161,6 +152,7 @@ func ExpandCommandPath(root *cobra.Command, args []string) ([]string, error) {
 	}
 	root.InitDefaultHelpCmd()
 	cur := root
+	expandPath := true
 	for i := start; i < end; i++ {
 		a := out[i]
 		if a == "--" {
@@ -169,32 +161,40 @@ func ExpandCommandPath(root *cobra.Command, args []string) ([]string, error) {
 		if strings.HasPrefix(a, "-") && a != "-" {
 			consumesNext, known := scanFlag(cur, a)
 			if !known {
-				// cobra reports the unknown flag. The token after it may be
-				// its value, so nothing after it is a command name to expand.
-				break
+				// Let Cobra report the unknown flag and leave the rest of the
+				// path alone. A later --json still controls the error format.
+				expandPath = false
 			}
 			if consumesNext {
 				i++
+				continue
+			}
+			if a == "--json" {
+				jsonErrors = true
+			} else if value, ok := strings.CutPrefix(a, "--json="); ok {
+				if useJSON, err := strconv.ParseBool(value); err == nil {
+					jsonErrors = useJSON
+				}
 			}
 			continue
 		}
-		// Only a group takes a command name next. A leaf has no
-		// subcommands, so its arguments stay as they are.
-		if !cur.HasSubCommands() {
-			break
+		if !expandPath || !cur.HasSubCommands() {
+			continue
 		}
 		next, err := matchSubcommand(cur, a)
 		if err != nil {
-			return nil, err
+			pathError = err
+			expandPath = false
+			continue
 		}
 		out[i] = next.Name()
 		cur = next
 	}
-	return out, nil
+	return out, jsonErrors, pathError
 }
 
 // TopLevelCommand returns the child of root that args act on. It resolves a
-// name as ExpandCommandPath does, so a unique prefix counts. It looks through
+// name as inspectCommandLine does, so a unique prefix counts. It looks through
 // the help command and through a shell completion request: "help control tab"
 // and a completion of "control tab" act on control, as "control tab" does.
 //
