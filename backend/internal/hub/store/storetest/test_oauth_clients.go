@@ -329,7 +329,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		for _, owner := range []string{alice.ID, bob.ID} {
 			tokenID := id.Generate()
 			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID: tokenID, UserID: userid.MustNew(owner), ClientID: clientID,
+				Issuance: store.APITokenIssuanceAuthorizationCode,
+				ID:       tokenID, UserID: userid.MustNew(owner), ClientID: clientID,
 				InstallationName: "laptop", GrantedScopes: "workspace:read",
 				SecretHash: []byte("hash"),
 			}))
@@ -365,7 +366,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		other := seedApp(t, st, "second", "", store.OAuthClientSourceAdmin)
 		for _, owner := range []string{alice.ID, bob.ID} {
 			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID: id.Generate(), UserID: userid.MustNew(owner), ClientID: other,
+				Issuance: store.APITokenIssuanceAuthorizationCode,
+				ID:       id.Generate(), UserID: userid.MustNew(owner), ClientID: other,
 				InstallationName: "laptop", GrantedScopes: "workspace:read",
 				SecretHash: []byte("hash"),
 			}))
@@ -390,7 +392,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: owner, ClientID: clientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: owner, ClientID: clientID,
 			InstallationName: "laptop", GrantedScopes: "workspace:read",
 			SecretHash: []byte("hash"),
 		}))
@@ -422,7 +425,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: owner, ClientID: clientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: owner, ClientID: clientID,
 			InstallationName: "laptop", GrantedScopes: "workspace:read", SecretHash: []byte("hash"),
 		}))
 
@@ -626,6 +630,102 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "guarded-app", app.ClientName)
 		assert.Nil(t, app.RevokedAt)
+	})
+
+	t.Run("a code row with both step-up columns fails", func(t *testing.T) {
+		st := s.NewStore(t)
+		alice := SeedUser(t, st, "stepup-both")
+		owner := userid.MustNew(alice.ID)
+		clientID := seedApp(t, st, "stepup-both-app", alice.ID, store.OAuthClientSourceUser)
+
+		err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+			Code:             id.Generate(),
+			UserID:           owner,
+			ClientID:         clientID,
+			CodeChallenge:    "challenge",
+			RedirectURI:      "https://app.example.com/callback",
+			GrantedScopes:    "workspace:read",
+			InstallationName: "laptop",
+			ExpiresAt:        time.Now().Add(time.Minute),
+			StepUpSessionID:  "some-session",
+			StepUpTokenID:    "some-token",
+		})
+		require.Error(t, err, "the CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL) must refuse both set")
+	})
+
+	t.Run("a code row with one step-up column round-trips", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			set      func(p *store.CreateOAuthAuthorizationCodeParams)
+			expected string
+			get      func(row *store.OAuthAuthorizationCode) string
+		}{
+			{
+				name:     "step_up_session_id",
+				set:      func(p *store.CreateOAuthAuthorizationCodeParams) { p.StepUpSessionID = "sess-stepup-1" },
+				expected: "sess-stepup-1",
+				get:      func(row *store.OAuthAuthorizationCode) string { return row.StepUpSessionID },
+			},
+			{
+				name:     "step_up_token_id",
+				set:      func(p *store.CreateOAuthAuthorizationCodeParams) { p.StepUpTokenID = "token-stepup-1" },
+				expected: "token-stepup-1",
+				get:      func(row *store.OAuthAuthorizationCode) string { return row.StepUpTokenID },
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "stepup-one")
+				owner := userid.MustNew(alice.ID)
+				clientID := seedApp(t, st, "stepup-one-app", alice.ID, store.OAuthClientSourceUser)
+
+				code := id.Generate()
+				params := store.CreateOAuthAuthorizationCodeParams{
+					Code:             code,
+					UserID:           owner,
+					ClientID:         clientID,
+					CodeChallenge:    "challenge",
+					RedirectURI:      "https://app.example.com/callback",
+					GrantedScopes:    "workspace:read",
+					InstallationName: "laptop",
+					ExpiresAt:        time.Now().Add(time.Minute),
+				}
+				tc.set(&params)
+				require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, params))
+
+				row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
+				require.NoError(t, err)
+				assert.Equal(t, tc.expected, tc.get(row), "the step-up column must round-trip")
+			})
+		}
+	})
+
+	t.Run("MarkMintedSession stamps the session on a consumed code", func(t *testing.T) {
+		st := s.NewStore(t)
+		alice := SeedUser(t, st, "mark-minted-sess")
+		owner := userid.MustNew(alice.ID)
+		clientID := seedApp(t, st, "mark-minted-sess-app", alice.ID, store.OAuthClientSourceUser)
+
+		code := id.Generate()
+		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+			Code:             code,
+			UserID:           owner,
+			ClientID:         clientID,
+			CodeChallenge:    "challenge",
+			RedirectURI:      "https://app.example.com/callback",
+			GrantedScopes:    "",
+			InstallationName: "desktop",
+			ExpiresAt:        time.Now().Add(time.Minute),
+		}))
+
+		_, err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+		require.NoError(t, err)
+
+		require.NoError(t, st.OAuthAuthorizationCodes().MarkMintedSession(ctx, code, "session-abc"))
+
+		row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
+		require.NoError(t, err)
+		assert.Equal(t, "session-abc", row.MintedSessionID, "the minted session must read back on the consumed code")
 	})
 }
 

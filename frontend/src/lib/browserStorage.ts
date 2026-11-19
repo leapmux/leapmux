@@ -642,13 +642,23 @@ let hydrationToken = 0
  * account other than the signed-in one. Production never does -- `storedKeyFor`
  * answers that, and the accessors do it themselves.
  */
-export function accountStorageKey(userId: string, name: string): string {
-  return `${NAMESPACE}${ACCOUNT_SEGMENT}${encodeURIComponent(userId)}:${name}`
+export function accountStorageKey(account: string, name: string): string {
+  return `${NAMESPACE}${ACCOUNT_SEGMENT}${encodeURIComponent(account)}:${name}`
 }
 
-/** The prefix every key of `userId` carries. For a caller that matches a whole namespace. */
-export function accountStorageKeyPrefix(userId: string): string {
-  return accountStorageKey(userId, '')
+/** The prefix every key of `account` carries. For a caller that matches a whole namespace. */
+export function accountStorageKeyPrefix(account: string): string {
+  return accountStorageKey(account, '')
+}
+
+/**
+ * Composes a storage account from a Hub origin and a user id. The bundled
+ * origin serves solo mode and every remote Hub, so the account is the pair of
+ * Hub and user. Two Hubs behind one origin can no longer share a namespace
+ * when their user ids collide.
+ */
+export function storageAccountFor(hub: string, userId: string): string {
+  return `${encodeURIComponent(hub)}/${encodeURIComponent(userId)}`
 }
 
 /** The stored key for a `device`-scoped `name`. */
@@ -693,12 +703,12 @@ export function onStorageAccountChange(listener: () => void): () => void {
  * `hasStorageAccount` answers whether a namespace exists to write into, which
  * stays true after a sign-out.
  */
-export function setStorageAccount(userId: string): void {
-  if (userId === '')
+export function setStorageAccount(account: string): void {
+  if (account === '')
     throw new Error('Invalid storage account id: the id must not be empty.')
   // An unchanged id is not a move, so it neither disturbs an open batch nor
   // needs to do anything. `refreshUser` replaces the User object on every call.
-  if (userId === storageAccount)
+  if (account === storageAccount)
     return
   // A batch holds ONE account's document in memory and stores it in a `finally`.
   // Moving the namespace underneath it would write the outgoing account's whole
@@ -713,13 +723,13 @@ export function setStorageAccount(userId: string): void {
   // holds that account's rows -- is what every synchronous reader in the app
   // rests on, so it is checked HERE, at the one writer, rather than discovered
   // later at some unrelated read.
-  if (mirroredAccount !== userId) {
+  if (mirroredAccount !== account) {
     throw new Error(
-      `Storage account "${userId}" is not hydrated. `
-      + `Await hydrateStorageAccount(userId) before setStorageAccount(userId).`,
+      `Storage account "${account}" is not hydrated. `
+      + `Await hydrateStorageAccount(account) before setStorageAccount(account).`,
     )
   }
-  storageAccount = userId
+  storageAccount = account
   for (const listener of accountListeners)
     listener()
 }
@@ -1070,7 +1080,7 @@ const DEVICE_NAMES = namesWhere(spec => spec.scope === 'device')
  * session, so this gate is already ahead of it, and doing the work here keeps
  * the module free of asynchronous side effects at import time.
  */
-export async function hydrateStorageAccount(userId: string): Promise<void> {
+export async function hydrateStorageAccount(account: string): Promise<void> {
   const token = ++hydrationToken
   // ALREADY HYDRATED FOR THIS ACCOUNT: nothing to do. The token still moves
   // first, so a hydration for a DIFFERENT account that is still in flight
@@ -1083,11 +1093,11 @@ export async function hydrateStorageAccount(userId: string): Promise<void> {
   // mirror from disk, discarding any write this tab issued but has not flushed.
   // The BroadcastChannel keeps the mirror current across tabs, and the sweep
   // publishes its own evictions, so a re-read buys nothing.
-  if (mirroredAccount === userId)
+  if (mirroredAccount === account)
     return
   let rows: KvRow[] = []
   try {
-    rows = await readSyncRows(userId)
+    rows = await readSyncRows(account)
   }
   catch (err) {
     log.warn('browser storage hydration failed; this session runs on defaults', err)
@@ -1097,7 +1107,7 @@ export async function hydrateStorageAccount(userId: string): Promise<void> {
   // namespace -- the exact leak the scoping exists to close.
   if (token !== hydrationToken)
     return
-  installMirror(userId, rows)
+  installMirror(account, rows)
 }
 
 /**

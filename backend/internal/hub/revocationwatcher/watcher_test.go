@@ -190,6 +190,7 @@ func (e *envT) seedAPIToken(t *testing.T) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, e.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -233,6 +234,7 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 	expiresAt := time.Now().Add(time.Hour)
 	refreshExpiresAt := time.Now().Add(24 * time.Hour)
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,

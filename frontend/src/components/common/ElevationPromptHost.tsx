@@ -3,7 +3,9 @@ import { useLocation } from '@solidjs/router'
 import { createSignal, onCleanup, Show } from 'solid-js'
 import { Dialog } from '~/components/common/Dialog'
 import { ElevateForm } from '~/components/common/ElevateForm'
+import { BrowserStepUp } from '~/components/desktop/BrowserStepUp'
 import { setElevationPrompter } from '~/lib/elevationPrompt'
+import { ceremoniesRunInBrowser } from '~/lib/hubSite'
 
 /**
  * The one step-up prompt the app can open, and the only thing that registers
@@ -152,15 +154,22 @@ export const ElevationPromptHost: Component = () => {
       <Dialog title="Verify your identity" onClose={() => settle(false)}>
         <div class="vstack gap-4">
           <p>This change needs a recent sign-in.</p>
-          <ElevateForm
-            // The OAuth option leaves this document entirely, so it cannot
-            // resume the refused request. The hub sends the browser back to
-            // the address it left, which now carries the open panel, so the
-            // user lands where they were and repeats the action -- and it
-            // succeeds on the first attempt, because the session is elevated.
-            oauthRedirect={here()}
-            onElevated={() => settle(true)}
-          />
+          <Show
+            when={ceremoniesRunInBrowser()}
+            fallback={(
+              <ElevateForm
+                // The OAuth option leaves this document entirely, so it cannot
+                // resume the refused request. The hub sends the browser back to
+                // the address it left, which now carries the open panel, so the
+                // user lands where they were and repeats the action -- and it
+                // succeeds on the first attempt, because the session is elevated.
+                oauthRedirect={here()}
+                onElevated={() => settle(true)}
+              />
+            )}
+          >
+            <BrowserStepUp onElevated={() => settle(true)} />
+          </Show>
         </div>
       </Dialog>
     </Show>

@@ -1,7 +1,7 @@
 import type { Interceptor } from '@connectrpc/connect'
 import { Code, ConnectError, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
-import { desktopFetch, getCapabilities, isTauriApp } from '~/api/platformBridge'
+import { desktopFetch, isTauriApp } from '~/api/platformBridge'
 import * as wireHeaders from '~/generated/contracts/headers'
 import { SystemService } from '~/generated/proto/leapmux/v1/system_pb'
 import { isElevationRequired, promptForElevation } from '~/lib/elevationPrompt'
@@ -279,17 +279,7 @@ function getTransportFetch(): typeof globalThis.fetch {
   if (!isTauriApp())
     return credentialFetch
 
-  // Return a wrapper that checks capabilities on each call so the
-  // transport sees runtime-state changes (e.g. switching from
-  // launcher → solo mode). The eager check at module-init time would
-  // use stale heuristics—especially in dev mode where the webview
-  // loads from http://localhost instead of tauri://localhost.
-  return (input, init) => {
-    const capabilities = getCapabilities()
-    if (capabilities.hubTransport === 'proxy')
-      return desktopFetch(input, init)
-    return credentialFetch(input, init)
-  }
+  return desktopFetch
 }
 
 export const transport = createConnectTransport({

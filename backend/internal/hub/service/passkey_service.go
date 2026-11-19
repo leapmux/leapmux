@@ -189,7 +189,7 @@ func (s *UserService) stepUpMutationAuth(ctx context.Context, p stepUpParams, us
 		return stepUpAdmission{firstCredential: true}, admitFirstCredential(ctx, s.store, p.userInfo, user, now, p.firstCredentialWindow())
 	}
 	// An account that holds a factor must present it.
-	return stepUpAdmission{}, requireElevation(p.userInfo, p.elevationInstant(now))
+	return stepUpAdmission{}, auth.RequireElevation(p.userInfo, p.elevationInstant(now))
 }
 
 // assertFirstCredentialWithoutPasswordAllowed refuses a session-only first
@@ -324,7 +324,7 @@ func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, ma
 		// password"), which is this message. Without the marker the client
 		// printed this sentence as raw text beside a form and offered
 		// nothing.
-		return elevationRequiredErrorSaying(
+		return auth.ElevationRequiredErrorSaying(
 			"sign in again, or verify with your identity provider, then set this account's first password or passkey")
 	}
 	return nil

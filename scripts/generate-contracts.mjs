@@ -2231,6 +2231,7 @@ export const DESKTOP_RS_EVENT_NAMES = {
   userEventsMessage: 'EVENT_USER_EVENTS_MESSAGE',
   userEventsClose: 'EVENT_USER_EVENTS_CLOSE',
   sidecarLog: 'EVENT_SIDECAR_LOG',
+  browserAuthResult: 'EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'EVENT_MENU_SHOW_PREFERENCES',
 }
@@ -2247,6 +2248,7 @@ export const DESKTOP_TS_EVENT_NAMES = {
   userEventsMessage: 'TAURI_EVENT_USER_EVENTS_MESSAGE',
   userEventsClose: 'TAURI_EVENT_USER_EVENTS_CLOSE',
   sidecarLog: 'TAURI_EVENT_SIDECAR_LOG',
+  browserAuthResult: 'TAURI_EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'TAURI_EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
 }

@@ -16,6 +16,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    desktopHub: () => null,
     getRuntimeState: bridgeMocks.getRuntimeState,
     restoreWindowGeometry: bridgeMocks.restoreWindowGeometry,
     platformBridge: {

@@ -112,6 +112,10 @@ CREATE TABLE user_sessions (
     elevation_expires_at  DATETIME,
     user_agent      TEXT NOT NULL DEFAULT '',
     ip_address      TEXT NOT NULL DEFAULT '',
+    -- The built-in app that this session was issued to through the browser
+    -- handoff. NULL for a session that signed in on the Hub's own page. No
+    -- foreign key: only the token exchange of a built-in app writes it.
+    issued_to_client TEXT,
     -- Both or neither: the schema requires the pair, and Go also validates it.
     -- Half a pair is not a state the rest of the hub should have to consider:
     -- a deadline with no anchor is one the slide statement cannot clamp,
@@ -584,6 +588,11 @@ CREATE TABLE api_tokens (
     -- app stops working. The empty string is a legitimate value (a credential
     -- that reaches nothing) and a caller must state it.
     granted_scopes                TEXT NOT NULL,
+    -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
+    -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
+    -- 3 administrator. No DEFAULT: every mint states it.
+    -- TestEnumColumnChecksMatchTheirProtoRanges checks the range.
+    issuance                      INTEGER NOT NULL CHECK (typeof(issuance) = 'integer') CHECK (issuance BETWEEN 1 AND 3),
     secret_hash                   BLOB NOT NULL,
     refresh_hash                  BLOB,
     previous_refresh_hash         BLOB,
@@ -755,7 +764,16 @@ CREATE TABLE oauth_authorization_codes (
     -- RFC 6749 section 4.1.2 requires the server to revoke the token a
     -- replayed code already produced, and without this column there was
     -- nothing to name it.
-    minted_token_id       TEXT
+    minted_token_id       TEXT,
+    -- The session that the exchange issued, for an app whose code redeems
+    -- into a session. It serves the replay remedy as minted_token_id does.
+    minted_session_id     TEXT,
+    -- The credential that this code VERIFIES, when it verifies one rather
+    -- than issuing one. At most one is set. No foreign key, for the reason
+    -- device_authorizations.elevate_token_id gives.
+    step_up_session_id    TEXT,
+    step_up_token_id      TEXT,
+    CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL)
 );
 CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 

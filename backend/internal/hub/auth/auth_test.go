@@ -425,6 +425,7 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               id.Generate(),
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,

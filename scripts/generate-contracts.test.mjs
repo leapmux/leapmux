@@ -3528,6 +3528,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     userEventsMessage: 'u:m',
     userEventsClose: 'u:c',
     sidecarLog: 's:l',
+    browserAuthResult: 'b:r',
     menuShowAbout: 'm:a',
     menuShowPreferences: 'm:p',
   })

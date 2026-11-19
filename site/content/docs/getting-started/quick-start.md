@@ -22,7 +22,7 @@ This is the simplest path on macOS, Linux, or Windows.
 1. Install **LeapMux Desktop** for your platform (see [Installation](/docs/getting-started/installation/) for download details).
 2. Launch the app. On first launch it shows a launcher titled **"LeapMux"** with the subtitle **"Choose how you'd like to connect"** and two cards:
    - **Solo** — run everything on this machine, as described above.
-   - **Distributed** — connect to a remote Hub by URL (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
+   - **Distributed** — connect to a remote Hub; you sign in through the system browser (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
 3. Select **Solo** and click **Connect**.
 
 {{< callout type="info" >}}

@@ -465,6 +465,9 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 // SessionMeta holds optional metadata for session creation.
 type SessionMeta struct {
 	UserAgent string
+	// IssuedToClient names the built-in app this session is issued to through
+	// the browser handoff. Empty stores NULL.
+	IssuedToClient string
 }
 
 // CreatedSession separates the public identity from the secret cookie token.
@@ -498,6 +501,7 @@ func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, use
 	}
 	if len(meta) > 0 {
 		params.UserAgent = meta[0].UserAgent
+		params.IssuedToClient = meta[0].IssuedToClient
 	}
 	if err := st.Sessions().Create(ctx, params); err != nil {
 		return CreatedSession{}, fmt.Errorf("create session: %w", err)

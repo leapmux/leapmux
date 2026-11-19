@@ -112,6 +112,12 @@ func enumRangeColumns(t *testing.T) []enumRangeColumn {
 			checks:       []string{"CHECK (state BETWEEN 1 AND 3)"},
 		},
 		{
+			column:       "api_tokens.issuance",
+			lastOrdinal:  int32(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_ADMIN),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ApiTokenIssuance_name),
+			checks:       []string{"CHECK (issuance BETWEEN 1 AND 3)"},
+		},
+		{
 			column:       "workspace_sections.section_type",
 			lastOrdinal:  int32(leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.SectionType_name),

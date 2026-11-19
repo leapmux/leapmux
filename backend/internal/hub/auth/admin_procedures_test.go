@@ -3,6 +3,7 @@ package auth
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
@@ -231,17 +232,32 @@ func TestEnforceAdminDeniesByPrefix(t *testing.T) {
 	require.False(t, adminOnlyProcedures(t)[unlisted],
 		"the fixture must not be a declared procedure, or it proves nothing")
 
+	now := time.Now()
 	plain := &UserInfo{IsAdmin: false}
-	admin := &UserInfo{IsAdmin: true}
+	unelevatedAdmin := &UserInfo{IsAdmin: true, Credential: SessionCredential("s-unelevated")}
+	until := now.Add(ElevationWindow)
+	elevatedAdmin := &UserInfo{
+		IsAdmin:    true,
+		Credential: SessionCredential("s-elevated"),
+		Elevation:  NewElevation(&now, &until),
+	}
 
-	err := enforceAdmin(unlisted, plain)
+	err := enforceAdmin(unlisted, plain, now)
 	require.Error(t, err, "an undeclared Admin*Service procedure must still be denied")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.NoError(t, enforceAdmin(unlisted, admin), "an admin passes every admin procedure")
+
+	// An administrator without a current window is refused.
+	err = enforceAdmin(unlisted, unelevatedAdmin, now)
+	require.Error(t, err, "an administrator without a current window must be refused")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+
+	// An administrator with a current window passes.
+	assert.NoError(t, enforceAdmin(unlisted, elevatedAdmin, now),
+		"an administrator with a current window passes every admin procedure")
 
 	// A non-admin service keeps passing for everyone.
-	assert.NoError(t, enforceAdmin(leapmuxv1connect.AuthServiceGetCurrentUserProcedure, plain))
+	assert.NoError(t, enforceAdmin(leapmuxv1connect.AuthServiceGetCurrentUserProcedure, plain, now))
 	// And a service whose name merely CONTAINS "Admin" later in the path
 	// is not caught by the prefix.
-	assert.NoError(t, enforceAdmin("/leapmux.v1.WorkspaceService/AdminishThing", plain))
+	assert.NoError(t, enforceAdmin("/leapmux.v1.WorkspaceService/AdminishThing", plain, now))
 }

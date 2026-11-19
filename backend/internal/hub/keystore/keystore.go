@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 

@@ -14,6 +14,7 @@ import {
   localStorageSet,
   resetStorageAccountForTests,
   setStorageAccountForTests,
+  storageAccountFor,
 } from '~/lib/browserStorage'
 import { untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
@@ -53,11 +54,20 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-// `~/api/transport` reads these from the same module at load time, so the
-// factory must supply them beside the bridge the auth provider uses.
+// `~/api/transport` reads `desktopFetch` and `isTauriApp` from the same module
+// at load time, so the factory must supply them beside the bridge the auth
+// provider uses.
 vi.mock('~/api/platformBridge', () => ({
   desktopFetch: vi.fn(),
-  getCapabilities: () => ({ hubTransport: 'direct' }),
+  desktopHub: () => null,
+  getCapabilities: () => ({
+    mode: 'web',
+    tunnels: false,
+    appControl: false,
+    windowControl: false,
+    systemPermissions: false,
+    localSolo: false,
+  }),
   isTauriApp: () => false,
   platformBridge: {
     resetTunnels: vi.fn().mockResolvedValue(undefined),
@@ -153,7 +163,7 @@ function renderApp() {
  * Therefore, the seed must exist before the identity arrives.
  */
 async function seedDeviceTierFor(userId: string, prefs: BrowserPreferences) {
-  setStorageAccountForTests(userId)
+  setStorageAccountForTests(storageAccountFor(window.location.origin, userId))
   localStorageSet(KEY_BROWSER_PREFS, prefs)
   // FLUSHED to the database. Sign-in re-reads the account's rows from there
   // before it moves the namespace, so a seed that is only in this tab's mirror
@@ -197,7 +207,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   localStorageClearForTests()
-  setStorageAccountForTests(TEST_USER_ID)
+  setStorageAccountForTests(storageAccountFor(window.location.origin, TEST_USER_ID))
 })
 
 describe('usePreferencesForIdentity', () => {

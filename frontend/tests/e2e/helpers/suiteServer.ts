@@ -200,7 +200,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       getWorkerId(hubUrl, adminToken),
       signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com'),
       // The setup writes no hub setting, so this list holds only what the hub stored itself.
-      listCustomizedHubSettingsViaAPI(hubUrl, adminToken),
+      listCustomizedHubSettingsViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD),
     ])
 
     return {

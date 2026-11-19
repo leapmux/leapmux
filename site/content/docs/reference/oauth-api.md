@@ -53,11 +53,14 @@ GET /oauth/authorize
   &code_challenge_method=S256
   &scope=<space-delimited, optional>
   &installation_name=<label for this copy of the app, optional>
+  &step_up=<session:<session id> or token:<api token id>, optional>
 ```
 
 `state` is **required**, not recommended: a client that omits it cannot tell its own callback from one an attacker triggered. `code_challenge_method` must be `S256`; `plain` is not a challenge at all.
 
 An **omitted** `scope` is the app's registered ceiling minus every `admin:` permission. An admin permission must be specified.
+
+A request that carries `step_up` asks for a step-up of one existing credential instead of a new authorization. Its value names the credential the window is stamped on: `session:<session id>` for a session, `token:<api token id>` for an app credential. `scope` must then be empty. The credential must belong to the account holder who approves the request and to the app making it, and an app credential's app must carry the elevation setting (see [App Authorization](/docs/admin/app-authorization/#elevation)). The consent page names the credential from the Hub's own records, states that the request issues nothing, and is answered only by a browser session that holds a current window.
 
 The account holder sees a consent screen — served by `/oauth/authorize` itself, and answering through `POST /oauth/consent`, its only submit target. Both are browser-facing pages a client library never calls directly; they are listed here because a proxy or a content policy in front of the Hub must not block them.
 
@@ -85,7 +88,18 @@ POST /oauth/token
 
 A **confidential** client also authenticates on this request — HTTP Basic, or `client_secret` in the body. A public client sends `client_id` alone.
 
-**A code is one-shot.** Presenting it twice means it leaked, so the second presentation is refused *and* the credential the first one minted is revoked (RFC 6749 section 4.1.2).
+**A code is one-shot.** Presenting it twice means it leaked, so the second presentation is refused *and* the credential the first one minted is revoked (RFC 6749 section 4.1.2). A replayed code of the built-in app `leapmux-desktop` revokes the session the first exchange issued, and the refusal holds until the Hub's cleanup removes the expired code row.
+
+What the exchange answers depends on the code:
+
+| The code | The answer |
+|---|---|
+| An ordinary authorization code | The token response below. |
+| A code of the built-in app `leapmux-desktop` | `200` with `{"signed_in": true}`, and the session cookie in `Set-Cookie`. The code redeems into a **session**, not an app credential: the body holds no secret, and no "an app was authorized" mail is sent. |
+| A step-up code, when the request carries the credential the code identifies | `200` with `{"elevated": true}`. The window is stamped on that credential; the body holds no token, because nothing is issued. |
+| A step-up code, when the request carries no credential, or one the Hub rejects | `401` `invalid_token`. The code stays valid: repair the credential and present the code again. |
+| A step-up code, when the request carries a different credential, or the Hub can no longer elevate the target | `400` `invalid_grant`. The code stays valid. |
+| Any request, while the Hub cannot read the credential | `500`. The code stays valid. |
 
 ## Device authorization
 
@@ -188,7 +202,14 @@ The Hub writes every error description itself, and no description names a client
 
 ## Step-up
 
-Some actions need a recently proven factor. A credential that lacks one is refused with `FAILED_PRECONDITION` and the `Leapmux-Elevation-Required: 1` header; the app then runs:
+Some actions need a recently proven factor. A credential that lacks one is refused with `FAILED_PRECONDITION` and the `Leapmux-Elevation-Required: 1` header. Two ceremonies prove it, and the credential's issuance decides which one runs:
+
+| The credential | The ceremony |
+|---|---|
+| Issued through the device-code grant, or issued by an administrator | The device-code ceremony: `POST /oauth/step-up` opens one. |
+| Issued through the authorization-code grant — a login through a browser, such as the default `leapmux control auth login` | The loopback ceremony below. `POST /oauth/step-up` refuses it with `browser_step_up_required`. |
+
+### The device-code ceremony
 
 ```
 POST /oauth/step-up
@@ -198,6 +219,10 @@ POST /oauth/step-up
 This opens a device-style ceremony against the **existing** credential. It issues nothing. The account holder proves a factor in a browser, and the credential gains a window; the app polls `/oauth/token` with the device-code grant, and the success answer is `{"elevated": true}`, not a token response.
 
 An app is refused this ceremony unless its owner allowed it. See [App Authorization](/docs/admin/app-authorization/#elevation).
+
+### The loopback ceremony
+
+A credential that the authorization-code grant issued cannot use the device-code path: it was issued through a browser on its own machine, and `POST /oauth/step-up` answers `400` with `browser_step_up_required` for it. The app runs the loopback ceremony instead — an authorization request that carries `step_up=token:<its token id>`, as above — and the browser on that machine completes it. A session takes the same ceremony with `step_up=session:<its session id>`, which is how the desktop app's step-ups run. The control CLI runs both halves for you; see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
 
 ## Rate limits
 

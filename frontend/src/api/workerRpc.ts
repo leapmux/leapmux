@@ -11,7 +11,7 @@ import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import type { WatchEventsRequestSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { Code, createClient } from '@connectrpc/connect'
-import { getCapabilities, isTauriApp } from '~/api/platformBridge'
+import { isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
 import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
@@ -91,8 +91,7 @@ class BrowserChannelTransport implements ChannelTransport {
   }
 
   createWebSocket(): ChannelSocket {
-    const capabilities = getCapabilities()
-    if (isTauriApp() && capabilities.hubTransport === 'proxy') {
+    if (isTauriApp()) {
       return new TauriRelayWebSocket()
     }
 

@@ -28,6 +28,16 @@ const ControlCLIClientID = "leapmux-control-cli"
 // model carries perfectly well.
 const ServiceAccountClientID = "leapmux-service-account"
 
+// DesktopGrantTypes is the flow set the desktop's seeded registration runs.
+// See ControlCLIScopes for why it is a constant.
+const DesktopGrantTypes = GrantTypeAuthorizationCode
+
+// DesktopScopes is empty on purpose: the handoff issues a SESSION, which is
+// the account itself signed in. A session carries no scope ceiling, so the
+// registration states none -- and resolveRequestedScopes then refuses any
+// request that asks for one with invalid_scope.
+const DesktopScopes = ""
+
 // ControlCLIScopes is the ceiling the control CLI's seeded registration
 // carries. It is a constant of the build for the same reason the redirect
 // address is: a credential minted for the built-in CLI authenticates against
@@ -69,15 +79,40 @@ const (
 	ServiceAccountName = "Administrator-issued credential"
 )
 
-// IsBuiltIn reports whether a client id is one this build ships with. The two
+// DesktopClientID is the built-in desktop app: the sidecar's browser sign-in
+// and step-up, whose code mints a Hub session rather than an app credential.
+//
+// Its one registered redirect URI is the same RFC 8252 section 7.3 loopback
+// form as the CLI's: the sidecar's ephemeral listener matches on scheme, host
+// and path with the port free.
+const DesktopClientID = "leapmux-desktop"
+
+// DesktopName is what the consent screen and the credential list show for the
+// desktop app.
+const DesktopName = "LeapMux Desktop"
+
+// DesktopRedirectURI is the loopback redirect the desktop app registers. The
+// port is absent on purpose; see ControlCLIRedirectURI.
+const DesktopRedirectURI = "http://127.0.0.1/callback"
+
+// IsBuiltIn reports whether a client id is one this build ships with. The
 // built-in registrations cannot be deleted or edited, because their fields are
 // constants of the build rather than rows an administrator owns.
 func IsBuiltIn(clientID string) bool {
-	return clientID == ControlCLIClientID || clientID == ServiceAccountClientID
+	return clientID == ControlCLIClientID || clientID == ServiceAccountClientID ||
+		clientID == DesktopClientID
 }
 
 // BuiltInClientIDs lists them in a stable order, for a test or a listing that
-// must cover both.
+// must cover all of them.
 func BuiltInClientIDs() []string {
-	return []string{ControlCLIClientID, ServiceAccountClientID}
+	return []string{ControlCLIClientID, ServiceAccountClientID, DesktopClientID}
+}
+
+// IssuesSession reports whether an authorization for this app mints a SESSION
+// on the Hub rather than an app credential: the browser handoff of the
+// desktop's remote-Hub mode. The consent page and the token exchange branch on
+// it, and exactly one built-in answers true.
+func IssuesSession(clientID string) bool {
+	return clientID == DesktopClientID
 }

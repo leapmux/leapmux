@@ -12,7 +12,9 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/loopbackauth"
 )
 
 // Step-up ("sudo mode") for this CLI's own credential.
@@ -116,12 +118,33 @@ func (c *Client) Elevate(ctx context.Context) error {
 	return err
 }
 
+// errBrowserStepUpRequired reports a credential whose step-up the hub runs
+// only in the browser that issued it: an authorization-code credential must
+// prove its factor where it was minted, so the device ceremony is the wrong
+// leg and the loopback ceremony is the right one. The hub refuses the device
+// ceremony with oauthapp.BrowserStepUpRequiredCode and creates no device row.
+var errBrowserStepUpRequired = errors.New("this credential must be verified in the browser that issued it")
+
+// errStepUpNeedsSignIn reports a loopback step-up with nothing to verify: the
+// credential file holds no token id, so the ceremony has no step_up target
+// and the hub could not bind a code to this credential.
+var errStepUpNeedsSignIn = errors.New("no token id is recorded for this credential; sign in again with `leapmux control auth login`")
+
 // elevateOnce runs the ceremony itself. Elevate wraps it in the flight.
+//
+// The device-code ceremony runs first, and works for every credential whose
+// factor can be proved from any browser. When the hub answers that this
+// credential must be verified in its own browser instead, the loopback
+// ceremony runs -- the browser is then on THIS machine, which is what an
+// authorization-code credential was issued through.
 func (c *Client) elevateOnce(ctx context.Context) error {
 	if !c.promptAllowed {
 		return ErrElevationNeedsAPerson
 	}
 	grant, err := c.startElevation(ctx)
+	if errors.Is(err, errBrowserStepUpRequired) {
+		return c.elevateViaLoopback(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -184,7 +207,19 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 		}
 		return nil, ErrElevationUnsupported
 	}
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+	// 400 is the credential kind the device ceremony cannot carry: a
+	// browser-issued credential gets the refusal that names the browser leg,
+	// and every other 400 is a credential kind that carries no window at
+	// all. Both are permanent for the device ceremony -- but the first one
+	// has a working alternative, so it is a sentinel rather than a failure.
+	if resp.StatusCode == http.StatusBadRequest {
+		body := ReadOAuthError(resp)
+		if body.Error == oauthapp.BrowserStepUpRequiredCode {
+			return nil, errBrowserStepUpRequired
+		}
+		return nil, ErrElevationUnsupported
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrElevationUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -220,4 +255,88 @@ func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string)
 		return nil
 	}
 	return DeviceFlowError(resp)
+}
+
+// elevateViaLoopback runs the browser step-up of a credential the hub
+// refuses to verify through the device ceremony. The person at the browser
+// is on THIS machine, so the redirect comes back to a loopback listener here.
+func (c *Client) elevateViaLoopback(ctx context.Context) error {
+	creds, err := LoadCredentials(c.HubURL)
+	if err != nil || creds.TokenID == "" {
+		return errStepUpNeedsSignIn
+	}
+	flow, err := loopbackauth.Start(loopbackauth.Request{
+		HubBaseURL:       c.HubURL,
+		App:              CLIApp(creds.ClientIDOrBuiltIn()),
+		InstallationName: DefaultDeviceName(),
+		StepUp:           loopbackauth.StepUpForToken(creds.TokenID),
+	})
+	if err != nil {
+		return err
+	}
+	defer flow.Close()
+
+	authorizeURL := flow.AuthorizeURL()
+	_, _ = fmt.Fprintln(Err, "This command needs you to verify your identity.")
+	_, _ = fmt.Fprintln(Err, "Open this URL in your browser:")
+	_, _ = fmt.Fprintln(Err, " ", authorizeURL)
+	_ = OpenBrowser(authorizeURL)
+
+	code, err := flow.Wait(ctx)
+	if err != nil {
+		return err
+	}
+	// The access token can expire or rotate while the person is at the
+	// browser; the redemption must present the credential the code names.
+	if err := c.EnsureFreshBearer(ctx); err != nil {
+		return err
+	}
+	return c.redeemStepUpCode(ctx, flow, code)
+}
+
+// redeemStepUpCode exchanges the loopback step-up's code for the window.
+// A step-up mints nothing, so the answer is the confirmation alone.
+func (c *Client) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, code string) error {
+	resp, err := c.postStepUpRedemption(ctx, flow, code)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		_ = resp.Body.Close()
+		// The hub keeps the code valid after a 401, so a repaired bearer is
+		// worth one more post rather than a lost ceremony.
+		if err := c.repairAfterUnauthenticated(ctx); err != nil {
+			return err
+		}
+		resp, err = c.postStepUpRedemption(ctx, flow, code)
+		if err != nil {
+			return err
+		}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body := ReadOAuthError(resp)
+		if body.Error != "" {
+			return errors.New(body.Message())
+		}
+		return fmt.Errorf("the hub refused the verification request: %s", resp.Status)
+	}
+	var out struct {
+		Elevated bool `json:"elevated"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return err
+	}
+	if !out.Elevated {
+		return errors.New("the hub did not confirm the verification")
+	}
+	return nil
+}
+
+// postStepUpRedemption performs one redemption attempt, presenting the
+// bearer this client holds.
+func (c *Client) postStepUpRedemption(ctx context.Context, flow *loopbackauth.Flow, code string) (*http.Response, error) {
+	return PostForm(ctx, c.HTTPClient,
+		locallisten.JoinPath(c.connectURL, "/oauth/token"),
+		flow.TokenForm(code), c.ApplyAuth)
 }

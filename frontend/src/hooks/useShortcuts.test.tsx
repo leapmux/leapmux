@@ -18,6 +18,7 @@ const loadExternalAppsMock = vi.fn()
 const showWarnToastMock = vi.fn()
 
 vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
   getRuntimeState: () => runtimeStateMock(),
   isTauriApp: () => false,
   openWebInspector: vi.fn(),
@@ -789,7 +790,6 @@ describe('useShortcuts', () => {
         hubUrl: '',
         capabilities: {
           mode: 'tauri-desktop-solo',
-          hubTransport: 'proxy',
           tunnels: true,
           appControl: true,
           windowControl: true,

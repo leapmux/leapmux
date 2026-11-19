@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -31,6 +32,7 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 		ElevationExpiresAt: s.ElevationExpiresAt.Ptr(),
 		UserAgent:          s.UserAgent,
 		IPAddress:          s.IpAddress,
+		IssuedToClient:     s.IssuedToClient.String,
 	}
 }
 
@@ -52,12 +54,13 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 	return (&sqliteStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		conn := tx.(*sqliteStore).conn
 		return conn.queryError(conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-			SecretHash: p.SecretHash,
-			ID:         p.ID,
-			UserID:     p.UserID.String(),
-			ExpiresAt:  sqltime.NewSQLiteTime(p.ExpiresAt),
-			UserAgent:  p.UserAgent,
-			IpAddress:  p.IPAddress,
+			SecretHash:     p.SecretHash,
+			ID:             p.ID,
+			UserID:         p.UserID.String(),
+			ExpiresAt:      sqltime.NewSQLiteTime(p.ExpiresAt),
+			UserAgent:      p.UserAgent,
+			IpAddress:      p.IPAddress,
+			IssuedToClient: sqlutil.NullNonEmpty(p.IssuedToClient),
 		}))
 	})
 }

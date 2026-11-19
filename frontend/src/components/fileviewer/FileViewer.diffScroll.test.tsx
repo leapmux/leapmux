@@ -47,6 +47,7 @@ vi.mock('~/context/PreferencesContext', () => ({
 }))
 
 vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
   isTauriApp: () => false,
   platformBridge: {
     revealInFileManager: () => Promise.resolve(),

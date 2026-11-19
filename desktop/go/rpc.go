@@ -602,6 +602,24 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			Result: &desktoppb.Response_CliInstallSymlink{CliInstallSymlink: result},
 		})
 
+	case *desktoppb.Request_StartBrowserAuth:
+		ceremonyID, authorizeURL, err := s.app.StartBrowserAuth(m.StartBrowserAuth.GetKind())
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeResponse(&desktoppb.Response{
+			Id: id,
+			Result: &desktoppb.Response_StartBrowserAuth{StartBrowserAuth: &desktoppb.StartBrowserAuthResponse{
+				CeremonyId:   ceremonyID,
+				AuthorizeUrl: authorizeURL,
+			}},
+		})
+
+	case *desktoppb.Request_CancelBrowserAuth:
+		s.app.CancelBrowserAuth(m.CancelBrowserAuth.GetCeremonyId())
+		s.writeOK(id)
+
 	default:
 		s.writeError(id, fmt.Errorf("unknown method: %T", req.Method))
 	}

@@ -1,4 +1,5 @@
 import { onMount } from 'solid-js'
+import { HubPage } from '~/components/common/HubPage'
 import { RecoverPage } from '~/components/common/RecoverPage'
 import { SignedOutOnly } from '~/components/common/SignedOutOnly'
 import { setPageTitle } from '~/lib/pageTitle'
@@ -9,7 +10,9 @@ export default function RecoverAccountRoute() {
   })
   return (
     <SignedOutOnly>
-      <RecoverPage />
+      <HubPage>
+        <RecoverPage />
+      </HubPage>
     </SignedOutOnly>
   )
 }

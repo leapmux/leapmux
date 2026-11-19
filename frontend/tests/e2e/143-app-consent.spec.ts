@@ -13,8 +13,8 @@ import { expect } from '@playwright/test'
 import { AppClientType, AppVisibility } from '../../src/generated/proto/leapmux/v1/app_pb'
 import { Scope } from '../../src/generated/proto/leapmux/v1/scope_pb'
 import { test } from './fixtures'
-import { elevatedAdminSessionViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
-import { authorizeURL, consentForm, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from './helpers/oauthApps'
+import { elevatedAdminSessionViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { authorizeURL, consentForm, issueControlCLICredentialViaAPI, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from './helpers/oauthApps'
 import { answerElevationPrompt, loginViaToken } from './helpers/ui'
 
 /**
@@ -241,5 +241,69 @@ test.describe('app consent needs an elevated session', () => {
     expect(location).toContain('error=access_denied')
     expect(location).toContain('state=state-deny')
     expect(location).not.toContain('code=')
+  })
+})
+
+test.describe('consent page variants', () => {
+  test('leapmux-desktop sign-in shows the sign-in heading and no permission list', async ({ page, leapmuxServer }) => {
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
+
+    await page.goto(`${leapmuxServer.hubUrl}/oauth/authorize?client_id=leapmux-desktop&response_type=code&code_challenge_method=S256&redirect_uri=${encodeURIComponent('http://127.0.0.1:54321/callback')}&state=s1&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&installation_name=e2e-laptop`, {
+      waitUntil: 'networkidle',
+    })
+    // Set the cookie so the page is signed in.
+    await page.context().addCookies([
+      {
+        name: 'leapmux-session',
+        value: cookie.replace('leapmux-session=', ''),
+        domain: new URL(leapmuxServer.hubUrl).hostname,
+        path: '/',
+      },
+    ])
+    await page.reload({ waitUntil: 'networkidle' })
+
+    await expect(page.getByRole('heading', { name: /Sign in to LeapMux Desktop/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Deny/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Sign in/i })).toBeVisible()
+    // No permission list for the sign-in variant.
+    await expect(page.locator('.scope-family')).not.toBeVisible()
+  })
+
+  test('step-up shows the verify heading and button', async ({ page, leapmuxServer }) => {
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
+    const { tokenId } = await issueControlCLICredentialViaAPI(leapmuxServer.hubUrl, cookie)
+
+    await page.context().addCookies([
+      {
+        name: 'leapmux-session',
+        value: cookie.replace('leapmux-session=', ''),
+        domain: new URL(leapmuxServer.hubUrl).hostname,
+        path: '/',
+      },
+    ])
+
+    await page.goto(`${leapmuxServer.hubUrl}/oauth/authorize?client_id=leapmux-control-cli&response_type=code&code_challenge_method=S256&redirect_uri=${encodeURIComponent('http://127.0.0.1:54321/callback')}&state=s2&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&installation_name=e2e-laptop&step_up=token:${tokenId}`, {
+      waitUntil: 'networkidle',
+    })
+
+    await expect(page.getByRole('heading', { name: /Verify/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Verify/i })).toBeVisible()
+  })
+
+  test('a fresh sign-in reaches the consent page with no bounce to /elevate', async ({ page, leapmuxServer }) => {
+    // Sign in through the page — this creates a session with a 5-minute window.
+    await page.goto(`${leapmuxServer.hubUrl}/login`)
+    await page.getByLabel(/username/i).fill(TEST_ADMIN_USERNAME)
+    await page.getByLabel(/password/i).fill(TEST_ADMIN_PASSWORD)
+    await page.getByRole('button', { name: /sign in/i }).click()
+    await page.waitForURL(/\/$/, { timeout: 30000 })
+
+    // Now navigate to the authorize URL directly.
+    await page.goto(`${leapmuxServer.hubUrl}/oauth/authorize?client_id=leapmux-control-cli&response_type=code&code_challenge_method=S256&redirect_uri=${encodeURIComponent('http://127.0.0.1:54321/callback')}&state=s3&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&installation_name=e2e-laptop`, {
+      waitUntil: 'networkidle',
+    })
+
+    // Should land on the consent page directly, not bounce to /elevate.
+    await expect(page.getByRole('heading', { name: /Authorize/i })).toBeVisible()
   })
 })

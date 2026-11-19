@@ -50,7 +50,8 @@ func TestWorkerStream_RefusesTheUpgradeForABadCredential(t *testing.T) {
 	require.NoError(t, err)
 	tokenID, secret := id.Generate(), auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(t.Context(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.adminID(t)), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.adminID(t)), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "worker-stream-test", GrantedScopes: "worker:read", SecretHash: validator.HashSecret(secret),
 	}))
 	userToken := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)

@@ -1106,6 +1106,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.Iss
 			ClientID:         clientID,
 			InstallationName: installationName,
 			GrantedScopes:    grantedString,
+			Issuance:         store.APITokenIssuanceAdmin,
 			AccessTTL:        time.Duration(secs) * time.Second,
 			Rotating:         rotating,
 		})

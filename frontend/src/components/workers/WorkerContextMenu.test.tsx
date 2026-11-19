@@ -14,6 +14,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    desktopHub: () => null,
     isTunnelAvailable: vi.fn(() => false),
   }
 })

@@ -115,7 +115,7 @@ params:
     enable: true
     base: "https://github.com/leapmux/leapmux/edit/main/site/content"
 
-  # The fixed durations of the authentication model, held once because three
+  # The fixed durations of the authentication model, held once because the
   # pages state them in prose. Render one with the `duration` shortcode:
   #
   #   {{< duration elevation-window >}}          -> two hours
@@ -136,6 +136,10 @@ params:
     elevation-cap:
       words: eight hours
       digits: 8 hours
+    # How long a sign-in that proved a factor needs no second proof.
+    fresh-authentication-window:
+      words: five minutes
+      digits: 5 minutes
     # A CLI credential's access token, which renews itself.
     access-token:
       words: one hour

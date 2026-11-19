@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -94,6 +95,14 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 	if !row.ClientElevationAllowed {
 		writeOAuthError(w, http.StatusForbidden, "unauthorized_client",
 			"this app is not allowed to verify a factor; its owner can allow it under Preferences › Apps › App registrations")
+		return
+	}
+	// A credential issued through a browser on its own machine proves its
+	// factor in that browser. The device-code ceremony would verify it
+	// against nothing a person is at.
+	if row.Issuance == store.APITokenIssuanceAuthorizationCode {
+		writeOAuthError(w, http.StatusBadRequest, oauthapp.BrowserStepUpRequiredCode,
+			"this credential was issued through a browser on its own computer; verify it through that browser")
 		return
 	}
 	// The installation label is what the REQUESTER calls itself, and it

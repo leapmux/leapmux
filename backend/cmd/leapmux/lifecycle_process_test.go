@@ -26,11 +26,11 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 func TestCombinedConflictPrecedesRuntimePublication(t *testing.T) {

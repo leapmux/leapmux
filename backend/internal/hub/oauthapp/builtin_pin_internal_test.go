@@ -27,3 +27,23 @@ func TestBuiltInCeilingsMatchTheGrantableVocabulary(t *testing.T) {
 		"the service account's ceiling documents itself as the whole grantable vocabulary")
 	require.NotEmpty(t, want)
 }
+
+// The desktop handoff's constants pin its registration shape: a public
+// loopback client, the authorization_code grant alone, and no scope. The
+// consent page and the token exchange branch on IssuesSession, so exactly one
+// built-in may answer true there.
+func TestDesktopBuiltInConstants(t *testing.T) {
+	assert.Equal(t, "leapmux-desktop", DesktopClientID)
+	assert.Equal(t, "LeapMux Desktop", DesktopName)
+	assert.Equal(t, "http://127.0.0.1/callback", DesktopRedirectURI)
+	assert.Equal(t, "authorization_code", DesktopGrantTypes)
+	assert.Empty(t, DesktopScopes)
+
+	require.True(t, IsBuiltIn(DesktopClientID))
+	assert.Contains(t, BuiltInClientIDs(), DesktopClientID)
+
+	assert.True(t, IssuesSession(DesktopClientID))
+	assert.False(t, IssuesSession(ControlCLIClientID))
+	assert.False(t, IssuesSession(ServiceAccountClientID))
+	assert.False(t, IssuesSession("some-other-app"))
+}

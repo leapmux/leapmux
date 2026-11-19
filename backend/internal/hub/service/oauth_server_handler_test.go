@@ -937,6 +937,7 @@ func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
 	tokenID := id.Generate()
 	prev := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -983,7 +984,8 @@ func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) 
 		auth.BearerKindAPI, tokenID, previousHash, now, auth.AccessTokenTTL, auth.RefreshTokenTTL,
 	)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash,
 	}))
 	storedExpiry := now.Add(10 * time.Second)
@@ -1020,6 +1022,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	tokenID := id.Generate()
 	previousRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1102,7 +1105,8 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	tokenID := id.Generate()
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(currentRefresh),
 	}))
 	underlying := env.store.APITokens()
@@ -1147,6 +1151,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	currentRefresh := auth.MintAccessSecret()
 	currentRefreshHash := env.validator.HashSecret(currentRefresh)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1194,6 +1199,7 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 	cur := auth.MintAccessSecret()
 	expiredGrace := time.Now().Add(-time.Hour)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1687,6 +1693,7 @@ func TestAPIAuth_Revoke_AcceptsRefreshSecrets(t *testing.T) {
 			tokenID := id.Generate()
 			refreshSecret := auth.MintAccessSecret()
 			require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+				Issuance:         store.APITokenIssuanceAuthorizationCode,
 				ID:               tokenID,
 				UserID:           userid.MustNew(env.userID),
 				ClientID:         oauthapp.ControlCLIClientID,
@@ -2001,6 +2008,7 @@ func TestAPIAuth_Revoke_AnswersEveryPresentedTokenIdentically(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -2496,6 +2504,7 @@ func TestAPIAuth_Refresh_RequiresClientAuthentication(t *testing.T) {
 		tokenID = id.Generate()
 		refresh = auth.MintAccessSecret()
 		require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           userid.MustNew(env.userID),
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -2549,6 +2558,7 @@ func TestAPIAuth_Revoke_ANamedRetiredAppIsTheIdempotentSuccess(t *testing.T) {
 	tokenID := id.Generate()
 	refresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -2591,7 +2601,8 @@ func TestAPIAuth_Refresh_GraceRetryKeepsTheCallersOwnNarrowing(t *testing.T) {
 		auth.BearerKindAPI, tokenID, previousHash, now, auth.AccessTokenTTL, auth.RefreshTokenTTL,
 	)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test",
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test",
 		GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash:    env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash,
 	}))
@@ -2791,7 +2802,8 @@ func seedRefreshableToken(t *testing.T, env *apiAuthEnv) (tokenID, refreshSecret
 	tokenID = id.Generate()
 	refreshSecret = auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(t.Context(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(refreshSecret),
 	}))

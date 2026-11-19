@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // The settings file that the worker generates for each agent.

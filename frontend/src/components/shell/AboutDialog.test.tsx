@@ -21,6 +21,7 @@ vi.mock('~/lib/systemInfo', () => ({
 }))
 
 vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
   isTauriApp: () => false,
 }))
 

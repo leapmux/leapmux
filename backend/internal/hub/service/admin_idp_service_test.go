@@ -536,12 +536,15 @@ func TestAdminIdPService_WritesNeedAProvenFactor(t *testing.T) {
 		})
 	}
 
-	// A READ takes nothing. The window guards what a stolen administrator
-	// cookie could CHANGE for every account on the hub; the inventory it can
-	// already see is not that.
-	t.Run("ListOAuthProviders needs no elevation", func(t *testing.T) {
+	// Every Admin* procedure now takes the interceptor's elevation check,
+	// reads included. A listing refuses an un-elevated session with the marker.
+	t.Run("ListOAuthProviders needs elevation", func(t *testing.T) {
 		env := setupAdminOAuthTestUnelevated(t)
-		_, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
-		assert.NoError(t, err)
+		callCtx, info := connect.NewClientContext(ctx)
+		_, err := env.client.ListOAuthProviders(authedReq(callCtx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+			"the refusal must be the one a step-up prompt can clear")
 	})
 }

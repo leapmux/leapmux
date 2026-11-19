@@ -72,6 +72,8 @@ export function passkeyErrorMessage(err: unknown, fallback: string): string | nu
  */
 export function passkeyBlockerMessage(blocker: PasskeyBlocker): string {
   switch (blocker) {
+    case 'needs-browser':
+      return 'Passkeys work in your browser, not in this app.'
     case 'insecure-context':
       return 'A browser runs a passkey only on a secure page. '
         + 'Open the hub over HTTPS, or at a localhost address.'

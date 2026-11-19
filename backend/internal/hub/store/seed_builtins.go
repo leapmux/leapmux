@@ -57,6 +57,17 @@ func SeedBuiltIns(ctx context.Context, st Store, now time.Time) error {
 			ClientURI:  "",
 			Scopes:     oauthapp.ServiceAccountScopes,
 		}),
+		seed(UpsertBuiltInClientParams{
+			// The desktop's remote-Hub sign-in: a browser handoff that mints a
+			// SESSION, not an app credential. No scopes to ask for (the session
+			// is the account itself), and the authorization_code grant alone.
+			ClientID:     oauthapp.DesktopClientID,
+			ClientName:   oauthapp.DesktopName,
+			ClientURI:    "",
+			RedirectURIs: oauthapp.DesktopRedirectURI,
+			Scopes:       oauthapp.DesktopScopes,
+			GrantTypes:   oauthapp.DesktopGrantTypes,
+		}),
 	}
 	for _, row := range rows {
 		if err := st.OAuthClients().UpsertBuiltIn(ctx, row); err != nil {

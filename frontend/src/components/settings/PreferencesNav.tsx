@@ -28,6 +28,12 @@ export interface PreferencesNavProps {
    * theme, so we use the same DropdownMenu pattern as AgentProviderSelector.
    */
   compact: boolean
+  /**
+   * When set, the ADMINISTRATION section ends with an "Unlock
+   * administration..." entry. The dialog passes it while the user is an
+   * administrator whose settings have not been loaded yet.
+   */
+  onUnlockAdmin?: (() => void) | undefined
 }
 
 /** Option label: append the same warning mark the sidebar tabs show. */
@@ -96,6 +102,16 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
         <li class={menuSectionHeader}>ADMINISTRATION</li>
         {sectionItems(adminGroups())}
       </Show>
+      <Show when={props.onUnlockAdmin && adminGroups().length === 0}>
+        <li class={menuSectionHeader}>ADMINISTRATION</li>
+        <DropdownMenuCheckableItem
+          kind="radio"
+          label="Unlock administration..."
+          checked={false}
+          data-testid="preferences-nav-unlock-admin"
+          onSelect={() => props.onUnlockAdmin?.()}
+        />
+      </Show>
     </DropdownMenu>
   )
 
@@ -157,6 +173,16 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
             </>
           )}
         </For>
+        <Show when={props.onUnlockAdmin && adminGroups().length === 0}>
+          <button
+            type="button"
+            class={styles.navButton}
+            data-testid="preferences-nav-unlock-admin"
+            onClick={() => props.onUnlockAdmin?.()}
+          >
+            Unlock administration...
+          </button>
+        </Show>
       </nav>
     </Show>
   )

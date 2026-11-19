@@ -51,7 +51,15 @@ vi.mock('~/api/workerRpc', () => ({
 
 vi.mock('~/api/platformBridge', () => ({
   desktopFetch: vi.fn(),
-  getCapabilities: () => ({ hubTransport: 'direct' }),
+  desktopHub: () => null,
+  getCapabilities: () => ({
+    mode: 'web',
+    tunnels: false,
+    appControl: false,
+    windowControl: false,
+    systemPermissions: false,
+    localSolo: false,
+  }),
   isTauriApp: () => false,
   platformBridge: {
     resetTunnels: vi.fn().mockResolvedValue(undefined),

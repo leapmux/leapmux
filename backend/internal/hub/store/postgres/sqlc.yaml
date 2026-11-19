@@ -88,3 +88,7 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "DeviceAuthorizationState"
+          - column: "api_tokens.issuance"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ApiTokenIssuance"

@@ -6,7 +6,7 @@
 -- name: CreateOAuthAuthorizationCode :exec
 INSERT INTO oauth_authorization_codes (
     code, user_id, client_id, code_challenge, redirect_uri, granted_scopes,
-    installation_name, expires_at
+    installation_name, expires_at, step_up_session_id, step_up_token_id
 ) VALUES (
     sqlc.arg(code),
     sqlc.arg(user_id),
@@ -15,7 +15,9 @@ INSERT INTO oauth_authorization_codes (
     sqlc.arg(redirect_uri),
     sqlc.arg(granted_scopes),
     sqlc.arg(installation_name),
-    sqlc.arg(expires_at)
+    sqlc.arg(expires_at),
+    sqlc.narg(step_up_session_id),
+    sqlc.narg(step_up_token_id)
 );
 
 -- name: MarkOAuthAuthorizationCodeMinted :exec
@@ -24,6 +26,13 @@ INSERT INTO oauth_authorization_codes (
 -- column there was nothing to name the token by.
 UPDATE oauth_authorization_codes
 SET minted_token_id = sqlc.arg(minted_token_id)
+WHERE code = sqlc.arg(code);
+
+-- name: MarkOAuthAuthorizationCodeMintedSession :exec
+-- Records WHICH session the exchange issued, for an app whose code redeems
+-- into a session. It serves the replay remedy as minted_token_id does.
+UPDATE oauth_authorization_codes
+SET minted_session_id = sqlc.arg(minted_session_id)
 WHERE code = sqlc.arg(code);
 
 -- name: GetOAuthAuthorizationCode :one

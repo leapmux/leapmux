@@ -23,7 +23,8 @@ func TestOAuthRequireSessionKeepsTheBearerRungOff(t *testing.T) {
 	require.NoError(t, err)
 	tokenID, secret := id.Generate(), auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(t.Context(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(owner.ID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(owner.ID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "consenting-app", GrantedScopes: "workspace:read", SecretHash: validator.HashSecret(secret),
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)

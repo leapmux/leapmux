@@ -43,6 +43,7 @@ func TestIssueAPIToken_CannotMintACredentialWiderThanItself(t *testing.T) {
 		tokenID := id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           owner,
 			ClientID:         oauthapp.ControlCLIClientID,

@@ -51,7 +51,7 @@ A short-lived credential a Worker mints for the agent or terminal running in one
 
 ### Distributed mode
 
-Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode content is end-to-end encrypted while the Hub only relays it. The Hub is still trusted for identity and code. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode content is end-to-end encrypted while the Hub only relays it. The Hub is still trusted for identity; a browser trusts it for code as well. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ## E
 
@@ -79,7 +79,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity and code**. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you or serve modified Frontend code. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity**, and a browser trusts it for code. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
@@ -161,7 +161,7 @@ Handing the **input queue**'s first item to the turn an agent already runs, inst
 
 ### Step-up
 
-The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker, opens `/oauth/step-up`, and the account holder approves in a browser; the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused this ceremony unless its owner allowed it per app. See [Session elevation](/docs/admin/security/#session-elevation).
+The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker and runs the ceremony its credential's issuance calls for: a credential from the device-code login or from an administrator opens `/oauth/step-up` — the device-code ceremony — and one from a browser login, such as the default `leapmux control auth login`, verifies through a loopback ceremony in a browser on its own machine. Either way the account holder approves in a browser, and the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused the device-code ceremony unless its owner allowed it per app. See [Session elevation](/docs/admin/security/#session-elevation).
 
 ## T
 

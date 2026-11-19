@@ -44,10 +44,11 @@ import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
 import { BOOT_PHASE_READY, BOOT_SPLASH_ENTER_MS, setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet, storageAccountFor } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { attachDismissSoftKeyboardOnTap } from '~/lib/dismissSoftKeyboardOnTap'
+import { hubOrigin } from '~/lib/hubSite'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
@@ -126,6 +127,12 @@ const log = createLogger('shell')
 export const AppShell: Component = () => {
   const auth = useAuth()
   const userId = () => auth.user()?.id ?? ''
+  const storageAccount = () => {
+    const uid = userId()
+    return uid
+      ? storageAccountFor(hubOrigin(), uid)
+      : ''
+  }
   const workspace = useWorkspace()
   const preferences = usePreferences()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -163,7 +170,7 @@ export const AppShell: Component = () => {
     effectiveClientId,
     ownClientId,
   } = useCrdtRuntime({
-    userId: () => userId(),
+    userId: () => storageAccount(),
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
     activeClient,
     // Created/renamed/deleted events on the user WS stream refresh the sidebar

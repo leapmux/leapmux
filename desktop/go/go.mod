@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/Microsoft/go-winio v0.6.4
+	github.com/coder/quartz v0.3.1
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/leapmux/leapmux v0.0.0-20260806144509-6b7d44fbd401
@@ -25,7 +26,6 @@ require (
 	github.com/cenkalti/backoff/v7 v7.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
-	github.com/coder/quartz v0.3.1 // indirect
 	github.com/coreos/go-oidc/v3 v3.21.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect

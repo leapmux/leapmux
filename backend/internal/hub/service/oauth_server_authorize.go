@@ -1,13 +1,17 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/pkce"
@@ -31,6 +35,14 @@ type authorizeRequest struct {
 	codeChallenge string
 	scopes        authscope.ScopeSet
 	installation  string
+	stepUp        stepUpTarget
+}
+
+// stepUpTarget names the credential an authorization VERIFIES rather than
+// issues. At most one of sessionID and tokenID is set.
+type stepUpTarget struct {
+	sessionID string
+	tokenID   string
 }
 
 // parseAuthorizeRequest validates a request and reports what to answer when it
@@ -119,7 +131,68 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 	}
 	req.scopes = scopes
 	req.installation = normalizeInstallationName(values.Get("installation_name"))
+	if stepUpRaw := values.Get("step_up"); stepUpRaw != "" {
+		target, stepUpErr := h.parseStepUpTarget(r.Context(), stepUpRaw, app, user)
+		if stepUpErr != nil {
+			return req, *stepUpErr, true, false
+		}
+		req.stepUp = target
+	}
 	return req, oauthErrorResponse{}, false, true
+}
+
+// parseStepUpTarget validates a `step_up` parameter and resolves the
+// credential it names. Every failure is redirectable with `access_denied`.
+func (h *OAuthServerHandler) parseStepUpTarget(
+	ctx context.Context, raw string, app *store.OAuthClient, user *auth.UserInfo,
+) (stepUpTarget, *oauthErrorResponse) {
+	var target stepUpTarget
+	if strings.HasPrefix(raw, oauthapp.StepUpSessionPrefix) {
+		id := strings.TrimPrefix(raw, oauthapp.StepUpSessionPrefix)
+		if id == "" {
+			return target, oauthStepUpBody("step_up session id is empty")
+		}
+		sess, err := h.store.Sessions().GetByID(ctx, id, time.Now().UTC())
+		if err != nil || sess == nil {
+			return target, oauthStepUpBody("step_up session not found")
+		}
+		if sess.UserID != user.ID.String() {
+			return target, oauthStepUpBody("step_up session belongs to another user")
+		}
+		if sess.IssuedToClient != app.ClientID {
+			return target, oauthStepUpBody("step_up session was not issued to this app")
+		}
+		target.sessionID = id
+		return target, nil
+	}
+	if strings.HasPrefix(raw, oauthapp.StepUpTokenPrefix) {
+		id := strings.TrimPrefix(raw, oauthapp.StepUpTokenPrefix)
+		if id == "" {
+			return target, oauthStepUpBody("step_up token id is empty")
+		}
+		tok, err := h.store.APITokens().GetByID(ctx, id)
+		if err != nil || tok == nil || tok.RevokedAt != nil {
+			return target, oauthStepUpBody("step_up token not found")
+		}
+		if tok.UserID != user.ID.String() {
+			return target, oauthStepUpBody("step_up token belongs to another user")
+		}
+		if tok.ClientID != app.ClientID {
+			return target, oauthStepUpBody("step_up token was not issued to this app")
+		}
+		if !app.ElevationAllowed {
+			return target, oauthStepUpBody("step_up token's app does not allow elevation")
+		}
+		target.tokenID = id
+		return target, nil
+	}
+	return target, oauthStepUpBody("step_up must start with session: or token:")
+}
+
+// oauthStepUpBody builds the redirectable `access_denied` body for a step_up
+// failure. The plan requires one fixed description for every step_up refusal.
+func oauthStepUpBody(description string) *oauthErrorResponse {
+	return &oauthErrorResponse{Error: "access_denied", ErrorDescription: description}
 }
 
 // handleAuthorize serves the consent page.

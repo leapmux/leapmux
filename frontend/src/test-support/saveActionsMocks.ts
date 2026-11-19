@@ -33,6 +33,7 @@ export interface SaveActionsSpies {
 
 export function platformBridgeMock(spies: SaveActionsSpies) {
   return {
+    desktopHub: () => null,
     isTauriApp: () => spies.isTauriAppImpl(),
     platformBridge: {
       revealInFileManager: (...args: unknown[]) => spies.revealImpl(...args),

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
-import { flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storageAccountFor, storedKeyFor } from '~/lib/browserStorage'
 import { deferred, settle, untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
@@ -69,10 +69,19 @@ vi.mock('~/api/workerRpc', () => ({
 // a test that never states a tunnel outcome must not crash the auth effect.
 const mockResetTunnels = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
 vi.mock('~/api/platformBridge', () => ({
-  // ~/api/transport imports these from the same module at load time, so the
-  // factory must provide them alongside the bridge under test.
+  // `~/api/transport` imports `desktopFetch` and `isTauriApp` from the same
+  // module at load time, so the factory must provide them alongside the bridge
+  // under test.
   desktopFetch: vi.fn(),
-  getCapabilities: () => ({ hubTransport: 'direct' }),
+  desktopHub: () => null,
+  getCapabilities: () => ({
+    mode: 'web',
+    tunnels: false,
+    appControl: false,
+    windowControl: false,
+    systemPermissions: false,
+    localSolo: false,
+  }),
   isTauriApp: () => false,
   platformBridge: {
     resetTunnels: () => mockResetTunnels(),
@@ -1871,7 +1880,7 @@ describe('AuthContext storage namespace', () => {
   async function seedStoredPrefs(userId: string, prefs: Record<string, unknown>): Promise<void> {
     vi.stubGlobal('indexedDB', new IDBFactory())
     resetBrowserStorageForTests()
-    setStorageAccountForTests(userId)
+    setStorageAccountForTests(storageAccountFor(window.location.origin, userId))
     localStorageSet(KEY_BROWSER_PREFS, prefs)
     await flushStorageWrites()
     resetBrowserStorageForTests()
@@ -1906,7 +1915,7 @@ describe('AuthContext storage namespace', () => {
     // `loading` goes false after the flush that publishes the identity, and
     // that flush renders `Guarded`.
     await untilTrue(() => !captured.loading())
-    expect(seenWhileRendering).toBe('leapmux:u:alice:browser-prefs')
+    expect(seenWhileRendering).toBe(accountStorageKey(storageAccountFor(window.location.origin, 'alice'), 'browser-prefs'))
   })
 
   // The namespace alone is not the point of moving it early: the VALUES have to
@@ -1964,7 +1973,7 @@ describe('AuthContext storage namespace', () => {
     expect(auth().bootstrapError()).toBeNull()
     // Signed in, on defaults: the mirror is empty, which reads as "nothing
     // stored" everywhere.
-    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:alice:browser-prefs')
+    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(accountStorageKey(storageAccountFor(window.location.origin, 'alice'), 'browser-prefs'))
     expect(loadBrowserPrefs()).toEqual({})
   })
 
@@ -2000,7 +2009,7 @@ describe('AuthContext storage namespace', () => {
     // it must not fall through into recovering an account of its own.
     expect(auth().signInRecovery()).toBeNull()
     expect(published).not.toContain('bob')
-    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:carol:browser-prefs')
+    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(accountStorageKey(storageAccountFor(window.location.origin, 'carol'), 'browser-prefs'))
     stop()
   })
 
@@ -2055,7 +2064,7 @@ describe('AuthContext storage namespace', () => {
     await auth().logout()
 
     expect(hasStorageAccount()).toBe(true)
-    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:alice:browser-prefs')
+    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(accountStorageKey(storageAccountFor(window.location.origin, 'alice'), 'browser-prefs'))
   })
 
   // A User the app cannot key storage by is not an identity. Letting

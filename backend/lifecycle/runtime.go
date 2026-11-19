@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // ErrInstanceRunning reports a data directory whose runtime lock

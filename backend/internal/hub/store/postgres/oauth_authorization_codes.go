@@ -25,6 +25,9 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 		GrantedScopes:    c.GrantedScopes,
 		InstallationName: c.InstallationName,
 		MintedTokenID:    c.MintedTokenID.String,
+		MintedSessionID:  c.MintedSessionID.String,
+		StepUpSessionID:  c.StepUpSessionID.String,
+		StepUpTokenID:    c.StepUpTokenID.String,
 		CreatedAt:        c.CreatedAt.Time,
 		ExpiresAt:        c.ExpiresAt.Time,
 		ConsumedAt:       c.ConsumedAt.Ptr(),
@@ -41,6 +44,8 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 		GrantedScopes:    p.GrantedScopes,
 		InstallationName: p.InstallationName,
 		ExpiresAt:        pgtime.New(p.ExpiresAt),
+		StepUpSessionID:  pgtype.Text{String: p.StepUpSessionID, Valid: p.StepUpSessionID != ""},
+		StepUpTokenID:    pgtype.Text{String: p.StepUpTokenID, Valid: p.StepUpTokenID != ""},
 	}))
 }
 
@@ -95,5 +100,12 @@ func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, toke
 	return mapErr(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
 		Code:          code,
 		MintedTokenID: pgtype.Text{String: tokenID, Valid: tokenID != ""},
+	}))
+}
+
+func (s *oauthAuthorizationCodeStore) MarkMintedSession(ctx context.Context, code, sessionID string) error {
+	return mapErr(s.conn.q.MarkOAuthAuthorizationCodeMintedSession(ctx, gendb.MarkOAuthAuthorizationCodeMintedSessionParams{
+		Code:            code,
+		MintedSessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 	}))
 }

@@ -934,7 +934,7 @@ describe('loginViaAPI', () => {
 })
 
 describe('freshAdminSessionViaAPI', () => {
-  it('signs in as the test administrator and elevates nothing', async () => {
+  it('signs in as the test administrator and drops the sign-in window', async () => {
     const requests = recordedRequests(() => new Response('{}', {
       headers: { 'Set-Cookie': 'leapmux-session=fresh; Path=/' },
     }))
@@ -947,6 +947,10 @@ describe('freshAdminSessionViaAPI', () => {
           password: TEST_ADMIN_PASSWORD,
           captcha: { payload: 'solved-captcha', honeypot: '' },
         },
+      ],
+      [
+        'UserService/DropElevation',
+        {},
       ],
     ])
   })

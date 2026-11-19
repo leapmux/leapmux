@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // stateFileName is the file the hub writes in its data directory, beside the

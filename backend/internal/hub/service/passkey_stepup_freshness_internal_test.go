@@ -216,7 +216,7 @@ func TestStepUpMutationAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 	_, err = svc.stepUpMutationAuth(
 		ctx, entryStepUp(info(time.Now().UTC().Add(-24*time.Hour))), user)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, errElevationRequired),
+	assert.True(t, errors.Is(err, auth.ErrElevationRequired),
 		"a stale sign-in is now resolvable by proving a factor, so it must open a prompt")
 }
 
@@ -302,7 +302,7 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(&unelevatedCLI), user)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.True(t, errors.Is(err, errElevationRequired),
+	assert.True(t, errors.Is(err, auth.ErrElevationRequired),
 		"the CLI must be told to run the browser leg and retry")
 
 	// A LAPSED window on the same credential is refused the same way.
@@ -326,7 +326,7 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	// factor and retry", and this caller has nothing to prove: a prompt would
 	// collect a factor and then refuse the retry for the same reason. A
 	// refusal that wraps no sentinel carries no marker.
-	assert.False(t, errors.Is(err, errElevationRequired))
+	assert.False(t, errors.Is(err, auth.ErrElevationRequired))
 
 	// The FIRST-CREDENTIAL shape is the one case that still refuses a
 	// command-line credential, and it refuses it without a marker. The
@@ -353,7 +353,7 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(freshCLI), shellUser)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.False(t, errors.Is(err, errElevationRequired),
+	assert.False(t, errors.Is(err, auth.ErrElevationRequired),
 		"the first-credential refusal to a bearer is not one a prompt can clear")
 }
 

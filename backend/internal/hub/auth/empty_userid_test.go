@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,6 +41,8 @@ var zeroUserIDDenyFuncs = []string{
 	"(*DelegationScopeCache).Resolve",
 	"RevokeAllUserCredentials",
 	"RevokeUserCredentialsExceptAPIToken",
+	"RequireElevation",
+	"RequireElevatableCredential",
 }
 
 // TestZeroUserIDDenies exercises the deny-closed contract for every entry in
@@ -253,6 +256,25 @@ func TestZeroUserIDDenies(t *testing.T) {
 				require.NoError(t, err)
 				assert.False(t, scope.Allows(worker.ID),
 					"the cached answer must be the same denial, not a widened one")
+			case "RequireElevation":
+				// A nil UserInfo carries no credential row, so the rule answers
+				// "cannot elevate" -- the no-marker refusal. The control is the
+				// solo short-circuit: solo mode has no ceremony and passes.
+				err := auth.RequireElevation(nil, time.Now())
+				require.Error(t, err, "a nil UserInfo must not pass the elevation gate")
+
+				solo := &auth.UserInfo{Solo: true}
+				require.NoError(t, auth.RequireElevation(solo, time.Now()),
+					"control: solo mode passes the elevation gate")
+			case "RequireElevatableCredential":
+				// A nil UserInfo has no elevatable row. The control is a
+				// session credential, which has a row to stamp.
+				err := auth.RequireElevatableCredential(nil)
+				require.Error(t, err, "a nil UserInfo has no elevatable credential")
+
+				sessionUser := &auth.UserInfo{Credential: auth.SessionCredential("s1")}
+				require.NoError(t, auth.RequireElevatableCredential(sessionUser),
+					"control: a session credential is elevatable")
 			default:
 				t.Fatalf("zeroUserIDDenyFuncs lists %q but TestZeroUserIDDenies has no case for it", name)
 			}

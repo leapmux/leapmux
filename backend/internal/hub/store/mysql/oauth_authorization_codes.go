@@ -25,6 +25,9 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 		GrantedScopes:    c.GrantedScopes,
 		InstallationName: c.InstallationName,
 		MintedTokenID:    c.MintedTokenID.String,
+		MintedSessionID:  c.MintedSessionID.String,
+		StepUpSessionID:  c.StepUpSessionID.String,
+		StepUpTokenID:    c.StepUpTokenID.String,
 		CreatedAt:        c.CreatedAt.Time,
 		ExpiresAt:        c.ExpiresAt.Time,
 		ConsumedAt:       c.ConsumedAt.Ptr(),
@@ -41,6 +44,8 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 		GrantedScopes:    p.GrantedScopes,
 		InstallationName: p.InstallationName,
 		ExpiresAt:        sqltime.NewMySQLTime(p.ExpiresAt),
+		StepUpSessionID:  sqlutil.NullNonEmpty(p.StepUpSessionID),
+		StepUpTokenID:    sqlutil.NullNonEmpty(p.StepUpTokenID),
 	}))
 }
 
@@ -106,5 +111,12 @@ func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, toke
 	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
 		Code:          code,
 		MintedTokenID: sqlutil.NullNonEmpty(tokenID),
+	}))
+}
+
+func (s *oauthAuthorizationCodeStore) MarkMintedSession(ctx context.Context, code, sessionID string) error {
+	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMintedSession(ctx, gendb.MarkOAuthAuthorizationCodeMintedSessionParams{
+		Code:            code,
+		MintedSessionID: sqlutil.NullNonEmpty(sessionID),
 	}))
 }

@@ -7,7 +7,7 @@ import { PillGroup } from './PillGroup'
 function authMethodOptions(): PillOptions<AuthMethod> {
   const password = { key: 'password' as const, label: 'Password' }
   const blocker = passkeyBlocker()
-  if (blocker === 'origin-not-allowed')
+  if (blocker === 'origin-not-allowed' || blocker === 'needs-browser')
     return [password]
   return [
     password,

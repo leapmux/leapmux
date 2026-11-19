@@ -201,6 +201,7 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               apiTokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,

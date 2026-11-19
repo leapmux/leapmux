@@ -78,6 +78,7 @@ vi.mock('~/api/platformBridge', () => ({
       wasClean: close?.wasClean === true,
     }
   },
+  desktopHub: () => null,
   isTauriApp: () => bridge.isTauri,
   platformBridge: {
     onEvent: (name: string, handler: (payload: unknown) => void) => {

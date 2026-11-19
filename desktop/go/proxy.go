@@ -5,10 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -61,7 +64,14 @@ func newProxy(hubURL string) (*HubProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unsupported hub URL %q: %w", hubURL, err)
 	}
-	return newProxyForEndpoint(endpoint), nil
+	return newProxyForEndpoint(endpoint, mustNewMemoryJar()), nil
+}
+
+// mustNewMemoryJar returns a fresh in-memory cookie jar. cookiejar.New only
+// fails on a bad Options, and nil is valid, so this never panics in practice.
+func mustNewMemoryJar() http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	return jar
 }
 
 // newProxyForEndpoint builds the proxy on an endpoint the caller already holds.
@@ -70,12 +80,15 @@ func newProxy(hubURL string) (*HubProxy, error) {
 // proxy must share ONE endpoint: an endpoint owns the h2c verdict and the
 // connection pools, so a second one for the same URL probes the hub again and
 // pools separately, and the first one's idle connections then belong to nobody.
-func newProxyForEndpoint(endpoint *hubtransport.Endpoint) *HubProxy {
+//
+// The caller supplies the jar: ConnectDistributed passes a persistentJar so the
+// session survives a restart, while ConnectSolo and tests pass a fresh
+// in-memory jar.
+func newProxyForEndpoint(endpoint *hubtransport.Endpoint, jar http.CookieJar) *HubProxy {
 	// The pin is built against the BASE URL rather than the endpoint URL,
 	// because a local-IPC endpoint presents the placeholder origin that its
 	// transport dials, and the pin compares against what the request carries.
 	baseURL := endpoint.BaseURL()
-	jar, _ := cookiejar.New(nil)
 	session := func(c *http.Client) *http.Client {
 		c.Jar = jar
 		c.CheckRedirect = pinRedirectsToOrigin(baseURL)
@@ -263,11 +276,41 @@ func hubRequestURL(base *url.URL, path string) (string, error) {
 	return resolved.String(), nil
 }
 
+// proxyDeadlineGrace is added to every timeout the proxy reads from a request,
+// so the Hub's own deadline answer can arrive before this side ends the
+// request on its own clock.
+const proxyDeadlineGrace = 5 * time.Second
+
+// maxProxyRequestTimeoutMs is the largest Connect-Timeout-Ms that still fits a
+// time.Duration with proxyDeadlineGrace added. A larger value would wrap the
+// duration negative and fire the deadline at once.
+const maxProxyRequestTimeoutMs = (math.MaxInt64 - int64(proxyDeadlineGrace)) / int64(time.Millisecond)
+
+// proxyRequestTimeout reports the deadline ProxyHTTP puts on a proxied request:
+// the Connect-Timeout-Ms it finds in the headers, without regard to case, as a
+// duration with proxyDeadlineGrace added. ok is false when the header is absent
+// or does not hold a positive integer, and the caller then leaves the request
+// context without a deadline.
+func proxyRequestTimeout(headers map[string]string) (time.Duration, bool) {
+	for name, value := range headers {
+		if !strings.EqualFold(name, "Connect-Timeout-Ms") {
+			continue
+		}
+		ms, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || ms <= 0 || ms > maxProxyRequestTimeoutMs {
+			return 0, false
+		}
+		return time.Duration(ms)*time.Millisecond + proxyDeadlineGrace, true
+	}
+	return 0, false
+}
+
 // ProxyHTTP forwards a frontend HTTP request to the hub.
 //
 // It owns only the lifecycle concerns -- admission, the shutdown check, snapshotting
-// the connection under the read lock, and binding the request to both the caller's
-// context and the connection's -- then delegates the request itself to the HubProxy
+// the connection under the read lock, binding the request to both the caller's
+// context and the connection's, and ending the request by the deadline the caller
+// declares -- then delegates the request itself to the HubProxy
 // it snapshotted. The proxying rules (origin pinning, the frame budget) live on
 // HubProxy, beside the client and base URL they operate on.
 func (a *App) ProxyHTTP(ctx context.Context, method, path string, headers map[string]string, body []byte) (*ProxyResponse, []byte, error) {
@@ -289,6 +332,11 @@ func (a *App) ProxyHTTP(ctx context.Context, method, path string, headers map[st
 	unlock()
 	requestCtx, cancelRequest := ctxutil.WithLinkedCancel(connection.ctx, ctx)
 	defer cancelRequest()
+	if timeout, ok := proxyRequestTimeout(headers); ok {
+		var cancelTimeout context.CancelFunc
+		requestCtx, cancelTimeout = context.WithTimeout(requestCtx, timeout)
+		defer cancelTimeout()
+	}
 
 	return proxy.Do(requestCtx, method, path, headers, body)
 }
@@ -332,6 +380,10 @@ func (p *HubProxy) Do(ctx context.Context, method, path string, headers map[stri
 		return nil, nil, fmt.Errorf("proxy request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// The jar stored these cookies already; returning the header would hand a
+	// webview script the session token whenever the Hub slides the session.
+	resp.Header.Del("Set-Cookie")
 
 	// resp.Header is immutable once Do returns and the body is read to EOF
 	// (trailers land in resp.Trailer, not here), and it is only read below and

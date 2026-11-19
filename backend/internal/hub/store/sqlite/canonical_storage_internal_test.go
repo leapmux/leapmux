@@ -71,6 +71,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// triplet on RotateRefresh, and a pending revocation event via Revoke.
 	rotatedID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               rotatedID,
 		UserID:           userid.MustNew(user.ID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -94,6 +95,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.EqualValues(t, 1, rotated)
 	revokedID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               revokedID,
 		UserID:           userid.MustNew(user.ID),
 		ClientID:         oauthapp.ControlCLIClientID,

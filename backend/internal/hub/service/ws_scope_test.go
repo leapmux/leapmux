@@ -41,7 +41,8 @@ func mintScopedAPIToken(t *testing.T, st store.Store, tv *auth.TokenValidator, g
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(u.ID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(u.ID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "test", GrantedScopes: granted,
 		SecretHash: tv.HashSecret(secret),
 	}))

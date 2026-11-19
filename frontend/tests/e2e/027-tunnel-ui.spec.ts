@@ -7,8 +7,10 @@ import { expandSidebarSection, loginViaToken, openWorkspace, sidebarSectionHeade
 // load so the UI renders the tunnel entrypoints at initial render time.
 
 /**
- * Add a page.addInitScript that sets up a mock Tauri desktop environment with
- * tunnel methods only. Hub transport remains browser-native in the test page.
+ * Add a page.addInitScript that sets up a mock Tauri desktop environment.
+ * The bridge answers the tunnel methods, `proxy_http` for hub RPC, and the
+ * channel and user-events relays, because under Tauri the page routes hub
+ * traffic through the bridge.
  */
 function addTunnelMockInitScript(page: import('@playwright/test').Page) {
   return page.addInitScript(() => {
@@ -24,6 +26,7 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
     }> = []
     let nextId = 1
     let userEventsSocket: WebSocket | undefined
+    let channelSocket: WebSocket | undefined
     const intentionallyClosedSockets = new WeakSet<WebSocket>()
 
     const closeUserEventsSocket = () => {
@@ -34,12 +37,28 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       userEventsSocket = undefined
     }
 
+    const closeChannelSocket = () => {
+      if (!channelSocket)
+        return
+      intentionallyClosedSockets.add(channelSocket)
+      channelSocket.close()
+      channelSocket = undefined
+    }
+
     const bytesToBase64 = (data: ArrayBuffer) => {
       const bytes = new Uint8Array(data)
       let binary = ''
       for (const byte of bytes)
         binary += String.fromCharCode(byte)
       return btoa(binary)
+    }
+
+    const base64ToBytes = (data: string) => {
+      const binary = atob(data)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++)
+        bytes[i] = binary.charCodeAt(i)
+      return bytes
     }
 
     win.__TAURI_INVOKE__ = (cmd: string, args?: any) => {
@@ -75,7 +94,6 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
             hubUrl: window.location.origin,
             capabilities: {
               mode: 'tauri-desktop-distributed',
-              hubTransport: 'direct',
               tunnels: true,
               appControl: true,
               windowControl: true,
@@ -83,6 +101,60 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
               localSolo: false,
             },
           })
+        case 'proxy_http': {
+          const { method, path, headers, bodyBase64 } = args.payload
+          return fetch(window.location.origin + path, {
+            method,
+            headers,
+            body: bodyBase64
+              ? base64ToBytes(bodyBase64)
+              : null,
+          }).then(async (response) => {
+            const responseHeaders: Record<string, string[]> = {}
+            response.headers.forEach((value, name) => {
+              (responseHeaders[name] ??= []).push(value)
+            })
+            return {
+              status: response.status,
+              headers: responseHeaders,
+              body: bytesToBase64(await response.arrayBuffer()),
+            }
+          })
+        }
+        case 'open_channel_relay': {
+          closeChannelSocket()
+          const protocol = window.location.protocol === 'https:'
+            ? 'wss:'
+            : 'ws:'
+          const socket = new WebSocket(
+            `${protocol}//${window.location.host}/ws/channel`,
+            ['channel-relay'],
+          )
+          channelSocket = socket
+          socket.binaryType = 'arraybuffer'
+          socket.addEventListener('message', (event) => {
+            win.__TAURI_INTERNALS__.emitEvent('channel:message', bytesToBase64(event.data))
+          })
+          socket.addEventListener('close', (event) => {
+            if (!intentionallyClosedSockets.has(socket)) {
+              win.__TAURI_INTERNALS__.emitEvent('channel:close', {
+                code: event.code,
+                reason: event.reason,
+                wasClean: event.wasClean,
+              })
+            }
+          })
+          return new Promise<void>((resolve, reject) => {
+            socket.addEventListener('open', () => resolve(), { once: true })
+            socket.addEventListener('error', () => reject(new Error('channel relay failed')), { once: true })
+          })
+        }
+        case 'send_channel_message':
+          channelSocket?.send(base64ToBytes(args.b64Data))
+          return Promise.resolve()
+        case 'close_channel_relay':
+          closeChannelSocket()
+          return Promise.resolve()
         case 'open_userevents_relay': {
           closeUserEventsSocket()
           const params = new URLSearchParams()
@@ -242,9 +314,11 @@ test.describe('Tunnel UI', () => {
   })
 
   test('tunnel creation error is displayed in dialog', async ({ page, workspace }) => {
-    // Override CreateTunnel to reject with an error.
+    // Override CreateTunnel to reject with an error. Every command this bridge
+    // does not handle passes to the previous __TAURI_INVOKE__.
     await page.evaluate(() => {
-      ;(window as any).__TAURI_INVOKE__ = (cmd: string) => {
+      const previousInvoke = (window as any).__TAURI_INVOKE__
+      ;(window as any).__TAURI_INVOKE__ = (cmd: string, args?: any) => {
         if (cmd === 'create_tunnel')
           return Promise.reject(new Error('bind 127.0.0.1:3000: address already in use'))
         if (cmd === 'delete_tunnel')
@@ -258,7 +332,6 @@ test.describe('Tunnel UI', () => {
             hubUrl: window.location.origin,
             capabilities: {
               mode: 'tauri-desktop-distributed',
-              hubTransport: 'direct',
               tunnels: true,
               appControl: true,
               windowControl: true,
@@ -267,7 +340,7 @@ test.describe('Tunnel UI', () => {
             },
           })
         }
-        return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
+        return previousInvoke(cmd, args)
       }
     })
 

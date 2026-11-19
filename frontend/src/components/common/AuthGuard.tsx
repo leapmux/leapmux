@@ -2,6 +2,7 @@ import type { ParentComponent } from 'solid-js'
 import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createMemo, Match, Switch } from 'solid-js'
 import { BootSplash } from '~/components/common/BootSplash'
+import { HubPage } from '~/components/common/HubPage'
 import { PasswordSetupGate } from '~/components/common/PasswordSetupGate'
 import { useAuth } from '~/context/AuthContext'
 import { assertNever } from '~/lib/assertNever'
@@ -183,7 +184,9 @@ export const AuthGuard: ParentComponent = (props) => {
         {props.children}
       </Match>
       <Match when={branch() === 'password-setup'}>
-        <PasswordSetupGate />
+        <HubPage>
+          <PasswordSetupGate />
+        </HubPage>
       </Match>
       <Match when={branch() === 'panel' && failure()}>
         {current => (

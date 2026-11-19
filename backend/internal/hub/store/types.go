@@ -120,6 +120,10 @@ type UserSession struct {
 	ElevationExpiresAt *time.Time
 	UserAgent          string
 	IPAddress          string
+	// IssuedToClient names the built-in app this session was issued to through
+	// the browser handoff. Empty for a session that signed in on the Hub's own
+	// page. NULL reads as the empty string.
+	IssuedToClient string
 }
 
 // PageCursor returns the keyset position for the per-user session listing
@@ -852,6 +856,9 @@ type CreateSessionParams struct {
 	ExpiresAt  time.Time
 	UserAgent  string
 	IPAddress  string
+	// IssuedToClient names the built-in app this session is issued to through
+	// the browser handoff. Empty stores NULL.
+	IssuedToClient string
 }
 
 type TouchSessionParams struct {
@@ -1413,6 +1420,19 @@ type RecoveryRevocation struct {
 
 // --- API token types ---
 
+// APITokenIssuance is a defined type over leapmuxv1.ApiTokenIssuance: which
+// ceremony issued an app credential. api_tokens.issuance stores the ordinal.
+// The Hub offers the device-code step-up only to a credential that was issued
+// without a browser.
+type APITokenIssuance leapmuxv1.ApiTokenIssuance
+
+const (
+	APITokenIssuanceUnspecified       = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_UNSPECIFIED)
+	APITokenIssuanceAuthorizationCode = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_AUTHORIZATION_CODE)
+	APITokenIssuanceDeviceCode        = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_DEVICE_CODE)
+	APITokenIssuanceAdmin             = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_ADMIN)
+)
+
 // APIToken is a durable bearer credential issued to leapmux control CLI
 // (and future external clients). The exposed bearer is composed in code
 // as "lmx_<id>_<secret>"; SecretHash stores HMAC-SHA256(secret, server
@@ -1442,6 +1462,10 @@ type APIToken struct {
 	// lost a member would keep working as a narrower app and nobody would
 	// notice the vocabulary drifted.
 	GrantedScopes string
+	// Issuance records which ceremony issued this credential. The Hub offers
+	// the device-code step-up only to a credential that was issued without a
+	// browser.
+	Issuance APITokenIssuance
 	// The step-up window, the same pair a session row carries. Nil means the
 	// credential never proved a factor, and the two are written and cleared
 	// together -- read them through auth.NewElevation, which refuses half a
@@ -1875,6 +1899,16 @@ type OAuthAuthorizationCode struct {
 	// consumption. A REPLAY revokes it, which is what RFC 6749 section 4.1.2
 	// requires and what nothing could express while the column was absent.
 	MintedTokenID string
+	// MintedSessionID is the session the exchange issued, for an app whose
+	// code redeems into a session. It serves the replay remedy as
+	// MintedTokenID does.
+	MintedSessionID string
+	// StepUpSessionID names the session this code VERIFIES, when it verifies
+	// one rather than issuing one. At most one of StepUpSessionID and
+	// StepUpTokenID is set.
+	StepUpSessionID string
+	// StepUpTokenID names the app credential this code verifies.
+	StepUpTokenID string
 }
 
 type CreateAPITokenParams struct {
@@ -1891,7 +1925,11 @@ type CreateAPITokenParams struct {
 	// unscoped grant. The adapters always bind this field, so omitting it from
 	// a Go literal stores the empty grant. The column requires a non-NULL value
 	// and has no SQL default; that does not detect an omitted Go field.
-	GrantedScopes    string
+	GrantedScopes string
+	// Issuance records which ceremony issued this credential. No DEFAULT on
+	// the column: every mint states it, and an omitted Go field binds 0 and
+	// fails the CHECK.
+	Issuance         APITokenIssuance
 	SecretHash       []byte
 	RefreshHash      []byte
 	ExpiresAt        *time.Time
@@ -2024,6 +2062,12 @@ type CreateOAuthAuthorizationCodeParams struct {
 	GrantedScopes    string
 	InstallationName string
 	ExpiresAt        time.Time
+	// StepUpSessionID names the session this code verifies, when it verifies
+	// one rather than issuing one. Empty stores NULL. At most one of
+	// StepUpSessionID and StepUpTokenID is set; the CHECK refuses both.
+	StepUpSessionID string
+	// StepUpTokenID names the app credential this code verifies.
+	StepUpTokenID string
 }
 
 type CreatePendingOAuthSignupParams struct {

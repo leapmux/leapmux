@@ -6,6 +6,7 @@ import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { CaptchaProvider as GenCaptchaProvider, SoloAccess as GenSoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
 import { frontendBuildInfo } from '~/lib/buildEnv'
 import { formatErrorMessage } from '~/lib/errors'
+import { ceremoniesRunInBrowser } from '~/lib/hubSite'
 import { formatLocalDateTime } from './dateFormat'
 
 export type CaptchaProvider = GenCaptchaProvider
@@ -227,7 +228,7 @@ export function isEmailEnabled(): boolean {
 }
 
 /** Why this page cannot run a passkey ceremony. See `passkeyBlocker`. */
-export type PasskeyBlocker = 'insecure-context' | 'no-webauthn' | 'origin-not-allowed'
+export type PasskeyBlocker = 'needs-browser' | 'insecure-context' | 'no-webauthn' | 'origin-not-allowed'
 
 // browserRunsWebAuthn reports whether this browser exposes the WebAuthn API
 // on this page. A browser exposes it in a secure context only: HTTPS, or
@@ -268,6 +269,8 @@ function browserRunsWebAuthn(): boolean {
  * is not exported, so the mistake cannot be made.
  */
 export function passkeyBlocker(): PasskeyBlocker | null {
+  if (ceremoniesRunInBrowser())
+    return 'needs-browser'
   if (!browserRunsWebAuthn()) {
     // An explicit false, the same rule the captcha gate and the clipboard
     // hold: jsdom leaves isSecureContext undefined, and an unknown context
@@ -395,8 +398,8 @@ export function getAltchaAlgorithm(): string {
 // a reverse proxy) or when TCP is disabled (desktop app's local-only mode,
 // where the browser origin resolves to `tauri://localhost` and the only
 // viable URL is the unix-socket / named-pipe address). Empty otherwise — the
-// caller should fall back to `window.location.origin`, which already reflects
-// the public-facing URL the user connects through.
+// caller should fall back to `hubOrigin()`, which reflects the connected Hub
+// in remote mode and the page origin otherwise.
 export function getWorkerHubUrl(): string {
   return current().workerHubUrl
 }

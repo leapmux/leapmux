@@ -77,6 +77,10 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "DeviceAuthorizationState"
+          - column: "api_tokens.issuance"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ApiTokenIssuance"
           # Force binary token-hash columns to []byte (sqlc would map
           # MySQL VARBINARY to NullString otherwise, which is awkward
           # for HMAC bytes).

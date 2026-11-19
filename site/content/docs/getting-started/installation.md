@@ -46,7 +46,7 @@ The standalone server binary for macOS is distributed as `darwin_arm64` only.
 
 ## Desktop app
 
-The desktop app is a self-contained application that bundles the LeapMux Frontend and a local service. On first launch it presents a **LeapMux** launcher asking how you want to connect — **Solo** (a Hub and Worker run together on this machine; no network setup, your data stays local) or **Distributed** (connect to a remote Hub by URL). See [Quick Start](/docs/getting-started/quick-start/) for what to do after the app opens.
+The desktop app is a self-contained application that bundles the LeapMux Frontend and a local service. On first launch it presents a **LeapMux** launcher asking how you want to connect — **Solo** (a Hub and Worker run together on this machine; no network setup, your data stays local) or **Distributed** (connect to a remote Hub by URL; you sign in through the system browser). See [Quick Start](/docs/getting-started/quick-start/) for what to do after the app opens.
 
 ### Download
 

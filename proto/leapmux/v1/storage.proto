@@ -136,6 +136,19 @@ enum DeviceAuthorizationState {
   DEVICE_AUTHORIZATION_STATE_DENIED = 3;
 }
 
+// ApiTokenIssuance records which ceremony issued an app credential.
+// api_tokens.issuance stores the ordinal. The Hub offers the device-code
+// step-up only to a credential that was issued without a browser.
+enum ApiTokenIssuance {
+  API_TOKEN_ISSUANCE_UNSPECIFIED = 0;
+  // The authorization-code grant: a browser on the credential's own machine.
+  API_TOKEN_ISSUANCE_AUTHORIZATION_CODE = 1;
+  // The RFC 8628 device-code grant: no browser on that machine.
+  API_TOKEN_ISSUANCE_DEVICE_CODE = 2;
+  // AdminUserService.IssueAPIToken: issued out of band.
+  API_TOKEN_ISSUANCE_ADMIN = 3;
+}
+
 // AgentInputQueuePauseOwner records which cause created the pause that still
 // holds, so only that cause lifts it again. Numbers
 // agent_input_queue_state.pause_owner.

@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 func TestAttemptLogRotatesBySize(t *testing.T) {

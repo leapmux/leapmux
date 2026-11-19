@@ -20,7 +20,6 @@ export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distrib
 
 export interface PlatformCapabilities {
   mode: PlatformMode
-  hubTransport: 'direct' | 'proxy'
   tunnels: boolean
   appControl: boolean
   windowControl: boolean
@@ -168,6 +167,14 @@ export interface DesktopRuntimeState {
   capabilities: PlatformCapabilities
 }
 
+/** The ceremony that the system browser runs for the desktop's session. */
+export type BrowserAuthKind = 'sign-in' | 'step-up'
+
+export interface BrowserAuthStart {
+  ceremonyId: string
+  authorizeUrl: string
+}
+
 export interface ProxyHttpResponse {
   status: number
   headers: Record<string, string[]>
@@ -301,6 +308,21 @@ declare global {
 }
 
 let runtimeStateCache: DesktopRuntimeState | null = null
+
+/**
+ * Returns the connected Hub's identity, or null outside Tauri and before the
+ * shell answers. The remote Hub's URL is what `hubOrigin()` and
+ * `ceremoniesRunInBrowser()` read.
+ */
+export function desktopHub(): { kind: 'solo' } | { kind: 'remote', url: string } | null {
+  if (!isTauriApp() || !runtimeStateCache)
+    return null
+  if (runtimeStateCache.shellMode === 'solo')
+    return { kind: 'solo' }
+  if (runtimeStateCache.shellMode === 'distributed' && runtimeStateCache.hubUrl)
+    return { kind: 'remote', url: runtimeStateCache.hubUrl }
+  return null
+}
 let runtimeStateFetch: Promise<DesktopRuntimeState> | null = null
 let sidecarLogListening = false
 const mobileUserAgentRegex = /android|iphone|ipad|ipod/i
@@ -310,7 +332,6 @@ const sidecarLog = createLogger('sidecar')
 function caps(mode: PlatformMode, overrides: Partial<Omit<PlatformCapabilities, 'mode'>> = {}): PlatformCapabilities {
   return {
     mode,
-    hubTransport: 'direct',
     tunnels: false,
     appControl: false,
     windowControl: false,
@@ -326,21 +347,7 @@ const MOBILE_CAPABILITIES = caps('tauri-mobile-distributed', {
   appControl: true,
 })
 
-const LOCAL_DESKTOP_LAUNCHER_CAPABILITIES = caps('tauri-desktop-solo', {
-  hubTransport: 'proxy',
-  tunnels: true,
-  appControl: true,
-  windowControl: true,
-  systemPermissions: true,
-  localSolo: true,
-})
-
-const DISTRIBUTED_DESKTOP_CAPABILITIES = caps('tauri-desktop-distributed', {
-  tunnels: true,
-  appControl: true,
-  windowControl: true,
-  systemPermissions: true,
-})
+const DESKTOP_PENDING_CAPABILITIES = caps('tauri-desktop-distributed')
 
 export function isTauriApp(): boolean {
   return typeof window.__TAURI_INTERNALS__ !== 'undefined'
@@ -348,12 +355,6 @@ export function isTauriApp(): boolean {
 
 export function isTunnelAvailable(): boolean {
   return getCapabilities().tunnels
-}
-
-export function isSoloTauriApp(): boolean {
-  if (!isTauriApp())
-    return false
-  return window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost'
 }
 
 function isMobileViewport(): boolean {
@@ -413,12 +414,10 @@ export function resetPlatformRuntimeState(): void {
 export function getCapabilities(): PlatformCapabilities {
   if (runtimeStateCache)
     return runtimeStateCache.capabilities
-  if (isSoloTauriApp())
-    return LOCAL_DESKTOP_LAUNCHER_CAPABILITIES
   if (isTauriApp() && isMobileViewport())
     return MOBILE_CAPABILITIES
   if (isTauriApp())
-    return DISTRIBUTED_DESKTOP_CAPABILITIES
+    return DESKTOP_PENDING_CAPABILITIES
   return WEB_CAPABILITIES
 }
 
@@ -972,10 +971,17 @@ export const platformBridge = {
     await refreshRuntimeState()
   },
   async connectDistributed(hubUrl: string): Promise<void> {
-    // Note: the Rust shell navigates the webview to the hub URL after
-    // this resolves, so the current page is torn down — no need to
-    // refresh runtime state here.
     await tauriInvoke('connect_distributed', { hubUrl })
+    await refreshRuntimeState()
+  },
+  async startBrowserAuth(kind: BrowserAuthKind): Promise<BrowserAuthStart> {
+    const cmd = kind === 'sign-in'
+      ? 'start_browser_sign_in'
+      : 'start_browser_step_up'
+    return tauriInvoke<BrowserAuthStart>(cmd)
+  },
+  async cancelBrowserAuth(ceremonyId: string): Promise<void> {
+    await tauriInvoke('cancel_browser_auth', { ceremonyId })
   },
   async proxyHttp(method: string, path: string, headers: Record<string, string>, bodyBase64: string): Promise<ProxyHttpResponse> {
     return tauriInvoke('proxy_http', {

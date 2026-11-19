@@ -228,7 +228,9 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 ## Administration
 
-Administrators see a second group in the navigation, **ADMINISTRATION**, below the user categories. Its rows are the Hub's own instance settings: the Hub authenticates and validates every write, and every write needs a **verified session** — several of these keys are the Hub's own security controls. The first change in a sitting opens a **Verify your identity** dialog and then lands on its own; see [Session elevation](/docs/admin/security/#session-elevation).
+Administrators see a second group in the navigation, **ADMINISTRATION**, below the user categories. Its rows are the Hub's own instance settings, and every Administration procedure needs a current step-up window, reads included — several of these keys are the Hub's own security controls. See [Session elevation](/docs/admin/security/#session-elevation).
+
+The group shows after the unlock step. While the session holds no window, it lists only **Hub-wide Apps** and an **Unlock administration...** entry; the rest of the rows appear once you unlock. Desktop solo mode and a client that already holds a window show the whole list at once, with no unlock entry.
 
 Most rows apply without a restart. The Hub that serves the write applies the change at once, and another Hub on the same database picks it up within ~30 seconds. The dialog re-reads the Hub's state after every accepted write. For example, publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
 

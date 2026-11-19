@@ -161,6 +161,8 @@ func TestSoloRung_ASessionCookieAuthenticatesOverTCP(t *testing.T) {
 	createdSession, err := auth.CreateSession(
 		context.Background(), f.store, hubtestutil.TestSecretHasher(), userid.MustNew(f.user.ID.String()), auth.DefaultSessionDuration)
 	require.NoError(t, err)
+	// The Admin* procedure behind the call below now needs a step-up window.
+	hubtestutil.ElevateSession(t, f.store, hubtestutil.SessionIDFromCookie(t, createdSession.Token), f.user.ID.String())
 	// secure=false, matching the zero Policy this fixture's interceptor holds:
 	// the plain cookie name is the one both ladders look for here.
 	cookie := auth.BuildSessionCookie(createdSession.Token, createdSession.ExpiresAt, false)
@@ -189,16 +191,21 @@ func TestSoloRung_YieldsToAPresentedBearerEvenWithNoPassword(t *testing.T) {
 	mint := func(grant string) (string, string) {
 		tokenID, secret := id.Generate(), auth.MintAccessSecret()
 		require.NoError(t, f.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-			ID: tokenID, UserID: f.user.ID, ClientID: oauthapp.ControlCLIClientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: f.user.ID, ClientID: oauthapp.ControlCLIClientID,
 			InstallationName: "IPC precedence", GrantedScopes: grant, SecretHash: f.validator.HashSecret(secret),
 		}))
 		return tokenID, auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
-	_, admitted := mint("admin:read")
+	admittedID, admitted := mint("admin:read")
 	_, narrow := mint("file:read")
 	revokedID, revoked := mint("admin:read")
 	_, err := f.store.APITokens().Revoke(context.Background(), revokedID)
 	require.NoError(t, err)
+	// The admitted bearer reaches an Admin* procedure, which the interceptor
+	// now guards behind a step-up window. Elevate before the first request,
+	// because the interceptor caches the UserInfo it validated.
+	hubtestutil.ElevateAPIToken(t, f.store, admittedID, f.user.ID.String())
 	require.NoError(t, f.connectCall(map[string]string{"Authorization": "Bearer " + admitted}))
 	for _, tc := range []struct {
 		name, bearer string

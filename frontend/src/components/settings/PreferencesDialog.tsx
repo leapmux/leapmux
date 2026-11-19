@@ -7,6 +7,8 @@ import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useViewportBelow } from '~/hooks/useViewportBelow'
 import { desktopShellRefusals } from '~/lib/desktopShellStatus'
+import { isElevationCurrent } from '~/lib/elevation'
+import { isAutoAuthenticated } from '~/lib/systemInfo'
 import { createAdminSettingsStore } from '~/stores/adminSettings.store'
 import { breakpoints } from '~/styles/tokens'
 import { NAV_GROUPS } from './navGroups'
@@ -186,8 +188,15 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
     matchSettings(searchIndex(), query(), visibleGroups().map(g => g.id)),
   )
 
+  const adminUnlocked = (): boolean =>
+    isAutoAuthenticated() || isElevationCurrent(auth.elevationExpiresAt())
+
+  const handleUnlockAdmin = (): void => {
+    void adminStore.load()
+  }
+
   onMount(() => {
-    if (isAdmin())
+    if (isAdmin() && adminUnlocked())
       void adminStore.load()
     // RETRY a failed account load, here, where its rows are about to be
     // rendered. The context loads once at PROVIDER mount, and
@@ -229,6 +238,11 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
                 onSelect={props.onCategory}
                 restartGroups={restartGroups}
                 compact={narrow()}
+                onUnlockAdmin={
+                  isAdmin() && adminStore.state.descriptors.length === 0 && !adminStore.state.loading
+                    ? handleUnlockAdmin
+                    : undefined
+                }
               />
             )}
           </Show>

@@ -247,7 +247,7 @@ leapmux worker deregister
 
 ## Tunnels (desktop app)
 
-A **tunnel** gives you local access to a service the Worker can reach — a dev server, a database, or any TCP endpoint on the Worker's machine or private network. The traffic uses the Worker's existing end-to-end-encrypted channel. While the Hub only relays ciphertext, it cannot read the tunneled traffic. The desktop app's tunnels keep no key pin. In remote-Hub mode, a Hub that substitutes a Worker key can read tunneled traffic.
+A **tunnel** gives you local access to a service the Worker can reach — a dev server, a database, or any TCP endpoint on the Worker's machine or private network. The traffic uses the Worker's existing end-to-end-encrypted channel. While the Hub only relays ciphertext, it cannot read the tunneled traffic. In remote-Hub mode a tunnel uses the desktop app's own session with the Hub — the session the rest of the app rides — so signing out ends the tunnels. The desktop app's tunnels keep no key pin. In remote-Hub mode, a Hub that substitutes a Worker key can read tunneled traffic.
 
 Tunnels are a **desktop-app feature**. They are available in both solo and distributed desktop modes, but not in a plain browser (the browser cannot open the local listening sockets a tunnel needs). You manage them from a Worker's sidebar context menu, where — **when tunnels are available and you own the Worker** — these items appear:
 

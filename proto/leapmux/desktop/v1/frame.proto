@@ -55,7 +55,30 @@ message Request {
     // Cache the resolved Desktop preferences on this device. See
     // SetDesktopBehaviorRequest below for why the shell needs a copy at all.
     SetDesktopBehaviorRequest set_desktop_behavior = 34;
+    // Start a browser ceremony for the connected remote Hub. See
+    // BrowserAuthKind. A new start ends the ceremony in progress.
+    StartBrowserAuthRequest start_browser_auth = 35;
+    CancelBrowserAuthRequest cancel_browser_auth = 36;
   }
+}
+
+// The ceremony that the system browser runs for the desktop's session.
+enum BrowserAuthKind {
+  BROWSER_AUTH_KIND_UNSPECIFIED = 0;
+  // Issue a session to this app.
+  BROWSER_AUTH_KIND_SIGN_IN = 1;
+  // Stamp the step-up window on the session that this app holds.
+  BROWSER_AUTH_KIND_STEP_UP = 2;
+}
+
+message StartBrowserAuthRequest {
+  BrowserAuthKind kind = 1;
+}
+
+// Cancel one ceremony. A request for a ceremony that already ended does
+// nothing.
+message CancelBrowserAuthRequest {
+  string ceremony_id = 1;
 }
 
 // Parameterless requests
@@ -216,7 +239,16 @@ message Response {
     CliPathStatusResponse cli_path_status = 20;
     CliInstallSymlinkResponse cli_install_symlink = 21;
     SetDesktopBehaviorResponse set_desktop_behavior = 22;
+    StartBrowserAuthResponse start_browser_auth = 23;
   }
+}
+
+message StartBrowserAuthResponse {
+  // Identifies this ceremony in its BrowserAuthResultEvent.
+  string ceremony_id = 1;
+  // The address that the webview opens in the system browser. The sidecar
+  // builds it from the Hub URL that the user entered.
+  string authorize_url = 2;
 }
 
 // --- CLI PATH integration (macOS) ---
@@ -353,7 +385,16 @@ message Event {
     // terminated; the frontend resets its bootstrap state in the
     // same way it does on a native WebSocket `close` event.
     UserEventsCloseEvent user_events_close = 5;
+    // One ceremony ended. The sidecar emits exactly one for each ceremony.
+    BrowserAuthResultEvent browser_auth_result = 6;
   }
+}
+
+message BrowserAuthResultEvent {
+  string ceremony_id = 1;
+  bool ok = 2;
+  // The reason, when ok is false. Empty for a cancellation.
+  string failure = 3;
 }
 
 message ChannelMessageEvent {

@@ -15,6 +15,7 @@ vi.mock('~/api/workerRpc', () => ({
 }))
 
 vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
   platformBridge: {
     fileSaveOpen: (...args: unknown[]) => fileSaveOpenImpl(...args),
     fileSaveOpenDialog: (...args: unknown[]) => fileSaveOpenDialogImpl(...args),

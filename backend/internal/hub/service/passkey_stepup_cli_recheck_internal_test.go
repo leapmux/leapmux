@@ -30,6 +30,7 @@ func liveElevatedCredentialAt(
 	uid := userid.MustNew(user.ID)
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           uid,
 		ClientID:         oauthapp.ControlCLIClientID,

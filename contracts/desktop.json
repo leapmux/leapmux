@@ -13,6 +13,7 @@
     "userEventsMessage": "userevents:message",
     "userEventsClose": "userevents:close",
     "sidecarLog": "sidecar:log",
+    "browserAuthResult": "browser-auth:result",
     "menuShowAbout": "menu:show-about",
     "menuShowPreferences": "menu:show-preferences"
   },

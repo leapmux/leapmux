@@ -14,6 +14,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "LeapMux Desktop",
         "width": 1280,
         "height": 800,

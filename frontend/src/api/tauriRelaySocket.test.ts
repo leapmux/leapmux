@@ -22,7 +22,15 @@ vi.mock('~/api/platformBridge', () => ({
       wasClean: close?.wasClean === true,
     }
   },
-  getCapabilities: () => ({ hubTransport: 'proxy' }),
+  desktopHub: () => null,
+  getCapabilities: () => ({
+    mode: 'tauri-desktop-solo',
+    tunnels: true,
+    appControl: true,
+    windowControl: true,
+    systemPermissions: true,
+    localSolo: true,
+  }),
   isTauriApp: () => true,
   platformBridge: {
     closeChannelRelay: bridgeMocks.closeChannelRelay,

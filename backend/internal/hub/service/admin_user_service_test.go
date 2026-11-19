@@ -361,6 +361,7 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	worker := storetest.SeedWorker(t, env.st, carolID)
 	tokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(carolID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1306,6 +1307,7 @@ func TestAdminUserService_IssueAPITokenAdmitsAnElevatedBearer(t *testing.T) {
 		tokenID = id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           owner,
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -1743,6 +1745,7 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               apiTokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -2038,6 +2041,10 @@ func TestAdminUserService_ResetPassword_KillsTheAccountsAPITokens(t *testing.T) 
 	}, env.token))
 	require.NoError(t, err)
 	bearer := issued.GetAccessToken()
+	// The GetUser call below reaches an Admin* procedure, which the
+	// interceptor guards behind a step-up window. Elevate before the bearer's
+	// first request, because the interceptor caches the UserInfo it validated.
+	hubtestutil.ElevateAPIToken(t, env.st, issued.GetTokenId(), env.adminID)
 
 	// The bearer reaches the service -- so the refusal below is this verb's
 	// own rule and not the admin gate answering first.
@@ -2461,7 +2468,8 @@ func TestListAPITokens_ReportsWhatEachCredentialReaches(t *testing.T) {
 	require.NoError(t, createErr)
 	tokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
 		InstallationName: "ci-runner",
 		GrantedScopes:    "workspace:read file:read worker:read",
 		SecretHash:       []byte("hash"),

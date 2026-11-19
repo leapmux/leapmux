@@ -11,27 +11,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"golang.org/x/oauth2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
-	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/loopbackauth"
 )
 
 // Ctx is the dispatcher-supplied context. The cmd package keeps its
@@ -247,50 +242,33 @@ func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName, scope string
 	// The socket-hub refusal this flow needs already ran in RunAuthLogin,
 	// before the destructive cleanup: a refused flag must not cost the
 	// machine its working credential.
-	verifier := oauth2.GenerateVerifier()
-	challenge := pkce.S256(verifier)
-	state := id.Generate()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	flow, err := loopbackauth.Start(loopbackauth.Request{
+		HubBaseURL:       hubURL,
+		App:              control.CLIApp(control.ControlCLIClientID),
+		Scope:            scope,
+		InstallationName: deviceName,
+	})
 	if err != nil {
 		return control.EmitErrorWith("listen_failed", err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	redirectURI := localRedirectURI(port)
+	defer flow.Close()
 
-	startParams := url.Values{
-		"client_id":             {control.ControlCLIClientID},
-		"response_type":         {"code"},
-		"code_challenge_method": {"S256"},
-		"redirect_uri":          {redirectURI},
-		"state":                 {state},
-		"code_challenge":        {challenge},
-		"installation_name":     {deviceName},
-		"scope":                 {scope},
-	}
-	startURL := locallisten.JoinPath(hubURL, "/oauth/authorize?"+startParams.Encode())
+	startURL := flow.AuthorizeURL()
 	_, _ = fmt.Fprintln(control.Out, "Open this URL in your browser to authorize the CLI:")
 	_, _ = fmt.Fprintln(control.Out, " ", startURL)
-	_ = openBrowser(startURL)
+	_ = control.OpenBrowser(startURL)
 
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-	srv := &http.Server{Handler: callbackHandler(state, codeCh, errCh)}
-	go func() { _ = srv.Serve(ln) }()
-	defer func() { _ = srv.Shutdown(context.Background()) }()
-
-	var code string
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-errCh:
-		return control.EmitErrorWith("callback_error", err)
-	case code = <-codeCh:
-	case <-time.After(10 * time.Minute):
+	code, err := flow.Wait(ctx)
+	switch {
+	case err == nil:
+	case errors.Is(err, loopbackauth.ErrTimeout):
 		return control.EmitError("timeout", "timed out waiting for browser authorization")
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	default:
+		return control.EmitErrorWith("callback_error", err)
 	}
-
-	return exchangeAuthorizationCode(ctx, hubURL, code, verifier, redirectURI, scope)
+	return exchangeAuthorizationCode(ctx, hubURL, flow.TokenForm(code), scope)
 }
 
 func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName, scope string) error {
@@ -369,17 +347,12 @@ func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL
 	return control.DeviceFlowError(resp)
 }
 
-func exchangeAuthorizationCode(ctx context.Context, hubURL, code, verifier, redirectURI, requestedScope string) error {
-	form := url.Values{
-		"grant_type":    {control.GrantTypeAuthorizationCode},
-		"client_id":     {control.ControlCLIClientID},
-		"code":          {code},
-		"code_verifier": {verifier},
-		// RFC 6749 section 4.1.3 makes this REQUIRED and identical to the one
-		// the authorization used, so the hub can refuse a code intercepted at
-		// one registered address and redeemed as though it came from another.
-		"redirect_uri": {redirectURI},
-	}
+// exchangeAuthorizationCode redeems the local-redirect login's code. The form
+// is flow.TokenForm: the verifier and the redirect URI are the ceremony's own
+// (RFC 6749 section 4.1.3 makes redirect_uri REQUIRED and identical to the one
+// the authorization used), so the hub can refuse a code intercepted at one
+// registered address and redeemed as though it came from another.
+func exchangeAuthorizationCode(ctx context.Context, hubURL string, form url.Values, requestedScope string) error {
 	hc, baseURL, err := cliHTTPClient(hubURL)
 	if err != nil {
 		return control.EmitErrorWith("invalid_hub_url", err)
@@ -392,7 +365,7 @@ func exchangeAuthorizationCode(ctx context.Context, hubURL, code, verifier, redi
 	if resp.StatusCode != http.StatusOK {
 		return control.EmitError("token_exchange_failed", resp.Status)
 	}
-	return persistTokenResponse(hubURL, resp.Body, control.ControlCLIClientID, requestedScope)
+	return persistTokenResponse(hubURL, resp.Body, form.Get("client_id"), requestedScope)
 }
 
 // persistTokenResponse writes the freshly minted credential and retires the
@@ -794,83 +767,6 @@ func cliEndpoint(hubURL string) (*hubtransport.Endpoint, error) {
 	return endpoint, nil
 }
 
-// callbackHandler serves the local-redirect login's /callback. Its channel
-// sends are NON-BLOCKING: the success page is a plain 200, and a user reload
-// re-GETs this address with the same valid values. The channels hold one
-// outcome each; a duplicate that arrives after the CLI has its answer is
-// ACKNOWLEDGED here and dropped, because a blocking send parks the handler
-// and the deferred srv.Shutdown waits for it forever -- a login that already
-// succeeded would hang the CLI.
-func callbackHandler(state string, codeCh chan<- string, errCh chan<- error) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/callback" {
-			http.NotFound(w, r)
-			return
-		}
-		q := r.URL.Query()
-		gotState := q.Get("state")
-		gotCode := q.Get("code")
-		// RFC 6749 section 4.1.2.1: a redirect the hub could validate carries
-		// either a code or an error, plus the echoed state. Reading the error
-		// parameter matters because the hub redirects EVERY refusal it could
-		// validate back here -- a Deny on the consent page, an invalid_scope,
-		// a server error -- and folding those into the state-mismatch branch
-		// told a user who deliberately refused that the state check had failed,
-		// a CSRF suspicion they can neither check nor act on. The state check
-		// stays first: a mismatched state is refused as a mismatch whatever
-		// else the query carries.
-		if gotState != state {
-			http.Error(w, "invalid callback", http.StatusBadRequest)
-			select {
-			case errCh <- errors.New("callback state mismatch"):
-			default:
-			}
-			return
-		}
-		if gotErr := q.Get("error"); gotErr != "" {
-			msg := gotErr
-			if desc := q.Get("error_description"); desc != "" {
-				msg = gotErr + ": " + desc
-			}
-			http.Error(w, "authorization refused", http.StatusBadRequest)
-			select {
-			case errCh <- fmt.Errorf("authorization failed: %s", msg):
-			default:
-			}
-			return
-		}
-		if gotCode == "" {
-			http.Error(w, "invalid callback", http.StatusBadRequest)
-			select {
-			case errCh <- errors.New("callback carried neither a code nor an error"):
-			default:
-			}
-			return
-		}
-		_, _ = fmt.Fprintln(w, "Authorization received. You can close this window and return to the CLI.")
-		select {
-		case codeCh <- gotCode:
-		default:
-		}
-	})
-}
-
-// localRedirectURI binds an ephemeral port onto the REGISTERED loopback
-// redirect rather than a local literal: the hub matches the callback against
-// the registration (scheme, host and path exact; only the port free per RFC
-// 8252 section 7.3), so the path here is whatever the constant says, and a
-// future edit to the registration cannot silently break every CLI login.
-func localRedirectURI(port int) string {
-	u, err := url.Parse(control.ControlCLIRedirectURI)
-	if err != nil {
-		// Unreachable for the constant's shape; the fallback keeps the
-		// registered host and path rather than inventing a third spelling.
-		return fmt.Sprintf("http://127.0.0.1:%d/callback", port)
-	}
-	u.Host = fmt.Sprintf("127.0.0.1:%d", port)
-	return u.String()
-}
-
 // revokeBearer ends one credential. clientID is the app the credential was
 // issued to -- the hub binds the revocation to that app (RFC 7009 section
 // 2.1), so a credential minted to another registration must present its own
@@ -920,17 +816,6 @@ func revokeBearer(hubURL, bearer, clientID string) error {
 		return fmt.Errorf("revoke failed: %s", resp.Status)
 	}
 	return nil
-}
-
-func openBrowser(url string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", url).Start()
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	default:
-		return exec.Command("xdg-open", url).Start()
-	}
 }
 
 // requestedScope normalizes a --scope value into the RFC 6749 section 3.3 wire

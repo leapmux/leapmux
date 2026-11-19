@@ -96,8 +96,8 @@ func TestProxyHTTPRejectsBodyThatCannotFitResponseEnvelope(t *testing.T) {
 
 func TestProxyHTTPPreservesRepeatedResponseHeaders(t *testing.T) {
 	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Add("Set-Cookie", "first=one; Path=/")
-		w.Header().Add("Set-Cookie", "second=two; Path=/")
+		w.Header().Add("Link", "</one>; rel=preload")
+		w.Header().Add("Link", "</two>; rel=preconnect")
 		w.Header().Add("X-Repeated", "one")
 		w.Header().Add("X-Repeated", "two")
 		w.WriteHeader(http.StatusNoContent)
@@ -109,12 +109,137 @@ func TestProxyHTTPPreservesRepeatedResponseHeaders(t *testing.T) {
 
 	resp, _, err := app.ProxyHTTP(context.Background(), "GET", "/", nil, nil)
 	require.NoError(t, err)
-	require.Equal(t, []string{"first=one; Path=/", "second=two; Path=/"}, resp.Headers.Values("Set-Cookie"))
+	require.Equal(t, []string{"</one>; rel=preload", "</two>; rel=preconnect"}, resp.Headers.Values("Link"))
 	require.Equal(t, []string{"one", "two"}, resp.Headers.Values("X-Repeated"))
 }
 
+// A webview script must not read the session token from a response that slides
+// the session, so the result carries no Set-Cookie. The jar holds the cookie
+// regardless: only the caller is cut out.
+func TestProxyHTTPDropsSetCookieFromResponse(t *testing.T) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "leapmux-session=secret123; Path=/")
+		w.Header().Add("Link", "</one>; rel=preload")
+		w.Header().Add("Link", "</two>; rel=preconnect")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	proxy := mustNewProxy(t, server.URL)
+	app := NewApp("")
+	installTestConnection(app, proxy, nil, server.URL)
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	resp, _, err := app.ProxyHTTP(context.Background(), "GET", "/", nil, nil)
+	require.NoError(t, err)
+
+	cookies := proxy.client.Jar.Cookies(mustParseURL(server.URL))
+	require.Len(t, cookies, 1, "the jar must hold the session cookie")
+	assert.Equal(t, "leapmux-session", cookies[0].Name)
+	assert.Equal(t, "secret123", cookies[0].Value)
+
+	assert.Empty(t, resp.Headers.Values("Set-Cookie"), "the result must carry no Set-Cookie")
+	assert.Equal(t, []string{"</one>; rel=preload", "</two>; rel=preconnect"}, resp.Headers.Values("Link"),
+		"both Link values must remain")
+}
+
+// recordingRoundTripper answers every request with an empty 200 and keeps the
+// outgoing request, so a test can inspect the context the proxy put on it.
+type recordingRoundTripper struct {
+	req *http.Request
+}
+
+func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.req = req
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
+}
+
+// Connect-Timeout-Ms is the deadline the webview declares for its own call. The
+// proxy ends the request by that deadline plus the grace period, so a Hub that
+// stops answering cannot hold the request until the operating system gives up.
+func TestProxyHTTPSetsDeadlineFromConnectTimeoutHeader(t *testing.T) {
+	rec := &recordingRoundTripper{}
+	app := NewApp("")
+	installTestConnection(app, &HubProxy{client: &http.Client{Transport: rec}, baseURL: "http://hub.test"}, nil, "http://hub.test")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	_, _, err := app.ProxyHTTP(context.Background(), "GET", "/api/thing",
+		map[string]string{"Connect-Timeout-Ms": "30000"}, nil)
+	require.NoError(t, err)
+
+	require.NotNil(t, rec.req, "the proxy must send the request")
+	deadline, ok := rec.req.Context().Deadline()
+	require.True(t, ok, "the outgoing request's context must carry the proxy deadline")
+	// The deadline is the header's 30 seconds plus the 5-second grace, 35
+	// seconds in all. The window pins that value: a wrong wiring (the bare 30
+	// seconds, or the grace alone) lands outside it, and the gap below 35
+	// tolerates the scheduling between minting the deadline and the round trip.
+	remaining := time.Until(deadline)
+	assert.LessOrEqual(t, remaining, 35*time.Second)
+	assert.Greater(t, remaining, 32*time.Second)
+}
+
+// Without Connect-Timeout-Ms the proxy sets no deadline of its own: only the
+// caller's and the connection's lifetimes end the request.
+func TestProxyHTTPWithoutConnectTimeoutHeaderHasNoDeadline(t *testing.T) {
+	rec := &recordingRoundTripper{}
+	app := NewApp("")
+	installTestConnection(app, &HubProxy{client: &http.Client{Transport: rec}, baseURL: "http://hub.test"}, nil, "http://hub.test")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	_, _, err := app.ProxyHTTP(context.Background(), "GET", "/api/thing", nil, nil)
+	require.NoError(t, err)
+
+	require.NotNil(t, rec.req, "the proxy must send the request")
+	_, ok := rec.req.Context().Deadline()
+	assert.False(t, ok, "a request without the header must carry no deadline")
+}
+
+func TestProxyRequestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		want    time.Duration
+		wantOK  bool
+	}{
+		{
+			name:    "Connect-Timeout-Ms: 30000 adds the grace period",
+			headers: map[string]string{"Connect-Timeout-Ms": "30000"},
+			want:    35 * time.Second,
+			wantOK:  true,
+		},
+		{
+			name:    "lower-case header name is read",
+			headers: map[string]string{"connect-timeout-ms": "1"},
+			want:    5001 * time.Millisecond,
+			wantOK:  true,
+		},
+		{name: "absent header", headers: map[string]string{"Accept": "application/json"}},
+		{name: "zero value", headers: map[string]string{"Connect-Timeout-Ms": "0"}},
+		{name: "negative value", headers: map[string]string{"Connect-Timeout-Ms": "-5"}},
+		{name: "non-integer value", headers: map[string]string{"Connect-Timeout-Ms": "abc"}},
+		{name: "empty value", headers: map[string]string{"Connect-Timeout-Ms": ""}},
+		{
+			// A value this large would wrap the deadline negative and fire at
+			// once, so the proxy reads it as absent instead.
+			name:    "value past the largest representable duration",
+			headers: map[string]string{"Connect-Timeout-Ms": "9223372036854775807"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := proxyRequestTimeout(tc.headers)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestSwitchModeCancelsBlockedProxyRequest(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	requestStarted := make(chan struct{})
 	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == leapmuxv1connect.SystemServiceGetSystemInfoProcedure {

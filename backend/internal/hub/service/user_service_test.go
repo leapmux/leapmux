@@ -70,6 +70,7 @@ func (e *userTestEnv) bearerFor(t *testing.T) string {
 	secret := auth.MintAccessSecret()
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, e.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		ClientID:         oauthapp.ControlCLIClientID,

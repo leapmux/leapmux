@@ -102,7 +102,23 @@ func (f *adminGateFixture) plainUserCookie(t *testing.T) string {
 
 func TestAdminGate_AdminCookieAllowed(t *testing.T) {
 	f := setupAdminGateServer(t)
-	_, err := f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, f.adminCookie(t)))
+
+	// Without an elevation window the interceptor refuses with the marker.
+	refusedCookie := f.adminCookie(t)
+	refusedCtx, refusedInfo := connect.NewClientContext(context.Background())
+	refusedInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+refusedCookie)
+	_, err := f.adminClient.ListSettings(refusedCtx, &leapmuxv1.ListSettingsRequest{})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", refusedInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the refusal must be the one a step-up prompt can clear")
+
+	// With a current window the admin cookie passes. A FRESH login, because
+	// the interceptor caches the UserInfo it validated: stamping the row
+	// after a refused request would be invisible until that entry expired.
+	cookie := f.adminCookie(t)
+	hubtestutil.ElevateSession(t, f.st, hubtestutil.SessionIDFromCookie(t, cookie), f.adminUserID)
+	_, err = f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, cookie))
 	require.NoError(t, err)
 }
 
@@ -138,10 +154,14 @@ func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 	owner, ownerOK := userid.New(f.adminUserID)
 	require.True(t, ownerOK)
 
+	// Every minted token is elevated, so the scope assertions below are not
+	// masked by the interceptor's elevation check. The scope refusals happen
+	// at the scope rung, which runs before the elevation rung.
 	mint := func(grant string) string {
 		tokenID := id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           owner,
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -149,6 +169,7 @@ func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 			GrantedScopes:    grant,
 			SecretHash:       f.tv.HashSecret(secret),
 		}))
+		hubtestutil.ElevateAPIToken(t, f.st, tokenID, f.adminUserID)
 		return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
 	listSettings := func(bearer string) error {
@@ -188,6 +209,7 @@ func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           owner,
 		ClientID:         oauthapp.ControlCLIClientID,

@@ -13,6 +13,7 @@ export const CONTROL_CLI_CLIENT_ID = 'leapmux-control-cli'
 
 /** A syntactically valid S256 PKCE challenge: the example of RFC 7636, appendix B. */
 export const TEST_PKCE_CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM'
+export const TEST_PKCE_VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
 
 /** The loopback callback of a native test app. RFC 8252 lets such an app bind any port. */
 export const LOOPBACK_REDIRECT_URI = 'http://127.0.0.1:54321/callback'
@@ -25,13 +26,15 @@ export interface AuthorizeRequest {
   redirectUri?: string
   /** The state that the hub returns to the app. The default is `state-e2e`. */
   state?: string
+  /** The step-up target: `session:<id>` or `token:<id>`. */
+  stepUp?: string
   /** More parameters, such as `scope`. A parameter here replaces a default of the same name. */
   extra?: Record<string, string>
 }
 
 /** The parameters of an authorization request, which the authorize URL and the consent form both carry. */
 export function authorizeParams(request: AuthorizeRequest = {}): Record<string, string> {
-  return {
+  const params: Record<string, string> = {
     client_id: request.clientId ?? CONTROL_CLI_CLIENT_ID,
     response_type: 'code',
     code_challenge_method: 'S256',
@@ -41,6 +44,9 @@ export function authorizeParams(request: AuthorizeRequest = {}): Record<string, 
     installation_name: 'e2e-laptop',
     ...request.extra,
   }
+  if (request.stepUp !== undefined)
+    params.step_up = request.stepUp
+  return params
 }
 
 /** The authorization URL of the hub for one request. */
@@ -86,4 +92,49 @@ export async function listAppsViaAPI(hubUrl: string, cookie: string): Promise<st
       throw new Error('listAppsViaAPI: the ListApps reply holds an app with no client ID.')
     return app.clientId
   })
+}
+
+/**
+ * Issue a control-CLI credential through the authorization-code exchange.
+ * The caller passes the cookie of an ELEVATED session (consent requires one).
+ */
+export async function issueControlCLICredentialViaAPI(
+  hubUrl: string,
+  cookie: string,
+): Promise<{ tokenId: string }> {
+  const { fetchHub } = await import('./hubTransport')
+
+  // 1. POST the consent form with "allow" and read the code from Location.
+  const consentRes = await fetchHub(`${hubUrl}/oauth/consent`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Cookie': cookie,
+    },
+    body: new URLSearchParams(consentForm({}, 'allow')).toString(),
+    redirect: 'manual',
+  })
+  const location = consentRes.headers.get('Location')
+  if (!location)
+    throw new Error(`issueControlCLICredentialViaAPI: no Location header (${consentRes.status})`)
+  const code = new URL(location, hubUrl).searchParams.get('code')
+  if (!code)
+    throw new Error('issueControlCLICredentialViaAPI: no code in the redirect')
+
+  // 2. POST the code exchange.
+  const tokenRes = await fetchHub(`${hubUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: CONTROL_CLI_CLIENT_ID,
+      code,
+      code_verifier: TEST_PKCE_VERIFIER,
+      redirect_uri: LOOPBACK_REDIRECT_URI,
+    }).toString(),
+  })
+  const body = await tokenRes.json() as { token_id?: string }
+  if (!body.token_id)
+    throw new Error(`issueControlCLICredentialViaAPI: no token_id (${tokenRes.status})`)
+  return { tokenId: body.token_id }
 }

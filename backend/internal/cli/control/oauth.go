@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/loopbackauth"
 )
 
 // The pieces every `/oauth/...` stage shares.
@@ -48,6 +50,32 @@ const ControlCLIClientID = oauthapp.ControlCLIClientID
 // an ephemeral port of THIS address, and a local literal could drift from the
 // row the hub seeds.
 const ControlCLIRedirectURI = oauthapp.ControlCLIRedirectURI
+
+// CLIApp is this CLI's loopback ceremony identity for the app a credential is
+// bound to. The login and the step-up both call it: a credential minted to
+// another registration must redeem its code through that registration's own
+// id, or the hub answers "this grant was issued to a different app".
+func CLIApp(clientID string) loopbackauth.App {
+	app := loopbackauth.ControlCLI
+	app.ClientID = clientID
+	return app
+}
+
+// OpenBrowser opens the system browser at url. It is a variable so a test of
+// the loopback ceremony replaces it: nothing may launch a real browser
+// mid-test.
+var OpenBrowser func(url string) error = openBrowser
+
+func openBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Start()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	default:
+		return exec.Command("xdg-open", url).Start()
+	}
+}
 
 const (
 	// DeviceCodePollFallback is the poll cadence a device-flow client uses
@@ -222,18 +250,7 @@ func PostForm(
 // -- so the page that asked a user to approve a step-up specified a device
 // that matched nothing in their credential list.
 func DefaultDeviceName() string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown-host"
-	}
-	user := os.Getenv("USER")
-	if user == "" {
-		user = os.Getenv("USERNAME")
-	}
-	if user == "" {
-		return host
-	}
-	return user + "@" + host
+	return loopbackauth.InstallationName()
 }
 
 // MissingScopes reports which requested permissions a grant did not include.

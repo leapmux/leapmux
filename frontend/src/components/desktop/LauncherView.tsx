@@ -108,13 +108,12 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     try {
       if (mode() === 'solo') {
         await platformBridge.connectSolo()
-        await fadeOut()
-        props.onConnected()
       }
       else {
-        await fadeOut()
         await platformBridge.connectDistributed(hubUrl().trim())
       }
+      await fadeOut()
+      props.onConnected()
     }
     catch (err) {
       setVisible(true)

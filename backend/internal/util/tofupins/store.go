@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/noise"
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // Entry is one pinned worker's static keys plus telemetry. Fields are

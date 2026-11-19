@@ -25,7 +25,8 @@ func mintAppCredential(t *testing.T, env *apiAuthEnv, clientID string) (tokenID,
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
 		InstallationName: "laptop", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(secret),
 	}))

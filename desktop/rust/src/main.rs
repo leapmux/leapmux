@@ -27,6 +27,11 @@ mod alloc_probe;
 #[cfg(test)]
 mod asset_csp;
 
+// Test-only guards for the window config the shell builds the main window
+// from, the way `asset_csp` guards the served CSP.
+#[cfg(test)]
+mod window_config;
+
 mod sidecar_ipc;
 
 // Windows-only connect/handshake + its tests. A single module-level `cfg`
@@ -56,6 +61,10 @@ mod file_save;
 // decision that policy feeds. Its per-platform minimize hooks carry their own
 // `cfg` attributes inside the module, the way `windows_impl` does.
 mod tray;
+
+// The navigation allow-list, registered as a plugin so it covers every
+// webview the shell serves.
+mod navigation;
 
 #[cfg(target_os = "linux")]
 mod tabfix_linux;
@@ -217,13 +226,6 @@ enum PlatformMode {
     TauriMobileDistributed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum HubTransport {
-    Direct,
-    Proxy,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ShellMode {
@@ -236,7 +238,6 @@ enum ShellMode {
 #[serde(rename_all = "camelCase")]
 struct PlatformCapabilities {
     mode: PlatformMode,
-    hub_transport: HubTransport,
     tunnels: bool,
     app_control: bool,
     window_control: bool,
@@ -366,7 +367,6 @@ struct ShellState {
     shell_mode: ShellMode,
     connected: bool,
     hub_url: String,
-    local_app_url: String,
 }
 
 struct SidecarProcess {
@@ -449,11 +449,6 @@ impl DesktopShell {
     /// the other launch read instead of before it. A shell this returns holds
     /// the launcher defaults until that call completes.
     fn connect(app_handle: AppHandle) -> Result<Self, String> {
-        let local_app_url = if cfg!(debug_assertions) {
-            crate::DEV_FRONTEND_URL.to_string()
-        } else {
-            "tauri://localhost".to_string()
-        };
         let sidecar_path = resolve_sidecar_path(&app_handle)?;
         let bootstrap = bootstrap_sidecar(&sidecar_path)?;
 
@@ -476,7 +471,6 @@ impl DesktopShell {
                 shell_mode: ShellMode::Launcher,
                 connected: false,
                 hub_url: String::new(),
-                local_app_url,
             }),
         };
 
@@ -742,6 +736,18 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
                 json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
             );
         }
+        proto::event::Payload::BrowserAuthResult(result) => {
+            // The one result of one browser-auth ceremony, forwarded
+            // verbatim: the webview resolves the ceremony's promise from it.
+            let _ = app_handle.emit(
+                contracts_generated::EVENT_BROWSER_AUTH_RESULT,
+                json!({
+                    "ceremonyId": result.ceremony_id,
+                    "ok": result.ok,
+                    "failure": result.failure,
+                }),
+            );
+        }
         proto::event::Payload::SidecarLog(log) => {
             let payload = json!({
               "level": log.level,
@@ -756,11 +762,13 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
 
 // --- Static helpers ---
 
+// No transport field on `PlatformCapabilities`: every desktop mode reaches
+// the Hub through the shell's proxy, so the webview derives the transport
+// from the platform it runs on instead of reading a reported value.
 fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
     match state.shell_mode {
         ShellMode::Solo | ShellMode::Launcher => PlatformCapabilities {
             mode: PlatformMode::TauriDesktopSolo,
-            hub_transport: HubTransport::Proxy,
             tunnels: true,
             app_control: true,
             window_control: true,
@@ -769,7 +777,6 @@ fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
         },
         ShellMode::Distributed => PlatformCapabilities {
             mode: PlatformMode::TauriDesktopDistributed,
-            hub_transport: HubTransport::Direct,
             tunnels: true,
             app_control: true,
             window_control: true,
@@ -942,10 +949,12 @@ async fn connect_solo(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String>
     Ok(())
 }
 
+/// Connect to a remote Hub. The window keeps showing the bundled frontend:
+/// every mode reaches the Hub through the shell's proxy, so no navigation
+/// follows the connect.
 #[tauri::command]
 async fn connect_distributed(
     shell: State<'_, Arc<DesktopShell>>,
-    window: WebviewWindow,
     hub_url: String,
 ) -> Result<(), String> {
     let resp = check_response(
@@ -956,14 +965,7 @@ async fn connect_distributed(
             .await?,
     )?;
     let info = sidecar_info_from_response(resp, "connect_distributed")?;
-    let normalized_hub_url = info.hub_url.clone();
     apply_sidecar_info(&shell.state, info);
-
-    let target_url =
-        Url::parse(&normalized_hub_url).map_err(|err| format!("parse hub url: {err}"))?;
-    window
-        .navigate(target_url)
-        .map_err(|err| format!("navigate to hub: {err}"))?;
     Ok(())
 }
 
@@ -1343,8 +1345,11 @@ async fn switch_mode(
     let (info, cleanup_errors) = lifecycle_from_response(response)?;
     apply_sidecar_info(&shell.state, info);
 
-    let local_app_url = recover(&shell.state).local_app_url.clone();
-    let (target_url, cleanup_message) = launcher_url(&local_app_url, &cleanup_errors)?;
+    let window_url = window
+        .url()
+        .map_err(|err| format!("read the window url: {err}"))?;
+    let base_url = launcher_base_url(&window_url);
+    let (target_url, cleanup_message) = launcher_url(base_url.as_str(), &cleanup_errors)?;
     if let Err(err) = window.navigate(target_url) {
         if cleanup_message.is_empty() {
             return Err(format!("navigate to launcher: {err}"));
@@ -1354,6 +1359,21 @@ async fn switch_mode(
         ));
     }
     Ok(())
+}
+
+/// The launcher's own origin, derived from the URL the window holds.
+///
+/// The window always shows the bundled frontend -- on the app origin in a
+/// release build, on the dev server in a dev build -- so its origin IS the
+/// launcher URL, and no stored copy can drift from it. The path, query and
+/// fragment of the current URL carry the route the user is on, not the
+/// launcher, so they are dropped here.
+fn launcher_base_url(window_url: &Url) -> Url {
+    let mut base = window_url.clone();
+    base.set_path("/");
+    base.set_query(None);
+    base.set_fragment(None);
+    base
 }
 
 fn launcher_url(local_app_url: &str, cleanup_errors: &[String]) -> Result<(Url, String), String> {
@@ -1623,6 +1643,74 @@ fn reset_webview_zoom(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String>
     shell.set_zoom(1.0)
 }
 
+// --- Browser auth commands ---
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserAuthStart {
+    ceremony_id: String,
+    authorize_url: String,
+}
+
+#[tauri::command]
+async fn start_browser_sign_in(
+    shell: State<'_, Arc<DesktopShell>>,
+) -> Result<BrowserAuthStart, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::StartBrowserAuth(
+                proto::StartBrowserAuthRequest {
+                    kind: proto::BrowserAuthKind::SignIn as i32,
+                },
+            ))
+            .await?,
+    )?;
+    match resp.result {
+        Some(proto::response::Result::StartBrowserAuth(start)) => Ok(BrowserAuthStart {
+            ceremony_id: start.ceremony_id,
+            authorize_url: start.authorize_url,
+        }),
+        _ => Err("unexpected response for start_browser_sign_in".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn start_browser_step_up(
+    shell: State<'_, Arc<DesktopShell>>,
+) -> Result<BrowserAuthStart, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::StartBrowserAuth(
+                proto::StartBrowserAuthRequest {
+                    kind: proto::BrowserAuthKind::StepUp as i32,
+                },
+            ))
+            .await?,
+    )?;
+    match resp.result {
+        Some(proto::response::Result::StartBrowserAuth(start)) => Ok(BrowserAuthStart {
+            ceremony_id: start.ceremony_id,
+            authorize_url: start.authorize_url,
+        }),
+        _ => Err("unexpected response for start_browser_step_up".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn cancel_browser_auth(
+    shell: State<'_, Arc<DesktopShell>>,
+    ceremony_id: String,
+) -> Result<(), String> {
+    check_response(
+        shell
+            .send_request_async(proto::request::Method::CancelBrowserAuth(
+                proto::CancelBrowserAuthRequest { ceremony_id },
+            ))
+            .await?,
+    )?;
+    Ok(())
+}
+
 // --- Window/app helpers ---
 
 fn open_main_web_inspector(app: &AppHandle) {
@@ -1835,7 +1923,10 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![tray::AUTOSTART_ARG]),
-        ));
+        ))
+        // The navigation allow-list covers every webview, not just the main
+        // window; see `navigation::plugin`.
+        .plugin(navigation::plugin());
 
     // Linux and Windows render the app menu as a hamburger dropdown inside
     // the custom titlebar (`CustomTitlebar.tsx`). Only macOS uses a native
@@ -1902,6 +1993,25 @@ fn main() {
             }
         })
         .setup(|app| {
+            // The `main` window is declared with `"create": false`, so the
+            // shell builds it here. `on_new_window` refuses every new window
+            // the PAGE requests (`window.open`, a `target="_blank"` link).
+            // The `notice` licenses window the frontend opens is created
+            // through the Tauri API instead, and the navigation allow-list
+            // covers its webview too.
+            let window_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == MAIN_WINDOW_LABEL)
+                .ok_or_else(|| {
+                    format!("tauri.conf.json must declare the {MAIN_WINDOW_LABEL} window")
+                })?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), window_config)?
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                .build()?;
+
             // titleBarStyle "Overlay" is a macOS-only option. On Linux and
             // Windows the native decorations are left in place by default,
             // which causes the OS title bar to render alongside our custom
@@ -1976,30 +2086,16 @@ fn main() {
             let launch_state = tray::install(app.handle(), &cached, autostart_launch);
 
             let runtime_state = shell.runtime_state();
-            if runtime_state.connected && runtime_state.shell_mode == ShellMode::Distributed {
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let target_url = Url::parse(&runtime_state.hub_url)
-                        .map_err(|err| format!("parse reattach hub url: {err}"))?;
-                    window
-                        .navigate(target_url)
-                        .map_err(|err| format!("navigate to reattached hub: {err}"))?;
-                }
-                // The shell reveals the window on THIS route, because
-                // `LauncherView` -- the only caller of `restoreWindowGeometry`
-                // -- never mounts once the webview navigates to the hub. It
-                // also carries the saved geometry for the same reason: nothing
-                // else sizes the window here, so without it every reattach
-                // launch opens at the built-in default.
-                //
-                // IMMEDIATELY, and not once the hub page loads. `navigate` only
-                // requests the navigation, so the window maps before the first
-                // byte arrives and the user sees an empty window for the length
-                // of the page load. That is the accepted trade: the load is
-                // over a NETWORK and can be slow, can serve an error, or can
-                // never finish, and a hub that is unreachable would then leave
-                // no window at all until the safety net fires five seconds in.
-                // A window the user can act on -- switch mode, quit -- beats a
-                // painted one that may never come.
+            if runtime_state.connected {
+                // A launch that finds a live session enters the session
+                // surface directly and never mounts `LauncherView` -- the only
+                // caller of `restoreWindowGeometry` and the only reader of the
+                // launch decision through `get_startup_info`. The shell
+                // therefore applies the decision here, in every mode, and
+                // navigates nowhere: the window already holds the bundled
+                // frontend. Without it, such a launch would open at the
+                // built-in default size and the visibility the decision asks
+                // for would reach nothing.
                 //
                 // Through `take()`, so the decision is CONSUMED here: a later
                 // "Switch mode..." navigates back to the launcher, which mounts
@@ -2079,6 +2175,9 @@ fn main() {
             restart_app,
             save_window_geometry,
             set_desktop_behavior,
+            start_browser_sign_in,
+            start_browser_step_up,
+            cancel_browser_auth,
             quit_app,
             open_web_inspector,
             set_menu_item_accelerator,
@@ -2627,7 +2726,6 @@ mod tests {
             shell_mode: ShellMode::Launcher,
             connected: false,
             hub_url: String::new(),
-            local_app_url: "http://localhost:4328".to_string(),
         })
     }
 
@@ -2702,6 +2800,60 @@ mod tests {
 
         assert!(message.is_empty());
         assert!(url.query().is_none());
+    }
+
+    // `switch_mode` navigates to the launcher root of the URL the window
+    // holds, so the route the user is on never survives the switch and the
+    // origin -- app protocol or dev server -- needs no stored copy.
+    #[test]
+    fn launcher_base_url_strips_the_path_query_and_fragment() {
+        let base = launcher_base_url(&Url::parse("http://tauri.localhost/app?x=1#f").expect("url"));
+        assert_eq!(base.as_str(), "http://tauri.localhost/");
+
+        let base = launcher_base_url(&Url::parse("tauri://localhost/settings").expect("url"));
+        assert_eq!(base.as_str(), "tauri://localhost/");
+    }
+
+    #[test]
+    fn launcher_url_on_the_launcher_base_carries_one_cleanup_message() {
+        let base = launcher_base_url(&Url::parse("http://tauri.localhost/app?x=1#f").expect("url"));
+        let (url, message) = launcher_url(base.as_str(), &["lease release failed".to_string()])
+            .expect("valid launcher url");
+
+        assert_eq!(message, "lease release failed");
+        assert_eq!(
+            url.as_str(),
+            "http://tauri.localhost/?cleanup_error=lease+release+failed"
+        );
+    }
+
+    // The transport is derivable from the platform -- every desktop mode
+    // reaches the Hub through the shell's proxy -- so the capabilities carry
+    // no transport field for the webview to read.
+    #[test]
+    fn capabilities_of_each_mode_carry_no_transport_field() {
+        for (shell_mode, local_solo) in [
+            (ShellMode::Launcher, true),
+            (ShellMode::Solo, true),
+            (ShellMode::Distributed, false),
+        ] {
+            let state = ShellState {
+                shell_mode,
+                connected: false,
+                hub_url: String::new(),
+            };
+            let json =
+                serde_json::to_value(capabilities_for(&state)).expect("serialize the capabilities");
+            assert!(
+                json.get("hubTransport").is_none(),
+                "{shell_mode:?}: the transport must not be reported"
+            );
+            assert_eq!(
+                json.get("localSolo"),
+                Some(&serde_json::Value::Bool(local_solo)),
+                "{shell_mode:?}: local_solo is true for solo and launcher only"
+            );
+        }
     }
 
     #[test]

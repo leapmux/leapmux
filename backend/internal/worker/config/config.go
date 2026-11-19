@@ -18,8 +18,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/util/useronly"
 )
 

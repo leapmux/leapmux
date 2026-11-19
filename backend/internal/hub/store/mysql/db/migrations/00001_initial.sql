@@ -135,6 +135,10 @@ CREATE TABLE user_sessions (
     elevation_expires_at  DATETIME(3),
     user_agent      TEXT NOT NULL,
     ip_address      VARCHAR(255) NOT NULL DEFAULT '',
+    -- The built-in app that this session was issued to through the browser
+    -- handoff. NULL for a session that signed in on the Hub's own page. No
+    -- foreign key: only the token exchange of a built-in app writes it.
+    issued_to_client VARCHAR(255),
     -- Both or neither: the schema requires the pair, and Go also validates it.
     -- Half a pair is not a state the rest of the hub should have to consider:
     -- a deadline with no anchor is one the slide statement cannot clamp,
@@ -526,6 +530,10 @@ CREATE TABLE api_tokens (
     installation_name             VARCHAR(255) NOT NULL,
     -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
     granted_scopes                TEXT NOT NULL,
+    -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
+    -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
+    -- 3 administrator. No DEFAULT: every mint states it.
+    issuance                      INT NOT NULL CHECK (issuance BETWEEN 1 AND 3),
     secret_hash                   VARBINARY(64) NOT NULL,
     refresh_hash                  VARBINARY(64),
     previous_refresh_hash         VARBINARY(64),
@@ -662,6 +670,15 @@ CREATE TABLE oauth_authorization_codes (
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
     minted_token_id       VARCHAR(255),
+    -- The session that the exchange issued, for an app whose code redeems
+    -- into a session. It serves the replay remedy as minted_token_id does.
+    minted_session_id     VARCHAR(255),
+    -- The credential that this code VERIFIES, when it verifies one rather
+    -- than issuing one. At most one is set. No foreign key, for the reason
+    -- device_authorizations.elevate_token_id gives.
+    step_up_session_id    VARCHAR(255),
+    step_up_token_id      VARCHAR(255),
+    CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;

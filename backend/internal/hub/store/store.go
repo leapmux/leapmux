@@ -763,6 +763,10 @@ type OAuthAuthorizationCodeStore interface {
 	// MarkMinted records which credential the exchange produced, so a later
 	// replay of the same code can revoke it.
 	MarkMinted(ctx context.Context, code, tokenID string) error
+	// MarkMintedSession records which session the exchange issued, for an app
+	// whose code redeems into a session. It serves the replay remedy as
+	// MarkMinted does.
+	MarkMintedSession(ctx context.Context, code, sessionID string) error
 	// ConsumeActiveForUserClient spends this account's outstanding codes for
 	// an app -- the DISCONNECT path, which must not leave a consent granted
 	// seconds before it redeemable into a fresh credential.

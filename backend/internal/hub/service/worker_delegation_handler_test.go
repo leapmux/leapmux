@@ -485,7 +485,8 @@ func TestWorkerDelegation_Revoke_HappyPath(t *testing.T) {
 	user, lease := warmCachedBearerLease(t, env.probe, env.cache, access)
 	keeperID, keeperSecret := id.Generate(), auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: keeperID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       keeperID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "unrelated", GrantedScopes: "workspace:read", SecretHash: env.validator.HashSecret(keeperSecret),
 	}))
 	keeper := auth.FormatBearer(auth.BearerKindAPI, keeperID, keeperSecret)

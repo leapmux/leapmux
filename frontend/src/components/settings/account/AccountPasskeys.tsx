@@ -15,6 +15,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
 import { elevationPrompting } from '~/lib/elevationPrompt'
 import { formatErrorMessage } from '~/lib/errors'
+import { openHubPage } from '~/lib/hubSite'
 import {
   credentialIdFromRegistrationJson,
   loadPasskeys,
@@ -378,7 +379,17 @@ export const AccountPasskeys: Component = () => {
           <p class={listStyles.credentialListEmpty}>No passkeys registered yet.</p>
         </Show>
         <Show when={blockedReason()}>
-          {reason => <Alert variant="warning">{reason()}</Alert>}
+          {reason => (
+            <Alert variant="warning">
+              {reason()}
+              <Show when={passkeyBlocker() === 'needs-browser'}>
+                {' '}
+                <button type="button" onClick={() => void openHubPage('/?prefs=account')}>
+                  Open in browser
+                </button>
+              </Show>
+            </Alert>
+          )}
         </Show>
         <For each={passkeys()}>
           {passkey => (

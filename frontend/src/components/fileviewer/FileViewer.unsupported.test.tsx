@@ -83,6 +83,7 @@ vi.mock('~/context/PreferencesContext', () => ({
 // Web-mode by default — these tests target the browser anchor-click
 // download flow.
 vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
   isTauriApp: () => false,
   platformBridge: {
     revealInFileManager: () => Promise.resolve(),

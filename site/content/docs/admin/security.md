@@ -7,9 +7,9 @@ weight: 9
 
 This chapter is the security reference for administrators and for security-conscious users. It describes the trust model, the end-to-end encryption (E2EE) of Frontend↔Worker traffic, and Worker identity pinning. It also covers what changes in solo mode. The last section lists the steps to operate LeapMux safely.
 
-**The Hub is trusted for identity and code.** End-to-end encryption protects content from a Hub that only observes its database, logs, and relayed traffic.
+**The Hub is trusted for identity.** End-to-end encryption protects content from a Hub that only observes its database, logs, and relayed traffic. A browser runs the Frontend that the Hub serves, so it trusts the Hub for code as well. The desktop app runs its bundled Frontend in both modes, so no Hub can serve it code.
 
-It does not protect against a Hub that acts, or against anyone who can sign in at the Hub as you. The Worker accepts the caller identity that the Hub states. The browser runs the code that the Hub serves.
+It does not protect against a Hub that acts, or against anyone who can sign in at the Hub as you. The Worker accepts the caller identity that the Hub states.
 
 **Frontend↔Worker content is opaque to a Hub that only relays traffic:**
 
@@ -31,7 +31,7 @@ It does not protect against a Hub that acts, or against anyone who can sign in a
 
 ## The trust model
 
-LeapMux is built around a single, deliberate trust boundary. In distributed mode the Hub may be operated by a teammate, a platform team, or a hosting provider — someone other than you. The design withstands a curious Hub. A compromised Hub can open its own channel to any of your Workers as you, and it can serve a modified Frontend.
+LeapMux is built around a single, deliberate trust boundary. In distributed mode the Hub may be operated by a teammate, a platform team, or a hosting provider — someone other than you. The design withstands a curious Hub. A compromised Hub can open its own channel to any of your Workers as you, and it can serve a modified Frontend to a browser. The desktop app runs its bundled Frontend in both modes, so a Hub cannot serve it code. The Hub stays trusted for identity in every client.
 
 There are three protocol paths, each with a different security posture:
 
@@ -44,7 +44,7 @@ There are three protocol paths, each with a different security posture:
 The key consequence: control-plane data (accounts, workspace records, layout, Worker registration) reaches the Hub in a form it can read, while everything you actually do inside an agent or terminal travels inside an encrypted channel the Hub merely forwards.
 
 {{< callout type="info" >}}
-"End-to-end" here means the two ends are your browser (the Frontend) and the Worker daemon. The Hub is the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) for how these components fit together and [Running LeapMux](/docs/admin/running-leapmux/) for how to launch each one.
+"End-to-end" here means the two ends are the Frontend (a browser or the desktop app) and the Worker daemon. The Hub is the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) for how these components fit together and [Running LeapMux](/docs/admin/running-leapmux/) for how to launch each one.
 {{< /callout >}}
 
 ## What the Hub can and cannot see
@@ -216,7 +216,7 @@ The Frontend pins this identity **TOFU** ("trust on first use"). On the first co
 - **Match** — the connection proceeds silently.
 - **Mismatch** — the Frontend stops and asks you to decide. Reject once and that Worker is refused for the rest of the browser session without prompting again; reload to be asked afresh.
 
-Pinning stops one attack: a Hub substituting a Worker key in a channel that your browser opens. The substituted key differs from the pin, so the browser asks you to decide. Pinning does not stop a Hub that opens its own channel as you, or serves modified Frontend code that reads your pins.
+Pinning stops one attack: a Hub substituting a Worker key in a channel that your browser opens. The substituted key differs from the pin, so the browser asks you to decide. Pinning does not stop a Hub that opens its own channel as you, or serves modified Frontend code that reads your pins. That limit holds for a browser. The desktop app runs its bundled Frontend and keeps its pins in its own storage, one store per Hub, so a Hub cannot serve it code that reads them.
 
 The Hub pins the keys too, so a stolen Worker auth token alone cannot attach other keys to that Worker — not even for a client that has no pin yet. The Worker's public keys are public, though, so a holder of the token can still do these things:
 
@@ -247,7 +247,7 @@ The fingerprints are **4 dash-joined English words** derived from a hash of the 
 
 The desktop app writes its Worker's line to standard error, prefixed with `desktop-sidecar: `. To see it, start the app from a terminal: on macOS, run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"`; on Linux, run the AppImage, or `leapmux-desktop`, the program the `.deb` package installs. A Windows release build has no console. In solo mode, the desktop app's own local Worker runs in the same process as its Hub. A key change for that local Worker cannot come from the network: it means the app's stored pins or data changed.
 
-In the browser, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/). The desktop app's tunnels keep no pin.
+In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/). The desktop app's tunnels keep no pin.
 
 - Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove --target-worker-id=<id>`.
 - `leapmux control` CLI pins, cleared with `leapmux control worker pins remove --worker-id=<id>`.
@@ -314,7 +314,11 @@ The verified client IP controls address-keyed rate limits and new session record
 
 A sensitive account change needs a **recently proven factor**, not just a live session cookie. Proving one **elevates** the session for {{< duration elevation-window >}}. Every sensitive action then succeeds without another prompt, and each one slides that window forward. An elevation is capped at **{{< duration elevation-cap >}}** from the instant the factor was proven, whatever happens in between, so an all-day session ends the day un-elevated and a stolen cookie cannot keep sliding the window forward.
 
+A sign-in with a password or a passkey proves a factor on its own and starts a window of {{< duration fresh-authentication-window >}}. Every rule on this page then applies to that window as to any other: nothing asks for a second proof inside it, each sensitive action slides it forward, and the cap still counts from the sign-in. A cookie stolen inside those minutes holds a window, and it can slide that window for up to {{< duration elevation-cap >}}.
+
 In the browser, a refused action opens the **Verify your identity** prompt above whatever dialog raised it — the form keeps its input, and the action continues on its own once a factor is proven. [Accounts & Authentication](/docs/using/accounts/#managing-your-profile) shows what this looks like from the Preferences dialog; this section is the rule it implements.
+
+In the desktop app's remote-Hub mode, a refused action sends you to the browser instead: the step-up dialog offers **Verify in your browser**, and the proof happens on the Hub's page there. A desktop ceremony can also elevate the browser's own session for the full {{< duration elevation-window >}}, because the consent page requires it: a desktop sign-in or step-up that finds the browser without a window sends it through `/elevate`, which gives that browser session the full window too.
 
 These actions require elevation:
 
@@ -330,11 +334,13 @@ Your account email and a linked provider are on that list because both are recov
 
 An app **registration** is on it for a similar reason, one layer out. Editing one rewrites where a consent redirects, so it diverts an authorization code already in flight to an address the editor chose — the most dangerous single write in the feature. **Disconnecting** an app is deliberately not on the list, and neither is retiring a registration: both only reduce what an app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
-An administrator's own surface takes the same rule, and one property decides how strictly: **does the verb create a new way into an account?** Creating a user, resetting somebody's password, changing an account's administration, and writing somebody's email address or its verified flag all do.
+An administrator's own surface takes the same rule — **every Administration procedure needs a current window**, reads included. The read verbs of `leapmux control admin` ask for a proof like the writes do, and an access-reducing verb — `session revoke`, `api-token revoke`, and the like — asks before it acts. A read needs the window and does not slide it. One thing stays readable without a window: the list of Hub-wide app registrations, which is outside the Admin procedures the rule follows. Its sensitive writes still need the window.
+
+Within that, one property decides how strictly: **does the verb create a new way into an account?** Creating a user, resetting somebody's password, changing an account's administration, and writing somebody's email address or its verified flag all do.
 
 Each of those refuses a command-line credential outright, however recently that credential verified — it hands out authority the credential itself did not have, and the browser session that would have to verify it is the granting one. The administration change refuses in **both** directions, because one Hub procedure carries the grant and the revoke, so an emergency demotion needs a browser too.
 
-Issuing a command-line credential also creates a new way in, and it is the single exception: an **elevated** command-line credential is admitted, so a headless service account can still renew. What limits it instead is the credential it mints — that one does not renew and expires no later than its issuer. Every other elevated admin verb accepts an elevated command-line credential: deleting a user, editing a display name, writing a Hub setting, and writing an identity provider. See [App credentials](#app-credentials).
+Issuing a command-line credential also creates a new way in, and it is the single exception: an **elevated** command-line credential is admitted, so a headless service account can still renew — with a person present to approve the window. What limits it instead is the credential it mints — that one does not renew and expires no later than its issuer. Every other elevated admin verb accepts an elevated command-line credential: deleting a user, editing a display name, writing a Hub setting, and writing an identity provider. See [App credentials](#app-credentials).
 
 Hub settings are on the list for a reason of scale rather than of ownership: several of those keys *are* the controls this document describes — `signup_enabled`, the captcha configuration, the rate limits, SMTP, and the `public_url` that passkey sign-in derives its relying party from. A stolen administrator cookie that could turn those off would buy more than any single account change the window already guards.
 
@@ -363,7 +369,11 @@ Inside a LeapMux agent or terminal tab the question does not arise: a tab holds 
 
 ### Verifying a command-line credential
 
-The ceremony is the device-code ceremony: the CLI asks, the Hub returns an address and a short code, a person approves it in a browser, and the CLI's refused command runs. `leapmux control` does all of that for you — a refused command prints the address and waits.
+How the proof runs depends on how the credential was issued. `leapmux control` picks the ceremony for you, and a refused command starts it.
+
+A credential from the default `leapmux control auth login` verifies through the **loopback ceremony**. A refused command opens a browser on the CLI's own machine, you prove the factor on the Hub's page there, and the command runs. The completion lands on a loopback address, so the browser has to be on that machine.
+
+A credential from `leapmux control auth login --device-code`, or one an administrator issued with `leapmux control admin api-token issue`, verifies through the **device-code ceremony**: the CLI prints an address and a short code, a person approves it in a browser, and the refused command runs.
 
 ```
 $ leapmux control admin settings set public_url https://hub.example.com
@@ -375,9 +385,9 @@ Or open: https://hub.example.com/oauth/device?user_code=7XC-8DZ
 
 Three properties are worth stating:
 
-- **The credential cannot approve its own request.** The approval page accepts a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
+- **The credential cannot approve its own request.** Both ceremonies accept a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
 - **Approving grants a window, not a credential.** Nothing is minted, nothing on disk changes, and no "an app was authorized" mail is sent. The window is the same {{< duration elevation-window >}} a browser session gets, every command that uses it slides it forward, and it is capped the same way.
-- **The browser can be on another machine.** This is the flow SSH sessions and containers already use to sign in, so a headless host verifies from a laptop.
+- **A credential from the default login cannot be verified over SSH.** Its ceremony needs a browser on the CLI's own machine, and over SSH there is none. Sign in again with `--device-code` there: the device-code ceremony's browser can be on another machine, which is the flow headless hosts and containers use.
 
 A fully unattended job cannot answer a prompt, and no design makes it able to. Give one a narrowly scoped, short-lived credential instead, and expect to re-verify when a person is present.
 
@@ -385,7 +395,7 @@ A fully unattended job cannot answer a prompt, and no design makes it able to. G
 
 An account with **neither a password nor a passkey** holds no factor of its own. A linked provider still elevates such an account — that is the third row of the table above. An account that holds no linked provider either, the last row, cannot elevate at all, so a rule that demanded elevation before it could attach its first credential would lock it out permanently.
 
-Two rules therefore admit the **first** password or passkey, and they are siblings. The Hub tries the elevated rule first, for every account shape: a session that already proved a factor is admitted at once, and a provider re-authentication counts as that proof. Only when the session is not elevated does the Hub apply the first-credential rule — an authentication from the last **five minutes**, plus a durable identity (a verified email or a linked OAuth provider).
+Two rules therefore admit the **first** password or passkey, and they are siblings. The Hub tries the elevated rule first, for every account shape: a session that already proved a factor is admitted at once, and a provider re-authentication counts as that proof. Only when the session is not elevated does the Hub apply the first-credential rule — an authentication from the last **{{< duration fresh-authentication-window >}}**, plus a durable identity (a verified email or a linked OAuth provider).
 
 A cookie captured earlier in the day therefore cannot attach a credential that outlives it, and the remedy is self-service: signing in again produces a new session.
 
@@ -517,6 +527,7 @@ The facts an administrator looks up most often. The full crypto primitives are i
 | Solo mode default bind | `127.0.0.1:4327` plus the local socket. The socket needs no sign-in. TCP callers sign in as `solo` once a password exists; before that, they can only set the first password. |
 | At-rest secret key file | `encryption.key` (mode `0600`, default `<DataDir>/encryption.key`) |
 | Session elevation window | {{< duration elevation-window digits >}}, extended by each sensitive action; {{< duration elevation-cap digits >}} maximum from the proven factor |
+| Fresh sign-in window | {{< duration fresh-authentication-window digits >}}, the window a sign-in with a password or a passkey starts |
 | App credential lifetime | Access token {{< duration access-token digits >}} (renewed for you) · refresh {{< duration refresh-token digits >}} · {{< duration absolute-cap digits >}} absolute |
 | OAuth code lifetimes | {{< duration authorization-code-ttl digits >}} (authorization code) · {{< duration device-code-ttl digits >}} (device code) |
 

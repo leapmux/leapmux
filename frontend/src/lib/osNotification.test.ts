@@ -7,6 +7,7 @@ vi.mock('~/components/common/Toast', () => ({
 }))
 
 vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
   isTauriApp: vi.fn(() => false),
   platformBridge: {
     requestNotificationPermission: vi.fn(),

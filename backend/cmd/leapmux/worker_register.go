@@ -8,11 +8,11 @@ import (
 
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/logging"
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/lifecycle"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // runWorkerRegister registers the worker and exits. It never starts the

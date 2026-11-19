@@ -45,6 +45,7 @@ func cliCredential(t *testing.T, env *apiAuthEnv, name string) (tokenID, bearer 
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceDeviceCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,

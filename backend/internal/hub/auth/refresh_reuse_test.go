@@ -44,6 +44,7 @@ func mintAPIToken(t *testing.T, st store.Store, v *auth.TokenValidator, userID s
 	currentSecret = auth.MintAccessSecret()
 	refreshSecret = auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,

@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/lifecycle"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // The real CLI owns definition and specification publication in this suite.

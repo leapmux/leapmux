@@ -13,6 +13,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -266,12 +268,24 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	// authorization code could widen what the user consented to, or label the
 	// credential as the victim's own laptop in the connected-app list and in the
 	// issuance notice while the consent page showed something else.
+
+	// Three paths: a step-up code verifies a credential, a session code issues
+	// a session, and any other code mints an app credential.
+	if row.StepUpSessionID != "" || row.StepUpTokenID != "" {
+		h.handleStepUpCodeExchange(w, r, row, app)
+		return
+	}
+	if oauthapp.IssuesSession(app.ClientID) {
+		h.handleSessionCodeExchange(w, r, row, app, grantUID, scopes)
+		return
+	}
 	h.issueTokenResponse(w, r, consentedGrant{
 		id:               code,
 		userID:           grantUID,
 		app:              app,
 		installationName: row.InstallationName,
 		scopes:           scopes,
+		issuance:         store.APITokenIssuanceAuthorizationCode,
 		invalidGrantMsg:  "code expired or already consumed",
 		internalMsg:      "authorization code token issuance failed",
 		consume: func(tx store.Store) error {
@@ -290,6 +304,126 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			return nil
 		},
 	})
+}
+
+// handleStepUpCodeExchange redeems a step-up code: it stamps the step-up
+// window on the credential the code identifies, and issues nothing.
+func (h *OAuthServerHandler) handleStepUpCodeExchange(
+	w http.ResponseWriter, r *http.Request, row *store.OAuthAuthorizationCode, app *store.OAuthClient,
+) {
+	userInfo, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+		Store:     h.store,
+		Validator: h.validator,
+	})
+	if err != nil && !errors.Is(err, auth.ErrHTTPUnauthenticated) {
+		writeInternalError(w, "step-up authentication failed", err)
+		return
+	}
+	if err != nil || userInfo == nil {
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "authentication required")
+		return
+	}
+	targetSessionID, targetTokenID, ok := userInfo.Credential.ElevatableRow()
+	if !ok {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential cannot be elevated")
+		return
+	}
+	if row.StepUpSessionID != "" && targetSessionID != row.StepUpSessionID {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential does not match the step-up target")
+		return
+	}
+	if row.StepUpTokenID != "" && targetTokenID != row.StepUpTokenID {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential does not match the step-up target")
+		return
+	}
+	if userInfo.ID.String() != row.UserID {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "step-up target belongs to another user")
+		return
+	}
+	uid, uidOK := userid.New(row.UserID)
+	if !uidOK {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "step-up target belongs to another user")
+		return
+	}
+	var stampErr error
+	txErr := h.store.RunInUserAuthTransaction(r.Context(), uid, func(tx store.Store) error {
+		if _, err := tx.OAuthAuthorizationCodes().Consume(r.Context(), row.Code, h.now().UTC()); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errAuthorizationCodeUnavailable
+			}
+			return fmt.Errorf("consume authorization code: %w", err)
+		}
+		if row.StepUpSessionID != "" {
+			if _, _, err := elevateSessionRow(r.Context(), tx, row.StepUpSessionID, uid, h.now().UTC()); err != nil {
+				stampErr = err
+				return err
+			}
+		} else {
+			if err := h.elevateGrantedToken(r.Context(), tx, row.StepUpTokenID, uid); err != nil {
+				stampErr = err
+				return err
+			}
+		}
+		return nil
+	})
+	if txErr != nil {
+		if errors.Is(txErr, errAuthorizationCodeUnavailable) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
+			return
+		}
+		if stampErr != nil {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that credential is no longer available")
+			return
+		}
+		writeInternalError(w, "step-up transaction failed", txErr)
+		return
+	}
+	h.lifecycle.UserInfoInvalidated(row.UserID)
+	writeJSON(w, http.StatusOK, map[string]bool{"elevated": true})
+}
+
+// handleSessionCodeExchange redeems a session code: it creates a session for
+// the user and sets the session cookie. Used by the desktop handoff.
+func (h *OAuthServerHandler) handleSessionCodeExchange(
+	w http.ResponseWriter, r *http.Request, row *store.OAuthAuthorizationCode,
+	app *store.OAuthClient, grantUID userid.UserID, scopes authscope.ScopeSet,
+) {
+	var created *auth.CreatedSession
+	txErr := h.store.RunInUserAuthTransaction(r.Context(), grantUID, func(tx store.Store) error {
+		if _, err := tx.OAuthAuthorizationCodes().Consume(r.Context(), row.Code, h.now().UTC()); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errAuthorizationCodeUnavailable
+			}
+			return fmt.Errorf("consume authorization code: %w", err)
+		}
+		sess, err := auth.CreateSession(r.Context(), tx, h.sessionHasher, grantUID,
+			settings.SessionDuration(h.snapshot(r.Context())),
+			auth.SessionMeta{
+				UserAgent:      app.ClientName + " on " + row.InstallationName,
+				IssuedToClient: app.ClientID,
+			})
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		created = &sess
+		if err := tx.OAuthAuthorizationCodes().MarkMintedSession(r.Context(), row.Code, sess.ID); err != nil {
+			return fmt.Errorf("record authorization code session: %w", err)
+		}
+		return nil
+	})
+	if txErr != nil {
+		if errors.Is(txErr, errAuthorizationCodeUnavailable) {
+			h.revokeReplayedCode(r.Context(), row.Code, app)
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
+			return
+		}
+		writeInternalError(w, "authorization code session issuance failed", txErr)
+		return
+	}
+	secure := h.secureCookies(r.Context())
+	auth.BuildSessionCookie(created.Token, created.ExpiresAt, secure)
+	http.SetCookie(w, auth.BuildSessionCookie(created.Token, created.ExpiresAt, secure))
+	writeJSON(w, http.StatusOK, map[string]bool{"signed_in": true})
 }
 
 // revokeReplayedCode applies RFC 6749 section 4.1.2's remedy for a code
@@ -342,6 +476,10 @@ type consentedGrant struct {
 	app              *store.OAuthClient
 	installationName string
 	scopes           authscope.ScopeSet
+	// issuance records which ceremony this grant belongs to: an
+	// authorization-code exchange passes AUTHORIZATION_CODE, and a device-code
+	// exchange passes DEVICE_CODE.
+	issuance store.APITokenIssuance
 	// invalidGrantMsg answers a single-use grant that is already gone
 	// (errAuthorizationGrantUnavailable); internalMsg answers anything else.
 	invalidGrantMsg string
@@ -458,6 +596,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		app:              app,
 		installationName: row.DeviceName,
 		scopes:           scopes,
+		issuance:         store.APITokenIssuanceDeviceCode,
 		invalidGrantMsg:  "device_code expired or already consumed",
 		internalMsg:      "device authorization token issuance failed",
 		consume: func(tx store.Store) error {
@@ -736,6 +875,7 @@ func (h *OAuthServerHandler) issueAPIToken(
 		ClientID:         grant.app.ClientID,
 		InstallationName: grant.installationName,
 		GrantedScopes:    granted,
+		Issuance:         grant.issuance,
 		Rotating:         true,
 	})
 	if err != nil {

@@ -12,10 +12,11 @@ import { loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/proto/leapmux/v1/auth_pb'
 import { setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { hydrateStorageAccount, setStorageAccount } from '~/lib/browserStorage'
+import { hydrateStorageAccount, setStorageAccount, storageAccountFor } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
+import { hubOrigin } from '~/lib/hubSite'
 import { createLogger } from '~/lib/logger'
 import { isAutoAuthenticated, isPasswordSetupGate, loadSystemInfo } from '~/lib/systemInfo'
 import { authenticateForChallenge, passkeyErrorMessage } from '~/lib/webauthn'
@@ -171,6 +172,12 @@ export interface AuthState {
   retryBootstrap: () => Promise<void>
   login: (username: string, password: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
   loginWithPasskey: (username: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
+  /**
+   * Adopt the session the sidecar's jar already holds, after a successful
+   * browser handoff. Reads the account through `GetCurrentUser`; a failed
+   * read starts sign-in recovery.
+   */
+  adoptBrowserSignIn: (opts?: SignInOptions) => Promise<AuthLoginResult>
   logout: () => Promise<void>
   /**
    * Adopt the session a sign-up, the OAuth completion or the first solo
@@ -373,14 +380,15 @@ export const AuthProvider: ParentComponent = (props) => {
       next = null
     }
     if (next) {
-      await hydrateStorageAccount(next.id)
+      const account = storageAccountFor(hubOrigin(), next.id)
+      await hydrateStorageAccount(account)
       // A later identity superseded this one while its rows were loading. It
       // owns the mirror now, so publishing this one would point the namespace
       // at an account the mirror no longer holds -- which `setStorageAccount`
       // would refuse anyway, loudly, in the middle of a sign-in.
       if (generation !== authGeneration)
         return false
-      setStorageAccount(next.id)
+      setStorageAccount(account)
     }
     setUserSignal(next)
     return true
@@ -950,6 +958,18 @@ export const AuthProvider: ParentComponent = (props) => {
       })
     })
 
+  const adoptBrowserSignIn = (opts: SignInOptions = {}): Promise<AuthLoginResult> =>
+    runSignIn('Sign-in failed', opts, async () => {
+      try {
+        return await authClient.getCurrentUser({})
+      }
+      catch {
+        // The handoff succeeded; a failed account read starts sign-in
+        // recovery through adoptSignInReport with no session report.
+        return {}
+      }
+    })
+
   const logout = async () => {
     // A credential-free connection has no session to end; every other one,
     // solo or not, signs out normally.
@@ -991,6 +1011,7 @@ export const AuthProvider: ParentComponent = (props) => {
     dropElevation,
     login,
     loginWithPasskey,
+    adoptBrowserSignIn,
     logout,
     setAuth,
     signInRecovery,

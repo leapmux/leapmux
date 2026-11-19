@@ -5,6 +5,7 @@ import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
+import { HubPage } from '~/components/common/HubPage'
 import * as styles from '~/components/common/LoginPage.css'
 import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
@@ -144,75 +145,77 @@ const OAuthCompleteSignupPage: Component = () => {
   }
 
   return (
-    <div class={styles.container}>
-      <div class={pageCard}>
-        <h1>Complete Sign Up</h1>
-        <Show when={loading()}>
-          <div class={styles.loadingCenter}>
-            <Spinner size="md" />
-          </div>
-        </Show>
-        <Show when={!loading() && tokenError()}>
-          <div class={errorText}>{tokenError()}</div>
-          <div class={styles.authFooter}>
-            <A href="/login">Back to login</A>
-          </div>
-        </Show>
-        <Show when={!loading() && !tokenError()}>
-          <Show when={providerName()}>
-            <p class={styles.providerHint}>
-              Signed in via
-              {' '}
-              {providerName()}
-              . Choose a username to finish creating your account.
-            </p>
+    <HubPage>
+      <div class={styles.container}>
+        <div class={pageCard}>
+          <h1>Complete Sign Up</h1>
+          <Show when={loading()}>
+            <div class={styles.loadingCenter}>
+              <Spinner size="md" />
+            </div>
           </Show>
-          <form class="vstack gap-4" onSubmit={handleSubmit}>
-            <UsernameField value={username} onInput={setUsername} />
-            <label>
-              Display Name
-              <input
-                type="text"
-                value={displayName()}
-                onInput={e => setDisplayName(e.currentTarget.value)}
-              />
-            </label>
-            {/*
+          <Show when={!loading() && tokenError()}>
+            <div class={errorText}>{tokenError()}</div>
+            <div class={styles.authFooter}>
+              <A href="/login">Back to login</A>
+            </div>
+          </Show>
+          <Show when={!loading() && !tokenError()}>
+            <Show when={providerName()}>
+              <p class={styles.providerHint}>
+                Signed in via
+                {' '}
+                {providerName()}
+                . Choose a username to finish creating your account.
+              </p>
+            </Show>
+            <form class="vstack gap-4" onSubmit={handleSubmit}>
+              <UsernameField value={username} onInput={setUsername} />
+              <label>
+                Display Name
+                <input
+                  type="text"
+                  value={displayName()}
+                  onInput={e => setDisplayName(e.currentTarget.value)}
+                />
+              </label>
+              {/*
               A provider-supplied address is fixed -- the hub validated it at
               the callback and will not accept a substitute. When the provider
               gave nothing, the field is the only way to supply one, and on a
               hub that requires verification the sign-up cannot complete
               without it.
             */}
-            <label>
-              Email
-              <input
-                type="email"
-                value={email()}
-                onInput={e => setEmail(e.currentTarget.value)}
-                readOnly={providerSuppliedEmail()}
-                required={emailRequired()}
-              />
-            </label>
-            <CaptchaSection action={CAPTCHA_ACTION.completeSignup} captcha={captcha} />
-            <Show when={error()}>
-              <div class={errorText}>{error()}</div>
-            </Show>
-            <button type="submit" disabled={submitBlocked()}>
-              <Show when={submitting()}><Spinner /></Show>
-              {submitting()
-                ? 'Creating account...'
-                : 'Create account'}
-            </button>
-          </form>
-          <div class={styles.authFooter}>
-            Already have an account?
-            {' '}
-            <A href="/login">Sign in</A>
-          </div>
-        </Show>
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={email()}
+                  onInput={e => setEmail(e.currentTarget.value)}
+                  readOnly={providerSuppliedEmail()}
+                  required={emailRequired()}
+                />
+              </label>
+              <CaptchaSection action={CAPTCHA_ACTION.completeSignup} captcha={captcha} />
+              <Show when={error()}>
+                <div class={errorText}>{error()}</div>
+              </Show>
+              <button type="submit" disabled={submitBlocked()}>
+                <Show when={submitting()}><Spinner /></Show>
+                {submitting()
+                  ? 'Creating account...'
+                  : 'Create account'}
+              </button>
+            </form>
+            <div class={styles.authFooter}>
+              Already have an account?
+              {' '}
+              <A href="/login">Sign in</A>
+            </div>
+          </Show>
+        </div>
       </div>
-    </div>
+    </HubPage>
   )
 }
 

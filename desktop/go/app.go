@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -53,6 +54,13 @@ type App struct {
 	// lifecycleMu is released across it rather than held for the whole boot.
 	startSolo  func(context.Context) (*soloRuntime, error)
 	binaryHash string
+	// browserAuth is the ceremony in progress, guarded by lifecycleMu. A newer
+	// start, a matching cancel and the disconnect teardown all end it through
+	// endBrowserAuthLocked.
+	browserAuth *browserAuthCeremony
+	// browserAuthClock schedules the ceremony's timers. NewApp sets the real
+	// clock; a test replaces it to drive the timeouts.
+	browserAuthClock quartz.Clock
 	// events is the event pub-sub: a generic sink and a relay-aware variant
 	// behind one RWMutex. Extracted into its own type so App's mutex surface is
 	// just the lifecycle/config locks. See event_sink.go and #295.
@@ -76,11 +84,12 @@ const protocolVersion = "1"
 func NewApp(binaryHash string) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		ctx:          ctx,
-		cancel:       cancel,
-		tunnels:      NewTunnelManager(),
-		externalApps: defaultExternalAppRegistry(),
-		binaryHash:   binaryHash,
+		ctx:              ctx,
+		cancel:           cancel,
+		tunnels:          NewTunnelManager(),
+		externalApps:     defaultExternalAppRegistry(),
+		binaryHash:       binaryHash,
+		browserAuthClock: quartz.NewReal(),
 	}
 	app.startSolo = app.defaultStartSolo
 	app.startup()
@@ -639,6 +648,12 @@ func (a *App) finishDisconnect(connection *desktopConnection) {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 
+	// A browser ceremony belongs to the connection that started it. End it
+	// before the lifetime below is cancelled, so its goroutine wakes on a
+	// ceremony that the slot no longer names and emits the one cancelled
+	// result for it.
+	a.endBrowserAuthLocked()
+
 	// The connection's lifetime ends HERE. openRelay parents every relay context
 	// on it and coder/websocket force-closes a socket whose context is
 	// cancelled, so cancelling it any earlier retires the read loop that carries
@@ -860,7 +875,7 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 		return a.rollbackDistributed(err, connectionStop)
 	}
 	// The endpoint the probe already used and already settled the protocol on.
-	proxy := newProxyForEndpoint(hubEndpoint)
+	proxy := newProxyForEndpoint(hubEndpoint, openPersistentJar(mustParseURL(hubEndpoint.BaseURL()), sessionsDir()))
 	a.applyProxyToTunnels(proxy)
 	a.connection = &desktopConnection{
 		ctx:    connectionCtx,

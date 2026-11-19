@@ -464,7 +464,8 @@ func TestAppService_RevokeCascadesToEveryAccountsCredentials(t *testing.T) {
 	for _, owner := range []string{env.adminID, env.userID} {
 		tokenID := id.Generate()
 		require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: userid.MustNew(owner), ClientID: clientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: userid.MustNew(owner), ClientID: clientID,
 			InstallationName: "laptop", GrantedScopes: "workspace:read",
 			SecretHash: []byte("hash"),
 		}))
@@ -520,7 +521,8 @@ func TestAppService_DeleteIsRefusedWhileACredentialLives(t *testing.T) {
 
 	tokenID := id.Generate()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
 		InstallationName: "laptop", GrantedScopes: "workspace:read", SecretHash: []byte("hash"),
 	}))
 
@@ -947,7 +949,8 @@ func TestAppService_TurningElevationOffDropsTheCachedWindow(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
 		InstallationName: "laptop", GrantedScopes: "workspace:read",
 		SecretHash: env.validator.HashSecret(secret),
 	}))
@@ -982,7 +985,8 @@ func (e *appEnv) mintCredentialFor(t *testing.T, clientID, installation, granted
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, e.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(e.adminID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(e.adminID), ClientID: clientID,
 		InstallationName: installation, GrantedScopes: granted,
 		SecretHash: e.validator.HashSecret(auth.MintAccessSecret()),
 	}))
@@ -1328,7 +1332,8 @@ func TestAppService_NoOpElevationToggleKeepsTheCachedWindow(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.adminID), ClientID: clientID,
 		InstallationName: "laptop", GrantedScopes: "workspace:read",
 		SecretHash: env.validator.HashSecret(secret),
 	}))

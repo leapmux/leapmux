@@ -197,6 +197,7 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(soloRow.ID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -449,6 +450,7 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	pastExpiry := time.Now().Add(-1 * time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -479,6 +481,7 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 	tv.Now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 	expiresAt := start.Add(10 * time.Second)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -958,7 +961,8 @@ func seedInterceptorAPIToken(t *testing.T, st store.Store, validator *auth.Token
 	tokenID = newTestTokenID()
 	secret = auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(t.Context(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(), SecretHash: validator.HashSecret(secret),
 	}))
 	return tokenID, secret

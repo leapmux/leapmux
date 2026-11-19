@@ -43,54 +43,6 @@ import (
 // reaches that caller alone; another tab keeps the deadline it last read until
 // it reads the account again.
 
-// elevationRequiredError refuses a sensitive action on a session that is not
-// elevated.
-//
-// FailedPrecondition, deliberately, NOT Unauthenticated. The frontend's
-// global interceptor treats Unauthenticated as "your session ended" and
-// signs the user out, so the one refusal whose remedy is "prove a factor and
-// try again" would instead discard the session the user is about to prove
-// a factor for.
-//
-// The wording is elevationRequiredMessage, the default every caller but one
-// takes. See elevationRequiredErrorSaying for the exception.
-func elevationRequiredError() error {
-	return elevationRequiredErrorSaying(elevationRequiredMessage)
-}
-
-// elevationRequiredErrorSaying is the same refusal with different wording,
-// for the one caller whose remedy is WIDER than "prove a factor": the
-// first-credential rule, where verifying at an identity provider AND signing
-// in again both admit, and only that rule can say so.
-//
-// The message is a required parameter rather than a variadic. A variadic
-// accepts two strings and silently ignores all but the first, which is a call
-// a reader cannot get right from the signature.
-//
-// It still WRAPS errElevationRequired, so errors.Is keeps answering for every
-// refusal of this kind. Replacing the cause left the sentinel true of five
-// refusals and false of the sixth, with nothing but the header to distinguish
-// them.
-// elevationRequiredErrorSaying is the same refusal with different wording,
-// for the one caller whose remedy the default sentence does not state.
-//
-// The refusal WRAPS errElevationRequired, which is also what decides the
-// ElevationRequiredHeader marker: see NewElevationResponseInterceptor. The
-// marker is not set here, because connect v2 carries no metadata on an
-// error and this function reaches no response header. Keying the marker on
-// the sentinel instead of on construction is a stronger contract than the
-// v1 marker-on-the-error was: every refusal of this kind carries it, and a
-// caller cannot forget to add it.
-func elevationRequiredErrorSaying(message string) error {
-	// The message is what the caller reads; the wrapped sentinel travels as
-	// the cause, so errors.Is still answers and NewElevationResponseInterceptor
-	// can key the marker on it. connect.NewError takes a string and serializes
-	// only that, so the wrap has to be attached separately or the sentinel
-	// dissolves into prose.
-	cause := fmt.Errorf("%w: %s", errElevationRequired, message)
-	return wrappedConnectError(connect.CodeFailedPrecondition, cause)
-}
-
 // ElevationRequiredHeader marks a refusal whose remedy is "prove a factor
 // and retry". Exported because the frontend and the E2E suite both key on
 // it; the value is always "1" and only its presence is meaningful. The name
@@ -215,7 +167,7 @@ func recordElevationSlide(ctx context.Context, until time.Time) {
 // one interceptor every RPC, so the unary filter is a StreamType check.
 //
 // It writes BOTH elevation response headers: the slide deadline, and the
-// ElevationRequiredHeader marker on a refusal that wraps errElevationRequired.
+// ElevationRequiredHeader marker on a refusal that wraps auth.ErrElevationRequired.
 // The marker is response metadata rather than part of the error because
 // connect v2 carries no metadata on an error. Keying it on the sentinel here
 // is a stronger contract than v1's marker-on-the-error: every refusal of this
@@ -240,7 +192,7 @@ func NewElevationResponseInterceptor() connect.ServerInterceptor {
 			ctx, slide := withElevationSlide(ctx)
 			meta := &elevationMetadataStream{ServerStream: stream, info: info, slide: slide}
 			err := next(ctx, spec, meta)
-			if errors.Is(err, errElevationRequired) {
+			if errors.Is(err, auth.ErrElevationRequired) {
 				// A machine-readable marker, so a client can distinguish THIS
 				// FailedPrecondition from every other one (an account with no
 				// password, a last passkey that needs a replacement) and open
@@ -287,15 +239,6 @@ func (s *elevationMetadataStream) Send(msg any) error {
 	return s.ServerStream.Send(msg)
 }
 
-// errElevationRequired is the SENTINEL every elevation refusal wraps, so
-// errors.Is answers for all of them however each one is worded. There is no
-// rate-limit budget keyed on it, because being un-elevated is not a failed
-// attempt.
-var errElevationRequired = errors.New("this action needs a recent sign-in")
-
-// elevationRequiredMessage is the remedy every caller but one states.
-const elevationRequiredMessage = "verify your identity and try again"
-
 // verifyElevationPassword checks the password presented to ElevateSession.
 // Wrong password returns ErrInvalidCurrentPassword so the rate-limit
 // interceptor can count the failure.
@@ -311,52 +254,6 @@ func verifyElevationPassword(ctx context.Context, user *store.User, currentPassw
 		return credentialRejectedError(ctx, fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
 	}
 	return nil
-}
-
-// requireElevation refuses a sensitive action on a session that did not
-// prove a factor inside the window.
-//
-// This is the PLAIN gate, and every sensitive action outside passkey
-// management uses it. It has no first-credential branch, because it needs
-// none: an account that can sign in holds at least one of a password, a
-// passkey, or an OAuth link, and each of the three elevates.
-// stepUpMutationAuth carries that extra branch for the one case this
-// cannot serve -- attaching the FIRST such credential to an account that
-// holds none of them.
-//
-// Adding the branch here would be worse than redundant. An account with two
-// OAuth links and no password would count as having nothing to elevate with,
-// and could then detach one of them WITHOUT elevating, although its identity
-// provider could prove the factor.
-//
-// The two refusals are DIFFERENT, and the difference is the marker rather
-// than the wording. A session that did not prove a factor gets
-// elevationRequiredError, which carries ElevationRequiredHeader and means
-// "prove one and retry". A credential that can never carry an elevation --
-// a delegation bearer, which a worker mints for an agent with nobody at a
-// keyboard -- gets the plain refusal from requireElevatableCredential, with
-// NO marker, because a step-up prompt cannot help it: it would ask for a
-// factor and then refuse the retry for the same reason.
-func requireElevation(userInfo *auth.UserInfo, now time.Time) error {
-	// Solo mode has no ceremony to prove a factor with, so the rule has
-	// nothing to decide. Its synthetic user carries no credential row, so
-	// every test below answers "cannot elevate", and the refusal it produces
-	// -- "sign in from a browser" -- describes a sign-in that does not exist
-	// there. That refusal is permanent, and it covers the whole
-	// hub-administration surface, which solo mode is meant to serve: solo mode
-	// withdraws only the HiddenInSolo keys from it.
-	if userInfo.SoloAuthenticated() {
-		return nil
-	}
-	if userInfo.Elevated(now) {
-		return nil
-	}
-	// Not elevated. Either the credential could be and is not, or it never
-	// can be; only the second has no remedy the caller can act on here.
-	if err := requireElevatableCredential(userInfo); err != nil {
-		return err
-	}
-	return elevationRequiredError()
 }
 
 // Creating DURABLE NEW AUTHORITY is one class, and these two functions are
@@ -410,7 +307,7 @@ func requireElevatedSessionForDurableAuthority(ctx context.Context, now time.Tim
 	if _, err := requireElevatableSession(userInfo); err != nil {
 		return nil, err
 	}
-	return userInfo, requireElevation(userInfo, now)
+	return userInfo, auth.RequireElevation(userInfo, now)
 }
 
 // commitUnderElevation runs an irreversible write on behalf of an already
@@ -523,7 +420,7 @@ func assertElevatedActor(userInfo *auth.UserInfo, now time.Time) error {
 	if userInfo == nil {
 		return connect.Errorf(connect.CodeUnauthenticated, "not authenticated")
 	}
-	return requireElevation(userInfo, now)
+	return auth.RequireElevation(userInfo, now)
 }
 
 // writeUnderElevation admits a write to the hub's own CONFIGURATION, runs it,
@@ -839,44 +736,6 @@ func accountShapeElevatesOnlyThroughAProvider(passwordSet bool, passkeyCount int
 	return !passwordSet && passkeyCount == 0
 }
 
-// requireElevatableCredential refuses a credential that can carry no
-// elevation at all.
-//
-// TWO kinds can: a session cookie, and a command-line credential, which
-// proves its factor in a browser through the /oauth/step-up
-// leg. Each has a row to stamp and a person who can be prompted. A
-// DELEGATION bearer has neither -- a worker mints it for an agent that reads
-// untrusted input -- and neither does solo mode, which authenticates a
-// synthetic user against no row.
-//
-// The refusal deliberately carries NO ElevationRequiredHeader. The marker
-// means "prove a factor and retry", and there is nothing this caller can
-// prove: a step-up prompt would collect a factor and then refuse the retry
-// for the same reason. See requireElevation, which chooses between the two
-// refusals.
-//
-// Nil-safe, like every sibling in this family. requireElevation reaches it
-// through UserInfo.Elevated, which is documented nil-safe, so a nil that
-// slipped past would turn a refusal into a handler panic here.
-func requireElevatableCredential(userInfo *auth.UserInfo) error {
-	if userInfo != nil {
-		if _, _, ok := userInfo.Credential.ElevatableRow(); ok {
-			return nil
-		}
-	}
-	return errCredentialNotElevatable()
-}
-
-// errCredentialNotElevatable is the refusal both elevatable-credential rules
-// return. One constructor, because the two rules differ in WHICH credentials
-// they admit and not in what they tell a caller that holds none of them: the
-// remedy is the same sentence, and two copies of a security message drift the
-// moment somebody rewords one.
-func errCredentialNotElevatable() error {
-	return connect.NewError(connect.CodeFailedPrecondition,
-		"this credential cannot verify your identity; sign in from a browser to perform this action")
-}
-
 // requireElevatableSession returns the acting SESSION id, refusing every
 // other credential -- a command-line credential included.
 //
@@ -894,7 +753,7 @@ func requireElevatableSession(userInfo *auth.UserInfo) (string, error) {
 		sessionID = userInfo.Credential.SessionID()
 	}
 	if sessionID == "" {
-		return "", errCredentialNotElevatable()
+		return "", auth.ErrCredentialNotElevatable()
 	}
 	return sessionID, nil
 }
@@ -1197,7 +1056,7 @@ func (s *UserService) DropElevation(ctx context.Context, _ *leapmuxv1.DropElevat
 	}
 	sessionID, apiTokenID, ok := userInfo.Credential.ElevatableRow()
 	if !ok {
-		return nil, errCredentialNotElevatable()
+		return nil, auth.ErrCredentialNotElevatable()
 	}
 	var n int64
 	if sessionID != "" {

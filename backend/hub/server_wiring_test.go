@@ -88,6 +88,7 @@ func (h *wiringHub) storedToken(t *testing.T) (bearer, refresh string) {
 	tokenID := id.Generate()
 	secret, refreshSecret := auth.MintAccessSecret(), auth.MintAccessSecret()
 	require.NoError(t, h.srv.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(h.adminID),
 		ClientID:         oauthapp.ControlCLIClientID,

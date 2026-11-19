@@ -106,6 +106,10 @@ CREATE TABLE user_sessions (
     elevation_expires_at  TIMESTAMPTZ,
     user_agent      TEXT NOT NULL DEFAULT '',
     ip_address      TEXT NOT NULL DEFAULT '',
+    -- The built-in app that this session was issued to through the browser
+    -- handoff. NULL for a session that signed in on the Hub's own page. No
+    -- foreign key: only the token exchange of a built-in app writes it.
+    issued_to_client TEXT COLLATE "C",
     -- Both or neither: the schema requires the pair, and Go also validates it.
     -- Half a pair is not a state the rest of the hub should have to consider:
     -- a deadline with no anchor is one the slide statement cannot clamp,
@@ -471,6 +475,10 @@ CREATE TABLE api_tokens (
     installation_name             TEXT NOT NULL,
     -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
     granted_scopes                TEXT NOT NULL,
+    -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
+    -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
+    -- 3 administrator. No DEFAULT: every mint states it.
+    issuance                      INTEGER NOT NULL CHECK (issuance BETWEEN 1 AND 3),
     secret_hash                   BYTEA NOT NULL,
     refresh_hash                  BYTEA,
     previous_refresh_hash         BYTEA,
@@ -597,7 +605,16 @@ CREATE TABLE oauth_authorization_codes (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at            TIMESTAMPTZ NOT NULL,
     consumed_at           TIMESTAMPTZ,
-    minted_token_id       TEXT COLLATE "C"
+    minted_token_id       TEXT COLLATE "C",
+    -- The session that the exchange issued, for an app whose code redeems
+    -- into a session. It serves the replay remedy as minted_token_id does.
+    minted_session_id     TEXT COLLATE "C",
+    -- The credential that this code VERIFIES, when it verifies one rather
+    -- than issuing one. At most one is set. No foreign key, for the reason
+    -- device_authorizations.elevate_token_id gives.
+    step_up_session_id    TEXT COLLATE "C",
+    step_up_token_id      TEXT COLLATE "C",
+    CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL)
 );
 CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 
