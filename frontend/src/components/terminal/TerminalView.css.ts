@@ -34,8 +34,9 @@ export const terminalWrapper = style({
  *
  * The wrapper is the last opaque layer between that surface and the user: xterm
  * itself paints nothing once its theme background is transparent (see
- * `transparentBackground` in `~/lib/terminal`), and the rule below already
- * neutralizes the one background xterm.css hardcodes.
+ * `transparentBackground` in `~/lib/terminal`), and xterm.css hardcodes its one
+ * opaque viewport background only for terminals that did not ask for
+ * transparency.
  */
 export const terminalWrapperTransparent = style({
   backgroundColor: 'transparent',
@@ -104,15 +105,29 @@ globalStyle(`${terminalWrapper} .xterm`, {
   padding: 'var(--space-1)',
 })
 
-// Override xterm.css default background (#000) so the themed wrapper background
-// shows through, and suppress the viewport's own scrollbar.
+// The viewport must stay transparent: the terminal theme's background is
+// already painted underneath it. xterm writes that colour INLINE on the
+// `.xterm` element itself (Viewport.ts, `element.style.backgroundColor` from
+// the theme) and again on `.xterm-scrollable-element`. A background declared
+// here covers it. xterm.css declares one -- an opaque `#000` -- and the rule
+// below neutralizes it.
 //
-// The background is NOT the theme colour: xterm writes that inline onto
-// `.xterm-scrollable-element` (Viewport.ts), which no rule here can or should
-// reach. This rule exists only for the opaque `#000` xterm.css declares on the
-// viewport itself, which would otherwise sit above the wrapper's palette
-// background -- and, for a transparent terminal, above the panel's.
+// xterm.css hardcodes it as `.xterm:not(.allow-transparency) .xterm-viewport
+// { background-color: #000 }`, at three classes of specificity, so the macOS
+// scrollbar is opaque. The override mirrors that selector under the wrapper --
+// four classes -- because a tie falls to whichever stylesheet the bundler
+// emits last, and that order is not the project's to choose. It flipped once
+// already and brought the black viewport back. Keep the override strictly
+// more specific than xterm.css's rule; never let the two tie.
 //
+// The `:not(.allow-transparency)` scoping is deliberate: it covers exactly the
+// elements xterm.css paints black. A terminal that asked for transparency
+// (the quake panel) matches neither rule and keeps the default transparent
+// viewport, which is what lets its panel show through.
+globalStyle(`${terminalWrapper} .xterm:not(.allow-transparency) .xterm-viewport`, {
+  backgroundColor: 'transparent',
+})
+
 // The SCROLLBAR is redundant, and was a second bar beside xterm's own. xterm 6
 // draws its scrollbar itself -- the `.slider` of the vendored VS Code
 // scrollable element, styled below -- while xterm.css still declares
@@ -122,8 +137,11 @@ globalStyle(`${terminalWrapper} .xterm`, {
 // `scrollbar-width` and then ignores the pseudo-element, Safari has only the
 // pseudo-element. Neither stops the viewport SCROLLING -- the wheel and the
 // keyboard reach the scrollback exactly as before.
+//
+// This half matches EVERY viewport, transparent or not: xterm.css declares
+// `overflow-y: scroll` on all of them, so the quake panel needs the native bar
+// hidden too.
 globalStyle(`${terminalWrapper} .xterm .xterm-viewport`, {
-  backgroundColor: 'transparent',
   scrollbarWidth: 'none',
 })
 

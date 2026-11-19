@@ -88,6 +88,26 @@ test.describe('Terminal', () => {
     await expect(activeXterm(page)).toBeVisible()
   })
 
+  test('follows the terminal theme background instead of xterm.css black', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await openTerminalViaUI(page)
+    await waitForTerminalReady(page)
+
+    // xterm.css hardcodes `background-color: #000` on `.xterm-viewport`, which
+    // would cover the terminal theme's background. The viewport must stay
+    // transparent so the background xterm paints inline on `.xterm` shows.
+    const viewport = activeXterm(page).locator('.xterm-viewport')
+    const viewportBackground = await viewport.evaluate(el => getComputedStyle(el).backgroundColor)
+    expect(viewportBackground).toBe('rgba(0, 0, 0, 0)')
+
+    // The terminal theme follows the UI theme by default (`match-ui`), so the
+    // background xterm paints equals the wrapper's own theme background.
+    const wrapper = page.locator('[data-terminal-id][data-active="true"]')
+    const painted = await activeXterm(page).evaluate(el => getComputedStyle(el).backgroundColor)
+    expect(painted).not.toBe('rgba(0, 0, 0, 0)')
+    expect(painted).toBe(await wrapper.evaluate(el => getComputedStyle(el).backgroundColor))
+  })
+
   test('should preserve terminal content when switching between tabs', async ({ page, authenticatedWorkspace }) => {
     // Open terminal 1 and type a marker
     await openTerminalViaUI(page)
@@ -270,7 +290,17 @@ test.describe('Terminal', () => {
       const previousRows = await getTerminalRows(page)
       await page.setViewportSize(viewport)
       await expect.poll(() => getTerminalRows(page)).not.toBe(previousRows)
-      const terminal = await retryUntilPass(async () => {
+      // The worker record, the browser and the PTY must agree on the new size.
+      // All three reads run again until they agree, because `stty size` reads
+      // the PTY at command time and the resize ioctl can land after the worker
+      // record already reports the new size. A probe that runs once freezes
+      // that instant in the buffer, and a wait on its output then burns the
+      // whole deadline on text that can never change. Re-reading the record
+      // per attempt also keeps the expected size current when the fit is
+      // still settling.
+      //
+      // Input echo holds %s, so only executed output can contain the complete marker.
+      await retryUntilPass(async () => {
         const response = await channel.callWorker(
           leapmuxServer.workerId,
           WorkerTerminalService.method.listTerminals,
@@ -283,11 +313,9 @@ test.describe('Terminal', () => {
           throw new Error('The worker did not return the open terminal.')
         expect(current.rows).toBe(await getTerminalRows(page))
         expect(current.cols).toBeGreaterThan(0)
-        return current
+        await typeInTerminal(page, `printf 'LMX_SIZE_%s=' '${index}'; stty size`)
+        expect(await getTerminalText(page)).toContain(`LMX_SIZE_${index}=${current.rows} ${current.cols}`)
       })
-      // Input echo holds %s, so only executed output can contain the complete marker.
-      await typeInTerminal(page, `printf 'LMX_SIZE_%s=' '${index}'; stty size`)
-      await waitForTerminalText(page, `LMX_SIZE_${index}=${terminal.rows} ${terminal.cols}`)
     }
   })
 
