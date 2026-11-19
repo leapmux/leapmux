@@ -374,9 +374,9 @@ For the complete administrator surface — including sessions, API tokens, and d
 A Worker runs in one of two encryption modes, set with `--encryption-mode`:
 
 - `post-quantum` (the default) — the hybrid post-quantum handshake.
-- `classic` — X25519-only Noise_NK, no post-quantum protection.
+- `classic` — static ML-KEM authentication without the SLH-DSA signature or post-quantum forward secrecy.
 
-Both modes register and advertise all three static keys, because the keys are the Worker's identity: the Hub pins them and refuses a connection that presents others. `classic` only selects the classical handshake.
+Both modes register and advertise all three static keys, because the keys are the Worker's identity: the Hub pins them and refuses a connection that presents others. `classic` selects the handshake without the SLH-DSA signature or post-quantum forward secrecy.
 
 Leave this at the default unless you have a specific reason to change it; both ends must agree, and the Hub tracks the mode the Worker declares. The cryptographic details are covered in [Security & Threat Model](/docs/admin/security/).
 

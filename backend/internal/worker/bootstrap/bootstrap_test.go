@@ -463,17 +463,20 @@ func TestWiring_ShutdownFlushesTheOutboundQueue(t *testing.T) {
 
 func TestWire_PropagatesMaxMessageSize(t *testing.T) {
 	const configured = 2 << 20
-	var workerPublicKey []byte
+	var workerKey *noiseutil.CompositeKeypair
 	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) {
 		p.MaxMessageSize = configured
-		workerPublicKey = p.CompositeKey.X25519Public
+		p.WorkerID = "worker-test"
+		workerKey = p.CompositeKey
 	})
 	t.Cleanup(func() { agent.ConfigureMaxMessageSize(0) })
 
 	assert.Equal(t, configured, w.Service.MaxMessageSize,
 		"Wire must carry MaxMessageSize into the service producer ceiling")
 
-	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(workerPublicKey)
+	slhdsaPub, err := workerKey.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1("worker-test", workerKey.X25519Public, workerKey.MlkemPublicKeyBytes(), slhdsaPub)
 	require.NoError(t, err)
 	resp := w.Service.Channels.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-wired-max",

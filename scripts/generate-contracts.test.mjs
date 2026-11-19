@@ -236,6 +236,26 @@ describe('checkWire', () => {
       'uint32 nonce space',
     )
   })
+
+  it('rejects equal protocol names', () => {
+    expectContractError(
+      () => checkWire({
+        ...WIRE,
+        noise: { ...WIRE.noise, postQuantumProtocolName: WIRE.noise.classicProtocolName },
+      }),
+      'noise.classicProtocolName and noise.postQuantumProtocolName must differ',
+    )
+  })
+
+  it('rejects equal handshake labels', () => {
+    expectContractError(
+      () => checkWire({
+        ...WIRE,
+        noise: { ...WIRE.noise, handshakeSignatureLabel: WIRE.noise.handshakeContextLabel },
+      }),
+      'handshakeContextLabel and noise.handshakeSignatureLabel must differ',
+    )
+  })
 })
 
 describe('checkHeaders / checkRetry', () => {

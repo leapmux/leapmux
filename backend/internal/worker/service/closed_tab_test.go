@@ -3,8 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/ecdh"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -302,16 +300,15 @@ func (r rewritingDBTX) QueryRowContext(ctx context.Context, query string, args .
 	return r.inner.QueryRowContext(ctx, r.rewrite(query), args...)
 }
 
-// newClassicalServiceTestKeys creates fresh identity keys for fixtures that
-// explicitly use CLASSIC channels. Those paths never read the hybrid fields.
-func newClassicalServiceTestKeys(t *testing.T) *noiseutil.CompositeKeypair {
+var serviceTestKeysOnce = sync.OnceValues(noiseutil.GenerateCompositeKeypair)
+
+// serviceTestKeys shares the complete keypair that every classic service fixture
+// reads but never mutates.
+func serviceTestKeys(t *testing.T) *noiseutil.CompositeKeypair {
 	t.Helper()
-	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	key, err := serviceTestKeysOnce()
 	require.NoError(t, err)
-	return &noiseutil.CompositeKeypair{
-		X25519Public:  privateKey.PublicKey().Bytes(),
-		X25519Private: privateKey.Bytes(),
-	}
+	return key
 }
 
 // setupTestService creates a minimal service.Service with an in-memory DB
@@ -331,14 +328,14 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *testService
 
 	// Set up a channel manager with a completed handshake so dispatched
 	// handlers see a real session.
-	// Classical encryption keeps setupTestService cheap under -race: these
-	// tests exercise service/dispatcher behaviour, not the PQ handshake, and
-	// SLH-DSA under the race detector otherwise dominates the package runtime.
-	ck := newClassicalServiceTestKeys(t)
-	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error { return nil }, nil, 0, 0)
+	// Classic mode and one shared keypair keep setupTestService cheap under -race.
+	ck := serviceTestKeys(t)
+	chmgr := channel.NewManager("worker-test", ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error { return nil }, nil, 0, 0)
 	t.Cleanup(chmgr.CloseAll)
 
-	_, msg1, err := noiseutil.ClassicalInitiatorHandshake1(ck.X25519Public)
+	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1("worker-test", ck.X25519Public, ck.MlkemPublicKeyBytes(), slhdsaPub)
 	require.NoError(t, err)
 	chmgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        testChannelID,
@@ -347,6 +344,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *testService
 		MaxMessageSize:   uint64(contracts.MaxMessageSize),
 		GrantedScopes:    testChannelGrant,
 	})
+	hs.Clear()
 
 	// Built through service.New, not by hand.
 	//

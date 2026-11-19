@@ -1160,7 +1160,7 @@ func TestConnect_AControlReplyOnAClosedStreamKeepsTheHubsRefusal(t *testing.T) {
 		c, stream := writerStreamClient(t, net.ErrClosed, websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.WorkerCloseReasonDeleted})
 		keys, err := noiseutil.GenerateCompositeKeypair()
 		require.NoError(t, err)
-		c.SetChannelMgr(channel.NewManager(keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, c.Send, c.TrySendOrReset, 0, 0))
+		c.SetChannelMgr(channel.NewManager("worker-test", keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, c.Send, c.TrySendOrReset, 0, 0))
 		stream.messages = []*leapmuxv1.ConnectResponse{{RequestId: "open-1", Payload: &leapmuxv1.ConnectResponse_ChannelOpen{ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "channel-1"}}}}
 		result := make(chan error, 1)
 		go func() { result <- c.Connect(t.Context(), "token") }()

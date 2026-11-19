@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"crypto/mlkem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // testRekeyWatchdog is the budget for the two tests that need the watchdog to
@@ -31,15 +33,25 @@ import (
 // can beat a goroutine to its first scheduling slice would flake on a loaded
 // CI box. Two seconds is orders of magnitude past any plausible stall while
 // still costing a fifth of the production window.
-const testRekeyWatchdog = 2 * time.Second
+const (
+	testRekeyWatchdog = 2 * time.Second
+	eventWaitLimit    = 30 * time.Second
+)
 
 // rekeyChannelOption customizes the Channel pairedRekeyChannel builds.
-type rekeyChannelOption func(*Channel)
+type rekeyChannelOption struct {
+	postQuantum bool
+	apply       func(*Channel)
+}
 
 // withRekeyWatchdog shortens the in-flight-rekey watchdog so a test can watch
 // it fire (or prove it retired) without parking on the real clock.
 func withRekeyWatchdog(d time.Duration) rekeyChannelOption {
-	return func(ch *Channel) { ch.rekey.watchdogTimeout = d }
+	return rekeyChannelOption{apply: func(ch *Channel) { ch.rekey.watchdogTimeout = d }}
+}
+
+func withPostQuantumRekey() rekeyChannelOption {
+	return rekeyChannelOption{postQuantum: true}
 }
 
 // withCancelGate parks ch.cancel so a test can inspect what a resolution has --
@@ -57,7 +69,7 @@ func withRekeyWatchdog(d time.Duration) rekeyChannelOption {
 // Options run before pairedRekeyChannel starts recvLoop, so wrapping the field
 // here never races that goroutine.
 func withCancelGate(entered chan<- struct{}, release <-chan struct{}) rekeyChannelOption {
-	return func(ch *Channel) {
+	return rekeyChannelOption{apply: func(ch *Channel) {
 		inner := ch.cancel
 		announce := sync.OnceFunc(func() { close(entered) })
 		ch.cancel = func() {
@@ -65,22 +77,39 @@ func withCancelGate(entered chan<- struct{}, release <-chan struct{}) rekeyChann
 			<-release
 			inner()
 		}
-	}
+	}}
 }
 
 // pairedRekeyChannel stands up a Noise pair over a WebSocket with the client's
 // recvLoop running so Ack/Reject can complete an in-band rekey round trip.
-func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, peerSession *noiseutil.Session, peerWS *websocket.Conn) {
+func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, peerSession *noiseutil.Session, peerWS *websocket.Conn, workerKey *noiseutil.CompositeKeypair) {
 	t.Helper()
 
+	postQuantum := false
+	for _, opt := range opts {
+		postQuantum = postQuantum || opt.postQuantum
+	}
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-
-	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1(key.X25519Public)
+	slhdsaPub, err := key.SlhdsaPublicKeyBytes()
 	require.NoError(t, err)
-	msg2, peerSess, err := noiseutil.ClassicalResponderHandshake(key.X25519Public, key.X25519Private, msg1)
+	var hs *noiseutil.HandshakeState
+	var msg1 []byte
+	if postQuantum {
+		hs, msg1, err = noiseutil.InitiatorHandshake1("worker-test", key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+	} else {
+		hs, msg1, err = noiseutil.ClassicalInitiatorHandshake1("worker-test", key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+	}
 	require.NoError(t, err)
-	initiatorSession, err := noiseutil.ClassicalInitiatorHandshake2(hs, msg2)
+	var msg2 []byte
+	var peerSess *noiseutil.Session
+	if postQuantum {
+		msg2, peerSess, err = noiseutil.ResponderHandshake(key, "worker-test", msg1)
+	} else {
+		msg2, peerSess, err = noiseutil.ClassicalResponderHandshake(key, "worker-test", msg1)
+	}
+	require.NoError(t, err)
+	initiatorSession, err := hs.Finish(msg2)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,7 +140,7 @@ func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, 
 
 	select {
 	case <-ready:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("server did not accept the websocket")
 	}
 
@@ -121,6 +150,10 @@ func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, 
 	require.NotNil(t, peerWS)
 	peerWS.SetReadLimit(channelwire.WSReadLimit)
 
+	var workerMlkemPub []byte
+	if postQuantum {
+		workerMlkemPub = key.MlkemPublicKeyBytes()
+	}
 	ch = &Channel{
 		channelID:      "rekey-test",
 		userID:         "user-1",
@@ -133,91 +166,121 @@ func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, 
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 		rekey: rekeyController{
-			lastRekeyAt: time.Now(),
-			// Classical handshake ⇒ rekey is X25519-only: workerMlkemPub stays
-			// nil (its zero value), which EncapsulateRekeyPQ short-circuits on.
+			lastRekeyAt:    time.Now(),
+			workerMlkemPub: workerMlkemPub,
 		},
 	}
 	for _, opt := range opts {
-		opt(ch)
+		if opt.apply != nil {
+			opt.apply(ch)
+		}
 	}
 	go ch.recvLoop()
-	return ch, peerSess, peerWS
+	return ch, peerSess, peerWS, key
 }
 
-// awaitRekeyRequest reads the initiator's RekeyRequest off the peer socket and
-// returns the correlation id plus the initiator's fresh ephemeral public key
-// (which the peer combines with its own ephemeral to complete the DH).
-func awaitRekeyRequest(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn) (corr uint64, initiatorPub []byte) {
+func TestRecvLoopEndsOnTheCloseFrameWithoutADecryptError(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	ch, _, peerWS, _ := pairedRekeyChannel(t)
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS,
+		channelwire.CloseNotification("rekey-test")))
+
+	select {
+	case <-ch.ctx.Done():
+	case <-time.After(eventWaitLimit):
+		t.Fatal("the close frame did not end the receive loop")
+	}
+	assert.True(t, ch.Closed())
+	assert.NotContains(t, logs.String(), "tunnel channel decrypt error")
+}
+
+// awaitRekeyRequest opens the initiator's request and returns its full contents.
+func awaitRekeyRequest(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn) (corr uint64, request *leapmuxv1.RekeyRequest) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), eventWaitLimit)
 	defer cancel()
 	msg, err := channelwire.ReadChannelMessage(ctx, peerWS)
 	require.NoError(t, err)
-	pt, err := peer.Decrypt(msg.GetCiphertext())
+	pt, err := channelwire.OpenChannelMessage(peer, msg)
 	require.NoError(t, err)
 	var envelope leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(pt, &envelope))
 	req, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_RekeyRequest)
 	require.True(t, ok, "expected RekeyRequest, got %T", envelope.GetKind())
-	return msg.GetCorrelationId(), req.RekeyRequest.GetDhPub()
+	return msg.GetCorrelationId(), req.RekeyRequest
 }
 
-func sendRekeyOutcome(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn, corr uint64, initiatorPub []byte, accept bool) {
+func sendRekeyOutcome(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn, corr uint64, request *leapmuxv1.RekeyRequest, accept bool) {
 	t.Helper()
-	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, initiatorPub, accept, 0)
+	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, request, accept, 0)
 }
 
-// sendRekeyOutcomeWithRetry simulates the worker responder: on accept it
-// generates its own fresh ephemeral, derives the shared DH secret, rotates the
-// peer's receive key (retaining prev), sends the Ack carrying the responder
-// ephemeral, then rotates the peer's send key. Classical mode ⇒ no ML-KEM.
-func sendRekeyOutcomeWithRetry(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn, corr uint64, initiatorPub []byte, accept bool, retryAfterMs int64) {
+func sendRekeyOutcomeWithRetry(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn, corr uint64, request *leapmuxv1.RekeyRequest, accept bool, retryAfterMs int64) {
 	t.Helper()
-	ctx := context.Background()
+	sendRekeyOutcomeWithKey(t, peer, peerWS, nil, corr, request, accept, retryAfterMs)
+}
+
+// sendRekeyOutcomeWithKey simulates the Worker, including its ML-KEM answer when
+// workerKey is non-nil. It rotates receive, seals the Ack under the old send key,
+// then rotates send.
+func sendRekeyOutcomeWithKey(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn, workerKey *noiseutil.CompositeKeypair, corr uint64, request *leapmuxv1.RekeyRequest, accept bool, retryAfterMs int64) {
+	t.Helper()
 	var envelope *leapmuxv1.InnerMessage
 	if accept {
-		require.Len(t, initiatorPub, noiseutil.EphemeralPublicKeySize, "initiator rekey ephemeral must be 32 bytes")
-		eph, err := noiseutil.GenerateEphemeralX25519()
+		require.Len(t, request.GetDhPub(), noiseutil.EphemeralPublicKeySize)
+		seed, err := noiseutil.GenerateEphemeralX25519Seed()
+		require.NoError(t, err)
+		defer noiseutil.Zero(seed)
+		responderPub, err := noiseutil.X25519PublicFromSeed(seed)
+		require.NoError(t, err)
+		var decapsulationKey = (*mlkem.DecapsulationKey1024)(nil)
+		if workerKey != nil {
+			decapsulationKey = workerKey.MlkemDecapsulationKey
+		}
+		pqSecret, ephemeralCiphertext, err := noiseutil.AnswerRekeyPQ(decapsulationKey, request.GetMlkemStaticCt(), request.GetMlkemEphemeralPub())
 		require.NoError(t, err)
 		dh, pq, err := noiseutil.DeriveRekeySecrets(noiseutil.RekeyMaterial{
-			LocalEphemeralPriv: eph.Bytes(),
-			PeerEphemeralPub:   initiatorPub,
+			LocalEphemeralPriv: seed,
+			PeerEphemeralPub:   request.GetDhPub(),
+			PQSharedSecret:     pqSecret,
 		})
 		require.NoError(t, err)
-		// Each direction needs its own copy: rekeyWithSecret zeroes its inputs.
 		dhForSend := append([]byte(nil), dh...)
 		pqForSend := append([]byte(nil), pq...)
 		peer.RekeyReceiveWithSecret(dh, pq)
 		envelope = &leapmuxv1.InnerMessage{
 			Kind: &leapmuxv1.InnerMessage_RekeyAck{RekeyAck: &leapmuxv1.RekeyAck{
-				DhPub: eph.PublicKey().Bytes(),
+				DhPub:            responderPub,
+				MlkemEphemeralCt: ephemeralCiphertext,
 			}},
 		}
 		pt, err := proto.Marshal(envelope)
 		require.NoError(t, err)
-		ct, err := peer.Encrypt(pt)
-		require.NoError(t, err)
-		require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS,
-			channelwire.NewChannelMessage("rekey-test", corr, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, ct)))
+		frame := sealChannelPlaintextForTunnel(t, peer, corr, pt)
+		require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, frame))
 		peer.RekeySendWithSecret(dhForSend, pqForSend)
-	} else {
-		envelope = &leapmuxv1.InnerMessage{
-			Kind: &leapmuxv1.InnerMessage_RekeyReject{RekeyReject: &leapmuxv1.RekeyReject{
-				RetryAfterMs: retryAfterMs,
-			}},
-		}
-		pt, err := proto.Marshal(envelope)
-		require.NoError(t, err)
-		ct, err := peer.Encrypt(pt)
-		require.NoError(t, err)
-		require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS,
-			channelwire.NewChannelMessage("rekey-test", corr, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, ct)))
+		return
 	}
+	envelope = &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_RekeyReject{RekeyReject: &leapmuxv1.RekeyReject{
+			RetryAfterMs: retryAfterMs,
+		}},
+	}
+	pt, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	frame := sealChannelPlaintextForTunnel(t, peer, corr, pt)
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, frame))
+}
+
+func sealChannelPlaintextForTunnel(t *testing.T, session *noiseutil.Session, correlationID uint64, plaintext []byte) *leapmuxv1.ChannelMessage {
+	t.Helper()
+	frame, err := channelwire.SealChannelMessage(session, "rekey-test", correlationID, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
+	require.NoError(t, err)
+	return frame
 }
 
 func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	tc := newOpenedConn(ch, "conn-rekey", "example.test", 443)
 	t.Cleanup(func() { _ = tc.Close() })
 
@@ -228,13 +291,13 @@ func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 
@@ -247,11 +310,11 @@ func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 11, n)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), eventWaitLimit)
 	defer cancel()
 	msg, err := channelwire.ReadChannelMessage(ctx, peerWS)
 	require.NoError(t, err)
-	_, err = peer.Decrypt(msg.GetCiphertext())
+	_, err = channelwire.OpenChannelMessage(peer, msg)
 	require.NoError(t, err, "peer must decrypt post-rekey frames under the new receive key")
 }
 
@@ -269,7 +332,7 @@ func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 // races a shortened window against the Ack round trip -- a race a loaded CI
 // box would eventually lose.
 func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	defer func() { _ = peerWS.CloseNow() }()
 
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
@@ -277,7 +340,7 @@ func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
 	// Poll rather than read once: startRekeyLocked SPAWNS runRekeyTimer and the
 	// counter is incremented inside that goroutine, so awaitRekeyRequest
 	// (which returns once the peer has read the Request frame) orders nothing
@@ -285,7 +348,7 @@ func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
 	// schedules the new goroutine first.
 	require.Eventually(t, func() bool { return ch.rekey.watchdogLive.Load() > 0 },
 		2*time.Second, time.Millisecond, "the starter must have armed a watchdog")
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 	require.NoError(t, <-done)
 	require.False(t, ch.Closed(), "channel open right after Ack")
 
@@ -308,7 +371,7 @@ func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
 // Ack. This is the core of the non-blocking rekey: rekeyMu is released across
 // the RTT, so a second sender arriving mid-rekey must not start a second one.
 func TestChannelRekeyConcurrentCallersShareOneRequest(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	// Two concurrent callers. Both should block on the in-flight rekey.
@@ -317,15 +380,15 @@ func TestChannelRekeyConcurrentCallersShareOneRequest(t *testing.T) {
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
 
 	// Exactly one RekeyRequest must reach the wire (the joiner must not send).
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	// Both callers must resolve on the single Ack.
 	for i := 0; i < 2; i++ {
 		select {
 		case err := <-done:
 			require.NoError(t, err, "caller %d must resolve on the shared Ack", i)
-		case <-time.After(5 * time.Second):
+		case <-time.After(eventWaitLimit):
 			t.Fatalf("caller %d did not complete after the shared Ack", i)
 		}
 	}
@@ -344,21 +407,21 @@ func TestChannelRekeyConcurrentCallersShareOneRequest(t *testing.T) {
 // covers the reject path of resolveRekey's broadcast (the accept path is
 // covered by TestChannelRekeyConcurrentCallersShareOneRequest).
 func TestChannelRekeyConcurrentCallersShareReject(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 2)
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, initiatorPub, false, 0)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, request, false, 0)
 
 	for i := 0; i < 2; i++ {
 		select {
 		case err := <-done:
 			require.NoError(t, err, "caller %d must resolve on the shared Reject", i)
-		case <-time.After(5 * time.Second):
+		case <-time.After(eventWaitLimit):
 			t.Fatalf("caller %d did not complete after the shared Reject", i)
 		}
 	}
@@ -385,7 +448,7 @@ func TestChannelRekeyConcurrentCallersShareReject(t *testing.T) {
 // unanswered by the single-outcome peer stub, so that caller blocked until the
 // sessionVerifyTimeout watchdog fired and cancelled the whole channel.
 func TestChannelRekeyRejectArmsBackoffBeforeWakingWaiters(t *testing.T) {
-	ch, _, _ := pairedRekeyChannel(t)
+	ch, _, _, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	// Stand in for an in-flight rekey whose starter has not woken yet: a
@@ -420,7 +483,7 @@ func TestChannelRekeyRejectArmsBackoffBeforeWakingWaiters(t *testing.T) {
 }
 
 func TestChannelRekeyRejectLeavesChannelOpen(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 
 	sendNonceBefore := ch.session.Send.Nonce()
 	recvNonceBefore := ch.session.Receive.Nonce()
@@ -431,13 +494,13 @@ func TestChannelRekeyRejectLeavesChannelOpen(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, false)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, false)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 
@@ -454,7 +517,7 @@ func TestChannelRekeyTimeoutCancelsChannel(t *testing.T) {
 	// watchdog test rather than after it.
 	t.Parallel()
 
-	ch, peer, peerWS := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
+	ch, peer, peerWS, _ := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -499,7 +562,7 @@ func TestChannelRekeyTimeoutCancelsBeforeWakingWaiters(t *testing.T) {
 	resume := sync.OnceFunc(func() { close(resumeCancel) })
 	t.Cleanup(resume)
 
-	ch, _, _ := pairedRekeyChannel(t,
+	ch, _, _, _ := pairedRekeyChannel(t,
 		withRekeyWatchdog(50*time.Millisecond),
 		withCancelGate(cancelling, resumeCancel))
 
@@ -515,7 +578,7 @@ func TestChannelRekeyTimeoutCancelsBeforeWakingWaiters(t *testing.T) {
 
 	select {
 	case <-cancelling:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("the watchdog did not cancel the channel at its deadline")
 	}
 	// The watchdog is parked inside ch.cancel: it has claimed the rekey but the
@@ -529,7 +592,7 @@ func TestChannelRekeyTimeoutCancelsBeforeWakingWaiters(t *testing.T) {
 		require.Error(t, outcome.err)
 		assert.Contains(t, outcome.err.Error(), "rekey timeout")
 		assert.True(t, ch.Closed(), "the cancel must be visible to every waiter it wakes")
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("the watchdog did not broadcast the timeout after the cancel")
 	}
 }
@@ -546,7 +609,7 @@ func TestChannelRekeyTimeoutCancelsBeforeWakingWaiters(t *testing.T) {
 // TestChannelRekeyTimeoutCancelsChannel's Closed() assertion for a flake in its
 // error-message assertion.
 func TestChannelRekeyAwaitPrefersTerminalOutcomeOverCancel(t *testing.T) {
-	ch, _, _ := pairedRekeyChannel(t)
+	ch, _, _, _ := pairedRekeyChannel(t)
 
 	waiter := make(chan rekeyOutcome, 1)
 	ch.mu.Lock()
@@ -574,13 +637,13 @@ func TestChannelRekeyAwaitPrefersTerminalOutcomeOverCancel(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "rekey timeout",
 			"the claimant's cause must win over the cancel it performed")
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("await did not surface the claimed resolution's outcome")
 	}
 }
 
 func TestChannelRekeyRejectSuppressesAgeOnlyRetry(t *testing.T) {
-	ch, _, peerWS := pairedRekeyChannel(t)
+	ch, _, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 	ch.rekey.rekeyNotBefore = time.Now().Add(contracts.MinRekeyInterval)
 
@@ -593,7 +656,7 @@ func TestChannelRekeyRejectSuppressesAgeOnlyRetry(t *testing.T) {
 }
 
 func TestChannelRekeyRejectFallsBackToDefaultBackoff(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -601,14 +664,14 @@ func TestChannelRekeyRejectFallsBackToDefaultBackoff(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
 	// Legacy peer: empty retry_after_ms → DefaultRejectBackoff.
-	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, initiatorPub, false, 0)
+	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, request, false, 0)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 
@@ -618,7 +681,7 @@ func TestChannelRekeyRejectFallsBackToDefaultBackoff(t *testing.T) {
 }
 
 func TestChannelRekeyRejectHonorsRetryAfter(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -626,14 +689,14 @@ func TestChannelRekeyRejectHonorsRetryAfter(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
 	const retryMs int64 = 180_000
-	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, initiatorPub, false, retryMs)
+	sendRekeyOutcomeWithRetry(t, peer, peerWS, corr, request, false, retryMs)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 
@@ -648,7 +711,7 @@ func TestChannelRekeyCallerCtxCancelKeepsChannelOpen(t *testing.T) {
 	// tear down the shared channel (that would RST every multiplexed Conn). The
 	// Ack wait is bound to ch.ctx + sessionVerifyTimeout; once Ack arrives,
 	// ensureRekeyed succeeds and the caller sees its cancel on the subsequent send.
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -657,21 +720,21 @@ func TestChannelRekeyCallerCtxCancelKeepsChannelOpen(t *testing.T) {
 		done <- ch.ensureRekeyed(ctx)
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
 	cancel()
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err, "Ack must complete rekey even after caller ctx cancel")
 		assert.False(t, ch.Closed(), "caller ctx cancel must not tear the channel down")
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not return after Ack")
 	}
 }
 
 func TestChannelRekeyDuplicateAckDoesNotDoubleRotate(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -679,13 +742,13 @@ func TestChannelRekeyDuplicateAckDoesNotDoubleRotate(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 
@@ -699,10 +762,8 @@ func TestChannelRekeyDuplicateAckDoesNotDoubleRotate(t *testing.T) {
 		Kind: &leapmuxv1.InnerMessage_RekeyAck{RekeyAck: &leapmuxv1.RekeyAck{}},
 	})
 	require.NoError(t, err)
-	ct, err := peer.Encrypt(pt)
-	require.NoError(t, err)
-	require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS,
-		channelwire.NewChannelMessage("rekey-test", corr, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, ct)))
+	ct := sealChannelPlaintextForTunnel(t, peer, corr, pt)
+	require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS, ct))
 
 	time.Sleep(50 * time.Millisecond)
 	assert.False(t, ch.Closed(), "duplicate Ack must not desync keys")
@@ -716,7 +777,7 @@ func TestChannelRekeyDuplicateAckDoesNotDoubleRotate(t *testing.T) {
 // The channel cancels and the waiting sender observes a terminal error rather
 // than a retryable Reject.
 func TestChannelRekeyAckWithBadResponderEphemeralCancels(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -734,16 +795,14 @@ func TestChannelRekeyAckWithBadResponderEphemeralCancels(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
-	ct, err := peer.Encrypt(pt)
-	require.NoError(t, err)
-	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS,
-		channelwire.NewChannelMessage("rekey-test", corr, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, ct)))
+	ct := sealChannelPlaintextForTunnel(t, peer, corr, pt)
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, ct))
 
 	select {
 	case err := <-done:
 		require.Error(t, err, "bad responder ephemeral must surface a terminal error")
 		assert.True(t, ch.Closed(), "bad responder ephemeral must cancel the channel")
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete after bad Ack")
 	}
 }
@@ -761,7 +820,7 @@ func TestChannelRekeyAckWithBadResponderEphemeralCancels(t *testing.T) {
 // (nil) state after a successful Ack so a regression that re-introduces the
 // snapshot-without-claim shape fails here (and -race catches the rest).
 func TestChannelRekeyAckClaimsMaterial(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -769,13 +828,13 @@ func TestChannelRekeyAckClaimsMaterial(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 
@@ -801,7 +860,7 @@ func TestChannelRekeyConcurrentCallersShareTerminalFailure(t *testing.T) {
 	// watchdog test rather than after it.
 	t.Parallel()
 
-	ch, peer, peerWS := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
+	ch, peer, peerWS, _ := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 2)
@@ -843,7 +902,7 @@ func TestChannelRekeyConcurrentCallersShareTerminalFailure(t *testing.T) {
 }
 
 func TestChannelRekeyPastHardCeilingCancels(t *testing.T) {
-	ch, _, peerWS := pairedRekeyChannel(t)
+	ch, _, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyHardCeiling - time.Second)
 
 	err := ch.ensureRekeyed(context.Background())
@@ -862,7 +921,7 @@ func TestChannelRekeyPastHardCeilingCancels(t *testing.T) {
 // does across a whole multi-chunk message), ensure cannot put a RekeyRequest
 // on the wire between chunks.
 func TestChannelRekeyMuSerializesEnsureAndSend(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	ch.rekey.rekeyMu.Lock() // simulate sendInnerContext mid multi-chunk send
@@ -881,19 +940,19 @@ func TestChannelRekeyMuSerializesEnsureAndSend(t *testing.T) {
 
 	ch.rekey.rekeyMu.Unlock()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete after unlock")
 	}
 }
 
 func TestChannelRekeyRejectPastHardCeilingCancels(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -901,7 +960,7 @@ func TestChannelRekeyRejectPastHardCeilingCancels(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
 	// Simulate the key aging past the hard ceiling while waiting for the Reject
 	// (e.g. a slow peer). lastRekeyAt is rekeyMu-guarded and read under that
 	// lock in awaitRekeyOutcome (which runs on the ensureRekeyed goroutine
@@ -909,20 +968,20 @@ func TestChannelRekeyRejectPastHardCeilingCancels(t *testing.T) {
 	ch.rekey.rekeyMu.Lock()
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyHardCeiling)
 	ch.rekey.rekeyMu.Unlock()
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, false)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, false)
 
 	select {
 	case err := <-done:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "hard ceiling")
 		assert.True(t, ch.Closed(), "Reject past hard ceiling must cancel the channel")
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("ensureRekeyed did not complete")
 	}
 }
 
 func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now()
 	ch.rekey.rekeyNotBefore = time.Now().Add(contracts.MinRekeyInterval)
 	ch.session.Send.SetNonceForTest(contracts.SoftNonceLimit + 1)
@@ -933,13 +992,13 @@ func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
 		done <- ch.ensureRekeyed(context.Background())
 	}()
 
-	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
-	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
+	corr, request := awaitRekeyRequest(t, peer, peerWS)
+	sendRekeyOutcome(t, peer, peerWS, corr, request, true)
 
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("soft-nonce rekey did not complete")
 	}
 	assert.False(t, ch.Closed())
@@ -959,12 +1018,14 @@ func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
 // Asserted through the waiter, because that is what a stale Ack must NOT
 // resolve: the live rekey has to stay in flight.
 func TestChannelRekeyIgnoresAStaleAck(t *testing.T) {
-	ch, _, _ := pairedRekeyChannel(t)
+	ch, _, _, _ := pairedRekeyChannel(t)
 
 	waiter := make(chan rekeyOutcome, 1)
 	seed, err := noiseutil.GenerateEphemeralX25519Seed()
 	require.NoError(t, err)
-	material := &rekeySecrets{ephemeralSeed: seed, pqShared: []byte("pq")}
+	offer, err := noiseutil.OfferRekeyPQ(nil)
+	require.NoError(t, err)
+	material := &rekeySecrets{ephemeralSeed: seed, pq: offer}
 	ch.mu.Lock()
 	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
 	ch.rekey.rekeyMaterial = material
@@ -973,7 +1034,7 @@ func TestChannelRekeyIgnoresAStaleAck(t *testing.T) {
 
 	// An Ack naming the PREVIOUS request id, carrying a well-formed ephemeral so
 	// the only thing that can reject it is the correlation check.
-	ch.handleRekeyAck(41, make([]byte, noiseutil.EphemeralPublicKeySize))
+	ch.handleRekeyAck(41, &leapmuxv1.RekeyAck{DhPub: make([]byte, noiseutil.EphemeralPublicKeySize)})
 
 	assert.Empty(t, waiter, "a stale Ack must not resolve the in-flight rekey")
 	ch.mu.Lock()
@@ -988,7 +1049,7 @@ func TestChannelRekeyIgnoresAStaleAck(t *testing.T) {
 // arm a backoff and drain the waiters of a rekey that is still legitimately in
 // flight, stranding its starter until the watchdog fired.
 func TestChannelRekeyIgnoresAStaleReject(t *testing.T) {
-	ch, _, _ := pairedRekeyChannel(t)
+	ch, _, _, _ := pairedRekeyChannel(t)
 
 	waiter := make(chan rekeyOutcome, 1)
 	ch.mu.Lock()
@@ -1014,7 +1075,7 @@ func TestChannelRekeyIgnoresAStaleReject(t *testing.T) {
 // resolveRekeyTerminal makes that structural: its signature cannot express the
 // arming outcome.
 func TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu(t *testing.T) {
-	ch, _, _ := pairedRekeyChannel(t)
+	ch, _, _, _ := pairedRekeyChannel(t)
 
 	waiter := make(chan rekeyOutcome, 1)
 	ch.mu.Lock()
@@ -1058,4 +1119,101 @@ func TestRekeyWatchdogTimeout_ZeroMeansTheProductionBudget(t *testing.T) {
 	ch.rekey.watchdogTimeout = 250 * time.Millisecond
 	assert.Equal(t, 250*time.Millisecond, ch.rekeyWatchdogTimeout(),
 		"a configured watchdog must be honoured over the fallback")
+}
+
+func TestChannelRekeyPostQuantumRoundTrip(t *testing.T) {
+	ch, peer, peerWS, workerKey := pairedRekeyChannel(t, withPostQuantumRekey())
+	conn := newOpenedConn(ch, "conn-pq-rekey", "example.test", 443)
+	t.Cleanup(func() { _ = conn.Close() })
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
+	done := make(chan error, 1)
+	go func() { done <- ch.ensureRekeyed(context.Background()) }()
+	correlationID, request := awaitRekeyRequest(t, peer, peerWS)
+	require.NotEmpty(t, request.GetMlkemStaticCt())
+	require.NotEmpty(t, request.GetMlkemEphemeralPub())
+	sendRekeyOutcomeWithKey(t, peer, peerWS, workerKey, correlationID, request, true, 0)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(eventWaitLimit):
+		t.Fatal("the post-quantum rekey did not complete")
+	}
+
+	_, err := conn.Write([]byte("after-pq-rekey"))
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), eventWaitLimit)
+	defer cancel()
+	frame, err := channelwire.ReadChannelMessage(ctx, peerWS)
+	require.NoError(t, err)
+	_, err = channelwire.OpenChannelMessage(peer, frame)
+	require.NoError(t, err, "the Worker must decrypt under the new receive key")
+
+	response := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	ch.mu.Lock()
+	ch.pending[900] = response
+	ch.mu.Unlock()
+	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Response{
+		Response: channelwire.NewPayloadResponse([]byte("after")),
+	}})
+	require.NoError(t, err)
+	responseFrame := sealChannelPlaintextForTunnel(t, peer, 900, plaintext)
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, responseFrame))
+	select {
+	case answer := <-response:
+		assert.Equal(t, []byte("after"), answer.GetPayload())
+	case <-time.After(eventWaitLimit):
+		t.Fatal("the initiator did not decrypt the post-rekey response")
+	}
+}
+
+func TestChannelRekeyPostQuantumAckWithoutCiphertextCancels(t *testing.T) {
+	ch, peer, peerWS, _ := pairedRekeyChannel(t, withPostQuantumRekey())
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
+	done := make(chan error, 1)
+	go func() { done <- ch.ensureRekeyed(context.Background()) }()
+	correlationID, _ := awaitRekeyRequest(t, peer, peerWS)
+	seed, err := noiseutil.GenerateEphemeralX25519Seed()
+	require.NoError(t, err)
+	defer noiseutil.Zero(seed)
+	responderPub, err := noiseutil.X25519PublicFromSeed(seed)
+	require.NoError(t, err)
+	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_RekeyAck{
+		RekeyAck: &leapmuxv1.RekeyAck{DhPub: responderPub},
+	}})
+	require.NoError(t, err)
+	frame := sealChannelPlaintextForTunnel(t, peer, correlationID, plaintext)
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, frame))
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(eventWaitLimit):
+		t.Fatal("the malformed Ack did not resolve the rekey")
+	}
+	assert.True(t, ch.Closed())
+}
+
+func TestChannelRekeyClassicAckWithCiphertextCancels(t *testing.T) {
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
+	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
+	done := make(chan error, 1)
+	go func() { done <- ch.ensureRekeyed(context.Background()) }()
+	correlationID, _ := awaitRekeyRequest(t, peer, peerWS)
+	seed, err := noiseutil.GenerateEphemeralX25519Seed()
+	require.NoError(t, err)
+	defer noiseutil.Zero(seed)
+	responderPub, err := noiseutil.X25519PublicFromSeed(seed)
+	require.NoError(t, err)
+	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_RekeyAck{
+		RekeyAck: &leapmuxv1.RekeyAck{DhPub: responderPub, MlkemEphemeralCt: []byte{1}},
+	}})
+	require.NoError(t, err)
+	frame := sealChannelPlaintextForTunnel(t, peer, correlationID, plaintext)
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, frame))
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(eventWaitLimit):
+		t.Fatal("the classic Ack with ML-KEM material did not resolve the rekey")
+	}
+	assert.True(t, ch.Closed())
 }

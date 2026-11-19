@@ -197,8 +197,13 @@
         "hardNonceLimit",
         "x25519PublicKeySizeBytes",
         "mlkemPublicKeySizeBytes",
+        "mlkemCiphertextSizeBytes",
         "slhdsaPublicKeySizeBytes",
-        "slhdsaSignatureSizeBytes"
+        "slhdsaSignatureSizeBytes",
+        "classicProtocolName",
+        "postQuantumProtocolName",
+        "handshakeContextLabel",
+        "handshakeSignatureLabel"
       ],
       "properties": {
         "softNonceLimit": {
@@ -222,6 +227,11 @@
           "minimum": 1,
           "description": "Size of an ML-KEM-1024 encapsulation key. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
         },
+        "mlkemCiphertextSizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an ML-KEM-1024 ciphertext. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
         "slhdsaPublicKeySizeBytes": {
           "type": "integer",
           "minimum": 1,
@@ -231,6 +241,26 @@
           "type": "integer",
           "minimum": 1,
           "description": "Size of an SLH-DSA-SHAKE-256f signature, which authenticates the handshake transcript. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "classicProtocolName": {
+          "type": "string",
+          "pattern": "^Noise_[A-Za-z0-9+]+_[A-Za-z0-9+]+_[A-Za-z0-9]+_[A-Za-z0-9]+$",
+          "description": "Noise protocol name for classic channel handshakes. The name identifies the handshake pattern and cryptographic algorithms, and starts the handshake hash."
+        },
+        "postQuantumProtocolName": {
+          "type": "string",
+          "pattern": "^Noise_[A-Za-z0-9+]+_[A-Za-z0-9+]+_[A-Za-z0-9]+_[A-Za-z0-9]+$",
+          "description": "Noise protocol name for post-quantum channel handshakes. The name identifies the handshake pattern and cryptographic algorithms, and starts the handshake hash."
+        },
+        "handshakeContextLabel": {
+          "type": "string",
+          "pattern": "^[a-z0-9.]+$",
+          "description": "Versioned domain-separation label in the channel handshake prologue, followed by a zero byte and the Worker id."
+        },
+        "handshakeSignatureLabel": {
+          "type": "string",
+          "pattern": "^[a-z0-9.]+$",
+          "description": "Versioned domain-separation label in the post-quantum handshake signature, followed by a zero byte and the handshake hash."
         }
       }
     },

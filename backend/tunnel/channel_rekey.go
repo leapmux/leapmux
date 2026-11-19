@@ -51,9 +51,9 @@ type rekeyController struct {
 	// on the in-flight rekey's outcome. Multiple callers can wait concurrently
 	// because rekeyMu is released across the Ack RTT. Guarded by ch.mu.
 	rekeyWaiters []chan rekeyOutcome
-	// rekeyMaterial holds the fresh ephemeral seed + ML-KEM shared secret
-	// produced when a RekeyRequest is sent, consumed when the matching RekeyAck
-	// arrives. nil outside an in-flight rekey. Guarded by ch.mu.
+	// rekeyMaterial holds the fresh X25519 seed and post-quantum offer produced
+	// when a RekeyRequest is sent, consumed when the matching RekeyAck arrives.
+	// nil outside an in-flight rekey. Guarded by ch.mu.
 	rekeyMaterial *rekeySecrets
 	// rekeyDone is closed when the in-flight rekey resolves (Ack/Reject/send
 	// error/timeout/channel close) so runRekeyTimer retires the instant the
@@ -86,7 +86,7 @@ type rekeyController struct {
 	// retained from GetWorkerHandshakeParams so an in-band rekey can encapsulate
 	// a fresh PQ ciphertext without a second round trip. nil on classical-mode
 	// channels; its presence is the single source of truth for "is this a PQ
-	// channel" (EncapsulateRekeyPQ short-circuits on len==0). Immutable after
+	// channel" (OfferRekeyPQ returns an empty offer for len==0). Immutable after
 	// OpenChannel.
 	workerMlkemPub []byte
 }
@@ -107,16 +107,11 @@ type rekeyOutcome struct {
 	err error
 }
 
-// rekeySecrets holds the initiator's fresh key-agreement material for one
-// in-flight rekey: the local ephemeral private key (as the raw 32-byte seed the
-// caller owns, so it can be genuinely zeroed — see GenerateEphemeralX25519Seed)
-// and the ML-KEM shared secret (nil in classic mode). The responder's ephemeral
-// public key arrives on the RekeyAck; DeriveRekeySecrets then combines the two
-// into the dhSecret both directions rotate on. Zeroed once the resolution that
-// claims it has consumed it.
+// rekeySecrets holds the initiator's owned X25519 seed and post-quantum offer
+// for one in-flight rekey. The responder's public values arrive on the Ack.
 type rekeySecrets struct {
 	ephemeralSeed []byte
-	pqShared      []byte
+	pq            *noiseutil.RekeyPQOffer
 }
 
 // zero wipes both halves of the in-flight rekey material. Called by every
@@ -127,7 +122,7 @@ func (rm *rekeySecrets) zero() {
 		return
 	}
 	noiseutil.Zero(rm.ephemeralSeed)
-	noiseutil.Zero(rm.pqShared)
+	rm.pq.Zero()
 }
 
 // ensureRekeyed initiates an in-band rekey when age or soft-nonce policy says
@@ -239,10 +234,10 @@ func (ch *Channel) startRekeyLocked(ctx context.Context) (wait chan rekeyOutcome
 	if gerr != nil {
 		return nil, 0, nil, fmt.Errorf("rekey ephemeral: %w", gerr)
 	}
-	pqShared, mlkemCT, perr := noiseutil.EncapsulateRekeyPQ(rk.workerMlkemPub)
+	offer, perr := noiseutil.OfferRekeyPQ(rk.workerMlkemPub)
 	if perr != nil {
 		noiseutil.Zero(ephemeralSeed)
-		return nil, 0, nil, fmt.Errorf("rekey ML-KEM encapsulate: %w", perr)
+		return nil, 0, nil, fmt.Errorf("rekey ML-KEM offer: %w", perr)
 	}
 
 	// Register the waiter, material, and the resolution signal under ch.mu. A
@@ -258,20 +253,18 @@ func (ch *Channel) startRekeyLocked(ctx context.Context) (wait chan rekeyOutcome
 		rk.rekeyWaiters = append(rk.rekeyWaiters, wait)
 		ch.mu.Unlock()
 		noiseutil.Zero(ephemeralSeed)
-		noiseutil.Zero(pqShared)
+		offer.Zero()
 		return wait, 0, nil, nil
 	}
 	rk.rekeyWaiters = []chan rekeyOutcome{wait}
-	rk.rekeyMaterial = &rekeySecrets{ephemeralSeed: ephemeralSeed, pqShared: pqShared}
+	rk.rekeyMaterial = &rekeySecrets{ephemeralSeed: ephemeralSeed, pq: offer}
 	rk.rekeyDone = done
 	reqID = ch.allocateReqIDLocked()
 	rk.rekeyReqID = reqID
 	ch.mu.Unlock()
 
 	// Capture the prepared request for the caller to send after rekeyMu is
-	// released. dhPub is the ephemeral's public point derived from the seed;
-	// mlkemCT is nil in classic mode (EncapsulateRekeyPQ returns nil ciphertext
-	// on an empty mlkemPub).
+	// released. Both ML-KEM fields are empty on a classic channel.
 	dhPub, perr := noiseutil.X25519PublicFromSeed(ephemeralSeed)
 	if perr != nil {
 		// The seed came from GenerateEphemeralX25519Seed, so this should not
@@ -283,8 +276,9 @@ func (ch *Channel) startRekeyLocked(ctx context.Context) (wait chan rekeyOutcome
 	}
 	req := &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
-			DhPub:   dhPub,
-			MlkemCt: mlkemCT,
+			DhPub:             dhPub,
+			MlkemStaticCt:     offer.StaticCiphertext,
+			MlkemEphemeralPub: offer.EphemeralPublicKey,
 		}},
 	}
 	send = func() error {
@@ -580,21 +574,21 @@ func (ch *Channel) rekeyOutcomeError(outcome rekeyOutcome) error {
 }
 
 // handleRekeyAck rotates both CipherStates with the fresh X25519 + ML-KEM
-// entropy and resolves the in-flight rekey (waking every waiter). responderPub
-// is the responder's ephemeral public key from the Ack, combined with the local
-// ephemeral private key stashed at send time. Rotation runs under rekeyMu so it
+// entropy and resolves the in-flight rekey (waking every waiter). The Ack
+// supplies the responder's X25519 public key and ephemeral ML-KEM ciphertext.
+// Rotation runs under rekeyMu so it
 // is serialized against the Encrypt callback in sendInnerRaw; the previous
 // receive key is retained for the grace window so worker data frames still in
 // flight under the old send key decrypt. The state drain, material zeroing, and
 // watchdog disarm all funnel through resolveRekey so a duplicate Ack cannot
 // double-rotate and a resolution path cannot leak the timer.
-func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
+func (ch *Channel) handleRekeyAck(correlationID uint64, ack *leapmuxv1.RekeyAck) {
 	rk := &ch.rekey
 	// CLAIM ownership of the in-flight material under ch.mu by nilling the slot,
 	// not just snapshotting it. runRekeyTimer (separate goroutine) and the
 	// awaitRekeyOutcome ctx.Done arm both resolve the rekey, and every
 	// resolution re-reads the SAME *rekeySecrets pointer and zeroes
-	// rm.ephemeralSeed / rm.pqShared outside any lock (see
+	// rm.ephemeralSeed / rm.pq outside any lock (see
 	// claimRekeyResolution). If we left the slot populated, an Ack landing at
 	// ~the sessionVerifyTimeout boundary would race our DeriveRekeySecrets read
 	// of rm.ephemeralSeed against that rm.zero() write of it — a torn X25519
@@ -616,7 +610,7 @@ func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
 	// We claimed rm by nilling the slot, so the resolution on every exit below
 	// finds rekeyMaterial==nil and will NOT zero it — wiping rm is ours.
 	// A defer guarantees it on every path (bad-responder-pub, derivation
-	// failure, success), so the fresh ephemeral seed + ML-KEM shared secret
+	// failure, success), so the fresh ephemeral seed and post-quantum offer
 	// never linger past the Ack they were generated for.
 	defer rm.zero()
 	if !inFlight {
@@ -624,22 +618,30 @@ func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
 			"channel_id", ch.channelID, "ack_correlation_id", correlationID, "in_flight_correlation_id", staleFor)
 		return
 	}
-	if rm == nil || len(responderPub) != noiseutil.EphemeralPublicKeySize {
+	if rm == nil || len(ack.GetDhPub()) != noiseutil.EphemeralPublicKeySize {
 		// No local material to combine, or the responder's ephemeral is bad:
 		// the channel cannot be advanced safely. Fail closed.
 		slog.Error("rekey ack missing local material or valid responder ephemeral; closing channel",
 			"channel_id", ch.channelID,
-			"responder_pub_len", len(responderPub),
+			"responder_pub_len", len(ack.GetDhPub()),
 		)
 		ch.cancelAndResolveRekeyTerminal(
 			errors.New("rekey ack missing local material or valid responder ephemeral"))
 		return
 	}
 
+	pqSecret, err := rm.pq.Accept(ack.GetMlkemEphemeralCt())
+	if err != nil {
+		slog.Error("rekey ack ML-KEM acceptance failed; closing channel",
+			"channel_id", ch.channelID, "error", err)
+		ch.cancelAndResolveRekeyTerminal(err)
+		return
+	}
+	defer noiseutil.Zero(pqSecret)
 	dhSecret, pq, err := noiseutil.DeriveRekeySecrets(noiseutil.RekeyMaterial{
 		LocalEphemeralPriv: rm.ephemeralSeed,
-		PeerEphemeralPub:   responderPub,
-		PQSharedSecret:     rm.pqShared,
+		PeerEphemeralPub:   ack.GetDhPub(),
+		PQSharedSecret:     pqSecret,
 	})
 	if err != nil {
 		slog.Error("rekey ack DH derivation failed; closing channel",

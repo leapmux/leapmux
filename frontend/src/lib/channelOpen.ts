@@ -36,7 +36,7 @@ export interface ChannelOpenTransport {
 export interface ChannelOpenSession {
   /** Start the session worker ahead of the handshake, so that it loads while the open waits for the Hub. */
   prepare: () => void
-  beginHandshake: (mode: EncryptionMode, keys: WorkerKeyBundle) => Promise<SessionHandshake>
+  beginHandshake: (workerId: string, mode: EncryptionMode, keys: WorkerKeyBundle) => Promise<SessionHandshake>
   finishHandshake: (handshake: SessionHandshake, params: FinishHandshakeParams) => Promise<void>
   abandonHandshake: (handshake: SessionHandshake) => void
   close: (channelId: string) => void
@@ -132,7 +132,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
     //    the Hub has registered the channel, so a malformed or forged handshake-2
     //    — wrong length, bad AEAD tag, invalid SLH-DSA signature — must roll that
     //    registration back like every later failure.
-    const handshake = await this.deps.session.beginHandshake(mode, keyBundle)
+    const handshake = await this.deps.session.beginHandshake(workerId, mode, keyBundle)
     // Every exit from here either hands the handshake to finishHandshake, which
     // spends it, or abandons it, so that its state never outlives the open.
     let handshakeHeld = true

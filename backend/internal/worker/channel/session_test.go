@@ -3,7 +3,6 @@ package channel
 import (
 	"bytes"
 	"context"
-	"crypto/ecdh"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,6 +36,8 @@ import (
 // happens AFTER the channel opens, so each announces the ordinary
 // non-administrative grant. A test that means to exercise a narrower one says
 // so at its own call site.
+const testWorkerID = "worker-test"
+
 var testChannelGrant = authscope.ScopesToWire(authscope.NonAdminGrant())
 
 // collectSender collects all ConnectRequest messages sent by the channel manager.
@@ -92,7 +93,7 @@ func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int
 	require.NoError(t, err)
 
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, maxIncompleteChunked)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, maxIncompleteChunked)
 	// Tests that exercise the size cap inject a reassembled ceiling directly
 	// so both the sender and the reassembler pick it up at HandleOpen.
 	if maxMessageSize > 0 {
@@ -101,15 +102,19 @@ func setupTestManagerWith(t *testing.T, maxMessageSize, maxIncompleteChunked int
 	return mgr, ck, sender
 }
 
+func startTestHandshake(t *testing.T, ck *noiseutil.CompositeKeypair) (*noiseutil.HandshakeState, []byte, error) {
+	t.Helper()
+	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	return noiseutil.InitiatorHandshake1(testWorkerID, ck.X25519Public, ck.MlkemPublicKeyBytes(), slhdsaPub)
+}
+
 // performHandshake runs a full hybrid Noise_NK handshake between initiator and responder (Manager).
 func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair, channelID, userID string) *noiseutil.Session {
 	t.Helper()
 
-	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
-	require.NoError(t, err)
-
 	// Initiator creates msg1.
-	hs, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	hs, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 
 	// Responder (Manager) handles open.
@@ -127,65 +132,60 @@ func performHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair
 		"worker must echo the effective max_message_size")
 
 	// Initiator completes handshake.
-	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, resp.GetHandshakePayload(), slhdsaPub)
+	initiatorSession, err := hs.Finish(resp.GetHandshakePayload())
 	require.NoError(t, err)
 
 	return initiatorSession
 }
 
-// rekeyInitiator is the initiator-side state of one in-band rekey, mirroring
-// tunnel.Channel: a fresh ephemeral private key plus the ML-KEM shared secret
-// encapsulated under the worker's static key. Pass to initiatorStartRekey /
-// initiatorApplyAck to drive the worker's handleRekeyRequest in tests.
+// rekeyInitiator mirrors the tunnel's owned ephemeral seed and PQ offer.
 type rekeyInitiator struct {
-	ephemeral *ecdh.PrivateKey
-	pqShared  []byte
+	ephemeralSeed []byte
+	pq            *noiseutil.RekeyPQOffer
 }
 
-// initiatorStartRekey builds a fresh-DH + ML-KEM RekeyRequest the way
-// tunnel.Channel.initiateRekey does, returning the request envelope and the
-// initiator material to combine with the responder's Ack.
 func initiatorStartRekey(t *testing.T, workerMlkemPub []byte) (*leapmuxv1.InnerMessage, *rekeyInitiator) {
 	t.Helper()
-	eph, err := noiseutil.GenerateEphemeralX25519()
+	seed, err := noiseutil.GenerateEphemeralX25519Seed()
 	require.NoError(t, err)
-	pq, ct, err := noiseutil.EncapsulateRekeyPQ(workerMlkemPub)
+	publicKey, err := noiseutil.X25519PublicFromSeed(seed)
+	require.NoError(t, err)
+	offer, err := noiseutil.OfferRekeyPQ(workerMlkemPub)
 	require.NoError(t, err)
 	return &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
-			DhPub:   eph.PublicKey().Bytes(),
-			MlkemCt: ct,
+			DhPub:             publicKey,
+			MlkemStaticCt:     offer.StaticCiphertext,
+			MlkemEphemeralPub: offer.EphemeralPublicKey,
 		}},
-	}, &rekeyInitiator{ephemeral: eph, pqShared: pq}
+	}, &rekeyInitiator{ephemeralSeed: seed, pq: offer}
 }
 
-// initiatorApplyAck combines the responder's Ack ephemeral with the initiator's
-// stashed material and rotates both initiator directions, mirroring
-// tunnel.Channel.handleRekeyAck.
-func initiatorApplyAck(t *testing.T, init *noiseutil.Session, ri *rekeyInitiator, responderPub []byte) {
+func initiatorApplyAck(t *testing.T, init *noiseutil.Session, ri *rekeyInitiator, ack *leapmuxv1.RekeyAck) {
 	t.Helper()
+	defer noiseutil.Zero(ri.ephemeralSeed)
+	pqSecret, err := ri.pq.Accept(ack.GetMlkemEphemeralCt())
+	require.NoError(t, err)
+	defer noiseutil.Zero(pqSecret)
 	dh, pq, err := noiseutil.DeriveRekeySecrets(noiseutil.RekeyMaterial{
-		LocalEphemeralPriv: ri.ephemeral.Bytes(),
-		PeerEphemeralPub:   responderPub,
-		PQSharedSecret:     ri.pqShared,
+		LocalEphemeralPriv: ri.ephemeralSeed,
+		PeerEphemeralPub:   ack.GetDhPub(),
+		PQSharedSecret:     pqSecret,
 	})
 	require.NoError(t, err)
-	// Give each side its own copy: DeriveRekeySecrets returns slices backed by
-	// fresh buffers, but rekeyWithSecret zeroes them — pass copies so the second
-	// call sees intact bytes.
 	dh2 := append([]byte(nil), dh...)
 	pq2 := append([]byte(nil), pq...)
 	init.RekeySendWithSecret(dh, pq)
 	init.RekeyReceiveWithSecret(dh2, pq2)
 }
 
-// performClassicalHandshake runs a classical (X25519-only) Noise_NK handshake
-// against a classic-mode Manager, returning the initiator session. Used to
-// exercise the classic branch of handleRekeyRequest (which skips ML-KEM and
-// runs the single-stage HKDF rekey).
+// performClassicalHandshake runs a classic handshake against a classic-mode
+// Manager. Its rekey uses X25519 and no ML-KEM exchange.
 func performClassicalHandshake(t *testing.T, mgr *Manager, ck *noiseutil.CompositeKeypair, channelID, userID string) *noiseutil.Session {
 	t.Helper()
-	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1(ck.X25519Public)
+	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1(testWorkerID, ck.X25519Public, ck.MlkemPublicKeyBytes(), slhdsaPub)
 	require.NoError(t, err)
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        channelID,
@@ -196,25 +196,148 @@ func performClassicalHandshake(t *testing.T, mgr *Manager, ck *noiseutil.Composi
 	})
 	require.Empty(t, resp.GetError(), "classical handshake should succeed")
 	require.NotEmpty(t, resp.GetHandshakePayload())
-	initiator, err := noiseutil.ClassicalInitiatorHandshake2(hs, resp.GetHandshakePayload())
+	initiator, err := hs.Finish(resp.GetHandshakePayload())
 	require.NoError(t, err)
 	return initiator
 }
 
-// initiatorStartClassicalRekey builds a fresh-DH RekeyRequest with NO ML-KEM
-// ciphertext, the way a classical-mode tunnel.Channel does (workerMlkemPub is
-// nil → EncapsulateRekeyPQ returns nil). Mirrors initiatorStartRekey for the
-// classic path.
+func TestHandleMessage_ClosesTheChannelOnAChangedEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		sealChannelID string
+		flags         leapmuxv1.ChannelMessageFlags
+		change        func(*leapmuxv1.ChannelMessage)
+	}{
+		{
+			name: "correlation id",
+			change: func(msg *leapmuxv1.ChannelMessage) {
+				msg.CorrelationId = 8
+			},
+		},
+		{
+			name:  "a first chunk loses MORE",
+			flags: leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+			change: func(msg *leapmuxv1.ChannelMessage) {
+				msg.Flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
+			},
+		},
+		{
+			name: "a final frame gains MORE",
+			change: func(msg *leapmuxv1.ChannelMessage) {
+				msg.Flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
+			},
+		},
+		{
+			name:          "channel id",
+			sealChannelID: "other-channel",
+			change: func(msg *leapmuxv1.ChannelMessage) {
+				msg.ChannelId = "ch-envelope"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, key, sender := setupTestManager(t)
+			mgr.SetDispatcher(NewDispatcher())
+			session := performHandshake(t, mgr, key, "ch-envelope", "user-1")
+			plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Request{
+				Request: &leapmuxv1.InnerRpcRequest{Method: "test"},
+			}})
+			require.NoError(t, err)
+			channelID := tc.sealChannelID
+			if channelID == "" {
+				channelID = "ch-envelope"
+			}
+			msg, err := channelwire.SealChannelMessage(session, channelID, 7, tc.flags, plaintext)
+			require.NoError(t, err)
+			tc.change(msg)
+
+			mgr.HandleMessage(msg)
+
+			mgr.mu.RLock()
+			_, exists := mgr.sessions["ch-envelope"]
+			mgr.mu.RUnlock()
+			assert.False(t, exists, "a changed envelope must close the channel")
+			var closeFrames int
+			for _, sent := range sender.messages() {
+				if sent.GetChannelMessageResp().GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE {
+					closeFrames++
+				}
+			}
+			assert.Equal(t, 1, closeFrames)
+			mgr.HandleMessage(msg)
+		})
+	}
+}
+
+func TestHandleOpen_RefusesAHandshakeForAnotherWorker(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	firstSender := newCollectSender()
+	secondSender := newCollectSender()
+	_ = NewManager("worker-a", key, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, firstSender.send, firstSender.trySend, 0, 0)
+	second := NewManager("worker-b", key, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, secondSender.send, secondSender.trySend, 0, 0)
+
+	slhdsaPub, err := key.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	hs, message1, err := noiseutil.InitiatorHandshake1("worker-a", key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+	require.NoError(t, err)
+	defer hs.Clear()
+	resp := second.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-other-worker",
+		UserId:           "user-1",
+		HandshakePayload: message1,
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
+		GrantedScopes:    testChannelGrant,
+	})
+
+	assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_HANDSHAKE_FAILED, resp.GetErrorCode())
+	second.mu.RLock()
+	_, exists := second.sessions["ch-other-worker"]
+	second.mu.RUnlock()
+	assert.False(t, exists)
+}
+
+func TestHandleOpen_RefusesAHandshakeOfTheOtherMode(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPub, err := key.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	for _, managerMode := range []leapmuxv1.EncryptionMode{
+		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+	} {
+		t.Run(managerMode.String(), func(t *testing.T) {
+			sender := newCollectSender()
+			mgr := NewManager(testWorkerID, key, managerMode, sender.send, sender.trySend, 0, 0)
+			var hs *noiseutil.HandshakeState
+			var message1 []byte
+			if managerMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
+				hs, message1, err = noiseutil.InitiatorHandshake1(testWorkerID, key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+			} else {
+				hs, message1, err = noiseutil.ClassicalInitiatorHandshake1(testWorkerID, key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+			}
+			require.NoError(t, err)
+			defer hs.Clear()
+			resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+				ChannelId:        "ch-wrong-mode",
+				UserId:           "user-1",
+				HandshakePayload: message1,
+				MaxMessageSize:   uint64(contracts.MaxMessageSize),
+				GrantedScopes:    testChannelGrant,
+			})
+			assert.Equal(t, leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_HANDSHAKE_FAILED, resp.GetErrorCode())
+			mgr.mu.RLock()
+			_, exists := mgr.sessions["ch-wrong-mode"]
+			mgr.mu.RUnlock()
+			assert.False(t, exists)
+		})
+	}
+}
+
+// initiatorStartClassicalRekey builds a classic rekey with empty ML-KEM fields.
 func initiatorStartClassicalRekey(t *testing.T) (*leapmuxv1.InnerMessage, *rekeyInitiator) {
 	t.Helper()
-	eph, err := noiseutil.GenerateEphemeralX25519()
-	require.NoError(t, err)
-	return &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
-			DhPub:   eph.PublicKey().Bytes(),
-			MlkemCt: nil,
-		}},
-	}, &rekeyInitiator{ephemeral: eph, pqShared: nil}
+	return initiatorStartRekey(t, nil)
 }
 
 func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
@@ -226,9 +349,9 @@ func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
 
 	const workerMax = 2 * 1024 * 1024
 	const hubMax = 4 * 1024 * 1024
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-min",
@@ -258,9 +381,9 @@ func TestHandleOpen_TakesHubWhenHubSmallerThanWorker(t *testing.T) {
 
 	const workerMax = 4 * 1024 * 1024
 	const hubMax = 2 * 1024 * 1024
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-hub-wins",
@@ -292,7 +415,7 @@ func TestHandleOpen_NotifiesNegotiatedMaxMessageSize(t *testing.T) {
 
 	const workerMax = 4 * 1024 * 1024
 	const hubMax = 2 * 1024 * 1024
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, workerMax, 0)
 	var seenID string
 	var seen int
 	mgr.SetOnNegotiatedMaxMessageSize(func(channelID string, n int) {
@@ -300,7 +423,7 @@ func TestHandleOpen_NotifiesNegotiatedMaxMessageSize(t *testing.T) {
 		seen = n
 	})
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-notify",
@@ -323,7 +446,7 @@ func TestHandleOpen_ReassembledOverrideClampsMaxPayloadBudget(t *testing.T) {
 	t.Parallel()
 
 	mgr, ck, _ := setupTestManagerWith(t, 100, 0)
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-tiny",
@@ -351,7 +474,7 @@ func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
 	mgr.SetOnReleasedMaxMessageSize(func(string) { perID++ })
 	mgr.SetOnReleasedAllMaxMessageSizes(func() { allCalls++ })
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	for _, id := range []string{"ch-a", "ch-b"} {
 		resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
@@ -362,7 +485,7 @@ func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
 			GrantedScopes:    testChannelGrant,
 		})
 		require.Empty(t, resp.GetError())
-		_, msg1, err = noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+		_, msg1, err = startTestHandshake(t, ck)
 		require.NoError(t, err)
 	}
 
@@ -378,7 +501,7 @@ func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
 	var released []string
 	mgr.SetOnReleasedMaxMessageSize(func(id string) { released = append(released, id) })
 
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	for _, id := range []string{"ch-a", "ch-b"} {
 		resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
@@ -389,7 +512,7 @@ func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
 			GrantedScopes:    testChannelGrant,
 		})
 		require.Empty(t, resp.GetError())
-		_, msg1, err = noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+		_, msg1, err = startTestHandshake(t, ck)
 		require.NoError(t, err)
 	}
 
@@ -402,7 +525,7 @@ func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
 	t.Parallel()
 
 	mgr, ck, _ := setupTestManager(t)
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 
 	t.Run("below floor", func(t *testing.T) {
@@ -440,20 +563,20 @@ func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
 	})
 }
 
-// sendRequest sends an InnerRpcRequest wrapped in InnerMessage via the encrypted channel.
-func sendRequest(t *testing.T, initiatorSession *noiseutil.Session, channelID string, req *leapmuxv1.InnerRpcRequest) []byte {
+func sealChannelPlaintext(t *testing.T, session *noiseutil.Session, channelID string, correlationID uint64, flags leapmuxv1.ChannelMessageFlags, plaintext []byte) *leapmuxv1.ChannelMessage {
 	t.Helper()
+	frame, err := channelwire.SealChannelMessage(session, channelID, correlationID, flags, plaintext)
+	require.NoError(t, err)
+	return frame
+}
 
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_Request{Request: req},
-	}
+// sendRequest returns a sealed InnerRpcRequest frame.
+func sendRequest(t *testing.T, initiatorSession *noiseutil.Session, channelID string, req *leapmuxv1.InnerRpcRequest, correlationID uint64, flags leapmuxv1.ChannelMessageFlags) *leapmuxv1.ChannelMessage {
+	t.Helper()
+	envelope := &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Request{Request: req}}
 	plaintext, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-
-	ciphertext, err := initiatorSession.Encrypt(plaintext)
-	require.NoError(t, err)
-
-	return ciphertext
+	return sealChannelPlaintext(t, initiatorSession, channelID, correlationID, flags, plaintext)
 }
 
 // decryptInnerResponse decrypts and unwraps a response from the sender.
@@ -463,7 +586,7 @@ func decryptInnerResponse(t *testing.T, initiatorSession *noiseutil.Session, msg
 	chMsg := msg.GetChannelMessageResp()
 	require.NotNil(t, chMsg)
 
-	respPlaintext, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
+	respPlaintext, err := channelwire.OpenChannelMessage(initiatorSession, chMsg)
 	require.NoError(t, err)
 
 	var envelope leapmuxv1.InnerMessage
@@ -507,7 +630,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	require.NoError(t, err)
 	sender := newCollectSender()
 	var closeCallbackCount int
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, 0)
 	mgr.SetOnChannelClose(func(id string) {
 		_ = id
 		closeCallbackCount++
@@ -525,7 +648,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 	// Re-open with the same channel id. Build a valid handshake payload
 	// so the rejection happens at the session-table check, not at the
 	// handshake layer (a bad payload would short-circuit earlier).
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        "ch-reuse",
@@ -563,7 +686,7 @@ func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
 
 	// A VALID handshake payload, so the rejection is provably the identity check
 	// and not the handshake layer short-circuiting earlier.
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
@@ -626,15 +749,11 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 	ct := sendRequest(t, initiatorSession, "ch-echo", &leapmuxv1.InnerRpcRequest{
 		Method:  "echo",
 		Payload: []byte("hello"),
-	})
+	}, 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 
 	// Send the encrypted message.
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-echo",
-		Ciphertext:    ct,
-		CorrelationId: 42,
-	})
+	mgr.HandleMessage(ct)
 
 	// Wait for the async handler to send the response.
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -668,14 +787,9 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 	ct1 := sendRequest(t, initiatorSession, "ch-flags", &leapmuxv1.InnerRpcRequest{
 		Method:  "echo",
 		Payload: []byte("dropped"),
-	})
+	}, 41, leapmuxv1.ChannelMessageFlags(3))
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-flags",
-		Ciphertext:    ct1,
-		CorrelationId: 41,
-		Flags:         leapmuxv1.ChannelMessageFlags(3), // MORE|CLOSE combined
-	})
+	mgr.HandleMessage(ct1)
 	assert.Len(t, sender.messages(), msgsBefore, "an out-of-spec frame must produce no response")
 
 	// Frame 2: the NEXT ciphertext from the same initiator session still
@@ -684,12 +798,8 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 	ct2 := sendRequest(t, initiatorSession, "ch-flags", &leapmuxv1.InnerRpcRequest{
 		Method:  "echo",
 		Payload: []byte("delivered"),
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-flags",
-		Ciphertext:    ct2,
-		CorrelationId: 42,
-	})
+	}, 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(ct2)
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	require.Greater(t, len(msgs), msgsBefore)
 	innerResp := decryptInnerResponse(t, initiatorSession, msgs[len(msgs)-1])
@@ -719,13 +829,9 @@ func TestHandleMessage_NoDispatcher(t *testing.T) {
 
 	ct := sendRequest(t, initiatorSession, "ch-no-disp", &leapmuxv1.InnerRpcRequest{
 		Method: "anything",
-	})
+	}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-no-disp",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	mgr.HandleMessage(ct)
 
 	// Wait for async UNIMPLEMENTED error response. It is the session's FIRST
 	// message: with the identity claim gone, a request needs no preceding exchange.
@@ -760,12 +866,8 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 
 	// No claim: the very first encrypted message is a request.
 	session := performHandshake(t, mgr, kp, "ch-noclaim", "hub-user")
-	ct := sendRequest(t, session, "ch-noclaim", &leapmuxv1.InnerRpcRequest{Method: "whoami"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-noclaim",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	ct := sendRequest(t, session, "ch-noclaim", &leapmuxv1.InnerRpcRequest{Method: "whoami"}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(ct)
 
 	select {
 	case userID := <-gotUserID:
@@ -799,20 +901,16 @@ func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
 	mgr.SetDispatcher(dispatcher)
 
 	session := performHandshake(t, mgr, kp, "ch-wide", "user-1")
-	ct := sendRequest(t, session, "ch-wide", &leapmuxv1.InnerRpcRequest{
-		Method:  "echo",
-		Payload: []byte("hello"),
-	})
-
 	// Past uint32: a 32-bit field would truncate this to 7 and correlate the reply to
 	// whatever request holds id 7.
 	const wideID uint64 = 1<<40 | 7
+	ct := sendRequest(t, session, "ch-wide", &leapmuxv1.InnerRpcRequest{
+		Method:  "echo",
+		Payload: []byte("hello"),
+	}, wideID, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-wide",
-		Ciphertext:    ct,
-		CorrelationId: wideID,
-	})
+	mgr.HandleMessage(ct)
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	require.Greater(t, len(msgs), msgsBefore)
@@ -944,12 +1042,8 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 
 	initiatorSession := performHandshake(t, mgr, kp, "ch-inspect", "user-1")
 
-	ct := sendRequest(t, initiatorSession, "ch-inspect", &leapmuxv1.InnerRpcRequest{Method: "inspect"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-inspect",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	ct := sendRequest(t, initiatorSession, "ch-inspect", &leapmuxv1.InnerRpcRequest{Method: "inspect"}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(ct)
 
 	// Wait for the handler-supplied ctx with a generous deadline so the
 	// dispatcher's `go` doesn't race the assertion.
@@ -991,7 +1085,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, nil, 0, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, blockingSend, nil, 0, 0)
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
@@ -1007,12 +1101,8 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	// response send stays parked in its own goroutine.
 	occupy := sendRequest(t, session, "ch-block", &leapmuxv1.InnerRpcRequest{
 		Method: "slow",
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-block",
-		Ciphertext:    occupy,
-		CorrelationId: 1,
-	})
+	}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(occupy)
 
 	// Wait for that send to enter the blocked state.
 	<-blockCh
@@ -1021,14 +1111,11 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	// promptly even though sendFn is currently blocked by the first response.
 	ct := sendRequest(t, session, "ch-block", &leapmuxv1.InnerRpcRequest{
 		Method: "slow",
-	})
+	}, 0, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 
 	done := make(chan struct{})
 	go func() {
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:  "ch-block",
-			Ciphertext: ct,
-		})
+		mgr.HandleMessage(ct)
 		close(done)
 	}()
 
@@ -1060,13 +1147,13 @@ func TestMultipleChannels(t *testing.T) {
 	session2 := performHandshake(t, mgr, kp, "ch-b", "bob")
 
 	// Send on ch-a.
-	ct1 := sendRequest(t, session1, "ch-a", &leapmuxv1.InnerRpcRequest{Method: "ping"})
+	ct1 := sendRequest(t, session1, "ch-a", &leapmuxv1.InnerRpcRequest{Method: "ping"}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-a", Ciphertext: ct1, CorrelationId: 1})
+	mgr.HandleMessage(ct1)
 
 	// Send on ch-b.
-	ct2 := sendRequest(t, session2, "ch-b", &leapmuxv1.InnerRpcRequest{Method: "ping"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-b", Ciphertext: ct2, CorrelationId: 2})
+	ct2 := sendRequest(t, session2, "ch-b", &leapmuxv1.InnerRpcRequest{Method: "ping"}, 2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(ct2)
 
 	// Wait for both async handlers to complete.
 	msgs := sender.waitForMessages(msgsBefore + 2)
@@ -1096,7 +1183,7 @@ func decryptChannelMessage(t *testing.T, session *noiseutil.Session, msg *leapmu
 	t.Helper()
 	chMsg := msg.GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	pt, err := session.Decrypt(chMsg.GetCiphertext())
+	pt, err := channelwire.OpenChannelMessage(session, chMsg)
 	require.NoError(t, err)
 	return pt, chMsg
 }
@@ -1118,13 +1205,9 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	ct := sendRequest(t, session, "ch-single", &leapmuxv1.InnerRpcRequest{
 		Method:  "echo",
 		Payload: []byte("small"),
-	})
+	}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-single",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	mgr.HandleMessage(ct)
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	lastMsg := msgs[len(msgs)-1]
@@ -1134,7 +1217,7 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 }
 
-func TestSendEncrypted_MultiChunk(t *testing.T) {
+func TestSender_SealsEachChunkWithItsOwnEnvelope(t *testing.T) {
 	t.Parallel()
 
 	mgr, kp, sender := setupTestManager(t)
@@ -1153,13 +1236,9 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 
 	session := performHandshake(t, mgr, kp, "ch-multi", "user-1")
 
-	ct := sendRequest(t, session, "ch-multi", &leapmuxv1.InnerRpcRequest{Method: "big"})
+	ct := sendRequest(t, session, "ch-multi", &leapmuxv1.InnerRpcRequest{Method: "big"}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-multi",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	mgr.HandleMessage(ct)
 
 	// Should get at least 2 messages (chunked).
 	msgs := sender.waitForMessages(msgsBefore + 2)
@@ -1230,13 +1309,9 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 		_ = s.SendResponse(channelwire.NewPayloadResponse(make([]byte, exactPayloadSize)))
 	})
 
-	ct := sendRequest(t, session, "ch-exact", &leapmuxv1.InnerRpcRequest{Method: "exact"})
+	ct := sendRequest(t, session, "ch-exact", &leapmuxv1.InnerRpcRequest{Method: "exact"}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-exact",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	mgr.HandleMessage(ct)
 
 	// Should fit in 1 chunk.
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -1249,13 +1324,9 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 		_ = s.SendResponse(channelwire.NewPayloadResponse(make([]byte, exactPayloadSize+1)))
 	})
 
-	ct2 := sendRequest(t, session, "ch-exact", &leapmuxv1.InnerRpcRequest{Method: "overflow"})
+	ct2 := sendRequest(t, session, "ch-exact", &leapmuxv1.InnerRpcRequest{Method: "overflow"}, 2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	msgsBefore = len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-exact",
-		Ciphertext:    ct2,
-		CorrelationId: 2,
-	})
+	mgr.HandleMessage(ct2)
 
 	// Should produce exactly 2 chunks.
 	msgs = sender.waitForMessages(msgsBefore + 2)
@@ -1306,20 +1377,12 @@ func TestReassembly_E2E(t *testing.T) {
 		chunk := data[offset:end]
 		offset = end
 
-		ct, encErr := session.Encrypt(chunk)
-		require.NoError(t, encErr)
-
 		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
 		if offset < len(data) {
 			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 		}
-
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-reasm",
-			Ciphertext:    ct,
-			CorrelationId: 42,
-			Flags:         flags,
-		})
+		ct := sealChannelPlaintext(t, session, "ch-reasm", 42, flags, chunk)
+		mgr.HandleMessage(ct)
 	}
 
 	// Wait for the handler response.
@@ -1342,37 +1405,20 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 
 	// Send chunks that exceed max size.
 	chunk1 := make([]byte, 60)
-	ct1, err := session.Encrypt(chunk1)
-	require.NoError(t, err)
-
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-maxsize",
-		Ciphertext:    ct1,
-		CorrelationId: 1,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	ct1 := sealChannelPlaintext(t, session, "ch-maxsize", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk1)
+	mgr.HandleMessage(ct1)
 
 	chunk2 := make([]byte, 60)
-	ct2, err := session.Encrypt(chunk2)
-	require.NoError(t, err)
+	ct2 := sealChannelPlaintext(t, session, "ch-maxsize", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk2)
 
 	// This should be dropped (total 120 > 100 max).
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-maxsize",
-		Ciphertext:    ct2,
-		CorrelationId: 1,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	mgr.HandleMessage(ct2)
 
 	// Subsequent messages on other correlation IDs should still work: the oversize
 	// drop errors only its own request, never the shared channel.
 	before := len(sender.messages())
-	ct3 := sendRequest(t, session, "ch-maxsize", &leapmuxv1.InnerRpcRequest{Method: "anything"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-maxsize",
-		Ciphertext:    ct3,
-		CorrelationId: 2,
-	})
+	ct3 := sendRequest(t, session, "ch-maxsize", &leapmuxv1.InnerRpcRequest{Method: "anything"}, 2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(ct3)
 
 	// An UNIMPLEMENTED error comes back, proving the channel is still functional.
 	msgs := sender.waitForMessages(before + 1)
@@ -1392,42 +1438,22 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 	// Start 2 chunked sequences.
 	for i := uint64(1); i <= 2; i++ {
 		chunk := make([]byte, 10)
-		ct, err := session.Encrypt(chunk)
-		require.NoError(t, err)
-
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-maxinc",
-			Ciphertext:    ct,
-			CorrelationId: i,
-			Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-		})
+		ct := sealChannelPlaintext(t, session, "ch-maxinc", i, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk)
+		mgr.HandleMessage(ct)
 	}
 
 	// 3rd chunked sequence should be silently dropped.
 	chunk := make([]byte, 10)
-	ct, err := session.Encrypt(chunk)
-	require.NoError(t, err)
-
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-maxinc",
-		Ciphertext:    ct,
-		CorrelationId: 3,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	ct := sealChannelPlaintext(t, session, "ch-maxinc", 3, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk)
+	mgr.HandleMessage(ct)
 
 	// Verify the session still works by completing one of the sequences.
 	finalChunk := make([]byte, 10)
-	ctFinal, err := session.Encrypt(finalChunk)
-	require.NoError(t, err)
+	ctFinal := sealChannelPlaintext(t, session, "ch-maxinc", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, finalChunk)
 
 	// This completes correlation 1, freeing a slot. It won't unmarshal cleanly
 	// but proves the reassembly path isn't stuck.
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-maxinc",
-		Ciphertext:    ctFinal,
-		CorrelationId: 1,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
-	})
+	mgr.HandleMessage(ctFinal)
 }
 
 func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
@@ -1449,12 +1475,8 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 	session := performHandshake(t, mgr, kp, "ch-sendmax", "user-1")
 	before := len(sender.messages())
 
-	ct := sendRequest(t, session, "ch-sendmax", &leapmuxv1.InnerRpcRequest{Method: "big"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-sendmax",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	ct := sendRequest(t, session, "ch-sendmax", &leapmuxv1.InnerRpcRequest{Method: "big"}, 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(ct)
 
 	select {
 	case err := <-sendErr:
@@ -1481,28 +1503,15 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 
 	// Send a first chunk within limits (60 bytes).
 	chunk1 := make([]byte, 60)
-	ct1, err := session.Encrypt(chunk1)
-	require.NoError(t, err)
-
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-finalover",
-		Ciphertext:    ct1,
-		CorrelationId: 1,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	ct1 := sealChannelPlaintext(t, session, "ch-finalover", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk1)
+	mgr.HandleMessage(ct1)
 
 	// Send a final chunk that pushes total over the limit (60 + 60 = 120 > 100).
 	chunk2 := make([]byte, 60)
-	ct2, err := session.Encrypt(chunk2)
-	require.NoError(t, err)
+	ct2 := sealChannelPlaintext(t, session, "ch-finalover", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chunk2)
 
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-finalover",
-		Ciphertext:    ct2,
-		CorrelationId: 1,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
-	})
+	mgr.HandleMessage(ct2)
 
 	// Should get a RESOURCE_EXHAUSTED error response.
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -1527,27 +1536,14 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 
 	// Send two MORE chunks that exceed the limit.
 	chunk1 := make([]byte, 60)
-	ct1, err := session.Encrypt(chunk1)
-	require.NoError(t, err)
-
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-errcontent",
-		Ciphertext:    ct1,
-		CorrelationId: 42,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	ct1 := sealChannelPlaintext(t, session, "ch-errcontent", 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk1)
+	mgr.HandleMessage(ct1)
 
 	chunk2 := make([]byte, 60)
-	ct2, err := session.Encrypt(chunk2)
-	require.NoError(t, err)
+	ct2 := sealChannelPlaintext(t, session, "ch-errcontent", 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk2)
 
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-errcontent",
-		Ciphertext:    ct2,
-		CorrelationId: 42,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	mgr.HandleMessage(ct2)
 
 	// Verify the full error response structure.
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -1577,29 +1573,16 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 	// Start 2 chunked sequences.
 	for i := uint64(1); i <= 2; i++ {
 		chunk := make([]byte, 10)
-		ct, err := session.Encrypt(chunk)
-		require.NoError(t, err)
-
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-maxincerr",
-			Ciphertext:    ct,
-			CorrelationId: i,
-			Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-		})
+		ct := sealChannelPlaintext(t, session, "ch-maxincerr", i, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk)
+		mgr.HandleMessage(ct)
 	}
 
 	// 3rd should trigger error response.
 	chunk := make([]byte, 10)
-	ct, err := session.Encrypt(chunk)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, session, "ch-maxincerr", 3, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk)
 
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-maxincerr",
-		Ciphertext:    ct,
-		CorrelationId: 3,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	mgr.HandleMessage(ct)
 
 	// Should get a RESOURCE_EXHAUSTED error response.
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -1621,15 +1604,8 @@ func TestHandleClose_MidChunk(t *testing.T) {
 
 	// Start a chunked sequence.
 	chunk := make([]byte, 10)
-	ct, err := session.Encrypt(chunk)
-	require.NoError(t, err)
-
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-midclose",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
-	})
+	ct := sealChannelPlaintext(t, session, "ch-midclose", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, chunk)
+	mgr.HandleMessage(ct)
 
 	// Close the channel mid-chunk — should not panic.
 	require.NotPanics(t, func() {
@@ -1653,7 +1629,7 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	var closedMu sync.Mutex
 	var closedChannels []string
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, sender.trySend, 0, 0)
 	mgr.SetOnChannelClose(func(channelID string) {
 		closedMu.Lock()
 		closedChannels = append(closedChannels, channelID)
@@ -1691,13 +1667,8 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 	closedMu.Unlock()
 
 	// Verify subsequent messages for this channel are ignored.
-	ct, encErr := session.Encrypt([]byte("should be ignored"))
-	require.NoError(t, encErr)
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-decrypt-fail",
-		Ciphertext:    ct,
-		CorrelationId: 43,
-	})
+	ct := sealChannelPlaintext(t, session, "ch-decrypt-fail", 43, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte("should be ignored"))
+	mgr.HandleMessage(ct)
 
 	// No additional messages should have been sent.
 	assert.Len(t, sender.messages(), countBefore+1)
@@ -1728,18 +1699,12 @@ func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
 
 	sendChunk := func(size int, more bool) {
 		t.Helper()
-		ct, err := session.Encrypt(make([]byte, size))
-		require.NoError(t, err)
 		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
 		if more {
 			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 		}
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     channelID,
-			Ciphertext:    ct,
-			CorrelationId: correlationID,
-			Flags:         flags,
-		})
+		ct := sealChannelPlaintext(t, session, channelID, correlationID, flags, make([]byte, size))
+		mgr.HandleMessage(ct)
 	}
 
 	buffer := func() *channelwire.ChunkBuffer {
@@ -1918,7 +1883,7 @@ func TestHandleRekeyRequest_LogsAFailedReplyAtTheLevelOfItsCause(t *testing.T) {
 				sent.Add(1)
 				return writeFailed
 			}
-			mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sendFn, func(*leapmuxv1.ConnectRequest) bool { return true }, 0, 0)
+			mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sendFn, func(*leapmuxv1.ConnectRequest) bool { return true }, 0, 0)
 			const channelID = "ch-rekey-reply"
 			t.Cleanup(func() { mgr.HandleClose(channelID) })
 			performHandshake(t, mgr, ck, channelID, "user-rekey-reply")
@@ -2198,7 +2163,7 @@ func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
 
 	// Peer decryptability in arrival order.
 	for _, fr := range got {
-		_, err := initiatorSession.Decrypt(fr.GetCiphertext())
+		_, err := channelwire.OpenChannelMessage(initiatorSession, fr)
 		require.NoError(t, err, "peer must decrypt every frame in arrival order")
 	}
 }
@@ -2404,7 +2369,7 @@ func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
 
 	sender := newCollectSender()
 	var mgr *Manager
-	mgr = NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, func(msg *leapmuxv1.ConnectRequest) bool {
+	mgr = NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, func(msg *leapmuxv1.ConnectRequest) bool {
 		chMsg := msg.GetChannelMessageResp()
 		require.NotNil(t, chMsg)
 		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, chMsg.GetFlags())
@@ -2438,6 +2403,46 @@ func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
 	assert.Equal(t, []string{"trySend", "handleClose"}, got)
 }
 
+func TestHandleMessage_RekeyPostQuantumRoundTrip(t *testing.T) {
+	mgr, key, sender := setupTestManager(t)
+	dispatcher := NewDispatcher()
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, writer ResponseWriter) {
+		_ = writer.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
+	})
+	mgr.SetDispatcher(dispatcher)
+	const channelID = "ch-pq-rekey"
+	initiator := performHandshake(t, mgr, key, channelID, "user-1")
+	mgr.mu.RLock()
+	sess := mgr.sessions[channelID]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
+
+	envelope, material := initiatorStartRekey(t, key.MlkemPublicKeyBytes())
+	frame, err := encryptInner(t, initiator, envelope, channelID, 55, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	require.NoError(t, err)
+	mgr.HandleMessage(frame)
+	messages := sender.waitForMessages(1)
+	ackFrame := messages[0].GetChannelMessageResp()
+	plaintext, err := channelwire.OpenChannelMessage(initiator, ackFrame)
+	require.NoError(t, err)
+	var ackEnvelope leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plaintext, &ackEnvelope))
+	ack := ackEnvelope.GetRekeyAck()
+	require.NotNil(t, ack)
+	require.NotEmpty(t, ack.GetMlkemEphemeralCt())
+	initiatorApplyAck(t, initiator, material, ack)
+
+	request := sendRequest(t, initiator, channelID, &leapmuxv1.InnerRpcRequest{
+		Method:  "echo",
+		Payload: []byte("after"),
+	}, 56, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(request)
+	messages = sender.waitForMessages(2)
+	response := decryptInnerResponse(t, initiator, messages[1])
+	assert.Equal(t, []byte("after"), response.GetPayload())
+}
+
 func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	t.Parallel()
 
@@ -2457,27 +2462,22 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 		envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 		pt, err := proto.Marshal(envelope)
 		require.NoError(t, err)
-		ct, err := initiator.Encrypt(pt)
-		require.NoError(t, err)
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-rekey",
-			Ciphertext:    ct,
-			CorrelationId: corr,
-		})
+		ct := sealChannelPlaintext(t, initiator, "ch-rekey", corr, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
+		mgr.HandleMessage(ct)
 		return ri
 	}
 
-	decryptOutcome := func(msg *leapmuxv1.ConnectRequest) (kind string, retryAfterMs int64, responderPub []byte) {
+	decryptOutcome := func(msg *leapmuxv1.ConnectRequest) (kind string, retryAfterMs int64, ack *leapmuxv1.RekeyAck) {
 		t.Helper()
 		chMsg := msg.GetChannelMessageResp()
 		require.NotNil(t, chMsg)
-		pt, err := initiator.Decrypt(chMsg.GetCiphertext())
+		pt, err := channelwire.OpenChannelMessage(initiator, chMsg)
 		require.NoError(t, err)
 		var envelope leapmuxv1.InnerMessage
 		require.NoError(t, proto.Unmarshal(pt, &envelope))
 		switch k := envelope.GetKind().(type) {
 		case *leapmuxv1.InnerMessage_RekeyAck:
-			return "ack", 0, k.RekeyAck.GetDhPub()
+			return "ack", 0, k.RekeyAck
 		case *leapmuxv1.InnerMessage_RekeyReject:
 			ms := k.RekeyReject.GetRetryAfterMs()
 			assert.Greater(t, ms, int64(0), "age-only Reject must advertise retry_after_ms")
@@ -2507,10 +2507,10 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	msgsBefore = len(sender.messages())
 	ri := sendRekey(101)
 	msgs = sender.waitForMessages(msgsBefore + 1)
-	kind, _, responderPub := decryptOutcome(msgs[len(msgs)-1])
+	kind, _, ack := decryptOutcome(msgs[len(msgs)-1])
 	assert.Equal(t, "ack", kind)
 	// Initiator applies Ack the way tunnel.Channel does.
-	initiatorApplyAck(t, initiator, ri, responderPub)
+	initiatorApplyAck(t, initiator, ri, ack)
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 	assert.Equal(t, uint64(0), initiator.Send.Nonce())
@@ -2525,13 +2525,9 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	ct := sendRequest(t, initiator, "ch-rekey", &leapmuxv1.InnerRpcRequest{
 		Method:  "echo",
 		Payload: []byte("after-rekey"),
-	})
+	}, 102, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	msgsBefore = len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-rekey",
-		Ciphertext:    ct,
-		CorrelationId: 102,
-	})
+	mgr.HandleMessage(ct)
 	msgs = sender.waitForMessages(msgsBefore + 1)
 	innerResp := decryptInnerResponse(t, initiator, msgs[len(msgs)-1])
 	assert.Equal(t, []byte("after-rekey"), innerResp.GetPayload())
@@ -2564,14 +2560,9 @@ func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
 	}
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, initiator, channelID, 200, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     channelID,
-		Ciphertext:    ct,
-		CorrelationId: 200,
-	})
+	mgr.HandleMessage(ct)
 
 	// sess.cancel() fires synchronously: the session's lifetime context is done.
 	require.Error(t, sess.ctx.Err(), "bad ephemeral must cancel the session lifetime")
@@ -2579,60 +2570,65 @@ func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
 	assert.Equal(t, msgsBefore, len(sender.messages()), "bad ephemeral must send no response")
 }
 
-// TestHandleMessage_RekeyBadMlkemCtCancels covers the PQ-channel validation: a
-// RekeyRequest on a post-quantum channel whose mlkem_ct is not the 1568-byte
-// ML-KEM-1024 ciphertext must cancel the session rather than decapsulating
-// garbage. (This test's harness uses the default POST_QUANTUM manager.)
 func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
 	t.Parallel()
-
-	mgr, kp, _ := setupTestManager(t)
-	// setupTestManager's sender isn't needed — assert via the session lifetime.
-	initiator := performHandshake(t, mgr, kp, "ch-badct", "user-badct")
-
-	const channelID = "ch-badct"
-	mgr.mu.RLock()
-	sess := mgr.sessions[channelID]
-	mgr.mu.RUnlock()
-	require.NotNil(t, sess)
-	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
-
-	// A valid-sized ephemeral so the dh_pub check passes, but a garbage mlkem_ct.
-	eph, err := noiseutil.GenerateEphemeralX25519()
-	require.NoError(t, err)
-	envelope := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: &leapmuxv1.RekeyRequest{
-			DhPub:   eph.PublicKey().Bytes(),
-			MlkemCt: []byte("not-a-valid-mlkem-ciphertext"),
+	for _, tc := range []struct {
+		name   string
+		change func(*leapmuxv1.RekeyRequest)
+	}{
+		{name: "malformed static ciphertext", change: func(req *leapmuxv1.RekeyRequest) {
+			req.MlkemStaticCt = []byte("not-a-valid-mlkem-ciphertext")
 		}},
-	}
-	pt, err := proto.Marshal(envelope)
-	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     channelID,
-		Ciphertext:    ct,
-		CorrelationId: 201,
-	})
+		{name: "ephemeral key of the wrong size", change: func(req *leapmuxv1.RekeyRequest) {
+			req.MlkemEphemeralPub = []byte("too-short")
+		}},
+		{name: "invalid ephemeral key", change: func(req *leapmuxv1.RekeyRequest) {
+			req.MlkemEphemeralPub = bytes.Repeat([]byte{0xFF}, contracts.MlkemPublicKeySize)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, kp, _ := setupTestManager(t)
+			const channelID = "ch-badct"
+			initiator := performHandshake(t, mgr, kp, channelID, "user-badct")
+			mgr.mu.RLock()
+			sess := mgr.sessions[channelID]
+			mgr.mu.RUnlock()
+			require.NotNil(t, sess)
+			sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
 
-	require.Error(t, sess.ctx.Err(), "bad mlkem_ct must cancel the session lifetime")
+			seed, err := noiseutil.GenerateEphemeralX25519Seed()
+			require.NoError(t, err)
+			defer noiseutil.Zero(seed)
+			publicKey, err := noiseutil.X25519PublicFromSeed(seed)
+			require.NoError(t, err)
+			offer, err := noiseutil.OfferRekeyPQ(kp.MlkemPublicKeyBytes())
+			require.NoError(t, err)
+			defer offer.Zero()
+			req := &leapmuxv1.RekeyRequest{
+				DhPub:             publicKey,
+				MlkemStaticCt:     offer.StaticCiphertext,
+				MlkemEphemeralPub: offer.EphemeralPublicKey,
+			}
+			tc.change(req)
+			envelope := &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_RekeyRequest{RekeyRequest: req}}
+			pt, err := proto.Marshal(envelope)
+			require.NoError(t, err)
+			ct := sealChannelPlaintext(t, initiator, channelID, 201, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
+			mgr.HandleMessage(ct)
+			require.Error(t, sess.ctx.Err(), "invalid ML-KEM material must cancel the session lifetime")
+		})
+	}
 }
 
-// TestHandleMessage_RekeyClassicChannel exercises the CLASSIC branch of
-// handleRekeyRequest: a classical (X25519-only) channel sends a RekeyRequest
-// with no mlkem_ct, the worker skips ML-KEM decapsulation and rotates onto the
-// single-stage HKDF(k, dh) derivation, and both peers' post-rekey traffic
-// round-trips. This is the only test covering the classic path — every other
-// rekey test uses the default POST_QUANTUM manager — so it pins the
-// pqSecret==nil agreement between the Go worker and a classic initiator.
+// TestHandleMessage_RekeyClassicChannel covers the classic rekey's empty
+// ML-KEM fields, its fresh-DH-only ratchet, and traffic under the new keys.
 func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
 	t.Parallel()
 
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	sender := newCollectSender()
-	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, sender.send, sender.trySend, 0, 0)
+	mgr := NewManager(testWorkerID, ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, sender.send, sender.trySend, 0, 0)
 
 	const channelID = "ch-classic-rekey"
 	initiator := performClassicalHandshake(t, mgr, ck, channelID, "user-classic")
@@ -2646,38 +2642,43 @@ func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
 	envelope, ri := initiatorStartClassicalRekey(t)
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, initiator, channelID, 300, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     channelID,
-		Ciphertext:    ct,
-		CorrelationId: 300,
-	})
+	mgr.HandleMessage(ct)
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	plain, err := channelwire.OpenChannelMessage(initiator, chMsg)
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
 	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok, "classic rekey must Ack, got %T", resp.GetKind())
 
-	// Both sides rotate onto the single-stage HKDF(k, dh) derivation.
-	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
+	// Both sides rotate onto the classic fresh-DH derivation.
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck)
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 	assert.Equal(t, uint64(0), initiator.Send.Nonce())
 	assert.Equal(t, uint64(0), initiator.Receive.Nonce())
 
 	// Post-rekey traffic round-trips both directions under the new classic key.
-	respPt, err := sess.Session.Encrypt([]byte("classic-after"))
-	require.NoError(t, err)
-	respDec, err := initiator.Decrypt(respPt)
+	respFrame := sealChannelPlaintext(t, sess.Session, channelID, 300, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte("classic-after"))
+	respDec, err := channelwire.OpenChannelMessage(initiator, respFrame)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("classic-after"), respDec)
+
+	sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
+	invalidEnvelope, invalidMaterial := initiatorStartClassicalRekey(t)
+	defer noiseutil.Zero(invalidMaterial.ephemeralSeed)
+	defer invalidMaterial.pq.Zero()
+	invalidEnvelope.GetRekeyRequest().MlkemStaticCt = []byte{1}
+	invalidPlaintext, err := proto.Marshal(invalidEnvelope)
+	require.NoError(t, err)
+	invalidFrame := sealChannelPlaintext(t, initiator, channelID, 301, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, invalidPlaintext)
+	mgr.HandleMessage(invalidFrame)
+	require.Error(t, sess.ctx.Err(), "a classic channel must reject non-empty ML-KEM material")
 }
 
 func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
@@ -2700,26 +2701,21 @@ func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, initiator, "ch-rekey-soft", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-rekey-soft",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	mgr.HandleMessage(ct)
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	plain, err := channelwire.OpenChannelMessage(initiator, chMsg)
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
 	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok, "soft-nonce rekey inside MinRekeyInterval must Ack, got %T", resp.GetKind())
 
-	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck)
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 }
@@ -2747,19 +2743,14 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, initiator, "ch-rekey-send-soft", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-rekey-send-soft",
-		Ciphertext:    ct,
-		CorrelationId: 1,
-	})
+	mgr.HandleMessage(ct)
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	plain, err := channelwire.OpenChannelMessage(initiator, chMsg)
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
@@ -2767,7 +2758,7 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 	require.True(t, ok, "Send soft-nonce via peek must Ack inside MinRekeyInterval, got %T", resp.GetKind())
 	assert.False(t, sess.Session.Receive.NeedsRekey(), "Receive must still be under soft after the Request")
 
-	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck)
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce())
 	assert.Equal(t, uint64(0), sess.Session.Receive.Nonce())
 }
@@ -2806,18 +2797,13 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, initiator, "ch-rekey-frame", 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 
 	msgsBefore := len(sender.messages())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-rekey-frame",
-			Ciphertext:    ct,
-			CorrelationId: 7,
-		})
+		mgr.HandleMessage(ct)
 	}()
 
 	select {
@@ -2839,13 +2825,13 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	plain, err := channelwire.OpenChannelMessage(initiator, chMsg)
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
 	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok)
-	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck)
 	assert.Equal(t, uint64(0), sess.Session.Send.Nonce(), "RekeySend runs under the same frame as Ack")
 }
 
@@ -2871,13 +2857,9 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 		ct := sendRequest(t, initiator, "ch-rekey-load", &leapmuxv1.InnerRpcRequest{
 			Method:  "echo",
 			Payload: []byte(payload),
-		})
+		}, corr, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 		msgsBefore := len(sender.messages())
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-rekey-load",
-			Ciphertext:    ct,
-			CorrelationId: corr,
-		})
+		mgr.HandleMessage(ct)
 		msgs := sender.waitForMessages(msgsBefore + 1)
 		innerResp := decryptInnerResponse(t, initiator, msgs[len(msgs)-1])
 		assert.Equal(t, []byte(payload), innerResp.GetPayload())
@@ -2889,24 +2871,19 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ct, err := initiator.Encrypt(pt)
-	require.NoError(t, err)
+	ct := sealChannelPlaintext(t, initiator, "ch-rekey-load", 2, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-rekey-load",
-		Ciphertext:    ct,
-		CorrelationId: 2,
-	})
+	mgr.HandleMessage(ct)
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	plain, err := initiator.Decrypt(chMsg.GetCiphertext())
+	plain, err := channelwire.OpenChannelMessage(initiator, chMsg)
 	require.NoError(t, err)
 	var resp leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plain, &resp))
 	ack, ok := resp.GetKind().(*leapmuxv1.InnerMessage_RekeyAck)
 	require.True(t, ok)
-	initiatorApplyAck(t, initiator, ri, ack.RekeyAck.GetDhPub())
+	initiatorApplyAck(t, initiator, ri, ack.RekeyAck)
 
 	for i := 0; i < 8; i++ {
 		echo(uint64(10+i), "after-"+string(rune('a'+i)))
@@ -2933,12 +2910,8 @@ func TestHandleMessage_StreamRequestRoutesToBoundController(t *testing.T) {
 
 	openCT := sendRequest(t, initiatorSession, "ch-stream-req", &leapmuxv1.InnerRpcRequest{
 		Method: "stream", Payload: []byte("open"),
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-stream-req",
-		Ciphertext:    openCT,
-		CorrelationId: 7,
-	})
+	}, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(openCT)
 
 	<-ready
 
@@ -2946,13 +2919,9 @@ func TestHandleMessage_StreamRequestRoutesToBoundController(t *testing.T) {
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{
 			StreamRequest: revisionFrame([]byte("update")),
 		},
-	})
+	}, "ch-stream-req", 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	require.NoError(t, err)
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-stream-req",
-		Ciphertext:    updateCT,
-		CorrelationId: 7,
-	})
+	mgr.HandleMessage(updateCT)
 
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
@@ -2972,14 +2941,10 @@ func TestHandleMessage_StreamRequestUnboundIdIsDropped(t *testing.T) {
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{
 			StreamRequest: revisionFrame([]byte("orphan")),
 		},
-	})
+	}, "ch-unbound", 99, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	require.NoError(t, err)
 	// Must not panic or log as "unexpected kind" — unbound is a quiet drop.
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-unbound",
-		Ciphertext:    updateCT,
-		CorrelationId: 99,
-	})
+	mgr.HandleMessage(updateCT)
 	assert.Empty(t, sender.messages())
 }
 
@@ -3004,21 +2969,21 @@ func TestHandleMessage_StreamRequestWithNoActionFailsTheStream(t *testing.T) {
 	mgr.SetDispatcher(dispatcher)
 
 	initiatorSession := performHandshake(t, mgr, kp, "ch-no-action", "user-no-action")
-	openCT := sendRequest(t, initiatorSession, "ch-no-action", &leapmuxv1.InnerRpcRequest{Method: "stream"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-no-action", Ciphertext: openCT, CorrelationId: 7})
+	openCT := sendRequest(t, initiatorSession, "ch-no-action", &leapmuxv1.InnerRpcRequest{Method: "stream"}, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(openCT)
 	<-ready
 
 	frameCT, err := encryptInner(t, initiatorSession, &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{StreamRequest: &leapmuxv1.InnerStreamRequest{}},
-	})
+	}, "ch-no-action", 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 	require.NoError(t, err)
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-no-action", Ciphertext: frameCT, CorrelationId: 7})
+	mgr.HandleMessage(frameCT)
 
 	require.Eventually(t, func() bool { return len(sender.messages()) > 0 }, 30*time.Second, 10*time.Millisecond)
 	first := sender.messages()[0].GetChannelMessageResp()
 	require.NotNil(t, first)
 	assert.Equal(t, uint64(7), first.GetCorrelationId(), "the error answers the stream's correlation id")
-	plaintext, err := initiatorSession.Decrypt(first.GetCiphertext())
+	plaintext, err := channelwire.OpenChannelMessage(initiatorSession, first)
 	require.NoError(t, err)
 	var envelope leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plaintext, &envelope))
@@ -3059,12 +3024,8 @@ func TestHandleClose_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 	initiatorSession := performHandshake(t, mgr, kp, "ch-close-order", "user-close-order")
 	openCT := sendRequest(t, initiatorSession, "ch-close-order", &leapmuxv1.InnerRpcRequest{
 		Method: "stream", Payload: []byte("open"),
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-close-order",
-		Ciphertext:    openCT,
-		CorrelationId: 3,
-	})
+	}, 3, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(openCT)
 	<-ready
 
 	origOnCancel := ctrl.onCancelHook
@@ -3108,12 +3069,8 @@ func TestCloseAll_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 	initiatorSession := performHandshake(t, mgr, kp, "ch-closeall-order", "user-closeall-order")
 	openCT := sendRequest(t, initiatorSession, "ch-closeall-order", &leapmuxv1.InnerRpcRequest{
 		Method: "stream", Payload: []byte("open"),
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-closeall-order",
-		Ciphertext:    openCT,
-		CorrelationId: 3,
-	})
+	}, 3, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(openCT)
 	<-ready
 
 	origOnCancel := ctrl.onCancelHook
@@ -3217,8 +3174,8 @@ func TestCloseSendsNothingFromAStreamThatEndsWithTheChannel(t *testing.T) {
 				mgr.SetDispatcher(dispatcher)
 
 				initiatorSession := performHandshake(t, mgr, kp, channelID, "user-final-frame")
-				openCT := sendRequest(t, initiatorSession, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-				mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, Ciphertext: openCT, CorrelationId: 5})
+				openCT := sendRequest(t, initiatorSession, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"}, 5, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+				mgr.HandleMessage(openCT)
 				<-ready
 				require.Empty(t, sender.messages(), "the stream sends nothing before the close")
 
@@ -3258,12 +3215,8 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 	initiatorSession := performHandshake(t, mgr, kp, "ch-chunk-sr", "user-chunk-sr")
 	openCT := sendRequest(t, initiatorSession, "ch-chunk-sr", &leapmuxv1.InnerRpcRequest{
 		Method: "stream", Payload: []byte("open"),
-	})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ChannelId:     "ch-chunk-sr",
-		Ciphertext:    openCT,
-		CorrelationId: 11,
-	})
+	}, 11, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	mgr.HandleMessage(openCT)
 	<-ready
 
 	payload := bytes.Repeat([]byte("x"), contracts.MaxPlaintextPerChunk+50)
@@ -3281,18 +3234,12 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 		}
 		chunk := envelope[offset:end]
 		offset = end
-		ct, encErr := initiatorSession.Encrypt(chunk)
-		require.NoError(t, encErr)
 		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
 		if offset < len(envelope) {
 			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 		}
-		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ChannelId:     "ch-chunk-sr",
-			Ciphertext:    ct,
-			CorrelationId: 11,
-			Flags:         flags,
-		})
+		ct := sealChannelPlaintext(t, initiatorSession, "ch-chunk-sr", 11, flags, chunk)
+		mgr.HandleMessage(ct)
 	}
 
 	require.Eventually(t, func() bool {
@@ -3325,9 +3272,9 @@ func (c *streamRequestRecordingController) OnCancel() {
 	}
 }
 
-func encryptInner(t *testing.T, session *noiseutil.Session, msg *leapmuxv1.InnerMessage) ([]byte, error) {
+func encryptInner(t *testing.T, session *noiseutil.Session, msg *leapmuxv1.InnerMessage, channelID string, correlationID uint64, flags leapmuxv1.ChannelMessageFlags) (*leapmuxv1.ChannelMessage, error) {
 	t.Helper()
 	plain, err := proto.Marshal(msg)
 	require.NoError(t, err)
-	return session.Encrypt(plain)
+	return channelwire.SealChannelMessage(session, channelID, correlationID, flags, plain)
 }

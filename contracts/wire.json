@@ -40,8 +40,13 @@
     "hardNonceLimit": 4294967295,
     "x25519PublicKeySizeBytes": 32,
     "mlkemPublicKeySizeBytes": 1568,
+    "mlkemCiphertextSizeBytes": 1568,
     "slhdsaPublicKeySizeBytes": 64,
-    "slhdsaSignatureSizeBytes": 49856
+    "slhdsaSignatureSizeBytes": 49856,
+    "classicProtocolName": "Noise_NK+skem_25519+MLKEM1024_ChaChaPoly_BLAKE2b",
+    "postQuantumProtocolName": "Noise_NKhfs+skem+sig_25519+MLKEM1024+SLHDSASHAKE256f_ChaChaPoly_BLAKE2b",
+    "handshakeContextLabel": "leapmux.channel.handshake.v1",
+    "handshakeSignatureLabel": "leapmux.channel.handshake.signature.v1"
   },
   "framing": {
     "lengthPrefixBytes": 4

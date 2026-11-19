@@ -1069,21 +1069,12 @@ func (m *Manager) getConnSender(userID, connID string) SendFunc {
 	return uc.sendFn
 }
 
-// CloseNotification builds the frame that tells a frontend a channel is closed.
-// The CLOSE flag is the sentinel, and the frame carries no ciphertext.
-func CloseNotification(channelID string) *leapmuxv1.ChannelMessage {
-	return &leapmuxv1.ChannelMessage{
-		ChannelId: channelID,
-		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
-	}
-}
-
 // sendCloseNotification sends a channel-close notification to a single sender.
 func sendCloseNotification(sender SendFunc, channelID string) {
 	if sender == nil {
 		return
 	}
-	if err := sender(CloseNotification(channelID)); err != nil {
+	if err := sender(channelwire.CloseNotification(channelID)); err != nil {
 		slog.Debug("failed to send channel close notification",
 			"channel_id", channelID,
 			"error", err,

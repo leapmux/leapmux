@@ -10,13 +10,14 @@ const keys = {
   mlkemPublicKey: new Uint8Array(1568),
   slhdsaPublicKey: new Uint8Array(64),
 }
+const EMPTY = new Uint8Array(0)
 
 /** A host whose endpoint runs the mock handshakes, and a port spawned from it that records each event. */
 function spawnHarness() {
   const pair = createTestSession()
   const host = createInProcessSessionHost({
     handshake1: () => ({
-      message1: new Uint8Array(1616),
+      message1: new Uint8Array(3216),
       handshakeState: blankHybridHandshakeState(),
     }),
     handshake2: async () => pair.initiator,
@@ -46,6 +47,7 @@ async function until(done: () => boolean): Promise<void> {
 async function openSession(h: ReturnType<typeof spawnHarness>): Promise<void> {
   h.port.postMessage({
     type: 'beginHandshake',
+    workerId: 'worker-1',
     requestId: 1,
     mode: EncryptionMode.POST_QUANTUM,
     keys,
@@ -67,6 +69,7 @@ describe('createInProcessSessionHost', () => {
 
     h.port.postMessage({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -104,6 +107,7 @@ describe('createInProcessSessionHost', () => {
 
     h.port.postMessage({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -126,6 +130,7 @@ describe('createInProcessSessionHost', () => {
     })
     const command = {
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -167,9 +172,10 @@ describe('createInProcessSessionHost', () => {
     h.port.terminate()
 
     expect(endpoint.sessionState('ch-1')).toBeUndefined()
-    expect(() => h.pair.initiator.send.encrypt(new Uint8Array(1))).toThrow(/destroyed/)
+    expect(() => h.pair.initiator.send.encrypt(EMPTY, new Uint8Array(1))).toThrow(/destroyed/)
     h.port.postMessage({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 3,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -189,6 +195,7 @@ describe('createInProcessSessionHost', () => {
     await until(() => h.host.inFlight() === 0)
     h.port.postMessage({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 3,
       mode: EncryptionMode.POST_QUANTUM,
       keys,

@@ -63,7 +63,7 @@ function clientHarness(opts?: { spawn?: () => SessionWorkerPort, requestBudgetMs
 
 /** Begin a handshake, and answer it from the worker. */
 async function begin(h: ReturnType<typeof clientHarness>, port = 0) {
-  const pending = h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+  const pending = h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
   const command = h.ports[port]!.commands('beginHandshake').at(-1)!
   h.ports[port]!.emit({
     type: 'handshakeBegun',
@@ -189,7 +189,7 @@ describe('ChannelSessionClient spawn', () => {
 
     h.client.prepare()
     expect(h.spawn).toHaveBeenCalledOnce()
-    void h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    void h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
 
     expect(h.spawn).toHaveBeenCalledOnce()
     expect(h.ports[0]!.commands('beginHandshake')).toHaveLength(1)
@@ -227,12 +227,12 @@ describe('ChannelSessionClient spawn', () => {
     })
 
     expect(() => h.client.prepare()).not.toThrow()
-    await expect(h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys))
+    await expect(h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys))
       .rejects
       .toMatchObject({ source: 'transport', message: 'channel session worker could not start: blocked by CSP' })
     expect(attempts).toBe(2)
 
-    const pending = h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    const pending = h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
     expect(attempts).toBe(3)
     const command = port.commands('beginHandshake')[0]!
     port.emit({
@@ -262,7 +262,7 @@ describe('ChannelSessionClient requests', () => {
 
   it('rejects with a ChannelError that carries the source, the message and the disconnected flag on requestFailed', async () => {
     const h = clientHarness()
-    const pending = h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    const pending = h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
     const { requestId } = h.ports[0]!.commands('beginHandshake')[0]!
 
     h.ports[0]!.emit({ type: 'requestFailed', requestId, error: failure })
@@ -292,7 +292,7 @@ describe('ChannelSessionClient requests', () => {
 
   it('rejects a request whose answer has the wrong type', async () => {
     const h = clientHarness()
-    const pending = h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    const pending = h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
     const { requestId } = h.ports[0]!.commands('beginHandshake')[0]!
 
     h.ports[0]!.emit({ type: 'requestDone', requestId })
@@ -626,7 +626,7 @@ describe('ChannelSessionClient lost worker', () => {
     const h = clientHarness({ requestBudgetMs: 1_000 })
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     let outcome: unknown = 'pending'
-    void h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys).catch((err: unknown) => {
+    void h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys).catch((err: unknown) => {
       outcome = err
     })
 
@@ -646,7 +646,7 @@ describe('ChannelSessionClient lost worker', () => {
     })
     const h = clientHarness()
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    void h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys).catch(() => {})
+    void h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys).catch(() => {})
 
     await vi.advanceTimersByTimeAsync(SESSION_REQUEST_BUDGET_MS - 1)
     expect(h.deps.onWorkerLost).not.toHaveBeenCalled()
@@ -764,7 +764,7 @@ describe('ChannelSessionClient lost worker', () => {
       spawn: () => port,
     })
 
-    await expect(h.client.beginHandshake(EncryptionMode.POST_QUANTUM, keys))
+    await expect(h.client.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys))
       .rejects
       .toMatchObject({ source: 'transport', message: 'channel session worker could not start: no port' })
     expect(port.terminate).toHaveBeenCalledOnce()

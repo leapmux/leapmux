@@ -38,11 +38,13 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1(key.X25519Public)
+	slhdsaPub, err := key.SlhdsaPublicKeyBytes()
 	require.NoError(t, err)
-	msg2, peerSession, err := noiseutil.ClassicalResponderHandshake(key.X25519Public, key.X25519Private, msg1)
+	hs, msg1, err := noiseutil.ClassicalInitiatorHandshake1("worker-test", key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
 	require.NoError(t, err)
-	initiatorSession, err := noiseutil.ClassicalInitiatorHandshake2(hs, msg2)
+	msg2, peerSession, err := noiseutil.ClassicalResponderHandshake(key, "worker-test", msg1)
+	require.NoError(t, err)
+	initiatorSession, err := hs.Finish(msg2)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,7 +76,7 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 
 	select {
 	case <-ready:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitLimit):
 		t.Fatal("server did not accept the websocket")
 	}
 
@@ -90,7 +92,7 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 			if readErr != nil {
 				return
 			}
-			pt, decErr := peerSession.Decrypt(msg.GetCiphertext())
+			pt, decErr := channelwire.OpenChannelMessage(peerSession, msg)
 			if decErr != nil {
 				// A reorder or encrypt-bug surfaces as a decrypt failure; surface
 				// it as a zero-plaintext frame with the correlation id so the
@@ -171,15 +173,14 @@ func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 					close(started)
 					<-holdFirst
 				}
-				ct, err := ch.session.Encrypt(chunk)
+				frame, err := channelwire.SealChannelMessage(ch.session, ch.channelID, id, flags, chunk)
 				if err != nil {
 					return err
 				}
 				mu.Lock()
 				recs = append(recs, frameRec{id: id, flags: flags})
 				mu.Unlock()
-				return channelwire.WriteChannelMessage(ch.ctx, ch.ws,
-					channelwire.NewChannelMessage(ch.channelID, id, flags, ct))
+				return channelwire.WriteChannelMessage(ch.ctx, ch.ws, frame)
 			}
 		}
 

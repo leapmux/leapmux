@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -555,19 +554,6 @@ func TestUnregister_SendsCloseNotification(t *testing.T) {
 		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, received[0].GetFlags())
 		assert.Empty(t, received[0].GetCiphertext())
 	}
-}
-
-// The close notification is the channel id and the CLOSE flag, and nothing
-// else: a field the relay does not need would be one more value both sides
-// must agree on.
-func TestCloseNotification(t *testing.T) {
-	got := CloseNotification("ch1")
-	want := &leapmuxv1.ChannelMessage{
-		ChannelId: "ch1",
-		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
-	}
-	assert.True(t, proto.Equal(want, got), "got %v", got)
-	assert.NotSame(t, got, CloseNotification("ch1"), "each call builds its own message")
 }
 
 func TestUnregister_CloseNotification_NoConnID(t *testing.T) {

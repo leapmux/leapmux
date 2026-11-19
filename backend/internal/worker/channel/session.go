@@ -140,7 +140,8 @@ type CloseCallback func(channelID string)
 // Manager manages encrypted channel sessions on the Worker side.
 type Manager struct {
 	mu                   sync.RWMutex
-	sessions             map[string]*channelSession  // channelID -> session
+	sessions             map[string]*channelSession // channelID -> session
+	workerID             string
 	compositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair (X25519 + ML-KEM + SLH-DSA)
 	encryptionMode       leapmuxv1.EncryptionMode    // Encryption mode
 	sendFn               SendFunc                    // Function to send messages to Hub
@@ -177,6 +178,7 @@ type Manager struct {
 // assign it afterwards: safe only for as long as nothing closed a
 // channel during bootstrap, and a nil dereference the day something did.
 func NewManager(
+	workerID string,
 	compositeKey *noiseutil.CompositeKeypair,
 	encryptionMode leapmuxv1.EncryptionMode,
 	sendFn SendFunc,
@@ -190,6 +192,7 @@ func NewManager(
 	}
 	return &Manager{
 		sessions:             make(map[string]*channelSession),
+		workerID:             workerID,
 		compositeKey:         compositeKey,
 		encryptionMode:       encryptionMode,
 		sendFn:               sendFn,
@@ -361,16 +364,15 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 
 	switch m.encryptionMode {
 	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
-		// Classical Noise_NK (X25519 only, no PQ).
 		handshakeResp, session, err = noiseutil.ClassicalResponderHandshake(
-			m.compositeKey.X25519Public,
-			m.compositeKey.X25519Private,
+			m.compositeKey,
+			m.workerID,
 			req.GetHandshakePayload(),
 		)
 	default:
-		// Post-quantum hybrid Noise_NK (X25519 + ML-KEM + SLH-DSA).
 		handshakeResp, session, err = noiseutil.ResponderHandshake(
 			m.compositeKey,
+			m.workerID,
 			req.GetHandshakePayload(),
 		)
 	}
@@ -488,7 +490,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 
 	// Decrypt. This must remain sequential in the receive loop because
 	// the receive cipher state tracks a nonce counter.
-	decrypted, err := sess.Session.Decrypt(msg.GetCiphertext())
+	decrypted, err := channelwire.OpenChannelMessage(sess.Session, msg)
 	if err != nil {
 		channelID := msg.GetChannelId()
 		slog.Error("failed to decrypt channel message, closing channel",
@@ -504,11 +506,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 		if m.trySendFn != nil {
 			_ = m.trySendFn(&leapmuxv1.ConnectRequest{
 				Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-					ChannelMessageResp: channelwire.NewChannelMessage(
-						channelID, 0,
-						leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
-						nil,
-					),
+					ChannelMessageResp: channelwire.CloseNotification(channelID),
 				},
 			})
 		}
@@ -639,7 +637,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 // The fresh DH + ML-KEM exchange is what closes the #321 forward-secrecy gap:
 // the next epoch's key cannot be derived from the current one because it mixes
 // new ephemeral key-agreement entropy. The rekey frames ride inside the
-// AEAD-encrypted channel, so the dh_pub / mlkem_ct fields need no signature.
+// AEAD-encrypted channel, so the rekey's public values and ciphertexts need no signature.
 //
 // Soft-nonce inspection of Send and the send rotation both run under the
 // SendGate frame permit so they cannot race concurrent Encrypt from
@@ -682,31 +680,27 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 		return
 	}
 
-	// Decapsulate the fresh ML-KEM ciphertext (post-quantum channels only).
-	// Classic channels send an empty mlkem_ct and skip PQ entropy.
-	var pqSecret []byte
-	if sess.encryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
-		mlkemCT := req.GetMlkemCt()
-		if len(mlkemCT) != noiseutil.MlkemCiphertextSize {
-			slog.Error("rekey request has wrong-size ML-KEM ciphertext; closing channel",
-				"channel_id", sess.ChannelID,
-				"correlation_id", requestID,
-				"mlkem_ct_len", len(mlkemCT),
-			)
-			sess.cancel()
-			return
-		}
-		var decapErr error
-		pqSecret, decapErr = sess.compositeKey.MlkemDecapsulationKey.Decapsulate(mlkemCT)
-		if decapErr != nil {
-			slog.Error("rekey ML-KEM decapsulation failed; closing channel",
-				"channel_id", sess.ChannelID,
-				"correlation_id", requestID,
-				"error", decapErr,
-			)
-			sess.cancel()
-			return
-		}
+	// Post-quantum channels combine the static and ephemeral ML-KEM secrets.
+	// Classic channels require both request fields to be empty.
+	workerMlkemKey := sess.compositeKey.MlkemDecapsulationKey
+	if sess.encryptionMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
+		workerMlkemKey = nil
+	}
+	pqSecret, ephemeralCiphertext, err := noiseutil.AnswerRekeyPQ(
+		workerMlkemKey,
+		req.GetMlkemStaticCt(),
+		req.GetMlkemEphemeralPub(),
+	)
+	if err != nil {
+		slog.Error("rekey request has invalid ML-KEM material; closing channel",
+			"channel_id", sess.ChannelID,
+			"correlation_id", requestID,
+			"mlkem_static_ct_len", len(req.GetMlkemStaticCt()),
+			"mlkem_ephemeral_pub_len", len(req.GetMlkemEphemeralPub()),
+			"error", err,
+		)
+		sess.cancel()
+		return
 	}
 
 	// Generate the responder's fresh ephemeral and complete the DH agreement.
@@ -764,7 +758,8 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 	sess.Session.RekeyReceiveWithSecret(dhSecret, pq)
 	if err := sess.sender.sendEncryptedAfter(requestID, &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_RekeyAck{RekeyAck: &leapmuxv1.RekeyAck{
-			DhPub: responderPub,
+			DhPub:            responderPub,
+			MlkemEphemeralCt: ephemeralCiphertext,
 		}},
 	}, func() {
 		// Still holding the frame permit: no concurrent Encrypt can observe
@@ -1065,19 +1060,18 @@ func (s *channelSender) sendEncryptedAfter(requestID uint64, envelope *leapmuxv1
 
 	return s.gate.Send(context.Background(), s.lifetime, requestID, data,
 		func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
-			ciphertext, err := s.session.Encrypt(chunk)
+			frame, err := channelwire.SealChannelMessage(s.session, s.channelID, requestID, flags, chunk)
 			if err != nil {
 				return fmt.Errorf("encrypt inner message: %w", err)
 			}
 			slog.Debug("sending channel message",
 				"channel_id", s.channelID,
 				"correlation_id", requestID,
-				"ciphertext_len", len(ciphertext),
+				"ciphertext_len", len(frame.GetCiphertext()),
 				"flags", flags)
 			if err := s.sendFn(&leapmuxv1.ConnectRequest{
 				Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-					ChannelMessageResp: channelwire.NewChannelMessage(
-						s.channelID, requestID, flags, ciphertext),
+					ChannelMessageResp: frame,
 				},
 			}); err != nil {
 				return fmt.Errorf("send channel message: %w", err)

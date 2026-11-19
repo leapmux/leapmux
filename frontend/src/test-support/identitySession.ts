@@ -15,8 +15,8 @@ export function makeIdentitySession(): Session {
 
 function createIdentityCipherState(): CipherStateLike {
   return {
-    encrypt: input => new Uint8Array(input),
-    decrypt: input => new Uint8Array(input),
+    encrypt: (_ad, input) => new Uint8Array(input),
+    decrypt: (_ad, input) => new Uint8Array(input),
     needsRekey: () => false,
     rekeyWithSecret: () => {},
     clearPrev: () => {},

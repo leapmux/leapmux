@@ -1,5 +1,7 @@
 import type { MessageShape } from '@bufbuild/protobuf'
 import type { ChannelManager } from './channel'
+import type { Session } from './noise'
+import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -31,6 +33,15 @@ import {
   sessionStateOf,
 } from './channel.test-support'
 import { ChannelError } from './channelError'
+import { frameAssociatedData } from './channelFraming'
+
+function sealWorker(session: Session, channelId: string, correlationId: bigint, flags: number, plaintext: Uint8Array): Uint8Array {
+  return session.send.encrypt(frameAssociatedData(channelId, correlationId, flags), plaintext)
+}
+
+function openWorker(session: Pick<Session, 'receive'>, frame: ChannelMessage): Uint8Array {
+  return session.receive.decrypt(frameAssociatedData(frame.channelId, frame.correlationId, frame.flags), frame.ciphertext)
+}
 
 describe('ChannelManager call', () => {
   const h = new ChannelManagerTestHarness()
@@ -66,7 +77,7 @@ describe('ChannelManager call', () => {
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
     })
-    const ct = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    const ct = sealWorker(pair.responder, channelId, unsafeId, ChannelMessageFlags.UNSPECIFIED, toBinary(InnerMessageSchema, envelope))
     let settled = false
     void callPromise.then(() => {
       settled = true
@@ -98,7 +109,7 @@ describe('ChannelManager call', () => {
     const sentMsg = decodeWireMessage(sentFrame)
     expect(sentMsg.channelId).toBe(channelId)
     const pair = sessions.get(channelId)!
-    const sentPlaintext = pair.responder.receive.decrypt(sentMsg.ciphertext)
+    const sentPlaintext = openWorker(pair.responder, sentMsg)
     const sentEnvelope = fromBinary(InnerMessageSchema, sentPlaintext)
     expect(sentEnvelope.kind.case).toBe('request')
     const sentReq = fromBinary(InnerRpcRequestSchema, toBinary(InnerRpcRequestSchema, sentEnvelope.kind.value as any))
@@ -291,7 +302,7 @@ describe('ChannelManager callWorker', () => {
     expect(h.mockWs.sent).toHaveLength(sentBefore + 1)
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
     expect(sentMsg.channelId).toBe(channelId)
-    const envelope = fromBinary(InnerMessageSchema, sessions.get(channelId)!.responder.receive.decrypt(sentMsg.ciphertext))
+    const envelope = fromBinary(InnerMessageSchema, openWorker(sessions.get(channelId)!.responder, sentMsg))
     if (envelope.kind.case !== 'request')
       throw new Error('callWorker must send an inner request')
     // The worker registers each handler under this exact string.
@@ -326,7 +337,7 @@ describe('ChannelManager callWorker', () => {
     const callPromise = h.mgr.callWorker('w1', WorkerFileService.method.statFile, { path: '/missing' })
     await h.settle()
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
-    sessions.get(channelId)!.responder.receive.decrypt(sentMsg.ciphertext)
+    openWorker(sessions.get(channelId)!.responder, sentMsg)
     const rejected = expect(callPromise).rejects.toMatchObject({ source: 'rpc', code: 2, message: 'no such file' })
     await h.sendErrorResponseFromWorker(channelId, Number(sentMsg.correlationId), 'no such file')
 
@@ -363,7 +374,7 @@ describe('ChannelManager stream', () => {
   async function readOpeningRequest(channelId: string) {
     await h.settle()
     const sent = decodeWireMessage(h.mockWs.sent.at(-1)!)
-    const { kind } = fromBinary(InnerMessageSchema, sessions.get(channelId)!.responder.receive.decrypt(sent.ciphertext))
+    const { kind } = fromBinary(InnerMessageSchema, openWorker(sessions.get(channelId)!.responder, sent))
     if (kind.case !== 'request')
       throw new Error(`expected a request, got ${kind.case}`)
     return kind.value
@@ -444,7 +455,8 @@ describe('ChannelManager stream', () => {
     function cancelFrameCount(channelId: string, sentBefore: number): number {
       const receive = sessions.get(channelId)!.responder.receive
       return h.mockWs.sent.slice(sentBefore).filter((frame) => {
-        const { kind } = fromBinary(InnerMessageSchema, receive.decrypt(decodeWireMessage(frame).ciphertext))
+        const decoded = decodeWireMessage(frame)
+        const { kind } = fromBinary(InnerMessageSchema, openWorker({ receive }, decoded))
         return kind.case === 'streamRequest' && kind.value.action.case === 'cancel'
       }).length
     }
@@ -753,11 +765,11 @@ describe('ChannelManager stream', () => {
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
     await h.settle()
     // The session decrypts in arrival order, so the opening frame comes first.
-    receive.decrypt(decodeWireMessage(h.mockWs.sent.at(-1)!).ciphertext)
+    openWorker({ receive }, decodeWireMessage(h.mockWs.sent.at(-1)!))
     const streamActionOfLastFrame = () => {
       const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
       expect(Number(sentMsg.correlationId)).toBe(handle.requestId)
-      const { kind } = fromBinary(InnerMessageSchema, receive.decrypt(sentMsg.ciphertext))
+      const { kind } = fromBinary(InnerMessageSchema, openWorker({ receive }, sentMsg))
       if (kind.case !== 'streamRequest')
         throw new Error(`expected a stream request, got ${kind.case}`)
       return kind.value.action
@@ -886,8 +898,8 @@ describe('ChannelManager late frames', () => {
       kind: { case: 'response', value: resp },
     }))
     const mid = Math.floor(plaintext.length / 2)
-    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
-    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 0, plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
     await h.settle()
 
     expect(capture.messages('warn', 'channel')).toEqual([])
@@ -996,7 +1008,7 @@ describe('ChannelManager chunking', () => {
       { id: FIRST_TEST_REQUEST_ID, flags: ChannelMessageFlags.UNSPECIFIED },
     ])
     // The Worker decrypts them in wire order and joins them into the request.
-    const chunks = frames.map(frame => pair.responder.receive.decrypt(frame.ciphertext))
+    const chunks = frames.map(frame => openWorker(pair.responder, frame))
     const joined = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0))
     let offset = 0
     for (const chunk of chunks) {
@@ -1035,7 +1047,7 @@ describe('ChannelManager chunking', () => {
     ])
     // A frame out of nonce order would fail to decrypt here.
     for (const frame of frames)
-      expect(() => pair.responder.receive.decrypt(frame.ciphertext)).not.toThrow()
+      expect(() => openWorker(pair.responder, frame)).not.toThrow()
 
     await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
     await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
@@ -1067,8 +1079,8 @@ describe('ChannelManager chunking', () => {
     const chunk2 = plaintext.slice(mid)
 
     // Encrypt each chunk separately.
-    const ct1 = pair.responder.send.encrypt(chunk1)
-    const ct2 = pair.responder.send.encrypt(chunk2)
+    const ct1 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, chunk1)
+    const ct2 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 0, chunk2)
 
     // Send chunk1 with flags=MORE.
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
@@ -1099,7 +1111,7 @@ describe('ChannelManager chunking', () => {
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
     })
-    const ct1 = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    const ct1 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 3, toBinary(InnerMessageSchema, envelope))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 3 }))
 
     // The dropped frame advanced the receive nonce: the peer's NEXT
@@ -1131,12 +1143,12 @@ describe('ChannelManager chunking', () => {
 
     // Send a chunk that's within limits.
     const chunk1Data = new Uint8Array(30)
-    const ct1 = pair.responder.send.encrypt(chunk1Data)
+    const ct1 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, chunk1Data)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // Send another chunk that exceeds the 50-byte limit (total 60 > 50).
     const chunk2Data = new Uint8Array(30)
-    const ct2 = pair.responder.send.encrypt(chunk2Data)
+    const ct2 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, chunk2Data)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct2, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // The call should be rejected with an error about the size limit.
@@ -1169,11 +1181,11 @@ describe('ChannelManager chunking', () => {
     const callPromise = smallMgr.call(channelId, 'Test', new Uint8Array())
 
     // A MORE chunk within limits.
-    const ct1 = pair.responder.send.encrypt(new Uint8Array(30))
+    const ct1 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // The FINAL chunk (flags: 0) pushes the total to 60 > 50.
-    const ct2 = pair.responder.send.encrypt(new Uint8Array(30))
+    const ct2 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 0, new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct2, { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     await expect(callPromise).rejects.toThrow('exceeds')
@@ -1188,13 +1200,13 @@ describe('ChannelManager chunking', () => {
     // Start MAX_INCOMPLETE_CHUNKED (4) chunked sequences.
     for (let i = 1; i <= 4; i++) {
       const chunk = new Uint8Array([i])
-      const ct = pair.responder.send.encrypt(chunk)
+      const ct = sealWorker(pair.responder, channelId, BigInt(i), 1, chunk)
       h.mockWs.simulateMessage(encodeWireMessage(channelId, ct, { id: i, flags: 1 }))
     }
 
     // 5th should be dropped (exceeded MAX_INCOMPLETE_CHUNKED).
     const chunk5 = new Uint8Array([5])
-    const ct5 = pair.responder.send.encrypt(chunk5)
+    const ct5 = sealWorker(pair.responder, channelId, 5n, 1, chunk5)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct5, { id: 5, flags: 1 }))
     await h.settle()
     expect(h.mgr.isOpen(channelId)).toBe(true)
@@ -1246,11 +1258,11 @@ describe('ChannelManager chunking', () => {
     const callPromise = smallMgr.call(channelId, 'Test', new Uint8Array())
 
     // Send a first chunk within limits (30 bytes).
-    const chunk1 = pair.responder.send.encrypt(new Uint8Array(30))
+    const chunk1 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk1, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
 
     // Send a final chunk that pushes over (30 + 30 = 60 > 50).
-    const chunk2 = pair.responder.send.encrypt(new Uint8Array(30))
+    const chunk2 = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 0, new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk2, { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     await expect(callPromise).rejects.toThrow('exceeds')
@@ -1280,10 +1292,10 @@ describe('ChannelManager chunking', () => {
     handle.onError(errorFn)
 
     // Send chunks that exceed the limit, targeted at the stream's requestId.
-    const chunk1 = pair.responder.send.encrypt(new Uint8Array(30))
+    const chunk1 = sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk1, { id: handle.requestId, flags: 1 }))
 
-    const chunk2 = pair.responder.send.encrypt(new Uint8Array(30))
+    const chunk2 = sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk2, { id: handle.requestId, flags: 1 }))
     await h.settle()
 
@@ -1300,7 +1312,7 @@ describe('ChannelManager chunking', () => {
 
     // Start a chunked sequence for the live call.
     const chunk = new Uint8Array([1, 2, 3])
-    const ct = pair.responder.send.encrypt(chunk)
+    const ct = sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, chunk)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
     await h.settle()
     const session = sessionStateOf(channelId)
@@ -1403,7 +1415,7 @@ describe('ChannelManager chunking', () => {
       await h.settle()
       const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
       const pair = sessions.get(channelId)!
-      pair.responder.receive.decrypt(sentMsg.ciphertext)
+      openWorker(pair.responder, sentMsg)
       await h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), new Uint8Array([42]))
       await expect(callPromise).resolves.toEqual(new Uint8Array([42]))
       expect(await smallMgr.getOrOpenChannel('w1')).toBe(channelId)
@@ -1491,15 +1503,15 @@ describe('ChannelManager reassembly lifetime', () => {
       handle.onError(errorFn)
 
       // 30 + 30 > 50: the breach.
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       await h.settle()
       expect(errorFn).toHaveBeenCalledOnce()
 
       // The peer keeps shovelling. Not one byte may be buffered, and the failure is
       // not re-reported.
       for (let i = 0; i < 200; i++) {
-        h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+        h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       }
       await h.settle()
       expect(errorFn).toHaveBeenCalledOnce()
@@ -1514,7 +1526,7 @@ describe('ChannelManager reassembly lifetime', () => {
       expect(ch.reassembly.liveCount()).toBe(0)
 
       // The message's final chunk reaps the tombstone.
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 0 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 0, new Uint8Array(30)), { id: handle.requestId, flags: 0 }))
       await h.settle()
       expect(ch.reassembly.size()).toBe(0)
       expect(errorFn).toHaveBeenCalledOnce()
@@ -1542,8 +1554,8 @@ describe('ChannelManager reassembly lifetime', () => {
 
       // 30 + 30 > 50: the breach. The throwing onError must not escape the message
       // dispatch.
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       await h.settle()
       expect(errorCalls).toBe(1)
 
@@ -1554,7 +1566,7 @@ describe('ChannelManager reassembly lifetime', () => {
       expect(ch.reassembly.liveCount()).toBe(0)
 
       for (let i = 0; i < 50; i++)
-        h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+        h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       await h.settle()
       expect(errorCalls).toBe(1)
     }
@@ -1572,7 +1584,7 @@ describe('ChannelManager reassembly lifetime', () => {
     const pair = sessions.get(channelId)!
 
     for (let id = 100; id < 104; id++) {
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(id), 1, new Uint8Array(30)), { id, flags: 1 }))
     }
     await h.settle()
 
@@ -1593,8 +1605,8 @@ describe('ChannelManager reassembly lifetime', () => {
     })
     const plaintext = toBinary(InnerMessageSchema, envelope)
     const mid = Math.floor(plaintext.length / 2)
-    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
-    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 0, plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
     await expect(callPromise).resolves.toEqual(new Uint8Array([9, 9]))
   })
@@ -1611,7 +1623,7 @@ describe('ChannelManager reassembly lifetime', () => {
       const pair = sessions.get(channelId)!
       const callPromise = cm.call(channelId, 'Test', new Uint8Array(), 1_000)
 
-      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(FIRST_TEST_REQUEST_ID), 1, new Uint8Array(30)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
       await h.settle()
       const ch = sessionStateOf(channelId)
       expect(ch.reassembly.size()).toBe(1)
@@ -1636,7 +1648,7 @@ describe('ChannelManager reassembly lifetime', () => {
     const pair = sessions.get(channelId)!
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
 
-    h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+    h.mockWs.simulateMessage(encodeWireMessage(channelId, sealWorker(pair.responder, channelId, BigInt(handle.requestId), 1, new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
     await h.settle()
     const ch = sessionStateOf(channelId)
     expect(ch.reassembly.size()).toBe(1)

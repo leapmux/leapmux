@@ -195,15 +195,52 @@ func NewStreamError(code int32, message string) *leapmuxv1.InnerStreamMessage {
 	return &leapmuxv1.InnerStreamMessage{End: true, Error: &leapmuxv1.RpcError{Code: code, Message: message}}
 }
 
-// NewChannelMessage wraps one encrypted chunk in the ChannelMessage envelope
-// both Go senders put on the wire.
-func NewChannelMessage(channelID string, correlationID uint64,
-	flags leapmuxv1.ChannelMessageFlags, ciphertext []byte) *leapmuxv1.ChannelMessage {
+// FrameSealer and FrameOpener are the halves of a Noise session that a frame needs.
+type FrameSealer interface {
+	Encrypt(ad, plaintext []byte) ([]byte, error)
+}
+
+type FrameOpener interface {
+	Decrypt(ad, ciphertext []byte) ([]byte, error)
+}
+
+// FrameAssociatedData binds every ChannelMessage field except the ciphertext
+// to the frame's AEAD tag.
+func FrameAssociatedData(channelID string, correlationID uint64, flags leapmuxv1.ChannelMessageFlags) []byte {
+	ad := make([]byte, 12+len(channelID))
+	binary.BigEndian.PutUint64(ad[:8], correlationID)
+	binary.BigEndian.PutUint32(ad[8:12], uint32(flags))
+	copy(ad[12:], channelID)
+	return ad
+}
+
+// SealChannelMessage encrypts one chunk and builds its envelope from the same
+// values that form the associated data.
+func SealChannelMessage(session FrameSealer, channelID string, correlationID uint64, flags leapmuxv1.ChannelMessageFlags, plaintext []byte) (*leapmuxv1.ChannelMessage, error) {
+	ciphertext, err := session.Encrypt(FrameAssociatedData(channelID, correlationID, flags), plaintext)
+	if err != nil {
+		return nil, err
+	}
 	return &leapmuxv1.ChannelMessage{
 		ChannelId:     channelID,
 		CorrelationId: correlationID,
 		Flags:         flags,
 		Ciphertext:    ciphertext,
+	}, nil
+}
+
+// OpenChannelMessage authenticates and decrypts one received frame.
+func OpenChannelMessage(session FrameOpener, msg *leapmuxv1.ChannelMessage) ([]byte, error) {
+	ad := FrameAssociatedData(msg.GetChannelId(), msg.GetCorrelationId(), msg.GetFlags())
+	return session.Decrypt(ad, msg.GetCiphertext())
+}
+
+// CloseNotification builds the unauthenticated close sentinel. It carries no
+// ciphertext and never enters the Noise cipher.
+func CloseNotification(channelID string) *leapmuxv1.ChannelMessage {
+	return &leapmuxv1.ChannelMessage{
+		ChannelId: channelID,
+		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
 	}
 }
 

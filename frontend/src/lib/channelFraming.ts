@@ -16,6 +16,17 @@ export function frameBytes(payload: Uint8Array): Uint8Array {
   return buf
 }
 
+/** Bind the complete ChannelMessage envelope except its ciphertext. */
+export function frameAssociatedData(channelId: string, correlationId: bigint, flags: number): Uint8Array {
+  const channel = new TextEncoder().encode(channelId)
+  const out = new Uint8Array(12 + channel.length)
+  const view = new DataView(out.buffer)
+  view.setBigUint64(0, correlationId)
+  view.setUint32(8, flags)
+  out.set(channel, 12)
+  return out
+}
+
 export type UnframeFailure
   = | { kind: 'short', length: number }
     | { kind: 'mismatch', declared: number, actual: number }

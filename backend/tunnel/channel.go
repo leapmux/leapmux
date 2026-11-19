@@ -367,59 +367,24 @@ func (o *OpenChannelOptions) authedCtx(ctx context.Context) context.Context {
 	return ctx
 }
 
-// initiatorHandshaker binds the two halves of a Noise_NK initiator handshake to ONE
-// reading of the worker's EncryptionMode.
-//
-// Message 1 and message 2 are sent a Hub round trip apart, and branching on the mode
-// at each of them made the pairing a convention rather than a fact: noiseutil exposes
-// a single *HandshakeState for both modes, so finishing a classical handshake with the
-// hybrid message-2 reader (or the reverse) compiles cleanly and fails only as a
-// decrypt error at the far end, 50 lines from the branch that caused it. Selecting the
-// matched pair once makes that mismatch unconstructible -- including for a third
-// EncryptionMode wired into message 1 and forgotten at message 2.
-type initiatorHandshaker struct {
-	// start produces handshake message 1 and the state finish must be handed back.
-	start func() (*noiseutil.HandshakeState, []byte, error)
-	// finish consumes the worker's handshake message 2 and yields the session.
-	finish func(hs *noiseutil.HandshakeState, message2 []byte) (*noiseutil.Session, error)
+// startInitiatorHandshake reads the announced mode once. Every mode but
+// CLASSIC uses the post-quantum handshake, so an unknown future mode fails
+// closed instead of silently downgrading.
+func startInitiatorHandshake(workerID string, params *leapmuxv1.GetWorkerHandshakeParamsResponse) (*noiseutil.HandshakeState, []byte, error) {
+	keys := params.GetKeys()
+	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
+		return noiseutil.ClassicalInitiatorHandshake1(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa())
+	}
+	return noiseutil.InitiatorHandshake1(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa())
 }
 
-// mlkemPubForRekey returns the worker's static ML-KEM encapsulation key to
-// retain for in-band rekey, or nil on classical-mode channels (which send no
-// PQ entropy during rekey). Matches newInitiatorHandshaker's single read of the
-// mode so the retained key and the handshake agree.
+// mlkemPubForRekey returns nil on a classic channel, whose rekey has no ML-KEM
+// exchange. The same mode read selects the handshake and the retained key.
 func mlkemPubForRekey(params *leapmuxv1.GetWorkerHandshakeParamsResponse) []byte {
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return nil
 	}
 	return params.GetKeys().GetMlkem()
-}
-
-// newInitiatorHandshaker selects the handshake pair for the worker's encryption mode,
-// reading params.EncryptionMode exactly once.
-//
-// Every mode but CLASSIC gets the hybrid pair. That is deliberate rather than a
-// fallthrough: the hub refuses a WorkerHello whose mode is UNSPECIFIED, so a client
-// never receives one, and defaulting an unknown future mode to the stronger
-// handshake fails it closed on a handshake error rather than silently downgrading
-// the channel to X25519-only.
-func newInitiatorHandshaker(params *leapmuxv1.GetWorkerHandshakeParamsResponse) initiatorHandshaker {
-	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
-		return initiatorHandshaker{
-			start: func() (*noiseutil.HandshakeState, []byte, error) {
-				return noiseutil.ClassicalInitiatorHandshake1(params.GetKeys().GetX25519())
-			},
-			finish: noiseutil.ClassicalInitiatorHandshake2,
-		}
-	}
-	return initiatorHandshaker{
-		start: func() (*noiseutil.HandshakeState, []byte, error) {
-			return noiseutil.InitiatorHandshake1(params.GetKeys().GetX25519(), params.GetKeys().GetMlkem())
-		},
-		finish: func(hs *noiseutil.HandshakeState, message2 []byte) (*noiseutil.Session, error) {
-			return noiseutil.InitiatorHandshake2(hs, message2, params.GetKeys().GetSlhdsa())
-		},
-	}
 }
 
 func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannelOptions) (*Channel, error) {
@@ -466,13 +431,12 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		}
 	}
 
-	// 2. Perform Noise_NK handshake (message 1). The mode is read once here; the
-	// matched message-2 half travels with it (see initiatorHandshaker).
-	handshaker := newInitiatorHandshaker(paramsResp)
-	hs, msg1, err := handshaker.start()
+	// 2. Perform Noise_NK handshake (message 1).
+	hs, msg1, err := startInitiatorHandshake(workerID, paramsResp)
 	if err != nil {
 		return nil, fmt.Errorf("handshake1: %w", err)
 	}
+	defer hs.Clear()
 
 	// 3. Open channel via Hub.
 	openReq := &leapmuxv1.OpenChannelRequest{
@@ -522,12 +486,17 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	}
 	maxReassembled := channelwire.MaxReassembledMessageSize(maxMessageSize)
 
-	// 4. Complete handshake (message 2), with the half that matches the message-1
-	// this handshaker already sent -- no second reading of the encryption mode.
-	session, err := handshaker.finish(hs, openResp.GetHandshakePayload())
+	// 4. Complete handshake (message 2) in the state's own mode.
+	session, err := hs.Finish(openResp.GetHandshakePayload())
 	if err != nil {
 		return nil, fmt.Errorf("handshake2: %w", err)
 	}
+	sessionNeedsZero := true
+	defer func() {
+		if sessionNeedsZero {
+			session.Zero()
+		}
+	}()
 
 	// 5. Connect to Hub's WebSocket relay.
 	wsURL := channelwire.HTTPToWS(hubURL) + contracts.WSRouteChannel
@@ -578,6 +547,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// and with no claim there is no reserved correlation id and no pre-recvLoop
 	// pending[0] registration.
 	go ch.recvLoop()
+	sessionNeedsZero = false
 	go ch.rekeyIdleLoop()
 
 	// 7. Prove the session works end to end before handing the channel out.
@@ -1010,13 +980,12 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 			// straddling chunks). Do not make chunk crypto stateful across
 			// chunks of one message without re-establishing that here.
 			ch.rekey.rekeyMu.Lock()
-			ciphertext, err := ch.session.Encrypt(chunk)
+			frame, err := channelwire.SealChannelMessage(ch.session, ch.channelID, correlationID, flags, chunk)
 			ch.rekey.rekeyMu.Unlock()
 			if err != nil {
 				return fmt.Errorf("encrypt inner message: %w", err)
 			}
-			return channelwire.WriteChannelMessage(ch.ctx, ch.ws,
-				channelwire.NewChannelMessage(ch.channelID, correlationID, flags, ciphertext))
+			return channelwire.WriteChannelMessage(ch.ctx, ch.ws, frame)
 		}); err != nil {
 		// An encrypt failure (nonce exhaustion) abandons this message BETWEEN
 		// chunks and a write failure means the transport is broken: either way
@@ -1269,8 +1238,12 @@ func (ch *Channel) recvLoop() {
 			return
 		}
 
+		if chMsg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE {
+			slog.Debug("tunnel channel received close frame", "channel_id", ch.channelID)
+			return
+		}
 		correlationID := chMsg.GetCorrelationId()
-		plaintext, decErr := ch.session.Decrypt(chMsg.GetCiphertext())
+		plaintext, decErr := channelwire.OpenChannelMessage(ch.session, chMsg)
 		if decErr != nil {
 			slog.Error("tunnel channel decrypt error", "channel_id", ch.channelID, "error", decErr)
 			return
@@ -1296,7 +1269,7 @@ func (ch *Channel) recvLoop() {
 			ch.deliverStream(correlationID, kind.Stream)
 
 		case *leapmuxv1.InnerMessage_RekeyAck:
-			ch.handleRekeyAck(correlationID, kind.RekeyAck.GetDhPub())
+			ch.handleRekeyAck(correlationID, kind.RekeyAck)
 
 		case *leapmuxv1.InnerMessage_RekeyReject:
 			retryAfter := time.Duration(kind.RekeyReject.GetRetryAfterMs()) * time.Millisecond

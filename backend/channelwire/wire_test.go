@@ -1,6 +1,7 @@
 package channelwire
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -259,12 +261,90 @@ func TestErrorConstructorsKeepAZeroErrorPresentOnTheWire(t *testing.T) {
 	})
 }
 
-func TestNewChannelMessage(t *testing.T) {
-	msg := NewChannelMessage("ch", 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte("ct"))
-	assert.Equal(t, "ch", msg.GetChannelId())
-	assert.Equal(t, uint64(42), msg.GetCorrelationId())
-	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, msg.GetFlags())
-	assert.Equal(t, []byte("ct"), msg.GetCiphertext())
+func TestFrameAssociatedData(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		channelID     string
+		correlationID uint64
+		flags         leapmuxv1.ChannelMessageFlags
+		wantHex       string
+	}{
+		{name: "channel and MORE", channelID: "abc", correlationID: 5, flags: leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, wantHex: "000000000000000500000001616263"},
+		{name: "largest uint64", channelID: "abc", correlationID: ^uint64(0), wantHex: "ffffffffffffffff00000000616263"},
+		{name: "out-of-spec flags", correlationID: 5, flags: leapmuxv1.ChannelMessageFlags(3), wantHex: "000000000000000500000003"},
+		{name: "empty channel id", wantHex: "000000000000000000000000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := hex.DecodeString(tc.wantHex)
+			require.NoError(t, err)
+			assert.Equal(t, want, FrameAssociatedData(tc.channelID, tc.correlationID, tc.flags))
+		})
+	}
+}
+
+func TestFrameAssociatedDataCoversEveryEnvelopeField(t *testing.T) {
+	fields := (&leapmuxv1.ChannelMessage{}).ProtoReflect().Descriptor().Fields()
+	var names []string
+	for i := 0; i < fields.Len(); i++ {
+		names = append(names, string(fields.Get(i).Name()))
+	}
+	assert.Equal(t, []string{"channel_id", "correlation_id", "flags", "ciphertext"}, names,
+		"add a new envelope field to FrameAssociatedData, frameAssociatedData in channelFraming.ts, and the handshake vector frames")
+}
+
+func TestSealAndOpenChannelMessage(t *testing.T) {
+	worker, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPub, err := worker.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	hs, message1, err := noiseutil.ClassicalInitiatorHandshake1("worker-1", worker.X25519Public, worker.MlkemPublicKeyBytes(), slhdsaPub)
+	require.NoError(t, err)
+	message2, responder, err := noiseutil.ClassicalResponderHandshake(worker, "worker-1", message1)
+	require.NoError(t, err)
+	initiator, err := hs.Finish(message2)
+	require.NoError(t, err)
+	defer initiator.Zero()
+	defer responder.Zero()
+
+	plaintext := []byte("payload")
+	frame, err := SealChannelMessage(initiator, "ch-1", 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, plaintext)
+	require.NoError(t, err)
+	assert.Equal(t, "ch-1", frame.GetChannelId())
+	assert.Equal(t, uint64(7), frame.GetCorrelationId())
+	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, frame.GetFlags())
+	opened, err := OpenChannelMessage(responder, frame)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, opened)
+
+	for _, tc := range []struct {
+		name   string
+		change func(*leapmuxv1.ChannelMessage)
+	}{
+		{name: "correlation id", change: func(msg *leapmuxv1.ChannelMessage) { msg.CorrelationId++ }},
+		{name: "flags", change: func(msg *leapmuxv1.ChannelMessage) {
+			msg.Flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
+		}},
+		{name: "channel id", change: func(msg *leapmuxv1.ChannelMessage) { msg.ChannelId = "other" }},
+		{name: "ciphertext", change: func(msg *leapmuxv1.ChannelMessage) { msg.Ciphertext[0] ^= 0xFF }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := proto.Clone(frame).(*leapmuxv1.ChannelMessage)
+			tc.change(changed)
+			_, err := OpenChannelMessage(responder, changed)
+			require.Error(t, err)
+		})
+	}
+}
+
+// The close notification is the channel id and the CLOSE flag, and nothing else.
+func TestCloseNotification(t *testing.T) {
+	got := CloseNotification("ch1")
+	want := &leapmuxv1.ChannelMessage{
+		ChannelId: "ch1",
+		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
+	}
+	assert.True(t, proto.Equal(want, got), "got %v", got)
+	assert.NotSame(t, got, CloseNotification("ch1"), "each call builds its own message")
 }
 
 func TestChunkContinuation(t *testing.T) {

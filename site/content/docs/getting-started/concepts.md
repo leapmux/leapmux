@@ -167,7 +167,7 @@ All Frontend↔Worker traffic is **end-to-end encrypted**. While the Hub only re
 Conceptually:
 
 - When the Frontend needs to talk to a Worker, it opens an **encrypted channel** to that Worker, multiplexed through the Hub. A Hub that only routes that ciphertext cannot decrypt it.
-- The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** (non-PQ) mode is also available; the default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/admin/security/).
+- The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** mode without the SLH-DSA signature or post-quantum forward secrecy is also available; it still authenticates the Worker's static ML-KEM key. The default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/admin/security/).
 - The Hub authenticates the channel open and names the user on the channel. The Frontend checks that name against the signed-in user. The Worker refuses any channel that carries no user identity.
 
 A Hub that only observes sees *who talks to whom* and the control-plane metadata needed to route traffic. Agent transcripts, tool calls, terminal I/O, and file contents travel inside the encrypted channel. That protects content from an observing Hub. Identity and Frontend code still depend on the Hub. It matters most in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).

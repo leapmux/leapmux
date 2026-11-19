@@ -91,19 +91,22 @@ The channel is established in two stages, over two different transports. The Fro
 | Role | Classical | Post-quantum |
 |------|-----------|--------------|
 | Key exchange | X25519 ECDH | ML-KEM-1024 (FIPS 203) |
-| Worker static-key authentication | (Noise NK pre-message) | SLH-DSA-SHAKE-256f (FIPS 205) signature over the transcript |
+| Forward secrecy | Ephemeral X25519 exchange | Ephemeral ML-KEM-1024 exchange in post-quantum mode |
+| Worker static-key authentication | Noise NK pre-message and static ML-KEM-1024 encapsulation | Static ML-KEM-1024 encapsulation plus an SLH-DSA-SHAKE-256f (FIPS 205) signature over the handshake hash |
 | Transport encryption | ChaCha20-Poly1305 AEAD | — |
 | Hashing / key derivation | BLAKE2b | — |
 
-The Noise protocol label is `Noise_NK_25519_ChaChaPoly_BLAKE2b`. The `NK` pattern means the responder (the **Worker**) has a known static key that the initiator (your **Frontend**) verifies, while the initiator stays anonymous. The Frontend learns the Worker's static key out-of-band from the Hub and checks it against its pin.
+The Noise protocol label is `Noise_NK+skem_25519+MLKEM1024_ChaChaPoly_BLAKE2b` in classic mode and `Noise_NKhfs+skem+sig_25519+MLKEM1024+SLHDSASHAKE256f_ChaChaPoly_BLAKE2b` in post-quantum mode. The `NK` pattern means the responder (the **Worker**) has a known static key that the initiator (your **Frontend**) verifies, while the initiator stays anonymous. The Frontend learns the Worker's static key out-of-band from the Hub and checks it against its pin.
 
 That anonymity is permanent: the initiator is never authenticated at the Noise layer, before or after the handshake. Who the caller is comes from the Hub, not from the channel — see "User identity binding" below.
 
 ### Why this design defeats a curious Hub
 
-- The ML-KEM ciphertext is bound into the handshake hash, so tampering with it makes the next message's authentication fail.
-- The Worker signs a transcript covering the handshake hash plus the ML-KEM material with its SLH-DSA private key. If the signature does not verify, the Frontend aborts the handshake and zeroes its handshake state — a Hub that altered the exchange cannot complete the handshake.
-- Both the classical and post-quantum shared secrets are mixed into the final transport keys, so an attacker would have to break *both* X25519 and ML-KEM to recover the session.
+- The handshake hash covers the protocol label, the Worker id, and all three of the Worker's static public keys. A different Worker or pinned key set cannot answer the handshake.
+- Every key-exchange value is authenticated. In post-quantum mode, the Worker also signs the handshake hash with its SLH-DSA private key; a verification failure aborts the handshake and zeroes its state.
+- Post-quantum mode mixes four secrets into the session keys: two from X25519 and two from ML-KEM. Classic mode mixes three: two from X25519 and one from the Worker's static ML-KEM key.
+- In post-quantum mode, a later copy of the Worker's static keys does not open a recorded session, even for an attacker that can break X25519.
+- Every data frame authenticates its channel id, correlation id, and flags. A Hub that changes one closes the channel and learns nothing else.
 
 ### Transport hardening
 
@@ -120,7 +123,7 @@ The encrypted channel has built-in limits that cap the damage from desync, repla
 
 The Hub enforces resource limits **without decrypting**: it caps the reassembled message size at the negotiated payload budget plus 64 KiB of envelope headroom (default ~16.06 MiB; administrators may raise the payload budget up to 64 MiB via the Hub's `max_message_size_bytes` setting) and allows only one in-flight chunked message per channel and direction, so a peer cannot exhaust Hub memory through the opaque relay. The Worker also fast-rejects a duplicate channel ID *before* running the (expensive) post-quantum handshake, so a peer cannot amplify Worker CPU by replaying open requests.
 
-**In-band rekey** rotates the channel's transport keys without closing it. The initiator proposes fresh key material — a new classical ephemeral and, on post-quantum channels, fresh ML-KEM material — keeps sending under the current key until the peer acknowledges, and only then switches. Both sides mix fresh Diffie–Hellman *and* post-quantum entropy into the next epoch, so compromising one epoch's key does not yield the next.
+**In-band rekey** rotates the channel's transport keys without closing it. The initiator proposes fresh key material — a new classical ephemeral and, on post-quantum channels, a fresh ML-KEM encapsulation key. The Worker encapsulates to that fresh ML-KEM key as well as answering the static-key encapsulation. The initiator keeps sending under the current key until the peer acknowledges, and only then switches. Both sides mix fresh Diffie–Hellman *and* post-quantum entropy into the next epoch, so compromising one epoch's key does not yield the next.
 
 The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux control`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
 
@@ -137,9 +140,9 @@ A Worker can run in one of two modes via `--encryption-mode`:
 | Mode | Handshake |
 |------|-----------|
 | `post-quantum` (default) | Hybrid X25519 + ML-KEM-1024 + SLH-DSA |
-| `classic` | X25519-only Noise_NK, no PQ |
+| `classic` | Only the Worker can complete the handshake, using its static ML-KEM key. It lacks the SLH-DSA signature and post-quantum forward secrecy. |
 
-The default is `post-quantum`. The Hub reports the Worker's live mode to the Frontend so the browser uses the matching handshake. Choose `classic` only if you have a specific compatibility or performance constraint and understand that you give up post-quantum protection. For the flag's accepted values, aliases, and fail-safe resolution, see [Configuration](/docs/admin/configuration/).
+The default is `post-quantum`. The Hub reports the Worker's live mode to the Frontend so the browser uses the matching handshake. A false report can only make the open fail; it cannot weaken the session. Choose `classic` only if you have a specific compatibility or performance constraint and understand that it lacks the SLH-DSA signature and post-quantum forward secrecy. For the flag's accepted values, aliases, and fail-safe resolution, see [Configuration](/docs/admin/configuration/).
 
 ### User identity binding
 
@@ -509,7 +512,7 @@ The facts an administrator looks up most often. The full crypto primitives are i
 
 | Property | Value |
 |----------|-------|
-| Noise protocol label | `Noise_NK_25519_ChaChaPoly_BLAKE2b` |
+| Noise protocol label | Classic: `Noise_NK+skem_25519+MLKEM1024_ChaChaPoly_BLAKE2b`; post-quantum: `Noise_NKhfs+skem+sig_25519+MLKEM1024+SLHDSASHAKE256f_ChaChaPoly_BLAKE2b` |
 | Worker encryption mode flag | `--encryption-mode classic` \| `post-quantum` (default `post-quantum`) |
 | Solo mode default bind | `127.0.0.1:4327` plus the local socket. The socket needs no sign-in. TCP callers sign in as `solo` once a password exists; before that, they can only set the first password. |
 | At-rest secret key file | `encryption.key` (mode `0600`, default `<DataDir>/encryption.key`) |

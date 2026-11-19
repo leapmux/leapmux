@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,17 +28,13 @@ import (
 )
 
 const (
-	protocolName = "Noise_NK_25519_ChaChaPoly_BLAKE2b"
-	hashLen      = 64                            // BLAKE2b output length
-	dhLen        = contracts.X25519PublicKeySize // X25519 key length
-	keyLen       = 32                            // ChaCha20-Poly1305 key length
+	hashLen = 64                            // BLAKE2b output length
+	dhLen   = contracts.X25519PublicKeySize // X25519 key length
+	keyLen  = 32                            // ChaCha20-Poly1305 key length
 
 	// EphemeralPublicKeySize is the size of an X25519 ephemeral public key, as
 	// carried by the in-band rekey's dh_pub field. Equals dhLen.
 	EphemeralPublicKeySize = dhLen
-
-	// MlkemCiphertextSize is the size of an ML-KEM-1024 ciphertext.
-	MlkemCiphertextSize = 1568
 
 	// RekeyGraceWindow is how long a previous receive CipherState stays live
 	// for decryption after a successful in-band rekey. This unblocks traffic
@@ -181,7 +178,7 @@ func RestoreCompositeKeypair(x25519Priv, mlkemSeed, slhdsaPrivBytes []byte) (*Co
 //
 //   - The X25519 key must not be a low-order point, which every DH refuses.
 //   - The ML-KEM key must parse, because a key whose coefficients are out of
-//     range is one every post-quantum handshake refuses.
+//     range is one every channel handshake refuses.
 //
 // The size is the whole check of the SLH-DSA key. Its parser only splits the
 // bytes into a seed and a root, so every value of the right size parses.
@@ -244,11 +241,14 @@ type symmetricState struct {
 	n    uint32       // nonce counter
 }
 
-func newSymmetricState() *symmetricState {
+func newSymmetricState(protocolName string) *symmetricState {
 	ss := &symmetricState{}
-	// Protocol name fits in 64 bytes, so we pad it.
 	nameBytes := []byte(protocolName)
-	copy(ss.h[:], nameBytes)
+	if len(nameBytes) <= hashLen {
+		copy(ss.h[:], nameBytes)
+	} else {
+		ss.h = blake2b.Sum512(nameBytes)
+	}
 	ss.ck = ss.h
 	return ss
 }
@@ -308,20 +308,6 @@ func (ss *symmetricState) split() (*CipherState, *CipherState) {
 	return &CipherState{k: k1}, &CipherState{k: k2}
 }
 
-// hybridSplit mixes extra key material (ML-KEM shared secret) into the chaining
-// key before deriving the final cipher keys. This binds both classical and PQ
-// secrets into the session keys.
-func (ss *symmetricState) hybridSplit(extraKeyMaterial []byte) (*CipherState, *CipherState) {
-	// Mix ML-KEM shared secret into chaining key.
-	ck2, _ := noiseHKDF(ss.ck[:], extraKeyMaterial)
-	// Derive cipher keys from the combined chaining key.
-	tempK1, tempK2 := noiseHKDF(ck2[:], nil)
-	var k1, k2 [keyLen]byte
-	copy(k1[:], tempK1[:keyLen])
-	copy(k2[:], tempK2[:keyLen])
-	return &CipherState{k: k1}, &CipherState{k: k2}
-}
-
 // ---- CipherState (post-handshake) ----
 
 // CipherState manages a key and nonce for post-handshake encryption/decryption.
@@ -361,8 +347,8 @@ type CipherState struct {
 	prevExpiresAt time.Time    // wall time after which prev must be zeroed; zero time ⇒ none
 }
 
-// Encrypt encrypts plaintext using the cipher key.
-func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
+// Encrypt encrypts plaintext using the cipher key and associated data.
+func (cs *CipherState) Encrypt(ad, plaintext []byte) ([]byte, error) {
 	if len(plaintext) > contracts.MaxPlaintextPerChunk {
 		return nil, fmt.Errorf("noise: plaintext too large (%d > %d)", len(plaintext), contracts.MaxPlaintextPerChunk)
 	}
@@ -370,7 +356,7 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 	if n > contracts.HardNonceLimit {
 		return nil, fmt.Errorf("noise: send nonce exceeded hard limit")
 	}
-	ct, err := aeadEncrypt(cs.k[:], uint32(n), nil, plaintext)
+	ct, err := aeadEncrypt(cs.k[:], uint32(n), ad, plaintext)
 	if err != nil {
 		return nil, err
 	}
@@ -384,12 +370,12 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 // send key until it observes the rotation, so a frame it emitted just before
 // the swap may still arrive after we rotated. Each retained key keeps its own
 // nonce counter, so a replayed old-key frame is still rejected.
-func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
+func (cs *CipherState) Decrypt(ad, ciphertext []byte) ([]byte, error) {
 	n := cs.n.Load()
 	if n > contracts.HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
-	pt, err := aeadDecrypt(cs.k[:], uint32(n), nil, ciphertext)
+	pt, err := aeadDecrypt(cs.k[:], uint32(n), ad, ciphertext)
 	if err == nil {
 		cs.n.Add(1)
 		return pt, nil
@@ -401,7 +387,7 @@ func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
 	prev := cs.prev
 	if prev != nil && !cs.prevExpiresAt.IsZero() {
 		if time.Now().Before(cs.prevExpiresAt) {
-			if pt2, perr := prev.tryDecrypt(ciphertext); perr == nil {
+			if pt2, perr := prev.tryDecrypt(ad, ciphertext); perr == nil {
 				return pt2, nil
 			}
 		} else {
@@ -421,12 +407,12 @@ func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
 
 // tryDecrypt decrypts without the prev fallback. Used by Decrypt for prev and
 // by tests that want to assert the current key alone cannot decrypt a frame.
-func (cs *CipherState) tryDecrypt(ciphertext []byte) ([]byte, error) {
+func (cs *CipherState) tryDecrypt(ad, ciphertext []byte) ([]byte, error) {
 	n := cs.n.Load()
 	if n > contracts.HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
-	pt, err := aeadDecrypt(cs.k[:], uint32(n), nil, ciphertext)
+	pt, err := aeadDecrypt(cs.k[:], uint32(n), ad, ciphertext)
 	if err != nil {
 		return nil, err
 	}
@@ -460,18 +446,17 @@ func (cs *CipherState) NeedsRekey() bool {
 // grace window) the previous key is zeroed and dropped instead — structurally,
 // not via a follow-up clear step the caller must remember. The nonce resets to 0.
 //
-// The derivation mirrors the Noise handshake's mixKey → hybridSplit ratchet
-// (noise.go mixKey / hybridSplit), collapsed onto the transport key:
+// The derivation applies the handshake's two HKDF stages to the transport key:
 //
 //	ck1 = HKDF(k, dhSecret)      // fresh X25519 ECDH(e_i, e_r)
-//	ck2 = HKDF(ck1, pqSecret)    // fresh ML-KEM-1024 shared secret (nil in classic mode)
+//	ck2 = HKDF(ck1, pqSecret)    // static || ephemeral ML-KEM secret (nil in classic mode)
 //	k'  = ck2[0:32]
 //
 // Keyed off this CipherState's own k, so the two transport directions stay
 // distinct (Send and Receive start from different keys and produce different
-// k'). dhSecret must be the raw X25519 shared secret; pqSecret is the raw
-// ML-KEM shared secret, or nil for a classical-only channel. Both inputs are
-// zeroed here.
+// k'). dhSecret must be the raw X25519 shared secret. On a post-quantum channel,
+// pqSecret is the 64-byte concatenation of the static and ephemeral ML-KEM
+// secrets; it is nil on a classic channel. Both inputs are zeroed here.
 //
 // Forward secrecy: because k' mixes fresh DH + ML-KEM entropy, compromise of
 // the current epoch key does NOT let an attacker derive the next. The Hub still
@@ -532,14 +517,14 @@ type Session struct {
 	Receive *CipherState
 }
 
-// Encrypt encrypts plaintext using the send cipher.
-func (s *Session) Encrypt(plaintext []byte) ([]byte, error) {
-	return s.Send.Encrypt(plaintext)
+// Encrypt encrypts plaintext using the send cipher and associated data.
+func (s *Session) Encrypt(ad, plaintext []byte) ([]byte, error) {
+	return s.Send.Encrypt(ad, plaintext)
 }
 
-// Decrypt decrypts ciphertext using the receive cipher.
-func (s *Session) Decrypt(ciphertext []byte) ([]byte, error) {
-	return s.Receive.Decrypt(ciphertext)
+// Decrypt decrypts ciphertext using the receive cipher and associated data.
+func (s *Session) Decrypt(ad, ciphertext []byte) ([]byte, error) {
+	return s.Receive.Decrypt(ad, ciphertext)
 }
 
 // NeedsRekeyEither returns true if either direction's nonce has exceeded the
@@ -606,24 +591,17 @@ func (s *Session) Zero() {
 
 // HandshakeState holds intermediate state between handshake messages.
 type HandshakeState struct {
-	ss      *symmetricState
-	ePriv   *ecdh.PrivateKey
-	rs      []byte // remote static public key (X25519)
-	mlkemSS []byte // ML-KEM shared secret
-	mlkemCT []byte // ML-KEM ciphertext (needed for transcript)
-}
-
-// GenerateEphemeralX25519 generates a fresh X25519 ephemeral keypair, the
-// shared generator used by both the Noise handshake and the in-band rekey. The
-// caller must zero the returned private key's bytes when done (Clear / zeroBytes).
-func GenerateEphemeralX25519() (*ecdh.PrivateKey, error) {
-	return ecdh.X25519().GenerateKey(rand.Reader)
+	ss          *symmetricState
+	x25519Seed  []byte
+	mlkemSeed   []byte
+	slhdsaPub   []byte
+	postQuantum bool
 }
 
 // GenerateEphemeralX25519Seed generates a fresh X25519 ephemeral private key as
-// the raw 32-byte seed the CALLER owns and can actually zero. The in-band rekey
-// paths use this (not GenerateEphemeralX25519) because crypto/ecdh's
-// *PrivateKey keeps an internal copy of the scalar that the API gives no way to
+// the raw 32-byte seed the CALLER owns and can actually zero. Handshakes and
+// in-band rekeys hold this seed because crypto/ecdh's *PrivateKey keeps an
+// internal copy of the scalar that the API gives no way to
 // wipe — Zero(priv.Bytes()) only zeroes a throwaway copy, leaving the real
 // scalar on the heap until GC. Holding the seed directly makes "wipe the
 // ephemeral once both directions have rotated" genuinely true instead of
@@ -674,26 +652,26 @@ func DH(localPriv, remotePub []byte) ([]byte, error) {
 }
 
 // RekeyMaterial is the fresh key-agreement output an in-band rekey carries
-// between the two peers. It is the bridge between the wire (the dh_pub /
-// mlkem_ct fields on RekeyRequest / RekeyAck) and CipherState.rekeyWithSecret.
+// between the two peers. It is the bridge between the rekey wire fields and
+// CipherState.rekeyWithSecret.
 type RekeyMaterial struct {
 	// LocalEphemeralPriv is this side's fresh X25519 ephemeral private key.
 	// Held only until both directions have rotated, then zeroed.
 	LocalEphemeralPriv []byte
 	// PeerEphemeralPub is the peer's fresh X25519 ephemeral public key.
 	PeerEphemeralPub []byte
-	// PQSharedSecret is the fresh ML-KEM-1024 shared secret (nil in classic mode).
+	// PQSharedSecret concatenates the static and ephemeral ML-KEM secrets on a
+	// post-quantum channel. It is nil on a classic channel.
 	PQSharedSecret []byte
 }
 
 // DeriveRekeySecrets computes the (dhSecret, pqSecret) pair both peers feed into
 // CipherState.rekeyWithSecret. dhSecret is the X25519 ECDH of the two fresh
-// ephemerals; pqSecret is the ML-KEM shared secret established out-of-band
-// (encapsulated by the initiator, decapsulated by the responder), or nil for a
-// classical channel. Both inputs come from the same RekeyMaterial on each side,
-// so the two directions mix identical entropy — direction-distinctness comes
-// from each CipherState's own starting key. The caller must zero the returned
-// secrets once both directions have rotated.
+// ephemerals. pqSecret is the 64-byte static || ephemeral ML-KEM secret on a
+// post-quantum channel, or nil on a classic channel. Both inputs come from the
+// same RekeyMaterial on each side, so the two directions mix identical entropy —
+// direction-distinctness comes from each CipherState's own starting key. The
+// caller must zero the returned secrets once both directions have rotated.
 func DeriveRekeySecrets(m RekeyMaterial) (dhSecret, pqSecret []byte, err error) {
 	if len(m.LocalEphemeralPriv) != dhLen {
 		return nil, nil, fmt.Errorf("noise: rekey ephemeral private key wrong size: got %d, want %d", len(m.LocalEphemeralPriv), dhLen)
@@ -708,351 +686,467 @@ func DeriveRekeySecrets(m RekeyMaterial) (dhSecret, pqSecret []byte, err error) 
 	return dhSecret, m.PQSharedSecret, nil
 }
 
-// EncapsulateRekeyPQ encapsulates a fresh ML-KEM-1024 shared secret under the
-// worker's static encapsulation key, returning (sharedSecret, ciphertext). The
-// initiator sends the ciphertext in the RekeyRequest; the responder decapsulates
-// it to recover the same shared secret. Empty mlkemPub returns (nil, nil) so a
-// classical channel skips PQ entropy uniformly. The caller must zero
-// sharedSecret once both directions have rotated.
-func EncapsulateRekeyPQ(mlkemPub []byte) (sharedSecret, ciphertext []byte, err error) {
-	if len(mlkemPub) == 0 {
-		return nil, nil, nil
-	}
-	ek, err := mlkem.NewEncapsulationKey1024(mlkemPub)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: parse ML-KEM encapsulation key: %w", err)
-	}
-	ss, ct := ek.Encapsulate()
-	return ss, ct, nil
+// RekeyPQOffer is the initiator's post-quantum half of one in-band rekey.
+type RekeyPQOffer struct {
+	StaticCiphertext   []byte
+	EphemeralPublicKey []byte
+	staticSharedSecret []byte
+	ephemeralSeed      []byte
 }
 
-// ---- Responder Handshake (Worker) ----
+// OfferRekeyPQ creates the static encapsulation and ephemeral key of a
+// post-quantum rekey. An empty Worker key returns an empty offer for a classic
+// channel.
+func OfferRekeyPQ(workerMlkemPub []byte) (*RekeyPQOffer, error) {
+	return offerRekeyPQ(systemEntropy, workerMlkemPub)
+}
 
-// ResponderHandshake performs the responder (Worker) side of the hybrid Noise_NK handshake.
-// It takes the Worker's composite keypair and the initiator's first handshake message
-// (which contains noise_msg1 || mlkem_ciphertext), and returns the response message
-// (noise_msg2 || slhdsa_signature) and established session.
-func ResponderHandshake(compositeKey *CompositeKeypair, message1 []byte) (response []byte, session *Session, err error) {
-	// message1 = noise_msg1 (32 + 16 = 48 bytes) || mlkem_ciphertext (1568 bytes)
-	noiseMsg1Len := dhLen + chacha20poly1305.Overhead // 32 + 16 = 48
-	expectedLen := noiseMsg1Len + MlkemCiphertextSize
+func offerRekeyPQ(rnd entropy, workerMlkemPub []byte) (*RekeyPQOffer, error) {
+	if len(workerMlkemPub) == 0 {
+		return &RekeyPQOffer{}, nil
+	}
+	workerKey, err := mlkem.NewEncapsulationKey1024(workerMlkemPub)
+	if err != nil {
+		return nil, fmt.Errorf("noise: parse worker ML-KEM encapsulation key: %w", err)
+	}
+	staticSharedSecret, staticCiphertext := rnd.encapsulate(workerKey)
+	ephemeralSeed, err := rnd.mlkemSeed()
+	if err != nil {
+		zeroBytes(staticSharedSecret)
+		zeroBytes(staticCiphertext)
+		return nil, fmt.Errorf("noise: generate rekey ML-KEM key: %w", err)
+	}
+	ephemeralKey, err := mlkem.NewDecapsulationKey1024(ephemeralSeed)
+	if err != nil {
+		zeroBytes(staticSharedSecret)
+		zeroBytes(staticCiphertext)
+		zeroBytes(ephemeralSeed)
+		return nil, fmt.Errorf("noise: generate rekey ML-KEM key: %w", err)
+	}
+	return &RekeyPQOffer{
+		StaticCiphertext:   staticCiphertext,
+		EphemeralPublicKey: ephemeralKey.EncapsulationKey().Bytes(),
+		staticSharedSecret: staticSharedSecret,
+		ephemeralSeed:      ephemeralSeed,
+	}, nil
+}
+
+// Accept completes an offer with the Worker's ephemeral encapsulation. It
+// zeroes the offer on every exit. The caller zeroes the returned secret.
+func (o *RekeyPQOffer) Accept(ephemeralCiphertext []byte) (pqSecret []byte, err error) {
+	if o == nil {
+		if len(ephemeralCiphertext) != 0 {
+			return nil, fmt.Errorf("noise: classic rekey Ack carries an ML-KEM ciphertext")
+		}
+		return nil, nil
+	}
+	defer o.Zero()
+	if len(o.staticSharedSecret) == 0 && len(o.ephemeralSeed) == 0 {
+		if len(ephemeralCiphertext) != 0 {
+			return nil, fmt.Errorf("noise: classic rekey Ack carries an ML-KEM ciphertext")
+		}
+		return nil, nil
+	}
+	if len(o.staticSharedSecret) != keyLen {
+		return nil, fmt.Errorf("noise: rekey offer has no valid static ML-KEM secret")
+	}
+	if len(ephemeralCiphertext) != contracts.MlkemCiphertextSize {
+		return nil, fmt.Errorf("noise: rekey ephemeral ML-KEM ciphertext is %d bytes, want %d", len(ephemeralCiphertext), contracts.MlkemCiphertextSize)
+	}
+	ephemeralKey, err := mlkem.NewDecapsulationKey1024(o.ephemeralSeed)
+	if err != nil {
+		return nil, fmt.Errorf("noise: restore rekey ML-KEM key: %w", err)
+	}
+	ephemeralSharedSecret, err := ephemeralKey.Decapsulate(ephemeralCiphertext)
+	if err != nil {
+		return nil, fmt.Errorf("noise: decapsulate rekey ephemeral ML-KEM secret: %w", err)
+	}
+	defer zeroBytes(ephemeralSharedSecret)
+	pqSecret = make([]byte, 0, 2*keyLen)
+	pqSecret = append(pqSecret, o.staticSharedSecret...)
+	pqSecret = append(pqSecret, ephemeralSharedSecret...)
+	return pqSecret, nil
+}
+
+// Zero wipes an offer's secret and wire buffers. It is safe on a nil offer and
+// safe to call more than once.
+func (o *RekeyPQOffer) Zero() {
+	if o == nil {
+		return
+	}
+	zeroBytes(o.StaticCiphertext)
+	zeroBytes(o.EphemeralPublicKey)
+	zeroBytes(o.staticSharedSecret)
+	zeroBytes(o.ephemeralSeed)
+}
+
+// AnswerRekeyPQ decapsulates the static secret and encapsulates to the
+// initiator's ephemeral key. A nil decapsulation key means a classic channel.
+func AnswerRekeyPQ(dk *mlkem.DecapsulationKey1024, staticCiphertext, ephemeralPublicKey []byte) (pqSecret, ephemeralCiphertext []byte, err error) {
+	return answerRekeyPQ(systemEntropy, dk, staticCiphertext, ephemeralPublicKey)
+}
+
+func answerRekeyPQ(rnd entropy, dk *mlkem.DecapsulationKey1024, staticCiphertext, ephemeralPublicKey []byte) (pqSecret, ephemeralCiphertext []byte, err error) {
+	if dk == nil {
+		if len(staticCiphertext) != 0 || len(ephemeralPublicKey) != 0 {
+			return nil, nil, fmt.Errorf("noise: classic rekey request carries ML-KEM material")
+		}
+		return nil, nil, nil
+	}
+	if len(staticCiphertext) != contracts.MlkemCiphertextSize {
+		return nil, nil, fmt.Errorf("noise: rekey static ML-KEM ciphertext is %d bytes, want %d", len(staticCiphertext), contracts.MlkemCiphertextSize)
+	}
+	if len(ephemeralPublicKey) != contracts.MlkemPublicKeySize {
+		return nil, nil, fmt.Errorf("noise: rekey ephemeral ML-KEM key is %d bytes, want %d", len(ephemeralPublicKey), contracts.MlkemPublicKeySize)
+	}
+	staticSharedSecret, err := dk.Decapsulate(staticCiphertext)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: decapsulate rekey static ML-KEM secret: %w", err)
+	}
+	defer zeroBytes(staticSharedSecret)
+	ephemeralKey, err := mlkem.NewEncapsulationKey1024(ephemeralPublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: parse rekey ephemeral ML-KEM key: %w", err)
+	}
+	ephemeralSharedSecret, ephemeralCiphertext := rnd.encapsulate(ephemeralKey)
+	defer zeroBytes(ephemeralSharedSecret)
+	pqSecret = make([]byte, 0, 2*keyLen)
+	pqSecret = append(pqSecret, staticSharedSecret...)
+	pqSecret = append(pqSecret, ephemeralSharedSecret...)
+	return pqSecret, ephemeralCiphertext, nil
+}
+
+// ---- Channel Handshake ----
+
+type entropy struct {
+	x25519Seed  func() ([]byte, error)
+	mlkemSeed   func() ([]byte, error)
+	encapsulate func(ek *mlkem.EncapsulationKey1024) (sharedKey, ciphertext []byte)
+	signRandom  io.Reader
+}
+
+var systemEntropy = entropy{
+	x25519Seed: GenerateEphemeralX25519Seed,
+	mlkemSeed: func() ([]byte, error) {
+		key, err := mlkem.GenerateKey1024()
+		if err != nil {
+			return nil, err
+		}
+		return key.Bytes(), nil
+	},
+	encapsulate: func(ek *mlkem.EncapsulationKey1024) (sharedKey, ciphertext []byte) {
+		return ek.Encapsulate()
+	},
+	signRandom: rand.Reader,
+}
+
+func handshakePrologue(workerID string) ([]byte, error) {
+	if workerID == "" {
+		return nil, fmt.Errorf("noise: Worker id is required for the channel handshake")
+	}
+	return []byte(contracts.NoiseHandshakeContextLabel + "\x00" + workerID), nil
+}
+
+func mixStaticKeys(ss *symmetricState, x25519Pub, mlkemPub, slhdsaPub []byte) {
+	ss.mixHash(x25519Pub)
+	ss.mixHash(mlkemPub)
+	ss.mixHash(slhdsaPub)
+}
+
+func handshakeSignatureInput(handshakeHash []byte) []byte {
+	return append([]byte(contracts.NoiseHandshakeSignatureLabel+"\x00"), handshakeHash...)
+}
+
+// ResponderHandshake performs the post-quantum responder handshake.
+func ResponderHandshake(compositeKey *CompositeKeypair, workerID string, message1 []byte) (response []byte, session *Session, err error) {
+	return responderHandshake(systemEntropy, compositeKey, workerID, message1)
+}
+
+func responderHandshake(rnd entropy, compositeKey *CompositeKeypair, workerID string, message1 []byte) (response []byte, session *Session, err error) {
+	return runResponderHandshake(rnd, true, compositeKey, workerID, message1)
+}
+
+// ClassicalResponderHandshake performs the classic responder handshake, which
+// authenticates the Worker's static ML-KEM key without an SLH-DSA signature or
+// an ephemeral ML-KEM exchange.
+func ClassicalResponderHandshake(compositeKey *CompositeKeypair, workerID string, message1 []byte) (response []byte, session *Session, err error) {
+	return classicalResponderHandshake(systemEntropy, compositeKey, workerID, message1)
+}
+
+func classicalResponderHandshake(rnd entropy, compositeKey *CompositeKeypair, workerID string, message1 []byte) (response []byte, session *Session, err error) {
+	return runResponderHandshake(rnd, false, compositeKey, workerID, message1)
+}
+
+func runResponderHandshake(rnd entropy, postQuantum bool, compositeKey *CompositeKeypair, workerID string, message1 []byte) (response []byte, session *Session, err error) {
+	expectedLen := dhLen + contracts.MlkemCiphertextSize + 2*chacha20poly1305.Overhead
+	protocolName := contracts.NoiseClassicProtocolName
+	if postQuantum {
+		expectedLen += contracts.MlkemPublicKeySize + chacha20poly1305.Overhead
+		protocolName = contracts.NoisePostQuantumProtocolName
+	}
 	if len(message1) != expectedLen {
 		return nil, nil, fmt.Errorf("noise: message1 wrong size: got %d, want %d", len(message1), expectedLen)
 	}
+	prologue, err := handshakePrologue(workerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	slhdsaPub, err := compositeKey.SlhdsaPublicKeyBytes()
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: marshal Worker SLH-DSA public key: %w", err)
+	}
+	ss := newSymmetricState(protocolName)
+	defer ss.clear()
+	ss.mixHash(prologue)
+	mixStaticKeys(ss, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
 
-	noiseMsg1 := message1[:noiseMsg1Len]
-	mlkemCT := message1[noiseMsg1Len:]
-
-	// Initialize symmetric state.
-	ss := newSymmetricState()
-
-	// Mix empty prologue.
-	ss.mixHash(nil)
-
-	// Pre-message: <- s (mix responder's static public key).
-	ss.mixHash(compositeKey.X25519Public)
-
-	// Read message 1: -> e, es
-	// Read initiator's ephemeral public key.
-	re := noiseMsg1[:dhLen]
-	ss.mixHash(re)
-
-	// es: DH(s, re) — responder's static private with initiator's ephemeral.
-	dhES, err := DH(compositeKey.X25519Private, re)
+	offset := 0
+	initiatorEphemeral := message1[offset : offset+dhLen]
+	offset += dhLen
+	ss.mixHash(initiatorEphemeral)
+	dhES, err := DH(compositeKey.X25519Private, initiatorEphemeral)
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: es DH(responder static, initiator ephemeral): %w", err)
 	}
 	ss.mixKey(dhES)
 	zeroBytes(dhES)
 
-	// Decrypt payload from message 1.
-	_, err = ss.decryptAndHash(noiseMsg1[dhLen:])
+	var ephemeralMlkemKey *mlkem.EncapsulationKey1024
+	if postQuantum {
+		encryptedKeyLen := contracts.MlkemPublicKeySize + chacha20poly1305.Overhead
+		ephemeralKeyBytes, err := ss.decryptAndHash(message1[offset : offset+encryptedKeyLen])
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: decrypt message1 ephemeral ML-KEM key: %w", err)
+		}
+		offset += encryptedKeyLen
+		ephemeralMlkemKey, err = mlkem.NewEncapsulationKey1024(ephemeralKeyBytes)
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: parse message1 ephemeral ML-KEM key: %w", err)
+		}
+	}
+
+	encryptedStaticLen := contracts.MlkemCiphertextSize + chacha20poly1305.Overhead
+	staticCiphertext, err := ss.decryptAndHash(message1[offset : offset+encryptedStaticLen])
 	if err != nil {
+		return nil, nil, fmt.Errorf("noise: decrypt message1 static ML-KEM ciphertext: %w", err)
+	}
+	offset += encryptedStaticLen
+	staticSharedSecret, err := compositeKey.MlkemDecapsulationKey.Decapsulate(staticCiphertext)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: decapsulate message1 static ML-KEM secret: %w", err)
+	}
+	ss.mixKey(staticSharedSecret)
+	zeroBytes(staticSharedSecret)
+	if _, err := ss.decryptAndHash(message1[offset:]); err != nil {
 		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
 	}
 
-	// Bind ML-KEM ciphertext into the handshake hash so that tampering with
-	// the ciphertext causes the message2 AEAD to fail, independent of the
-	// SLH-DSA transcript signature.
-	ss.mixHash(mlkemCT)
-
-	// Write message 2: <- e, ee
-	// Generate responder ephemeral.
-	ePriv, err := GenerateEphemeralX25519()
+	responderSeed, err := rnd.x25519Seed()
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: generate responder ephemeral: %w", err)
 	}
-	ePub := ePriv.PublicKey().Bytes()
-	ss.mixHash(ePub)
-
-	// ee: DH(e, re).
-	dhEE, err := DH(ePriv.Bytes(), re)
+	defer zeroBytes(responderSeed)
+	responderEphemeral, err := X25519PublicFromSeed(responderSeed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: generate responder ephemeral: %w", err)
+	}
+	ss.mixHash(responderEphemeral)
+	dhEE, err := DH(responderSeed, initiatorEphemeral)
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: ee DH(responder ephemeral, initiator ephemeral): %w", err)
 	}
 	ss.mixKey(dhEE)
 	zeroBytes(dhEE)
 
-	// Encrypt empty payload.
-	encPayload, err := ss.encryptAndHash(nil)
+	message2 := append([]byte(nil), responderEphemeral...)
+	if postQuantum {
+		ephemeralSharedSecret, ephemeralCiphertext := rnd.encapsulate(ephemeralMlkemKey)
+		encryptedCiphertext, err := ss.encryptAndHash(ephemeralCiphertext)
+		if err != nil {
+			zeroBytes(ephemeralSharedSecret)
+			return nil, nil, fmt.Errorf("noise: encrypt message2 ephemeral ML-KEM ciphertext: %w", err)
+		}
+		ss.mixKey(ephemeralSharedSecret)
+		zeroBytes(ephemeralSharedSecret)
+		message2 = append(message2, encryptedCiphertext...)
+	}
+	encryptedPayload, err := ss.encryptAndHash(nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: encrypt message2 payload: %w", err)
 	}
-
-	noiseMsg2 := append(ePub, encPayload...)
-
-	// ML-KEM decapsulation.
-	mlkemSS, err := compositeKey.MlkemDecapsulationKey.Decapsulate(mlkemCT)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: ML-KEM decapsulate: %w", err)
+	message2 = append(message2, encryptedPayload...)
+	if postQuantum {
+		signature, err := compositeKey.SlhdsaPrivateKey.Sign(rnd.signRandom, handshakeSignatureInput(ss.h[:]), nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: SLH-DSA sign: %w", err)
+		}
+		message2 = append(message2, signature...)
 	}
-
-	// Compute transcript for SLH-DSA signing.
-	transcript := computeTranscript(ss.h[:], mlkemCT, mlkemSS)
-
-	// Sign transcript with SLH-DSA.
-	sig, err := compositeKey.SlhdsaPrivateKey.Sign(rand.Reader, transcript, nil)
-	if err != nil {
-		zeroBytes(mlkemSS)
-		return nil, nil, fmt.Errorf("noise: SLH-DSA sign: %w", err)
-	}
-
-	// Hybrid split: combine classical ck with ML-KEM shared secret.
-	send, recv := ss.hybridSplit(mlkemSS)
-	zeroBytes(mlkemSS)
-	ss.clear()
-
-	return append(noiseMsg2, sig...), &Session{Send: send, Receive: recv}, nil
+	send, receive := ss.split()
+	return message2, &Session{Send: send, Receive: receive}, nil
 }
 
-// ---- Initiator Handshake (Frontend, Go side for testing) ----
+// InitiatorHandshake1 creates the first post-quantum handshake message.
+func InitiatorHandshake1(workerID string, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub []byte) (*HandshakeState, []byte, error) {
+	return initiatorHandshake1(systemEntropy, workerID, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub)
+}
 
-// InitiatorHandshake1 creates the first handshake message for the hybrid Noise_NK initiator.
-// Returns the handshake state (needed for step 2) and the first message
-// (noise_msg1 || mlkem_ciphertext).
-func InitiatorHandshake1(remoteX25519Pub, remoteMlkemPub []byte) (*HandshakeState, []byte, error) {
-	// Initialize symmetric state.
-	ss := newSymmetricState()
+func initiatorHandshake1(rnd entropy, workerID string, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub []byte) (*HandshakeState, []byte, error) {
+	return runInitiatorHandshake1(rnd, true, workerID, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub)
+}
 
-	// Mix empty prologue.
-	ss.mixHash(nil)
+// ClassicalInitiatorHandshake1 creates the first classic handshake message.
+func ClassicalInitiatorHandshake1(workerID string, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub []byte) (*HandshakeState, []byte, error) {
+	return classicalInitiatorHandshake1(systemEntropy, workerID, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub)
+}
 
-	// Pre-message: <- s (mix responder's static public key).
-	ss.mixHash(remoteX25519Pub)
+func classicalInitiatorHandshake1(rnd entropy, workerID string, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub []byte) (*HandshakeState, []byte, error) {
+	return runInitiatorHandshake1(rnd, false, workerID, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub)
+}
 
-	// -> e, es
-	// Generate ephemeral keypair.
-	ePriv, err := GenerateEphemeralX25519()
+func runInitiatorHandshake1(rnd entropy, postQuantum bool, workerID string, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub []byte) (state *HandshakeState, message1 []byte, err error) {
+	prologue, err := handshakePrologue(workerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	protocolName := contracts.NoiseClassicProtocolName
+	if postQuantum {
+		protocolName = contracts.NoisePostQuantumProtocolName
+	}
+	state = &HandshakeState{
+		ss:          newSymmetricState(protocolName),
+		postQuantum: postQuantum,
+	}
+	stateToClear := state
+	if postQuantum {
+		state.slhdsaPub = append([]byte(nil), remoteSlhdsaPub...)
+	}
+	defer func() {
+		if err != nil {
+			stateToClear.Clear()
+			state = nil
+			message1 = nil
+		}
+	}()
+	state.ss.mixHash(prologue)
+	mixStaticKeys(state.ss, remoteX25519Pub, remoteMlkemPub, remoteSlhdsaPub)
+
+	state.x25519Seed, err = rnd.x25519Seed()
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: generate initiator ephemeral: %w", err)
 	}
-	ePub := ePriv.PublicKey().Bytes()
-	ss.mixHash(ePub)
-
-	// es: DH(e, rs).
-	dhES, err := DH(ePriv.Bytes(), remoteX25519Pub)
+	initiatorEphemeral, err := X25519PublicFromSeed(state.x25519Seed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: generate initiator ephemeral: %w", err)
+	}
+	state.ss.mixHash(initiatorEphemeral)
+	dhES, err := DH(state.x25519Seed, remoteX25519Pub)
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: es DH(initiator ephemeral, responder static): %w", err)
 	}
-	ss.mixKey(dhES)
+	state.ss.mixKey(dhES)
 	zeroBytes(dhES)
 
-	// Encrypt empty payload.
-	encPayload, err := ss.encryptAndHash(nil)
+	message1 = append([]byte(nil), initiatorEphemeral...)
+	if postQuantum {
+		state.mlkemSeed, err = rnd.mlkemSeed()
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: generate initiator ephemeral ML-KEM key: %w", err)
+		}
+		ephemeralKey, err := mlkem.NewDecapsulationKey1024(state.mlkemSeed)
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: generate initiator ephemeral ML-KEM key: %w", err)
+		}
+		encryptedKey, err := state.ss.encryptAndHash(ephemeralKey.EncapsulationKey().Bytes())
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: encrypt message1 ephemeral ML-KEM key: %w", err)
+		}
+		message1 = append(message1, encryptedKey...)
+	}
+
+	workerMlkemKey, err := mlkem.NewEncapsulationKey1024(remoteMlkemPub)
+	if err != nil {
+		return nil, nil, fmt.Errorf("noise: parse Worker ML-KEM encapsulation key: %w", err)
+	}
+	staticSharedSecret, staticCiphertext := rnd.encapsulate(workerMlkemKey)
+	encryptedCiphertext, err := state.ss.encryptAndHash(staticCiphertext)
+	if err != nil {
+		zeroBytes(staticSharedSecret)
+		return nil, nil, fmt.Errorf("noise: encrypt message1 static ML-KEM ciphertext: %w", err)
+	}
+	state.ss.mixKey(staticSharedSecret)
+	zeroBytes(staticSharedSecret)
+	message1 = append(message1, encryptedCiphertext...)
+	encryptedPayload, err := state.ss.encryptAndHash(nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("noise: encrypt message1 payload: %w", err)
 	}
-
-	noiseMsg1 := append(ePub, encPayload...)
-
-	// ML-KEM encapsulation.
-	mlkemEK, err := mlkem.NewEncapsulationKey1024(remoteMlkemPub)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: parse ML-KEM encapsulation key: %w", err)
-	}
-	mlkemSS, mlkemCT := mlkemEK.Encapsulate()
-
-	// Bind ML-KEM ciphertext into the handshake hash (matches responder's mixHash).
-	ss.mixHash(mlkemCT)
-
-	message1 := append(noiseMsg1, mlkemCT...)
-
-	return &HandshakeState{
-		ss:      ss,
-		ePriv:   ePriv,
-		rs:      remoteX25519Pub,
-		mlkemSS: mlkemSS,
-		mlkemCT: mlkemCT,
-	}, message1, nil
+	message1 = append(message1, encryptedPayload...)
+	return state, message1, nil
 }
 
-// InitiatorHandshake2 completes the initiator side by processing the responder's
-// handshake response message (noise_msg2 || slhdsa_signature).
-// It verifies the SLH-DSA signature and combines keys via HKDF.
-func InitiatorHandshake2(hs *HandshakeState, message2 []byte, remoteSlhdsaPub []byte) (*Session, error) {
-	noiseMsg2Len := dhLen + chacha20poly1305.Overhead // 32 + 16 = 48
-	expectedLen := noiseMsg2Len + contracts.SlhdsaSignatureSize
+// Finish processes message 2 in the mode that created the state and returns the
+// initiator's session. It clears the state on every exit.
+func (hs *HandshakeState) Finish(message2 []byte) (*Session, error) {
+	if hs == nil {
+		return nil, fmt.Errorf("noise: handshake state is nil")
+	}
+	defer hs.Clear()
+	if hs.ss == nil {
+		return nil, fmt.Errorf("noise: handshake state is already cleared")
+	}
+	expectedLen := dhLen + chacha20poly1305.Overhead
+	if hs.postQuantum {
+		expectedLen += contracts.MlkemCiphertextSize + chacha20poly1305.Overhead + contracts.SlhdsaSignatureSize
+	}
 	if len(message2) != expectedLen {
 		return nil, fmt.Errorf("noise: message2 wrong size: got %d, want %d", len(message2), expectedLen)
 	}
 
-	noiseMsg2 := message2[:noiseMsg2Len]
-	slhdsaSig := message2[noiseMsg2Len:]
-
-	ss := hs.ss
-
-	// <- e, ee
-	// Read responder's ephemeral public key.
-	re := noiseMsg2[:dhLen]
-	ss.mixHash(re)
-
-	// ee: DH(e, re).
-	dhEE, err := DH(hs.ePriv.Bytes(), re)
+	offset := 0
+	responderEphemeral := message2[offset : offset+dhLen]
+	offset += dhLen
+	hs.ss.mixHash(responderEphemeral)
+	dhEE, err := DH(hs.x25519Seed, responderEphemeral)
 	if err != nil {
 		return nil, fmt.Errorf("noise: ee DH(initiator ephemeral, responder ephemeral): %w", err)
 	}
-	ss.mixKey(dhEE)
+	hs.ss.mixKey(dhEE)
 	zeroBytes(dhEE)
-
-	// Decrypt payload.
-	_, err = ss.decryptAndHash(noiseMsg2[dhLen:])
-	if err != nil {
+	if hs.postQuantum {
+		encryptedCiphertextLen := contracts.MlkemCiphertextSize + chacha20poly1305.Overhead
+		ephemeralCiphertext, err := hs.ss.decryptAndHash(message2[offset : offset+encryptedCiphertextLen])
+		if err != nil {
+			return nil, fmt.Errorf("noise: decrypt message2 ephemeral ML-KEM ciphertext: %w", err)
+		}
+		offset += encryptedCiphertextLen
+		ephemeralKey, err := mlkem.NewDecapsulationKey1024(hs.mlkemSeed)
+		if err != nil {
+			return nil, fmt.Errorf("noise: restore initiator ephemeral ML-KEM key: %w", err)
+		}
+		ephemeralSharedSecret, err := ephemeralKey.Decapsulate(ephemeralCiphertext)
+		if err != nil {
+			return nil, fmt.Errorf("noise: decapsulate message2 ephemeral ML-KEM secret: %w", err)
+		}
+		hs.ss.mixKey(ephemeralSharedSecret)
+		zeroBytes(ephemeralSharedSecret)
+	}
+	encryptedPayloadLen := chacha20poly1305.Overhead
+	if _, err := hs.ss.decryptAndHash(message2[offset : offset+encryptedPayloadLen]); err != nil {
 		return nil, fmt.Errorf("noise: decrypt message2 payload: %w", err)
 	}
-
-	// Verify SLH-DSA signature over transcript.
-	transcript := computeTranscript(ss.h[:], hs.mlkemCT, hs.mlkemSS)
-
-	slhdsaPubKey := slhdsa.PublicKey{ID: slhdsa.SHAKE_256f}
-	if err := slhdsaPubKey.UnmarshalBinary(remoteSlhdsaPub); err != nil {
-		return nil, fmt.Errorf("noise: parse SLH-DSA public key: %w", err)
+	offset += encryptedPayloadLen
+	if hs.postQuantum {
+		slhdsaPub := slhdsa.PublicKey{ID: slhdsa.SHAKE_256f}
+		if err := slhdsaPub.UnmarshalBinary(hs.slhdsaPub); err != nil {
+			return nil, fmt.Errorf("noise: parse SLH-DSA public key: %w", err)
+		}
+		signature := message2[offset:]
+		if !slhdsa.Verify(&slhdsaPub, slhdsa.NewMessage(handshakeSignatureInput(hs.ss.h[:])), signature, nil) {
+			return nil, fmt.Errorf("noise: SLH-DSA signature verification failed")
+		}
 	}
-
-	if !slhdsa.Verify(&slhdsaPubKey, slhdsa.NewMessage(transcript), slhdsaSig, nil) {
-		return nil, fmt.Errorf("noise: SLH-DSA signature verification failed")
-	}
-
-	// Hybrid split: combine classical ck with ML-KEM shared secret.
-	// Initiator convention: send=cs2, receive=cs1.
-	cs1, cs2 := ss.hybridSplit(hs.mlkemSS)
-	ss.clear()
-	hs.Clear()
-
-	return &Session{Send: cs2, Receive: cs1}, nil
-}
-
-// ---- Classical Responder Handshake (Worker, X25519 only) ----
-
-// ClassicalResponderHandshake performs the responder side of the classical Noise_NK handshake.
-// message1 = noise_msg1 (48 bytes), response = noise_msg2 (48 bytes).
-func ClassicalResponderHandshake(x25519Pub, x25519Priv []byte, message1 []byte) (response []byte, session *Session, err error) {
-	noiseMsg1Len := dhLen + chacha20poly1305.Overhead // 48
-	if len(message1) != noiseMsg1Len {
-		return nil, nil, fmt.Errorf("noise: classical message1 wrong size: got %d, want %d", len(message1), noiseMsg1Len)
-	}
-
-	ss := newSymmetricState()
-	ss.mixHash(nil)
-	ss.mixHash(x25519Pub)
-
-	re := message1[:dhLen]
-	ss.mixHash(re)
-
-	dhES, err := DH(x25519Priv, re)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: es DH(responder static, initiator ephemeral): %w", err)
-	}
-	ss.mixKey(dhES)
-	zeroBytes(dhES)
-
-	if _, err = ss.decryptAndHash(message1[dhLen:]); err != nil {
-		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
-	}
-
-	ePriv, err := GenerateEphemeralX25519()
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: generate responder ephemeral: %w", err)
-	}
-	ePub := ePriv.PublicKey().Bytes()
-	ss.mixHash(ePub)
-
-	dhEE, err := DH(ePriv.Bytes(), re)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: ee DH(responder ephemeral, initiator ephemeral): %w", err)
-	}
-	ss.mixKey(dhEE)
-	zeroBytes(dhEE)
-
-	encPayload, err := ss.encryptAndHash(nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: encrypt message2 payload: %w", err)
-	}
-
-	send, recv := ss.split()
-	ss.clear()
-	return append(ePub, encPayload...), &Session{Send: send, Receive: recv}, nil
-}
-
-// ---- Classical Initiator Handshake (Frontend, Go side for testing) ----
-
-// ClassicalInitiatorHandshake1 creates the first message for the classical Noise_NK initiator.
-func ClassicalInitiatorHandshake1(remoteX25519Pub []byte) (*HandshakeState, []byte, error) {
-	ss := newSymmetricState()
-	ss.mixHash(nil)
-	ss.mixHash(remoteX25519Pub)
-
-	ePriv, err := GenerateEphemeralX25519()
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: generate initiator ephemeral: %w", err)
-	}
-	ePub := ePriv.PublicKey().Bytes()
-	ss.mixHash(ePub)
-
-	dhES, err := DH(ePriv.Bytes(), remoteX25519Pub)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: es DH(initiator ephemeral, responder static): %w", err)
-	}
-	ss.mixKey(dhES)
-	zeroBytes(dhES)
-
-	encPayload, err := ss.encryptAndHash(nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("noise: encrypt message1 payload: %w", err)
-	}
-
-	return &HandshakeState{
-		ss:    ss,
-		ePriv: ePriv,
-		rs:    remoteX25519Pub,
-	}, append(ePub, encPayload...), nil
-}
-
-// ClassicalInitiatorHandshake2 completes the classical Noise_NK initiator handshake.
-func ClassicalInitiatorHandshake2(hs *HandshakeState, message2 []byte) (*Session, error) {
-	noiseMsg2Len := dhLen + chacha20poly1305.Overhead // 48
-	if len(message2) != noiseMsg2Len {
-		return nil, fmt.Errorf("noise: classical message2 wrong size: got %d, want %d", len(message2), noiseMsg2Len)
-	}
-
-	ss := hs.ss
-
-	re := message2[:dhLen]
-	ss.mixHash(re)
-
-	dhEE, err := DH(hs.ePriv.Bytes(), re)
-	if err != nil {
-		return nil, fmt.Errorf("noise: ee DH(initiator ephemeral, responder ephemeral): %w", err)
-	}
-	ss.mixKey(dhEE)
-	zeroBytes(dhEE)
-
-	if _, err = ss.decryptAndHash(message2[dhLen:]); err != nil {
-		return nil, fmt.Errorf("noise: decrypt message2 payload: %w", err)
-	}
-
-	cs1, cs2 := ss.split()
-	ss.clear()
-	hs.Clear()
+	cs1, cs2 := hs.ss.split()
 	return &Session{Send: cs2, Receive: cs1}, nil
 }
 
@@ -1072,7 +1166,7 @@ func Zero(b []byte) {
 	zeroBytes(b)
 }
 
-// clear zeroes the symmetric state's sensitive fields after split/hybridSplit.
+// clear zeroes the symmetric state's sensitive fields after the handshake ends.
 func (ss *symmetricState) clear() {
 	zeroBytes(ss.ck[:])
 	zeroBytes(ss.k[:])
@@ -1081,17 +1175,17 @@ func (ss *symmetricState) clear() {
 	ss.n = 0
 }
 
-// Clear zeroes all sensitive fields in the HandshakeState.
-// Only secrets are zeroed — public keys (rs) are not sensitive.
-// Called automatically by InitiatorHandshake2 after completing the handshake.
+// Clear zeroes all sensitive fields in the HandshakeState. It is idempotent.
 func (hs *HandshakeState) Clear() {
+	if hs == nil {
+		return
+	}
 	if hs.ss != nil {
 		hs.ss.clear()
 		hs.ss = nil
 	}
-	hs.ePriv = nil
-	zeroBytes(hs.mlkemSS)
-	zeroBytes(hs.mlkemCT)
+	zeroBytes(hs.x25519Seed)
+	zeroBytes(hs.mlkemSeed)
 }
 
 // ---- Crypto primitives ----
@@ -1151,13 +1245,4 @@ func aeadDecrypt(key []byte, nonce uint32, ad, ciphertext []byte) ([]byte, error
 	nonceBytes[6] = byte(nonce >> 16)
 	nonceBytes[7] = byte(nonce >> 24)
 	return aead.Open(nil, nonceBytes, ciphertext, ad)
-}
-
-// computeTranscript computes BLAKE2b(handshake_hash || mlkem_ct || mlkem_ss).
-func computeTranscript(handshakeHash, mlkemCT, mlkemSS []byte) []byte {
-	h, _ := blake2b.New512(nil)
-	h.Write(handshakeHash)
-	h.Write(mlkemCT)
-	h.Write(mlkemSS)
-	return h.Sum(nil)
 }

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "noise_rekey_pq_vectors.schema.json",
+  "title": "Noise post-quantum rekey exchange vectors",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "exchanges"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "exchanges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "workerMlkemSeedHex",
+          "initiatorEntropy",
+          "responderEntropy",
+          "staticCiphertextHex",
+          "ephemeralPublicKeyHex",
+          "ephemeralCiphertextHex",
+          "pqSecretHex"
+        ],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "workerMlkemSeedHex": { "$ref": "#/$defs/hex128" },
+          "initiatorEntropy": {
+            "type": "object",
+            "$ref": "#/$defs/entropy",
+            "properties": { "mlkemKeygenSeedHex": true, "mlkemEncapsulationSeedHex": true },
+            "required": ["mlkemKeygenSeedHex", "mlkemEncapsulationSeedHex"]
+          },
+          "responderEntropy": {
+            "type": "object",
+            "$ref": "#/$defs/entropy",
+            "properties": { "mlkemEncapsulationSeedHex": true },
+            "required": ["mlkemEncapsulationSeedHex"]
+          },
+          "staticCiphertextHex": { "$ref": "#/$defs/hex3136" },
+          "ephemeralPublicKeyHex": { "$ref": "#/$defs/hex3136" },
+          "ephemeralCiphertextHex": { "$ref": "#/$defs/hex3136" },
+          "pqSecretHex": { "$ref": "#/$defs/hex128" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "entropy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x25519SeedHex": { "$ref": "#/$defs/hex64" },
+        "mlkemKeygenSeedHex": { "$ref": "#/$defs/hex128" },
+        "mlkemEncapsulationSeedHex": { "$ref": "#/$defs/hex64" },
+        "signRandomHex": { "$ref": "#/$defs/hex64" }
+      }
+    },
+    "hex64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hex128": { "type": "string", "pattern": "^[0-9a-f]{128}$" },
+    "hex3136": { "type": "string", "pattern": "^[0-9a-f]{3136}$" }
+  }
+}

@@ -194,12 +194,13 @@ export class ChannelSessionClient {
   }
 
   /** Build handshake message 1 in the session worker. */
-  async beginHandshake(mode: EncryptionMode, keys: WorkerKeyBundle): Promise<SessionHandshake> {
+  async beginHandshake(workerId: string, mode: EncryptionMode, keys: WorkerKeyBundle): Promise<SessionHandshake> {
     const worker = this.liveWorker()
     const requestId = this.nextRequestId++
     const begun = await this.request(worker, {
       type: 'beginHandshake',
       requestId,
+      workerId,
       mode,
       keys,
     }, 'handshakeBegun')

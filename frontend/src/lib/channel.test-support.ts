@@ -8,9 +8,11 @@ import type { KeyPinConfirmFn } from './keyPinStore'
 import type { HandshakeState, Session } from './noise'
 import type { HybridHandshakeState } from './noise-hybrid'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE, MLKEM_PUBLIC_KEY_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import {
+  ChannelMessageFlags,
   ChannelMessageSchema,
   EncryptionMode,
   InnerMessageSchema,
@@ -22,7 +24,7 @@ import {
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
 import { ChannelManager } from './channel'
-import { frameBytes, unframeBytes } from './channelFraming'
+import { frameAssociatedData, frameBytes, unframeBytes } from './channelFraming'
 import { createInProcessSessionHost } from './channelSessionInProcess'
 import { FIRST_REQUEST_ID } from './channelSessionProtocol'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
@@ -404,14 +406,14 @@ export function createMockTransport(
 
 // ---- Mock handshake functions (injected via ChannelManager DI) ----
 
-export function mockHandshake1(_remoteX25519Pub: Uint8Array, _remoteMlkemPub: Uint8Array): { handshakeState: HybridHandshakeState, message1: Uint8Array } {
+export function mockHandshake1(_workerId: string, _keys: WorkerKeyBundle): { handshakeState: HybridHandshakeState, message1: Uint8Array } {
   return {
     handshakeState: blankHybridHandshakeState(),
-    message1: new Uint8Array(1616),
+    message1: new Uint8Array(3216),
   }
 }
 
-export async function mockHandshake2(_state: HybridHandshakeState, _message2: Uint8Array, _remoteSlhdsaPub: Uint8Array): Promise<Session> {
+export async function mockHandshake2(_state: HybridHandshakeState, _message2: Uint8Array, _verify: unknown): Promise<Session> {
   const entries = [
     ...sessions.entries(),
   ]
@@ -474,13 +476,13 @@ export class ChannelManagerTestHarness {
     await settleChannelSessions()
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
-    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
+    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     expect(inner.kind.case).toBe('request')
     const resp = create(InnerRpcResponseSchema, {})
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
     })
-    const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    const ciphertext = pair.responder.send.encrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), toBinary(InnerMessageSchema, envelope))
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
       id: Number(sentMsg.correlationId),
     }))
@@ -492,22 +494,33 @@ export class ChannelManagerTestHarness {
     await settleChannelSessions()
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
-    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
+    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     expect(inner.kind.case).toBe('rekeyRequest')
     // Fresh-DH rekey: the test double ignores the secret bytes, but production
     // derives them from the request's dhPub + a responder ephemeral. Use a real
     // responder ephemeral pubkey in the Ack so the initiator's production DH
     // derivation (over real X25519) succeeds.
+    const request = inner.kind.case === 'rekeyRequest'
+      ? inner.kind.value
+      : undefined
+    if (!request)
+      throw new Error('expected RekeyRequest')
+    const pqAnswer = request.mlkemEphemeralPub.length === 0
+      ? null
+      : ml_kem1024.encapsulate(request.mlkemEphemeralPub)
     const responderEph = generateRekeyEphemeral()
     const placeholderSecret = new Uint8Array(32)
     pair.responder.receive.rekeyWithSecret(placeholderSecret, null, true)
     const envelope = create(InnerMessageSchema, {
       kind: {
         case: 'rekeyAck',
-        value: create(RekeyAckSchema, { dhPub: responderEph.publicKey }),
+        value: create(RekeyAckSchema, {
+          dhPub: responderEph.publicKey,
+          mlkemEphemeralCt: pqAnswer?.cipherText ?? new Uint8Array(0),
+        }),
       },
     })
-    const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    const ciphertext = pair.responder.send.encrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), toBinary(InnerMessageSchema, envelope))
     pair.responder.send.rekeyWithSecret(placeholderSecret, null, false)
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
       id: Number(sentMsg.correlationId),
@@ -520,7 +533,7 @@ export class ChannelManagerTestHarness {
     await settleChannelSessions()
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
-    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
+    const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     expect(inner.kind.case).toBe('rekeyRequest')
     const envelope = create(InnerMessageSchema, {
       kind: {
@@ -532,7 +545,7 @@ export class ChannelManagerTestHarness {
           : {}),
       },
     })
-    const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    const ciphertext = pair.responder.send.encrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), toBinary(InnerMessageSchema, envelope))
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
       id: Number(sentMsg.correlationId),
     }))
@@ -555,7 +568,7 @@ export class ChannelManagerTestHarness {
   private async injectFromWorker(channelId: string, requestId: number, envelope: MessageInitShape<typeof InnerMessageSchema>): Promise<void> {
     const pair = sessions.get(channelId)!
     const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, envelope))
-    const ciphertext = pair.responder.send.encrypt(plaintext)
+    const ciphertext = pair.responder.send.encrypt(frameAssociatedData(channelId, BigInt(requestId), ChannelMessageFlags.UNSPECIFIED), plaintext)
     this.mockWs.simulateMessage(encodeWireMessage(channelId, ciphertext, { id: requestId }))
     await settleChannelSessions()
   }
@@ -757,7 +770,7 @@ export function makeIdentityCipherManager(
 ): ChannelManager {
   return newTestChannelManager(transport, {
     session: {
-      classicHandshake1: (_rs: Uint8Array) => ({
+      classicHandshake1: (_workerId: string, _keys: WorkerKeyBundle) => ({
         message1: new Uint8Array(48),
         handshakeState: blankClassicHandshakeState(),
       }),

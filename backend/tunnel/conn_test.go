@@ -916,7 +916,7 @@ func readPeerRequest(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Co
 	t.Helper()
 	message, err := channelwire.ReadChannelMessage(testutil.DeadlineContext(t), peerWS)
 	require.NoError(t, err)
-	plaintext, err := peer.Decrypt(message.GetCiphertext())
+	plaintext, err := channelwire.OpenChannelMessage(peer, message)
 	require.NoError(t, err)
 	var envelope leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plaintext, &envelope))
@@ -931,10 +931,9 @@ func writePeerMessage(t *testing.T, peer *noiseutil.Session, peerWS *websocket.C
 	t.Helper()
 	plaintext, err := proto.Marshal(envelope)
 	require.NoError(t, err)
-	ciphertext, err := peer.Encrypt(plaintext)
+	frame, err := channelwire.SealChannelMessage(peer, "rekey-test", correlationID, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
 	require.NoError(t, err)
-	require.NoError(t, channelwire.WriteChannelMessage(testutil.DeadlineContext(t), peerWS,
-		channelwire.NewChannelMessage("rekey-test", correlationID, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, ciphertext)))
+	require.NoError(t, channelwire.WriteChannelMessage(testutil.DeadlineContext(t), peerWS, frame))
 }
 
 // A worker can refuse OpenTunnelConn with a unary error, as it does for a
@@ -942,7 +941,7 @@ func writePeerMessage(t *testing.T, peer *noiseutil.Session, peerWS *websocket.C
 // stream. The channel routes that error to the stream handler, so the dial
 // reports the refusal at once instead of waiting until its context ends.
 func TestDialTunnelReportsAUnaryRefusalOfTheOpen(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ctx := testutil.DeadlineContext(t)
 	type dialResult struct {
 		conn *Conn
@@ -985,7 +984,7 @@ func TestDialTunnelReportsAUnaryRefusalOfTheOpen(t *testing.T) {
 // dies.
 func TestDialTunnelClosesTheConnAfterTheChannelRejectsTheFirstFrame(t *testing.T) {
 	const limit = 512
-	ch, peer, peerWS := pairedRekeyChannel(t, func(ch *Channel) { ch.maxReassembled = limit })
+	ch, peer, peerWS, _ := pairedRekeyChannel(t, rekeyChannelOption{apply: func(ch *Channel) { ch.maxReassembled = limit }})
 	ctx := testutil.DeadlineContext(t)
 	dialed := make(chan error, 1)
 	go func() {

@@ -1,14 +1,17 @@
 import type { ChannelSessionOpts, SessionChannel } from './channelSession'
 import type { HandshakeState, Session } from './noise'
-import type { HybridHandshakeState } from './noise-hybrid'
+import type { HybridHandshakeState, RekeyPQOffer } from './noise-hybrid'
 import { fromBinary } from '@bufbuild/protobuf'
+import { x25519 } from '@noble/curves/ed25519.js'
+import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_REJECT_BACKOFF_MS, MAX_CHUNK_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS } from '~/generated/contracts/wire'
 import { ChannelMessageFlags, ChannelMessageSchema, EncryptionMode, InnerMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { blankClassicHandshakeState, blankHybridHandshakeState } from '~/test-support/channelSessionDoubles'
 import { ChannelError } from './channelError'
-import { unframeBytes } from './channelFraming'
+import { frameAssociatedData, unframeBytes } from './channelFraming'
 import { ChannelSession, createSessionChannel, FIRST_REKEY_CORRELATION_ID } from './channelSession'
+import { CipherState } from './noise'
 import { generateRekeyEphemeral } from './noise-hybrid'
 import { verifySlhDsaHere } from './slhDsaVerifyHere'
 import { yieldToEventLoop } from './workSlices'
@@ -19,8 +22,8 @@ function chunks(count: number): Uint8Array {
 }
 
 function mockCipher(sendNeeds = false, recvNeeds = false) {
-  const encrypt = vi.fn((pt: Uint8Array) => new Uint8Array(pt))
-  const decrypt = vi.fn((ct: Uint8Array) => new Uint8Array(ct))
+  const encrypt = vi.fn((_ad: Uint8Array, pt: Uint8Array) => new Uint8Array(pt))
+  const decrypt = vi.fn((_ad: Uint8Array, ct: Uint8Array) => new Uint8Array(ct))
   // Separate mocks per direction so tests can assert the send-vs-recv asymmetry
   // (e.g. clearPrev is called on send only). `satisfies Session` (not
   // `as unknown as`) so a future CipherState method addition fails to compile
@@ -120,6 +123,22 @@ function allZero(bytes: Uint8Array): boolean {
   return bytes.every(byte => byte === 0)
 }
 
+function filledPQOffer() {
+  return {
+    staticCipherText: new Uint8Array(1568).fill(1),
+    ephemeralPublicKey: new Uint8Array(1568).fill(2),
+    staticSharedSecret: new Uint8Array(32).fill(3),
+    ephemeralSecretKey: new Uint8Array(3168).fill(4),
+  }
+}
+
+function expectOfferZero(offer: RekeyPQOffer): void {
+  expect(allZero(offer.staticCipherText)).toBe(true)
+  expect(allZero(offer.ephemeralPublicKey)).toBe(true)
+  expect(allZero(offer.staticSharedSecret)).toBe(true)
+  expect(allZero(offer.ephemeralSecretKey)).toBe(true)
+}
+
 /** Put non-zero bytes into every secret of a classic handshake state, so that a test can see them zeroed. */
 function fillClassicSecrets(state: HandshakeState): void {
   state.e.privateKey.fill(0x11)
@@ -131,8 +150,7 @@ function fillClassicSecrets(state: HandshakeState): void {
 /** Put non-zero bytes into every secret of a hybrid handshake state (see fillClassicSecrets). */
 function fillHybridSecrets(state: HybridHandshakeState): void {
   fillClassicSecrets(state)
-  state.mlkemSS.fill(0x55)
-  state.mlkemCT.fill(0x66)
+  state.mlkemEphemeralSecretKey.fill(0x55)
 }
 
 /** Whether every secret of a classic handshake state is zero. */
@@ -142,7 +160,7 @@ function classicSecretsZero(state: HandshakeState): boolean {
 
 /** Whether every secret of a hybrid handshake state is zero. */
 function hybridSecretsZero(state: HybridHandshakeState): boolean {
-  return classicSecretsZero(state) && allZero(state.mlkemSS) && allZero(state.mlkemCT)
+  return classicSecretsZero(state) && allZero(state.mlkemEphemeralSecretKey)
 }
 
 const keys = {
@@ -156,7 +174,7 @@ describe('ChannelSession beginHandshake', () => {
     const message1 = new Uint8Array([9, 9])
     const finished = mockCipher()
     const state = blankClassicHandshakeState()
-    const classicHandshake1 = vi.fn((_rs: Uint8Array) => ({ message1, handshakeState: state }))
+    const classicHandshake1 = vi.fn((_workerId: string, _keys: unknown) => ({ message1, handshakeState: state }))
     const classicHandshake2 = vi.fn((_hs: HandshakeState, _payload: Uint8Array) => finished)
     const hybrid1 = vi.fn(() => ({
       message1,
@@ -164,8 +182,8 @@ describe('ChannelSession beginHandshake', () => {
     }))
     const { session } = harness({ classicHandshake1, classicHandshake2, handshake1: hybrid1 })
 
-    const pending = session.beginHandshake(EncryptionMode.CLASSIC, keys)
-    expect(classicHandshake1).toHaveBeenCalledWith(keys.x25519PublicKey)
+    const pending = session.beginHandshake('worker-1', EncryptionMode.CLASSIC, keys)
+    expect(classicHandshake1).toHaveBeenCalledWith('worker-1', keys)
     expect(hybrid1).not.toHaveBeenCalled()
     expect(pending.message1).toBe(message1)
 
@@ -178,27 +196,27 @@ describe('ChannelSession beginHandshake', () => {
     const message1 = new Uint8Array([8, 8])
     const finished = mockCipher()
     const state = blankHybridHandshakeState()
-    const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => ({ message1, handshakeState: state }))
-    const handshake2 = vi.fn(async (_hs: HybridHandshakeState, _payload: Uint8Array, _slh: Uint8Array, _verify: unknown) => finished)
+    const handshake1 = vi.fn((_workerId: string, _keys: unknown) => ({ message1, handshakeState: state }))
+    const handshake2 = vi.fn(async (_hs: HybridHandshakeState, _payload: Uint8Array, _verify: unknown) => finished)
     const classic1 = vi.fn(() => ({
       message1,
       handshakeState: blankClassicHandshakeState(),
     }))
     const { session } = harness({ handshake1, handshake2, classicHandshake1: classic1 })
 
-    const pending = session.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
-    expect(handshake1).toHaveBeenCalledWith(keys.x25519PublicKey, keys.mlkemPublicKey)
+    const pending = session.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
+    expect(handshake1).toHaveBeenCalledWith('worker-1', keys)
     expect(classic1).not.toHaveBeenCalled()
     expect(pending.message1).toBe(message1)
 
     const payload = new Uint8Array([6, 7])
     await expect(pending.finish(payload)).resolves.toBe(finished)
     // The session runs in the session worker, so it verifies on its own thread.
-    expect(handshake2).toHaveBeenCalledWith(state, payload, keys.slhdsaPublicKey, verifySlhDsaHere)
+    expect(handshake2).toHaveBeenCalledWith(state, payload, verifySlhDsaHere)
   })
 
   it('treats UNSPECIFIED like post-quantum (hybrid path)', () => {
-    const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => ({
+    const handshake1 = vi.fn((_workerId: string, _keys: unknown) => ({
       message1: new Uint8Array([1]),
       handshakeState: blankHybridHandshakeState(),
     }))
@@ -207,7 +225,7 @@ describe('ChannelSession beginHandshake', () => {
       handshakeState: blankClassicHandshakeState(),
     }))
     const { session } = harness({ handshake1, classicHandshake1: classic1 })
-    session.beginHandshake(EncryptionMode.UNSPECIFIED, keys)
+    session.beginHandshake('worker-1', EncryptionMode.UNSPECIFIED, keys)
     expect(handshake1).toHaveBeenCalledOnce()
     expect(classic1).not.toHaveBeenCalled()
   })
@@ -224,7 +242,7 @@ describe('ChannelSession beginHandshake', () => {
         throw new Error('bad handshake-2')
       },
     })
-    const pending = session.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    const pending = session.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
 
     await expect(pending.finish(new Uint8Array([1]))).rejects.toThrow('bad handshake-2')
     expect(hybridSecretsZero(state)).toBe(true)
@@ -242,7 +260,7 @@ describe('ChannelSession beginHandshake', () => {
         throw new Error('bad classic handshake-2')
       },
     })
-    const pending = session.beginHandshake(EncryptionMode.CLASSIC, keys)
+    const pending = session.beginHandshake('worker-1', EncryptionMode.CLASSIC, keys)
 
     await expect(pending.finish(new Uint8Array([1]))).rejects.toThrow('bad classic handshake-2')
     expect(classicSecretsZero(state)).toBe(true)
@@ -259,7 +277,7 @@ describe('ChannelSession beginHandshake', () => {
       handshake2: async () => mockCipher(),
     })
 
-    await session.beginHandshake(EncryptionMode.POST_QUANTUM, keys).finish(new Uint8Array([1]))
+    await session.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys).finish(new Uint8Array([1]))
 
     expect(hybridSecretsZero(state)).toBe(true)
   })
@@ -280,8 +298,8 @@ describe('ChannelSession beginHandshake', () => {
       }),
     })
 
-    const classicPending = session.beginHandshake(EncryptionMode.CLASSIC, keys)
-    const hybridPending = session.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    const classicPending = session.beginHandshake('worker-1', EncryptionMode.CLASSIC, keys)
+    const hybridPending = session.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
     classicPending.abandon()
     hybridPending.abandon()
     expect(() => hybridPending.abandon()).not.toThrow()
@@ -299,7 +317,7 @@ describe('ChannelSession beginHandshake', () => {
       }),
       handshake2,
     })
-    const pending = session.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
+    const pending = session.beginHandshake('worker-1', EncryptionMode.POST_QUANTUM, keys)
     pending.abandon()
 
     await expect(pending.finish(new Uint8Array([1]))).rejects.toThrow(/already finished or was abandoned/)
@@ -312,8 +330,9 @@ describe('ChannelSession policy', () => {
     const cipher = mockCipher()
     const { session } = harness()
     const ct = new Uint8Array([10, 11, 12])
-    expect(session.decrypt(makeChannel({ session: cipher }), ct)).toEqual(ct)
-    expect(cipher.receive.decrypt).toHaveBeenCalledWith(ct)
+    const ch = makeChannel({ session: cipher })
+    expect(session.decrypt(ch, 7n, ChannelMessageFlags.UNSPECIFIED, ct)).toEqual(ct)
+    expect(cipher.receive.decrypt).toHaveBeenCalledWith(frameAssociatedData('ch-1', 7n, ChannelMessageFlags.UNSPECIFIED), ct)
   })
 
   it('decrypt propagates cipher failures so the inbound path can end the session', () => {
@@ -322,7 +341,7 @@ describe('ChannelSession policy', () => {
       throw new Error('tag mismatch')
     })
     const { session } = harness()
-    expect(() => session.decrypt(makeChannel({ session: cipher }), new Uint8Array([1]))).toThrow('tag mismatch')
+    expect(() => session.decrypt(makeChannel({ session: cipher }), 1n, ChannelMessageFlags.UNSPECIFIED, new Uint8Array([1]))).toThrow('tag mismatch')
   })
 
   it('returns true from shouldInitiateRekey on soft nonce or age', () => {
@@ -398,7 +417,7 @@ describe('ChannelSession send', () => {
       { id: 7, more: false },
     ])
     // One encryption for each chunk, in chunk order.
-    expect(cipher.send.encrypt.mock.calls.map(([plaintext]) => plaintext.length)).toEqual([MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, 10])
+    expect(cipher.send.encrypt.mock.calls.map(([, plaintext]) => plaintext.length)).toEqual([MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, 10])
   })
 
   // A stream sends its follow-ups and its cancel under its own correlation ID.
@@ -686,9 +705,12 @@ describe('ChannelSession handleRekeyOutcome', () => {
     ch.rekeyWait = wait
     // Use a real ephemeral so the DH derivation (over real X25519) succeeds.
     const eph = generateRekeyEphemeral()
-    ch.rekeyMaterial = { ePriv: eph.privateKey, mlkemSS: null }
+    ch.rekeyMaterial = { ePriv: eph.privateKey, pq: null }
     const { session } = harness()
-    session.handleRekeyOutcome(ch, true, 0, undefined, eph.publicKey)
+    session.handleRekeyOutcome(ch, true, 0, undefined, {
+      dhPub: eph.publicKey,
+      mlkemEphemeralCt: new Uint8Array(0),
+    })
     // The send direction keeps no grace window. It is expressed structurally
     // now via rekeyWithSecret(..., false) (which zeroes the replaced key rather
     // than retaining it), NOT via a follow-up clearPrev the caller must
@@ -720,14 +742,14 @@ describe('ChannelSession handleRekeyOutcome', () => {
     const wait = vi.fn()
     ch.rekeyWait = wait
     const ePriv = generateRekeyEphemeral().privateKey.slice() // owned copy we can re-read
-    const mlkemSS = new Uint8Array(32).fill(0xAB)
-    ch.rekeyMaterial = { ePriv, mlkemSS }
+    const pq = filledPQOffer()
+    ch.rekeyMaterial = { ePriv, pq }
     const { session } = harness()
     session.handleRekeyOutcome(ch, false, 500)
     expect(wait).toHaveBeenCalledWith(false, 500)
     expect(ch.rekeyMaterial).toBeNull()
     expect(allZero(ePriv)).toBe(true)
-    expect(allZero(mlkemSS)).toBe(true)
+    expectOfferZero(pq)
     // Reject must not rotate keys.
     expect(cipher.send.rekeyWithSecret).not.toHaveBeenCalled()
   })
@@ -750,23 +772,57 @@ describe('ChannelSession handleRekeyOutcome', () => {
     })
     ch.rekeyAbort = rekeyAbort
     const ePriv = generateRekeyEphemeral().privateKey.slice()
-    const mlkemSS = new Uint8Array(32).fill(0xCD)
-    ch.rekeyMaterial = { ePriv, mlkemSS }
+    const pq = filledPQOffer()
+    ch.rekeyMaterial = { ePriv, pq }
     const { session, ended } = harness()
 
-    session.handleRekeyOutcome(ch, true, 0, 9, new Uint8Array(7)) // wrong-size dh_pub
+    session.handleRekeyOutcome(ch, true, 0, 9, {
+      dhPub: new Uint8Array(7),
+      mlkemEphemeralCt: new Uint8Array(0),
+    }) // wrong-size dh_pub
 
     expect(ended).toHaveLength(1)
     expect(ended[0]).toMatchObject({
       source: 'transport',
-      message: 'rekey ack carried no valid responder ephemeral key',
+      message: 'rekey ack key agreement failed',
       disconnected: false,
     })
     // The teardown funnels through rekeyAbort (clearRekeySlot + reject) rather
     // than hand-nulling rekeyWait.
     expect(rekeyAbort).toHaveBeenCalledOnce()
     expect(allZero(ePriv)).toBe(true)
-    expect(allZero(mlkemSS)).toBe(true)
+    expectOfferZero(pq)
+    expect(cipher.send.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('ends the session and zeroes the ephemeral key when the responder key is low-order', () => {
+    const cipher = mockCipher()
+    const ch = makeChannel({ session: cipher })
+    ch.rekeyWait = vi.fn()
+    ch.rekeyRequestId = 9
+    const rekeyAbort = vi.fn(() => {
+      ch.rekeyAbort = null
+      ch.rekeyWait = null
+      ch.rekeyRequestId = null
+    })
+    ch.rekeyAbort = rekeyAbort
+    const ePriv = generateRekeyEphemeral().privateKey.slice()
+    ch.rekeyMaterial = { ePriv, pq: null }
+    const { session, ended } = harness()
+
+    session.handleRekeyOutcome(ch, true, 0, 9, {
+      dhPub: new Uint8Array(32),
+      mlkemEphemeralCt: new Uint8Array(0),
+    })
+
+    expect(ended).toHaveLength(1)
+    expect(ended[0]).toMatchObject({
+      source: 'transport',
+      message: 'rekey ack key agreement failed',
+      disconnected: false,
+    })
+    expect(rekeyAbort).toHaveBeenCalledOnce()
+    expect(allZero(ePriv)).toBe(true)
     expect(cipher.send.destroy).toHaveBeenCalledOnce()
   })
 
@@ -933,5 +989,172 @@ describe('ChannelSession ensureRekeyed', () => {
     const failure = await session.ensureRekeyed(ch).catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(ChannelError)
     expect(failure).toBe(ended[0])
+  })
+})
+
+describe('ChannelSession post-quantum rekey', () => {
+  function workerKey() {
+    const seed = new Uint8Array(64).fill(7)
+    try {
+      return ml_kem1024.keygen(seed)
+    }
+    finally {
+      seed.fill(0)
+    }
+  }
+
+  function requestFrom(frames: Uint8Array[]) {
+    const frame = decodeMessages(frames)[0]!
+    const envelope = fromBinary(InnerMessageSchema, frame.ciphertext)
+    if (envelope.kind.case !== 'rekeyRequest')
+      throw new Error('expected RekeyRequest')
+    return {
+      id: Number(frame.correlationId),
+      request: envelope.kind.value,
+    }
+  }
+
+  it('sends both fields and rekeys with static and ephemeral ML-KEM secrets', async () => {
+    const cipher = mockCipher()
+    let sendDH: Uint8Array | undefined
+    let sendPQ: Uint8Array | null | undefined
+    let receiveDH: Uint8Array | undefined
+    let receivePQ: Uint8Array | null | undefined
+    cipher.send.rekeyWithSecret.mockImplementation((dh, pq) => {
+      sendDH = dh.slice()
+      sendPQ = pq?.slice() ?? null
+    })
+    cipher.receive.rekeyWithSecret.mockImplementation((dh, pq) => {
+      receiveDH = dh.slice()
+      receivePQ = pq?.slice() ?? null
+    })
+    const worker = workerKey()
+    const ch = agedChannel({ session: cipher, workerMlkemPub: worker.publicKey })
+    const { session, frames, ended } = harness()
+    const pending = session.ensureRekeyed(ch)
+    await yieldToEventLoop()
+    const { id, request } = requestFrom(frames)
+    expect(request.mlkemStaticCt.length).toBe(1568)
+    expect(request.mlkemEphemeralPub.length).toBe(1568)
+    const material = ch.rekeyMaterial!
+    const offer = material.pq!
+    expect(request.mlkemStaticCt).toEqual(offer.staticCipherText)
+    expect(request.mlkemEphemeralPub).toEqual(offer.ephemeralPublicKey)
+    const responder = generateRekeyEphemeral()
+    const answer = ml_kem1024.encapsulate(request.mlkemEphemeralPub)
+    const expectedDH = x25519.getSharedSecret(material.ePriv.slice(), responder.publicKey)
+    const expectedPQ = ml_kem1024.decapsulate(answer.cipherText, offer.ephemeralSecretKey)
+    const expectedPQPair = new Uint8Array([
+      ...offer.staticSharedSecret,
+      ...expectedPQ,
+    ])
+
+    session.handleRekeyOutcome(ch, true, 0, id, { dhPub: responder.publicKey, mlkemEphemeralCt: answer.cipherText })
+    await pending
+
+    expect(ended).toEqual([])
+    expect(sendDH).toEqual(expectedDH)
+    expect(receiveDH).toEqual(expectedDH)
+    expect(sendPQ).toEqual(expectedPQPair)
+    expect(receivePQ).toEqual(expectedPQPair)
+    expectOfferZero(offer)
+    expect(allZero(material.ePriv)).toBe(true)
+    expectedPQ.fill(0)
+  })
+
+  it('ends the session and zeroes the offer for a wrong-size Ack ciphertext', async () => {
+    const worker = workerKey()
+    const ch = agedChannel({ workerMlkemPub: worker.publicKey })
+    const { session, frames, ended } = harness()
+    const pending = session.ensureRekeyed(ch)
+    await yieldToEventLoop()
+    const { id } = requestFrom(frames)
+    const material = ch.rekeyMaterial!
+    const offer = material.pq!
+    const responder = generateRekeyEphemeral()
+    session.handleRekeyOutcome(ch, true, 0, id, {
+      dhPub: responder.publicKey,
+      mlkemEphemeralCt: new Uint8Array(1567),
+    })
+    await expect(pending).rejects.toMatchObject({ source: 'transport' })
+    expect(ended).toHaveLength(1)
+    expect(ended[0]).toMatchObject({
+      source: 'transport',
+      message: 'rekey ack key agreement failed',
+      disconnected: false,
+    })
+    expectOfferZero(offer)
+    expect(allZero(material.ePriv)).toBe(true)
+  })
+
+  it('zeroes the offer when a low-order responder key makes derivation fail', async () => {
+    const worker = workerKey()
+    const ch = agedChannel({ workerMlkemPub: worker.publicKey })
+    const { session, frames, ended } = harness()
+    const pending = session.ensureRekeyed(ch)
+    await yieldToEventLoop()
+    const { id, request } = requestFrom(frames)
+    const material = ch.rekeyMaterial!
+    const offer = material.pq!
+    const answer = ml_kem1024.encapsulate(request.mlkemEphemeralPub)
+    session.handleRekeyOutcome(ch, true, 0, id, {
+      dhPub: new Uint8Array(32),
+      mlkemEphemeralCt: answer.cipherText,
+    })
+    await expect(pending).rejects.toMatchObject({ source: 'transport' })
+    expect(ended).toHaveLength(1)
+    expect(ended[0]).toMatchObject({ source: 'transport', disconnected: false })
+    expectOfferZero(offer)
+    expect(allZero(material.ePriv)).toBe(true)
+  })
+
+  it('ends a classic channel when the Ack carries an ML-KEM ciphertext', async () => {
+    const ch = agedChannel()
+    const { session, frames, ended } = harness()
+    const pending = session.ensureRekeyed(ch)
+    await yieldToEventLoop()
+    const { id } = requestFrom(frames)
+    const material = ch.rekeyMaterial!
+    const responder = generateRekeyEphemeral()
+    session.handleRekeyOutcome(ch, true, 0, id, {
+      dhPub: responder.publicKey,
+      mlkemEphemeralCt: new Uint8Array(1),
+    })
+    await expect(pending).rejects.toMatchObject({ source: 'transport' })
+    expect(ended).toHaveLength(1)
+    expect(ended[0]).toMatchObject({ source: 'transport', disconnected: false })
+    expect(allZero(material.ePriv)).toBe(true)
+  })
+})
+
+describe('ChannelSession frame authentication', () => {
+  it('decrypts every chunk with the associated data of its own frame', () => {
+    const key1 = new Uint8Array(32).fill(1)
+    const key2 = new Uint8Array(32).fill(2)
+    const pair = {
+      initiator: {
+        send: new CipherState(key1),
+        receive: new CipherState(key2),
+      },
+      responder: {
+        send: new CipherState(key2),
+        receive: new CipherState(key1),
+      },
+    }
+    const ch = makeChannel({ session: pair.initiator })
+    const { session, frames } = harness()
+    const plaintext = chunks(2)
+    session.send(ch, plaintext, 7, true)
+    const messages = decodeMessages(frames)
+    expect(messages).toHaveLength(2)
+    const reassembled: number[] = []
+    for (const [index, frame] of messages.entries()) {
+      const ad = frameAssociatedData(frame.channelId, frame.correlationId, frame.flags)
+      reassembled.push(...pair.responder.receive.decrypt(ad, frame.ciphertext))
+      expect(frame.flags).toBe(index === 0
+        ? ChannelMessageFlags.MORE
+        : ChannelMessageFlags.UNSPECIFIED)
+    }
+    expect(new Uint8Array(reassembled)).toEqual(plaintext)
   })
 })

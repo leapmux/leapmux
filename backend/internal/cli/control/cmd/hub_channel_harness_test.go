@@ -50,9 +50,10 @@ type hubChannelHarness struct {
 
 	url string
 
-	hub    *recordingHub
-	worker *channel.Manager
-	keys   *leapmuxv1.WorkerPublicKeys
+	hub        *recordingHub
+	key        *noiseutil.CompositeKeypair
+	keys       *leapmuxv1.WorkerPublicKeys
+	dispatcher *channel.Dispatcher
 	// ctx ends with the test, and it ends every relay goroutine.
 	ctx   context.Context
 	opens atomic.Int32
@@ -60,7 +61,9 @@ type hubChannelHarness struct {
 	mu sync.Mutex
 	// relays maps a channel id to the socket that carries its frames. The hub
 	// learns the socket from the first frame that the client sends on it.
-	relays map[string]*websocket.Conn
+	relays   map[string]*websocket.Conn
+	workers  map[string]*channel.Manager
+	channels map[string]*channel.Manager
 }
 
 // startHubChannelHarness starts the hub and the worker, seeds the credential
@@ -79,10 +82,11 @@ func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.Loc
 	keys, err := workerkeys.Of(key)
 	require.NoError(t, err)
 
-	h := &hubChannelHarness{hub: hub, keys: keys, ctx: t.Context(), relays: map[string]*websocket.Conn{}}
-	h.worker = channel.NewManager(key, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, h.sendToClient, h.trySendToClient, 0, 0)
-	h.worker.SetDispatcher(harnessDispatcher(disp))
-	t.Cleanup(h.worker.CloseAll)
+	h := &hubChannelHarness{
+		hub: hub, key: key, keys: keys, dispatcher: harnessDispatcher(disp), ctx: t.Context(),
+		relays: map[string]*websocket.Conn{}, workers: map[string]*channel.Manager{}, channels: map[string]*channel.Manager{},
+	}
+	t.Cleanup(h.closeWorkers)
 
 	connectServer := connect.NewServer()
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, h)
@@ -154,6 +158,30 @@ func (h *hubChannelHarness) trySendToClient(msg *leapmuxv1.ConnectRequest) bool 
 	return h.sendToClient(msg) == nil
 }
 
+func (h *hubChannelHarness) managerForWorker(workerID string) *channel.Manager {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if manager := h.workers[workerID]; manager != nil {
+		return manager
+	}
+	manager := channel.NewManager(workerID, h.key, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, h.sendToClient, h.trySendToClient, 0, 0)
+	manager.SetDispatcher(h.dispatcher)
+	h.workers[workerID] = manager
+	return manager
+}
+
+func (h *hubChannelHarness) closeWorkers() {
+	h.mu.Lock()
+	workers := make([]*channel.Manager, 0, len(h.workers))
+	for _, manager := range h.workers {
+		workers = append(workers, manager)
+	}
+	h.mu.Unlock()
+	for _, manager := range workers {
+		manager.CloseAll()
+	}
+}
+
 // relayFrames serves /ws/channel. It hands every frame of one socket to the
 // worker, and it closes the worker's session when the socket ends.
 func (h *hubChannelHarness) relayFrames(w http.ResponseWriter, r *http.Request) {
@@ -165,9 +193,10 @@ func (h *hubChannelHarness) relayFrames(w http.ResponseWriter, r *http.Request) 
 	ws.SetReadLimit(channelwire.WSReadLimit)
 
 	var channelID string
+	var manager *channel.Manager
 	defer func() {
-		if channelID != "" {
-			h.worker.HandleClose(channelID)
+		if manager != nil {
+			manager.HandleClose(channelID)
 		}
 	}()
 	for {
@@ -179,9 +208,13 @@ func (h *hubChannelHarness) relayFrames(w http.ResponseWriter, r *http.Request) 
 			channelID = frame.GetChannelId()
 			h.mu.Lock()
 			h.relays[channelID] = ws
+			manager = h.channels[channelID]
 			h.mu.Unlock()
+			if manager == nil {
+				return
+			}
 		}
-		h.worker.HandleMessage(frame)
+		manager.HandleMessage(frame)
 	}
 }
 
@@ -197,7 +230,8 @@ func (h *hubChannelHarness) GetWorkerHandshakeParams(context.Context, *leapmuxv1
 
 func (h *hubChannelHarness) OpenChannel(_ context.Context, req *leapmuxv1.OpenChannelRequest) (*leapmuxv1.OpenChannelResponse, error) {
 	channelID := "channel-" + strconv.Itoa(int(h.opens.Add(1)))
-	opened := h.worker.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+	manager := h.managerForWorker(req.GetWorkerId())
+	opened := manager.HandleOpen(&leapmuxv1.ChannelOpenRequest{
 		ChannelId:        channelID,
 		UserId:           hubChannelUser,
 		HandshakePayload: req.GetHandshakePayload(),
@@ -207,6 +241,9 @@ func (h *hubChannelHarness) OpenChannel(_ context.Context, req *leapmuxv1.OpenCh
 	if reason := opened.GetError(); reason != "" {
 		return nil, connect.NewError(connect.CodeInternal, reason)
 	}
+	h.mu.Lock()
+	h.channels[channelID] = manager
+	h.mu.Unlock()
 	return &leapmuxv1.OpenChannelResponse{
 		ChannelId:        channelID,
 		HandshakePayload: opened.GetHandshakePayload(),
@@ -216,7 +253,13 @@ func (h *hubChannelHarness) OpenChannel(_ context.Context, req *leapmuxv1.OpenCh
 }
 
 func (h *hubChannelHarness) CloseChannel(_ context.Context, req *leapmuxv1.CloseChannelRequest) (*leapmuxv1.CloseChannelResponse, error) {
-	h.worker.HandleClose(req.GetChannelId())
+	h.mu.Lock()
+	manager := h.channels[req.GetChannelId()]
+	delete(h.channels, req.GetChannelId())
+	h.mu.Unlock()
+	if manager != nil {
+		manager.HandleClose(req.GetChannelId())
+	}
 	return &leapmuxv1.CloseChannelResponse{}, nil
 }
 
