@@ -241,14 +241,26 @@ describe('withCodexAuthEnvironment', () => {
 
   it('cleans its listener and private files on failure', async () => {
     let codexHome = ''
-    await expect(withCodexAuthEnvironment({
-      mockModelURL: upstreamURL,
-      homeDir: uniqueHomeDir(),
-    }, async (environment) => {
-      codexHome = environment.codexHome
-      throw new Error('scenario failed')
-    })).rejects.toThrow('scenario failed')
-    expect(existsSync(codexHome)).toBe(false)
+    const listeners: Server[] = []
+    const originalListen = http.Server.prototype.listen
+    const listen = vi.spyOn(http.Server.prototype, 'listen').mockImplementation(function (this: Server, ...args: Parameters<Server['listen']>) {
+      listeners.push(this)
+      return originalListen.apply(this, args)
+    })
+    try {
+      await expect(withCodexAuthEnvironment({
+        mockModelURL: upstreamURL,
+        homeDir: uniqueHomeDir(),
+      }, async (environment) => {
+        codexHome = environment.codexHome
+        throw new Error('scenario failed')
+      })).rejects.toThrow('scenario failed')
+      expect(existsSync(codexHome)).toBe(false)
+      expect(listeners[0]?.listening).toBe(false)
+    }
+    finally {
+      listen.mockRestore()
+    }
   })
 
   it('cleans partial initialization when writing the configuration fails', async () => {
@@ -527,17 +539,32 @@ describe('withCodexAuthEnvironment', () => {
   it('cleans its listener and private files on success', async () => {
     let codexHome = ''
     let url = ''
-    await withCodexAuthEnvironment({
-      mockModelURL: upstreamURL,
-      homeDir: uniqueHomeDir(),
-    }, async (environment) => {
-      codexHome = environment.codexHome
-      url = environment.url
-      await connectToListener(url)
+    const listeners: Server[] = []
+    const originalListen = http.Server.prototype.listen
+    const listen = vi.spyOn(http.Server.prototype, 'listen').mockImplementation(function (this: Server, ...args: Parameters<Server['listen']>) {
+      listeners.push(this)
+      return originalListen.apply(this, args)
     })
-    expect(existsSync(codexHome)).toBe(false)
-    // A pooled HTTP connection can reset even after the listener has closed.
-    await expect(connectToListener(url)).rejects.toMatchObject({ code: 'ECONNREFUSED' })
+    try {
+      await withCodexAuthEnvironment({
+        mockModelURL: upstreamURL,
+        homeDir: uniqueHomeDir(),
+      }, async (environment) => {
+        codexHome = environment.codexHome
+        url = environment.url
+        await connectToListener(url)
+      })
+      expect(existsSync(codexHome)).toBe(false)
+      // The listener's liveness is read from its own handle. A connect probe
+      // cannot carry this assertion: an ephemeral port is free for any other
+      // fixture to bind the moment this one closes, and a connect then reaches
+      // that listener instead of failing. Reproduced under parallel churn on
+      // Linux -- the connect succeeded while this handle reported closed.
+      expect(listeners[0]?.listening).toBe(false)
+    }
+    finally {
+      listen.mockRestore()
+    }
   })
 
   it('refuses missing and unrecognized credentials before forwarding content or catalog requests', async () => {
