@@ -159,14 +159,16 @@ export function createAgentInputQueueOperations(deps: {
     // tab switch moves the focus while the RPC is in flight.
     await runQueueRpc(deps.focusedAgentId()!, 'Failed to change queue pause state', workerAgentInput.setAgentInputQueuePaused, { paused })
   }
-  const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments: FileAttachment[] = [], scheduledAt = '', requirePendingAttempt = false): Promise<boolean> => {
+  // The composer queues a user message. A control answer's typed reason reaches the
+  // agent through AnswerControl, which the Worker queues itself.
+  const enqueueComposerInput = async (content: string, fileAttachments: FileAttachment[] = [], scheduledAt = '', requirePendingAttempt = false): Promise<boolean> => {
     // Capture the destination before the request can yield to a tab switch.
     const initialAgentID = deps.focusedAgentId()
     if (!initialAgentID)
       return false
     const payload = {
       agentId: initialAgentID,
-      kind,
+      kind: AgentInputKind.USER_MESSAGE,
       text: content,
       attachments: fileAttachments,
       scheduledAt,
@@ -190,7 +192,7 @@ export function createAgentInputQueueOperations(deps: {
       try {
         await runQueueRpc(initialAgentID, 'Failed to queue message', workerAgentInput.enqueueAgentInput, {
           inputId,
-          kind,
+          kind: payload.kind,
           text: content,
           attachments: queueAttachmentsOf(fileAttachments),
           scheduledAt,
@@ -212,16 +214,12 @@ export function createAgentInputQueueOperations(deps: {
     inFlightByInputId.set(inputId, request)
     return request
   }
-  // Each command fixes its request kind, so callers cannot select another one.
   const sendMessage = async (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') => {
-    await enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments, scheduledAt)
+    await enqueueComposerInput(content, fileAttachments, scheduledAt)
   }
   /** Retry only an exact unanswered payload, preserving its input ID and schedule. */
   const retryPendingMessage = (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') =>
-    enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments, scheduledAt, true)
-  const sendControlFeedback = async (content: string) => {
-    await enqueueComposerInput(AgentInputKind.CONTROL_FEEDBACK, content)
-  }
+    enqueueComposerInput(content, fileAttachments, scheduledAt, true)
 
   return {
     beginQueueEdit,
@@ -235,6 +233,5 @@ export function createAgentInputQueueOperations(deps: {
     setQueuePaused,
     sendMessage,
     retryPendingMessage,
-    sendControlFeedback,
   }
 }

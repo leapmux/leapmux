@@ -287,8 +287,8 @@ type droidStoredQuestion struct {
 	Question string `json:"question"`
 }
 
-// droidResolveControlResponse turns the browser's decision into the answer body
-// of Droid. The shared suites pin two rules:
+// droidResolveControlResponse turns the neutral answer of AnswerControlRequest
+// into the answer body of Droid. The shared suites pin two rules:
 //
 //   - An absent request leaves the response bytes alone.
 //   - A malformed request withholds the response.
@@ -312,13 +312,13 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	}
 
 	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok || behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
+	if !ok || behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 		slog.Warn("droid control response states no decision", "request_id", ctx.RequestID, "behavior", behavior)
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalNoDecision)
 		return resolution
 	}
-	allow := behavior == agent.ControlBehaviorAllow
+	allow := behavior == contracts.ControlAnswerBehaviorAllow
 	decision := droidInnerResponse(ctx.ResponseContent)
 
 	var resolution agent.ControlResponseResolution
@@ -450,7 +450,7 @@ func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision jso
 	return droidAskUserResult{Answers: answers}, nil
 }
 
-// droidDecidedAnswer is one answer of the browser's decision. Pointers tell an
+// droidDecidedAnswer is one answer of the neutral envelope. Pointers tell an
 // absent field from a zero value: an answer with no index or no text identifies
 // no question.
 type droidDecidedAnswer struct {
@@ -458,8 +458,8 @@ type droidDecidedAnswer struct {
 	Answer *string `json:"answer"`
 }
 
-// droidAnswersInQuestionOrder pairs each answer of the browser's decision with
-// its question by Droid's own index, and lists the answers in the order of the
+// droidAnswersInQuestionOrder pairs each answer of decision with its question
+// by Droid's own index, and lists the answers in the order of the
 // questions, with the index and the words of each question.
 //
 // The decision must answer every question exactly once, and nothing else.
@@ -521,8 +521,9 @@ func droidResponseEnvelope(id string, result any) droidEnvelope {
 	return env
 }
 
-// droidInnerResponse returns the neutral inner response object, where a browser
-// writes the fields a Droid answer takes beside the behavior.
+// droidInnerResponse returns the neutral inner response object, where
+// AnswerControlRequest writes the fields a Droid answer takes beside the
+// behavior.
 func droidInnerResponse(content []byte) json.RawMessage {
 	var envelope struct {
 		Response struct {

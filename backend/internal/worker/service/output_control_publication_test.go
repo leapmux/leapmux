@@ -723,9 +723,9 @@ func TestControlFinalizationWaitsForAnInFlightRepeatedPublication(t *testing.T) 
 	svc.sendControlResponseFn = func(string, []byte) error { return nil }
 	responseDone := make(chan error, 1)
 	go func() {
-		responseDone <- svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-			AgentId: "agent-1", ClaimToken: before.ClaimToken,
-			Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"request","response":{"behavior":"allow"}}}`),
+		responseDone <- svc.processControlAnswer(row, workerAnswer{
+			claimToken: before.ClaimToken,
+			content:    []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"request","response":{"behavior":"allow"}}}`),
 		})
 	}()
 	st := svc.Output.activityFor("agent-1", "agent-1")
@@ -1180,7 +1180,7 @@ func TestCompletedAsyncQuestionIsNotRepublished(t *testing.T) {
 				if skip {
 					response = questionSkipResponse(request.RequestID)
 				}
-				_, _, err := processControlResponseForTest(svc, row.ID, row, response, request.InstanceID)
+				_, _, err := processControlAnswerForTest(svc, row, response, request.InstanceID)
 				require.NoError(t, err)
 				if replaceSink {
 					sink = newTestRootOutputSink(t, svc.Output, row.ID, row.AgentProvider)

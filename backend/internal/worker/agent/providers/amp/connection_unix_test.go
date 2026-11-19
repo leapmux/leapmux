@@ -325,6 +325,6 @@ func TestProcessSwitchToAskAsksAtTheVeryNextRequest(t *testing.T) {
 	request := h.sink.LastPublishedControl()
 	assert.Equal(t, "TU-fake", permissionPayload(t, request.Payload).ToolUseID, "the banner is for the call")
 	asked.assertStillWaits(t)
-	require.NoError(t, h.agent.SendRawInput(controlAnswer(t, request.RequestID, agentapi.ControlBehaviorDeny, ""), agentapi.StopContext{}))
+	require.NoError(t, h.agent.SendRawInput(controlAnswer(t, request.RequestID, contracts.ControlAnswerBehaviorDeny, ""), agentapi.StopContext{}))
 	assert.Equal(t, helperExitReject, asked.exitCode(t))
 }

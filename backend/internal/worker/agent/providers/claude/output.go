@@ -1253,8 +1253,8 @@ func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 // completion handler only logs the completion and writes this frame. Its
 // elicitation handler still waits for the host's answer, so the MCP call stays
 // blocked until the Worker answers. The Worker therefore accepts the request,
-// as the browser does for a reader who accepts it (buildElicitationResponse in
-// frontend/src/components/chat/controls/elicitationForm.ts).
+// as AnswerControlRequest does for a reader who accepts it
+// (agent.AnswerElicitation).
 //
 // The answer is automatic, so finishControlAnswer withdraws the reader's card,
 // which is stale now. retireControl then removes the record. It also

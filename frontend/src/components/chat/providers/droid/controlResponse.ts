@@ -1,10 +1,10 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { ControlDecisionWords, PersistedControlResponse } from '../../persistedControlResponse'
 import type { DroidPermissionOption } from '~/generated/contracts/droid-protocol'
 import { DROID_ASK_USER_FIELD, DROID_PERMISSION_OPTION, DROID_REPLY } from '~/generated/contracts/droid-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { controlDecisionWords, joinAnswerLines, label, labeledAnswerLine } from '../../persistedControlResponse'
-import { droidExtractControl } from './extractControl'
 
 /**
  * The word that a cancelled questionnaire shows. Droid's reply states `cancelled` and no
@@ -73,10 +73,10 @@ function isDroidPermissionOption(option: string): option is DroidPermissionOptio
  * The display of one saved Factory Droid answer.
  *
  * The saved row holds the JSON-RPC response that the worker wrote to Droid's stdin
- * (`droidResolveControlResponse`), not the neutral envelope that the browser sent. Its
- * `result` is Droid's own reply: `{selectedOption}` for a permission request, and
- * `{cancelled, answers}` for a question request. The reply itself shows which of the
- * two it answers, so a row whose stored request is absent still reads correctly.
+ * (`droidResolveControlResponse`), not the neutral envelope that the Worker built from
+ * the decision. Its `result` is Droid's own reply: `{selectedOption}` for a permission
+ * request, and `{cancelled, answers}` for a question request. The reply itself shows
+ * which of the two it answers, so a row that states no prompt still reads correctly.
  *
  * Neither reply carries the reason for a rejection: the worker sends that reason as the
  * reader's next message, which the transcript shows as a row of its own.
@@ -90,19 +90,20 @@ export function droidControlResponseSummary(cr: PersistedControlResponse): Contr
     return null
   const option = result[DROID_REPLY.SelectedOption]
   if (typeof option === 'string')
-    return permissionDisplay(cr.request, option)
+    return permissionDisplay(cr.prompt, option)
   const answers = result[DROID_REPLY.Answers]
   if (Array.isArray(answers))
     return questionDisplay(result, answers)
   return null
 }
 
-function permissionDisplay(request: Record<string, unknown> | undefined, option: string): ControlResponseSummary | null {
+function permissionDisplay(prompt: ControlPrompt | undefined, option: string): ControlResponseSummary | null {
   if (!isDroidPermissionOption(option))
     return null
-  // The control that the banner drew decides the pair of words. An absent request
-  // cannot state a spec review, so it takes the permission words.
-  return label(DROID_OPTION_WORDS[option](controlDecisionWords(droidExtractControl({ payload: request ?? {} }))))
+  // The control that the banner drew, which the Worker recorded as the prompt, decides
+  // the pair of words. An absent prompt cannot state a spec review, so it takes the
+  // permission words.
+  return label(DROID_OPTION_WORDS[option](controlDecisionWords(prompt)))
 }
 
 /**

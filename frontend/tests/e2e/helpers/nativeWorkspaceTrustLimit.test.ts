@@ -94,7 +94,7 @@ vi.mock('./worktree', async importOriginal => ({
 // `exerciseUnsupportedControlThroughPermission` has its own cases in `./unsupportedNativeControl.test.ts`.
 vi.mock('./unsupportedNativeControl', async importOriginal => ({
   ...await importOriginal<typeof import('./unsupportedNativeControl')>(),
-  exerciseUnsupportedControlThroughPermission: async (_context: unknown, options: { purpose: string, classify: unknown, operation?: NativePermissionOperationPlan }) => {
+  exerciseUnsupportedControlThroughPermission: async (_context: unknown, options: { purpose: string, operation?: NativePermissionOperationPlan }) => {
     calls.events.push(`unsupported ${options.purpose}`)
     calls.proof = options
   },
@@ -450,12 +450,10 @@ describe('ignoredMcpServerProjectConfiguration', () => {
 })
 
 describe('exerciseMissingWorkspaceTrustRoute', () => {
-  const classify = () => null
-
   it('applies the ask option, then proves the default operation of the workspace-trust purpose under the route check', async () => {
-    await exerciseMissingWorkspaceTrustRoute(detachedContext(), { askOption: 'permissionMode-ask', classify })
+    await exerciseMissingWorkspaceTrustRoute(detachedContext(), { askOption: 'permissionMode-ask' })
     expect(calls.events).toEqual(['choose permissionMode-ask', 'idle', 'unsupported workspace-trust'])
-    expect(calls.proof).toEqual({ purpose: 'workspace-trust', classify })
+    expect(calls.proof).toEqual({ purpose: 'workspace-trust' })
   })
 
   it('prepares a stated operation after the ask option, and hands it to the proof', async () => {
@@ -466,7 +464,6 @@ describe('exerciseMissingWorkspaceTrustRoute', () => {
     }
     await exerciseMissingWorkspaceTrustRoute(detachedContext(), {
       askOption: 'permissionMode-ask',
-      classify,
       operation: () => {
         calls.events.push('own operation')
         return operation
@@ -478,11 +475,11 @@ describe('exerciseMissingWorkspaceTrustRoute', () => {
       'own operation',
       'unsupported workspace-trust',
     ])
-    expect(calls.proof).toEqual({ purpose: 'workspace-trust', classify, operation })
+    expect(calls.proof).toEqual({ purpose: 'workspace-trust', operation })
   })
 
   it('refuses an empty ask option before any browser step', async () => {
-    await expect(exerciseMissingWorkspaceTrustRoute(detachedContext(), { askOption: '', classify })).rejects.toThrow('the option under which the provider asks')
+    await expect(exerciseMissingWorkspaceTrustRoute(detachedContext(), { askOption: '' })).rejects.toThrow('the option under which the provider asks')
     expect(calls.events).toEqual([])
   })
 })

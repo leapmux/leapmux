@@ -70,7 +70,7 @@ func TestControlResponsePreservesNativeAnswerBytes(t *testing.T) {
 		{"cursor questions", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, `{"id":7,"method":"cursor/ask_question","params":{"questions":[{"id":"color","prompt":"Choose","options":[{"id":"red","label":"Red"}]}]}}`, `{"id":7,"result":{"outcome":{"outcome":"answered","answers":[{"questionId":"color","selectedOptionIds":["red"]}]}}}`},
 		{"kilo questions", leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, `{"type":"question.asked","properties":{"questions":[{"header":"Task"}]}}`, `{"id":7,"result":{"answers":[["Inspect"]]}}`},
 		// MiMo sends each answer to its own HTTP route, so the answer keeps the shape
-		// the browser wrote, and the persisted row shows that shape.
+		// that AnswerControlRequest wrote, and the persisted row shows that shape.
 		{"mimo questions", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"question.asked","properties":{"id":"que_1","questions":[{"header":"Task"}]},"request":{"tool_name":"question"}}`, `{"jsonrpc":"2.0","id":"mimo-question:que_1","result":{"answers":[["Inspect"]]}}`},
 		{"mimo permission option", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"permission.asked","properties":{"id":"per_1","permission":"bash"},"request":{"tool_name":"bash"}}`, `{"jsonrpc":"2.0","id":"mimo-permission:per_1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`},
 	}

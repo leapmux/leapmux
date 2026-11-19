@@ -51,9 +51,9 @@ func TestPlanApprovalRefusesAReplacedSessionBeforeEffects(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			old := createPlanSessionTestAgent(t, svc, tc.provider, tc.tool)
 			require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "replacement"}))
-			err := svc.processControlResponse(old, &leapmuxv1.SendControlResponseRequest{
-				ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
-				PlanApproval: &leapmuxv1.PlanApprovalSettings{ClearContext: tc.clear},
+			err := svc.processControlAnswer(old, workerAnswer{
+				claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+				planApproval: &leapmuxv1.PlanApprovalSettings{ClearContext: tc.clear},
 			})
 			require.ErrorContains(t, err, "session")
 			current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
@@ -69,9 +69,9 @@ func TestPlanApprovalRefusesAReplacedSessionBeforeEffects(t *testing.T) {
 func TestRestrictivePlanModeDoesNotEnableBypassOptions(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "CodexPlanModePrompt")
-	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: codex.ModeAskForApproval},
+	require.NoError(t, svc.processControlAnswer(row, workerAnswer{
+		claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+		planApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: codex.ModeAskForApproval},
 	}))
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -87,9 +87,9 @@ func TestRestrictivePlanModeDoesNotEnableBypassOptions(t *testing.T) {
 func TestSmartPlanApprovalSelectsTheSmartPreset(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "CodexPlanModePrompt")
-	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.CodexPermissionModeApproveForMe},
+	require.NoError(t, svc.processControlAnswer(row, workerAnswer{
+		claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+		planApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.CodexPermissionModeApproveForMe},
 	}))
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -109,8 +109,8 @@ func TestPlanApprovalRequiresConfirmedLiveSettings(t *testing.T) {
 	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
-	err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+	err = svc.processControlAnswer(row, workerAnswer{
+		claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
 	})
 	require.ErrorContains(t, err, "confirm")
 	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
@@ -124,8 +124,8 @@ func TestPlanApprovalReportsSettingsPersistenceFailure(t *testing.T) {
 	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_plan_settings BEFORE UPDATE OF options ON agents
 WHEN NEW.id='agent-1' BEGIN SELECT RAISE(ABORT, 'plan settings storage failed'); END`)
 	require.NoError(t, err)
-	err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+	err = svc.processControlAnswer(row, workerAnswer{
+		claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
 	})
 	require.ErrorContains(t, err, "plan settings storage failed")
 	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
@@ -168,9 +168,9 @@ func TestPlanContextClearPreservesAnUnchangedPermissionChoice(t *testing.T) {
 	row.Options = marshalOptions(values)
 	_, err := svc.DB.ExecContext(t.Context(), `UPDATE agents SET options=? WHERE id=?`, row.Options, row.ID)
 	require.NoError(t, err)
-	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
-		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{ClearContext: true},
+	require.NoError(t, svc.processControlAnswer(row, workerAnswer{
+		claimToken: "claim", content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+		planApproval: &leapmuxv1.PlanApprovalSettings{ClearContext: true},
 	}))
 	snapshot, err := svc.InputQueue.Snapshot(t.Context(), row.ID)
 	require.NoError(t, err)

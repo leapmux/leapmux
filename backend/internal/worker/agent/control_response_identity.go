@@ -8,7 +8,7 @@ import (
 )
 
 // restoreControlResponseID reads the native ID from the persisted request.
-// The browser uses the worker's string ID because JSON numbers can lose precision there.
+// An answer carries the worker's string key of the request as its ID (JSONRPCResult).
 func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolution {
 	resolution := ControlResponseResolution{Content: ctx.ResponseContent}
 	if len(ctx.RequestPayload) == 0 {

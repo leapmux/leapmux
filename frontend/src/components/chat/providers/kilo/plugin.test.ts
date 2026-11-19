@@ -1,12 +1,10 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { OPENCODE_OPTION } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
-import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { acpTextContent, describeACPCallRows, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
-import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
 import { input } from '../testUtils'
@@ -494,103 +492,6 @@ describe('kilo refused tool calls', () => {
   // A refusal is the WHOLE error. The same words inside a longer one are the tool's own.
   it('keeps the refusal words inside a longer error a failure', () => {
     expect(callOf(`bash: ${REJECTED}`)?.status).toBe('failed')
-  })
-})
-
-describe('kilo isAskUserQuestion', () => {
-  const plugin = providerFor(AgentProvider.KILO)!
-
-  it('returns true for question requests', () => {
-    const payload = {
-      type: 'question.asked',
-      properties: { questions: [] },
-    }
-    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(true)
-  })
-
-  it('returns false for permission requests', () => {
-    const payload = {
-      method: 'requestPermission',
-      params: {
-        toolCall: { toolCallId: 'tc-1' },
-      },
-    }
-    expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(false)
-  })
-
-  it('returns false for regular messages', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({})).toBe(false)
-  })
-})
-
-describe('the kilo permission sender', () => {
-  function decode(bytes: Uint8Array): Record<string, unknown> {
-    return JSON.parse(new TextDecoder().decode(bytes))
-  }
-
-  it('sends allow_once outcome with the unchanged worker request ID', async () => {
-    let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (content: Uint8Array) => {
-      captured = content
-    })
-
-    await providerFor(AgentProvider.KILO)!.controls?.sendPermissionOption!(onRespond, '5', 'once')
-
-    expect(onRespond).toHaveBeenCalledOnce()
-    const parsed = decode(captured!)
-    expect(parsed).toMatchObject({
-      jsonrpc: '2.0',
-      id: '5',
-      result: {
-        outcome: { outcome: 'selected', optionId: 'once' },
-      },
-    })
-  })
-})
-
-describe('kilo sendOpenCodeQuestionResponse', () => {
-  function decode(bytes: Uint8Array): Record<string, unknown> {
-    return JSON.parse(new TextDecoder().decode(bytes))
-  }
-
-  it('sends ordered answer arrays for each question', async () => {
-    let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (content: Uint8Array) => {
-      captured = content
-    })
-
-    await sendOpenCodeQuestionResponse(onRespond, 'que_1', [
-      {
-        question: 'Action?',
-        options: [
-          { label: 'Build' },
-        ],
-      },
-      {
-        question: 'Env?',
-        options: [
-          { label: 'Dev' },
-        ],
-      },
-    ], createControlAnswerState({
-      selections: {
-        0: ['Build'],
-        1: [],
-      },
-      customTexts: { 1: 'Dev' },
-    }))
-
-    const parsed = decode(captured!)
-    expect(parsed).toMatchObject({
-      jsonrpc: '2.0',
-      id: 'que_1',
-      result: {
-        answers: [
-          ['Build'],
-          ['Dev'],
-        ],
-      },
-    })
   })
 })
 

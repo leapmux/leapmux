@@ -4,7 +4,7 @@ import { KIMI_ANSWER_KIND, KIMI_APPROVAL_SCOPE, KIMI_DECISION, KIMI_DISPLAY, KIM
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, feedbackOrLabel, joinAnswerLines, label } from '../../persistedControlResponse'
 import { kimiQuestionRecords } from './askUserQuestion'
-import { kimiInteractionRequest } from './protocol'
+import { kimiDisplay, kimiInteractionRequest } from './protocol'
 
 /** The names Kimi's own UI gives the permission modes a goal can start in. */
 const KIMI_GOAL_MODE_LABELS: ReadonlyMap<string, string> = new Map([
@@ -41,7 +41,7 @@ function kimiApprovalSummary(request: Record<string, unknown>, native: Record<st
   const decision = pickString(native, KIMI_REPLY.Decision)
   const selected = pickString(native, KIMI_REPLY.SelectedLabel)
   const reason = pickString(native, KIMI_REPLY.Feedback).trim()
-  const displayKind = pickString(pickObject(request, 'tool_input_display'), 'kind')
+  const displayKind = pickString(kimiDisplay(request, 'tool_input_display'), 'kind')
   if (decision === KIMI_DECISION.Cancelled)
     return label('Cancelled')
   if (displayKind === KIMI_DISPLAY.PlanReview) {

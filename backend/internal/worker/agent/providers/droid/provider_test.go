@@ -124,8 +124,8 @@ func TestResolveControlResponseAnswersAPermissionRequest(t *testing.T) {
 
 func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 	t.Parallel()
-	// The request states the question with Droid's own number, and the browser
-	// answers it by that number.
+	// The request states the question with Droid's own number, and the answer
+	// identifies it by that number.
 	request, _ := json.Marshal(map[string]any{
 		"type":       "ask_user_request",
 		"requestId":  "droid-ask-1",

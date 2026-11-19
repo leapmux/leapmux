@@ -11,11 +11,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"

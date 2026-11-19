@@ -24,6 +24,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -361,8 +362,10 @@ func TestLazyProtoJSON_PayloadReachesAnEnabledHandler(t *testing.T) {
 // stay correct, only the CPU is wasted -- so no behavioural assertion
 // catches a regression. Scanning the source does.
 //
-// protojson.Format belongs in exactly one place: protoJSONValue.LogValue,
-// which slog calls only once a record survives the level check.
+// protojson.Format belongs in exactly one place of the code that ships:
+// protoJSONValue.LogValue, which slog calls only once a record survives the
+// level check. A test file and a test-support package link only into a test
+// binary, so they are on no hot path, and the walk skips them.
 //
 // The walk covers the whole worker tree, not just this package. The
 // hazard is wherever a proto meets a log call, and the packages next
@@ -390,6 +393,9 @@ func TestNoEagerProtojsonFormatInLogCalls(t *testing.T) {
 		}
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		if testutil.IsTestSupportPackage(filepath.Base(filepath.Dir(path))) {
 			return nil
 		}
 		src, readErr := os.ReadFile(path)

@@ -45,7 +45,9 @@ describe('deepseek harness provider', () => {
         sets: { permissions: 'danger-full-access' },
       },
     })
-    expect(plugin?.controls?.askUserQuestion).toBeDefined()
+    // The Worker reads each request and builds each answer, so the browser keeps only the
+    // display of a saved answer and the presets.
+    expect(Object.keys(plugin?.controls ?? {}).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
   })
 
   it.each([
@@ -264,6 +266,20 @@ describe('deepseek harness provider', () => {
       claimToken: 'native-claim',
       request,
       response,
+      prompt: {
+        kind: 'question',
+        questions: [
+          {
+            id: 'route',
+            question: 'Choose a route',
+            options: [
+              { label: 'First' },
+              { label: 'Second' },
+            ],
+          },
+        ],
+        preservesSelectionNotes: true,
+      },
     })
     expect(display).toEqual({ kind: 'label', text: 'Choose a route: Second' })
   })

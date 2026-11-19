@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -1402,7 +1401,7 @@ func TestZCodePlanFlag_ADeclinedPlanKeepsPlanMode(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 	resolution := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
 		RequestPayload:  zcodeStoredPayload(t, sink),
-		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorDeny, "Split step 2.", nil),
+		ResponseContent: zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorDeny, "Split step 2.", nil),
 	})
 	require.NotEmpty(t, resolution.Content)
 	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
@@ -1435,7 +1434,7 @@ func TestZCodePlanFlag_AnApprovedPlanReturnsToTheNativeMode(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 	resolution := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
 		RequestPayload:  zcodeStoredPayload(t, sink),
-		ResponseContent: zcodeAnswer(t, "req-plan", agent.ControlBehaviorAllow, "", nil),
+		ResponseContent: zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorAllow, "", nil),
 	})
 	require.NotEmpty(t, resolution.Content)
 	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))

@@ -113,7 +113,7 @@ func (clineProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) stri
 	return ""
 }
 
-// ResolveControlResponse turns the browser's decision into Cline's own answer.
+// ResolveControlResponse turns the neutral answer into Cline's own answer.
 // See control.go.
 func (clineProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	return resolveControlResponse(ctx)

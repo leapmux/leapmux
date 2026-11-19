@@ -65,7 +65,7 @@ func TestControlResponseForwardsTheNeutralEnvelope(t *testing.T) {
 		Type: contracts.AmpPermissionRequestTypeRequest, ToolName: "shell_command", Input: json.RawMessage(`{"command":"ls"}`),
 	})
 	require.NoError(t, err)
-	response := controlAnswer(t, "amp-permission-0a0b0c0d-1", agent.ControlBehaviorDeny, "no")
+	response := controlAnswer(t, "amp-permission-0a0b0c0d-1", contracts.ControlAnswerBehaviorDeny, "no")
 	resolution := ampProvider{}.ResolveControlResponse(agent.ControlResponseContext{
 		RequestID:       "amp-permission-0a0b0c0d-1",
 		RequestPayload:  request,

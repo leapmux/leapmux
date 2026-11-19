@@ -411,7 +411,7 @@ func sendAndWait(s *session, t tabTarget, text, inputID string, all bool, timeou
 	}
 	if state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER {
 		return agentReplyResult{}, 0, cli.Newf(cli.CodeAgentWaiting, "agent %s waits for an answer to a permission prompt, so the message would wait behind it", t.ID).
-			WithHint("answer the prompt in the agent's tab, then send the message again")
+			WithHint("list the prompt with \"leapmux control agent requests %s\", answer it, then send the message again", t.ID)
 	}
 	reader := workerReplyReader(s.c, t.WorkerID, t.ID)
 	baseline, err := reader.latestSeq(ctx)
@@ -448,7 +448,7 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 	}
 	switch {
 	case outcome == replyWaitWaiting:
-		p.Notice("agent %s waits for an answer to a permission prompt; answer it in the agent's tab", result.ID)
+		p.Notice("agent %s waits for an answer to a permission prompt; list it with \"leapmux control agent requests %s\"", result.ID, result.ID)
 	case result.Message == messageQueued:
 		p.Notice("the wait ended after %s; the message is still in the input queue of agent %s", timeout, result.ID)
 	default:

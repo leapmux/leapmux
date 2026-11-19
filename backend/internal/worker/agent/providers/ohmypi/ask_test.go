@@ -306,7 +306,7 @@ func TestAskCancellationEndsTheBridge(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
-	// The reader rejects the question: the browser sends omp's own cancel.
+	// The reader rejects the question: the answer is omp's own cancel.
 	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"158b2ba4525bfb89","cancelled":true}`), agent.StopContext{}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, true, answers[0]["cancelled"])

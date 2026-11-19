@@ -91,7 +91,8 @@ func stdinHasResponse(t *testing.T, a *Agent, stdin *agenttest.Stdin, id string)
 const codexCommandApprovalLine = `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"item-1","command":"make clean","availableDecisions":["accept","acceptForSession","decline","cancel"]}}`
 
 // TestCodexApprovalAnswerConformance replays testdata/codex_approval_answer_conformance.json
-// against the standing approval. The browser replays the same file against its Allow.
+// against the standing approval. TestCodexApprovalAnswerConformanceAllow replays the same
+// file against the answer to the user's Allow.
 func TestCodexApprovalAnswerConformance(t *testing.T) {
 	t.Parallel()
 

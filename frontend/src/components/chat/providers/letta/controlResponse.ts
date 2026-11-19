@@ -4,14 +4,13 @@ import { LETTA_QUESTION, LETTA_REPLY } from '~/generated/contracts/letta-protoco
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { normalizeRejectionMessage } from '~/utils/controlResponse'
 import { controlDecisionWords, feedbackOrLabel, joinAnswerLines, label, labeledAnswerLine } from '../../persistedControlResponse'
-import { lettaQuestionsFromPayload } from './askUserQuestion'
-import { lettaExtractControl } from './extractControl'
 
 /**
  * The display of one saved Letta Code answer.
  *
  * The saved row holds the bytes that the worker sent to Letta Code, not the
- * neutral envelope that the browser sent. They take one of two forms:
+ * neutral envelope that the Worker built from the decision. They take one of two
+ * forms:
  *
  * - A permission is the flat `approval_response` payload
  *   (`lettaResolveControlResponse`). Its `decision` states the behavior that
@@ -31,7 +30,7 @@ export function lettaControlResponseSummary(cr: PersistedControlResponse): Contr
   const decision = pickObject(cr.response, LETTA_REPLY.Decision)
   if (!decision)
     return null
-  const words = controlDecisionWords(lettaExtractControl({ payload: cr.request ?? {} }))
+  const words = controlDecisionWords(cr.prompt)
   const behavior = pickString(decision, LETTA_REPLY.Behavior)
   if (behavior === 'deny')
     return feedbackOrLabel(normalizeRejectionMessage(pickString(decision, LETTA_REPLY.Message)), words.deny)
@@ -41,15 +40,19 @@ export function lettaControlResponseSummary(cr: PersistedControlResponse): Contr
 }
 
 /**
- * The answer lines of a question response, in the order the stored request asked
+ * The answer lines of a question response, in the order the recorded prompt asked
  * its questions. The `answers` object is keyed by question text, so its stored
- * key order identifies nothing; the request's question order does.
+ * key order identifies nothing; the prompt's question order does. A row that
+ * states no question prompt shows no answer line.
  */
 function questionResponseSummary(cr: PersistedControlResponse): ControlResponseSummary {
   if (pickString(cr.response, LETTA_QUESTION.FieldStatus) === LETTA_QUESTION.StatusDismissed)
     return label('Dismissed')
   const answers = pickObject(cr.response, LETTA_QUESTION.FieldAnswers)
-  const lines = lettaQuestionsFromPayload(cr.request ?? {}).flatMap((question) => {
+  const questions = cr.prompt?.kind === 'question'
+    ? cr.prompt.questions
+    : []
+  const lines = questions.flatMap((question) => {
     const line = labeledAnswerLine(question.question, [
       pickString(answers, question.question),
     ])

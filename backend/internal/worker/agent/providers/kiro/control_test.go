@@ -362,7 +362,7 @@ func TestKiroWithdrawalAnswersEachOpenDialog(t *testing.T) {
 	syncPeer(t, a)
 
 	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
-	assert.JSONEq(t, `{"action":"dismissed"}`, answers["21"], "Kiro reads a dismissed question as no answer")
+	assert.JSONEq(t, `{"action":"dismissed"}`, answers["21"], "the withdrawal dismisses the open question")
 	assert.JSONEq(t, `{"action":"cancel"}`, answers["22"])
 	assert.Len(t, sink.CanceledControls(), 2, "every card retires")
 }

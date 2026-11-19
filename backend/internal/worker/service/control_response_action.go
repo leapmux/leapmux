@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -17,7 +18,7 @@ import (
 
 // controlResponseQueueID keeps application effects idempotent across response retries.
 func controlResponseQueueID(agentID string, plan controlResponsePlan) string {
-	queuesInput := plan.resolution.FollowUp.Text != "" || plan.exitPlanClearingContext() || plan.isPlanPrompt() && (plan.behavior() == agent.ControlBehaviorAllow || plan.rejectionMessage() != "")
+	queuesInput := plan.resolution.FollowUp.Text != "" || plan.exitPlanClearingContext() || plan.isPlanPrompt() && (plan.behavior() == contracts.ControlAnswerBehaviorAllow || plan.rejectionMessage() != "")
 	if !queuesInput {
 		return ""
 	}
@@ -102,14 +103,14 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	if plan.resolution.LeapMuxOwned {
 		return nil
 	}
-	// processControlResponse refuses a withheld resolution before it calls this
+	// processControlAnswer refuses a withheld resolution before it calls this
 	// function, so every plan that arrives here forwards its content.
 	return svc.sendControlResponseFn(ownerID, plan.resolution.Content)
 }
 
 func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Agent, plan controlResponsePlan) error {
 	inputID := controlResponseQueueID(agentID, plan)
-	if plan.behavior() == agent.ControlBehaviorDeny {
+	if plan.behavior() == contracts.ControlAnswerBehaviorDeny {
 		if feedback := plan.rejectionMessage(); feedback != "" {
 			_, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 				ID: inputID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: feedback,
@@ -137,9 +138,9 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 
 // answersARetiredInstance reports that this answer identifies a request instance the
 // worker no longer holds, because the stored claim token differs from the one the
-// browser sent.
+// client sent.
 //
-// Its caller refuses the answer in SILENCE. See the gate in processControlResponse
+// Its caller refuses the answer in SILENCE. See the gate in processControlAnswer
 // for why that is the correct outcome rather than an error.
 func (plan controlResponsePlan) answersARetiredInstance(claimToken string) bool {
 	return plan.requestMeta.ClaimToken != claimToken

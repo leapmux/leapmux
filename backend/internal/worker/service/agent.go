@@ -619,14 +619,37 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 	// A response must finish even if the requesting client disconnects.
 	// The saved delivery state distinguishes provider delivery from local recording.
-	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
-			response, err := svc.respondToControlRequest(dbAgent, r)
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RecordControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			response, err := svc.recordControlResponse(dbAgent, r)
 			if err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
 			}
 
+			sendProtoResponse(sender, response)
+		})
+
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure,
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.ListControlRequestsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			response, err := svc.listControlRequests(dbAgent)
+			if err != nil {
+				slog.Error("failed to list control requests", "agent_id", dbAgent.ID, "error", err)
+				sendInternalError(sender, "failed to list control requests")
+				return
+			}
+			sendProtoResponse(sender, response)
+		})
+
+	// An answer must finish even if the requesting client disconnects, as a
+	// recording does.
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.AnswerControlRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			response, err := svc.answerControl(dbAgent, r)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 			sendProtoResponse(sender, response)
 		})
 
@@ -1239,7 +1262,7 @@ func (svc *Service) replayAgentCatchUp(
 	} else {
 		for _, cr := range controlReqs {
 			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
-			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Queries, svc.Agents.Registry().Plugin(dbAgent.AgentProvider), agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", cr.RequestID, "error", stateErr)
 			}
@@ -1263,7 +1286,7 @@ func (svc *Service) replayAgentCatchUp(
 			if _, exists := replayedControls[controlRequestInstance{RequestID: answer.RequestID, ClaimToken: answer.ClaimToken}]; exists {
 				continue
 			}
-			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, answer.AgentProvider, agent.ControlRequest{
+			request, stateErr := buildAgentControlRequest(svc.Queries, svc.Agents.Registry().Plugin(answer.AgentProvider), agentID, answer.AgentProvider, agent.ControlRequest{
 				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID, NonBlocking: answer.NonBlocking,
 			}, answer.ClaimToken)
 			if stateErr != nil {
@@ -3973,9 +3996,10 @@ func broadcastReplayAgentEvent(sink *replaySink, replayAgentID string, event *le
 	})
 }
 
-func buildAgentControlRequest(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
+func buildAgentControlRequest(queries *db.Queries, plugin agent.Provider, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
 	state, err := controlResponseState(queries, agentID, request.RequestID, claimToken)
 	return &leapmuxv1.AgentControlRequest{
+		Prompt:         controlRequestPrompt(queries, plugin, agentID, request),
 		ResponseState:  state,
 		AgentSessionId: request.AgentSessionID,
 		RequestId:      request.RequestID,

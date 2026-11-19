@@ -54,8 +54,8 @@ func TestGeminiPlanResponseKeepsTheNativeIdentityAndOptions(t *testing.T) {
 		kind     agent.PlanModeControlKind
 		feedback string
 	}{
-		{agent.ControlBehaviorAllow, "proceed_once", agent.PlanModeControlExit, ""},
-		{agent.ControlBehaviorDeny, "cancel", agent.PlanModeControlNone, "Split the second step."},
+		{contracts.ControlAnswerBehaviorAllow, "proceed_once", agent.PlanModeControlExit, ""},
+		{contracts.ControlAnswerBehaviorDeny, "cancel", agent.PlanModeControlNone, "Split the second step."},
 	} {
 		response, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "jsonrpc:4", "response": map[string]string{"behavior": test.behavior, "message": test.feedback}}})
 		require.NoError(t, err)

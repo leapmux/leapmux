@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -58,7 +59,11 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	}
 	var write *messageWrite
 	if plan.needsTranscriptRow() {
-		content, err := controlResponseMessageContent(plan)
+		prompt := controlRequestPrompt(svc.Queries, svc.Agents.Registry().Plugin(provider), agentID, agent.ControlRequest{
+			RequestID: plan.requestMeta.RequestID, Payload: plan.requestMeta.Payload, SourceSeq: plan.requestMeta.SourceSeq,
+			AgentSessionID: plan.requestMeta.AgentSessionID, NonBlocking: plan.requestMeta.NonBlocking,
+		})
+		content, err := controlResponseMessageContent(plan, prompt)
 		if err != nil {
 			return err
 		}
@@ -158,7 +163,7 @@ func (svc *Service) recordControlResponsePlanMode(agentID string, provider leapm
 		return nil
 	}
 	plugin := svc.Agents.Registry().Plugin(provider)
-	if plan.resolution.PlanModeControl == agent.PlanModeControlExit && plan.behavior() == agent.ControlBehaviorAllow {
+	if plan.resolution.PlanModeControl == agent.PlanModeControlExit && plan.behavior() == contracts.ControlAnswerBehaviorAllow {
 		mode := resolveTargetMode(plan.settings.GetPermissionMode(), plugin.PlanModePermissionMode(agent.PlanModeControlExit))
 		if options := plugin.PlanApprovalOptions(mode); len(options) > 0 {
 			_, err := svc.applyPlanOptionsLocked(current, options)

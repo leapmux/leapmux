@@ -51,7 +51,7 @@ func planAskedEvent(t *testing.T, id, planPath string) []byte {
 	})
 }
 
-// elicitationAskedEvent is an MCP server's confirmation as MiMo HEAD asks it: one
+// elicitationAskedEvent is an MCP server's confirmation as MiMo 0.1.17 asks it: one
 // question with MiMo's three answers, no free text, and no tool call.
 func elicitationAskedEvent(t *testing.T, id string) []byte {
 	t.Helper()

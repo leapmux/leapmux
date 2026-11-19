@@ -3,6 +3,7 @@ package providerkit
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 )
 
 // RawKind distinguishes an absent field from JSON null and other values.
@@ -64,6 +65,21 @@ func RawBool(raw json.RawMessage) bool {
 	return bytes.Equal(bytes.TrimSpace(raw), []byte("true"))
 }
 
+// RawOptionalBool reads a JSON boolean, or nil for any other value and for
+// none, as a proto optional field holds it. Unlike RawBool, it tells an
+// absent or malformed flag from an explicit false.
+func RawOptionalBool(raw json.RawMessage) *bool {
+	var value bool
+	switch string(bytes.TrimSpace(raw)) {
+	case "true":
+		value = true
+	case "false":
+	default:
+		return nil
+	}
+	return &value
+}
+
 // StringField reads a string member of a JSON object. Other inputs return an empty string.
 func StringField(content []byte, key string) string {
 	var fields map[string]json.RawMessage
@@ -72,4 +88,99 @@ func StringField(content []byte, key string) string {
 	}
 	value, _ := RawString(fields[key])
 	return value
+}
+
+// RawObject reads a JSON object into its fields. Any other value, JSON null
+// and an array included, reports false.
+func RawObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+// RawFields reads a JSON object into its fields, or nil for any other value,
+// JSON null and an array included. A reader that chains field reads uses
+// it; one that must tell an empty object from no object uses RawObject.
+func RawFields(raw json.RawMessage) map[string]json.RawMessage {
+	fields, _ := RawObject(raw)
+	return fields
+}
+
+// RawArray reads a JSON array into its elements. Any other value, JSON null
+// included, reports false; an empty array reports true.
+func RawArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	var elements []json.RawMessage
+	if json.Unmarshal(raw, &elements) != nil || elements == nil {
+		return nil, false
+	}
+	return elements, true
+}
+
+// RawStrings reads the string elements of a JSON array, and drops every
+// other element. A value that is no array reads as an empty list, never nil,
+// so a caller that encodes the list writes `[]`.
+func RawStrings(raw json.RawMessage) []string {
+	elements, _ := RawArray(raw)
+	values := make([]string, 0, len(elements))
+	for _, element := range elements {
+		if value, ok := RawString(element); ok {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// RawObjectOrEmpty returns raw when it holds a JSON object, and `{}` for any
+// other value. A prompt states it as the arguments of a call, so a call
+// whose arguments are no object states an empty object.
+func RawObjectOrEmpty(raw json.RawMessage) json.RawMessage {
+	if _, ok := RawObject(raw); !ok {
+		return json.RawMessage("{}")
+	}
+	return raw
+}
+
+// ObjectString reads the string member key of fields, or "" when the member
+// is absent or is no string.
+func ObjectString(fields map[string]json.RawMessage, key string) string {
+	value, _ := RawString(fields[key])
+	return value
+}
+
+// maxSafeInteger is the largest whole number that a JSON reader of double
+// precision states exactly, as JavaScript's Number.MAX_SAFE_INTEGER.
+const maxSafeInteger = 1<<53 - 1
+
+// RawWholeNumber reads a JSON number whose value is a whole number that a
+// double states exactly, as JavaScript's Number.isSafeInteger judges it:
+// `2` and `2.0` are whole, and `1.5`, `"2"` and `null` are not.
+func RawWholeNumber(raw json.RawMessage) (int64, bool) {
+	if value, ok := RawInt64(raw); ok && value >= -maxSafeInteger && value <= maxSafeInteger {
+		return value, true
+	}
+	var number float64
+	if !RawPresent(raw) || json.Unmarshal(raw, &number) != nil {
+		return 0, false
+	}
+	if math.Trunc(number) != number || math.Abs(number) > maxSafeInteger {
+		return 0, false
+	}
+	return int64(number), true
+}
+
+// RawFloat64 reads a JSON number, a fraction or an exponent included. A
+// quoted number, any other value, and a number past the range of float64
+// return false.
+func RawFloat64(raw json.RawMessage) (float64, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || (raw[0] != '-' && (raw[0] < '0' || raw[0] > '9')) {
+		return 0, false
+	}
+	var value float64
+	if json.Unmarshal(raw, &value) != nil {
+		return 0, false
+	}
+	return value, true
 }

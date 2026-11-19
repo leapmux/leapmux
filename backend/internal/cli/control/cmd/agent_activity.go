@@ -167,33 +167,53 @@ func (f *activityFeed) sequence(ctx context.Context) {
 		}
 		return f.send(ctx, ev)
 	}
+	// handle takes one input in stream order. It returns false when the feed
+	// ends.
+	handle := func(in activityInput) bool {
+		if in.ack == nil {
+			return forward(in.event) && in.event.kind != activityFailed
+		}
+		for _, rejection := range in.ack.GetRejectedAgents() {
+			ev, ok := activityRejection(rejection)
+			if !ok {
+				continue
+			}
+			if !forward(ev) || ev.kind == activityFailed {
+				return false
+			}
+		}
+		if reading {
+			readAgain = true
+			return true
+		}
+		reading = true
+		go f.readLevel(ctx)
+		return true
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case in := <-f.inputs:
-			if in.ack == nil {
-				if !forward(in.event) || in.event.kind == activityFailed {
-					return
-				}
-				continue
+			if !handle(in) {
+				return
 			}
-			for _, rejection := range in.ack.GetRejectedAgents() {
-				ev, ok := activityRejection(rejection)
-				if !ok {
-					continue
-				}
-				if !forward(ev) || ev.kind == activityFailed {
-					return
-				}
-			}
-			if reading {
-				readAgain = true
-				continue
-			}
-			reading = true
-			go f.readLevel(ctx)
 		case read := <-f.levels:
+			// Input that is already queued arrived before the feed acts on
+			// this result, so the read that follows covers it: it goes first.
+			// A select over both channels picks at random, so without this an
+			// acknowledgement queued beside the result would start one read
+			// more than the acknowledgements need.
+			for drained := false; !drained; {
+				select {
+				case in := <-f.inputs:
+					if !handle(in) {
+						return
+					}
+				default:
+					drained = true
+				}
+			}
 			if read.err != nil {
 				f.send(ctx, activityEvent{kind: activityFailed, err: fmt.Errorf("read the state of the agents: %w", read.err)})
 				return

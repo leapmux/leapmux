@@ -1,7 +1,6 @@
 package letta
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Letta Code has two control flows, and they differ in how the answer returns.
@@ -106,7 +106,7 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 		"agent_id", a.AgentID(), "request_id", requestID, "kind", kind, "tool", req.ToolName)
 
 	// The tool fields take the CONTRACT names (`tool_name`, `tool_call_id`,
-	// `tool_input`): the browser plugin reads them under those names, the same
+	// `tool_input`): ReadControlRequest reads them under those names, the same
 	// ones a stream_delta carries. A payload that spelled them differently drew
 	// a banner titled "Tool" with no command.
 	payloadBytes, err := json.Marshal(map[string]any{
@@ -209,8 +209,8 @@ func lettaQuestionTexts(questions json.RawMessage) ([]string, bool) {
 	return texts, true
 }
 
-// lettaResolveControlResponse turns the browser's decision into the bytes that
-// the worker sends to Letta Code. An absent request leaves the response bytes
+// lettaResolveControlResponse turns the neutral answer of AnswerControlRequest
+// into the bytes that the worker sends to Letta Code. An absent request leaves the response bytes
 // alone, and a malformed request withholds the response: the two rules the
 // shared suites pin.
 //
@@ -252,7 +252,7 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	}
 
 	behaviorWord := "deny"
-	if behavior == agent.ControlBehaviorAllow {
+	if behavior == contracts.ControlAnswerBehaviorAllow {
 		behaviorWord = "allow"
 	}
 	decisionRaw, err := json.Marshal(decisionBody{Behavior: behaviorWord, Message: message})
@@ -274,7 +274,7 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	return agent.ControlResponseResolution{Content: raw}
 }
 
-// lettaResolveQuestion turns the browser's answer to a posted question into the
+// lettaResolveQuestion turns the neutral answer to a posted question into the
 // response of Letta Code. An allow answers each question, and any other
 // decision dismisses the questions. Letta Code reads a dismissal without a
 // reason, so a reason that the reader typed travels as the next user message.
@@ -293,7 +293,7 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 		Status:     contracts.LettaQuestionStatusDismissed,
 	}
 	feedback := message
-	if behavior == agent.ControlBehaviorAllow {
+	if behavior == contracts.ControlAnswerBehaviorAllow {
 		answers, complete := lettaAnswersFor(texts, ctx.ResponseContent)
 		if !complete {
 			var resolution agent.ControlResponseResolution
@@ -304,7 +304,7 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 		response.Answers = answers
 		feedback = ""
 	}
-	raw, err := encodeLettaJSON(response)
+	raw, err := providerkit.JSONStringify(response)
 	if err != nil {
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalUnencodableReply)
@@ -313,14 +313,15 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 	return agent.ControlResponseResolution{Content: raw, FollowUp: agent.FeedbackFollowUp(feedback)}
 }
 
-// lettaEnvelopeAnswersField is the member of `updatedInput` in which the browser
-// folds the answers of a question form. It belongs to the neutral control response
-// that every provider receives (AskUserQuestionControl). It is not a field of the
-// Letta response, so the `question` table of the contract does not state it.
+// lettaEnvelopeAnswersField is the member of `updatedInput` in which
+// AnswerControlRequest folds the answers of a question form
+// (providerkit.AskUserQuestionAnswers). It belongs to the neutral control
+// response that several providers share. It is not a field of the Letta
+// response, so the `question` table of the contract does not state it.
 const lettaEnvelopeAnswersField = "answers"
 
-// lettaAnswersFor reads the answers that the browser folded into the input of the
-// question call. It reports false unless the answers hold exactly one nonempty
+// lettaAnswersFor reads the answers that AnswerControlRequest folded into the
+// input of the question call. It reports false unless the answers hold exactly one nonempty
 // text for each question.
 func lettaAnswersFor(texts []string, content []byte) (map[string]string, bool) {
 	given, _ := agent.DecodeControlUpdatedInput(content)[lettaEnvelopeAnswersField].(map[string]any)
@@ -336,18 +337,6 @@ func lettaAnswersFor(texts []string, content []byte) (map[string]string, bool) {
 		answers[text] = answer
 	}
 	return answers, true
-}
-
-// encodeLettaJSON encodes value the way JavaScript does for the text of a task
-// notification: no HTML escape, and no trailing newline.
-func encodeLettaJSON(value any) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
 }
 
 // lettaQuestionNotification returns the text of the user message that answers a
@@ -384,7 +373,7 @@ func lettaQuestionNotification(data []byte) (string, error) {
 	default:
 		return "", fmt.Errorf("the Letta question response has the unknown status %q", response.Status)
 	}
-	encoded, err := encodeLettaJSON(response)
+	encoded, err := providerkit.JSONStringify(response)
 	if err != nil {
 		return "", err
 	}

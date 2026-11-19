@@ -8,8 +8,8 @@ import (
 	"maps"
 
 	"github.com/google/uuid"
-	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"

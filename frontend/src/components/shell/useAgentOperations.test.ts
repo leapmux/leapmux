@@ -8,8 +8,9 @@ import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent } from '~/api/workerRpc'
 import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from '~/components/chat/composer/scheduleDrafts'
+import { approvePlanDecision, permissionDecision } from '~/components/chat/controls/controlDecision'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentActivityState, AgentInfoSchema, AgentProvider, ControlResponseState, SendControlResponseResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentProvider, AnswerControlResponseSchema, ControlResponseState, RecordControlResponseResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
@@ -21,6 +22,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createCanonicalTabPublisher, createTestTabCreation } from '~/test-support/tabPublication'
 import { createTestTabStores } from '~/test-support/tabStores'
@@ -59,7 +61,8 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
         }
       },
       interruptAgent: (...args: unknown[]) => mockInterruptAgent(...args),
-      sendControlResponse: vi.fn(),
+      recordControlResponse: vi.fn(),
+      answerControl: vi.fn(),
       updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
       updateAgentGoal: (...args: unknown[]) => mockUpdateAgentGoal(...args),
       approveAutoReviewDenial: (...args: unknown[]) => mockApproveAutoReviewDenial(...args),
@@ -209,7 +212,8 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
 
 describe('useAgentOperations', () => {
   beforeEach(() => {
-    vi.mocked(workerAgent.sendControlResponse).mockResolvedValue(create(SendControlResponseResponseSchema, { state: ControlResponseState.COMPLETED }))
+    vi.mocked(workerAgent.recordControlResponse).mockResolvedValue(create(RecordControlResponseResponseSchema, { state: ControlResponseState.COMPLETED }))
+    vi.mocked(workerAgent.answerControl).mockResolvedValue(create(AnswerControlResponseSchema, { state: ControlResponseState.COMPLETED }))
     mockOpenAgent.mockReset()
     mockListAvailableProviders.mockReset()
     mockListAvailableProviders.mockResolvedValue({ providers: [] })
@@ -1283,17 +1287,15 @@ describe('useAgentOperations', () => {
     })
   })
 
-  describe('handleControlResponse claim-token echo', () => {
-    const answer = (requestId: string) =>
-      new TextEncoder().encode(JSON.stringify({
-        response: {
-          request_id: requestId,
-          response: { behavior: 'allow' },
-        },
-      }))
+  describe('handleControlAnswer', () => {
+    const allow = {
+      kind: 'decision',
+      decision: permissionDecision('allow'),
+    } as const
+    const record = { kind: 'record' } as const
 
     const request = (requestId: string, claimToken?: string): ControlRequest =>
-      ({
+      testControlRequest({
         requestId,
         agentId: 'a1',
         payload: {
@@ -1304,26 +1306,20 @@ describe('useAgentOperations', () => {
           : {}),
       })
 
-    it('sends plan settings separately and retains explicit empty and false values', async () => {
+    it('sends a decision through AnswerControl with the plan settings inside it', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          const pending = request('plan', 'claim')
-          pending.payload = {
-            request: { tool_name: 'ExitPlanMode' },
-          }
-          const bytes = answer('plan')
-          await ops.handleControlResponse(pending, bytes, {
-            planApproval: { permissionMode: '', clearContext: false },
-          })
-          expect(workerAgent.sendControlResponse).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+          vi.mocked(workerAgent.recordControlResponse).mockClear()
+          const decision = approvePlanDecision({ permissionMode: '', clearContext: false })
+          await expect(ops.handleControlAnswer(request('plan', 'claim'), { kind: 'decision', decision })).resolves.toBe(true)
+          expect(workerAgent.answerControl).toHaveBeenCalledWith(expect.any(String), {
+            agentId: 'a1',
             requestId: 'plan',
             claimToken: 'claim',
-            content: bytes,
-            planApproval: { permissionMode: '', clearContext: false },
-          }))
-          expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
-          expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('clearContext')
+            decision,
+          })
+          expect(workerAgent.recordControlResponse).not.toHaveBeenCalled()
         }
         finally {
           dispose()
@@ -1337,19 +1333,18 @@ describe('useAgentOperations', () => {
           const { ops, controlStore } = setup()
           const pending = request('r1', 'claim')
           controlStore.addRequest('a1', pending)
-          vi.mocked(workerAgent.sendControlResponse).mockResolvedValueOnce(create(SendControlResponseResponseSchema, {
+          vi.mocked(workerAgent.answerControl).mockResolvedValueOnce(create(AnswerControlResponseSchema, {
             state: ControlResponseState.DELIVERED,
             error: 'storage unavailable',
           }))
-          await expect(ops.handleControlResponse(pending, answer('r1'))).rejects.toThrow('Could not save the response: storage unavailable')
+          await expect(ops.handleControlAnswer(pending, allow)).rejects.toThrow('Could not save the response: storage unavailable')
           expect(controlStore.getRequests('a1')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
-          await expect(ops.handleControlResponse(pending, new Uint8Array(), { recordOnly: true })).resolves.toBe(true)
-          expect(workerAgent.sendControlResponse).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({
+          await expect(ops.handleControlAnswer(pending, record)).resolves.toBe(true)
+          expect(workerAgent.recordControlResponse).toHaveBeenLastCalledWith(expect.any(String), {
+            agentId: 'a1',
             requestId: 'r1',
             claimToken: 'claim',
-            recordOnly: true,
-            content: new Uint8Array(),
-          }))
+          })
           expect(controlStore.getRequests('a1')).toEqual([])
         }
         finally {
@@ -1364,9 +1359,25 @@ describe('useAgentOperations', () => {
           const { ops, controlStore } = setup()
           const pending = request('r1', 'claim')
           controlStore.addRequest('a1', pending)
-          vi.mocked(workerAgent.sendControlResponse).mockResolvedValueOnce(create(SendControlResponseResponseSchema, { state: ControlResponseState.READY }))
-          await expect(ops.handleControlResponse(pending, new Uint8Array(), { recordOnly: true })).resolves.toBe(false)
+          vi.mocked(workerAgent.recordControlResponse).mockResolvedValueOnce(create(RecordControlResponseResponseSchema, { state: ControlResponseState.READY }))
+          await expect(ops.handleControlAnswer(pending, record)).resolves.toBe(false)
           expect(controlStore.getRequests('a1')[0]?.responseState).toBe(ControlResponseState.READY)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('removes a request whose answer the Worker reports canceled', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, controlStore } = setup()
+          const pending = request('r1', 'claim')
+          controlStore.addRequest('a1', pending)
+          vi.mocked(workerAgent.answerControl).mockResolvedValueOnce(create(AnswerControlResponseSchema, { state: ControlResponseState.CANCELED }))
+          await expect(ops.handleControlAnswer(pending, allow)).resolves.toBe(true)
+          expect(controlStore.getRequests('a1')).toEqual([])
         }
         finally {
           dispose()
@@ -1378,11 +1389,11 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          vi.mocked(workerAgent.sendControlResponse).mockClear()
+          vi.mocked(workerAgent.answerControl).mockClear()
 
-          await ops.handleControlResponse(request('r1', 'instance-token-1'), answer('r1'))
+          await ops.handleControlAnswer(request('r1', 'instance-token-1'), allow)
 
-          expect(workerAgent.sendControlResponse).toHaveBeenCalledWith(
+          expect(workerAgent.answerControl).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ agentId: 'a1', claimToken: 'instance-token-1' }),
           )
@@ -1397,11 +1408,11 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          vi.mocked(workerAgent.sendControlResponse).mockClear()
+          vi.mocked(workerAgent.answerControl).mockClear()
 
-          await ops.handleControlResponse(request('r-missing'), answer('r-missing'))
+          await ops.handleControlAnswer(request('r-missing'), allow)
 
-          expect(workerAgent.sendControlResponse).toHaveBeenCalledWith(
+          expect(workerAgent.answerControl).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ agentId: 'a1', claimToken: '' }),
           )
@@ -1416,14 +1427,14 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          vi.mocked(workerAgent.sendControlResponse).mockClear()
+          vi.mocked(workerAgent.answerControl).mockClear()
 
           // A prior answer or cancel already removed this request. The caller holds the
           // instance, so the answer still claims on it rather than on an empty-token key,
           // which could double-win or drop the answer.
-          await ops.handleControlResponse(request('r-gone', 'captured-token-9'), answer('r-gone'))
+          await ops.handleControlAnswer(request('r-gone', 'captured-token-9'), allow)
 
-          expect(workerAgent.sendControlResponse).toHaveBeenCalledWith(
+          expect(workerAgent.answerControl).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ agentId: 'a1', claimToken: 'captured-token-9' }),
           )
@@ -1441,19 +1452,12 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, controlStore } = setup()
-          vi.mocked(workerAgent.sendControlResponse).mockClear()
-          controlStore.addRequest('a1', {
-            requestId: 'r1',
-            agentId: 'a1',
-            payload: {
-              request: { tool_name: 'Bash' },
-            },
-            claimToken: 'other-instance-token',
-          })
+          vi.mocked(workerAgent.answerControl).mockClear()
+          controlStore.addRequest('a1', request('r1', 'other-instance-token'))
 
-          await ops.handleControlResponse(request('r1'), answer('r1'))
+          await ops.handleControlAnswer(request('r1'), allow)
 
-          expect(workerAgent.sendControlResponse).toHaveBeenCalledWith(
+          expect(workerAgent.answerControl).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ agentId: 'a1', claimToken: '' }),
           )
@@ -1464,15 +1468,21 @@ describe('useAgentOperations', () => {
       })
     })
 
-    it('passes a transport failure to the request UI without a duplicate toast', async () => {
+    it.each([
+      ['a decision', allow, 'answerControl'],
+      ['a recording', record, 'recordControlResponse'],
+    ] as const)('passes a transport failure of %s to the request UI without a duplicate toast, and clears its state', async (_what, answer, method) => {
       await createRoot(async (dispose) => {
         try {
-          const { ops } = setup()
+          const { ops, controlStore } = setup()
+          const pending = request('r1', 'claim')
+          controlStore.addRequest('a1', { ...pending, responseState: ControlResponseState.READY })
           const failure = new Error('send failed')
-          vi.mocked(workerAgent.sendControlResponse).mockRejectedValueOnce(failure)
+          vi.mocked(workerAgent[method]).mockRejectedValueOnce(failure)
           const toastCount = mockShowWarnToast.mock.calls.length
-          await expect(ops.handleControlResponse(request('r1'), answer('r1'))).rejects.toBe(failure)
+          await expect(ops.handleControlAnswer(pending, answer)).rejects.toBe(failure)
           expect(mockShowWarnToast).toHaveBeenCalledTimes(toastCount)
+          expect(controlStore.getRequests('a1')[0]?.responseState).toBe(ControlResponseState.UNSPECIFIED)
         }
         finally {
           dispose()

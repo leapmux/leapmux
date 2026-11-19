@@ -2,8 +2,8 @@ import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
 import { AMP_OPTION, AMP_PERMISSION_MODE } from '~/generated/contracts/amp-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { buildAllowResponse, buildDenyResponse } from '~/test-support/controlResponses'
 import { providerToolCall } from '~/test-support/toolCallFixture'
-import { buildAllowResponse, buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
 import { providerFor } from '../registry'
 import { classifyAmpMessage } from './classification'
 import { ampResultDivider } from './extractors/resultDivider'
@@ -71,28 +71,22 @@ describe('amp plugin', () => {
     expect(plugin.configuration?.planMode).toBeUndefined()
     expect(plugin.configuration?.effortGroupKey).toBeUndefined()
     expect(plugin.configuration?.supportsSubagentSend).toBeUndefined()
-    expect(plugin.controls?.askUserQuestion).toBeUndefined()
-    expect(plugin.controls?.elicitation).toBeUndefined()
   })
 })
 
 describe('amp controls', () => {
+  // The Worker reads each request and builds each answer, so the browser keeps only the
+  // display of a saved answer and the presets.
+  it('registers only the saved-answer display and the presets', () => {
+    expect(Object.keys(controls).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
+  })
+
   it('offers the Bypass preset as Allow All and no Smart preset', () => {
     expect(controls.permissionPresets).toEqual({
       bypass: {
         sets: { permissionMode: AMP_PERMISSION_MODE.AllowAll },
       },
     })
-  })
-
-  it('reads the permission envelope into the permission row', () => {
-    expect(controls.extractControl?.({ payload: permission })?.kind).toBe('permission')
-  })
-
-  // The composer's send refuses the call, and its words ride the refusal as the reason.
-  it('sends the composer\'s text as a refusal', () => {
-    expect(controls.buildControlResponse?.(permission, 'Use the clean target.', 'r1')).toEqual(buildDenyResponse('r1', 'Use the clean target.'))
-    expect(controls.buildControlResponse?.(permission, '', 'r1')).toEqual(buildDenyResponse('r1', CONTROL_REJECTED_BY_USER_MESSAGE))
   })
 
   it('displays a saved answer from the neutral envelope', () => {

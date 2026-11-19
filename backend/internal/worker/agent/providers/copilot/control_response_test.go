@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// copilotAnswer builds the neutral envelope the browser's control surface sends.
+// copilotAnswer builds the neutral envelope that AnswerControlRequest sends.
 func copilotAnswer(requestID string, response map[string]any) []byte {
 	raw, _ := json.Marshal(map[string]any{
 		"type": "control_response",
@@ -135,13 +135,13 @@ func TestCopilotPermissionRejectionCarriesItsFeedback(t *testing.T) {
 	assert.Equal(t, map[string]any{"kind": "reject", "feedback": "Read another file."}, copilotNativeResponse(t, resolution))
 }
 
-// A refusal with no typed reason stays untyped: the placeholder the control surface
-// sends collapses to nothing rather than reaching the runtime as the user's words.
+// A refusal with no typed reason stays untyped: the placeholder that DenyResponse
+// writes collapses to nothing rather than reaching the runtime as the user's words.
 func TestCopilotBarePermissionRejectionCarriesNoFeedback(t *testing.T) {
 	t.Parallel()
 	resolution := copilotResolve(t, contracts.CopilotEventPermissionRequested,
 		map[string]any{"requestId": "native-1", "permissionRequest": map[string]any{"kind": "read"}},
-		map[string]any{"behavior": "deny", "message": agent.ControlRejectedByUserMessage})
+		map[string]any{"behavior": "deny", "message": contracts.ControlAnswerMessageRejectedByUser})
 	assert.Equal(t, map[string]any{"kind": "reject"}, copilotNativeResponse(t, resolution))
 }
 

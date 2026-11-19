@@ -87,7 +87,10 @@
     "Cancelled": "cancelled"
   },
   "permissionKinds": {
-    "AllowOnce": "allow_once"
+    "AllowOnce": "allow_once",
+    "AllowAlways": "allow_always",
+    "RejectOnce": "reject_once",
+    "RejectAlways": "reject_always"
   },
   "structs": {
     "ACPTerminalResult": {

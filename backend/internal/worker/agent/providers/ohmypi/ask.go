@@ -386,7 +386,8 @@ func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhM
 			continue
 		}
 		// Disabled preselected options remain in the native count. Only offered
-		// choices can be toggled; the browser sends the desired enabled values.
+		// choices can be toggled; the answer states the desired enabled values
+		// (AnswerControlRequest).
 		for _, option := range question.Options {
 			value := askOptionValue(option)
 			if initial[value] && !desired[value] {

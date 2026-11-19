@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )

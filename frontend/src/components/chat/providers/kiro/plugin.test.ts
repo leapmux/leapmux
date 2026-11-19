@@ -1,5 +1,7 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { extractChatRow, extractedRow } from '../../rowExtraction'
 import { describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -73,23 +75,8 @@ describe('kiro provider', () => {
     })
   })
 
-  it('reads its own MCP elicitation method', () => {
-    expect(plugin.controls?.elicitation?.({
-      method: '_kiro/mcp/elicitation',
-      params: {
-        elicitation: {
-          mode: 'form',
-          message: 'Pick one',
-          requestedSchema: { type: 'object' },
-        },
-      },
-    })).toMatchObject({
-      mode: 'form',
-      message: 'Pick one',
-      schema: { type: 'object' },
-    })
-  })
-
+  // The row reads the form from the prompt that the Worker recorded, and the shared
+  // form display answers before Kiro's own display, which reads no form.
   it('shows a saved MCP form answer through the shared form display', () => {
     const request = {
       jsonrpc: '2.0',
@@ -108,7 +95,15 @@ describe('kiro provider', () => {
         },
       },
     }
-    const display = plugin.controls?.controlResponseDisplay?.({
+    const prompt: ControlPrompt = {
+      kind: 'elicitation',
+      elicitation: {
+        mode: 'form',
+        message: 'Choose',
+        schema: request.params.elicitation.requestedSchema,
+      },
+    }
+    const response = {
       requestId: 'jsonrpc:1',
       claimToken: 'c',
       request,
@@ -120,36 +115,11 @@ describe('kiro provider', () => {
           content: { size: 'Large' },
         },
       },
-    })
-    expect(display).toEqual({ kind: 'label', text: 'Approved\nSize: Large' })
-  })
-
-  it('recognizes its question dialog', () => {
-    expect(plugin.controls?.askUserQuestion?.isRequest({ method: '_kiro/userInput' })).toBe(true)
-    expect(plugin.controls?.askUserQuestion?.isRequest({ method: 'session/request_permission' })).toBe(false)
-  })
-
-  it('carries a rejection reason in Kiro\'s own field rather than as a message', () => {
-    const permission = {
-      method: 'session/request_permission',
-      params: {
-        toolCall: { toolCallId: 'c' },
-        options: [
-          { optionId: 'accept', kind: 'allow_once' },
-          { optionId: 'reject', kind: 'reject_once' },
-        ],
-      },
+      prompt,
     }
-    expect(plugin.controls?.controlFeedbackAsFollowUpMessage?.(permission)).toBe(false)
-    expect(plugin.controls?.buildControlResponse?.(permission, 'Use rg', 'jsonrpc:1')).toEqual({
-      jsonrpc: '2.0',
-      id: 'jsonrpc:1',
-      result: {
-        outcome: { outcome: 'selected', optionId: 'reject' },
-        _meta: {
-          kiro: { rejectionReason: 'Use rg' },
-        },
-      },
+    expect(extractedRow(extractChatRow(AgentProvider.KIRO, input({}, null, AgentProvider.KIRO), { kind: 'control_response', response }))).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text: 'Approved\nSize: Large' },
     })
   })
 

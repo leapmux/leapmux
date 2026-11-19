@@ -233,6 +233,7 @@ Add a file only when the provider owns that role.
 | `catalog.go` | Model and option catalog data, discovery and conversion when they need a separate file. |
 | `settings.go` | Live option methods, settings snapshots, and any shared axis table. |
 | `control.go` | Control requests and replies. |
+| `control_prompt.go` | `ReadControlRequest` and `AnswerControlRequest`: the neutral prompt of a control request, and the provider's answer to a neutral decision. |
 | `output.go` | Conversation output handlers and live output state. |
 | `events.go` | Protocol event decoding and dispatch when these form one unit. |
 | `rpc.go` | Request and reply transport, including response routing. |
@@ -285,8 +286,10 @@ A change that crosses a layer is almost always misplaced. Each layer's
    compile error. Layer 3 never imports `../providers/`, parses provider bytes,
    or branches on `AgentProvider`, a tool name or a wire token.
 
-Only three control surfaces in `providers/` draw: `codex/CodexControlActions.tsx`,
-`cursor/CursorControlActions.tsx`, `pi/PiPlanApprovalActions.tsx`.
+No module in `providers/` draws, control requests included: the Worker reads
+each request into a neutral prompt (`Provider.ReadControlRequest`), the shared
+controls in `components/chat/controls/` draw it, and the answer goes back as a
+neutral decision (`Provider.AnswerControlRequest`).
 
 Enforcement, from `eslint/chatPipelinePlugin.ts`:
 
@@ -301,7 +304,7 @@ Enforcement, from `eslint/chatPipelinePlugin.ts`:
   each hook.
 
 A `no-restricted-syntax` block in `eslint.config.ts` bans JSX under `providers/`
-outside those three surfaces and test files.
+outside test files and the two `testUtils.tsx` helpers.
 `src/test-support/chatLayerStructure.test.ts` guards the structure the rules
 assume; `src/test-support/restrictedSyntaxKeepsBaseRules.test.ts` runs the real
 linter over probe files so a scoped config block cannot silently un-guard a

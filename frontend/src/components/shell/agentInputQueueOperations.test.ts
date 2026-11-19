@@ -399,15 +399,13 @@ describe('createAgentInputQueueOperations composer send', () => {
     expect(forceScrollToBottom).toHaveBeenCalledTimes(1)
   })
 
-  it('sends the control-feedback kind for a control reply and the message kind for a send', async () => {
+  it('sends the message kind for a send', async () => {
     const { ops } = setup()
     enqueueAgentInput.mockResolvedValue({ snapshot: undefined })
 
-    await ops.sendControlFeedback('use the other branch')
     await ops.sendMessage('deploy it')
 
-    expect(enqueueAgentInput.mock.calls[0]?.[1]).toMatchObject({ kind: AgentInputKind.CONTROL_FEEDBACK })
-    expect(enqueueAgentInput.mock.calls[1]?.[1]).toMatchObject({ kind: AgentInputKind.USER_MESSAGE })
+    expect(enqueueAgentInput.mock.calls[0]?.[1]).toMatchObject({ kind: AgentInputKind.USER_MESSAGE })
   })
 
   it('sends nothing when no agent tab is focused', async () => {

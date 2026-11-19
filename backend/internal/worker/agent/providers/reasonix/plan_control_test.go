@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -62,9 +63,9 @@ func TestReasonixPlanApprovalReplies(t *testing.T) {
 		exit     bool
 		feedback string
 	}{
-		{name: "approve", response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorAllow, ""), option: "allow_once", exit: true},
-		{name: "reject with revision", response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorDeny, "Split the second step."), option: "reject_once", feedback: "Split the second step."},
-		{name: "reject bare", response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorDeny, ""), option: "reject_once"},
+		{name: "approve", response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), option: "allow_once", exit: true},
+		{name: "reject with revision", response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorDeny, "Split the second step."), option: "reject_once", feedback: "Split the second step."},
+		{name: "reject bare", response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorDeny, ""), option: "reject_once"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -86,7 +87,7 @@ func TestReasonixPlanApprovalReplies(t *testing.T) {
 func TestReasonixPlanApprovalPreservesStringNativeID(t *testing.T) {
 	t.Parallel()
 	payload := strings.Replace(reasonixPlanPayload, `"id":3`, `"id":"native-3"`, 1)
-	result := resolveReasonixPlan(payload, reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorAllow, ""), nil)
+	result := resolveReasonixPlan(payload, reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), nil)
 	require.False(t, result.Withhold)
 	id, option := reasonixSelectedOption(t, result.Content)
 	assert.Equal(t, `"native-3"`, id)
@@ -100,14 +101,14 @@ func TestReasonixPlanApprovalWithholdsInvalidAnswers(t *testing.T) {
 		response []byte
 		reason   string
 	}{
-		"another request":   {payload: reasonixPlanPayload, response: reasonixDecision(t, "jsonrpc:4", agent.ControlBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
-		"no request id":     {payload: reasonixPlanPayload, response: reasonixDecision(t, "", agent.ControlBehaviorAllow, ""), reason: agent.RefusalNoDecision},
+		"another request":   {payload: reasonixPlanPayload, response: reasonixDecision(t, "jsonrpc:4", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
+		"no request id":     {payload: reasonixPlanPayload, response: reasonixDecision(t, "", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalNoDecision},
 		"unknown behavior":  {payload: reasonixPlanPayload, response: reasonixDecision(t, "jsonrpc:3", "maybe", ""), reason: agent.RefusalNoDecision},
 		"not json":          {payload: reasonixPlanPayload, response: []byte(`{`), reason: agent.RefusalNoDecision},
-		"missing native id": {payload: strings.Replace(reasonixPlanPayload, `"id":3,`, "", 1), response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
-		"missing allow":     {payload: strings.Replace(reasonixPlanPayload, `{"optionId":"allow_once","name":"Allow","kind":"allow_once"},`, "", 1), response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
-		"missing reject":    {payload: strings.Replace(reasonixPlanPayload, `,{"optionId":"reject_once","name":"Reject","kind":"reject_once"}`, "", 1), response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorDeny, ""), reason: agent.RefusalUnreadableRequest},
-		"malformed options": {payload: strings.Replace(reasonixPlanPayload, `"options":[`, `"options":{}, "unused":[`, 1), response: reasonixDecision(t, "jsonrpc:3", agent.ControlBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
+		"missing native id": {payload: strings.Replace(reasonixPlanPayload, `"id":3,`, "", 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
+		"missing allow":     {payload: strings.Replace(reasonixPlanPayload, `{"optionId":"allow_once","name":"Allow","kind":"allow_once"},`, "", 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
+		"missing reject":    {payload: strings.Replace(reasonixPlanPayload, `,{"optionId":"reject_once","name":"Reject","kind":"reject_once"}`, "", 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorDeny, ""), reason: agent.RefusalUnreadableRequest},
+		"malformed options": {payload: strings.Replace(reasonixPlanPayload, `"options":[`, `"options":{}, "unused":[`, 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

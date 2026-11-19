@@ -210,13 +210,13 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 func (a *Agent) answerPermission(requestID, behavior, message string) error {
 	var decision helperDecision
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		decision = allowDecision()
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		decision = rejectDecision(message)
 	default:
 		return fmt.Errorf("the answer to the Amp permission request %s states the behavior %q, and LeapMux knows only %q and %q",
-			requestID, behavior, agent.ControlBehaviorAllow, agent.ControlBehaviorDeny)
+			requestID, behavior, contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny)
 	}
 	if !a.bridge.answer(requestID, decision) {
 		return fmt.Errorf("the Amp permission request %s no longer waits for an answer", requestID)

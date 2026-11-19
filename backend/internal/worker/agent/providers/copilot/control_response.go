@@ -7,12 +7,13 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Copilot's native control answers.
 //
-// The browser sends the neutral approve/reject envelope that every provider's control
-// surface produces. This file turns one of those into the exact object the runtime's
+// AnswerControlRequest builds the neutral approve/reject envelope from the decision.
+// This file turns one of those into the exact object the runtime's
 // own remote procedure call takes, so the native vocabulary stays inside the provider
 // and the browser states a decision rather than a wire value.
 //
@@ -83,7 +84,8 @@ func copilotSessionApproval(request copilotPermissionRequest) map[string]any {
 	}
 }
 
-// copilotControlDecision is the browser's answer, as the neutral envelope carries it.
+// copilotControlDecision is the answer that AnswerControlRequest built, as the neutral
+// envelope carries it.
 type copilotControlDecision struct {
 	allow bool
 	// message is the rejection reason, already normalized: the placeholder that a
@@ -91,8 +93,9 @@ type copilotControlDecision struct {
 	message string
 	// scope states how long an approval lasts. Empty is a single approval.
 	scope string
-	// answer is the text a question control submitted, and wasFreeform states
-	// whether the user typed it or selected one of the offered choices.
+	// answer is the text of a question's answer (copilotQuestionAnswer), and
+	// wasFreeform states whether the user typed it or selected one of the offered
+	// choices.
 	answer      string
 	wasFreeform bool
 }
@@ -207,7 +210,7 @@ func copilotControlResponseContent(requestID string, answer any) ([]byte, error)
 	})
 }
 
-// copilotResolveControlAnswer translates the browser's decision for one stored
+// copilotResolveControlAnswer translates the neutral answer for one stored
 // request. It reports false when the stored request is not a Copilot control event,
 // so the caller can leave the response alone.
 func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.ControlResponseResolution, bool) {
@@ -217,7 +220,7 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
 	if eventType == contracts.CopilotEventElicitationRequested {
-		if native, ok := copilotElicitationAnswer(ctx.ResponseContent); ok {
+		if native, ok := copilotElicitationAnswer(ctx.ResponseContent, copilotElicitationMode(data)); ok {
 			content, err := copilotControlResponseContent(ctx.RequestID, native)
 			if err != nil {
 				result.Refuse(agent.RefusalUnencodableReply)
@@ -228,7 +231,7 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 		}
 	}
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		// Not a decision this build can read. Withholding leaves the runtime waiting
 		// and the request answerable, which a frame it cannot parse would not.
 		slog.Warn("Copilot control response carried no decision", "request_id", ctx.RequestID)
@@ -240,7 +243,7 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
-	decision := copilotControlDecision{allow: behavior == agent.ControlBehaviorAllow, message: message}
+	decision := copilotControlDecision{allow: behavior == contracts.ControlAnswerBehaviorAllow, message: message}
 	copilotReadDecisionFields(ctx.ResponseContent, &decision)
 	native, refusal := copilotNativeAnswer(eventType, data, decision)
 	if refusal != "" {
@@ -277,9 +280,22 @@ func copilotControlEvent(payload json.RawMessage) (string, json.RawMessage, bool
 	return "", nil, false
 }
 
-// copilotElicitationAnswer reads the shared elicitation form's own answer, which is
-// already the native shape: an action and the content the form produced.
-func copilotElicitationAnswer(content []byte) (any, bool) {
+// copilotElicitationMode is the MCP mode of an elicitation.requested: its
+// `mode`, or a form when it states none, as copilotElicitationPrompt reads it.
+func copilotElicitationMode(data json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(data, &fields)
+	if mode, ok := providerkit.RawString(fields["mode"]); ok {
+		return mode
+	}
+	return contracts.MCPElicitationModeForm
+}
+
+// copilotElicitationAnswer reads the elicitation answer, which is already
+// the native shape: an action, and for the accept of a form the content
+// that the form produced. An accept in any other mode, such as a URL that
+// the user visited, carries no content, as MCP defines it.
+func copilotElicitationAnswer(content []byte, mode string) (any, bool) {
 	var envelope struct {
 		Response struct {
 			Response struct {
@@ -294,6 +310,12 @@ func copilotElicitationAnswer(content []byte) (any, bool) {
 	answer := envelope.Response.Response
 	switch answer.Action {
 	case contracts.MCPElicitationActionAccept:
+		if mode != contracts.MCPElicitationModeForm {
+			if len(answer.Content) != 0 {
+				return nil, false
+			}
+			return map[string]any{"action": answer.Action}, true
+		}
 		if len(answer.Content) == 0 {
 			return nil, false
 		}
@@ -305,10 +327,10 @@ func copilotElicitationAnswer(content []byte) (any, bool) {
 	}
 }
 
-// copilotReadDecisionFields reads the fields a control surface adds beside the
+// copilotReadDecisionFields reads the fields that AnswerControlRequest adds beside the
 // neutral behavior: the approval scope, and a question's own answer.
 //
-// Every field is optional, so a control that offers none leaves the decision as its
+// Every field is optional, so an answer that states none leaves the decision as its
 // behavior alone.
 func copilotReadDecisionFields(content []byte, decision *copilotControlDecision) {
 	var envelope struct {

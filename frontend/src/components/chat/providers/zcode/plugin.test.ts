@@ -5,7 +5,6 @@ import { ZCODE_COMPACTION_STATUS, ZCODE_EVENT, ZCODE_GOAL_VERIFICATION_STATUS, Z
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
 import { providerQuotableText, providerToolMeta } from '~/test-support/toolCallFixture'
-import { buildDenyResponse } from '~/utils/controlResponse'
 import { compactionContextTokens } from '../../notificationEntries'
 import { toolCallMeta } from '../../results/tools/meta'
 import { extractChatRow, extractedRow } from '../../rowExtraction'
@@ -124,14 +123,6 @@ describe('zcode plugin metadata', () => {
       messages: [completed, verdict],
     }, AgentProvider.ZCODE), AgentProvider.ZCODE))
       .toBe(15000)
-  })
-
-  // Composer send is the reject path (the placeholder says so). Allow lives on its
-  // own button. An empty send is still a deny -- otherwise Reject with an empty
-  // editor is a silent no-op and the permission banner never leaves.
-  it('builds a deny envelope for composer send, including an empty one', () => {
-    expect(plugin?.controls?.buildControlResponse!({}, '', 'req-1')).toEqual(buildDenyResponse('req-1', ''))
-    expect(plugin?.controls?.buildControlResponse!({}, 'do not', 'req-1')).toEqual(buildDenyResponse('req-1', 'do not'))
   })
 })
 
@@ -453,27 +444,6 @@ describe('zcode tool row toolbar metadata', () => {
     })
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('a/b.ts\nc/d.ts')
-  })
-})
-
-describe('zcode isAskUserQuestion', () => {
-  it('recognizes the AskUserQuestion prompt by its recorded tool name', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({
-      request: { tool_name: ZCODE_TOOL.AskUserQuestion },
-    })).toBe(true)
-  })
-
-  it('rejects the plan approval, which travels over the same method', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({
-      request: { tool_name: ZCODE_TOOL.ExitPlanMode },
-    })).toBe(false)
-  })
-
-  it('rejects a permission request and an empty payload', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({
-      request: { tool_name: ZCODE_TOOL.Bash },
-    })).toBe(false)
-    expect(plugin?.controls?.askUserQuestion!.isRequest({})).toBe(false)
   })
 })
 

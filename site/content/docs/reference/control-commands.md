@@ -531,6 +531,169 @@ leapmux control agent wait 87a19d5f
 leapmux control agent wait 87a19d5f 5c2e0b91 --until waiting_for_user --any --timeout 10m
 ```
 
+### `leapmux control agent requests`
+
+List the pending control requests of agents: permission prompts, plans
+to approve, questions, MCP elicitation forms and extension dialogs.
+
+Each request prints with its handle. "agent approve", "agent deny" and
+"agent answer" take the agent and the handle, or a unique prefix of the
+handle. A request that the agent replaces gets a new handle, so an answer
+never reaches a request that you did not read.
+
+The text form prints each request in full, with the numbers that --option
+takes. --json prints each prompt as data.
+
+```text
+leapmux control agent requests [agent]... [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `[agent]...` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. Without one, the command lists the requests of every agent. |
+
+| Flag | Description |
+|---|---|
+| `--workspace string` | without an agent, list only the agents of this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+
+```sh
+leapmux control agent requests
+
+# List the requests of one agent, as JSON.
+leapmux control agent requests 87a19d5f --json
+```
+
+### `leapmux control agent approve`
+
+Approve a pending request:
+
+  - A permission prompt: its one-time approval. Choose another option, such
+    as an approval for the session, with "agent answer --option".
+  - A plan: the approval. --permission-mode and --clear-context set how the
+    agent implements it.
+  - An MCP elicitation: the accept, with the form's default values. Fill a
+    form with "agent answer --field".
+  - A confirm dialog: the confirmation.
+
+An agent cannot answer its own requests.
+
+This command changes state.
+
+```text
+leapmux control agent approve <agent> <request> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
+
+| Flag | Description |
+|---|---|
+| `--permission-mode string` | with a plan's approval, the permission mode to implement it in (default: the agent's own) |
+| `--clear-context` | with a plan's approval, implement it in a fresh context |
+
+```sh
+leapmux control agent approve 87a19d5f 3kQ9xZ1b
+
+# Approve a plan, and implement it in a fresh context.
+leapmux control agent approve 87a19d5f 3kQ9 --permission-mode acceptEdits --clear-context
+```
+
+### `leapmux control agent deny`
+
+Refuse a pending request:
+
+  - A permission prompt: its one-time refusal, with --message as the reason.
+  - A plan: the refusal, with --message as what to change.
+  - A question: the refusal to answer, with --message as the reason.
+  - An MCP elicitation: the decline.
+  - A dialog: the refusal of a confirm dialog, or the cancel of another.
+
+An agent cannot answer its own requests.
+
+This command changes state.
+
+```text
+leapmux control agent deny <agent> <request> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
+
+| Flag | Description |
+|---|---|
+| `--message string` | the reason of the refusal, which the agent reads |
+
+```sh
+leapmux control agent deny 87a19d5f 3kQ9xZ1b --message "Run the unit tests only"
+```
+
+### `leapmux control agent answer`
+
+Answer a pending request with any answer that it offers. "agent requests"
+numbers the options of each request.
+
+  - A question: --option chooses an option, and a text argument is a
+    typed answer. A multiple-choice question takes both: the answer then
+    holds the chosen options and the text. With several questions, write
+    each value as "&lt;question&gt;:&lt;value&gt;", such as --option 2:1 or
+    "1:Use the cache". A question that no --option answers keeps the
+    options that the agent selected for it, which "agent requests" shows
+    as its default. With no value at all, the command sends those
+    defaults, which must answer every question that needs an answer.
+  - A permission prompt: --option chooses any option, such as an approval
+    for the session. --message gives the reason of a refusing option.
+  - A plan: --option chooses one of its choices. --message gives what to
+    change, and --permission-mode and --clear-context apply to an approval.
+  - An MCP elicitation: --field fills the form, once for each field, or
+    once for each value of a list field. A field that "agent requests"
+    lists with a condition takes a value only when the condition holds,
+    and a field that it does not list keeps its default. --option chooses
+    an accept choice.
+  - An input or editor dialog: the text.
+
+An agent cannot answer its own requests.
+
+This command changes state.
+
+```text
+leapmux control agent answer <agent> <request> [text]... [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
+| `[text]...` | A typed answer, or "-" to read it from standard input. With several questions, write "&lt;question&gt;:&lt;text&gt;". |
+
+| Flag | Description |
+|---|---|
+| `--option string` | an option by its number, or "&lt;question&gt;:&lt;number&gt;" with several questions; repeat it for more than one (repeatable) |
+| `--field string` | a form field as &lt;name&gt;=&lt;value&gt;; repeat it for more than one (repeatable) |
+| `--message string` | the reason of a refusing option or choice, which the agent reads |
+| `--permission-mode string` | with a plan's approval, the permission mode to implement it in (default: the agent's own) |
+| `--clear-context` | with a plan's approval, implement it in a fresh context |
+
+```sh
+# Choose the second option of a question.
+leapmux control agent answer 87a19d5f 3kQ9 --option 2
+
+# Choose two options of a multiple-choice question, and type one more answer.
+leapmux control agent answer 87a19d5f 3kQ9 --option 1 --option 3 "Metrics"
+
+# Answer two questions.
+leapmux control agent answer 87a19d5f 3kQ9 --option 1:2 "2:Use the staging database"
+
+# Approve a command for the rest of the session.
+leapmux control agent answer 87a19d5f 3kQ9 --option 2
+
+# Fill an MCP form.
+leapmux control agent answer 87a19d5f 3kQ9 --field repository=leapmux --field private=true
+```
+
 ### `leapmux control agent interrupt`
 
 Stop an agent's current turn.

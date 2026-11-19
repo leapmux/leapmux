@@ -1,4 +1,3 @@
-import type { ControlExtractionInput, ExtractedControlRequest } from '../../../src/components/chat/providers/capabilities'
 import type { MockModelToolCall } from './mockModelScript'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
@@ -265,15 +264,14 @@ export function ignoredMcpServerProjectConfiguration(writeConfiguration: (direct
 /**
  * Prove that LeapMux offers no workspace-trust route for a provider that asks before a tool runs.
  *
- * The provider asks for one real operation, the browser classifier reads each control that the provider sends, and
- * no control offers a trust decision.
+ * The provider asks for one real operation, the Worker reads each control that the provider sends into a prompt,
+ * and no prompt offers a trust decision.
  */
 export async function exerciseMissingWorkspaceTrustRoute(
   context: ManagedNativeScenarioContext,
   options: {
     /** The test ID of the settings option under which the provider asks before a tool runs. */
     askOption: string
-    classify: (input: ControlExtractionInput) => ExtractedControlRequest | null
     /**
      * Prepare the operation that the provider asks for, after the ask option applies. The default writes one file
      * in the working directory through the shell tool of the provider.
@@ -288,7 +286,6 @@ export async function exerciseMissingWorkspaceTrustRoute(
   // The operation is prepared after the ask option applies, because a provider can restart its process to apply it.
   await exerciseUnsupportedControlThroughPermission(context, {
     purpose: 'workspace-trust',
-    classify: options.classify,
     ...(options.operation
       ? { operation: await options.operation() }
       : {}),

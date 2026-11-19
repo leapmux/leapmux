@@ -1,17 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import type { ControlPrompt } from '../../model/controlPrompt'
+import { describe, expect, it } from 'vitest'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { MIMO_DEFAULT_MODE, MIMO_MODE, MIMO_OPTION, MIMO_PERMISSION_POLICY, MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
+import { buildControlResponseEnvelope } from '~/test-support/controlResponses'
 import { mimoFrame, openingFrame, parsedFrame, statusFrame, TEST_SESSION, toolFrame } from '~/test-support/mimoFixtures'
 import { providerQuotableText } from '~/test-support/toolCallFixture'
-import { buildDenyResponse } from '~/utils/controlResponse'
-import { controlSurface } from '../../controls/controlSurface'
-import { buildElicitationResponse } from '../../controls/elicitationForm'
-import { createControlAnswerState } from '../../controls/types'
+import { extractChatRow, extractedRow } from '../../rowExtraction'
 import { providerFor } from '../registry'
 
+import { input } from '../testUtils'
 // Side-effect import to register the MiMo plugin.
 import './plugin'
 
@@ -83,195 +83,96 @@ describe('mimo plugin metadata', () => {
 })
 
 describe('mimo plugin controls', () => {
-  it('builds a deny envelope for a composer send, including an empty one', () => {
-    expect(plugin.controls?.buildControlResponse!({}, '', 'req-1')).toEqual(buildDenyResponse('req-1', ''))
-    expect(plugin.controls?.buildControlResponse!({}, 'not yet', 'req-1')).toEqual(buildDenyResponse('req-1', 'not yet'))
-  })
-
-  it('sends the chosen permission option as MiMo\'s own reply word', async () => {
-    const send = vi.fn().mockResolvedValue(undefined)
-    await plugin.controls!.sendPermissionOption!(send, 'mimo-permission:per_1', 'always')
-    expect(JSON.parse(new TextDecoder().decode(send.mock.calls[0]?.[0]))).toEqual({
-      jsonrpc: '2.0',
-      id: 'mimo-permission:per_1',
-      result: {
-        outcome: { outcome: 'selected', optionId: 'always' },
-      },
-    })
-  })
-
-  it('routes a question to the question card and a plan approval to the plan card', () => {
-    const question = {
-      type: OPENCODE_EVENT.QuestionAsked,
-      properties: {
-        id: 'que_1',
-        questions: [
-          { question: 'Which?' },
-        ],
-      },
-      request: { tool_name: MIMO_TOOL.Question },
-    }
-    // The browser reads the tool name the worker recorded, not the question key,
-    // so the key here is only the one MiMo sends.
-    const plan = {
-      type: OPENCODE_EVENT.QuestionAsked,
-      properties: {
-        id: 'que_2',
-        questions: [
-          { key: 'plan_exit' },
-        ],
-      },
-      request: { tool_name: MIMO_TOOL.PlanExit },
-      plan: 'Do it',
-    }
-    expect(plugin.controls?.askUserQuestion?.isRequest(question)).toBe(true)
-    expect(plugin.controls?.askUserQuestion?.isRequest(plan)).toBe(false)
-    expect(plugin.controls?.extractControl!({ payload: plan })).toEqual({ kind: 'plan', text: 'Do it' })
-  })
-
-  describe('an MCP elicitation', () => {
-    const elicitation = {
-      type: OPENCODE_EVENT.QuestionAsked,
-      properties: {
-        id: 'que_3',
-        questions: [
-          {
-            key: 'mcp_elicitation',
-            header: 'docs',
-            question: 'docs\n\nProceed?',
-            options: [
-              { label: 'Accept', description: '' },
-              { label: 'Decline', description: '' },
-              { label: 'Cancel', description: '' },
-            ],
-            multiple: false,
-            custom: false,
-          },
-        ],
-      },
-      request: { tool_name: MIMO_TOOL.Question },
-    }
-
-    // MiMo asks an MCP server's confirmation as a question that takes no free text,
-    // and it reads every answer but Accept and Decline as Cancel. The question card
-    // would offer free text and YOLO, which MiMo reads as Cancel, so the shared
-    // elicitation form draws it instead.
-    it('goes to the elicitation form, not the question card', () => {
-      expect(plugin.controls?.askUserQuestion?.isRequest(elicitation)).toBe(false)
-      expect(controlSurface({ requestId: 'r', agentId: 'a', payload: elicitation }, AgentProvider.MIMO_CODE, undefined)).toEqual({
-        kind: 'elicitation',
-        elicitation: {
-          mode: 'form',
-          server: 'docs',
-          message: 'Proceed?',
-          schema: { type: 'object', properties: {} },
+  const elicitation = {
+    type: OPENCODE_EVENT.QuestionAsked,
+    properties: {
+      id: 'que_3',
+      questions: [
+        {
+          key: 'mcp_elicitation',
+          header: 'docs',
+          question: 'docs\n\nProceed?',
+          options: [
+            { label: 'Accept', description: '' },
+            { label: 'Decline', description: '' },
+            { label: 'Cancel', description: '' },
+          ],
+          multiple: false,
+          custom: false,
         },
-      })
-    })
+      ],
+    },
+    request: { tool_name: MIMO_TOOL.Question },
+  }
 
-    it('states the saved answer in the elicitation words', () => {
-      const display = plugin.controls!.controlResponseDisplay!
-      const saved = (response: Record<string, unknown>) => ({
+  /** The row of one saved answer, as the transcript extracts it. */
+  function savedRow(request: Record<string, unknown>, response: Record<string, unknown>, prompt: ControlPrompt) {
+    return extractedRow(extractChatRow(AgentProvider.MIMO_CODE, input({}, null, AgentProvider.MIMO_CODE), {
+      kind: 'control_response',
+      response: {
         requestId: 'r',
         claimToken: 't',
-        request: elicitation,
+        request,
         response,
-      })
-      expect(display(saved(buildElicitationResponse('r', MCP_ELICITATION_ACTION.Accept, {})))).toEqual({ kind: 'label', text: 'Approved' })
-      expect(display(saved(buildElicitationResponse('r', MCP_ELICITATION_ACTION.Decline)))).toEqual({ kind: 'label', text: 'Rejected' })
-      expect(display(saved(buildElicitationResponse('r', MCP_ELICITATION_ACTION.Cancel)))).toEqual({ kind: 'label', text: 'Cancelled' })
-    })
+        prompt,
+      },
+    }))
+  }
 
-    it('leaves the saved answer to a question in the question words', () => {
-      const question = {
-        type: OPENCODE_EVENT.QuestionAsked,
-        properties: {
-          id: 'que_1',
-          questions: [
-            { question: 'Which?', header: 'Pick' },
-          ],
-        },
-        request: { tool_name: MIMO_TOOL.Question },
-      }
-      expect(plugin.controls!.controlResponseDisplay!({
-        requestId: 'r',
-        claimToken: 't',
-        request: question,
-        response: {
-          result: {
-            answers: [
-              ['A'],
-            ],
-          },
-        },
-      }))
-        .toEqual({ kind: 'label', text: 'Pick: A' })
+  // MiMo asks an MCP server's confirmation as a question that takes no free text. The
+  // Worker records it as an elicitation and answers it with the neutral elicitation
+  // envelope, and the shared form display states the answer in the elicitation words
+  // before MiMo's own display reads it.
+  it('states the saved answer of an MCP confirmation in the elicitation words', () => {
+    const prompt: ControlPrompt = {
+      kind: 'elicitation',
+      elicitation: {
+        mode: 'form',
+        server: 'docs',
+        message: 'Proceed?',
+        schema: { type: 'object', properties: {} },
+      },
+    }
+    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Accept, content: {} }), prompt)).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text: 'Approved' },
+    })
+    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Decline }), prompt)).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text: 'Rejected' },
+    })
+    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Cancel }), prompt)).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text: 'Cancelled' },
     })
   })
 
-  // MiMo's question tool is OpenCode's: the event, the answers and the rejection are
-  // the ones the shared OpenCode question wire reads and writes.
-  describe('a question', () => {
+  it('leaves the saved answer to a question in the question words', () => {
     const question = {
       type: OPENCODE_EVENT.QuestionAsked,
       properties: {
         id: 'que_1',
         questions: [
-          {
-            question: 'Which database?',
-            header: 'Database',
-            options: [
-              { label: 'SQLite' },
-              { label: 'Postgres' },
-            ],
-            multiple: true,
-          },
-          { question: 'Anything else?', options: [] },
+          { question: 'Which?', header: 'Pick' },
         ],
       },
       request: { tool_name: MIMO_TOOL.Question },
     }
-    const request = { requestId: 'mimo-question:que_1', agentId: 'a', payload: question }
-    const sentBody = (send: ReturnType<typeof vi.fn>): unknown => JSON.parse(new TextDecoder().decode(send.mock.calls[0]?.[0]))
-
-    it('folds MiMo\'s multiple onto multiSelect', () => {
-      const questions = plugin.controls!.askUserQuestion!.extractQuestions(question)
-      expect(questions).toHaveLength(2)
-      expect(questions[0]).toMatchObject({ question: 'Which database?', header: 'Database', multiSelect: true })
-      expect(questions[1]?.options).toEqual([])
-    })
-
-    it('answers each question with its choices or the typed words', async () => {
-      const send = vi.fn().mockResolvedValue(undefined)
-      const questions = plugin.controls!.askUserQuestion!.extractQuestions(question)
-      const state = createControlAnswerState({
-        selections: {
-          0: ['SQLite', 'Postgres'],
-        },
-        customTexts: { 1: '  more tests  ' },
-      })
-      await plugin.controls!.askUserQuestion!.sendAnswer(request, send, questions, state)
-      expect(sentBody(send)).toEqual({
-        jsonrpc: '2.0',
-        id: 'mimo-question:que_1',
-        result: {
-          answers: [
-            ['SQLite', 'Postgres'],
-            ['more tests'],
-          ],
-        },
-      })
-    })
-
-    // MiMo's reject route takes no body, so the reader's words cannot reach it.
-    it('dismisses the question, without the reader\'s words', async () => {
-      const send = vi.fn().mockResolvedValue(undefined)
-      await plugin.controls!.askUserQuestion!.sendReject(request, send, 'not now')
-      expect(sentBody(send)).toEqual({
-        jsonrpc: '2.0',
-        id: 'mimo-question:que_1',
-        result: { rejected: true },
-      })
+    const prompt: ControlPrompt = {
+      kind: 'question',
+      questions: [
+        { question: 'Which?', header: 'Pick', options: [] },
+      ],
+    }
+    expect(savedRow(question, {
+      result: {
+        answers: [
+          ['A'],
+        ],
+      },
+    }, prompt)).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text: 'Pick: A' },
     })
   })
 })

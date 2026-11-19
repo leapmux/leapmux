@@ -1,33 +1,79 @@
 import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
+import type { ControlAnswer, ControlAnswerHandler } from './controls/types'
+import type { ControlQuestion } from './model/question'
+import type { ControlDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
 import { batch, createRenderEffect, createRoot, createSignal, untrack } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { showWarnToast } from '~/components/common/Toast'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { AgentActivityState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import * as browserStorage from '~/lib/browserStorage'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
+import { approvePlanDecision, permissionDecision, questionDecision } from './controls/controlDecision'
 import { createControlAnswerState } from './controls/types'
-import { getCursorQuestions, sendCursorQuestionResponse } from './providers/cursor/askUserQuestion'
 
 // The asynchronous storage tier has no in-memory mirror, so these round-trips
 // need a database to round-trip through.
 useTestStorage()
 
-// The no-plugin bail surfaces a toast; mock the module so it doesn't reach the
-// runtime `window.ot` global (absent in jsdom) and we can assert it fired.
+// A failed answer to a request that is no longer shown surfaces a toast. Mock the
+// module so it does not reach the runtime `window.ot` global, which jsdom lacks.
 vi.mock('~/components/common/Toast', () => ({
   showWarnToast: vi.fn(),
   showInfoToast: vi.fn(),
   showErrorToast: vi.fn(),
 }))
 
-function setup(overrides?: Partial<ControlResponseHandlingProps>) {
+/** A question request with these questions, as the Worker sends it. */
+function questionRequest(requestId: string, questions: ControlQuestion[], fields: Partial<ControlRequest> = {}): ControlRequest {
+  return testControlRequest({
+    requestId,
+    agentId: 'test-agent',
+    prompt: { kind: 'question', questions },
+    ...fields,
+  })
+}
+
+/** A handler that records each answer and reports `completed` for it. */
+function answerHandler(completed: boolean | void = true) {
+  return vi.fn<ControlAnswerHandler>().mockResolvedValue(completed)
+}
+
+/** The answer of one call of a handler. */
+function answerOf(handler: ReturnType<typeof answerHandler>, call = 0): ControlAnswer {
+  const answer = handler.mock.calls[call]?.[1]
+  if (!answer)
+    throw new Error(`the handler received no answer in call ${call}`)
+  return answer
+}
+
+/** The decision of one call of a handler, or a failure for a call that recorded. */
+function decisionOf(handler: ReturnType<typeof answerHandler>, call = 0): ControlDecision {
+  const answer = answerOf(handler, call)
+  if (answer.kind !== 'decision')
+    throw new Error(`call ${call} recorded rather than decided`)
+  return answer.decision
+}
+
+/**
+ * Waits until the saved answers of the active request are restored.
+ *
+ * A fresh answer state starts ready, and the restore effect marks it not ready only
+ * when the root that holds the hook finishes its first run. One yield lets that run
+ * end, so the wait then observes the restore and not the initial state.
+ */
+async function answersRestored(state: ReturnType<typeof createControlAnswerState>) {
+  await Promise.resolve()
+  await vi.waitFor(() => expect(state.ready()).toBe(true))
+}
+
+function setup(overrides?: Partial<ControlResponseHandlingProps>, answerState = createControlAnswerState()) {
   const onSendMessage = vi.fn()
   const props: ControlResponseHandlingProps = {
     agentId: 'test-agent',
@@ -37,7 +83,7 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
   const resetEditorHeight = vi.fn()
   const result = useControlResponseHandling(
     props,
-    createControlAnswerState(),
+    answerState,
     () => undefined,
     resetEditorHeight,
   )
@@ -45,35 +91,28 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
 }
 
 describe('questions with selected answers only', () => {
-  it('applies native defaults when a question arrives after the composer mounts', async () => {
-    const request: ControlRequest = {
-      agentId: 'late-default-agent',
-      requestId: 'late-default-question',
-      claimToken: 'late-default-token',
-      payload: {
-        type: 'leapmux_ask',
-        id: 'late-default-question',
-        questions: [
-          {
-            id: 'style',
-            question: 'Choose a style',
-            multi: true,
-            allowEmpty: true,
-            allowCustomText: false,
-            initialSelections: ['0'],
-            options: [
-              { value: '0', label: 'Alpha' },
-            ],
-          },
-        ],
+  /** One multiple-choice question whose runtime selects option '0' by itself. */
+  function nativeDefaultQuestion(requestId: string, fields: Partial<ControlRequest>, options = [{ value: '0', label: 'Alpha' }]): ControlRequest {
+    return questionRequest(requestId, [
+      {
+        id: 'style',
+        question: 'Choose a style',
+        multiSelect: true,
+        allowEmpty: true,
+        allowCustomText: false,
+        initialSelections: ['0'],
+        options,
       },
-    }
+    ], fields)
+  }
+
+  it('applies native defaults when a question arrives after the composer mounts', async () => {
+    const request = nativeDefaultQuestion('late-default-question', { agentId: 'late-default-agent', claimToken: 'late-default-token' })
     const [requests, setRequests] = createSignal<ControlRequest[]>([])
     const state = createControlAnswerState()
     const { dispose } = createRoot((dispose) => {
       useControlResponseHandling({
-        agentId: request.agentId!,
-        agent: { agentProvider: AgentProvider.OH_MY_PI },
+        agentId: request.agentId,
         get controlRequests() { return requests() },
         questionsOpen: true,
         onSendMessage: vi.fn(),
@@ -121,29 +160,10 @@ describe('questions with selected answers only', () => {
       readFailure: true,
     },
   ])('restores native choice defaults for $label', async ({ label, draft, expected, readFailure }) => {
-    const request: ControlRequest = {
-      agentId: 'omp-default-agent',
-      requestId: `omp-default-${label}`,
-      claimToken: 'omp-default-token',
-      payload: {
-        type: 'leapmux_ask',
-        id: `omp-default-${label}`,
-        questions: [
-          {
-            id: 'style',
-            question: 'Choose a style',
-            multi: true,
-            allowEmpty: true,
-            allowCustomText: false,
-            initialSelections: ['0'],
-            options: [
-              { value: '0', label: 'Alpha' },
-              { value: '1', label: 'Beta' },
-            ],
-          },
-        ],
-      },
-    }
+    const request = nativeDefaultQuestion(`native-default-${label}`, { agentId: 'native-default-agent', claimToken: 'native-default-token' }, [
+      { value: '0', label: 'Alpha' },
+      { value: '1', label: 'Beta' },
+    ])
     if (draft !== undefined) {
       localStorageStore(`${PREFIX_CONTROL_STATE}${request.agentId}:${request.requestId}:${request.claimToken}`, {
         selections: { 0: draft },
@@ -158,8 +178,7 @@ describe('questions with selected answers only', () => {
     let restoring = false
     const { dispose } = createRoot((dispose) => {
       useControlResponseHandling({
-        agentId: request.agentId!,
-        agent: { agentProvider: AgentProvider.OH_MY_PI },
+        agentId: request.agentId,
         controlRequests: [request],
         questionsOpen: true,
         onSendMessage: vi.fn(),
@@ -193,26 +212,19 @@ describe('questions with selected answers only', () => {
       failedRead?.mockRestore()
     }
   })
+
+  const selectOnly: ControlQuestion[] = [
+    {
+      question: 'Choose',
+      allowCustomText: false,
+      options: [
+        { value: 'first', label: 'First' },
+      ],
+    },
+  ]
+
   it('restores a selected answer without hidden custom text', async () => {
-    const request: ControlRequest = {
-      agentId: 'test-agent',
-      requestId: 'cursor-restored',
-      claimToken: 'cursor-token',
-      payload: {
-        method: 'cursor/ask_question',
-        params: {
-          questions: [
-            {
-              id: 'q',
-              prompt: 'Choose',
-              options: [
-                { id: 'first', label: 'First' },
-              ],
-            },
-          ],
-        },
-      },
-    }
+    const request = questionRequest('cursor-restored', selectOnly, { claimToken: 'cursor-token', agentProvider: AgentProvider.CURSOR })
     localStorageStore(`${PREFIX_CONTROL_STATE}test-agent:cursor-restored:cursor-token`, {
       selections: {
         0: ['first'],
@@ -237,20 +249,15 @@ describe('questions with selected answers only', () => {
       }))
       expect(handling.editorPurpose()).toBe('none')
       expect(state.customTexts()[0] ?? '').toBe('')
-      const send = vi.fn().mockResolvedValue(undefined)
-      await sendCursorQuestionResponse(send, request.requestId, getCursorQuestions(request.payload), state)
-      expect(JSON.parse(new TextDecoder().decode(send.mock.calls[0]![0]))).toMatchObject({
-        result: {
-          outcome: {
-            answers: [
-              {
-                questionId: 'q',
-                selectedOptionIds: ['first'],
-              },
-            ],
-          },
+      const decision = questionDecision(state, { questions: selectOnly })
+      expect(decision.kind.case === 'question'
+        ? decision.kind.value.answers
+        : []).toMatchObject([
+        {
+          selected: ['first'],
+          customText: '',
         },
-      })
+      ])
     }
     finally {
       dispose()
@@ -258,33 +265,16 @@ describe('questions with selected answers only', () => {
   })
 
   it('offers no custom editor and refuses an indirect text submission', async () => {
-    const request: ControlRequest = {
-      agentId: 'test-agent',
-      requestId: 'cursor-choice',
-      payload: {
-        method: 'cursor/ask_question',
-        params: {
-          questions: [
-            {
-              id: 'q',
-              prompt: 'Choose',
-              options: [
-                { id: 'first', label: 'First' },
-              ],
-            },
-          ],
-        },
-      },
-    }
+    const request = questionRequest('cursor-choice', selectOnly, { agentProvider: AgentProvider.CURSOR })
     const state = createControlAnswerState()
-    const respond = vi.fn().mockResolvedValue(undefined)
+    const respond = answerHandler()
     const { handling, dispose } = createRoot(dispose => ({
       dispose,
       handling: useControlResponseHandling({
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CURSOR },
         controlRequests: [request],
-        onControlResponse: respond,
+        onControlAnswer: respond,
         onSendMessage: vi.fn(),
       }, state, () => undefined, vi.fn()),
     }))
@@ -333,8 +323,9 @@ function makeAttachment(overrides: Partial<FileAttachment> = {}): FileAttachment
   }
 }
 
+/** A permission request with LeapMux's own Allow and Deny, as the Worker reads an unknown tool. */
 function makeControlRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { tool_name: 'Bash', tool_input: {} }): ControlRequest {
-  return { requestId, agentId, payload }
+  return testControlRequest({ requestId, agentId, payload })
 }
 
 describe('handleSend', () => {
@@ -474,29 +465,17 @@ describe('handleSend', () => {
 // writes whatever the state holds.
 describe('restoring saved answers', () => {
   /** A control request whose answers this hook will persist under its own key. */
-  function askRequest(requestId: string, claimToken: string): ControlRequest {
-    return {
-      requestId,
-      agentId: 'test-agent',
-      claimToken,
-      payload: {
-        request: {
-          tool_name: 'AskUserQuestion',
-          input: {
-            questions: [
-              {
-                header: 'Task',
-                question: 'Pick a task',
-                options: [
-                  { label: 'Build' },
-                  { label: 'Test' },
-                ],
-              },
-            ],
-          },
-        },
-      },
-    }
+  function askRequest(requestId: string, claimToken: string, questions: ControlQuestion[] = [
+    {
+      header: 'Task',
+      question: 'Pick a task',
+      options: [
+        { label: 'Build' },
+        { label: 'Test' },
+      ],
+    },
+  ]): ControlRequest {
+    return questionRequest(requestId, questions, { claimToken })
   }
 
   function answerKey(request: ControlRequest): AsyncLocalKey {
@@ -504,28 +483,20 @@ describe('restoring saved answers', () => {
   }
 
   it('preserves a valid later page and its permitted custom answer', async () => {
-    const request = askRequest('later-page', 'later-token')
-    request.payload = {
-      request: {
-        tool_name: 'AskUserQuestion',
-        input: {
-          questions: [
-            {
-              question: 'First question',
-              options: [
-                { label: 'Build' },
-              ],
-            },
-            {
-              question: 'Second question',
-              options: [
-                { label: 'Test' },
-              ],
-            },
-          ],
-        },
+    const request = askRequest('later-page', 'later-token', [
+      {
+        question: 'First question',
+        options: [
+          { label: 'Build' },
+        ],
       },
-    }
+      {
+        question: 'Second question',
+        options: [
+          { label: 'Test' },
+        ],
+      },
+    ])
     localStorageStore(answerKey(request), {
       selections: {
         0: ['Build'],
@@ -613,7 +584,7 @@ describe('restoring saved answers', () => {
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [request],
         onSendMessage: vi.fn(),
-        onControlResponse: vi.fn().mockResolvedValue(true),
+        onControlAnswer: answerHandler(),
       }, state, () => undefined, vi.fn()),
     }))
     try {
@@ -761,26 +732,43 @@ describe('restoring saved answers', () => {
 })
 
 describe('handleControlSend', () => {
-  it('keeps plan settings with the captured request through the composer handler', async () => {
-    const request = makeControlRequest('plan', 'test-agent')
-    request.payload = {
-      request: { tool_name: 'ExitPlanMode' },
-    }
-    const onControlResponse = vi.fn().mockResolvedValue(true)
+  it('sends a decision for the captured request through the answer handler', async () => {
+    const request = testControlRequest({
+      requestId: 'plan',
+      agentId: 'test-agent',
+      prompt: { kind: 'plan', text: '1. Do it' },
+    })
+    const onControlAnswer = answerHandler()
     const { result, dispose } = createRoot(dispose => ({
       dispose,
       result: setup({
         controlRequests: [request],
-        onControlResponse,
+        onControlAnswer,
       }).result,
     }))
     try {
-      const bytes = new TextEncoder().encode('{"response":{"request_id":"plan","response":{"behavior":"allow"}}}')
-      const options = {
-        planApproval: { permissionMode: '', clearContext: false },
-      }
-      await result.respondTo(request)(bytes, options)
-      expect(onControlResponse).toHaveBeenCalledExactlyOnceWith(request, bytes, options)
+      const decision = approvePlanDecision({ permissionMode: '', clearContext: false })
+      await result.decideFor(request)(decision)
+      expect(onControlAnswer).toHaveBeenCalledExactlyOnceWith(request, { kind: 'decision', decision })
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('records through the answer handler with no decision', async () => {
+    const request = makeControlRequest('record', 'test-agent')
+    const onControlAnswer = answerHandler()
+    const { result, dispose } = createRoot(dispose => ({
+      dispose,
+      result: setup({
+        controlRequests: [request],
+        onControlAnswer,
+      }).result,
+    }))
+    try {
+      await result.recordResponse(request)
+      expect(onControlAnswer).toHaveBeenCalledExactlyOnceWith(request, { kind: 'record' })
     }
     finally {
       dispose()
@@ -815,13 +803,13 @@ describe('handleControlSend', () => {
       result: useControlResponseHandling({
         get agentId() { return agentId() },
         get controlRequests() { return requests() },
-        onControlResponse: () => delivery,
+        onControlAnswer: () => delivery,
         onSendMessage: vi.fn(),
       }, state, () => undefined, reset),
     }))
     try {
       await vi.waitFor(() => expect(state.choices()).toEqual({ scope: 'once' }))
-      const sending = result.respondTo(first)(new Uint8Array())
+      const sending = result.decideFor(first)(permissionDecision('leapmux:allow'))
       batch(() => {
         setAgentId('agent-B')
         setRequests([second])
@@ -849,8 +837,8 @@ describe('handleControlSend', () => {
       resolveDelivery = resolve
       rejectDelivery = reject
     })
-    const onControlResponse = vi.fn().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
-    const request: ControlRequest = {
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
+    const request = testControlRequest({
       requestId: 'pending',
       agentId: 'test-agent',
       agentProvider: AgentProvider.CLAUDE_CODE,
@@ -861,7 +849,7 @@ describe('handleControlSend', () => {
           input: { command: 'pwd' },
         },
       },
-    }
+    })
     const key: AsyncLocalKey = `${PREFIX_CONTROL_STATE}test-agent:pending:token`
     const state = createControlAnswerState()
     const reset = vi.fn()
@@ -870,7 +858,7 @@ describe('handleControlSend', () => {
       result: useControlResponseHandling({
         agentId: 'test-agent',
         controlRequests: [request],
-        onControlResponse,
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }, state, () => undefined, reset),
     }))
@@ -917,35 +905,23 @@ describe('handleControlSend', () => {
         0: ['Build'],
       },
     })
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = answerHandler()
     const key = `${PREFIX_CONTROL_STATE}test-agent:ask-1:tok-1`
     const props: ControlResponseHandlingProps = {
       agentId: 'test-agent',
       agent: { agentProvider: AgentProvider.CLAUDE_CODE },
       controlRequests: [
-        {
-          requestId: 'ask-1',
-          agentId: 'test-agent',
-          claimToken: 'tok-1',
-          payload: {
-            request: {
-              tool_name: 'AskUserQuestion',
-              input: {
-                questions: [
-                  {
-                    header: 'Task',
-                    question: 'Pick a task',
-                    options: [
-                      { label: 'Build' },
-                    ],
-                  },
-                ],
-              },
-            },
+        questionRequest('ask-1', [
+          {
+            header: 'Task',
+            question: 'Pick a task',
+            options: [
+              { label: 'Build' },
+            ],
           },
-        },
+        ], { claimToken: 'tok-1' }),
       ],
-      onControlResponse,
+      onControlAnswer,
       onSendMessage: vi.fn(),
     }
     let result!: ReturnType<typeof useControlResponseHandling>
@@ -964,15 +940,15 @@ describe('handleControlSend', () => {
 
     await batch(() => result.handleControlSend(''))
 
-    expect(onControlResponse).toHaveBeenCalledOnce()
+    expect(onControlAnswer).toHaveBeenCalledOnce()
     expect(await localStorageLoad(key)).toBeUndefined()
 
     dispose()
   })
 
-  it('uses Claude AskUserQuestion response format keyed by question text', async () => {
+  it('sends the answers of a question as a question decision', async () => {
     createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const onControlAnswer = answerHandler()
       const answerState = createControlAnswerState()
       answerState.setSelections({
         0: ['Build'],
@@ -981,72 +957,102 @@ describe('handleControlSend', () => {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [
-          makeControlRequest('req-1', 'test-agent', {
-            request: {
-              tool_name: 'AskUserQuestion',
-              input: {
-                questions: [
-                  {
-                    header: 'Task',
-                    question: 'Pick a task',
-                    options: [
-                      { label: 'Build' },
-                      { label: 'Test' },
-                    ],
-                  },
-                ],
-              },
+          questionRequest('req-1', [
+            {
+              header: 'Task',
+              question: 'Pick a task',
+              options: [
+                { label: 'Build' },
+                { label: 'Test' },
+              ],
             },
-          }),
+          ]),
         ],
-        onControlResponse,
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }
       const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
 
       result.handleControlSend('')
 
-      expect(onControlResponse).toHaveBeenCalledOnce()
-      const sendCall = onControlResponse.mock.calls[0]
-      expect(sendCall).toBeDefined()
-      const [, bytes] = sendCall ?? []
-      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
-      expect(parsed).toMatchObject({
-        type: 'control_response',
-        response: {
-          request_id: 'req-1',
-          response: {
-            behavior: 'allow',
-            updatedInput: {
-              answers: {
-                'Pick a task': 'Build',
-              },
-            },
-          },
+      expect(onControlAnswer).toHaveBeenCalledOnce()
+      const decision = decisionOf(onControlAnswer)
+      expect(decision.kind.case === 'question'
+        ? decision.kind.value.answers.map(({ selected, customText }) => ({ selected, customText }))
+        : undefined).toEqual([
+        {
+          selected: ['Build'],
+          customText: '',
         },
-      })
-      expect(parsed.response.response.updatedInput.answers).not.toHaveProperty('Task')
+      ])
       dispose()
     })
   })
 
-  it('threads the active request\'s per-instance claimToken to onControlResponse', async () => {
+  // The user's own requirement: on a multiple choice, choosing A and typing X answers
+  // A AND X, so the editor text joins the chosen options instead of replacing them.
+  it('sends the chosen options and the typed text of a multiple choice together', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const onControlAnswer = answerHandler()
+        const answerState = createControlAnswerState({
+          selections: {
+            0: ['Red'],
+          },
+        })
+        const { result } = setup({
+          controlRequests: [
+            questionRequest('colors', [
+              {
+                question: 'Which colors?',
+                multiSelect: true,
+                options: [
+                  { label: 'Red' },
+                  { label: 'Blue' },
+                ],
+              },
+            ]),
+          ],
+          onControlAnswer,
+        }, answerState)
+        await answersRestored(answerState)
+        expect(result.editorTextReplacesOptions()).toBe(false)
+
+        await result.handleControlSend('Green')
+
+        const decision = decisionOf(onControlAnswer)
+        expect(decision.kind.case === 'question'
+          ? decision.kind.value.answers.map(({ selected, customText }) => ({ selected, customText }))
+          : undefined).toEqual([
+          {
+            selected: ['Red'],
+            customText: 'Green',
+          },
+        ])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('threads the active request\'s per-instance claimToken to onControlAnswer', async () => {
     createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const onControlAnswer = answerHandler()
       const props: ControlResponseHandlingProps = {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [
-          {
+          testControlRequest({
             requestId: 'req-1',
             agentId: 'test-agent',
             payload: {
               request: { tool_name: 'Bash', tool_input: {} },
             },
             claimToken: 'instance-token-7',
-          },
+          }),
         ],
-        onControlResponse,
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }
       const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
@@ -1056,50 +1062,47 @@ describe('handleControlSend', () => {
       // The answer carries the whole request, so its claim token is the answered
       // instance's own. The worker's idempotency claim then keys on THIS instance,
       // and no store re-derivation can pair it with a sibling that reuses the id.
-      expect(onControlResponse).toHaveBeenCalledOnce()
+      expect(onControlAnswer).toHaveBeenCalledOnce()
       // Called once above; `?.` is the type-level guard alone.
-      expect(onControlResponse.mock.calls[0]?.[0].claimToken).toBe('instance-token-7')
+      expect(onControlAnswer.mock.calls[0]?.[0].claimToken).toBe('instance-token-7')
       dispose()
     })
   })
 
-  it('sends Codex approval feedback after the native cancel response', async () => {
+  // The typed reason goes INSIDE the refusal. The Worker forwards it to a runtime that
+  // takes no reason, so the composer sends no message of its own.
+  it('refuses a permission with the typed text as the reason, and sends no message', async () => {
     await createRoot(async (dispose) => {
       try {
-        let finishResponse!: () => void
-        const onControlResponse = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
-          finishResponse = resolve
-        }))
+        const onControlAnswer = answerHandler()
         const onSendMessage = vi.fn()
-        const onSendControlFeedback = vi.fn()
-        const props: ControlResponseHandlingProps = {
-          agentId: 'test-agent',
+        const { result } = setup({
           agent: { agentProvider: AgentProvider.CODEX },
           controlRequests: [
-            makeControlRequest('7', 'test-agent', {
-              method: 'item/commandExecution/requestApproval',
-              params: {
-                availableDecisions: ['accept', 'cancel'],
+            testControlRequest({
+              requestId: '7',
+              agentId: 'test-agent',
+              prompt: {
+                kind: 'permission',
+                permission: {
+                  options: [
+                    { optionId: 'accept', kind: 'allow_once', name: 'Allow' },
+                    { optionId: 'cancel', kind: 'reject_once', name: 'Cancel' },
+                  ],
+                },
               },
             }),
           ],
-          onControlResponse,
+          onControlAnswer,
           onSendMessage,
-          onSendControlFeedback,
-        }
-        const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
-
-        result.handleControlSend('Use a safer command')
-
-        const sendCall = onControlResponse.mock.calls[0]
-        expect(sendCall).toBeDefined()
-        const [, bytes] = sendCall ?? []
-        expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
-          result: { decision: 'cancel' },
         })
-        expect(onSendMessage).not.toHaveBeenCalled()
-        finishResponse()
-        await vi.waitFor(() => expect(onSendControlFeedback).toHaveBeenCalledWith('Use a safer command'))
+
+        await result.handleControlSend('Use a safer command')
+
+        const decision = decisionOf(onControlAnswer)
+        expect(decision.kind.case === 'permission'
+          ? decision.kind.value
+          : undefined).toMatchObject({ optionId: 'cancel', feedback: 'Use a safer command' })
         expect(onSendMessage).not.toHaveBeenCalled()
       }
       finally {
@@ -1108,35 +1111,61 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('sends Pi plan feedback only after the native stay decision', async () => {
+  it('approves a permission once for an empty send', async () => {
     await createRoot(async (dispose) => {
       try {
-        let finishResponse!: () => void
-        const onControlResponse = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
-          finishResponse = resolve
-        }))
-        const onSendControlFeedback = vi.fn()
+        const onControlAnswer = answerHandler()
+        const { result } = setup({
+          controlRequests: [
+            makeControlRequest('req-1', 'test-agent'),
+          ],
+          onControlAnswer,
+        })
+
+        await result.handleControlSend('')
+
+        const decision = decisionOf(onControlAnswer)
+        expect(decision.kind.case === 'permission'
+          ? decision.kind.value
+          : undefined).toMatchObject({ optionId: 'leapmux:allow', feedback: '' })
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('refuses a plan with the typed text, and sends no message', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const onControlAnswer = answerHandler()
+        const onSendMessage = vi.fn()
         const { result } = setup({
           agent: { agentProvider: AgentProvider.PI },
           controlRequests: [
-            makeControlRequest('plan', 'test-agent', {
-              type: 'extension_ui_request',
-              method: 'select',
-              title: 'Proposed plan ready. What next?',
-              options: ['Implement here', 'Start fresh and implement', 'Stay in Plan mode'],
+            testControlRequest({
+              requestId: 'plan',
+              agentId: 'test-agent',
+              prompt: {
+                kind: 'plan',
+                text: '1. Do it',
+                choices: [
+                  { id: 'stay', label: 'Stay in Plan mode', effect: 'refuse' },
+                ],
+              },
             }),
           ],
-          onControlResponse,
-          onSendControlFeedback,
+          onControlAnswer,
+          onSendMessage,
         })
-        result.handleControlSend('Revise the second step.')
-        const sendCall = onControlResponse.mock.calls[0]
-        expect(sendCall).toBeDefined()
-        const [, bytes] = sendCall ?? []
-        expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ type: 'extension_ui_response', id: 'plan', value: 'Stay in Plan mode' })
-        expect(onSendControlFeedback).not.toHaveBeenCalled()
-        finishResponse()
-        await vi.waitFor(() => expect(onSendControlFeedback).toHaveBeenCalledWith('Revise the second step.'))
+
+        await result.handleControlSend('Revise the second step.')
+
+        const decision = decisionOf(onControlAnswer)
+        expect(decision.kind.case === 'plan'
+          ? decision.kind.value
+          : undefined).toMatchObject({ approve: false, feedback: 'Revise the second step.', choiceId: '' })
+        expect(onSendMessage).not.toHaveBeenCalled()
       }
       finally {
         dispose()
@@ -1144,33 +1173,45 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('does not duplicate Codex plan feedback that the worker forwards', async () => {
+  it('sends nothing from the composer for a permission that offers no refusal', async () => {
     await createRoot(async (dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const onSendMessage = vi.fn()
-      const props: ControlResponseHandlingProps = {
-        agentId: 'test-agent',
-        agent: { agentProvider: AgentProvider.CODEX },
-        controlRequests: [
-          makeControlRequest('plan-7', 'test-agent', {
-            request: { tool_name: 'CodexPlanModePrompt', input: {} },
-          }),
-        ],
-        onControlResponse,
-        onSendMessage,
+      try {
+        const onControlAnswer = answerHandler()
+        const answerState = createControlAnswerState()
+        const { result } = setup({
+          controlRequests: [
+            testControlRequest({
+              requestId: 'allow-only',
+              agentId: 'test-agent',
+              prompt: {
+                kind: 'permission',
+                permission: {
+                  options: [
+                    { optionId: 'ok', kind: 'allow_once' },
+                  ],
+                },
+              },
+            }),
+          ],
+          onControlAnswer,
+        }, answerState)
+        await answersRestored(answerState)
+
+        expect(result.handleControlSend('no')).toBe(false)
+        expect(onControlAnswer).not.toHaveBeenCalled()
+        // The same request takes an empty send, which proves that the refusal above
+        // comes from the missing option and not from a request that is not ready.
+        await expect(result.handleControlSend('')).resolves.toBe(true)
+        expect(decisionOf(onControlAnswer).kind.value).toMatchObject({ optionId: 'ok' })
       }
-      const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
-
-      result.handleControlSend('Revise the plan')
-
-      await vi.waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
-      expect(onSendMessage).not.toHaveBeenCalled()
-      dispose()
+      finally {
+        dispose()
+      }
     })
   })
 
   it('does not pass attachments to control responses', async () => {
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = answerHandler()
     const attachments = [
       makeAttachment(),
     ]
@@ -1181,7 +1222,7 @@ describe('handleControlSend', () => {
       controlRequests: [
         makeControlRequest('req-1', 'test-agent'),
       ],
-      onControlResponse,
+      onControlAnswer,
       onSendMessage,
     }
     const resetEditorHeight = vi.fn()
@@ -1198,135 +1239,32 @@ describe('handleControlSend', () => {
     result.handleControlSend('')
     // onSendMessage should NOT have been called (it's a control response, not a user message).
     expect(onSendMessage).not.toHaveBeenCalled()
-    // onControlResponse should have been called (the allow response).
-    expect(onControlResponse).toHaveBeenCalled()
+    // onControlAnswer should have been called (the allow decision).
+    expect(onControlAnswer).toHaveBeenCalled()
   })
 
-  it('refuses to send a control response when the agent provider has no plugin', async () => {
-    // No agent provider -> no plugin. We removed the Claude fallback, so rather
-    // than encoding the response through the wrong provider's builder we bail
-    // (returning false to keep the editor content), surface a toast so the send
-    // is not a silent no-op, and send nothing.
-    vi.mocked(showWarnToast).mockClear()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+  // The Worker reads every provider's request, so the composer answers a request of an
+  // agent whose provider the browser does not know yet.
+  it('answers a request of an agent whose provider is not known yet', async () => {
+    const onControlAnswer = answerHandler()
     const props: ControlResponseHandlingProps = {
       agentId: 'test-agent',
       controlRequests: [
         makeControlRequest('req-1', 'test-agent'),
       ],
-      onControlResponse,
+      onControlAnswer,
       onSendMessage: vi.fn(),
     }
     const answerState = createControlAnswerState()
     const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
     await vi.waitFor(() => expect(answerState.ready()).toBe(true))
-    expect(result.handleControlSend('')).toBe(false)
-    expect(onControlResponse).not.toHaveBeenCalled()
-    expect(showWarnToast).toHaveBeenCalledWith(expect.stringContaining('unsupported agent provider'))
+    await expect(result.handleControlSend('')).resolves.toBe(true)
+    expect(onControlAnswer).toHaveBeenCalledOnce()
   })
 
-  it('uses Pi-native extension_ui_response values for select prompts', async () => {
+  it('advances multi-question requests instead of submitting incomplete answers', async () => {
     createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const answerState = createControlAnswerState()
-      answerState.setSelections({
-        0: ['Block'],
-      })
-      const props: ControlResponseHandlingProps = {
-        agentId: 'test-agent',
-        agent: { agentProvider: AgentProvider.PI },
-        controlRequests: [
-          makeControlRequest('req-1', 'test-agent', {
-            type: 'extension_ui_request',
-            id: 'req-1',
-            method: 'select',
-            title: 'Allow dangerous command?',
-            options: ['Allow', 'Block'],
-          }),
-        ],
-        onControlResponse,
-        onSendMessage: vi.fn(),
-      }
-      const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
-
-      result.handleControlSend('')
-
-      expect(onControlResponse).toHaveBeenCalledOnce()
-      const sendCall = onControlResponse.mock.calls[0]
-      expect(sendCall).toBeDefined()
-      const [, bytes] = sendCall ?? []
-      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
-      expect(parsed).toMatchObject({
-        type: 'extension_ui_response',
-        id: 'req-1',
-        value: 'Block',
-      })
-      dispose()
-    })
-  })
-
-  it.each(['7', '007', '9007199254740993'])('preserves worker control ID %s in Codex question responses', (requestId) => {
-    createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const answerState = createControlAnswerState()
-      answerState.setSelections({
-        0: ['Build'],
-      })
-      const props: ControlResponseHandlingProps = {
-        agentId: 'test-agent',
-        agent: { agentProvider: AgentProvider.CODEX },
-        controlRequests: [
-          makeControlRequest(requestId, 'test-agent', {
-            method: 'item/tool/requestUserInput',
-            params: {
-              questions: [
-                {
-                  id: 'q1',
-                  header: 'Action',
-                  question: 'What next?',
-                  options: [
-                    { label: 'Build' },
-                  ],
-                },
-              ],
-            },
-          }),
-        ],
-        onControlResponse,
-        onSendMessage: vi.fn(),
-      }
-      const result = useControlResponseHandling(
-        props,
-        answerState,
-        () => undefined,
-        vi.fn(),
-      )
-
-      result.handleControlSend('')
-
-      expect(onControlResponse).toHaveBeenCalledOnce()
-      const sendCall = onControlResponse.mock.calls[0]
-      expect(sendCall).toBeDefined()
-      const [, bytes] = sendCall ?? []
-      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
-      expect(parsed).toMatchObject({
-        jsonrpc: '2.0',
-        id: requestId,
-        result: {
-          answers: {
-            q1: {
-              answers: ['Build'],
-            },
-          },
-        },
-      })
-      dispose()
-    })
-  })
-
-  it('advances Codex multi-question requests instead of submitting incomplete answers', async () => {
-    createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const onControlAnswer = answerHandler()
       const answerState = createControlAnswerState()
       const editorContentRef = {
         get: () => 'Build',
@@ -1336,31 +1274,24 @@ describe('handleControlSend', () => {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CODEX },
         controlRequests: [
-          makeControlRequest('7', 'test-agent', {
-            method: 'item/tool/requestUserInput',
-            params: {
-              questions: [
-                {
-                  id: 'q1',
-                  header: 'Action',
-                  question: 'What next?',
-                  options: [
-                    { label: 'Build' },
-                  ],
-                },
-                {
-                  id: 'q2',
-                  header: 'Env',
-                  question: 'Where?',
-                  options: [
-                    { label: 'Dev' },
-                  ],
-                },
+          questionRequest('7', [
+            {
+              header: 'Action',
+              question: 'What next?',
+              options: [
+                { label: 'Build' },
               ],
             },
-          }),
+            {
+              header: 'Env',
+              question: 'Where?',
+              options: [
+                { label: 'Dev' },
+              ],
+            },
+          ]),
         ],
-        onControlResponse,
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }
       const result = useControlResponseHandling(
@@ -1370,19 +1301,20 @@ describe('handleControlSend', () => {
         vi.fn(),
       )
 
+      expect(result.editorPurpose()).toBe('answer')
       const submitted = result.handleControlSend('Build')
 
       expect(submitted).toBe(false)
       expect(answerState.currentPage()).toBe(1)
       expect(editorContentRef.set).toHaveBeenCalledWith('')
-      expect(onControlResponse).not.toHaveBeenCalled()
+      expect(onControlAnswer).not.toHaveBeenCalled()
       dispose()
     })
   })
 
-  it('uses OpenCode-native question responses', async () => {
+  it('sends a selection on one page and typed text on another', async () => {
     createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const onControlAnswer = answerHandler()
       const answerState = createControlAnswerState()
       answerState.setSelections({
         0: ['Build'],
@@ -1392,42 +1324,24 @@ describe('handleControlSend', () => {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.OPENCODE },
         controlRequests: [
-          makeControlRequest('que-1', 'test-agent', {
-            type: 'form.created',
-            data: {
-              form: {
-                id: 'frm_1',
-                sessionID: 'ses_1',
-                metadata: { kind: 'question' },
-                fields: [
-                  {
-                    key: 'q0',
-                    type: 'string',
-                    title: 'Task',
-                    description: 'Pick a task',
-                    required: true,
-                    custom: true,
-                    options: [
-                      { value: 'Build', label: 'Build' },
-                    ],
-                  },
-                  {
-                    key: 'q1',
-                    type: 'string',
-                    title: 'Env',
-                    description: 'Pick an env',
-                    required: true,
-                    custom: true,
-                    options: [
-                      { value: 'Dev', label: 'Dev' },
-                    ],
-                  },
-                ],
-              },
+          questionRequest('que-1', [
+            {
+              header: 'Task',
+              question: 'Pick a task',
+              options: [
+                { label: 'Build' },
+              ],
             },
-          }),
+            {
+              header: 'Env',
+              question: 'Pick an env',
+              options: [
+                { label: 'Dev' },
+              ],
+            },
+          ]),
         ],
-        onControlResponse,
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }
       const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
@@ -1435,81 +1349,17 @@ describe('handleControlSend', () => {
       expect(result.editorPurpose()).toBe('answer')
       result.handleControlSend('')
 
-      expect(onControlResponse).toHaveBeenCalledOnce()
-      const sendCall = onControlResponse.mock.calls[0]
-      expect(sendCall).toBeDefined()
-      const [, bytes] = sendCall ?? []
-      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
-      expect(parsed).toMatchObject({
-        jsonrpc: '2.0',
-        id: 'que-1',
-        result: {
-          answer: { q0: 'Build', q1: 'Dev' },
+      expect(onControlAnswer).toHaveBeenCalledOnce()
+      const decision = decisionOf(onControlAnswer)
+      expect(decision.kind.case === 'question'
+        ? decision.kind.value.answers.map(({ selected, customText }) => ({ selected, customText }))
+        : undefined).toEqual([
+        {
+          selected: ['Build'],
+          customText: '',
         },
-      })
-      dispose()
-    })
-  })
-
-  it('advances OpenCode multi-question requests instead of submitting incomplete answers', async () => {
-    createRoot((dispose) => {
-      const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const answerState = createControlAnswerState()
-      const editorContentRef = {
-        get: () => 'Build',
-        set: vi.fn(),
-      }
-      const props: ControlResponseHandlingProps = {
-        agentId: 'test-agent',
-        agent: { agentProvider: AgentProvider.OPENCODE },
-        controlRequests: [
-          makeControlRequest('que-1', 'test-agent', {
-            type: 'form.created',
-            data: {
-              form: {
-                id: 'frm_1',
-                sessionID: 'ses_1',
-                metadata: { kind: 'question' },
-                fields: [
-                  {
-                    key: 'q0',
-                    type: 'string',
-                    title: 'Task',
-                    description: 'Pick a task',
-                    required: true,
-                    custom: true,
-                    options: [
-                      { value: 'Build', label: 'Build' },
-                    ],
-                  },
-                  {
-                    key: 'q1',
-                    type: 'string',
-                    title: 'Env',
-                    description: 'Pick an env',
-                    required: true,
-                    custom: true,
-                    options: [
-                      { value: 'Dev', label: 'Dev' },
-                    ],
-                  },
-                ],
-              },
-            },
-          }),
-        ],
-        onControlResponse,
-        onSendMessage: vi.fn(),
-      }
-      const result = useControlResponseHandling(props, answerState, () => editorContentRef, vi.fn())
-
-      expect(result.editorPurpose()).toBe('answer')
-      const submitted = result.handleControlSend('Build')
-
-      expect(submitted).toBe(false)
-      expect(answerState.currentPage()).toBe(1)
-      expect(editorContentRef.set).toHaveBeenCalledWith('')
-      expect(onControlResponse).not.toHaveBeenCalled()
+        { selected: [], customText: 'Dev' },
+      ])
       dispose()
     })
   })
@@ -1530,8 +1380,7 @@ describe('handleControlSend', () => {
  * FailedPrecondition.
  */
 describe('showInterrupt', () => {
-  const pendingRequest = () =>
-    ({ requestId: 'r1', payload: {}, agentId: 'test-agent' } as unknown as ControlRequest)
+  const pendingRequest = () => testControlRequest({ requestId: 'r1', agentId: 'test-agent' })
 
   it('shows the button while the agent works and nothing is being asked', async () => {
     createRoot((dispose) => {
@@ -1645,32 +1494,25 @@ describe('showInterrupt', () => {
 })
 
 // Both halves of the banner take these two, so the composer and the banner
-// cannot classify the same request differently, and one graph answers all three
-// readers. See `createControlSurface`.
+// cannot read the same request differently, and one graph answers all three
+// readers.
 describe('activeControlSurface and activeControlProvider', () => {
-  const question = {
-    request: {
-      tool_name: 'AskUserQuestion',
-      input: {
-        questions: [
-          {
-            header: 'Task',
-            question: 'Pick a task',
-            options: [
-              { label: 'Build' },
-            ],
-          },
-        ],
-      },
+  const question = (): ControlRequest => questionRequest('req-1', [
+    {
+      header: 'Task',
+      question: 'Pick a task',
+      options: [
+        { label: 'Build' },
+      ],
     },
-  }
+  ])
 
-  it('classifies the active request and reports its provider', () => {
+  it('reads the prompt of the active request and reports its provider', () => {
     createRoot((dispose) => {
       const { result } = setup({
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [
-          makeControlRequest('req-1', 'test-agent', question),
+          question(),
         ],
       })
       expect(result.activeControlProvider()).toBe(AgentProvider.CLAUDE_CODE)
@@ -1680,7 +1522,7 @@ describe('activeControlSurface and activeControlProvider', () => {
     })
   })
 
-  it('reads a payload no shared form answers as a permission', () => {
+  it('reads the generic prompt of an unknown request as a permission', () => {
     createRoot((dispose) => {
       const { result } = setup({
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
@@ -1721,12 +1563,12 @@ describe('activeControlSurface and activeControlProvider', () => {
 
   // ONE graph: both halves of the banner and the composer read the same memo,
   // so a read from three places recomputes nothing.
-  it('classifies once for every reader of the same request', () => {
+  it('answers every reader of the same request with one prompt', () => {
     createRoot((dispose) => {
       const { result } = setup({
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [
-          makeControlRequest('req-1', 'test-agent', question),
+          question(),
         ],
       })
       expect(result.activeControlSurface()).toBe(result.activeControlSurface())
@@ -1795,10 +1637,22 @@ describe('activeControlRequest', () => {
   // swap, and the new prompt then opens with the answers the user gave for the
   // instance that went away.
   it('resets the ask state for a sibling that reuses the request id', async () => {
-    const first = makeControlRequest('req-1', 'agent-A', { tool_name: 'AskUserQuestion', tool_input: {} })
-    first.claimToken = 'claim-1'
-    const second = makeControlRequest('req-1', 'agent-A', { tool_name: 'AskUserQuestion', tool_input: {} })
-    second.claimToken = 'claim-2'
+    const questions: ControlQuestion[] = [
+      {
+        question: 'Which database?',
+        options: [
+          { label: 'Postgres' },
+        ],
+      },
+      {
+        question: 'Which region?',
+        options: [
+          { label: 'EU' },
+        ],
+      },
+    ]
+    const first = questionRequest('req-1', questions, { agentId: 'agent-A', claimToken: 'claim-1' })
+    const second = questionRequest('req-1', questions, { agentId: 'agent-A', claimToken: 'claim-2' })
     const answerState = createControlAnswerState()
     let setControlRequests!: (reqs: ControlRequest[]) => void
     const dispose = createRoot((disposeRoot) => {
@@ -1843,28 +1697,14 @@ describe('activeControlRequest', () => {
 
   /** One non-blocking question: the agent continues and the question waits. */
   function nonBlockingQuestion(): ControlRequest {
-    return {
-      agentId: 'test-agent',
-      requestId: 'q1',
-      claimToken: 'tok-q1',
-      payload: {
-        request: {
-          tool_name: 'AskUserQuestion',
-          input: {
-            questions: [
-              {
-                id: 'q',
-                question: 'Choose',
-                options: [
-                  { label: 'First' },
-                ],
-              },
-            ],
-          },
-        },
+    return questionRequest('q1', [
+      {
+        question: 'Choose',
+        options: [
+          { label: 'First' },
+        ],
       },
-      nonBlocking: true,
-    }
+    ], { claimToken: 'tok-q1', nonBlocking: true })
   }
 
   // The one rule for a non-blocking question: the composer shows it only
@@ -1919,14 +1759,15 @@ describe('a request whose payload LeapMux cannot read', () => {
   // the option list or decision vocabulary the unreadable payload was carrying. The stop
   // is the way out. See RL-002.
   it('offers no editor, and sends nothing when one is driven anyway', async () => {
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    const request: ControlRequest = {
+    const onControlAnswer = answerHandler()
+    // The Worker states no editor for a request that it cannot read.
+    const request = testControlRequest({
       agentId: 'test-agent',
       requestId: 'faulted',
-      payload: {},
+      editorRole: 'none',
       payloadFault: 'malformed',
       originalPayload: new TextEncoder().encode('{not json'),
-    }
+    })
     const state = createControlAnswerState()
     const { handling, dispose } = createRoot(dispose => ({
       dispose,
@@ -1934,7 +1775,7 @@ describe('a request whose payload LeapMux cannot read', () => {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.GOOSE },
         controlRequests: [request],
-        onControlResponse,
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }, state, () => undefined, vi.fn()),
     }))
@@ -1943,7 +1784,7 @@ describe('a request whose payload LeapMux cannot read', () => {
       expect(handling.editorPurpose()).toBe('none')
       expect(handling.editorPlaceholder()).toBeUndefined()
       expect(handling.handleControlSend('why did this fail')).toBe(false)
-      expect(onControlResponse).not.toHaveBeenCalled()
+      expect(onControlAnswer).not.toHaveBeenCalled()
     }
     finally {
       dispose()
@@ -1954,13 +1795,40 @@ describe('a request whose payload LeapMux cannot read', () => {
   // the ONLY way out -- there is no question to answer. The Worker says the turn
   // is blocked the same way it does for a readable prompt, so the button reads
   // its level and the fault changes nothing here.
-  it('still offers the stop', async () => {
-    const request: ControlRequest = {
+  // A fault offers no editor even under an editor role that states one.
+  it('offers no editor for a fault whatever the editor role says', async () => {
+    const request = testControlRequest({
       agentId: 'test-agent',
       requestId: 'faulted',
-      payload: {},
-      payloadFault: 'malformed',
+      editorRole: 'feedback',
+      payloadFault: 'not-an-object',
+    })
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({
+      dispose,
+      handling: useControlResponseHandling({
+        agentId: 'test-agent',
+        controlRequests: [request],
+        onControlAnswer: answerHandler(),
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, vi.fn()),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      expect(handling.editorPurpose()).toBe('none')
     }
+    finally {
+      dispose()
+    }
+  })
+
+  it('still offers the stop', async () => {
+    const request = testControlRequest({
+      agentId: 'test-agent',
+      requestId: 'faulted',
+      editorRole: 'none',
+      payloadFault: 'malformed',
+    })
     const state = createControlAnswerState()
     const { handling, dispose } = createRoot(dispose => ({
       dispose,
@@ -1969,7 +1837,7 @@ describe('a request whose payload LeapMux cannot read', () => {
         agent: { agentProvider: AgentProvider.GOOSE },
         controlRequests: [request],
         agentActivity: AgentActivityState.WAITING_FOR_USER,
-        onControlResponse: vi.fn(),
+        onControlAnswer: answerHandler(),
         onSendMessage: vi.fn(),
       }, state, () => undefined, vi.fn()),
     }))
@@ -1985,16 +1853,17 @@ describe('a request whose payload LeapMux cannot read', () => {
 
 describe('elicitation composer submission', () => {
   it('prevents a hidden editor from submitting form answers', async () => {
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    const request: ControlRequest = {
+    const onControlResponse = answerHandler()
+    const request = testControlRequest({
       agentId: 'test-agent',
       requestId: 'form-submit',
       claimToken: 'form-token',
-      payload: {
-        method: 'elicitation/create',
-        params: {
+      prompt: {
+        kind: 'elicitation',
+        elicitation: {
           mode: 'form',
-          requestedSchema: {
+          message: '',
+          schema: {
             type: 'object',
             required: ['count'],
             properties: {
@@ -2003,7 +1872,7 @@ describe('elicitation composer submission', () => {
           },
         },
       },
-    }
+    })
     const state = createControlAnswerState()
     const { handling, dispose } = createRoot(dispose => ({
       dispose,
@@ -2011,7 +1880,7 @@ describe('elicitation composer submission', () => {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.GOOSE },
         controlRequests: [request],
-        onControlResponse,
+        onControlAnswer: onControlResponse,
         onSendMessage: vi.fn(),
       }, state, () => undefined, vi.fn()),
     }))
@@ -2037,7 +1906,7 @@ describe('elicitation composer submission', () => {
 // refuses only on a literal `false` -- so the composer cleared the text the user
 // still had to send. See SCAN-S8-1.
 describe('handleControlSend completion', () => {
-  const denyRequest = (): ControlRequest => ({
+  const denyRequest = (): ControlRequest => testControlRequest({
     requestId: 'open',
     agentId: 'test-agent',
     agentProvider: AgentProvider.CLAUDE_CODE,
@@ -2051,7 +1920,7 @@ describe('handleControlSend completion', () => {
 
   async function sendWith(completed: boolean | undefined) {
     const request = denyRequest()
-    const onControlResponse = vi.fn().mockResolvedValue(completed)
+    const onControlResponse = answerHandler(completed)
     const state = createControlAnswerState()
     const { result, dispose } = createRoot(dispose => ({
       dispose,
@@ -2059,7 +1928,7 @@ describe('handleControlSend completion', () => {
         {
           agentId: 'test-agent',
           controlRequests: [request],
-          onControlResponse,
+          onControlAnswer: onControlResponse,
           onSendMessage: vi.fn(),
         },
         state,
@@ -2095,32 +1964,31 @@ describe('handleControlSend completion', () => {
 // delivery state alone -- so a faulted request in the READY state passed it.
 // See ALTITUDE-FE-4.
 describe('submitResponse payload fault', () => {
-  const faulted = (): ControlRequest => ({
+  const faulted = (): ControlRequest => testControlRequest({
     requestId: 'faulted',
     agentId: 'test-agent',
     agentProvider: AgentProvider.CLAUDE_CODE,
-    payload: {},
+    editorRole: 'none',
     payloadFault: 'malformed',
     responseState: ControlResponseState.READY,
   })
 
   it('refuses an answer and still admits the recording', async () => {
     const request = faulted()
-    const onControlResponse = vi.fn().mockResolvedValue(true)
+    const onControlResponse = answerHandler()
     const { result, dispose } = createRoot(dispose => ({
       dispose,
       result: setup({
         controlRequests: [request],
-        onControlResponse,
+        onControlAnswer: onControlResponse,
       }).result,
     }))
     try {
-      await expect(result.respondTo(request)(new TextEncoder().encode('{}'))).rejects.toThrow('Check the saved response state before sending an answer.')
+      await expect(result.decideFor(request)(permissionDecision('leapmux:allow'))).rejects.toThrow('Check the saved response state before sending an answer.')
       expect(onControlResponse).not.toHaveBeenCalled()
       await result.recordResponse(request)
       expect(onControlResponse).toHaveBeenCalledOnce()
-      // Called once above; `?.` is the type-level guard alone.
-      expect(onControlResponse.mock.calls[0]?.[2]).toMatchObject({ recordOnly: true })
+      expect(answerOf(onControlResponse)).toEqual({ kind: 'record' })
     }
     finally {
       dispose()

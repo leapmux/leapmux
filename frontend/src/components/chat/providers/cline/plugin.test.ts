@@ -1,11 +1,9 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import type { ControlRequest } from '~/stores/control.store'
 import { describe, expect, it } from 'vitest'
-import { CLINE_DECLINE_REASON, CLINE_PERMISSION_MODE, CLINE_QUESTION_ANSWER } from '~/generated/contracts/cline-protocol'
+import { CLINE_DECLINE_REASON, CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
-import { buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
-import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { classifyClineMessage } from './classification'
 import { clineCompactionBoundary, clineCompactionStart, clineNotificationEntry } from './extractors/notification'
@@ -14,7 +12,6 @@ import { clineExtractRow } from './extractors/row'
 import { clineConfiguration } from './pluginConfiguration'
 import { clineControls } from './pluginControls'
 import { clineNeedsRequest, clineSpanRole } from './spanRole'
-import { CLINE_SPAWN_WARNING } from './spawnWarning'
 import './plugin'
 
 const plugin = providerFor(AgentProvider.CLINE)!
@@ -57,12 +54,35 @@ const question: Record<string, unknown> = {
   },
 }
 
-function saved(request: Record<string, unknown>, response: Record<string, unknown> | undefined): PersistedControlResponse {
+/** The prompts that the Worker reads from the requests above. */
+const PERMISSION_PROMPT: ControlPrompt = {
+  kind: 'permission',
+  permission: { title: 'editor', options: [] },
+}
+const PLAN_PROMPT: ControlPrompt = { kind: 'plan' }
+const QUESTION_PROMPT: ControlPrompt = {
+  kind: 'question',
+  questions: [
+    {
+      question: 'Which color do you prefer?',
+      options: [
+        { label: 'Red' },
+        { label: 'Blue' },
+      ],
+    },
+  ],
+}
+
+/** One saved row: the native request, the answer, and the prompt that the Worker recorded. */
+function saved(request: Record<string, unknown>, response: Record<string, unknown> | undefined, prompt?: ControlPrompt): PersistedControlResponse {
   return {
     requestId: 'r1',
     claimToken: '',
     request,
     response,
+    ...(prompt
+      ? { prompt }
+      : {}),
   }
 }
 
@@ -112,13 +132,18 @@ describe('cline plugin', () => {
     })).toBe(CLINE_PERMISSION_MODE.Plan)
   })
 
-  it('states no elicitation and no child input', () => {
-    expect(controls.elicitation).toBeUndefined()
+  it('states no child input', () => {
     expect(plugin.configuration?.supportsSubagentSend).toBeUndefined()
   })
 })
 
 describe('cline controls', () => {
+  // The Worker reads each request and builds each answer, so the browser keeps only the
+  // display of a saved answer and the presets.
+  it('registers only the saved-answer display and the presets', () => {
+    expect(Object.keys(controls).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
+  })
+
   it('offers the Bypass preset as Auto-approve and no Smart preset', () => {
     expect(controls.permissionPresets).toEqual({
       bypass: {
@@ -126,206 +151,22 @@ describe('cline controls', () => {
       },
     })
   })
-
-  it('reads an approval into a permission with its arguments', () => {
-    const control = controls.extractControl?.({
-      payload: approval('editor', { path: '/work/a.ts', old_text: 'a', new_text: 'b' }),
-    })
-    expect(control).toEqual({
-      kind: 'permission',
-      permission: {
-        title: 'editor',
-        input: { path: '/work/a.ts', old_text: 'a', new_text: 'b' },
-        options: [],
-      },
-    })
-  })
-
-  it('states the commands of a command approval', () => {
-    const control = controls.extractControl?.({
-      payload: approval('run_commands', {
-        commands: [
-          'git status',
-          {
-            command: 'go',
-            args: ['test', './...'],
-          },
-        ],
-      }),
-    })
-    expect(control?.kind === 'permission'
-      ? control.permission.command
-      : undefined).toBe('git status\ngo test ./...')
-  })
-
-  // A subagent, a configured agent and a teammate each run their own tools without
-  // asking, so the approval that starts one says so.
-  it.each([
-    [
-      'spawn_agent',
-      { task: 'Look.' },
-    ],
-    [
-      'subagent_reviewer_1a2b',
-      { prompt: 'Review the change.' },
-    ],
-    [
-      'team_spawn_teammate',
-      { agentId: 'researcher', rolePrompt: 'You research.' },
-    ],
-    [
-      'team_run_task',
-      { agentId: 'researcher', task: 'Report a word.' },
-    ],
-  ])('warns that the agent that %s starts runs its tools without asking', (tool, input) => {
-    const control = controls.extractControl?.({
-      payload: approval(tool, input),
-    })
-    expect(control?.kind === 'permission'
-      ? control.permission.reason
-      : undefined).toBe(CLINE_SPAWN_WARNING)
-  })
-
-  it('gives no warning for a tool that starts no agent', () => {
-    for (const tool of [
-      'editor',
-      'run_commands',
-      'team_status',
-      'github__subagent_search',
-    ]) {
-      const control = controls.extractControl?.({
-        payload: approval(tool, {}),
-      })
-      expect(control?.kind === 'permission'
-        ? control.permission.reason
-        : 'no permission', tool).toBeUndefined()
-    }
-  })
-
-  it('reads the plan tool\'s approval as the plan approval', () => {
-    expect(controls.extractControl?.({
-      payload: approval('switch_to_act_mode', {}),
-    })).toEqual({ kind: 'plan' })
-  })
-
-  it('reads nothing else', () => {
-    expect(controls.extractControl?.({ payload: question })).toBeNull()
-    expect(controls.extractControl?.({
-      payload: { type: 'control_request' },
-    })).toBeNull()
-  })
-
-  it('reads an approval whose arguments are not JSON with none', () => {
-    const payload = approval('editor', {})
-    const inner = payload.payload as Record<string, unknown>
-    inner.inputJson = 'not json'
-    const control = controls.extractControl?.({ payload })
-    expect(control?.kind === 'permission'
-      ? control.permission.input
-      : undefined).toEqual({})
-  })
-
-  // The composer's send refuses the call, and its words ride the refusal as the reason.
-  it('sends the composer\'s text as a refusal', () => {
-    expect(controls.buildControlResponse?.(approval('editor', {}), 'Use the other file.', 'r1')).toEqual(buildDenyResponse('r1', 'Use the other file.'))
-    expect(controls.buildControlResponse?.(approval('editor', {}), '', 'r1')).toEqual(buildDenyResponse('r1', CONTROL_REJECTED_BY_USER_MESSAGE))
-  })
-})
-
-describe('cline questions', () => {
-  const ask = controls.askUserQuestion!
-
-  it('recognizes a question and nothing else', () => {
-    expect(ask.isRequest(question)).toBe(true)
-    expect(ask.isRequest(approval('ask_question', {}))).toBe(false)
-    const other = structuredClone(question)
-    ;(other.payload as Record<string, unknown>).capabilityName = 'custom_tool.switch_to_act_mode'
-    expect(ask.isRequest(other)).toBe(false)
-  })
-
-  it('reads the question and its options', () => {
-    expect(ask.extractQuestions(question)).toEqual([
-      {
-        question: 'Which color do you prefer?',
-        options: [
-          { value: 'Red', label: 'Red' },
-          { value: 'Blue', label: 'Blue' },
-        ],
-      },
-    ])
-  })
-
-  it('reads no question from arguments that state none', () => {
-    const empty = structuredClone(question)
-    ;((empty.payload as Record<string, unknown>).payload as Record<string, unknown>).args = [
-      '  ',
-      ['A'],
-    ]
-    expect(ask.extractQuestions(empty)).toEqual([])
-  })
-
-  const request: ControlRequest = { agentId: 'a', requestId: 'capreq_1', payload: question }
-
-  /** The bytes one send carries, decoded. */
-  function recorder() {
-    const sent: Uint8Array[] = []
-    const send = async (bytes: Uint8Array) => {
-      sent.push(bytes)
-    }
-    return {
-      send,
-      last: () => JSON.parse(new TextDecoder().decode(sent.at(-1))) as Record<string, unknown>,
-    }
-  }
-
-  async function answer(selected: string[], typed: string): Promise<Record<string, unknown>> {
-    const { send, last } = recorder()
-    await ask.sendAnswer(request, send, ask.extractQuestions(question), createControlAnswerState({
-      selections: { 0: selected },
-      customTexts: { 0: typed },
-    }))
-    return last()
-  }
-
-  // The whole envelope, because the worker reads the behavior and the request id too:
-  // an answer with another behavior or id would not reach the question.
-  it('answers with the picked option', async () => {
-    expect(await answer(['Blue'], '')).toEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'capreq_1',
-        response: { behavior: 'allow', [CLINE_QUESTION_ANSWER.Answer]: 'Blue' },
-      },
-    })
-  })
-
-  it('answers with the reader\'s own words when they typed any', async () => {
-    const response = await answer(['Blue'], '  Green  ')
-    expect((response.response as { response: Record<string, unknown> }).response[CLINE_QUESTION_ANSWER.Answer]).toBe('Green')
-  })
-
-  it('refuses with the reader\'s words', async () => {
-    const { send, last } = recorder()
-    await ask.sendReject(request, send, 'Not now.')
-    expect(last()).toEqual(buildDenyResponse('capreq_1', 'Not now.'))
-  })
 })
 
 describe('cline saved answers', () => {
   const display = controls.controlResponseDisplay!
 
   it('words an approval and a refusal', () => {
-    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: true }))).toEqual({ kind: 'label', text: 'Allow' })
-    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: false, reason: 'Not that one.' }))).toEqual({ kind: 'feedback', message: 'Not that one.' })
-    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: false, reason: CLINE_DECLINE_REASON.Tool }))).toEqual({ kind: 'label', text: 'Deny' })
+    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: true }, PERMISSION_PROMPT))).toEqual({ kind: 'label', text: 'Allow' })
+    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: false, reason: 'Not that one.' }, PERMISSION_PROMPT))).toEqual({ kind: 'feedback', message: 'Not that one.' })
+    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: false, reason: CLINE_DECLINE_REASON.Tool }, PERMISSION_PROMPT))).toEqual({ kind: 'label', text: 'Deny' })
   })
 
   it('words the plan approval with the mode it switched to', () => {
     const plan = approval('switch_to_act_mode', {})
-    expect(display(saved(plan, { approvalId: 'approval_1', approved: true, permissionMode: CLINE_PERMISSION_MODE.AutoApprove }))).toEqual({ kind: 'label', text: 'Approve (Auto-approve)' })
-    expect(display(saved(plan, { approvalId: 'approval_1', approved: true }))).toEqual({ kind: 'label', text: 'Approve' })
-    expect(display(saved(plan, { approvalId: 'approval_1', approved: false, reason: 'Split it.' }))).toEqual({ kind: 'feedback', message: 'Split it.' })
+    expect(display(saved(plan, { approvalId: 'approval_1', approved: true, permissionMode: CLINE_PERMISSION_MODE.AutoApprove }, PLAN_PROMPT))).toEqual({ kind: 'label', text: 'Approve (Auto-approve)' })
+    expect(display(saved(plan, { approvalId: 'approval_1', approved: true }, PLAN_PROMPT))).toEqual({ kind: 'label', text: 'Approve' })
+    expect(display(saved(plan, { approvalId: 'approval_1', approved: false, reason: 'Split it.' }, PLAN_PROMPT))).toEqual({ kind: 'feedback', message: 'Split it.' })
   })
 
   it('words a question\'s answer and its refusal', () => {
@@ -333,16 +174,28 @@ describe('cline saved answers', () => {
       requestId: 'capreq_1',
       ok: true,
       payload: { result: 'Blue' },
-    }))).toEqual({ kind: 'label', text: 'Blue' })
-    expect(display(saved(question, { requestId: 'capreq_1', ok: false, error: CLINE_DECLINE_REASON.Question }))).toEqual({ kind: 'label', text: 'Declined' })
-    expect(display(saved(question, { requestId: 'capreq_1', ok: false, error: 'Later.' }))).toEqual({ kind: 'feedback', message: 'Later.' })
+    }, QUESTION_PROMPT))).toEqual({ kind: 'label', text: 'Blue' })
+    expect(display(saved(question, { requestId: 'capreq_1', ok: false, error: CLINE_DECLINE_REASON.Question }, QUESTION_PROMPT))).toEqual({ kind: 'label', text: 'Declined' })
+    expect(display(saved(question, { requestId: 'capreq_1', ok: false, error: 'Later.' }, QUESTION_PROMPT))).toEqual({ kind: 'feedback', message: 'Later.' })
   })
 
   it('reads nothing it does not know', () => {
-    expect(display(saved(approval('editor', {}), undefined))).toBeNull()
-    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1' }))).toBeNull()
-    expect(display(saved(question, { requestId: 'capreq_1' }))).toBeNull()
+    expect(display(saved(approval('editor', {}), undefined, PERMISSION_PROMPT))).toBeNull()
+    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1' }, PERMISSION_PROMPT))).toBeNull()
+    expect(display(saved(question, { requestId: 'capreq_1' }, QUESTION_PROMPT))).toBeNull()
     expect(display(saved({ type: 'other' }, { approved: true }))).toBeNull()
+    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: true }))).toBeNull()
+  })
+
+  // The recorded prompt decides which reply the row holds and which words it shows,
+  // not the native request beside it.
+  it('reads the kind of the request from the recorded prompt', () => {
+    expect(display(saved(approval('editor', {}), { approvalId: 'approval_1', approved: true }, PLAN_PROMPT))).toEqual({ kind: 'label', text: 'Approve' })
+    expect(display(saved(approval('editor', {}), {
+      requestId: 'capreq_1',
+      ok: true,
+      payload: { result: 'Blue' },
+    }, QUESTION_PROMPT))).toEqual({ kind: 'label', text: 'Blue' })
   })
 })
 

@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { acpTextContent, describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
+import { reasonixControlResponseSummary } from './controlResponse'
 
 import './plugin'
 
@@ -29,6 +30,10 @@ describe('reasonix provider', () => {
     expect(plugin?.controls?.permissionPresets?.bypass?.sets).toEqual({ tool_approval: 'yolo' })
   })
 
+  it('registers its own display of a saved answer', () => {
+    expect(plugin.controls?.controlResponseDisplay).toBe(reasonixControlResponseSummary)
+  })
+
   it('offers native image and resource attachments', () => {
     expect(plugin.configuration?.attachments).toEqual({
       text: true,
@@ -36,32 +41,6 @@ describe('reasonix provider', () => {
       pdf: true,
       audio: false,
       binary: true,
-    })
-  })
-
-  it('reads the native MCP form request', () => {
-    const schema = {
-      type: 'object',
-      properties: {
-        count: { type: 'string', maxLength: 4096 },
-      },
-    }
-    expect(plugin?.controls?.elicitation?.({
-      method: 'elicitation/create',
-      params: {
-        sessionId: 'session-1',
-        mode: 'form',
-        message: 'Choose a count.',
-        requestedSchema: schema,
-      },
-    })).toEqual({
-      mode: 'form',
-      message: 'Choose a count.',
-      server: '',
-      schema,
-      url: '',
-      title: '',
-      description: '',
     })
   })
 })

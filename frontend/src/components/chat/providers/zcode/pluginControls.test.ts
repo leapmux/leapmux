@@ -1,12 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
+import { describe, expect, it } from 'vitest'
 import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
-import { ZCODE_METHOD, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { WORKSPACE_TRUST_OPTION, WORKSPACE_TRUST_OPTIONS } from '../workspaceTrust'
+import { ZCODE_INTERACTION, ZCODE_METHOD } from '~/generated/contracts/zcode-protocol'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { extractChatRow, extractedRow } from '../../rowExtraction'
+import { resolveMessageForRendering } from '../registry'
 import { zcodeControls } from './pluginControls'
-
-function decode(bytes: unknown): Record<string, unknown> {
-  return JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
-}
+import './plugin'
 
 // The Worker asks ZCode's hook-trust question itself, in LeapMux's neutral shape.
 describe('zcodeControls', () => {
@@ -15,61 +15,6 @@ describe('zcodeControls', () => {
     path: '/work/project',
     configuration: ['hooks'],
   }
-  const permission = {
-    method: ZCODE_METHOD.RequestPermission,
-    request: {
-      tool_name: ZCODE_TOOL.Bash,
-      input: { command: 'ls' },
-    },
-    params: {
-      options: [
-        { optionId: 'allow', name: 'Allow' },
-        { optionId: 'deny', name: 'Deny' },
-      ],
-    },
-  }
-
-  it('draws the hook-trust question with the name of the agent', () => {
-    expect(zcodeControls.extractControl?.({ payload: question })).toEqual({
-      kind: 'permission',
-      permission: {
-        title: 'Trust the folder /work/project',
-        reason: 'ZCode loads the hooks of a project only from a folder that you trust, and it keeps your answer for the folder.',
-        options: [...WORKSPACE_TRUST_OPTIONS],
-      },
-    })
-  })
-
-  it('still draws a native permission request', () => {
-    expect(zcodeControls.extractControl?.({ payload: permission })).toMatchObject({ kind: 'permission' })
-  })
-
-  it.each([
-    [WORKSPACE_TRUST_OPTION.Trust, 'allow'],
-    [WORKSPACE_TRUST_OPTION.Reject, 'deny'],
-  ])('sends the trust option %s as the neutral %s decision', async (optionId, behavior) => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-    await zcodeControls.sendPermissionOption?.(onRespond, 'workspace-trust:session-1', optionId)
-    expect(decode(onRespond.mock.calls[0]?.[0])).toEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'workspace-trust:session-1',
-        response: { behavior },
-      },
-    })
-  })
-
-  it('still sends a native option with its choice', async () => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-    await zcodeControls.sendPermissionOption?.(onRespond, 'req-1', 'allow_once')
-    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
-      response: {
-        request_id: 'req-1',
-        response: { behavior: 'allow' },
-      },
-    })
-  })
 
   it.each([
     [WORKSPACE_TRUST_DECISION.Trust, 'Trusted this folder'],
@@ -87,5 +32,66 @@ describe('zcodeControls', () => {
         },
       },
     })).toEqual({ kind: 'label', text })
+  })
+})
+
+/*
+ * ZCode forwards an MCP server's form as a user-input request. The Worker records the
+ * form as the prompt of the answer, so the row reads a refused or a dismissed form in
+ * the words of the form's own buttons, and not as the plan or the question that the
+ * same RPC carries.
+ */
+describe('zcode saved form answer', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      count: { type: 'integer', title: 'Count' },
+    },
+  }
+
+  /** The row of one saved form answer, as the Worker stores ZCode's own reply. */
+  function savedForm(result: Record<string, unknown>): PersistedControlResponse {
+    return {
+      requestId: 'mcp-elicit-1',
+      claimToken: 'claim-1',
+      request: {
+        id: 21,
+        method: ZCODE_METHOD.RequestUserInput,
+        request: { tool_name: 'McpElicitation', input: {} },
+        params: {
+          schema: { interaction: ZCODE_INTERACTION.McpElicitation, serverName: 'form_probe', requestedSchema: schema },
+        },
+      },
+      response: { id: 21, result },
+      prompt: {
+        kind: 'elicitation',
+        elicitation: {
+          mode: 'form',
+          message: 'Choose the probe settings.',
+          server: 'form_probe',
+          schema,
+        },
+      },
+    }
+  }
+
+  function displayOf(record: PersistedControlResponse) {
+    const parsed = resolveMessageForRendering({
+      rawText: '',
+      topLevel: {},
+      parentObject: {},
+      wrapper: null,
+    }, AgentProvider.ZCODE)
+    return extractedRow(extractChatRow(AgentProvider.ZCODE, parsed, { kind: 'control_response', response: record }))
+  }
+
+  it.each([
+    ['decline', 'Rejected'],
+    ['cancel', 'Cancelled'],
+  ])('reads a form answered with %s as %s', (action, text) => {
+    expect(displayOf(savedForm({ action }))).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text },
+    })
   })
 })

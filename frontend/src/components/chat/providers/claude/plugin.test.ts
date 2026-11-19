@@ -1,4 +1,5 @@
 import type { MessageCategory } from '../../messageClassifier'
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
@@ -197,7 +198,7 @@ describe('claude preview text (scroll-rail mark preview)', () => {
 
   it('derives the control-response display from the native response envelope (not previewText)', () => {
     // Control-response rows resolve through controlResponseDisplay, not previewText -- Claude's
-    // derivation IS the neutral behavior envelope: allow -> Approved, deny+message -> feedback.
+    // derivation IS the neutral behavior envelope: allow -> Allow, deny+message -> feedback.
     const allow = {
       type: 'control_response',
       response: {
@@ -231,13 +232,37 @@ describe('claude preview text (scroll-rail mark preview)', () => {
   /*
    * The envelope above says nothing about WHICH control it answers, and the two Claude
    * offers carry different words: a plan is approved, a permission is allowed. The
-   * request decides, through the same reader the banner drew it with -- so a saved row
-   * reads the words its own button carried.
+   * prompt that the Worker recorded with the answer decides, because the banner drew
+   * that prompt -- so a saved row reads the words its own button carried. The native
+   * tool name does not decide: a row that records no prompt reads the permission words,
+   * even for a plan approval.
    */
-  it.each([
-    ['ExitPlanMode', 'Approve', 'Reject'],
-    ['Bash', 'Allow', 'Deny'],
-  ])('reads the %s answer with that control\'s own words', (toolName, allowWord, denyWord) => {
+  it.each<[string, string, ControlPrompt | undefined, string, string]>([
+    [
+      'a plan approval',
+      'ExitPlanMode',
+      { kind: 'plan' },
+      'Approve',
+      'Reject',
+    ],
+    [
+      'a permission',
+      'Bash',
+      {
+        kind: 'permission',
+        permission: { title: 'Bash', options: [] },
+      },
+      'Allow',
+      'Deny',
+    ],
+    [
+      'a row that records no prompt',
+      'ExitPlanMode',
+      undefined,
+      'Allow',
+      'Deny',
+    ],
+  ])('reads the answer to %s with that control\'s own words', (_, toolName, prompt, allowWord, denyWord) => {
     const request = {
       request: { tool_name: toolName, input: {} },
     }
@@ -248,19 +273,18 @@ describe('claude preview text (scroll-rail mark preview)', () => {
         response: { behavior },
       },
     })
-    expect(plugin?.controls?.controlResponseDisplay!({
+    const saved = (behavior: string) => ({
       claimToken: 'c',
       requestId: 'r',
       request,
-      response: answer('allow'),
-    }))
+      response: answer(behavior),
+      ...(prompt
+        ? { prompt }
+        : {}),
+    })
+    expect(plugin?.controls?.controlResponseDisplay!(saved('allow')))
       .toEqual({ kind: 'label', text: allowWord })
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'c',
-      requestId: 'r',
-      request,
-      response: answer('deny'),
-    }))
+    expect(plugin?.controls?.controlResponseDisplay!(saved('deny')))
       .toEqual({ kind: 'label', text: denyWord })
   })
 })

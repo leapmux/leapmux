@@ -262,7 +262,7 @@ The banner shows a **Permissions** choice when the provider supplies permission 
 
 ### Questions
 
-A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
+A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. For a question with radio buttons, the typed answer replaces the chosen one. For a question with checkboxes, the typed answer joins the checked options: checking **A** and typing **X** answers **A** and **X**. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
 
 ### Plan approvals
 
@@ -271,6 +271,8 @@ When an agent finishes planning, the banner shows the plan. **Approve** starts t
 If several prompts queue up, you answer them one at a time. LeapMux de-duplicates requests and remembers answered ones, so a reconnect never re-asks something you already handled.
 
 The exact buttons and their names come from the provider's own protocol.
+
+A script answers the same requests with `leapmux control agent requests`, `approve`, `deny` and `answer`; see [Driving agents from a script](#driving-agents-from-a-script).
 
 ## Changing settings mid-session
 
@@ -333,6 +335,12 @@ leapmux control agent send <agent> "Which tests fail?" --wait --timeout 30m
 # Wait until agents settle, or until one of them waits for an answer
 leapmux control agent wait <agent> <agent>
 leapmux control agent wait <agent> <agent> --until waiting_for_user --any
+
+# List the prompts that agents wait on, then answer one
+leapmux control agent requests
+leapmux control agent approve <agent> <request>
+leapmux control agent deny <agent> <request> --message "Use the staging database"
+leapmux control agent answer <agent> <request> --option 2
 
 # Interrupt the current turn
 leapmux control agent interrupt <agent> --reason "wrong file"

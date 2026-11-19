@@ -2,8 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { CLINE_SPAWN_WARNING } from '../../../src/components/chat/providers/cline/spawnWarning'
-import { CLINE_DECLINE_REASON } from '../../../src/generated/contracts/cline-protocol'
+import { CLINE_DECLINE_REASON, CLINE_PROMPT_REASON } from '../../../src/generated/contracts/cline-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectDeclinedToolRowAcrossReload, expectSavedRefusalFeedback, toolResultCallId } from '../helpers/nativePermission'
@@ -99,7 +98,7 @@ clineTest.describe('Cline control requests', () => {
       decision: 'deny',
       beforeDecision: async (banner) => {
         await expect(banner).toContainText('spawn_agent')
-        await expect(banner).toContainText(CLINE_SPAWN_WARNING)
+        await expect(banner).toContainText(CLINE_PROMPT_REASON.SpawnAgent)
       },
       // A refusal with no words of the reader's gives the model LeapMux's own reason.
       nativeProof: request => expect(JSON.stringify(request.body)).toContain(CLINE_DECLINE_REASON.Tool),

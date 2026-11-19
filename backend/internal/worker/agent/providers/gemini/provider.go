@@ -39,10 +39,10 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 	}
 	option := ""
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		option = "proceed_once"
 		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		option = "cancel"
 		result.FollowUp = agent.FeedbackFollowUp(feedback)
 	default:

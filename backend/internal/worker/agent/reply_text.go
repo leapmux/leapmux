@@ -78,11 +78,17 @@ func assembledReplyText(envelope map[string]json.RawMessage) (text string, ok, v
 // replyOf trims a reply as JavaScript's String.prototype.trim does, and
 // keeps it when anything remains.
 func replyOf(text string, ok bool) (string, bool) {
-	text = strings.TrimFunc(text, isJavaScriptWhiteSpace)
+	text = TrimJavaScriptSpace(text)
 	if !ok || text == "" {
 		return "", false
 	}
 	return text, true
+}
+
+// TrimJavaScriptSpace trims text as JavaScript's String.prototype.trim
+// does, so a Worker reads typed text as the browser reads it.
+func TrimJavaScriptSpace(text string) string {
+	return strings.TrimFunc(text, isJavaScriptWhiteSpace)
 }
 
 // isJavaScriptWhiteSpace reports a character that JavaScript's trim removes:

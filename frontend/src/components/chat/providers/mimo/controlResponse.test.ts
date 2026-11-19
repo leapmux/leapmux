@@ -1,16 +1,9 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
+import { buildAllowResponse, buildDenyResponse } from '~/test-support/controlResponses'
+import { resolveControlResponseSummary } from '../../persistedControlResponse'
 import { mimoControlResponseSummary } from './controlResponse'
-
-function saved(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return {
-    requestId: 'r',
-    claimToken: 't',
-    request,
-    response,
-  }
-}
 
 const PERMISSION = {
   type: 'permission.asked',
@@ -40,6 +33,54 @@ const PLAN = {
   plan: '# Plan',
 }
 
+/** The permission prompt that the Worker reads from {@link PERMISSION} (`mimoPermissionPrompt` in Go). */
+const PERMISSION_PROMPT: ControlPrompt = {
+  kind: 'permission',
+  permission: {
+    title: 'bash',
+    options: [
+      { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+      { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
+      { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+    ],
+  },
+}
+
+const PROMPTS = new Map<Record<string, unknown> | undefined, ControlPrompt>([
+  [PERMISSION, PERMISSION_PROMPT],
+  [
+    QUESTION,
+    {
+      kind: 'question',
+      questions: [
+        { question: 'Which database?', header: 'Database', options: [] },
+        { question: 'Why?', options: [] },
+      ],
+    },
+  ],
+  [
+    PLAN,
+    { kind: 'plan', text: '# Plan' },
+  ],
+])
+
+/**
+ * A saved answer, with the prompt that the Worker records for the request: by default
+ * the prompt of the request fixture below, or none for any other request. `null`
+ * states a row that recorded no prompt.
+ */
+function saved(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined, prompt: ControlPrompt | null = PROMPTS.get(request) ?? null): PersistedControlResponse {
+  return {
+    requestId: 'r',
+    claimToken: 't',
+    request,
+    response,
+    ...(prompt
+      ? { prompt }
+      : {}),
+  }
+}
+
 describe('mimoControlResponseSummary', () => {
   it('states the permission option the reader chose', () => {
     const selected = (optionId: string) => ({
@@ -58,6 +99,31 @@ describe('mimoControlResponseSummary', () => {
       },
     }))).toEqual({ kind: 'label', text: 'Deny' })
     expect(mimoControlResponseSummary(saved(PERMISSION, selected('forever')))).toBeNull()
+    expect(mimoControlResponseSummary(saved(PERMISSION, selected('toString')))).toBeNull()
+  })
+
+  // The words come from the options of the prompt that the banner drew, so a prompt
+  // whose options state other words reads those.
+  it('states the chosen option in the words of the recorded prompt', () => {
+    const selected = (optionId: string) => ({
+      result: {
+        outcome: { outcome: 'selected', optionId },
+      },
+    })
+    const prompt: ControlPrompt = {
+      kind: 'permission',
+      permission: {
+        title: 'bash',
+        options: [
+          { optionId: 'once', kind: 'allow_once', name: 'Run it this time' },
+          { optionId: 'reject', kind: 'reject_once' },
+        ],
+      },
+    }
+    expect(mimoControlResponseSummary(saved(PERMISSION, selected('once'), prompt))).toEqual({ kind: 'label', text: 'Run it this time' })
+    expect(mimoControlResponseSummary(saved(PERMISSION, selected('reject'), prompt))).toEqual({ kind: 'label', text: 'Reject' })
+    // The Worker leaves out Always allow for a request that saves no pattern.
+    expect(mimoControlResponseSummary(saved(PERMISSION, selected('always'), prompt))).toBeNull()
   })
 
   it('states each answer under its question', () => {
@@ -80,8 +146,9 @@ describe('mimoControlResponseSummary', () => {
     }))).toEqual({ kind: 'label', text: 'Dismissed' })
   })
 
-  // The plan buttons send the shared allow/deny envelope. The envelope does not state
-  // which control it answers, and the request does: a plan takes the plan words.
+  // The Worker answers a plan with the shared allow/deny envelope. The envelope does not
+  // state which control it answers, and the recorded prompt does: a plan takes the plan
+  // words.
   it('states a plan answer in the plan words', () => {
     expect(mimoControlResponseSummary(saved(PLAN, buildAllowResponse('r', {})))).toEqual({ kind: 'label', text: 'Approve' })
     expect(mimoControlResponseSummary(saved(PLAN, buildDenyResponse('r')))).toEqual({ kind: 'label', text: 'Reject' })
@@ -91,7 +158,15 @@ describe('mimoControlResponseSummary', () => {
     }))).toEqual({ kind: 'label', text: 'Reject' })
   })
 
-  // The composer's Send feedback answers a permission through the same envelope.
+  // The kind of the request comes from the prompt alone, so a plan whose row recorded
+  // no prompt reads in the permission words.
+  it('states a plan answer whose row recorded no prompt in the permission words', () => {
+    expect(mimoControlResponseSummary(saved(PLAN, buildAllowResponse('r', {}), null))).toEqual({ kind: 'label', text: 'Allow' })
+    expect(mimoControlResponseSummary(saved(PLAN, buildDenyResponse('r'), null))).toEqual({ kind: 'label', text: 'Deny' })
+  })
+
+  // The Worker answers a permission that the reader refused with feedback through the
+  // same envelope.
   it('states a permission answered through the envelope in the permission words', () => {
     expect(mimoControlResponseSummary(saved(PERMISSION, buildDenyResponse('r', 'Keep the file')))).toEqual({ kind: 'feedback', message: 'Keep the file' })
     expect(mimoControlResponseSummary(saved(PERMISSION, buildDenyResponse('r')))).toEqual({ kind: 'label', text: 'Deny' })
@@ -112,14 +187,33 @@ describe('mimoControlResponseSummary', () => {
     }))).toBeNull()
   })
 
-  // The chosen option states its own answer, so a response whose request did not
-  // survive still reads as that option.
+  // The prompt lives in the answer row's own metadata, so a response whose request did
+  // not survive still reads as the option.
   it('states a chosen option when the request is absent', () => {
     expect(mimoControlResponseSummary(saved(undefined, {
       result: {
         outcome: { outcome: 'selected', optionId: 'always' },
       },
-    }))).toEqual({ kind: 'label', text: 'Always allow' })
+    }, PERMISSION_PROMPT))).toEqual({ kind: 'label', text: 'Always allow' })
+  })
+
+  // The prompt states which request a result answers. A result whose row records none
+  // reads as nothing here, and the shared chokepoint shows its generic label.
+  it('reads nothing from a result whose row records no prompt', () => {
+    const row = saved(PERMISSION, {
+      result: {
+        outcome: { outcome: 'selected', optionId: 'once' },
+      },
+    }, null)
+    expect(mimoControlResponseSummary(row)).toBeNull()
+    expect(mimoControlResponseSummary(saved(QUESTION, {
+      result: {
+        answers: [
+          ['SQLite'],
+        ],
+      },
+    }, null))).toBeNull()
+    expect(resolveControlResponseSummary(row, mimoControlResponseSummary)).toEqual({ kind: 'label', text: 'Responded' })
   })
 
   it('labels an answer by its question when the question has no header, and by its position when it has neither', () => {
@@ -133,6 +227,13 @@ describe('mimoControlResponseSummary', () => {
       },
       request: { tool_name: 'question' },
     }
+    const prompt: ControlPrompt = {
+      kind: 'question',
+      questions: [
+        { question: 'Why?', options: [] },
+        { question: '', options: [] },
+      ],
+    }
     expect(mimoControlResponseSummary(saved(request, {
       result: {
         answers: [
@@ -140,7 +241,25 @@ describe('mimoControlResponseSummary', () => {
           ['size'],
         ],
       },
-    }))).toEqual({ kind: 'label', text: 'Why?: speed\nQuestion 2: size' })
+    }, prompt))).toEqual({ kind: 'label', text: 'Why?: speed\nQuestion 2: size' })
+  })
+
+  // The questions come from the prompt that the banner drew, not from the stored
+  // request.
+  it('labels each answer with the questions of the recorded prompt, not of the native request', () => {
+    const prompt: ControlPrompt = {
+      kind: 'question',
+      questions: [
+        { question: 'Which engine?', header: 'Engine', options: [] },
+      ],
+    }
+    expect(mimoControlResponseSummary(saved(QUESTION, {
+      result: {
+        answers: [
+          ['SQLite'],
+        ],
+      },
+    }, prompt))).toEqual({ kind: 'label', text: 'Engine: SQLite' })
   })
 
   // An answer beyond the questions the request kept still reaches the row, under its
@@ -164,7 +283,7 @@ describe('mimoControlResponseSummary', () => {
           ['A'],
         ],
       },
-    }))).toEqual({ kind: 'label', text: 'Question 1: A' })
+    }, { kind: 'question', questions: [] }))).toEqual({ kind: 'label', text: 'Question 1: A' })
   })
 
   it('trims each choice and skips an empty one, and skips a question with no answer', () => {

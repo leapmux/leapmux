@@ -317,6 +317,7 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
 - `agent list` and `agent get` print each agent's state (`idle`, `working`, `waiting_for_user`), model, effort and git state. `agent get --options` also prints every option group with its choices.
 - `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`. `--wait` waits for the reply; see [Waiting for agents](#waiting-for-agents).
 - `agent wait <agent>...` waits until each agent reaches a state; see [Waiting for agents](#waiting-for-agents).
+- `agent requests`, `agent approve`, `agent deny` and `agent answer` list and answer the permission prompts, plans and questions that agents wait on; see [Answering prompts](#answering-prompts).
 - `agent messages` prints the most recent page by default (`--anchor latest`). `--anchor oldest` prints the first messages in history. `--anchor before --cursor-seq N` prints the page older than seq N, and `--anchor after --cursor-seq N` the page newer than it. Messages always come back in ascending seq. `--follow` prints the page and then each new message as it arrives, and reconnects after a transient drop. It accepts only `--anchor latest` and `--anchor after`.
 - `agent set` changes the model, the effort, the permission mode, and any provider option with `--option key=value`. A provider that can apply a change to the running process applies it at once (Claude Code and Codex do for most settings). Another change restarts the agent. See [Coding Agents](/docs/using/coding-agents/) for the settings of each provider.
 
@@ -327,10 +328,32 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
 - **`agent wait <agent>... --until <state>`** ends once each agent was in the state at some moment after the wait began. An agent that is in the state already ends the wait at once. `--until` takes a state that `agent list` prints (`idle`, `working`, `waiting_for_user`), or `settled`, the default: `idle` or `waiting_for_user`, so the agent works no more. `--any` ends the wait with the first agent instead of the last.
   - An agent whose input queue holds a message that it will read is neither `idle` nor `settled` yet. So a wait right after `agent open --message` waits for the turn of that first message, although the starting agent reports `idle`. A message scheduled for later does not hold the wait.
 - **`agent send <agent> [text] --wait`** sends the message, waits until the agent settles after it, and prints the agent's last reply as the transcript shows it. `--all` prints every reply after the message. An agent that runs a background task settles when the task ends too.
-  - It sends nothing to an agent that waits for an answer to a permission prompt, because the message would wait behind the prompt. The command fails with `agent_waiting` (status `5`).
+  - It sends nothing to an agent that waits for an answer to a permission prompt, because the message would wait behind the prompt. The command fails with `agent_waiting` (status `5`). Answer the prompt first; see [Answering prompts](#answering-prompts).
   - A paused input queue keeps the message, and the command says so on stderr and keeps waiting. A planned restart pauses the queue too, and that pause ends by itself.
 - **Both print their result even when the condition did not hold, and exit `6`**: `--timeout` passed, an agent closed, or the agent stopped at a prompt after the message. The result states where things stand. For `agent wait`, `reached` marks each agent that reached the state. For `agent send --wait`, `message` is `queued` or `delivered`, and `state` is the agent's state, such as `waiting_for_user`.
 - **A wait refuses the calling agent** with `usage`, because an agent cannot settle while its own turn runs the wait.
+
+### Answering prompts
+
+An agent asks the user through a control request: a permission prompt, a plan to approve, one or more questions, an MCP elicitation form, or an extension's dialog. The browser shows it as a banner. The CLI answers the same request.
+
+- **`agent requests [agent]...`** lists the pending requests of the agents, or of every agent when you give none (`--workspace` narrows it). The text form prints each request in full, so you read a whole command before you approve it, and it numbers the options that `--option` takes. `--json` prints each prompt as data.
+- **Each request has a handle.** The three answer commands take the agent and the handle, or a unique prefix of the handle. A request that the agent replaces gets a new handle, so an answer never reaches a request that you did not read.
+- **`agent approve <agent> <request>`** approves:
+  - A permission prompt: its one-time approval
+  - A plan: the approval, with `--permission-mode` and `--clear-context`
+  - An MCP elicitation: the accept, with the default values of the fields that the form asks
+  - A confirm dialog: the confirmation
+- **`agent deny <agent> <request> [--message <text>]`** refuses a permission prompt, a plan or a question, with the message as the reason that the agent reads. It also declines an MCP elicitation and refuses or cancels a dialog.
+- **`agent answer <agent> <request>`** gives any answer that the request offers:
+  - `--option <n>` chooses an option of a question or a permission prompt, a choice of a plan, or an accept choice of an MCP elicitation. Use it for an approval for the whole session, for example.
+  - A text argument is a typed answer to a question, or the text of an input dialog.
+  - A multiple-choice question takes options and a text together: `--option 1 --option 3 "Metrics"` answers with both options and the text.
+  - With several questions, each value says which question it answers: `--option 2:1` and `"1:Use the cache"`.
+  - A question that no `--option` answers keeps the options that the agent selected for it, which `agent requests` shows as its `default`. With no value at all, the command sends those defaults.
+  - `--field <name>=<value>` fills an MCP form, once for each field. A field that `agent requests` lists with a `when` condition takes a value only while the condition holds; otherwise the form neither sends nor requires it. A field that the list leaves out is hidden, and it keeps its default.
+- **The Worker checks each answer against the prompt**, as it does for the browser, and fails a wrong one with `invalid_argument`. A request that the agent withdrew, or that another client answered first, fails with `conflict`.
+- **An agent cannot answer its own requests.** The command fails with `usage`: the user answers them.
 
 ### Terminals
 
@@ -394,6 +417,19 @@ leapmux control agent wait "$A" "$B" --timeout 30m
 
 # Ask one of them a follow-up question and keep the answer.
 summary=$(leapmux control agent send "$A" "Summarize your change in one line." --wait)
+```
+
+### Approve an agent's prompts
+
+```bash
+# Wait until the agent stops at a prompt, then read what it asks.
+leapmux control agent wait "$A" --until waiting_for_user
+leapmux control agent requests "$A"
+
+# Approve the first request, or refuse it with a reason.
+R=$(leapmux control agent requests "$A" -q | head -1)
+leapmux control agent approve "$A" "$R"
+leapmux control agent deny "$A" "$R" --message "Run the unit tests only."
 ```
 
 ### A script that runs inside an agent

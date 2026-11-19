@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"

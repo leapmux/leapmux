@@ -184,27 +184,15 @@ func (codexProvider) ReportsDefaultModelSentinel() bool { return false }
 // tool-call or tool-suggestion elicitation. The request's
 // `_meta.codex_approval_kind` states which approval it is, and its
 // `_meta.persist` lists the scopes it accepts; an answer may name only one of
-// those, and only a session or an always scope.
+// those, and only a session or an always scope. codexElicitationAcceptChoices
+// reads both, so the answer admits exactly the scopes that the prompt offers.
 func codexMCPElicitationMeta(requestPayload json.RawMessage, persist string) bool {
-	var request struct {
-		Params struct {
-			Meta struct {
-				Kind    string   `json:"codex_approval_kind"`
-				Persist []string `json:"persist"`
-			} `json:"_meta"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(requestPayload, &request) != nil {
-		return false
-	}
-	meta := request.Params.Meta
-	if meta.Kind != contracts.MCPElicitationApprovalKindToolCall && meta.Kind != contracts.MCPElicitationApprovalKindToolSuggestion {
-		return false
-	}
-	if persist != contracts.MCPElicitationApprovalScopeSession && persist != contracts.MCPElicitationApprovalScopeAlways {
-		return false
-	}
-	return slices.Contains(meta.Persist, persist)
+	params := providerkit.RawFields(providerkit.RawFields(requestPayload)["params"])
+	// The once choice remembers nothing, and its empty scope must not admit
+	// an empty persist.
+	return persist != "" && slices.ContainsFunc(codexElicitationAcceptChoices(providerkit.RawFields(params["_meta"])), func(choice codexElicitationAcceptChoice) bool {
+		return choice.persist == persist
+	})
 }
 
 // ChildCapabilities states the native child operations that this provider supports.

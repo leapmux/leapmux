@@ -1497,7 +1497,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	}
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID
-	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken)
+	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.plugin, s.agentID, s.agentProvider, request, stored.ClaimToken)
 	if stateErr != nil {
 		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
 	}

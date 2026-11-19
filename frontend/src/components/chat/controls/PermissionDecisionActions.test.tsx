@@ -1,47 +1,48 @@
+import type { PermissionOption, PermissionPrompt } from '../model/controlPrompt'
 import type { PermissionPresetController } from '../providerSettings'
+import type { ControlDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions } from '~/test-support/controlRequestBanner'
-import { allowChoicePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
-import { providerFor } from '../providers/registry'
+import { allowChoicePillGroup, permissionPillGroup, testControlRequest } from '~/test-support/controlRequests'
 import { createControlAnswerState } from './types'
-import '../providers'
 
 /**
  * The shared decision row, read through each runtime's own option list.
  *
  * Every agent that states its own answers sends a different vocabulary of option
- * IDS, and this row lays them out by their KINDS instead. The cases below are the
- * four shapes those agents send, each rendered through the real banner: the
- * provider's `extractControl` fills the model and the banner picks this row, so a
- * plugin that stopped filling the options would fail here rather than draw an
+ * IDs, and this row lays them out by their KINDS instead. The cases below are the
+ * shapes the Worker's readers send, each rendered through the real banner, so a
+ * layout that stopped reading an option list would fail here rather than draw an
  * Allow that answers nothing.
  */
-function decodeOptionId(content: Uint8Array): string {
-  return JSON.parse(new TextDecoder().decode(content)).result.outcome.optionId
+function decidedOptionId(onDecide: ReturnType<typeof vi.fn>, call: number): string | undefined {
+  const decision = onDecide.mock.calls[call]?.[0] as ControlDecision | undefined
+  return decision?.kind.case === 'permission'
+    ? decision.kind.value.optionId
+    : undefined
 }
 
-function renderDecisions(
+function renderPermission(
   provider: AgentProvider,
   requestId: string,
-  options: Array<Record<string, string>>,
+  permission: PermissionPrompt,
   presets?: PermissionPresetController,
+  answerState = createControlAnswerState(),
 ) {
-  const onRespond = vi.fn().mockResolvedValue(undefined)
+  const onDecide = vi.fn().mockResolvedValue(undefined)
   render(() => (
     <ControlRequestActions
       agentProvider={provider}
-      request={{
+      request={testControlRequest({
         agentId: 'agent1',
         requestId,
-        payload: {
-          params: { options },
-        },
-      }}
-      answerState={createControlAnswerState()}
-      onRespond={onRespond}
+        prompt: { kind: 'permission', permission },
+      })}
+      answerState={answerState}
+      onDecide={onDecide}
       hasEditorContent={false}
       onTriggerSend={vi.fn()}
       {...(presets === undefined
@@ -49,84 +50,54 @@ function renderDecisions(
         : { presets })}
     />
   ))
-  return { onRespond }
+  return { onDecide }
 }
 
-describe('the selected-option reply of the Agent Client Protocol family', () => {
-  it('sends the chosen id as a selected outcome, under the worker request id', async () => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-
-    await providerFor(AgentProvider.GOOSE)!.controls?.sendPermissionOption!(onRespond, '7', 'proceed_once')
-
-    expect(onRespond).toHaveBeenCalledTimes(1)
-    const respondCall = onRespond.mock.calls[0]
-    expect(respondCall).toBeDefined()
-    const [content] = respondCall ?? []
-    expect(JSON.parse(new TextDecoder().decode(content))).toEqual({
-      jsonrpc: '2.0',
-      id: '7',
-      result: {
-        outcome: {
-          outcome: 'selected',
-          optionId: 'proceed_once',
-        },
-      },
-    })
-  })
-})
+function renderDecisions(
+  provider: AgentProvider,
+  requestId: string,
+  options: PermissionOption[],
+  presets?: PermissionPresetController,
+) {
+  return renderPermission(provider, requestId, { options }, presets)
+}
 
 describe('PermissionDecisionActions', () => {
   it.each([
-    ['Switch this turn', 'allow', 'once'],
-    ['Always switch', 'allow', 'session'],
-    ['Decline', 'deny', undefined],
-  ])('preserves the independent %s decision without permission presets', async (label, behavior, scope) => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
+    ['Switch this turn', 'once'],
+    ['Always switch', 'session'],
+    ['Decline', 'reject'],
+  ])('sends the independent %s decision without permission presets', async (label, optionId) => {
     const apply = vi.fn()
     const answerState = createControlAnswerState()
     answerState.setChoices({ 'control-permissions-pill': 'bypass' })
-    render(() => (
-      <ControlRequestActions
-        agentProvider={AgentProvider.GITHUB_COPILOT}
-        request={{
-          agentId: 'agent1',
-          requestId: 'switch',
-          payload: {
-            method: 'session.event',
-            params: {
-              event: {
-                type: 'auto_mode_switch.requested',
-                data: { requestId: 'switch', errorCode: 'user_model_rate_limited' },
-              },
-            },
-          },
-        }}
-        answerState={answerState}
-        onRespond={onRespond}
-        hasEditorContent={false}
-        onTriggerSend={vi.fn()}
-        presets={{
-          bypass: {
-            sets: { permissionMode: 'allow_all' },
-          },
-          apply,
-        }}
-      />
-    ))
+    // Copilot's automatic model switch, as the Worker reads it.
+    const { onDecide } = renderPermission(AgentProvider.GITHUB_COPILOT, 'switch', {
+      title: 'Copilot asks to switch to Auto',
+      options: [
+        { optionId: 'once', kind: 'allow_once', name: 'Switch this turn' },
+        { optionId: 'session', kind: 'allow_always', name: 'Always switch' },
+        { optionId: 'reject', kind: 'reject_once', name: 'Decline' },
+      ],
+      independentOptions: true,
+    }, {
+      bypass: {
+        sets: { permissionMode: 'allow_all' },
+      },
+      apply,
+    }, answerState)
     expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Switch this turn', 'Always switch', 'Decline'])
     expect(screen.queryByRole('radiogroup')).toBeNull()
     await fireEvent.click(screen.getByRole('button', { name: label }))
-    expect(onRespond).toHaveBeenCalledTimes(1)
-    const response = JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]![0])).response.response
-    expect(response.behavior).toBe(behavior)
-    expect(response.scope).toBe(scope)
+    expect(onDecide).toHaveBeenCalledTimes(1)
+    expect(decidedOptionId(onDecide, 0)).toBe(optionId)
     expect(apply).not.toHaveBeenCalled()
   })
 
   /** Goose's wire shape: four kind-named options, emitted allow-first. */
   function renderGooseActions() {
     const apply = vi.fn()
-    const { onRespond } = renderDecisions(AgentProvider.GOOSE, '7', [
+    const { onDecide } = renderDecisions(AgentProvider.GOOSE, '7', [
       { optionId: 'allow_always', kind: 'allow_always', name: 'allow_always' },
       { optionId: 'allow_once', kind: 'allow_once', name: 'allow_once' },
       { optionId: 'reject_once', kind: 'reject_once', name: 'reject_once' },
@@ -140,7 +111,7 @@ describe('PermissionDecisionActions', () => {
       },
       apply,
     })
-    return { onRespond, apply }
+    return { onDecide, apply }
   }
 
   /** Kilo's wire shape: an allow_always with no reject_always. */
@@ -188,36 +159,36 @@ describe('PermissionDecisionActions', () => {
   })
 
   it('sends the once options while Once is selected', async () => {
-    const { onRespond } = renderGooseActions()
+    const { onDecide } = renderGooseActions()
 
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[0]?.[0])).toBe('allow_once')
+    expect(decidedOptionId(onDecide, 0)).toBe('allow_once')
 
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[1]?.[0])).toBe('reject_once')
+    expect(decidedOptionId(onDecide, 1)).toBe('reject_once')
   })
 
   it('sends the always options once a scope beyond Once is selected', async () => {
-    const { onRespond } = renderGooseActions()
+    const { onDecide } = renderGooseActions()
 
     fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[0]?.[0])).toBe('allow_always')
+    expect(decidedOptionId(onDecide, 0)).toBe('allow_always')
 
     // A remembering scope also upgrades Deny for the one agent offering reject_always.
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[1]?.[0])).toBe('reject_always')
+    expect(decidedOptionId(onDecide, 1)).toBe('reject_always')
   })
 
   it('keeps the reject-once option under a remembering scope when the agent offers no reject_always', async () => {
-    const { onRespond } = renderKiloShapeActions()
+    const { onDecide } = renderKiloShapeActions()
 
     fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[0]?.[0])).toBe('reject')
+    expect(decidedOptionId(onDecide, 0)).toBe('reject')
 
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[1]?.[0])).toBe('always')
+    expect(decidedOptionId(onDecide, 1)).toBe('always')
   })
 
   it('draws no scope group when the agent offers no always option', () => {
@@ -256,7 +227,7 @@ describe('PermissionDecisionActions', () => {
   })
 
   it('states the duration on the Allow button when the agent offers no once option', async () => {
-    const { onRespond } = renderDecisions(AgentProvider.GOOSE, '11', [
+    const { onDecide } = renderDecisions(AgentProvider.GOOSE, '11', [
       { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
       { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
     ])
@@ -265,21 +236,21 @@ describe('PermissionDecisionActions', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Allow scope' })).not.toBeInTheDocument()
 
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[0]?.[0])).toBe('always')
+    expect(decidedOptionId(onDecide, 0)).toBe('always')
   })
 
   it('applies the chosen permission preset after an allow and never after a reject', async () => {
-    const { onRespond, apply } = renderGooseActions()
+    const { onDecide, apply } = renderGooseActions()
 
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(onRespond).toHaveBeenCalledTimes(1)
+    expect(onDecide).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenCalledWith({
       sets: { permissionMode: 'auto' },
     })
 
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
-    expect(onRespond).toHaveBeenCalledTimes(2)
+    expect(onDecide).toHaveBeenCalledTimes(2)
     expect(apply).toHaveBeenCalledTimes(1)
   })
 
@@ -288,7 +259,7 @@ describe('PermissionDecisionActions', () => {
     // taken": an extra button carrying an invented kind (a future agent's
     // answer variant) is not that action, so it must not switch the mode.
     const apply = vi.fn()
-    const { onRespond } = renderDecisions(AgentProvider.GOOSE, '15', [
+    const { onDecide } = renderDecisions(AgentProvider.GOOSE, '15', [
       { optionId: 'once', kind: 'allow_once', name: 'Allow' },
       { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
       { optionId: 'ask', kind: 'ask_user', name: 'Ask the user' },
@@ -302,13 +273,13 @@ describe('PermissionDecisionActions', () => {
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-decision-ask'))
 
-    expect(onRespond).toHaveBeenCalledOnce()
-    expect(decodeOptionId(onRespond.mock.calls[0]?.[0])).toBe('ask')
+    expect(onDecide).toHaveBeenCalledOnce()
+    expect(decidedOptionId(onDecide, 0)).toBe('ask')
     expect(apply).not.toHaveBeenCalled()
   })
 
   it('draws a Once / Session / Project pill group for Reasonix\'s two always scopes', async () => {
-    const { onRespond } = renderDecisions(AgentProvider.REASONIX, '13', [
+    const { onDecide } = renderDecisions(AgentProvider.REASONIX, '13', [
       { optionId: 'reasonix_write_once', kind: 'allow_once', name: 'Allow once' },
       { optionId: 'reasonix_write_session', kind: 'allow_always', name: 'Allow these directories for this session' },
       { optionId: 'reasonix_write_project', kind: 'allow_always', name: 'Add to project allow_write' },
@@ -325,13 +296,13 @@ describe('PermissionDecisionActions', () => {
 
     // Allow sends the selected scope's option, Once first, Project after a pick.
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[0]?.[0])).toBe('reasonix_write_once')
+    expect(decidedOptionId(onDecide, 0)).toBe('reasonix_write_once')
 
     fireEvent.click(scope.getByRole('radio', { name: 'Project' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[1]?.[0])).toBe('reasonix_write_project')
+    expect(decidedOptionId(onDecide, 1)).toBe('reasonix_write_project')
 
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
-    expect(decodeOptionId(onRespond.mock.calls[2]?.[0])).toBe('reasonix_write_deny')
+    expect(decidedOptionId(onDecide, 2)).toBe('reasonix_write_deny')
   })
 })

@@ -10,7 +10,7 @@ import { withCommandExit } from '../../../model/commandResult'
 import { mcpToolCallRequest, parseMcpContentItem, splitPrefixedPair } from '../../../model/mcpToolCall'
 import { failedResult, proseResult } from '../../../model/toolCall'
 import { acpRemapFacts, acpResultAvailable, acpSpecFor } from '../../acp/extractors/toolCall'
-import { kiroUserInputQuestions } from '../askUserQuestion'
+import { kiroUserInputQuestion } from '../askUserQuestion'
 import { kiroMeta } from '../protocol'
 import { isKiroTool, KIRO_TOOL, KIRO_TOOL_KINDS } from '../toolKinds'
 import { kiroAgentRequest, kiroAgentRun } from './agent'
@@ -400,12 +400,13 @@ export const kiroToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   if (pickString(meta, 'toolId') === KIRO_USER_INPUT_TOOL_ID) {
     // The answer is the reply to Kiro's own question request, which draws in the
     // transcript as its own row. The call states the question alone.
-    const questions = kiroUserInputQuestions(title, meta?.userInputOptions)
     const asked = {
       kind: 'question' as const,
       name: KIRO_USER_INPUT_TOOL_ID,
       request: {
-        questions: questions.slice(0, 1),
+        questions: [
+          kiroUserInputQuestion(title, meta?.userInputOptions),
+        ],
       },
       title: 'Question',
     }

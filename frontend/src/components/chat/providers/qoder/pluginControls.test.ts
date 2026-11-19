@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import type { ControlPrompt } from '../../model/controlPrompt'
+import type { PersistedControlResponse } from '../../persistedControlResponse'
+import { describe, expect, it } from 'vitest'
+import { CONTROL_ANSWER_MESSAGE } from '~/generated/contracts/control-answer'
 import { QODER_MODE } from '~/generated/contracts/qoder-protocol'
-import { CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
-import { createControlAnswerState } from '../../controls/types'
+import { GENERIC_PERMISSION_PROMPT } from '~/test-support/controlRequests'
+import { } from '~/test-support/controlResponses'
+import { resolveControlResponseSummary } from '../../persistedControlResponse'
 import { qoderControls } from './pluginControls'
 
 /** A stored can_use_tool request in the shape the worker publishes it. */
@@ -13,117 +17,117 @@ function approvalPayload(toolName: string, input: Record<string, unknown>): Reco
   }
 }
 
+/** The prompt that the Worker records for `ExitPlanMode`: the plan approval. */
+const PLAN_PROMPT: ControlPrompt = { kind: 'plan' }
+
+/**
+ * The decision object that the Worker sends to Qoder and stores as the answer row
+ * (`translateQoderCanUseTool`): Qoder's own fields inside the control-response envelope.
+ */
+function storedAnswer(answer: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: 'control_response',
+    response: { subtype: 'success', request_id: 'approval:ap1', response: answer },
+  }
+}
+
+/** One saved row: the stored answer, the native request, and the prompt that the Worker recorded. */
+function saved(request: Record<string, unknown>, prompt: ControlPrompt, answer: Record<string, unknown>): PersistedControlResponse {
+  return {
+    requestId: 'approval:ap1',
+    claimToken: 'claim',
+    request,
+    response: storedAnswer(answer),
+    prompt,
+  }
+}
+
+/** What the transcript row and the scroll-rail dot both show for one saved row. */
+function display(cr: PersistedControlResponse) {
+  return resolveControlResponseSummary(cr, qoderControls.controlResponseDisplay)
+}
+
+const BASH = approvalPayload('Bash', { command: 'ls' })
+const EXIT_PLAN = approvalPayload('ExitPlanMode', { plan: 'Do the thing.' })
+
 describe('qoderControls', () => {
-  it('draws a native MCP elicitation as a form and keeps typed answer values', () => {
-    const schema = {
-      type: 'object',
-      properties: {
-        count: { type: 'integer', title: 'Count' },
-      },
-    }
-    const payload = {
-      type: 'control_request',
-      request_id: 'form-1',
-      request: {
-        subtype: 'elicitation',
-        mcp_server_name: 'form_probe',
-        mode: 'form',
-        message: 'Choose the probe settings.',
-        requested_schema: schema,
-      },
-    }
-    expect(qoderControls.elicitation?.(payload)).toEqual({
-      mode: 'form',
-      message: 'Choose the probe settings.',
-      server: 'form_probe',
-      schema,
-      url: '',
-      title: '',
-      description: '',
-    })
-    expect(qoderControls.elicitation?.({
-      request: { subtype: 'can_use_tool' },
-    })).toBeUndefined()
+  // The Worker reads each request and builds each answer, so the browser keeps only the
+  // display of a saved answer and the presets.
+  it('registers only the saved-answer display and the presets', () => {
+    expect(Object.keys(qoderControls).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
+  })
+})
+
+describe('qoderControls controlResponseDisplay', () => {
+  it('reads a permission answer with the words of its buttons', () => {
+    expect(display(saved(BASH, GENERIC_PERMISSION_PROMPT, { behavior: 'allow', outcome: 'proceed_once' })))
+      .toStrictEqual({ kind: 'label', text: 'Allow' })
+    expect(display(saved(BASH, GENERIC_PERMISSION_PROMPT, { behavior: 'allow', permissionScope: 'session' })))
+      .toStrictEqual({ kind: 'label', text: 'Allow' })
+    expect(display(saved(BASH, GENERIC_PERMISSION_PROMPT, { behavior: 'deny' })))
+      .toStrictEqual({ kind: 'label', text: 'Deny' })
+  })
+
+  it('reads a refusal with the reader\'s words as the feedback it sent', () => {
+    expect(display(saved(BASH, GENERIC_PERMISSION_PROMPT, { behavior: 'deny', message: 'Use a dry run.', reason: 'Use a dry run.' })))
+      .toStrictEqual({ kind: 'feedback', message: 'Use a dry run.' })
+    expect(display(saved(BASH, GENERIC_PERMISSION_PROMPT, { behavior: 'deny', message: CONTROL_ANSWER_MESSAGE.RejectedByUser })))
+      .toStrictEqual({ kind: 'label', text: 'Deny' })
+  })
+
+  it('reads a plan answer with the words of the plan control', () => {
+    expect(display(saved(EXIT_PLAN, PLAN_PROMPT, {
+      behavior: 'allow',
+      updatedInput: { plan: 'Do the thing.' },
+    })))
+      .toStrictEqual({ kind: 'label', text: 'Approve' })
+    expect(display(saved(EXIT_PLAN, PLAN_PROMPT, { behavior: 'deny' })))
+      .toStrictEqual({ kind: 'label', text: 'Reject' })
+    expect(display(saved(EXIT_PLAN, PLAN_PROMPT, { behavior: 'deny', message: 'Revise step 2.', reason: 'Revise step 2.' })))
+      .toStrictEqual({ kind: 'feedback', message: 'Revise step 2.' })
+  })
+
+  // The recorded prompt is what the banner drew, so it decides the words, and the
+  // native request does not.
+  it('takes the words from the recorded prompt, not from the native request', () => {
+    expect(display(saved(EXIT_PLAN, GENERIC_PERMISSION_PROMPT, { behavior: 'allow' })))
+      .toStrictEqual({ kind: 'label', text: 'Allow' })
+    expect(display(saved(BASH, PLAN_PROMPT, { behavior: 'deny' })))
+      .toStrictEqual({ kind: 'label', text: 'Reject' })
+  })
+
+  // A row that states no prompt cannot state a plan, so it takes the permission words.
+  it('reads an answer whose row states no prompt with the permission words', () => {
+    const { prompt: _prompt, ...unprompted } = saved(EXIT_PLAN, PLAN_PROMPT, { behavior: 'allow' })
+    expect(display(unprompted)).toStrictEqual({ kind: 'label', text: 'Allow' })
+  })
+
+  // The shared display reads a saved MCP elicitation answer before this one, through the
+  // recorded elicitation prompt. Qoder's display recognizes no elicitation result itself.
+  it('reads nothing from an elicitation result', () => {
     expect(qoderControls.controlResponseDisplay?.({
       requestId: 'form-1',
       claimToken: '',
-      request: payload,
-      response: {
-        type: 'control_response',
-        response: {
-          response: {
-            action: 'accept',
-            content: { count: 0 },
-          },
-        },
+      request: {
+        type: 'control_request',
+        request_id: 'form-1',
+        request: { subtype: 'elicitation' },
       },
-    })).toEqual({ kind: 'label', text: 'Approved\nCount: 0' })
+      response: storedAnswer({
+        action: 'accept',
+        content: { count: 0 },
+      }),
+    })).toBeNull()
   })
 
-  it('allows a permission the composer sends with no reason', () => {
-    expect(qoderControls.buildControlResponse?.(approvalPayload('Bash', { command: 'ls' }), '', 'approval:ap1'))
-      .toStrictEqual({
-        type: 'control_response',
-        response: {
-          subtype: 'success',
-          request_id: 'approval:ap1',
-          response: {
-            behavior: 'allow',
-            updatedInput: { command: 'ls' },
-          },
-        },
-      })
-  })
-
-  it('denies a permission the composer answers with a reason', () => {
-    expect(qoderControls.buildControlResponse?.(approvalPayload('Bash', { command: 'ls' }), 'Use a dry run.', 'approval:ap1'))
-      .toStrictEqual({
-        type: 'control_response',
-        response: {
-          subtype: 'success',
-          request_id: 'approval:ap1',
-          response: { behavior: 'deny', message: 'Use a dry run.' },
-        },
-      })
-  })
-
-  // An editor reply to a plan always rejects it: the dedicated approval button
-  // owns the allow path, so a typed message is feedback and never an approve.
-  it('denies a plan the composer answers, even with no reason', () => {
-    expect(qoderControls.buildControlResponse?.(approvalPayload('ExitPlanMode', { plan: 'Do the thing.' }), 'Revise step 2.', 'approval:ap1'))
-      .toMatchObject({
-        response: {
-          response: { behavior: 'deny', message: 'Revise step 2.' },
-        },
-      })
-    expect(qoderControls.buildControlResponse?.(approvalPayload('ExitPlanMode', { plan: 'Do the thing.' }), '', 'approval:ap1'))
-      .toMatchObject({
-        response: {
-          response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE },
-        },
-      })
-  })
-
-  it('reads a shell command beside the offered scope options', () => {
-    expect(qoderControls.extractControl?.({
-      payload: approvalPayload('Bash', { command: 'ls' }),
+  it('degrades to the generic label for an answer that states no behavior', () => {
+    expect(display(saved(BASH, GENERIC_PERMISSION_PROMPT, { outcome: 'proceed_once' })))
+      .toStrictEqual({ kind: 'label', text: 'Responded' })
+    expect(display({
+      ...saved(BASH, GENERIC_PERMISSION_PROMPT, {}),
+      response: undefined,
     }))
-      .toStrictEqual({
-        kind: 'permission',
-        permission: {
-          title: 'Bash',
-          input: { command: 'ls' },
-          command: 'ls',
-          options: [
-            { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
-            { optionId: 'session', kind: 'allow_always', name: 'Allow for this session' },
-            { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
-          ],
-        },
-      })
-    expect(qoderControls.extractControl?.({
-      payload: approvalPayload('ExitPlanMode', {}),
-    })?.kind).toBe('plan')
+      .toStrictEqual({ kind: 'label', text: 'Responded' })
   })
 })
 
@@ -140,136 +144,5 @@ describe('qoderControls permissionPresets', () => {
         sets: { permissionMode: QODER_MODE.BypassPermissions },
       },
     })
-  })
-})
-
-describe('qoderControls askUserQuestion', () => {
-  const questions = [
-    {
-      question: 'Color?',
-      header: 'Color',
-      options: [
-        { label: 'Red', description: 'Warm' },
-        { label: 'Blue', description: 'Cool' },
-      ],
-    },
-  ]
-
-  it('recognizes a question by its tool name', () => {
-    expect(qoderControls.askUserQuestion?.isRequest(approvalPayload('AskUserQuestion', { questions }))).toBe(true)
-    expect(qoderControls.askUserQuestion?.isRequest(approvalPayload('WriteTodos', {}))).toBe(false)
-  })
-
-  it('reads the questions the payload declares', () => {
-    expect(qoderControls.askUserQuestion?.extractQuestions(approvalPayload('AskUserQuestion', { questions })))
-      .toEqual(questions)
-  })
-
-  // The reply is the whole tool input with `answers` added: the worker folds
-  // that object into Qoder's `updatedInput`, and Qoder's own reader matches the
-  // answers back to the questions by their text.
-  it('answers with the neutral allow and the input that carries the answers', async () => {
-    const request = {
-      requestId: 'approval:ap1',
-      agentId: 'agent-1',
-      payload: approvalPayload('AskUserQuestion', { questions }),
-    }
-    const sent: string[] = []
-    const sendControlResponse = async (content: Uint8Array) => {
-      sent.push(new TextDecoder().decode(content))
-      return undefined
-    }
-    const state = createControlAnswerState({
-      selections: {
-        0: ['Red'],
-      },
-    })
-
-    await qoderControls.askUserQuestion?.sendAnswer(request, sendControlResponse, questions, state)
-
-    expect(sent).toHaveLength(1)
-    expect(JSON.parse(sent[0]!)).toStrictEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'approval:ap1',
-        response: {
-          behavior: 'allow',
-          updatedInput: {
-            questions,
-            answers: { 'Color?': 'Red' },
-          },
-        },
-      },
-    })
-  })
-
-  it('rejects with the neutral deny and the reader\'s words', async () => {
-    const request = {
-      requestId: 'approval:ap1',
-      agentId: 'agent-1',
-      payload: approvalPayload('AskUserQuestion', { questions }),
-    }
-    const sent: string[] = []
-    const sendControlResponse = async (content: Uint8Array) => {
-      sent.push(new TextDecoder().decode(content))
-      return undefined
-    }
-
-    await qoderControls.askUserQuestion?.sendReject(request, sendControlResponse, 'Ask again tomorrow.')
-
-    expect(JSON.parse(sent[0]!)).toStrictEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'approval:ap1',
-        response: { behavior: 'deny', message: 'Ask again tomorrow.' },
-      },
-    })
-  })
-})
-
-describe('qoderControls permission options', () => {
-  it('offers the once and session scopes the runtime accepts', () => {
-    const extracted = qoderControls.extractControl?.({
-      payload: approvalPayload('Bash', { command: 'printf hi > out.txt' }),
-    })
-    expect(extracted && 'permission' in extracted
-      ? extracted.permission.options
-      : []).toEqual([
-      { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
-      { optionId: 'session', kind: 'allow_always', name: 'Allow for this session' },
-      { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
-    ])
-  })
-
-  it('sends the selected scope as the choice of an allow', async () => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-    await qoderControls.sendPermissionOption?.(onRespond, 'approval:ap1', 'session')
-    expect(onRespond).toHaveBeenCalledOnce()
-    const sent = JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))
-    expect(sent).toMatchObject({
-      response: {
-        response: { behavior: 'allow', choice: 'session' },
-      },
-    })
-
-    await qoderControls.sendPermissionOption?.(onRespond, 'approval:ap1', 'once')
-    sent.response.response.behavior = 'allow'
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[1]?.[0] as Uint8Array)))
-      .toMatchObject({
-        response: {
-          response: { behavior: 'allow', choice: 'once' },
-        },
-      })
-
-    // An id no pill offered answers deny, mirroring the runtime's fail-safe.
-    await qoderControls.sendPermissionOption?.(onRespond, 'approval:ap1', 'persist')
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[2]?.[0] as Uint8Array)))
-      .toMatchObject({
-        response: {
-          response: { behavior: 'deny', choice: 'persist' },
-        },
-      })
   })
 })

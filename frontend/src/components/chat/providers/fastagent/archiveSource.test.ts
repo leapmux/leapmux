@@ -191,8 +191,12 @@ describe('fastAgentArchiveSource', () => {
       ],
     })
     expect(call).toMatchObject({ id: 'real-live', status: 'declined' })
-    const permission = providerFor(AgentProvider.FAST_AGENT)?.controls?.extractControl?.({
-      payload: {
+    // The Worker reads the permission itself. The plugin keeps the ACP display of the
+    // saved answer, which reads the chosen option from the request's own list.
+    const display = providerFor(AgentProvider.FAST_AGENT)?.controls?.controlResponseDisplay?.({
+      requestId: 'permission',
+      claimToken: 'claim',
+      request: {
         method: 'session/request_permission',
         params: {
           toolCall: {
@@ -202,19 +206,16 @@ describe('fastAgentArchiveSource', () => {
             rawInput: { command: 'printf permission' },
           },
           options: [
-            { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once' },
+            { optionId: 'allow_once', kind: 'allow_once', name: 'Allow this command' },
           ],
         },
       },
-    })
-    expect(permission).toMatchObject({
-      kind: 'permission',
-      permission: {
-        command: 'printf permission',
-        options: [
-          { optionId: 'allow_once' },
-        ],
+      response: {
+        result: {
+          outcome: { outcome: 'selected', optionId: 'allow_once' },
+        },
       },
     })
+    expect(display).toEqual({ kind: 'label', text: 'Allow this command' })
   })
 })

@@ -1,12 +1,17 @@
 import type { ControlPrompt } from './model/controlPrompt'
 import type { ControlResponseSummary } from './model/controlResponse'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { fromJson } from '@bufbuild/protobuf'
+import { CONTROL_ANSWER_BEHAVIOR } from '~/generated/contracts/control-answer'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
+import { ControlPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { isObject, pickString, stringArray } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
+import { controlPromptFromWire } from './model/controlPromptWire'
 
 // This module reads worker metadata separately from the native request and response.
-// Provider plugins derive display text from the native payloads.
+// Provider plugins derive display text from the native payloads, and read the kind of
+// the request from the prompt that the Worker recorded in the metadata.
 
 // The user-facing labels for a persisted control-response answer, derived by the frontend from the
 // native response payload (issue #258). They live in THIS leaf -- the module that owns
@@ -19,7 +24,7 @@ import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
  * reads the same before and after the reader gives it. The two pairs below are the two
  * control families that state no option list of their own:
  *
- *   - a bare permission, whose buttons are Allow and Deny (`GenericToolActions`);
+ *   - a bare permission, whose buttons are Allow and Deny (`agent.AllowDenyOptions` in Go);
  *   - a plan approval, whose buttons are Approve and Reject (`ExitPlanModeControl`).
  *
  * A permission that DOES carry an option list reads its own option back instead, through
@@ -38,10 +43,9 @@ export type ControlDecisionWords = typeof CONTROL_DECISION_WORDS[keyof typeof CO
  *
  * Which pair is a property of the REQUEST, and the answer cannot state it: a plan
  * approval and a bare permission share the neutral envelope, and their buttons carry
- * different words. The control model already answers which control arrived -- it is what
- * the banner drew -- so a provider reads its own `extractControl` here rather than a
- * second field of the same request. Claude and ZCode each read one, and the two
- * discriminators disagreed for a request that carried only one of them.
+ * different words. The prompt that the Worker recorded with the answer
+ * ({@link PersistedControlResponse.prompt}) is what the banner drew, so a provider
+ * passes it here rather than reading a field of its own request.
  */
 export function controlDecisionWords(control: ControlPrompt | null | undefined): ControlDecisionWords {
   return control?.kind === 'plan'
@@ -64,6 +68,12 @@ export interface PersistedControlResponse {
   request: Record<string, unknown> | undefined
   /** Native response, or undefined when the original bytes are not a JSON object. */
   response: Record<string, unknown> | undefined
+  /**
+   * What the request asked, as the Worker read it when it recorded the answer, or
+   * undefined for a row that states none. A display reads the kind of the request
+   * here, never from the native request.
+   */
+  prompt?: ControlPrompt
 }
 
 /**
@@ -78,8 +88,7 @@ export interface PersistedControlResponse {
  * payload isn't recognizable (the caller then degrades via {@link fallbackControlResponseSummary}).
  * Named once in this leaf so the registry interface, the transcript renderer, and the
  * {@link resolveControlResponseSummary} chokepoint reference ONE spelling instead of re-typing the
- * signature -- a change to the contract lands in one place. (registerACPProvider reaches for
- * `Provider['controlResponseDisplay']` instead, since it can import the plugin type without a cycle.)
+ * signature -- a change to the contract lands in one place.
  */
 export type ControlResponseDeriver = (cr: PersistedControlResponse) => ControlResponseSummary | null
 
@@ -137,6 +146,7 @@ export function parsePersistedControlResponse(
   const requestId = parsed.messageMetadata[MESSAGE_METADATA_FIELD.ControlRequestID]
   if (typeof requestId !== 'string')
     return null
+  const prompt = persistedControlPrompt(parsed.messageMetadata[MESSAGE_METADATA_FIELD.ControlPrompt])
   return {
     requestId,
     claimToken: pickString(parsed.messageMetadata, MESSAGE_METADATA_FIELD.ControlRequestClaimToken),
@@ -144,6 +154,24 @@ export function parsePersistedControlResponse(
       ? parsed.supplementalContent
       : undefined,
     response: parsed.parentObject,
+    ...(prompt
+      ? { prompt }
+      : {}),
+  }
+}
+
+/**
+ * The prompt that the Worker recorded with a response row, as protojson, or undefined
+ * for a row that states none or a value that does not read as a prompt.
+ */
+function persistedControlPrompt(value: unknown): ControlPrompt | undefined {
+  if (!isObject(value))
+    return undefined
+  try {
+    return controlPromptFromWire(fromJson(ControlPromptSchema, value as Parameters<typeof fromJson>[1], { ignoreUnknownFields: true }))
+  }
+  catch {
+    return undefined
   }
 }
 
@@ -164,7 +192,7 @@ export function controlBehaviorDisplay(
   const env = decodeControlBehaviorEnvelope(response)
   if (!env)
     return null
-  if (env.behavior === 'allow')
+  if (env.behavior === CONTROL_ANSWER_BEHAVIOR.Allow)
     return label(words.allow)
   return feedbackOrLabel(env.message, words.deny)
 }

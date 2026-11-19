@@ -3,13 +3,11 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { kiroAssistantTextSegments } from './assistantText'
 import { kiroAgentTurnEnd } from './classification'
-import { kiroControlResponseSummary, kiroPermissionRejectReason } from './controlResponse'
-import { kiroElicitation, kiroExtractControl } from './extractControl'
+import { kiroControlResponseSummary } from './controlResponse'
 import { kiroOutputFilePaths } from './extractors/outputFilePaths'
 import { kiroToolCallAdapter } from './extractors/toolCall'
 import { kiroNativeNotifications } from './notification'
 import { kiroPermissionPresets } from './permissionPresets'
-import { kiroQuestionHandling } from './pluginControls'
 
 registerACPProvider({
   outputFilePaths: kiroOutputFilePaths,
@@ -33,11 +31,7 @@ registerACPProvider({
     audio: false,
     binary: [...KIRO_BINARY_MIME],
   },
-  extractControl: kiroExtractControl,
-  elicitation: kiroElicitation,
   controlResponseDisplay: kiroControlResponseSummary,
-  permissionRejectReason: kiroPermissionRejectReason,
-  questionHandling: kiroQuestionHandling,
   agentTurnEnd: kiroAgentTurnEnd,
   assistantTextSegments: kiroAssistantTextSegments,
   nativeNotifications: kiroNativeNotifications,

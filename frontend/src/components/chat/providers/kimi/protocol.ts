@@ -3,7 +3,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
  * Read stored notices and native control interactions.
- * Native transcript envelopes use ./transcript.
+ * Native conversation records use ./conversation.
  * The Worker removes duplicate global warnings and recreates profile warnings in their native event shape.
  * Vocabulary that Go and TypeScript both read lives in contracts/kimi-protocol.json.
  */
@@ -12,7 +12,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 const KIMI_EVENT_TYPES: ReadonlySet<string> = new Set<string>([KIMI_EVENT.Warning, KIMI_EVENT.ConfigWarning])
 
 /** The agent id the main agent of a session carries. */
-export const KIMI_MAIN_AGENT = 'main'
+const KIMI_MAIN_AGENT = 'main'
 
 /** One persisted Kimi Code event. */
 export interface KimiEventRow {

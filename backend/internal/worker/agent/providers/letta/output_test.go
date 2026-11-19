@@ -462,7 +462,7 @@ func TestControlRequestBodyLivesInTheRequestField(t *testing.T) {
 	assert.Equal(t, string(lettaControlPermission), payload.Type, "a request for the question tool asks whether the tool may run")
 }
 
-// The control payload uses the contract's tool fields that the browser reads.
+// The control payload uses the contract's tool fields, which ReadControlRequest reads.
 // A payload with `toolName`, `toolCallId`, and `input` drew an empty tool banner.
 // Its question options did not appear.
 func TestControlPayloadUsesTheContractFieldNames(t *testing.T) {

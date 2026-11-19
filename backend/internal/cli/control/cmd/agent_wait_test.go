@@ -371,20 +371,20 @@ func TestQueueWatch_SaysOnceWhyAPausedQueueKeepsTheWaitGoing(t *testing.T) {
 	assert.ErrorIs(t, err, refused)
 }
 
-func TestGroupWaitTargets(t *testing.T) {
-	groups, agentIDs := groupWaitTargets([]tabTarget{
+func TestGroupAgentsByWorker(t *testing.T) {
+	groups, agentIDs := groupAgentsByWorker([]tabTarget{
 		{ID: "a-1", WorkerID: "w-1"},
 		{ID: "b-1", WorkerID: "w-2"},
 		{ID: "a-2", WorkerID: "w-1"},
 		{ID: "a-1", WorkerID: "w-1"},
 	})
 	assert.Equal(t, []string{"a-1", "b-1", "a-2"}, agentIDs, "the result follows the arguments, and a repeated agent counts once")
-	assert.Equal(t, []waitTargets{
+	assert.Equal(t, []workerAgents{
 		{workerID: "w-1", agentIDs: []string{"a-1", "a-2"}},
 		{workerID: "w-2", agentIDs: []string{"b-1"}},
 	}, groups, "one watch for each Worker")
 
-	groups, agentIDs = groupWaitTargets(nil)
+	groups, agentIDs = groupAgentsByWorker(nil)
 	assert.Empty(t, groups)
 	assert.Empty(t, agentIDs)
 }

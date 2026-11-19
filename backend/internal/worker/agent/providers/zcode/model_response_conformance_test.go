@@ -10,11 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestZCodeModelResponseConformance replays the shared main-reply corpus.
+// TestZCodeModelResponseConformance replays the main-reply corpus against
+// zcodeIsMainReply.
 //
-// The browser replays the same file against `zcodeIsMainReply` in the provider
-// plugin. A divergence between the two copies persists a side query as an
-// assistant bubble on one side and hides it on the other.
+// The browser has no copy of the rule, because the worker stores no side query.
 func TestZCodeModelResponseConformance(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(testutil.RepoPath(t, "testdata", "zcode_model_response_conformance.json"))

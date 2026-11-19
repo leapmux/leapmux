@@ -3,10 +3,9 @@ package providerkit
 import (
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/stretchr/testify/assert"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 

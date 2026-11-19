@@ -1,0 +1,350 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// The neutral form of an agent's control requests and of their answers.
+//
+// Each provider states a prompt in its own wire format: Claude a tool name and
+// its input, Codex a JSON-RPC method and a command, the Agent Client Protocol
+// family a tool call and an option list, Pi an extension dialog. The Worker's
+// provider package reads its own request into a ControlPrompt, and builds its
+// own answer from a ControlDecision. A client draws the prompt and sends the
+// decision, so no client reads or writes a provider's JSON.
+
+// ControlPrompt is what one control request asks.
+message ControlPrompt {
+  oneof kind {
+    PermissionPrompt permission = 1;
+    PlanPrompt plan = 2;
+    QuestionPrompt question = 3;
+    ElicitationPrompt elicitation = 4;
+    DialogPrompt dialog = 5;
+    // The Worker cannot read the payload at all, so the request offers no
+    // answer. The provider still waits, so a client shows the request and
+    // the fault, and offers a stop instead. AnswerControl refuses it.
+    ControlPayloadFault unreadable = 6;
+  }
+  // What the composer's editor does while this request waits.
+  ControlEditorPurpose editor_purpose = 7;
+}
+
+// ControlPayloadFault is why the Worker cannot read a control request's
+// payload.
+enum ControlPayloadFault {
+  CONTROL_PAYLOAD_FAULT_UNSPECIFIED = 0;
+  // The payload is not JSON.
+  CONTROL_PAYLOAD_FAULT_MALFORMED = 1;
+  // The payload is JSON, but not an object.
+  CONTROL_PAYLOAD_FAULT_NOT_AN_OBJECT = 2;
+}
+
+// ControlEditorPurpose says what text typed in the composer means for a
+// request.
+enum ControlEditorPurpose {
+  CONTROL_EDITOR_PURPOSE_UNSPECIFIED = 0; // Treated as FEEDBACK.
+  // The text explains a refusal, or revises a plan.
+  CONTROL_EDITOR_PURPOSE_FEEDBACK = 1;
+  // The text answers the request, as a dialog's value does.
+  CONTROL_EDITOR_PURPOSE_ANSWER = 2;
+  // The request takes no text; the composer sends a message instead.
+  CONTROL_EDITOR_PURPOSE_NONE = 3;
+}
+
+// PermissionPrompt asks whether one call may run.
+message PermissionPrompt {
+  // The operation to approve: a tool name, or the runtime's own title.
+  string title = 1;
+  // Why the call needs approval, in the runtime's own words.
+  string reason = 2;
+  // What the runtime asks to approve, in prose (Markdown), such as a
+  // subagent's plan. A prompt that states it leaves it out of input_json.
+  string text = 3;
+  // The command that the call runs.
+  string command = 4;
+  string working_directory = 5;
+  // The call's arguments as JSON text, or empty for none.
+  string input_json = 6;
+  // The answers, in the order that the runtime sent them. A provider whose
+  // runtime states none offers LeapMux's own, so every answer is an option.
+  repeated PermissionOption options = 7;
+  // Each option makes a distinct decision, and no scope combines them.
+  bool independent_options = 8;
+}
+
+// PermissionOption is one answer to a permission prompt.
+message PermissionOption {
+  // What a PermissionDecision sends back.
+  string option_id = 1;
+  PermissionOptionKind kind = 2;
+  // The runtime's label, or empty for the label of the kind.
+  string name = 3;
+  // How far an always-allow reaches, when the provider knows it.
+  PermissionScope scope = 4;
+}
+
+enum PermissionOptionKind {
+  PERMISSION_OPTION_KIND_UNSPECIFIED = 0;
+  PERMISSION_OPTION_KIND_ALLOW_ONCE = 1;
+  PERMISSION_OPTION_KIND_ALLOW_ALWAYS = 2;
+  PERMISSION_OPTION_KIND_REJECT_ONCE = 3;
+  PERMISSION_OPTION_KIND_REJECT_ALWAYS = 4;
+  // A kind outside the four above. Its name says what it does.
+  PERMISSION_OPTION_KIND_OTHER = 5;
+}
+
+enum PermissionScope {
+  PERMISSION_SCOPE_UNSPECIFIED = 0;
+  PERMISSION_SCOPE_SESSION = 1;
+  PERMISSION_SCOPE_WORKSPACE = 2;
+  PERMISSION_SCOPE_PROJECT = 3;
+  PERMISSION_SCOPE_USER = 4;
+}
+
+// PlanPrompt asks to approve a plan.
+message PlanPrompt {
+  // The plan, when the request itself carries it. Most providers put the plan
+  // in the transcript instead.
+  string text = 1;
+  // The tool permissions that the plan asks for beside itself.
+  repeated PlanPermission permissions = 2;
+  repeated string details = 3;
+  // The answers that the runtime offers beside a plain approve and reject.
+  repeated PlanChoice choices = 4;
+}
+
+message PlanPermission {
+  string tool = 1;
+  string prompt = 2;
+}
+
+message PlanChoice {
+  // What a PlanDecision sends back.
+  string id = 1;
+  string label = 2;
+  string description = 3;
+  // What the choice does with the plan. A PlanDecision approves exactly
+  // when its choice approves.
+  PlanChoiceEffect effect = 4;
+}
+
+enum PlanChoiceEffect {
+  PLAN_CHOICE_EFFECT_UNSPECIFIED = 0;
+  // The agent implements the plan.
+  PLAN_CHOICE_EFFECT_APPROVE = 1;
+  // The agent keeps planning, or leaves plan mode without the plan.
+  PLAN_CHOICE_EFFECT_REFUSE = 2;
+  // Neither, such as saving the plan for later. The choice takes no
+  // feedback and no approval settings.
+  PLAN_CHOICE_EFFECT_OTHER = 3;
+}
+
+// QuestionPrompt asks one or more questions.
+message QuestionPrompt {
+  repeated ControlQuestion questions = 1;
+  // An option selection and a typed note coexist in one answer, instead of
+  // replacing each other.
+  bool preserves_selection_notes = 2;
+}
+
+message ControlQuestion {
+  string id = 1;
+  string header = 2;
+  string question = 3;
+  repeated QuestionOption options = 4;
+  bool multi_select = 5;
+  bool allow_empty = 6;
+  // False when the runtime accepts selected options only. Unset permits
+  // typed text.
+  optional bool allow_custom_text = 7;
+  // How many options a multiple selection must choose, when the runtime
+  // states counts.
+  optional int32 minimum_selections = 8;
+  optional int32 maximum_selections = 9;
+  // Text that the question shows above itself. A short title and the label
+  // of a saved answer leave it out.
+  string context = 10;
+  // The options that the runtime selects before the user answers. Set when
+  // the runtime states its own selection, even an empty one, which is an
+  // answer of no option. Unset leaves the question unanswered until the user
+  // answers it.
+  QuestionSelections initial_selections = 11;
+}
+
+// QuestionSelections lists selected options by the value that an answer
+// sends for each.
+message QuestionSelections {
+  repeated string values = 1;
+}
+
+message QuestionOption {
+  // What an answer sends back. Unset sends the label.
+  optional string value = 1;
+  string label = 2;
+  string description = 3;
+  string preview = 4;
+}
+
+// ElicitationPrompt is a form that an MCP server asks the user to fill in.
+message ElicitationPrompt {
+  ElicitationPurpose purpose = 1;
+  // The MCP elicitation mode, such as "form" or "url".
+  string mode = 2;
+  string title = 3;
+  string description = 4;
+  string message = 5;
+  string server = 6;
+  // The JSON Schema of the form as JSON text, or empty for none.
+  string schema_json = 7;
+  string url = 8;
+  // The call's arguments as JSON text, for an elicitation that asks for a
+  // permission.
+  string arguments_json = 9;
+  string argument_notice = 10;
+  // The accept answers that the server offers beside a plain accept.
+  repeated ElicitationAcceptChoice accept_choices = 11;
+  // Rules for the fields of the form schema: a field that the form keeps
+  // hidden, and a field that the form asks only when earlier answers meet
+  // its conditions.
+  repeated ElicitationFieldRule field_rules = 12;
+}
+
+// ElicitationFieldRule states how the form treats one field of its schema.
+message ElicitationFieldRule {
+  // The property of the schema that the rule is for.
+  string key = 1;
+  // The form never shows the field. Its default value is still sent while
+  // the field is active.
+  bool hidden = 2;
+  // The form asks the field only when every condition holds. Each condition
+  // reads the answer to an earlier field, so a field that is not active does
+  // not make a later field active. An inactive field is neither sent nor
+  // required.
+  repeated ElicitationFieldCondition conditions = 3;
+}
+
+message ElicitationFieldCondition {
+  // The earlier field whose answer the condition reads. A field with no
+  // answer meets no condition.
+  string field = 1;
+  ElicitationFieldComparison comparison = 2;
+  // The value to compare with, as JSON text: a string, a number or a
+  // boolean. A list answer meets "equal" when it holds the value.
+  string value_json = 3;
+}
+
+enum ElicitationFieldComparison {
+  ELICITATION_FIELD_COMPARISON_UNSPECIFIED = 0;
+  ELICITATION_FIELD_COMPARISON_EQUAL = 1;
+  ELICITATION_FIELD_COMPARISON_NOT_EQUAL = 2;
+}
+
+enum ElicitationPurpose {
+  ELICITATION_PURPOSE_UNSPECIFIED = 0; // A form.
+  ELICITATION_PURPOSE_PERMISSION = 1;
+}
+
+message ElicitationAcceptChoice {
+  string key = 1;
+  string label = 2;
+}
+
+// DialogPrompt is a dialog that an extension opened through the runtime.
+message DialogPrompt {
+  string title = 1;
+  // The sentence that a confirm dialog states above its buttons.
+  string message = 2;
+  // The hint that an input dialog shows in its field.
+  string placeholder = 3;
+  // The text that the editor starts from.
+  string prefill = 4;
+  DialogVariant variant = 5;
+  // How long the runtime waits before it answers itself, in milliseconds.
+  optional int64 timeout_ms = 6;
+}
+
+enum DialogVariant {
+  DIALOG_VARIANT_UNSPECIFIED = 0;
+  DIALOG_VARIANT_CONFIRM = 1;
+  DIALOG_VARIANT_INPUT = 2;
+  DIALOG_VARIANT_EDITOR = 3;
+}
+
+// ControlDecision answers one ControlPrompt. Its kind must match the kind of
+// the prompt.
+message ControlDecision {
+  oneof kind {
+    PermissionDecision permission = 1;
+    PlanDecision plan = 2;
+    QuestionDecision question = 3;
+    ElicitationDecision elicitation = 4;
+    DialogDecision dialog = 5;
+  }
+}
+
+message PermissionDecision {
+  // One option_id of the prompt.
+  string option_id = 1;
+  // Why the user refused, for a refusing option. The Worker delivers it as
+  // the runtime accepts it: in the answer, or as a message after it.
+  string feedback = 2;
+}
+
+message PlanDecision {
+  bool approve = 1;
+  // One id of the prompt's choices, or empty for a plain approve or reject.
+  string choice_id = 2;
+  // What to change, for a refusal.
+  string feedback = 3;
+  // The permission mode to switch to with an approval, or empty for the
+  // provider's own default.
+  string permission_mode = 4;
+  // Start the implementation in a fresh context.
+  bool clear_context = 5;
+}
+
+message QuestionDecision {
+  // One answer for each question of the prompt, in its order.
+  repeated QuestionAnswer answers = 1;
+  // Refuse to answer.
+  bool cancelled = 2;
+  // Why, for a refusal.
+  string feedback = 3;
+}
+
+message QuestionAnswer {
+  // The values of the selected options.
+  repeated string selected = 1;
+  string custom_text = 2;
+}
+
+message ElicitationDecision {
+  ElicitationAction action = 1;
+  // The filled form as JSON text, for an accept.
+  string content_json = 2;
+  // One key of the prompt's accept choices, or empty for a plain accept.
+  string accept_choice_key = 3;
+}
+
+enum ElicitationAction {
+  ELICITATION_ACTION_UNSPECIFIED = 0;
+  ELICITATION_ACTION_ACCEPT = 1;
+  ELICITATION_ACTION_DECLINE = 2;
+  ELICITATION_ACTION_CANCEL = 3;
+}
+
+message DialogDecision {
+  DialogAction action = 1;
+  // The text, for SUBMIT.
+  string value = 2;
+}
+
+enum DialogAction {
+  DIALOG_ACTION_UNSPECIFIED = 0;
+  // Confirm a confirm dialog.
+  DIALOG_ACTION_CONFIRM = 1;
+  // Refuse a confirm dialog.
+  DIALOG_ACTION_REFUSE = 2;
+  // Submit the value of an input or an editor dialog.
+  DIALOG_ACTION_SUBMIT = 3;
+  // Dismiss the dialog.
+  DIALOG_ACTION_CANCEL = 4;
+}

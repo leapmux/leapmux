@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"

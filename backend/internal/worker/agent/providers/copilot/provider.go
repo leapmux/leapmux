@@ -206,7 +206,7 @@ func parseCopilotChecklist(checklist string) []todoevents.Item {
 	return items
 }
 
-// ResolveControlResponse turns the browser's decision into Copilot's native answer.
+// ResolveControlResponse turns the neutral answer into Copilot's native answer.
 //
 // The translation lives in control_response.go, which also classifies the
 // plan decision. It is Exit rather than Prompt because the runtime ASKED and stays

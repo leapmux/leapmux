@@ -363,7 +363,7 @@ func (record *controlRecord) cancel(key string) {
 }
 
 func validSettlement(line *providerkit.ParsedLine) (controlParams, string, bool) {
-	fields, ok := controlJSONObject(line.Params)
+	fields, ok := providerkit.RawObject(line.Params)
 	if !ok {
 		return controlParams{}, "", false
 	}
@@ -384,13 +384,13 @@ func validSettlement(line *providerkit.ParsedLine) (controlParams, string, bool)
 	}
 	approvalID, approvalOK := providerkit.RawString(fields["approvalId"])
 	decision, decisionOK := providerkit.RawString(fields["decision"])
-	stages, stagesOK := controlJSONArray(fields["stageEvidence"])
+	stages, stagesOK := providerkit.RawArray(fields["stageEvidence"])
 	if !approvalOK || approvalID == "" || !decisionOK || strings.TrimSpace(decision) == "" || !stagesOK {
 		return controlParams{}, "", false
 	}
 	seen := make(map[int64]bool, len(stages))
 	for _, raw := range stages {
-		stage, stageOK := controlJSONObject(raw)
+		stage, stageOK := providerkit.RawObject(raw)
 		if !stageOK || !validApprovalStage(stage, approvalID, seen) {
 			return controlParams{}, "", false
 		}
@@ -399,7 +399,7 @@ func validSettlement(line *providerkit.ParsedLine) (controlParams, string, bool)
 }
 
 func validApprovalStage(stage map[string]json.RawMessage, approvalID string, seen map[int64]bool) bool {
-	requirement, ok := controlJSONObject(stage["requirementId"])
+	requirement, ok := providerkit.RawObject(stage["requirementId"])
 	if !ok {
 		return false
 	}
@@ -414,7 +414,7 @@ func validApprovalStage(stage map[string]json.RawMessage, approvalID string, see
 	if !positionOK || !totalOK {
 		return false
 	}
-	argv, argvOK := controlJSONArray(stage["argv"])
+	argv, argvOK := providerkit.RawArray(stage["argv"])
 	if !argvOK {
 		return false
 	}
@@ -423,7 +423,7 @@ func validApprovalStage(stage map[string]json.RawMessage, approvalID string, see
 			return false
 		}
 	}
-	resolution, resolutionOK := controlJSONObject(stage["resolution"])
+	resolution, resolutionOK := providerkit.RawObject(stage["resolution"])
 	_, kindOK := providerkit.RawString(resolution["kind"])
 	return resolutionOK && kindOK
 }
@@ -494,7 +494,7 @@ func nativeControlReply(request controlParams, raw []byte, key string) (string, 
 		}
 		return methodApprovalDecide, params, nil
 	}
-	envelope, ok := controlJSONObject(raw)
+	envelope, ok := providerkit.RawObject(raw)
 	if !ok {
 		return "", nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
@@ -522,7 +522,7 @@ func nativeControlReply(request controlParams, raw []byte, key string) (string, 
 		}
 	}
 	questions, ok := readNativeQuestions(request.Questions)
-	answers, readable := controlJSONArray(fields["answers"])
+	answers, readable := providerkit.RawArray(fields["answers"])
 	if !ok || !readable || !validQuestionAnswers(questions, answers) {
 		return "", nil, errors.New(agent.RefusalAnswersDoNotFit)
 	}
@@ -531,21 +531,23 @@ func nativeControlReply(request controlParams, raw []byte, key string) (string, 
 }
 
 type nativeApprovalChoice struct {
-	ID       string
+	ID string
+	// Label is the words that Muse states for the choice.
+	Label    string
 	Decision string
 	Scope    string
 	Feedback bool
 }
 
 func readApprovalChoices(raw json.RawMessage) ([]nativeApprovalChoice, bool) {
-	values, ok := controlJSONArray(raw)
+	values, ok := providerkit.RawArray(raw)
 	if !ok || len(values) == 0 {
 		return nil, false
 	}
 	choices := make([]nativeApprovalChoice, 0, len(values))
 	ids := make(map[string]bool, len(values))
 	for _, value := range values {
-		fields, ok := controlJSONObject(value)
+		fields, ok := providerkit.RawObject(value)
 		if !ok {
 			return nil, false
 		}
@@ -568,7 +570,7 @@ func readApprovalChoices(raw json.RawMessage) ([]nativeApprovalChoice, bool) {
 			feedback = *value
 		}
 		ids[id] = true
-		choices = append(choices, nativeApprovalChoice{ID: id, Decision: decision, Scope: scope, Feedback: feedback})
+		choices = append(choices, nativeApprovalChoice{ID: id, Label: label, Decision: decision, Scope: scope, Feedback: feedback})
 	}
 	return choices, true
 }
@@ -578,7 +580,7 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 	if !ok {
 		return "", "", errors.New("the native Muse approval choices are invalid")
 	}
-	envelope, ok := controlJSONObject(raw)
+	envelope, ok := providerkit.RawObject(raw)
 	if !ok {
 		return "", "", errors.New(agent.RefusalUnreadableAnswer)
 	}
@@ -590,9 +592,9 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 		if _, present := envelope["result"]; present {
 			return "", "", errors.New(agent.RefusalUnreadableAnswer)
 		}
-		outer, ok := controlJSONObject(neutral)
+		outer, ok := providerkit.RawObject(neutral)
 		id, idOK := providerkit.RawString(outer["request_id"])
-		answer, answerOK := controlJSONObject(outer["response"])
+		answer, answerOK := providerkit.RawObject(outer["response"])
 		behavior, behaviorOK := providerkit.RawString(answer["behavior"])
 		if !ok || !idOK || !answerOK || !behaviorOK {
 			return "", "", errors.New(agent.RefusalUnreadableAnswer)
@@ -601,7 +603,7 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 			return "", "", errors.New(agent.RefusalOtherRequest)
 		}
 		behavior = strings.TrimSpace(behavior)
-		if behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
+		if behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 			return "", "", errors.New(agent.RefusalNoDecision)
 		}
 		if value, present := answer["message"]; present {
@@ -620,12 +622,12 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 		}
 		if choice == "" {
 			decision := contracts.MuseApprovalDecisionApproved
-			if behavior == agent.ControlBehaviorDeny {
+			if behavior == contracts.ControlAnswerBehaviorDeny {
 				decision = ""
 			}
 			for _, offered := range choices {
 				matches := offered.Decision == decision
-				if behavior == agent.ControlBehaviorDeny {
+				if behavior == contracts.ControlAnswerBehaviorDeny {
 					matches = offered.Decision == contracts.MuseApprovalDecisionDenied || offered.Decision == contracts.MuseApprovalDecisionAbort
 				}
 				if matches && offered.Scope == contracts.MuseChoiceScopeOnce && (feedback == "" || offered.Feedback) {
@@ -674,27 +676,11 @@ func nativeReplyFields(envelope map[string]json.RawMessage, key string) (map[str
 	if id != key {
 		return nil, errors.New(agent.RefusalOtherRequest)
 	}
-	result, ok := controlJSONObject(envelope["result"])
+	result, ok := providerkit.RawObject(envelope["result"])
 	if !ok {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
 	return result, nil
-}
-
-func controlJSONObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil || fields == nil {
-		return nil, false
-	}
-	return fields, true
-}
-
-func controlJSONArray(raw json.RawMessage) ([]json.RawMessage, bool) {
-	var values []json.RawMessage
-	if json.Unmarshal(raw, &values) != nil || values == nil {
-		return nil, false
-	}
-	return values, true
 }
 
 type nativeQuestionOption struct {
@@ -712,23 +698,23 @@ type nativeQuestion struct {
 }
 
 func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
-	values, ok := controlJSONArray(raw)
+	values, ok := providerkit.RawArray(raw)
 	if !ok || len(values) == 0 {
 		return nil, false
 	}
 	questions := make([]nativeQuestion, 0, len(values))
 	ids := make(map[string]bool, len(values))
 	for _, value := range values {
-		fields, ok := controlJSONObject(value)
+		fields, ok := providerkit.RawObject(value)
 		if !ok {
 			return nil, false
 		}
 		id, idOK := providerkit.RawString(fields["id"])
 		text, textOK := providerkit.RawString(fields["question"])
 		_, headerOK := providerkit.RawString(fields["header"])
-		selection, selectionOK := controlJSONObject(fields["selection"])
+		selection, selectionOK := providerkit.RawObject(fields["selection"])
 		mode, modeOK := providerkit.RawString(selection["mode"])
-		options, optionsOK := controlJSONArray(fields["options"])
+		options, optionsOK := providerkit.RawArray(fields["options"])
 		if !idOK || strings.TrimSpace(id) == "" || ids[id] || !textOK || strings.TrimSpace(text) == "" || !headerOK || !selectionOK || !modeOK || !optionsOK {
 			return nil, false
 		}
@@ -739,7 +725,7 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 		question.Selection.Mode = mode
 		labels := make(map[string]bool, len(options))
 		for _, raw := range options {
-			option, ok := controlJSONObject(raw)
+			option, ok := providerkit.RawObject(raw)
 			label, labelOK := providerkit.RawString(option["label"])
 			if !ok || !labelOK || strings.TrimSpace(label) == "" || labels[label] {
 				return nil, false
@@ -759,16 +745,19 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 	return questions, true
 }
 
+// readSelectionCount reads one selection count: absent, or a whole number,
+// as JavaScript's Number.isSafeInteger reads it, so `2.0` counts as 2.
 func readSelectionCount(fields map[string]json.RawMessage, key string) (*int, bool) {
 	raw, present := fields[key]
 	if !present {
 		return nil, true
 	}
-	var count *int
-	if json.Unmarshal(raw, &count) != nil || count == nil {
+	value, whole := providerkit.RawWholeNumber(raw)
+	if !whole {
 		return nil, false
 	}
-	return count, true
+	count := int(value)
+	return &count, true
 }
 
 func questionSelectionLimits(question nativeQuestion) (int, int, bool) {

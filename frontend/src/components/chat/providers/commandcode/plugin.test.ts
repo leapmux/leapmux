@@ -46,7 +46,9 @@ describe('command code provider', () => {
         sets: { permissionMode: 'bypass' },
       },
     })
-    expect(plugin?.controls?.askUserQuestion).toBeUndefined()
+    // The Worker reads each request and builds each answer, and the shared fallback
+    // displays a saved answer, so the presets are the whole control registration.
+    expect(Object.keys(plugin?.controls ?? {})).toEqual(['permissionPresets'])
     expect(plugin?.configuration?.supportsSubagentSend).toBeUndefined()
   })
 

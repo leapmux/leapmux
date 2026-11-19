@@ -1866,7 +1866,7 @@ func TestPlanExecutionFailsWhenTheSavedPlanCannotBeRead(t *testing.T) {
 	assert.Empty(t, snapshot.Items)
 }
 
-// An approval's answer row reaches COMPLETED only after processControlResponse
+// An approval's answer row reaches COMPLETED only after processControlAnswer
 // records the delivery, and enqueuePlanExecution inserts the input BEFORE that.
 // So the queue can drain the input while its answer is still PENDING. Marking it
 // FAILED there makes the user retry by hand what the NotifyDependencyReady of

@@ -13,8 +13,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// The worker stores a JSON-RPC request under the key `jsonrpc:<id>`, and the
-// browser answers under that key.
+// The worker stores a JSON-RPC request under the key `jsonrpc:<id>`, and an
+// answer carries that key as its id.
 const kiroStoredRequestID = "jsonrpc:5"
 
 // kiroRequestPayload is a stored request of one method with the native id 5.
@@ -50,8 +50,8 @@ func withWorkspaceRoot(params map[string]any, root string) map[string]any {
 	return params
 }
 
-// selectedReply is the browser's permission reply that selects one option,
-// with the given result `_meta`.
+// selectedReply is the permission reply that selects one option, with the
+// given result `_meta`.
 func selectedReply(t *testing.T, optionID string, meta map[string]any) []byte {
 	t.Helper()
 	result := map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}}
@@ -170,9 +170,9 @@ func TestKiroScopedAlwaysOptionIsWithheldWhenKiroDidNotOfferItsOwn(t *testing.T)
 }
 
 // A rule for the workspace needs the workspace root, which the request states
-// in its consent. The browser offers the workspace scope only with a root, and
-// the worker holds the same rule, so a client that sends the scope anyway gets
-// no reply that Kiro would refuse or apply to no workspace.
+// in its consent. The prompt offers the workspace scope only with a root, and
+// the resolution holds the same rule, so an answer that states the scope
+// anyway gets no reply that Kiro would refuse or apply to no workspace.
 func TestKiroWorkspaceAlwaysOptionIsWithheldWithNoWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 	for name, params := range map[string]map[string]any{
@@ -351,7 +351,7 @@ func TestKiroElicitationWithholdsAnUnreadableAnswer(t *testing.T) {
 func TestKiroQuestionReplyPassesUnchanged(t *testing.T) {
 	t.Parallel()
 	payload := kiroRequestPayload(t, contracts.KiroMethodUserInput, nil)
-	// The browser writes Kiro's own reply for a question.
+	// AnswerControlRequest writes Kiro's own reply for a question.
 	answer := []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"action":"answered","answer":"Postgres [PostGIS]"}}`)
 
 	result := resolveKiro(t, payload, answer)

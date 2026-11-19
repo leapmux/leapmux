@@ -31,13 +31,13 @@ func (p opencodeProvider) ResolveControlResponse(ctx agent.ControlResponseContex
 	}
 	if behavior != "" {
 		switch behavior {
-		case agent.ControlBehaviorAllow:
+		case contracts.ControlAnswerBehaviorAllow:
 			if control.kind != "permission" {
 				result.Refuse("the form requires its field values")
 				return result
 			}
 			answer[contracts.OpenCodeNativeAnswerFieldDecision] = contracts.OpenCodeNativePermissionDecisionOnce
-		case agent.ControlBehaviorDeny:
+		case contracts.ControlAnswerBehaviorDeny:
 			if control.kind == "permission" {
 				answer[contracts.OpenCodeNativeAnswerFieldDecision] = contracts.OpenCodeNativePermissionDecisionReject
 				if message != "" {

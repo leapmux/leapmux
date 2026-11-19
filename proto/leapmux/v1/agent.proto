@@ -2,6 +2,7 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "leapmux/v1/access.proto";
+import "leapmux/v1/agent_control.proto";
 import "leapmux/v1/common.proto";
 import "leapmux/v1/tab_creation.proto";
 import "leapmux/v1/git.proto";
@@ -22,7 +23,13 @@ service WorkerAgentService {
   rpc UpdateAgentSettings(UpdateAgentSettingsRequest) returns (UpdateAgentSettingsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
-  rpc SendControlResponse(SendControlResponseRequest) returns (SendControlResponseResponse) {
+  rpc RecordControlResponse(RecordControlResponseRequest) returns (RecordControlResponseResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc ListControlRequests(ListControlRequestsRequest) returns (ListControlRequestsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc AnswerControl(AnswerControlRequest) returns (AnswerControlResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
   rpc InterruptAgent(InterruptAgentRequest) returns (InterruptAgentResponse) {
@@ -1175,7 +1182,8 @@ message AgentControlRequest {
   AgentProvider agent_provider = 3; // Provider for this agent
   // claim_token identifies the request instance. An identical pending announcement keeps its token.
   // A new request after deletion, or a changed payload, receives a fresh token.
-  // The frontend echoes the token in SendControlResponseRequest to deduplicate answers per instance.
+  // A client echoes the token in AnswerControlRequest and RecordControlResponseRequest, so an
+  // answer and a recording act on this instance alone.
   string claim_token = 4;
   // Optional transcript source, outside the original provider payload. Zero means no source is available.
   int64 source_seq = 5;
@@ -1185,6 +1193,9 @@ message AgentControlRequest {
   // and the request waits until the user answers or skips it. A process exit and
   // an interrupt keep it. The browser shows it only when the user opens it.
   bool non_blocking = 8;
+  // What the request asks, as the provider's Worker package reads its payload.
+  // A client draws this and answers it with AnswerControl.
+  ControlPrompt prompt = 9;
 }
 
 // ControlResponseState describes the worker's evidence for one response instance.
@@ -1213,20 +1224,37 @@ message PlanApprovalSettings {
   bool clear_context = 2;
 }
 
-// SendControlResponseRequest sends a control response back to the agent.
-message SendControlResponseRequest {
+// RecordControlResponseRequest asks the Worker to finish recording the response that it
+// already delivered for one request instance, or only to report the state of that
+// instance. It never sends an answer to the agent: a client answers through AnswerControl,
+// where the Worker's provider builds the answer from a neutral decision.
+message RecordControlResponseRequest {
   string agent_id = 1;
-  bytes content = 2;  // The response that the provider adapter prepares for delivery.
-  // The request ID and claim token identify the exact request instance.
+  // The request ID and the claim token identify the exact request instance.
+  string request_id = 2;
   string claim_token = 3;
-  string request_id = 4;
-  // Check the saved state and complete confirmed delivery. Never send to the provider.
-  bool record_only = 5;
-  // LeapMux applies these settings with the plan decision. They are not provider JSON.
-  PlanApprovalSettings plan_approval = 6;
 }
 
-message SendControlResponseResponse {
+message RecordControlResponseResponse {
+  ControlResponseState state = 1;
+  string error = 2;
+}
+
+// ListControlRequestsRequest lists the requests that one agent waits on.
+message ListControlRequestsRequest { string agent_id = 1; }
+message ListControlRequestsResponse { repeated AgentControlRequest requests = 1; }
+
+// AnswerControlRequest answers one request instance with a neutral decision.
+// The Worker's provider package builds the provider's own answer from it.
+message AnswerControlRequest {
+  string agent_id = 1;
+  // The request ID and the claim token identify the exact request instance.
+  string request_id = 2;
+  string claim_token = 3;
+  ControlDecision decision = 4;
+}
+
+message AnswerControlResponse {
   ControlResponseState state = 1;
   string error = 2;
 }

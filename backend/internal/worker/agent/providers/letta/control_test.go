@@ -213,9 +213,9 @@ func questionRequest(t *testing.T) agenttest.ControlRequestRecord {
 	return published[0]
 }
 
-// questionAnswer is the neutral envelope that the browser sends for a question.
-// An answer folds the answers into the input of the question call, as the shared
-// question control does for every provider.
+// questionAnswer is the neutral envelope that AnswerControlRequest builds for a
+// question. An answer folds the answers into the input of the question call, as
+// providerkit.AskUserQuestionAnswers does.
 func questionAnswer(t *testing.T, requestID, behavior string, answers map[string]string) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
@@ -229,7 +229,7 @@ func questionAnswer(t *testing.T, requestID, behavior string, answers map[string
 	return raw
 }
 
-// resolveQuestion resolves one browser answer against the request that the
+// resolveQuestion resolves one neutral answer against the request that the
 // receipt published.
 func resolveQuestion(t *testing.T, request agenttest.ControlRequestRecord, behavior string, answers map[string]string) agent.ControlResponseResolution {
 	t.Helper()
@@ -674,7 +674,7 @@ func TestQuestionDismissalCarriesTheTypedReasonAsFeedback(t *testing.T) {
 		wantFeedback string
 	}{
 		{"a dismissal with a reason", "deny", nil, "Ask me again tomorrow.", "Ask me again tomorrow."},
-		{"a dismissal with the placeholder reason", "deny", nil, agent.ControlRejectedByUserMessage, ""},
+		{"a dismissal with the placeholder reason", "deny", nil, contracts.ControlAnswerMessageRejectedByUser, ""},
 		{"a dismissal with no reason", "deny", nil, "", ""},
 		{"an answer", "allow", map[string]string{"Which color do you prefer?": "Red"}, "Thanks.", ""},
 	}

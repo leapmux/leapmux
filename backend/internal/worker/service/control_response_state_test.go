@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -41,27 +43,27 @@ func TestControlResponseReportsDeliveryState(t *testing.T) {
 				_, err := svc.DB.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER fail_control_recording BEFORE INSERT ON messages WHEN NEW.mark_type=%d BEGIN SELECT RAISE(ABORT, 'response storage unavailable'); END`, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE))
 				require.NoError(t, err)
 			}
-			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
-				AgentId: "agent-1", RequestId: "request", ClaimToken: "claim",
-				Content: []byte(`{"id":"request","result":{"decision":"accept"}}`),
-			}, writer)
-			require.Empty(t, writer.errors, "delivery outcomes must carry their typed state")
-			require.Len(t, writer.responses, 1)
-			var response leapmuxv1.SendControlResponseResponse
-			require.NoError(t, proto.Unmarshal(writer.responses[0].GetPayload(), &response))
-			require.Equal(t, scenario.state, response.State)
-			require.Equal(t, scenario.deliveryError != nil || scenario.recordingError, response.Error != "")
+			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+			require.NoError(t, err)
+			state, errText, err := svc.deliverControlAnswer(row, "request", workerAnswer{
+				claimToken: "claim",
+				content:    []byte(`{"id":"request","result":{"decision":"accept"}}`),
+			})
+			require.NoError(t, err, "delivery outcomes must carry their typed state")
+			require.Equal(t, scenario.state, state)
+			require.Equal(t, scenario.deliveryError != nil || scenario.recordingError, errText != "")
 			require.Equal(t, 1, sends)
 			if scenario.recordingError {
 				_, err := svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_recording")
 				require.NoError(t, err)
 			}
-			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
-				AgentId: "agent-1", RequestId: "request", ClaimToken: "claim", RecordOnly: true,
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure, &leapmuxv1.RecordControlResponseRequest{
+				AgentId: "agent-1", RequestId: "request", ClaimToken: "claim",
 			}, writer)
 			require.Empty(t, writer.errors)
-			require.Len(t, writer.responses, 2)
-			require.NoError(t, proto.Unmarshal(writer.responses[1].GetPayload(), &response))
+			require.Len(t, writer.responses, 1)
+			var response leapmuxv1.RecordControlResponseResponse
+			require.NoError(t, proto.Unmarshal(writer.responses[0].GetPayload(), &response))
 			expected := scenario.state
 			if expected == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED {
 				expected = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
@@ -72,22 +74,134 @@ func TestControlResponseReportsDeliveryState(t *testing.T) {
 	}
 }
 
-func TestControlResponseRejectsMismatchedRecordingRequests(t *testing.T) {
-	for _, request := range []*leapmuxv1.SendControlResponseRequest{
-		{RequestId: "other", Content: []byte(`{"id":"request","result":{}}`)},
-		{RequestId: "request", RecordOnly: true, Content: []byte(`{"id":"request","result":{}}`)},
-		{RecordOnly: true},
+// An answer that addresses a request other than the one that the Worker read
+// and the provider answered reaches no agent, and it claims neither request.
+// Both requests exist, so only the refusal keeps the answer from the agent.
+func TestDeliverControlAnswerRefusesAnAnswerToAnotherRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name, requestID, content, want string
+	}{
+		{"another request", "other", `{"id":"request","result":{"decision":"accept"}}`, `the answer addresses the request "request", not "other"`},
+		{"no request", "other", `{"result":{"decision":"accept"}}`, `the answer addresses the request "", not "other"`},
+		{"a missing request ID", "", `{"result":{"decision":"accept"}}`, "the control request ID is missing"},
 	} {
-		svc, dispatcher, writer := setupTestService(t)
-		createClaimTestAgent(t, svc, "agent-1")
-		request.AgentId = "agent-1"
-		svc.sendControlResponseFn = func(string, []byte) error {
-			t.Fatal("invalid recording requests cannot send to the provider")
-			return nil
-		}
-		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, request, writer)
-		require.Len(t, writer.errors, 1)
-		require.Empty(t, writer.responses)
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			createClaimTestAgent(t, svc, "agent-1")
+			for _, requestID := range []string{"request", "other"} {
+				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+					AgentID: "agent-1", RequestID: requestID, ClaimToken: "claim",
+					Payload: []byte(`{"id":"` + requestID + `","method":"item/commandExecution/requestApproval"}`),
+				})
+			}
+			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+			require.NoError(t, err)
+			svc.sendControlResponseFn = func(string, []byte) error {
+				t.Fatal("an answer to another request cannot reach the agent")
+				return nil
+			}
+
+			state, errText, err := svc.deliverControlAnswer(row, tc.requestID, workerAnswer{claimToken: "claim", content: []byte(tc.content)})
+
+			require.EqualError(t, err, tc.want)
+			assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, state)
+			assert.Empty(t, errText)
+			for _, requestID := range []string{"request", "other"} {
+				pending, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: requestID})
+				require.NoError(t, err, "the request %q stays open", requestID)
+				assert.Equal(t, "claim", pending.ClaimToken)
+				_, err = svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: requestID, ClaimToken: "claim"})
+				assert.ErrorIs(t, err, sql.ErrNoRows, "the refusal claims no answer for %q", requestID)
+			}
+		})
+	}
+}
+
+// A recording addresses one request instance, so a request with no ID fails,
+// and the RPC answers InvalidArgument.
+func TestRecordControlResponseRefusesAMissingRequestID(t *testing.T) {
+	svc, dispatcher, writer := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	svc.sendControlResponseFn = func(string, []byte) error {
+		t.Fatal("a recording cannot send to the agent")
+		return nil
+	}
+
+	response, err := svc.recordControlResponse(row, &leapmuxv1.RecordControlResponseRequest{ClaimToken: "claim"})
+	require.EqualError(t, err, "the control request ID is missing")
+	assert.Nil(t, response)
+
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure, &leapmuxv1.RecordControlResponseRequest{
+		AgentId: "agent-1", ClaimToken: "claim",
+	}, writer)
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+	assert.Equal(t, "the control request ID is missing", writer.errors[0].message)
+	assert.Empty(t, writer.responses)
+}
+
+// A recording of a request that has no saved answer only reports the state of
+// the instance: READY while the instance waits, and CANCELED once the request
+// is gone or another instance replaced it. It sends nothing to the agent, and
+// it claims, deletes and writes nothing.
+func TestRecordControlResponseOnlyReportsTheStateOfAnUnansweredRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		stored     bool
+		claimToken string
+		want       leapmuxv1.ControlResponseState
+	}{
+		{"a waiting instance", true, "claim", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY},
+		{"a replaced instance", true, "retired-claim", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED},
+		{"a gone request", false, "claim", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			createClaimTestAgent(t, svc, "agent-1")
+			if tc.stored {
+				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+					AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
+					Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
+				})
+			}
+			watcher := &responseChangedWriter{mockResponseWriter: mockResponseWriter{channelID: "record-only"}}
+			registerAgentWatch(svc, "record-only", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
+			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+			require.NoError(t, err)
+			svc.sendControlResponseFn = func(string, []byte) error {
+				t.Fatal("a recording cannot send to the agent")
+				return nil
+			}
+
+			response, err := svc.recordControlResponse(row, &leapmuxv1.RecordControlResponseRequest{RequestId: "request", ClaimToken: tc.claimToken})
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, response.GetState())
+			assert.Empty(t, response.GetError())
+			requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+			require.NoError(t, err)
+			if tc.stored {
+				require.Len(t, requests, 1, "a recording leaves the request open")
+				assert.Equal(t, "claim", requests[0].ClaimToken)
+			} else {
+				assert.Empty(t, requests)
+			}
+			_, err = svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "request", ClaimToken: tc.claimToken})
+			assert.ErrorIs(t, err, sql.ErrNoRows, "a recording claims no answer")
+			messages, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+			require.NoError(t, err)
+			assert.Empty(t, messages)
+			events := watcher.snapshot()
+			if tc.want == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY {
+				require.Len(t, events, 1, "every window learns the state of the waiting instance")
+				assert.Equal(t, tc.want, events[0].ResponseState)
+				assert.Equal(t, tc.claimToken, events[0].ClaimToken)
+			} else {
+				assert.Empty(t, events, "an instance that no longer waits and has no answer has no state to publish")
+			}
+		})
 	}
 }
 
@@ -112,13 +226,13 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: state.stored,
 			})
 			require.NoError(t, err)
-			replayed, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			replayed, err := buildAgentControlRequest(svc.Queries, agent.ProviderDefaults{}, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "claim")
 			require.NoError(t, err)
 			require.Equal(t, payload, replayed.Payload)
 			// Stored delivery states map to public response states.
 			require.Equal(t, state.wire, replayed.ResponseState)
-			newRequest, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			newRequest, err := buildAgentControlRequest(svc.Queries, agent.ProviderDefaults{}, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "replacement-claim")
 			require.NoError(t, err)
 			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, newRequest.ResponseState)
@@ -127,7 +241,7 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 }
 
 func TestControlResponseBroadcastsDeliveryProgress(t *testing.T) {
-	svc, dispatcher, writer := setupTestService(t)
+	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	watcher := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "response-state"}}
@@ -142,10 +256,10 @@ func TestControlResponseBroadcastsDeliveryProgress(t *testing.T) {
 		require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING, events[len(events)-1].ResponseState)
 		return nil
 	}
-	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
-		AgentId: "agent-1", RequestId: "request", ClaimToken: first.ClaimToken,
-		Content: []byte(`{"id":"request","result":{"decision":"accept"}}`),
-	}, writer)
+	deliverControlAnswerForTest(t, svc, "agent-1", "request", workerAnswer{
+		claimToken: first.ClaimToken,
+		content:    []byte(`{"id":"request","result":{"decision":"accept"}}`),
+	})
 	events := watcher.snapshot()
 	require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED, events[len(events)-1].ResponseState)
 	for _, event := range events {
@@ -169,7 +283,7 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 			require.NoError(t, err)
 			sends := 0
 			svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
-			require.Error(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: []byte(`{"id":"request","result":{"decision":"accept"}}`), ClaimToken: "old"}))
+			require.Error(t, svc.processControlAnswer(row, workerAnswer{content: []byte(`{"id":"request","result":{"decision":"accept"}}`), claimToken: "old"}))
 			svc.Output.ClearPendingControlRequests("agent-1")
 			if replaced {
 				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
@@ -195,8 +309,8 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 			registerAgentWatch(svc, "recovered-response", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
 			_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_replay")
 			require.NoError(t, err)
-			response, err := svc.respondToControlRequest(row, &leapmuxv1.SendControlResponseRequest{
-				RequestId: "request", ClaimToken: "old", RecordOnly: true,
+			response, err := svc.recordControlResponse(row, &leapmuxv1.RecordControlResponseRequest{
+				RequestId: "request", ClaimToken: "old",
 			})
 			require.NoError(t, err)
 			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, response.State)

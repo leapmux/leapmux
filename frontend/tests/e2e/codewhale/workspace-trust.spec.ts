@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { codewhaleExtractControl } from '../../../src/components/chat/providers/codewhale/extractControl'
 import { isObject } from '../../../src/lib/jsonPick'
 import { codewhaleTest } from '../codewhale-fixtures'
 import { withCleanup } from '../helpers/cleanup'
@@ -17,7 +16,7 @@ import { openProviderAgent, withAgentWorkspace } from '../helpers/workspace'
 import { CODEWHALE_AGENT, nativeContext } from './scenarios'
 
 codewhaleTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
-  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask', classify: codewhaleExtractControl })
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-ask' })
 })
 
 codewhaleTest('keeps project config unloaded and applies the actual global configuration', async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }) => {

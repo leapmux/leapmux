@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -237,12 +238,12 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 		plan.requestMeta.RequestID = "req-1"
 		plan.requestMeta.Loaded = true
 		plan.hasDecision = true
-		plan.decision.Response.Response.Behavior = agent.ControlBehaviorAllow
+		plan.decision.Response.Response.Behavior = contracts.ControlAnswerBehaviorAllow
 		plan.settings = &leapmuxv1.PlanApprovalSettings{ClearContext: clear}
 		plan.resolution.PlanModeControl = agent.PlanModeControlExit
 		plan.resolution.SelfDisplayed = selfDisplayed
 		plan.resolution.Content = []byte(`{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`)
-		// processControlResponse encodes the settings before any consumer reads
+		// processControlAnswer encodes the settings before any consumer reads
 		// them, and the transcript row refuses a plan that skipped that step.
 		require.NoError(t, plan.encodePlanApprovalSettings())
 		return plan

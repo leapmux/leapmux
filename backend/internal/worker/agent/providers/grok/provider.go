@@ -17,12 +17,12 @@ import (
 // and it adds what only Grok knows: where its session store lives, and the
 // replies of Grok's own dialogs.
 //
-// The browser answers each dialog in the shared shape of its surface: a plan
-// approval with the neutral allow and deny envelope, an MCP form with the
-// neutral elicitation envelope, and folder trust with the selected option of a
+// AnswerControlRequest answers each dialog in a shared shape: a plan approval
+// with the neutral allow and deny envelope, an MCP form with the neutral
+// elicitation envelope, and folder trust with the selected option of a
 // permission reply. This type rewrites each into the reply that Grok reads. A
-// question and a tool permission need no rewrite: the browser already sends
-// Grok's own reply.
+// question and a tool permission need no rewrite: AnswerControlRequest already
+// builds Grok's own reply.
 type grokProvider struct {
 	acp.Provider
 }
@@ -157,10 +157,10 @@ func resolveGrokPlanApproval(ctx agent.ControlResponseContext) agent.ControlResp
 	result := agent.DefaultControlResponseResolution(ctx)
 	reply := map[string]any{}
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		reply[contracts.GrokReplyFieldOutcome] = contracts.GrokPlanOutcomeApproved
 		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		reply[contracts.GrokReplyFieldOutcome] = contracts.GrokPlanOutcomeCancelled
 		if message != "" {
 			reply[contracts.GrokReplyFieldFeedback] = message
@@ -208,10 +208,9 @@ func resolveGrokElicitation(ctx agent.ControlResponseContext) agent.ControlRespo
 }
 
 // resolveGrokFolderTrust answers the question whether the repository's own
-// configuration may load. The browser draws it as a permission with two
-// options, and sends the id of the one the reader chose. The shared Allow and
-// Deny pair, which answers a request whose options the browser cannot read,
-// maps onto the same two words.
+// configuration may load. ReadControlRequest states it as a permission with
+// two options, and AnswerControlRequest selects the id of the one the reader
+// chose. Those ids are Grok's own two reply words.
 //
 // Grok reads any word but `trust` as a rejection. It keeps a rejection for the
 // rest of the process and asks about that repository no more, and it stores
@@ -231,17 +230,10 @@ func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlRespo
 	return result
 }
 
-// grokFolderTrustOutcome reads the reader's choice from either envelope.
+// grokFolderTrustOutcome reads the reader's choice: the option that the
+// permission reply selects, when the reply answers the stored request and the
+// option is one of Grok's two words.
 func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
-	if behavior, _, refusal := decisionFor(ctx); refusal == "" {
-		switch behavior {
-		case agent.ControlBehaviorAllow:
-			return contracts.GrokTrustOutcomeTrust, true
-		case agent.ControlBehaviorDeny:
-			return contracts.GrokTrustOutcomeReject, true
-		}
-		return "", false
-	}
 	var reply struct {
 		ID     json.RawMessage `json:"id"`
 		Result struct {

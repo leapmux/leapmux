@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -2246,8 +2245,9 @@ func (a *Agent) adoptZCodeRegistryFallbackLocked(payload zcodeSessionUpdatedPayl
 // The payload states its role through `querySource` when it carries one: only
 // `main_turn` is the reply. A payload with no `querySource` falls back to the
 // `stopReason`: `tool_internal` marks a side query. A `querySource` that is not a
-// string is not the reply either. The browser replays the same rule; the shared
-// corpus is testdata/zcode_model_response_conformance.json.
+// string is not the reply either. testdata/zcode_model_response_conformance.json
+// pins the rule. The browser has no copy of it, because the worker stores no side
+// query.
 func zcodeIsMainReply(querySource json.RawMessage, stopReason string) bool {
 	if len(querySource) == 0 {
 		return stopReason != contracts.ZCodeStopReasonToolInternal

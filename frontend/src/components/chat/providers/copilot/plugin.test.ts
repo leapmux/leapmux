@@ -1,14 +1,11 @@
-import type { ControlAnswerState } from '../../controls/types'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
 import { providerQuotableText } from '~/test-support/toolCallFixture'
-import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { WORKSPACE_TRUST_OPTION } from '../workspaceTrust'
 import { copilotNeedsRequest } from './spanRole'
 
 import './plugin'
@@ -247,66 +244,6 @@ describe('copilot needsRequest', () => {
   })
 })
 
-// The runtime distinguishes a typed answer from a selected choice, and it accepts an
-// explicit empty answer. Both facts travel inside the neutral control-response
-// envelope, which carries a scope or an answer that neither shared builder can hold.
-describe('copilot question answers', () => {
-  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
-  const request = {
-    requestId: 'req-1',
-    agentId: 'agent-1',
-    payload: frame(COPILOT_EVENT.UserInputRequested, {
-      question: 'Which one?',
-      choices: ['A', 'B'],
-    }),
-  }
-  const questions = [
-    {
-      question: 'Which one?',
-      options: [
-        { label: 'A' },
-        { label: 'B' },
-      ],
-    },
-  ]
-
-  async function sent(state: ControlAnswerState) {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-    await plugin?.controls?.askUserQuestion!.sendAnswer(request, onRespond, questions, state)
-    expect(onRespond).toHaveBeenCalledOnce()
-    return JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))
-  }
-
-  it.each([
-    [
-      'a selected choice',
-      {
-        selections: {
-          0: ['B'],
-        },
-      },
-      { behavior: 'allow', answer: 'B', wasFreeform: false },
-    ],
-    [
-      'a typed answer',
-      {
-        customTexts: { 0: '  neither  ' },
-      },
-      { behavior: 'allow', answer: 'neither', wasFreeform: true },
-    ],
-    [
-      'an explicit empty answer',
-      {},
-      { behavior: 'allow', answer: '', wasFreeform: true },
-    ],
-  ])('sends %s inside the control-response envelope', async (_label, seed, answer) => {
-    expect(await sent(createControlAnswerState(seed))).toEqual({
-      type: 'control_response',
-      response: { subtype: 'success', request_id: 'req-1', response: answer },
-    })
-  })
-})
-
 // The Worker asks Copilot's folder-trust question itself, in LeapMux's neutral shape.
 describe('copilotControls workspace trust', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
@@ -315,57 +252,6 @@ describe('copilotControls workspace trust', () => {
     path: '/work/project',
     configuration: ['MCP servers'],
   }
-
-  it('draws the question with the name of the agent', () => {
-    expect(plugin.controls?.extractControl?.({ payload: question })).toEqual({
-      kind: 'permission',
-      permission: {
-        title: 'Trust the folder /work/project',
-        reason: 'GitHub Copilot loads the MCP servers of a project only from a folder that you trust, and it keeps your answer for the folder.',
-        options: [
-          { optionId: 'workspace-trust', kind: 'allow_once', name: 'Trust this folder' },
-          { optionId: 'workspace-reject', kind: 'reject_once', name: 'Do not trust' },
-        ],
-      },
-    })
-  })
-
-  it('still draws a native permission request', () => {
-    const permission = frame(COPILOT_EVENT.PermissionRequested, {
-      requestId: 'r-1',
-      permissionRequest: { kind: 'read', path: '/work/project/a.go' },
-    })
-    expect(plugin.controls?.extractControl?.({ payload: permission })).toMatchObject({
-      kind: 'permission',
-      permission: {
-        options: expect.arrayContaining([
-          expect.objectContaining({ name: 'Allow once' }),
-        ]),
-      },
-    })
-  })
-
-  it('sends Trust as an allow decision, and a native option through its own envelope', async () => {
-    const onRespond = vi.fn().mockResolvedValue(undefined)
-    await plugin.controls?.sendPermissionOption?.(onRespond, 'workspace-trust:session-1', WORKSPACE_TRUST_OPTION.Trust)
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))).toEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'workspace-trust:session-1',
-        response: { behavior: 'allow' },
-      },
-    })
-    await plugin.controls?.sendPermissionOption?.(onRespond, 'copilot-request', 'session')
-    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[1]?.[0] as Uint8Array))).toEqual({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'copilot-request',
-        response: { behavior: 'allow', scope: 'session' },
-      },
-    })
-  })
 
   it('reads the saved answer', () => {
     expect(plugin.controls?.controlResponseDisplay?.({

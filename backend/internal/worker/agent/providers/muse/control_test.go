@@ -957,7 +957,7 @@ func TestMuseApprovalNeutralDenialUsesTheOfferedOnceAbort(t *testing.T) {
 			choice := museApprovalChoice("actual-native-reject", tc.decision, tc.scope)
 			choice["acceptsFeedback"] = tc.acceptsFeedback
 			id, request := museApprovalRequest(t, []any{museApprovalChoice("allow_once", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce), choice})
-			answer := mustMuseChoiceJSON(t, map[string]any{"response": map[string]any{"request_id": id, "response": map[string]any{"behavior": agent.ControlBehaviorDeny, "message": tc.feedback}}})
+			answer := mustMuseChoiceJSON(t, map[string]any{"response": map[string]any{"request_id": id, "response": map[string]any{"behavior": contracts.ControlAnswerBehaviorDeny, "message": tc.feedback}}})
 			originalRequest, originalAnswer := slices.Clone(request), slices.Clone(answer)
 			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
 			assert.Equal(t, !tc.valid, result.Withhold)
@@ -1136,12 +1136,12 @@ func TestMuseApprovalForwardsFutureNativeVocabularyForAnExactChoice(t *testing.T
 
 func TestMuseApprovalNeutralFallbackDoesNotGuessFutureVocabulary(t *testing.T) {
 	t.Parallel()
-	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
+	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
 		for _, knownChoice := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/known=%t", behavior, knownChoice), func(t *testing.T) {
 				t.Parallel()
 				decision := contracts.MuseApprovalDecisionApproved
-				if behavior == agent.ControlBehaviorDeny {
+				if behavior == contracts.ControlAnswerBehaviorDeny {
 					decision = contracts.MuseApprovalDecisionDenied
 				}
 				choices := []any{museApprovalChoice("future-decision", "futureDecision", contracts.MuseChoiceScopeOnce), museApprovalChoice("future-scope", decision, "futureScope")}

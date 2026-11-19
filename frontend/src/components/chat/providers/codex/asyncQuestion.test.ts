@@ -1,9 +1,8 @@
-import type { ControlAnswerSeed } from '../../controls/types'
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
-import { createControlAnswerState } from '../../controls/types'
-import { codexAsyncQuestionSummary, isCodexAsyncQuestion } from './asyncQuestion'
-import { codexControls } from './pluginControls'
+import { GENERIC_PERMISSION_PROMPT } from '~/test-support/controlRequests'
+import { codexAsyncQuestionSummary } from './asyncQuestion'
 
 const REQUEST_ID = 'codex-async-question-call_abc-0'
 
@@ -23,18 +22,22 @@ const ASYNC_REQUEST = {
   },
 }
 
-/** A question with no `options` key: the reader answers it in text. */
-const FREE_TEXT_REQUEST = {
-  request: {
-    tool_name: 'CodexAsyncQuestion',
-    input: {
-      question_item_id: '["request_user_input_async","call_abc",1]',
-      title: 'Which port should I use?',
+/** The prompt that the Worker reads from {@link ASYNC_REQUEST} (`codexAsyncQuestions` in Go). */
+const ASYNC_PROMPT: ControlPrompt = {
+  kind: 'question',
+  questions: [
+    {
+      question: 'Which color should I use?',
+      options: [
+        { label: 'Blue' },
+        { label: 'Red' },
+      ],
     },
-  },
+  ],
+  preservesSelectionNotes: true,
 }
 
-/** The neutral envelope, as the browser sends it and the worker persists it. */
+/** The neutral envelope, as the Worker answers the question and persists the answer. */
 function envelope(inner: Record<string, unknown>): Record<string, unknown> {
   return {
     type: 'control_response',
@@ -42,148 +45,20 @@ function envelope(inner: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
-describe('isCodexAsyncQuestion', () => {
-  it('accepts a request that carries the LeapMux async question tool name', () => {
-    expect(isCodexAsyncQuestion(ASYNC_REQUEST)).toBe(true)
-    expect(isCodexAsyncQuestion(FREE_TEXT_REQUEST)).toBe(true)
-  })
-
-  it('refuses a request of another tool', () => {
-    expect(isCodexAsyncQuestion({
-      request: { tool_name: 'CodexPlanModePrompt', input: {} },
-    })).toBe(false)
-    expect(isCodexAsyncQuestion({
-      method: 'item/tool/requestUserInput',
-      params: { questions: [] },
-    })).toBe(false)
-    expect(isCodexAsyncQuestion({})).toBe(false)
-  })
-})
-
-describe('codexControls askUserQuestion', () => {
-  const ask = codexControls.askUserQuestion!
-
-  it('recognizes the async question and the synchronous question alike', () => {
-    expect(ask.isRequest(ASYNC_REQUEST)).toBe(true)
-    expect(ask.isRequest({
-      method: 'item/tool/requestUserInput',
-      params: { questions: [] },
-    })).toBe(true)
-    expect(ask.isRequest({
-      request: { tool_name: 'CodexPlanModePrompt', input: {} },
-    })).toBe(false)
-  })
-
-  it('extracts the question with its options', () => {
-    expect(ask.extractQuestions(ASYNC_REQUEST)).toStrictEqual([
-      {
-        question: 'Which color should I use?',
-        options: [
-          { label: 'Blue' },
-          { label: 'Red' },
-        ],
-      },
-    ])
-  })
-
-  it('extracts a question without options as one that takes typed text', () => {
-    expect(ask.extractQuestions(FREE_TEXT_REQUEST)).toStrictEqual([
-      { question: 'Which port should I use?', options: [] },
-    ])
-  })
-
-  it('extracts no question from a malformed payload', () => {
-    // A missing title is malformed: rendering an untitled question would show
-    // options for a question the reader cannot see.
-    expect(ask.extractQuestions({
-      request: { tool_name: 'CodexAsyncQuestion', input: {} },
-    })).toStrictEqual([])
-    expect(ask.extractQuestions({
-      request: { tool_name: 'CodexAsyncQuestion', input: 'not an object' },
-    })).toStrictEqual([])
-    expect(ask.extractQuestions({})).toStrictEqual([])
-  })
-
-  /** Answer the request and read back the one envelope the send produced. */
-  async function sentAnswer(seed: ControlAnswerSeed): Promise<unknown> {
-    const replies: Array<Record<string, unknown>> = []
-    await ask.sendAnswer(
-      { requestId: REQUEST_ID, agentId: 'agent-1', payload: ASYNC_REQUEST },
-      async (bytes) => {
-        replies.push(JSON.parse(new TextDecoder().decode(bytes)))
-      },
-      ask.extractQuestions(ASYNC_REQUEST),
-      createControlAnswerState(seed),
-    )
-    expect(replies).toHaveLength(1)
-    return replies[0]
+/** One saved row. `null` states a row that records no prompt, or whose request is gone. */
+function row(response: Record<string, unknown> | undefined, prompt: ControlPrompt | null = ASYNC_PROMPT, request: Record<string, unknown> | null = ASYNC_REQUEST): PersistedControlResponse {
+  return {
+    requestId: REQUEST_ID,
+    claimToken: 'claim-1',
+    request: request ?? undefined,
+    response,
+    ...(prompt
+      ? { prompt }
+      : {}),
   }
-
-  it('sends the selected option as the answer', async () => {
-    expect(await sentAnswer({
-      selections: {
-        0: ['Red'],
-      },
-    })).toEqual(
-      envelope({ behavior: 'allow', answer: 'Red' }),
-    )
-  })
-
-  it('sends the trimmed note as the answer when the reader typed one', async () => {
-    expect(await sentAnswer({
-      customTexts: { 0: '  A light shade  ' },
-    })).toEqual(
-      envelope({ behavior: 'allow', answer: 'A light shade' }),
-    )
-  })
-
-  // Codex sets `preservesSelectionNotes`, so a selection and its note coexist
-  // and both must ride the one message Codex keeps no state for.
-  it('sends the selection and the note together', async () => {
-    expect(await sentAnswer({
-      selections: {
-        0: ['Red'],
-      },
-      customTexts: { 0: 'A light shade' },
-    })).toEqual(
-      envelope({ behavior: 'allow', answer: 'Red\n\nA light shade' }),
-    )
-  })
-
-  it('sends the automatic YOLO text as the answer', async () => {
-    expect(await sentAnswer({
-      customTexts: { 0: 'Go with the recommended option.' },
-    })).toEqual(
-      envelope({ behavior: 'allow', answer: 'Go with the recommended option.' }),
-    )
-  })
-
-  it('sends a bare deny when the reader skips the question', async () => {
-    const replies: Array<Record<string, unknown>> = []
-    await ask.sendReject(
-      { requestId: REQUEST_ID, agentId: 'agent-1', payload: ASYNC_REQUEST },
-      async (bytes) => {
-        replies.push(JSON.parse(new TextDecoder().decode(bytes)))
-      },
-      'A typed reason the skip sends on to nobody',
-    )
-    expect(replies).toHaveLength(1)
-    // The empty reason becomes the placeholder: Codex keeps no pending question
-    // state, and the skip sends nothing on to it at all.
-    expect(replies[0]).toEqual(envelope({ behavior: 'deny', message: 'Rejected by user.' }))
-  })
-})
+}
 
 describe('codexAsyncQuestionSummary', () => {
-  function row(response: Record<string, unknown> | undefined, request: Record<string, unknown> = ASYNC_REQUEST): PersistedControlResponse {
-    return {
-      requestId: REQUEST_ID,
-      claimToken: 'claim-1',
-      request,
-      response,
-    }
-  }
-
   it.each(['allow', 'deny'])('normalizes a padded %s behavior before formatting the question', (behavior) => {
     const expected = behavior === 'allow'
       ? 'Which color should I use?: Red'
@@ -202,14 +77,59 @@ describe('codexAsyncQuestionSummary', () => {
       .toEqual({ kind: 'label', text: 'Which color should I use?: Red' })
   })
 
-  it('answers nothing for another request', () => {
-    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow', answer: 'Red' }), {
+  // The title is the question of the prompt that the banner drew, not the input of
+  // the stored request.
+  it('reads the title from the recorded prompt, not from the native request', () => {
+    const prompt: ControlPrompt = {
+      kind: 'question',
+      questions: [
+        { question: 'The recorded title', options: [] },
+      ],
+    }
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow', answer: 'Red' }), prompt)))
+      .toEqual({ kind: 'label', text: 'The recorded title: Red' })
+  })
+
+  // The prompt lives in the answer row's own metadata, so a row whose request is gone
+  // still reads its title.
+  it('reads the title of a question whose native request is gone', () => {
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'deny' }), ASYNC_PROMPT, null)))
+      .toEqual({ kind: 'label', text: 'Skipped: Which color should I use?' })
+  })
+
+  // The Worker reads no question from a request with no title, so the prompt states
+  // none, and a reader could only skip it.
+  it('reads a question with no title as the skip or the answer alone', () => {
+    const untitled: ControlPrompt = { kind: 'question', questions: [], preservesSelectionNotes: true }
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'deny' }), untitled))).toEqual({ kind: 'label', text: 'Skipped' })
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow', answer: 'Red' }), untitled))).toEqual({ kind: 'label', text: 'Red' })
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow', answer: '' }), untitled))).toBeNull()
+  })
+
+  it('answers nothing for a prompt that is no question', () => {
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow', answer: 'Red' }), GENERIC_PERMISSION_PROMPT, {
       request: { tool_name: 'Bash', input: {} },
     })))
       .toBeNull()
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow' }), { kind: 'plan' }))).toBeNull()
   })
 
-  it('answers nothing when the response carries no recognizable behavior', () => {
+  // requestUserInput is a question too, and the Worker answers it with a JSON-RPC
+  // result rather than the neutral envelope.
+  it('answers nothing for a question that the answer states as a JSON-RPC result', () => {
     expect(codexAsyncQuestionSummary(row({ result: {} }))).toBeNull()
+    expect(codexAsyncQuestionSummary(row({
+      result: {
+        answers: {
+          q0: {
+            answers: ['Red'],
+          },
+        },
+      },
+    }))).toBeNull()
+  })
+
+  it('answers nothing for a row that records no prompt', () => {
+    expect(codexAsyncQuestionSummary(row(envelope({ behavior: 'allow', answer: 'Red' }), null))).toBeNull()
   })
 })

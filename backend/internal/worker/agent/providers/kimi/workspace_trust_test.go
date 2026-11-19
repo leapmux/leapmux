@@ -222,7 +222,7 @@ func TestKimiWorkspaceTrustRetiresWithTheSessionControls(t *testing.T) {
 	assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
 }
 
-// The plugin turns the browser's neutral decision into the saved answer that the
+// The plugin turns the neutral allow or deny into the saved answer that the
 // agent reads.
 func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 	t.Parallel()
@@ -230,8 +230,8 @@ func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 	rig.agent.checkWorkspaceTrust()
 	request := rig.sink.LastPublishedControl()
 	for behavior, want := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		content, err := json.Marshal(map[string]any{"response": map[string]any{
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},

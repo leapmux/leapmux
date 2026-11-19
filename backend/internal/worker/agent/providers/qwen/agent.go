@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/coder/quartz"
-	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"

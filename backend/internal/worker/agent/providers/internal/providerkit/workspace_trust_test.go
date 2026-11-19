@@ -730,15 +730,15 @@ func TestWorkspaceTrustFailedPublicationAsksAgain(t *testing.T) {
 	assert.Equal(t, 1, sink.PublishedControlCount())
 }
 
-// The browser's neutral decision becomes the saved answer {decision}. A stored
+// The neutral allow or deny becomes the saved answer {decision}. A stored
 // request of another kind is the provider's own.
 func TestResolveWorkspaceTrustResponse(t *testing.T) {
 	t.Parallel()
 	question := []byte(`{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["MCP servers"]}`)
 	requestID := WorkspaceTrustRequestID("session-1")
 	for behavior, want := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		content, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": requestID, "response": map[string]string{"behavior": behavior}}})
 		require.NoError(t, err)

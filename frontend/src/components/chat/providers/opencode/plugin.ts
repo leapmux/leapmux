@@ -1,14 +1,15 @@
 import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { openCodePermissionPresets } from '../openCodePermissionPresets'
 import { registerProvider } from '../registry'
 import { classifyOpenCodeMessage } from './classification'
+import { openCodeControlResponseSummary } from './controlResponse'
 import { openCodeCompactionStart, openCodeNotificationEntry } from './extractors/notification'
 import { openCodeOutputFilePaths } from './extractors/outputFilePaths'
 import { openCodeResultDivider } from './extractors/resultDivider'
 import { openCodeExtractRow } from './extractors/row'
 import { openCodeSpanRole } from './extractors/toolCommon'
 import { openCodeConfiguration } from './pluginConfiguration'
-import { openCodeControls } from './pluginControls'
 import { resolveOpenCodeMessage } from './resolveMessage'
 
 const openCodePlugin: ProviderPlugin = {
@@ -22,7 +23,7 @@ const openCodePlugin: ProviderPlugin = {
     notificationEntry: openCodeNotificationEntry,
     compactionStart: openCodeCompactionStart,
   },
-  controls: openCodeControls,
+  controls: { permissionPresets: openCodePermissionPresets, controlResponseDisplay: openCodeControlResponseSummary },
   configuration: openCodeConfiguration,
 }
 

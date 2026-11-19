@@ -1,18 +1,47 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_METHOD, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { zcodeQuestionsFromPayload } from './askUserQuestion'
+import { resolveControlResponseSummary } from '../../persistedControlResponse'
 import { zcodeControlResponseSummary } from './controlResponse'
 
 /**
- * One saved answer, beside the request the worker stored for it.
+ * The question prompt that the Worker records for a request: one question for each
+ * text, with the header standing in for an absent question (`zcodeQuestions` in Go).
+ */
+function questionPrompt(...questions: string[]): ControlPrompt {
+  return {
+    kind: 'question',
+    questions: questions.map(question => ({ question, options: [] })),
+  }
+}
+
+/** The permission prompt that the Worker records for a request that offers no option. */
+const PERMISSION_PROMPT: ControlPrompt = {
+  kind: 'permission',
+  permission: {
+    title: ZCODE_TOOL.Bash,
+    options: [
+      { optionId: 'leapmux:allow', kind: 'allow_once' },
+      { optionId: 'leapmux:deny', kind: 'reject_once' },
+    ],
+  },
+}
+
+/** The plan prompt that the Worker records for the plan approval. */
+const PLAN_PROMPT: ControlPrompt = { kind: 'plan' }
+
+/**
+ * One saved answer, beside the request the worker stored for it and the prompt that
+ * the Worker recorded with it.
  *
- * The stored request is a HYBRID, and the fixture carries both halves because the
- * derivation reads both: ZCode's own `params`, and the Claude-shaped header whose
- * `tool_name` states WHICH of the three prompts arrived (see `providers/zcode/control.go`).
+ * The stored request is a HYBRID: ZCode's own `params`, and the Claude-shaped header
+ * whose `tool_name` states WHICH of the three prompts arrived (see
+ * `providers/zcode/control.go`). The display reads neither: the prompt states the kind.
  */
 function response(
   result: Record<string, unknown>,
+  prompt: ControlPrompt | undefined,
   params: Record<string, unknown> = {},
   method: string = ZCODE_METHOD.RequestUserInput,
   toolName: string = ZCODE_TOOL.AskUserQuestion,
@@ -27,22 +56,31 @@ function response(
       request: { tool_name: toolName },
     },
     response: { id: 7, result },
+    ...(prompt
+      ? { prompt }
+      : {}),
   }
+}
+
+/** One saved answer to a permission request. */
+function permissionResponse(result: Record<string, unknown>): PersistedControlResponse {
+  return response(result, PERMISSION_PROMPT, {}, ZCODE_METHOD.RequestPermission, ZCODE_TOOL.Bash)
 }
 
 /** One saved answer to the plan approval, which the worker records as `ExitPlanMode`. */
 function planResponse(result: Record<string, unknown>): PersistedControlResponse {
-  return response(result, {
+  return response(result, PLAN_PROMPT, {
     schema: { interaction: 'plan_approval' },
   }, ZCODE_METHOD.RequestUserInput, ZCODE_TOOL.ExitPlanMode)
 }
 
-function questionRequest(...questions: string[]): Record<string, unknown> {
-  return {
+/** One saved answer to the questions of the prompt, with the native request carrying the same texts. */
+function questionResponse(result: Record<string, unknown>, ...questions: string[]): PersistedControlResponse {
+  return response(result, questionPrompt(...questions), {
     input: {
       questions: questions.map(question => ({ question })),
     },
-  }
+  })
 }
 
 describe('zcodeControlResponseSummary', () => {
@@ -52,99 +90,95 @@ describe('zcodeControlResponseSummary', () => {
     ['escalate', 'Escalated'],
     ['modify', 'Modified'],
   ])('renders the native permission decision %s', (decision, text) => {
-    expect(zcodeControlResponseSummary(response({ decision }, {}, ZCODE_METHOD.RequestPermission))).toEqual({ kind: 'label', text })
+    expect(zcodeControlResponseSummary(permissionResponse({ decision }))).toEqual({ kind: 'label', text })
   })
 
   it('preserves a native permission rejection reason without attributing it to the user', () => {
-    expect(zcodeControlResponseSummary(response({ decision: 'deny', reason: 'No offered option allows this operation.' }, {}, ZCODE_METHOD.RequestPermission)))
+    expect(zcodeControlResponseSummary(permissionResponse({ decision: 'deny', reason: 'No offered option allows this operation.' })))
       .toEqual({ kind: 'label', text: 'Deny\nNo offered option allows this operation.' })
   })
 
-  it('renders native answers in the complete request order', () => {
-    expect(zcodeControlResponseSummary(response({
+  it('renders native answers in the order of the recorded prompt', () => {
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: {
         answers: { Second: 'b', First: 'a' },
         answer_0: 'wrong',
         answer_1: 'wrong',
       },
-    }, questionRequest('First', 'Second'))))
+    }, 'First', 'Second')))
       .toEqual({ kind: 'label', text: 'First: a\nSecond: b' })
   })
 
-  it('recovers question labels from native request display fields', () => {
-    expect(zcodeControlResponseSummary(response({
+  it('reads a single answer to the one question of the prompt', () => {
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer: 'Postgres' },
-    }, {
-      questions: [
-        { question: 'Database?' },
-      ],
-    })))
+    }, 'Database?')))
       .toEqual({ kind: 'label', text: 'Database?: Postgres' })
   })
 
   it('uses positional answers when keyed answers are absent', () => {
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer_0: 'a', answer_1: 'b', answer: 'ignored' },
-    }, questionRequest('First', 'Second'))))
+    }, 'First', 'Second')))
       .toEqual({ kind: 'label', text: 'First: a\nSecond: b' })
   })
 
   it('keeps the final native value when question text repeats', () => {
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer_0: 'first', answer_1: 'last' },
-    }, questionRequest('Repeated', 'Repeated'))))
+    }, 'Repeated', 'Repeated')))
       .toEqual({ kind: 'label', text: 'Repeated: last' })
   })
 
   it('uses a single answer only for one question', () => {
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer: 'a' },
-    }, questionRequest('One'))))
+    }, 'One')))
       .toEqual({ kind: 'label', text: 'One: a' })
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer: 'a' },
-    }, questionRequest('One', 'Two')))).toBeNull()
+    }, 'One', 'Two'))).toBeNull()
   })
 
   it('normalizes strings and string arrays as the native consumer does', () => {
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: {
         answer_0: '  value  ',
         answer_1: [' a ', false, '', ' b '],
       },
-    }, questionRequest('One', 'Two'))))
+    }, 'One', 'Two')))
       .toEqual({ kind: 'label', text: 'One: value\nTwo: a, b' })
   })
 
   it('does not show answers that the native consumer discards', () => {
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answers: {}, answer_0: 'ignored' },
-    }, questionRequest('One')))).toBeNull()
-    expect(zcodeControlResponseSummary(response({
+    }, 'One'))).toBeNull()
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: {
         answers: { Unrelated: 'ignored' },
       },
-    }, questionRequest('One')))).toBeNull()
-    expect(zcodeControlResponseSummary(response({
+    }, 'One'))).toBeNull()
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer_0: 0, answer_1: false, answer_2: ' ' },
-    }, questionRequest('One', 'Two', 'Three')))).toBeNull()
+    }, 'One', 'Two', 'Three'))).toBeNull()
   })
 
   it.each([
     ['decline', 'Reject'],
     ['cancel', 'Cancel'],
   ])('renders %s without claiming that its ignored reason reached the model', (action, text) => {
-    expect(zcodeControlResponseSummary(response({ action, reason: 'The native mapper drops this field.' }, questionRequest('One'))))
+    expect(zcodeControlResponseSummary(questionResponse({ action, reason: 'The native mapper drops this field.' }, 'One')))
       .toEqual({ kind: 'label', text })
   })
 
@@ -175,29 +209,36 @@ describe('zcodeControlResponseSummary', () => {
       .toEqual({ kind: 'label', text: 'Reject' })
   })
 
+  it.each([
+    ['decline', 'Reject'],
+    ['cancel', 'Cancel'],
+  ])('renders a plan reply that states %s', (action, text) => {
+    expect(zcodeControlResponseSummary(planResponse({ action }))).toEqual({ kind: 'label', text })
+  })
+
   /*
-   * The saved row and the banner must agree about WHICH control arrived, and the tool
-   * name is what decides -- the worker records it for exactly that (`providers/zcode/control.go`),
-   * and the banner reads nothing else. This display used to read `schema.interaction`
-   * instead, so a request that carried one field and not the other read as a plan on one
-   * surface and a question on the other.
+   * The saved row and the banner must agree about WHICH control arrived. The prompt
+   * that the Worker recorded with the answer decides, because the banner drew that
+   * prompt. Neither the tool name nor `schema.interaction` of the stored request
+   * decides: a request that carried one field and not the other once read as a plan on
+   * one surface and as a question on the other.
    */
-  it('reads the plan by the tool name the banner reads, with no schema beside it', () => {
-    const bare = response({
+  it('reads the plan by the recorded prompt, with no schema beside it', () => {
+    expect(zcodeControlResponseSummary(response({
       action: 'accept',
       content: { answer: 'approve' },
-    }, {}, ZCODE_METHOD.RequestUserInput, ZCODE_TOOL.ExitPlanMode)
-    expect(zcodeControlResponseSummary(bare)).toEqual({ kind: 'label', text: 'Approve' })
+    }, PLAN_PROMPT, {}, ZCODE_METHOD.RequestUserInput, ZCODE_TOOL.ExitPlanMode))).toEqual({ kind: 'label', text: 'Approve' })
   })
 
   it('reads a question as a question although its params carry the plan schema', () => {
-    const question = response(
+    expect(zcodeControlResponseSummary(response(
       {
         action: 'accept',
         content: {
           answers: { 'Which database?': 'Postgres' },
         },
       },
+      questionPrompt('Which database?'),
       {
         schema: { interaction: 'plan_approval' },
         input: {
@@ -206,43 +247,50 @@ describe('zcodeControlResponseSummary', () => {
           ],
         },
       },
-    )
-    expect(zcodeControlResponseSummary(question)).toEqual({ kind: 'label', text: 'Which database?: Postgres' })
+    ))).toEqual({ kind: 'label', text: 'Which database?: Postgres' })
   })
 
-  // `zcodeQuestionRecords` is the provider's ONE question list. The reader answers it and
-  // this display reads the saved answer back through it, so the two cannot disagree about
-  // which question an answer belongs to.
-  it('reads the same question list the reader answered', () => {
-    const params = {
-      schema: {
-        questions: [
-          { question: 'From the schema' },
-        ],
-      },
-      input: {
-        questions: [
-          { question: 'From the input' },
-        ],
-      },
-    }
-    expect(zcodeQuestionsFromPayload({ params }).map(question => question.question)).toEqual(['From the schema'])
+  it('reads a permission by the recorded prompt, whatever method the stored request states', () => {
+    expect(zcodeControlResponseSummary(response({ decision: 'allow' }, PERMISSION_PROMPT))).toEqual({ kind: 'label', text: 'Allow' })
     expect(zcodeControlResponseSummary(response({
       action: 'accept',
-      content: { answer: 'yes' },
-    }, params)))
-      .toEqual({ kind: 'label', text: 'From the schema: yes' })
+      content: { answer: 'a' },
+    }, PERMISSION_PROMPT, {}, ZCODE_METHOD.RequestPermission))).toBeNull()
   })
 
-  // The shared control shows a header-only question by its header and keys the answer map
-  // by that text, so the display must look it up under the same text.
+  // The questions come from the prompt that the banner drew, never from the stored
+  // request, whose lists the Worker read in its own precedence.
+  it('reads the question texts from the recorded prompt, not from the native request', () => {
+    expect(zcodeControlResponseSummary(response(
+      {
+        action: 'accept',
+        content: { answer: 'yes' },
+      },
+      questionPrompt('From the prompt'),
+      {
+        schema: {
+          questions: [
+            { question: 'From the schema' },
+          ],
+        },
+        input: {
+          questions: [
+            { question: 'From the input' },
+          ],
+        },
+      },
+    ))).toEqual({ kind: 'label', text: 'From the prompt: yes' })
+  })
+
+  // The prompt states a header-only question by its header, and the Worker keys the
+  // answer map by that text, so the display looks it up under the same text.
   it('reads a header-only question back under its header', () => {
     expect(zcodeControlResponseSummary(response({
       action: 'accept',
       content: {
         answers: { Databases: 'Postgres' },
       },
-    }, {
+    }, questionPrompt('Databases'), {
       input: {
         questions: [
           { header: 'Databases' },
@@ -252,13 +300,17 @@ describe('zcodeControlResponseSummary', () => {
       .toEqual({ kind: 'label', text: 'Databases: Postgres' })
   })
 
-  // The worker's positional `answer_<index>` keys count EVERY question the request
-  // declared, so a question nothing can answer still holds its place in the list.
-  it('keeps the positional index of a question with no text of its own', () => {
+  // The prompt leaves out a record that nothing can answer. The Worker keys the
+  // answer of every later question by its text, and positions it in the native list,
+  // so the keyed answer reads the right question whatever its position.
+  it('reads the keyed answer of a question after a record that the prompt left out', () => {
     expect(zcodeControlResponseSummary(response({
       action: 'accept',
-      content: { answer_0: 'dropped', answer_1: 'kept' },
-    }, {
+      content: {
+        answers: { Second: 'kept' },
+        answer_1: 'kept',
+      },
+    }, questionPrompt('Second'), {
       input: {
         questions: [
           {},
@@ -269,22 +321,65 @@ describe('zcodeControlResponseSummary', () => {
       .toEqual({ kind: 'label', text: 'Second: kept' })
   })
 
+  it('reads a question whose text spells a prototype member as its own answer', () => {
+    expect(zcodeControlResponseSummary(questionResponse({
+      action: 'accept',
+      content: {
+        answers: JSON.parse('{"toString":"a","__proto__":"b"}') as Record<string, unknown>,
+      },
+    }, 'toString', '__proto__', 'constructor')))
+      .toEqual({ kind: 'label', text: 'toString: a\n__proto__: b' })
+  })
+
   it('returns no derived label for an unknown or corrupt native response', () => {
-    expect(zcodeControlResponseSummary(response({ action: 'unknown' }))).toBeNull()
-    expect(zcodeControlResponseSummary(response({ decision: 'unknown' }, {}, ZCODE_METHOD.RequestPermission))).toBeNull()
+    expect(zcodeControlResponseSummary(questionResponse({ action: 'unknown' }, 'One'))).toBeNull()
+    expect(zcodeControlResponseSummary(permissionResponse({ decision: 'unknown' }))).toBeNull()
     expect(zcodeControlResponseSummary({
-      ...response({ action: 'accept' }),
+      ...questionResponse({ action: 'accept' }, 'One'),
       response: undefined,
     })).toBeNull()
-    expect(zcodeControlResponseSummary({
-      ...response({ action: 'accept' }),
-      request: undefined,
-    })).toBeNull()
-    expect(zcodeControlResponseSummary(response({
+    expect(zcodeControlResponseSummary(questionResponse({
       action: 'accept',
       content: { answer: 'ignored' },
-    }, {
-      questions: [null, 0, {}],
     }))).toBeNull()
+  })
+
+  // The prompt lives in the answer row's own metadata, so a row whose request is gone
+  // still reads its questions.
+  it('reads an answer whose native request is gone', () => {
+    expect(zcodeControlResponseSummary({
+      ...questionResponse({
+        action: 'accept',
+        content: {
+          answers: { One: 'a' },
+        },
+      }, 'One'),
+      request: undefined,
+    })).toEqual({ kind: 'label', text: 'One: a' })
+  })
+
+  // The prompt states which control the answer belongs to. A row with none reads as
+  // nothing here, whatever its tool name, and the shared chokepoint shows its generic
+  // label.
+  it('reads nothing from a row that records no prompt, whatever its tool name', () => {
+    const plan = response({
+      action: 'accept',
+      content: { answer: 'approve' },
+    }, undefined, {}, ZCODE_METHOD.RequestUserInput, ZCODE_TOOL.ExitPlanMode)
+    expect(zcodeControlResponseSummary(plan)).toBeNull()
+    const permission = response({ decision: 'allow' }, undefined, {}, ZCODE_METHOD.RequestPermission, ZCODE_TOOL.Bash)
+    expect(zcodeControlResponseSummary(permission)).toBeNull()
+    expect(resolveControlResponseSummary(permission, zcodeControlResponseSummary)).toEqual({ kind: 'label', text: 'Responded' })
+  })
+
+  it('reads nothing for a prompt that the reply cannot answer', () => {
+    const elicitation: ControlPrompt = {
+      kind: 'elicitation',
+      elicitation: { mode: 'form', message: 'Choose' },
+    }
+    expect(zcodeControlResponseSummary(response({
+      action: 'accept',
+      content: { answer_0: 'a' },
+    }, elicitation))).toBeNull()
   })
 })

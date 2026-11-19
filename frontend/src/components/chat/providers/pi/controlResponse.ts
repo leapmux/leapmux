@@ -1,86 +1,56 @@
 /**
- * Build Pi extension_ui_response bodies.
+ * The display of a saved Pi `extension_ui_response`.
  *
- * Pi blocks until the client posts a matching response line on stdin.
- * The native dialog methods use these response shapes:
+ * Pi blocks until the client posts a matching response line on stdin. The Worker
+ * builds that line from the reader's decision, and the saved row keeps it. The
+ * native dialog methods take these response shapes:
  *
  *   select / input / editor → { type, id, value }
  *   confirm                 → { type, id, confirmed }
  *   any cancel              → { type, id, cancelled: true }
  *
- * SendControlResponse sends UTF-8 bytes. The worker's providerkit.Process.SendRawInput
- * adds a trailing newline before it writes to Pi's stdin.
+ * The prompt that the Worker recorded with the answer states which control the reader
+ * answered (`ReadControlRequest` in the Go `pi` package): the plan menu, a question
+ * (an `input` or a `select`), or a dialog.
  */
 
-import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
 import type { ControlResponseSummary } from '../../model/controlResponse'
-import type { ControlQuestion } from '../../model/question'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION, PI_QUESTION_DIALOG } from '~/generated/contracts/pi-protocol'
-import { pickString } from '~/lib/jsonPick'
-import { sendResponse } from '../../controls/types'
+import { PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { label } from '../../persistedControlResponse'
-import { isPiPlanApproval } from './planRequest'
 
-const RESPONSE_TYPE = PI_EVENT.ExtensionUIResponse
-
-export interface PiSelectResponse {
-  type: typeof RESPONSE_TYPE
-  id: string
-  value: string
+/** The exact text that a value answer carried, or a word for the explicit empty answer. */
+function valueSummary(response: Record<string, unknown>): ControlResponseSummary | null {
+  if (typeof response.value !== 'string')
+    return null
+  return label(response.value === ''
+    ? 'Empty answer'
+    : response.value)
 }
 
-export interface PiConfirmResponse {
-  type: typeof RESPONSE_TYPE
-  id: string
-  confirmed: boolean
-}
-
-export interface PiCancelledResponse {
-  type: typeof RESPONSE_TYPE
-  id: string
-  cancelled: true
-}
-
-export type PiExtensionResponse = PiSelectResponse | PiConfirmResponse | PiCancelledResponse
-
-export function piValueResponse(requestId: string, value: string): PiSelectResponse {
-  return { type: RESPONSE_TYPE, id: requestId, value }
-}
-
-export function piConfirmResponse(requestId: string, confirmed: boolean): PiConfirmResponse {
-  return { type: RESPONSE_TYPE, id: requestId, confirmed }
-}
-
-export function piCancelResponse(requestId: string): PiCancelledResponse {
-  return { type: RESPONSE_TYPE, id: requestId, cancelled: true }
+/** The decision that a confirm answer carried. A confirm requires an explicit one. */
+function confirmSummary(response: Record<string, unknown>): ControlResponseSummary | null {
+  if (typeof response.confirmed !== 'boolean')
+    return null
+  return label(response.confirmed
+    ? 'Approved'
+    : 'Rejected')
 }
 
 /**
- * Read the current answer from ControlAnswerState.
- * Prefer the first selected option. Use the first custom-text entry when no option exists.
+ * The answer to the plan menu. Its three plan actions approve or refuse the plan, and
+ * any other option is an extension's own choice, which reads as the option itself.
  */
-export function piAskAnswerValue(answerState: ControlAnswerState, questions?: ControlQuestion[], payload?: Record<string, unknown>): string {
-  const selections = answerState.selections()[0] ?? []
-  if (selections.length) {
-    const multiSelect = questions?.[0]?.multiSelect || (payload?.method === PI_DIALOG_METHOD.Input && payload.placeholder === PI_QUESTION_DIALOG.MultiSelectPlaceholder)
-    // The length test above pinned the first selection; `?? ''` is the type-level guard alone.
-    return multiSelect
-      ? selections.join(',')
-      : selections[0] ?? ''
+function planSummary(response: Record<string, unknown>): ControlResponseSummary | null {
+  switch (response.value) {
+    case PI_PLAN_ACTION.ImplementHere:
+    case PI_PLAN_ACTION.ImplementFresh:
+      return label('Approved')
+    case PI_PLAN_ACTION.Stay:
+      return label('Rejected')
+    default:
+      return valueSummary(response)
   }
-  return answerState.customTexts()[0] ?? ''
-}
-
-/**
- * Send an extension_ui_response to Pi.
- * The control banner supplies onRespond, which calls workerAgent.sendControlResponse.
- */
-export function sendPiExtensionResponse(
-  onRespond: ControlResponseSender,
-  response: PiExtensionResponse,
-): Promise<void> {
-  return sendResponse(onRespond, response)
 }
 
 /** Read the native decision or exact text from a saved Pi response. */
@@ -88,33 +58,19 @@ export function piControlResponseSummary(cr: PersistedControlResponse): ControlR
   const response = cr.response
   if (!response)
     return null
+  // Every control takes a cancellation, so it needs no prompt to read.
   if (response.cancelled === true)
     return label('Cancelled')
-
-  if (cr.request && isPiPlanApproval(cr.request)) {
-    if (response.value === PI_PLAN_ACTION.ImplementHere || response.value === PI_PLAN_ACTION.ImplementFresh)
-      return label('Approved')
-    if (response.value === PI_PLAN_ACTION.Stay)
-      return label('Rejected')
-  }
-
-  const method = pickString(cr.request, 'method', '')
-  if (method === PI_DIALOG_METHOD.Confirm || (method === '' && typeof response.confirmed === 'boolean')) {
-    return typeof response.confirmed === 'boolean'
-      ? label(response.confirmed ? 'Approved' : 'Rejected')
-      : null
-  }
-  switch (method) {
-    case PI_DIALOG_METHOD.Select:
-    case PI_DIALOG_METHOD.Input:
-    case PI_DIALOG_METHOD.Editor:
-    case '': {
-      return typeof response.value === 'string'
-        ? label(response.value === ''
-            ? 'Empty answer'
-            : response.value)
-        : null
-    }
+  const prompt = cr.prompt
+  switch (prompt?.kind) {
+    case 'plan':
+      return planSummary(response)
+    case 'question':
+      return valueSummary(response)
+    case 'dialog':
+      return prompt.dialog.variant === 'confirm'
+        ? confirmSummary(response)
+        : valueSummary(response)
     default:
       return null
   }

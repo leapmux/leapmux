@@ -1,82 +1,97 @@
+import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import type { KiroAlwaysAllowID, KiroAlwaysDenyID } from './extractControl'
-import { KIRO_CONSENT_SCOPE, KIRO_META, KIRO_METHOD, KIRO_PERMISSION_OPTION, KIRO_SCOPED_PERMISSION_OPTION, KIRO_USER_INPUT_ACTION } from '~/generated/contracts/kiro-protocol'
+import { KIRO_CONSENT_SCOPE, KIRO_META, KIRO_PERMISSION_OPTION, KIRO_SCOPED_PERMISSION_OPTION, KIRO_USER_INPUT_ACTION } from '~/generated/contracts/kiro-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
+import { permissionOptionLabel } from '../../controls/permissionOptionLabels'
 import { feedback, label, labelOrNull } from '../../persistedControlResponse'
 import { acpControlResponseSummary } from '../acp/controlResponse'
 import { kiroUserInputSavedAnswer } from './askUserQuestion'
-import { KIRO_ALWAYS_ALLOW, KIRO_ALWAYS_DENY } from './extractControl'
-import { KIRO_REJECTION_REASON, kiroMeta } from './protocol'
+import { kiroMeta } from './protocol'
 
 /**
- * Adds the reason of a rejected permission to Kiro's reply, in `_meta.kiro`, and keeps
- * every other key the reply's metadata carried.
- */
-export function kiroPermissionRejectReason(result: Record<string, unknown>, reason: string): Record<string, unknown> {
-  const meta = pickObject(result, '_meta') ?? {}
-  const kiro = pickObject(meta, KIRO_META.Namespace) ?? {}
-  return {
-    ...result,
-    _meta: {
-      ...meta,
-      [KIRO_META.Namespace]: { ...kiro, [KIRO_REJECTION_REASON]: reason },
-    },
-  }
-}
-
-/** The option of each consent scope of a saved reply, for an always-allow and an always-deny. */
-const KIRO_SCOPE_OPTIONS: Readonly<Record<string, { allow: KiroAlwaysAllowID, deny: KiroAlwaysDenyID }>> = {
-  [KIRO_CONSENT_SCOPE.Workspace]: { allow: KIRO_SCOPED_PERMISSION_OPTION.AlwaysAcceptWorkspace, deny: KIRO_SCOPED_PERMISSION_OPTION.AlwaysRejectWorkspace },
-  [KIRO_CONSENT_SCOPE.User]: { allow: KIRO_SCOPED_PERMISSION_OPTION.AlwaysAcceptUser, deny: KIRO_SCOPED_PERMISSION_OPTION.AlwaysRejectUser },
-}
-
-/** The option that the consent scope of a saved reply states, or undefined for the session. */
-function kiroSavedScope(result: Record<string, unknown>): { allow: KiroAlwaysAllowID, deny: KiroAlwaysDenyID } | undefined {
-  const scope = pickString(pickObject(kiroMeta(result), KIRO_META.Consent), KIRO_META.Scope)
-  return Object.hasOwn(KIRO_SCOPE_OPTIONS, scope)
-    ? KIRO_SCOPE_OPTIONS[scope]
-    : undefined
-}
-
-/**
- * The words of one saved always-allow or always-deny, with its scope.
+ * The option of LeapMux's own that each consent scope of a saved reply chose, for
+ * Kiro's own always-allow and always-deny.
  *
- * The browser sends a wider scope as an option of LeapMux's own, and the worker turns
- * it into Kiro's own option with the scope in `_meta.kiro.consent`. A saved reply can
- * hold either form, and both read as the button the reader pressed.
+ * Kiro states one `always-accept` and one `always-reject`, which keep their rule for
+ * the session, and it reads a wider scope from the reply. The Worker offers each wider
+ * scope as an option of its own (`kiroAlwaysAllowRules` and `kiroAlwaysDenyRules` in
+ * Go), and it answers one with Kiro's own option and the scope in
+ * `_meta.kiro.consent`. This reads such a reply back to the option of the recorded
+ * prompt that the reader pressed. A `Map`, because the option id and the scope are
+ * wire data, and a bare index on a record would reach `Object.prototype`.
  */
-function kiroAlwaysRuleLabel(result: Record<string, unknown>): string | null {
+const KIRO_SCOPED_OPTION_IDS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
+  [
+    KIRO_PERMISSION_OPTION.AlwaysAccept,
+    new Map<string, string>([
+      [KIRO_CONSENT_SCOPE.Workspace, KIRO_SCOPED_PERMISSION_OPTION.AlwaysAcceptWorkspace],
+      [KIRO_CONSENT_SCOPE.User, KIRO_SCOPED_PERMISSION_OPTION.AlwaysAcceptUser],
+    ]),
+  ],
+  [
+    KIRO_PERMISSION_OPTION.AlwaysReject,
+    new Map<string, string>([
+      [KIRO_CONSENT_SCOPE.Workspace, KIRO_SCOPED_PERMISSION_OPTION.AlwaysRejectWorkspace],
+      [KIRO_CONSENT_SCOPE.User, KIRO_SCOPED_PERMISSION_OPTION.AlwaysRejectUser],
+    ]),
+  ],
+])
+
+/**
+ * The id of the prompt's option that a saved reply chose, or '' for a reply that
+ * selects no option.
+ *
+ * The reply can state Kiro's own always option with a wider scope, or the option id
+ * itself: both read as the option the reader pressed.
+ */
+function kiroChosenOptionId(result: Record<string, unknown>): string {
   const optionId = pickString(pickObject(result, 'outcome'), 'optionId')
-  if (optionId === KIRO_PERMISSION_OPTION.AlwaysAccept)
-    return KIRO_ALWAYS_ALLOW[kiroSavedScope(result)?.allow ?? KIRO_PERMISSION_OPTION.AlwaysAccept].name
-  if (optionId === KIRO_PERMISSION_OPTION.AlwaysReject)
-    return KIRO_ALWAYS_DENY[kiroSavedScope(result)?.deny ?? KIRO_PERMISSION_OPTION.AlwaysReject].name
-  if (Object.hasOwn(KIRO_ALWAYS_ALLOW, optionId))
-    return KIRO_ALWAYS_ALLOW[optionId as KiroAlwaysAllowID].name
-  if (Object.hasOwn(KIRO_ALWAYS_DENY, optionId))
-    return KIRO_ALWAYS_DENY[optionId as KiroAlwaysDenyID].name
-  return null
+  const scope = pickString(pickObject(kiroMeta(result), KIRO_META.Consent), KIRO_META.Scope)
+  return KIRO_SCOPED_OPTION_IDS.get(optionId)?.get(scope) ?? optionId
 }
 
 /**
- * The display of one saved Kiro answer. It dispatches on the request, and a request
- * the reader answered with one of its options takes the shared permission display.
+ * The display of one saved permission: the reason that a rejection carried, which is
+ * what the reader typed, or the words of the option of the recorded prompt that the
+ * reader chose. A reply that selects no option takes the shared permission display,
+ * which reads a cancellation. An option that the prompt does not offer reads as
+ * nothing.
+ */
+function kiroPermissionSummary(cr: PersistedControlResponse, result: Record<string, unknown>, options: readonly PermissionOption[]): ControlResponseSummary | null {
+  const reason = pickString(kiroMeta(result), KIRO_META.RejectionReason).trim()
+  if (reason)
+    return feedback(reason)
+  const optionId = kiroChosenOptionId(result)
+  if (!optionId)
+    return acpControlResponseSummary(cr)
+  const option = options.find(candidate => candidate.optionId === optionId)
+  return option
+    ? label(permissionOptionLabel(option))
+    : null
+}
+
+/**
+ * The display of one saved Kiro answer. The prompt that the Worker recorded with the
+ * answer states which request it answers: the question takes Kiro's own reply, and a
+ * permission takes the option that the reader chose.
  *
- * A rejection that carried a reason shows the reason, which is what the reader typed.
- * The MCP form takes the shared form display, which the registration wraps around this.
+ * The MCP form takes the shared form display, which the row extraction asks before
+ * this one, from the prompt that the Worker recorded. A row that records no prompt
+ * reads as nothing, so the caller falls back to the shared label.
  */
 export function kiroControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const result = pickObject(cr.response, 'result')
   if (!result)
-    return acpControlResponseSummary(cr)
-  if (pickString(cr.request, 'method') === KIRO_METHOD.UserInput) {
-    if (pickString(result, 'action') === KIRO_USER_INPUT_ACTION.Dismissed)
-      return label('Dismissed')
-    return labelOrNull(kiroUserInputSavedAnswer(result))
+    return null
+  switch (cr.prompt?.kind) {
+    case 'question':
+      if (pickString(result, 'action') === KIRO_USER_INPUT_ACTION.Dismissed)
+        return label('Dismissed')
+      return labelOrNull(kiroUserInputSavedAnswer(result))
+    case 'permission':
+      return kiroPermissionSummary(cr, result, cr.prompt.permission.options)
+    default:
+      return null
   }
-  const reason = pickString(kiroMeta(result), KIRO_REJECTION_REASON).trim()
-  if (reason)
-    return feedback(reason)
-  return labelOrNull(kiroAlwaysRuleLabel(result)) ?? acpControlResponseSummary(cr)
 }

@@ -46,30 +46,6 @@
       }
     },
     "permissionOptions": {
-      "ProceedAlways": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
-      "ProceedAlwaysFile": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
-      "ProceedAlwaysServer": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
-      "ProceedAlwaysTools": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards an option that the browser's decision states without branching on it; the browser words the saved answer from the option"
-      },
       "ProceedAutoRun": {
         "sides": [
           "go"
@@ -108,79 +84,27 @@
       }
     },
     "confirmationTypes": {
-      "ApplyPatch": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
-      },
       "AskUser": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "Create": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
-      },
-      "DroidShieldViolation": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards a confirmation whole and never branches on its type; the browser reads the type of a shield refusal from the stored bytes"
-      },
-      "Edit": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
-      },
-      "Exec": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
-      },
-      "MCPTool": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
-      },
-      "ProposeMission": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker forwards a confirmation whole and never branches on its type; the browser reads the type of a review card from the stored bytes"
-      },
       "RecommendMission": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "SandboxViolation": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "Script": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the browser draws this confirmation from the stored bytes and does not branch on this word"
-      },
       "StartMissionRun": {
         "sides": [
-          "go",
-          "ts"
+          "go"
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       }
@@ -194,23 +118,11 @@
       }
     },
     "reply": {
-      "Answers": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker reads and writes this field through struct tags, and contract_tags_test.go pins the spelling; the browser writes it in its decision and reads it from the saved answer"
-      },
       "Cancelled": {
         "sides": [
           "go"
         ],
         "why": "the worker writes this field through a struct tag, and contract_tags_test.go pins the spelling; the browser reads it from the saved answer"
-      },
-      "SelectedOption": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker reads and writes this field through struct tags, and contract_tags_test.go pins the spelling; the browser reads it from the saved answer"
       }
     }
   },

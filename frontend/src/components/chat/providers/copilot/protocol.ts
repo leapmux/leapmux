@@ -1,8 +1,6 @@
 import { COPILOT_METHOD } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
-export const COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE = 'user_model_rate_limited'
-
 /**
  * One native session event, as a persisted row holds it.
  *

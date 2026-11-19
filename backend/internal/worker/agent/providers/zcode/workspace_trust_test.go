@@ -359,8 +359,8 @@ func TestZCodeWithdrawingTheControlsRetiresTheTrustQuestion(t *testing.T) {
 	assert.Contains(t, sink.CanceledControls(), providerkit.WorkspaceTrustRequestID("sess-1"))
 }
 
-// The browser's decision on the question becomes the saved answer, and never a
-// ZCode frame.
+// The neutral allow or deny on the question becomes the saved answer, and never
+// a ZCode frame.
 func TestZCodeResolvesTheTrustAnswer(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(map[string]any{
@@ -371,8 +371,8 @@ func TestZCodeResolvesTheTrustAnswer(t *testing.T) {
 	require.NoError(t, err)
 	requestID := providerkit.WorkspaceTrustRequestID("sess-1")
 	for behavior, decision := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		t.Run(behavior, func(t *testing.T) {
 			t.Parallel()

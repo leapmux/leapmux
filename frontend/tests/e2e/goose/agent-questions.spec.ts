@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test'
-import { acpExtractControl } from '../../../src/components/chat/providers/acp/extractControl'
 import { gooseTest } from '../goose-fixtures'
 import { nativeModelToolNames } from '../helpers/nativeScenario'
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
@@ -10,7 +9,6 @@ gooseTest('offers an actual native permission without an agent question sequence
   await waitForSettingsIdle(native.page)
   await exerciseUnsupportedControlThroughPermission(native, {
     purpose: 'question',
-    classify: acpExtractControl,
     // The catalog that the model read offers no question tool of any known spelling.
     nativeProof: (request) => {
       const tools = nativeModelToolNames(request)

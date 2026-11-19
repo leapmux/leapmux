@@ -224,7 +224,7 @@ func (a *Agent) replyRemoteEvent(id string, outcome map[string]any) error {
 
 func (a *Agent) answerControl(raw []byte) error {
 	id, behavior, _, ok := agent.DecodeControlBehavior(raw)
-	if !ok || id == "" || behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
+	if !ok || id == "" || behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 		return fmt.Errorf("DeepSeek Harness control response is invalid")
 	}
 	a.Mu.Lock()
@@ -243,7 +243,7 @@ func (a *Agent) answerControl(raw []byte) error {
 	var value any
 	if pending.event == contracts.DeepseekHarnessControlEventApproval {
 		value = "rejected"
-		if behavior == agent.ControlBehaviorAllow {
+		if behavior == contracts.ControlAnswerBehaviorAllow {
 			value = "allowed-once"
 		}
 	} else {
@@ -265,22 +265,13 @@ func (a *Agent) answerControl(raw []byte) error {
 		}
 		if len(questions.Questions) == 1 && questions.Questions[0].Intent != nil && questions.Questions[0].Intent.Kind == "plan-review" {
 			question := questions.Questions[0]
-			label := question.Intent.Approve
-			if behavior != agent.ControlBehaviorAllow {
-				label = ""
-				for _, option := range question.Options {
-					if option.Label != question.Intent.Approve {
-						label = option.Label
-						break
-					}
-				}
-			}
-			if label == "" {
-				return fmt.Errorf("DeepSeek Harness plan review has no requested choice")
+			label, err := planReviewLabel(question, behavior == contracts.ControlAnswerBehaviorAllow, agent.DecodeControlChoice(raw))
+			if err != nil {
+				return err
 			}
 			value = map[string]any{"answers": []map[string]any{{"id": question.ID, "selected": []string{label}}}}
 		} else {
-			if behavior != agent.ControlBehaviorAllow {
+			if behavior != contracts.ControlAnswerBehaviorAllow {
 				return a.sendControlOutcome(id, pending, map[string]any{"kind": "next"})
 			}
 			var answers []map[string]any
@@ -291,4 +282,31 @@ func (a *Agent) answerControl(raw []byte) error {
 		}
 	}
 	return a.sendControlOutcome(id, pending, map[string]any{"kind": "result", "value": value})
+}
+
+// planReviewLabel is the option of a plan review that an answer selects. An
+// approval selects the review's approve label. A refusal selects the
+// refusing option that the answer states as its choice, or the first one
+// when it states none: a review can offer several refusals, such as one that
+// also leaves plan mode, and the user chose one of them.
+func planReviewLabel(question nativeQuestion, approve bool, choice string) (string, error) {
+	approveLabel := question.Intent.Approve
+	if approve {
+		if choice != "" && choice != approveLabel {
+			return "", fmt.Errorf("DeepSeek Harness plan review approves with %q, not %q", approveLabel, choice)
+		}
+		if approveLabel == "" {
+			return "", fmt.Errorf("DeepSeek Harness plan review has no requested choice")
+		}
+		return approveLabel, nil
+	}
+	for _, option := range question.Options {
+		if option.Label != approveLabel && (choice == "" || option.Label == choice) {
+			return option.Label, nil
+		}
+	}
+	if choice != "" {
+		return "", fmt.Errorf("DeepSeek Harness plan review offers no refusal %q", choice)
+	}
+	return "", fmt.Errorf("DeepSeek Harness plan review has no requested choice")
 }

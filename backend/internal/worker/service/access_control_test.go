@@ -117,8 +117,14 @@ var agentHandlerCases = []agentHandlerCase{
 	{leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, func(id string) proto.Message {
 		return &leapmuxv1.UpdateAgentSettingsRequest{AgentId: id, Settings: &leapmuxv1.AgentSettings{Options: map[string]string{"model": "opus"}}}
 	}},
-	{leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, func(id string) proto.Message {
-		return &leapmuxv1.SendControlResponseRequest{AgentId: id, Content: []byte("{}")}
+	{leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure, func(id string) proto.Message {
+		return &leapmuxv1.RecordControlResponseRequest{AgentId: id, RequestId: "request", ClaimToken: "claim"}
+	}},
+	{leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure, func(id string) proto.Message {
+		return &leapmuxv1.ListControlRequestsRequest{AgentId: id}
+	}},
+	{leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure, func(id string) proto.Message {
+		return &leapmuxv1.AnswerControlRequest{AgentId: id, RequestId: "request", ClaimToken: "claim"}
 	}},
 	{leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, func(id string) proto.Message {
 		return &leapmuxv1.UpdateAgentGoalRequest{

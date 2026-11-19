@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -22,12 +21,13 @@ import (
 // The server announces each through an unsequenced `interaction` frame and
 // parks the tool call until a REST answer resolves it. The worker publishes
 // the complete native frame as the control
-// request, under the server's own interaction ID, and the browser reads
-// it through the Kimi plugin. The answer comes back through
-// SendControlResponse: ResolveControlResponse (control_response.go) turns the
-// browser's decision into the server's own body, and deliverControlResponse
-// posts it. A subscription
-// re-emits the current pending live frames after its acknowledgement.
+// request, under the server's own interaction ID. ReadControlRequest reads it
+// into the prompt, and the browser's Kimi plugin reads it to display a saved
+// answer. The answer comes back through AnswerControl: AnswerControlRequest
+// builds the neutral envelope from the decision, ResolveControlResponse
+// (control_response.go) turns it into the server's own body, and
+// deliverControlResponse posts it. A subscription re-emits the current
+// pending live frames after its acknowledgement.
 //
 // The server resolves a request by itself when the turn ends (an abort, a
 // failure) and states that with an `interaction` frame whose status is `ended`. The worker then withdraws the request, so no banner waits on an
@@ -389,8 +389,8 @@ func (a *Agent) withdrawAllControls() {
 }
 
 // kimiControlEnvelope is the control-response envelope the service forwards:
-// the browser's own, with its inner response already turned into the server's
-// body by ResolveControlResponse.
+// the neutral envelope that AnswerControlRequest built, with its inner response
+// already turned into the server's body by ResolveControlResponse.
 type kimiControlEnvelope struct {
 	Response struct {
 		RequestID string          `json:"request_id"`

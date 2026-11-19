@@ -26,13 +26,13 @@ const storedPlanPayload = `{"type":"question.asked","properties":{"id":"que_2","
 	`"request":{"tool_name":"plan_exit","tool_use_id":"call-3"},"plan":"# Plan"}`
 
 // storedElicitationPayload is an MCP server's confirmation as publishControl
-// stores it: MiMo HEAD asks it as one question, with MiMo's three answers.
+// stores it: MiMo 0.1.17 asks it as one question, with MiMo's three answers.
 const storedElicitationPayload = `{"type":"question.asked","properties":{"id":"que_3","sessionID":"ses_test","questions":[{"key":"mcp_elicitation",` +
 	`"header":"docs","question":"docs\n\nProceed?","options":[{"label":"Accept"},{"label":"Decline"},{"label":"Cancel"}],"multiple":false,"custom":false}]},` +
 	`"request":{"tool_name":"question"}}`
 
-// elicitationEnvelope is the answer that the browser's shared elicitation form
-// writes, with the MCP action the reader chose.
+// elicitationEnvelope is the answer that agent.AnswerElicitation writes, with
+// the MCP action the reader chose.
 func elicitationEnvelope(requestID, action string) []byte {
 	raw, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{
 		"subtype": "success", "request_id": requestID, "response": map[string]any{"action": action, "content": map[string]any{}},
@@ -87,8 +87,8 @@ func TestResolveControlResponse(t *testing.T) {
 			response: allowEnvelope("mimo-question:que_1"), withhold: true},
 		{name: "an elicitation action answers an MCP server's confirmation", requestID: "mimo-question:que_3", payload: storedElicitationPayload,
 			response: elicitationEnvelope("mimo-question:que_3", contracts.MCPElicitationActionDecline)},
-		// The browser writes this envelope for an elicitation alone. A question that
-		// does not offer MiMo's word for the action cannot take it.
+		// AnswerControlRequest writes this envelope for an elicitation alone. A
+		// question that does not offer MiMo's word for the action cannot take it.
 		{name: "an elicitation action to a question that does not offer it is withheld", requestID: "mimo-question:que_1", payload: storedQuestionPayload,
 			response: elicitationEnvelope("mimo-question:que_1", contracts.MCPElicitationActionAccept), withhold: true},
 		{name: "an elicitation action to a permission is withheld", requestID: "mimo-permission:per_1", payload: storedPermissionPayload,
@@ -231,10 +231,10 @@ func TestNormalizeAttachmentsRefusesABinary(t *testing.T) {
 	assert.ErrorContains(t, err, "archive.bin")
 }
 
-// The browser writes the answer envelope from the generated OpenCode contract
-// table, and a Go struct tag cannot hold a constant. Without this test a rename
-// in contracts/opencode-protocol.json would move the browser and leave the
-// worker decoding the old name: every answer would fail to decode, and MiMo's
+// providerkit.AnswerOpenCodeQuestions writes the answer envelope from the
+// generated OpenCode contract constants, and a Go struct tag cannot hold a
+// constant. Without this test a rename in contracts/opencode-protocol.json
+// would move the writer and leave the worker decoding the old name: every answer would fail to decode, and MiMo's
 // question tool would wait until the turn ends.
 func TestMiMoAnswerTagsMatchTheContract(t *testing.T) {
 	t.Parallel()

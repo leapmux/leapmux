@@ -1,8 +1,7 @@
 import type { Component } from 'solid-js'
 import type { AgentComposerActionStateStore } from './agentComposerActionState'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
-import type { ControlResponseHandler, EditorContentRef } from './controls/types'
-import type { MessageContextResolver } from './messageContextResolver'
+import type { ControlAnswerHandler, EditorContentRef } from './controls/types'
 import type { PermissionPresetController, ProviderSettingChangeHandler } from './providerSettings'
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
@@ -74,7 +73,6 @@ import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
 export interface AgentEditorPanelProps {
-  messageContext?: MessageContextResolver
   /** See `MarkdownEditorProps.suppressAutoFocus`. Forwarded unchanged. */
   suppressAutoFocus?: () => boolean
   agentId: string
@@ -96,7 +94,6 @@ export interface AgentEditorPanelProps {
    * expired schedule stays in the composer instead of sending immediately.
    */
   onRetryPendingSend?: (content: string, attachments: FileAttachment[], scheduledAt: string) => Promise<boolean>
-  onSendControlFeedback?: (content: string) => void | Promise<void>
   inputQueue?: AgentInputQueueSnapshot
   queueClientId?: string
   onBeginQueueEdit?: BeginQueueEdit
@@ -120,7 +117,8 @@ export interface AgentEditorPanelProps {
   /** Whether the reader opened this agent's non-blocking questions. */
   questionsOpen?: boolean
   onQuestionsOpenChange?: (open: boolean) => void
-  onControlResponse?: ControlResponseHandler
+  /** Delivers ONE answer for a request instance: a decision, or a recording. */
+  onControlAnswer?: ControlAnswerHandler
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: ProviderSettingChangeHandler
   /**
@@ -552,11 +550,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       get controlRequests() { return props.controlRequests },
       get questionsOpen() { return props.questionsOpen },
       get onQuestionsOpenChange() { return props.onQuestionsOpenChange },
-      get messageContext() { return props.messageContext },
-      get onControlResponse() { return props.onControlResponse },
+      get onControlAnswer() { return props.onControlAnswer },
       get onSettingChange() { return props.onSettingChange },
       get onSendMessage() { return props.onSendMessage },
-      get onSendControlFeedback() { return props.onSendControlFeedback },
       get settingsLoading() { return props.settingsLoading },
       get agentActivity() { return props.agentActivity },
       get canInterrupt() { return props.canInterrupt },
@@ -1044,8 +1040,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           //
           // A plain conditional passes `request` as a reactive prop instead.
           // Every memo in the component's body then re-runs against the removed
-          // request. The question detection is one such memo, and a provider
-          // plugin's payload parsing is another.
+          // request. The match on the prompt kind is one such memo.
           banner={(
             <Show when={ctrl.activeControlRequest()} keyed>
               {request => (
@@ -1053,15 +1048,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   request={request}
                   answerState={answerState}
                   optionsDisabled={ctrl.editorTextReplacesOptions() && hasContent()}
-                  {...(props.messageContext !== undefined
-                    ? { messageContext: props.messageContext }
-                    : {})}
-                  {...(() => {
-                    const agentProvider = ctrl.activeControlProvider()
-                    return agentProvider !== undefined
-                      ? { agentProvider }
-                      : {}
-                  })()}
                   controlSurface={ctrl.activeControlSurface()}
                   {...(request.nonBlocking
                     ? { onAnswerLater: ctrl.closeQuestions }
@@ -1141,20 +1127,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       <ControlRequestActions
                         request={request}
                         answerState={answerState}
-                        onRespond={ctrl.respondTo(request)}
+                        onDecide={ctrl.decideFor(request)}
                         onRecordResponse={() => ctrl.recordResponse(request)}
                         hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}
                         onTriggerSend={() => { void triggerSend?.() }}
                         editorContentRef={() => editorContentRef}
-                        {...(props.messageContext !== undefined
-                          ? { messageContext: props.messageContext }
-                          : {})}
-                        {...(() => {
-                          const agentProvider = ctrl.activeControlProvider()
-                          return agentProvider !== undefined
-                            ? { agentProvider }
-                            : {}
-                        })()}
+                        agentProvider={ctrl.activeControlProvider()}
                         controlSurface={ctrl.activeControlSurface()}
                         {...(props.agentSessionInfo?.contextUsage !== undefined
                           ? { contextUsage: props.agentSessionInfo.contextUsage }

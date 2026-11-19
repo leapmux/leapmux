@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -92,9 +91,9 @@ type piToolState struct {
 }
 
 // piExtensionUIRequestHeader captures the routing fields of an
-// extension_ui_request event. The full payload is forwarded verbatim to the
-// frontend through PublishControlRequest / PersistLeapMuxNotification so renderers
-// can read every method-specific field.
+// extension_ui_request event. The full payload is forwarded verbatim through
+// PublishControlRequest / PersistLeapMuxNotification, so ReadControlRequest and
+// the browser's renderers can read every method-specific field.
 type piExtensionUIRequestHeader struct {
 	ID        string `json:"id"`
 	Method    string `json:"method"`
@@ -177,7 +176,7 @@ const piRetryableWebSocketError = "WebSocket error"
 
 // piDialogMethods is the set of extension UI methods that block waiting for an
 // extension_ui_response. These are surfaced as control requests so the
-// frontend can render a dialog and ship a response back.
+// frontend can render a dialog and send a decision back.
 var piDialogMethods = map[string]struct{}{
 	contracts.PiDialogMethodSelect:  {},
 	contracts.PiDialogMethodConfirm: {},

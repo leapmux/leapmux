@@ -36,7 +36,7 @@ func createClaimTestAgent(t *testing.T, svc *Service, id string) {
 	}))
 }
 
-// TestClaimControlResponseAnswer pins the per-INSTANCE idempotency claim SendControlResponse uses to
+// TestClaimControlResponseAnswer pins the per-INSTANCE idempotency claim processControlAnswer uses to
 // dedup a duplicate answer (an RPC retry or a second window echoing the SAME claim_token): the first
 // claim for a (agent, request, token) triple wins and a repeat loses, claims are isolated per request,
 // per agent, and per token, a DIFFERENT token for the same request id claims fresh (the reused-instance

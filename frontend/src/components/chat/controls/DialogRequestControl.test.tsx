@@ -1,11 +1,12 @@
 import type { DialogPrompt } from '../model/controlPrompt'
-import type { DialogResponder } from './DialogRequestControl'
+import type { ControlDecisionSender } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
+import { DialogAction } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { ControlRequestActions } from '../ControlRequestBanner'
 import { DialogRequestActions, DialogRequestContent, dialogTimeoutHint } from './DialogRequestControl'
 import { createControlAnswerState } from './types'
@@ -44,35 +45,38 @@ describe('dialogTimeoutHint', () => {
   })
 })
 
-/** A responder whose envelopes name the answer, so a test reads what was sent. */
-const responder: DialogResponder = {
-  confirm: (id, confirmed) => ({ id, confirmed }),
-  value: (id, value) => ({ id, value }),
-  cancel: id => ({ id, cancelled: true }),
+const request: ControlRequest = testControlRequest({
+  requestId: 'd1',
+  agentId: 'agent-1',
+  prompt: {
+    kind: 'dialog',
+    dialog: { title: 'Proceed?', variant: 'confirm' },
+  },
+})
+
+/** The dialog decisions that each call of a sender carried, as an action and a value. */
+function sent(onDecide: ReturnType<typeof vi.fn<ControlDecisionSender>>): Array<{ action: DialogAction, value: string }> {
+  return onDecide.mock.calls.map(([decision]) => {
+    if (decision.kind.case !== 'dialog')
+      throw new Error(`the sender carried a ${decision.kind.case} decision`)
+    return { action: decision.kind.value.action, value: decision.kind.value.value }
+  })
 }
 
-const request: ControlRequest = { requestId: 'd1', agentId: 'agent-1', payload: {} }
-
-/** The envelopes that each call of a sender carried. */
-function sent(onRespond: ReturnType<typeof vi.fn>): unknown[] {
-  return onRespond.mock.calls.map(call => JSON.parse(new TextDecoder().decode(call[0] as Uint8Array)))
-}
-
-/** The actions of one dialog, with a sender that records each envelope. */
+/** The actions of one dialog, with a sender that records each decision. */
 function renderActions(dialog: DialogPrompt, answerState = createControlAnswerState()) {
-  const onRespond = vi.fn(async (_content: Uint8Array) => {})
+  const onDecide = vi.fn<ControlDecisionSender>(async () => {})
   const view = render(() => (
     <DialogRequestActions
       request={request}
       dialog={dialog}
-      responder={responder}
       answerState={answerState}
-      onRespond={onRespond}
+      onDecide={onDecide}
       hasEditorContent={false}
       onTriggerSend={() => {}}
     />
   ))
-  return { ...view, onRespond }
+  return { ...view, onDecide }
 }
 
 /** The content half of one dialog. */
@@ -136,16 +140,16 @@ describe('DialogRequestContent', () => {
 
 describe('DialogRequestActions', () => {
   it('answers a confirm with Approve and Deny', async () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Proceed?', variant: 'confirm' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Proceed?', variant: 'confirm' })
     expect(getByTestId('control-allow-btn')).toHaveTextContent('Approve')
     expect(getByTestId('control-deny-btn')).toHaveTextContent('Deny')
     fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
     fireEvent.click(getByTestId('control-deny-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', confirmed: true },
-      { id: 'd1', confirmed: false },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledTimes(2))
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.CONFIRM, value: '' },
+      { action: DialogAction.REFUSE, value: '' },
     ])
   })
 
@@ -168,36 +172,36 @@ describe('DialogRequestActions', () => {
   })
 
   it('sends the typed text of an input, by the button and by Enter', async () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Branch name', variant: 'input' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Branch name', variant: 'input' })
     const input = getByTestId('dialog-input') as HTMLInputElement
     fireEvent.input(input, {
       target: { value: 'hello world' },
     })
     fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
     fireEvent.input(input, {
       target: { value: 'by enter' },
     })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', value: 'hello world' },
-      { id: 'd1', value: 'by enter' },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledTimes(2))
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.SUBMIT, value: 'hello world' },
+      { action: DialogAction.SUBMIT, value: 'by enter' },
     ])
   })
 
   // A runtime tells an empty answer apart from a dismissal.
   it('sends an empty input as an empty value, and Cancel as a dismissal', async () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Branch name', variant: 'input' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Branch name', variant: 'input' })
     expect(getByTestId('control-allow-btn')).toHaveTextContent('Send')
     expect(getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
     fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
     fireEvent.click(getByTestId('control-deny-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', value: '' },
-      { id: 'd1', cancelled: true },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledTimes(2))
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.SUBMIT, value: '' },
+      { action: DialogAction.CANCEL, value: '' },
     ])
   })
 
@@ -212,62 +216,62 @@ describe('DialogRequestActions', () => {
     fireEvent.input(editor, {
       target: { value: 'fix: typo\nin the docs' },
     })
-    const { getByTestId, onRespond } = renderActions(dialog, answerState)
+    const { getByTestId, onDecide } = renderActions(dialog, answerState)
     fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', value: 'fix: typo\nin the docs' },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.SUBMIT, value: 'fix: typo\nin the docs' },
     ])
   })
 
   it('sends the draft of an editor that the reader did not change', async () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Commit message', prefill: 'fix: ', variant: 'editor' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Commit message', prefill: 'fix: ', variant: 'editor' })
     fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', value: 'fix: ' },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.SUBMIT, value: 'fix: ' },
     ])
   })
 
   // A reader who clears the draft sends the empty text, not the draft again: the
   // answer state holds the empty value, and an empty value is a real answer.
   it('sends the empty text of an input whose draft the reader cleared', async () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Branch name', prefill: 'feature/', variant: 'input' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Branch name', prefill: 'feature/', variant: 'input' })
     fireEvent.input(getByTestId('dialog-input'), {
       target: { value: '' },
     })
     fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', value: '' },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.SUBMIT, value: '' },
     ])
   })
 
   it('offers Cancel and Send for an editor, and Cancel dismisses it', async () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Commit message', prefill: 'fix: ', variant: 'editor' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Commit message', prefill: 'fix: ', variant: 'editor' })
     expect(getByTestId('control-allow-btn')).toHaveTextContent('Send')
     expect(getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
     fireEvent.click(getByTestId('control-deny-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([
-      { id: 'd1', cancelled: true },
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.CANCEL, value: '' },
     ])
   })
 
   it('sends nothing for a key other than Enter', () => {
-    const { getByTestId, onRespond } = renderActions({ title: 'Branch name', variant: 'input' })
+    const { getByTestId, onDecide } = renderActions({ title: 'Branch name', variant: 'input' })
     const input = getByTestId('dialog-input')
     fireEvent.input(input, {
       target: { value: 'main' },
     })
     fireEvent.keyDown(input, { key: 'a' })
     fireEvent.keyDown(input, { key: 'Escape' })
-    expect(onRespond).not.toHaveBeenCalled()
+    expect(onDecide).not.toHaveBeenCalled()
   })
 
   it('reports a send that fails from the Enter key', async () => {
     const failure = new Error('worker unreachable')
-    const onRespond = vi.fn(async (_content: Uint8Array) => {
+    const onDecide = vi.fn<ControlDecisionSender>(async () => {
       throw failure
     })
     vi.mocked(showWarnToast).mockClear()
@@ -275,9 +279,8 @@ describe('DialogRequestActions', () => {
       <DialogRequestActions
         request={request}
         dialog={{ title: 'Branch name', variant: 'input' }}
-        responder={responder}
         answerState={createControlAnswerState()}
-        onRespond={onRespond}
+        onDecide={onDecide}
         hasEditorContent={false}
         onTriggerSend={() => {}}
       />
@@ -285,51 +288,34 @@ describe('DialogRequestActions', () => {
     fireEvent.keyDown(getByTestId('dialog-input'), { key: 'Enter' })
     await vi.waitFor(() => expect(showWarnToast).toHaveBeenCalledWith('Could not complete the action', failure))
   })
-
-  // Each answer carries the id of the request that the actions draw now, not the
-  // id that they drew first.
-  it('answers with the id of the current request', async () => {
-    const [current, setCurrent] = createSignal<ControlRequest>(request)
-    const onRespond = vi.fn(async (_content: Uint8Array) => {})
-    const { getByTestId } = render(() => (
-      <DialogRequestActions
-        request={current()}
-        dialog={{ title: 'Proceed?', variant: 'confirm' }}
-        responder={responder}
-        answerState={createControlAnswerState()}
-        onRespond={onRespond}
-        hasEditorContent={false}
-        onTriggerSend={() => {}}
-      />
-    ))
-    setCurrent({ ...request, requestId: 'd2' })
-    fireEvent.click(getByTestId('control-allow-btn'))
-    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([
-      { id: 'd2', confirmed: true },
-    ])
-  })
 })
 
 describe('ControlRequestActions', () => {
-  // Claude Code sends no dialog and states no responder. A dialog surface for it
-  // still draws buttons, because a request with none would block the turn.
-  it('draws the fallback pair for a dialog of a provider that states no responder', () => {
-    const { getByTestId, queryByTestId } = render(() => (
+  // The Worker answers a dialog for every provider, so the banner draws the dialog's
+  // own field and buttons whatever the provider is.
+  it('draws the dialog\'s own field and sends its decision for any provider', async () => {
+    const onDecide = vi.fn<ControlDecisionSender>(async () => {})
+    const { getByTestId } = render(() => (
       <ControlRequestActions
         request={request}
         controlSurface={{
           kind: 'dialog',
-          dialog: { title: 'Proceed?', variant: 'input' },
+          dialog: { title: 'Branch name', variant: 'input' },
         }}
         agentProvider={AgentProvider.CLAUDE_CODE}
         answerState={createControlAnswerState()}
-        onRespond={vi.fn(async () => {})}
+        onDecide={onDecide}
         hasEditorContent={false}
         onTriggerSend={() => {}}
       />
     ))
-    expect(queryByTestId('dialog-input')).toBeNull()
-    expect(getByTestId('control-allow-btn')).toBeInTheDocument()
+    fireEvent.input(getByTestId('dialog-input'), {
+      target: { value: 'main' },
+    })
+    fireEvent.click(getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(onDecide).toHaveBeenCalledOnce())
+    expect(sent(onDecide)).toEqual([
+      { action: DialogAction.SUBMIT, value: 'main' },
+    ])
   })
 })

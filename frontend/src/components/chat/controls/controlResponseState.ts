@@ -1,4 +1,5 @@
-import type { ControlPayloadFault, ControlRequest } from '~/stores/control.store'
+import type { ControlPayloadFault } from '~/components/chat/model/controlPrompt'
+import type { ControlRequest } from '~/stores/control.store'
 import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 
 export function canAnswerControlRequest(request: ControlRequest | null | undefined): boolean {
@@ -26,10 +27,9 @@ export function canSendControlResponse(request: ControlRequest | null | undefine
 /**
  * What the banner says about a request whose bytes LeapMux could not read.
  *
- * The provider plugins all draw "Permission Required" from an empty payload, because an
- * empty object is what a permission request looks like once its fields are gone. That
- * sentence states what the agent asked for, and here nobody knows -- so the banner states
- * the fault instead, and offers no decision. See RL-002.
+ * The Worker reads no prompt from such bytes (`agent.UnreadableControlPrompt` in Go), so
+ * nobody knows what the agent asked for. The banner states the fault instead, and offers
+ * no decision, because the Worker refuses every answer to the request. See RL-002.
  */
 export function controlPayloadFaultNotice(fault: ControlPayloadFault | undefined): string {
   switch (fault) {

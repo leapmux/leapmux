@@ -7,10 +7,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// browserAnswer is the neutral envelope the browser sends.
+// browserAnswer is the neutral envelope that AnswerControlRequest builds.
 func browserAnswer(t *testing.T, requestID, behavior, message string, updatedInput map[string]any) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
@@ -71,7 +72,7 @@ func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
 			t.Parallel()
 			resolution := (codebuddyProvider{}).ResolveControlResponse(agent.ControlResponseContext{
 				RequestID: "approval:plan-1", ToolName: tc.tool,
-				ResponseContent: browserAnswer(t, "approval:plan-1", agent.ControlBehaviorAllow, "", nil),
+				ResponseContent: browserAnswer(t, "approval:plan-1", contracts.ControlAnswerBehaviorAllow, "", nil),
 			})
 			assert.False(t, resolution.Withhold)
 			assert.Equal(t, tc.want, resolution.PlanModeControl)
@@ -80,7 +81,7 @@ func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
 	}
 }
 
-// An allow carries the input the browser folded its answer into. An
+// An allow carries the input that AnswerControlRequest folded the answers into. An
 // AskUserQuestion reply is the whole tool input with `answers` added, and
 // CodeBuddy merges that object into the tool call.
 func TestCodebuddyTranslateAllowForwardsUpdatedInput(t *testing.T) {
@@ -114,7 +115,7 @@ func TestCodebuddyTranslateBareDenyFillsThePlaceholder(t *testing.T) {
 	t.Parallel()
 	translated, ok := translateCanUseToolAnswer(browserAnswer(t, "approval:1", "deny", "", nil))
 	require.True(t, ok)
-	assert.Equal(t, map[string]any{"allowed": false, "reason": agent.ControlRejectedByUserMessage}, nativeAnswer(t, translated))
+	assert.Equal(t, map[string]any{"allowed": false, "reason": contracts.ControlAnswerMessageRejectedByUser}, nativeAnswer(t, translated))
 }
 
 func TestCodebuddyTranslateIgnoresAPayloadThatStatesNoDecision(t *testing.T) {

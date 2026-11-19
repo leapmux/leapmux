@@ -1,9 +1,8 @@
 import { expect } from '@playwright/test'
-import { ampExtractControl } from '../../../src/components/chat/providers/amp/extractControl'
 import { ampTest } from '../amp-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { watchNativeControls } from '../helpers/nativeControlWatch'
+import { readsProviderPermission, watchNativeControls } from '../helpers/nativeControlWatch'
 import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
 import { currentNativeAgent, nativeToolOutcome } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -38,14 +37,14 @@ ampTest('disables the actual native question tool while real permission controls
           decision: 'allow',
           beforeDecision: async (banner) => {
             await expect(banner).toContainText('AMPQUESTIONLIMIT')
-            await expect.poll(() => watch.controls().some(frame => ampExtractControl({ payload: frame.payload })?.kind === 'permission')).toBe(true)
+            await expect.poll(() => watch.controls().some(readsProviderPermission)).toBe(true)
           },
           nativeProof: async (request) => {
             expect((await nativeToolOutcome(native, request, callId)).text).toContain('AMPQUESTIONLIMIT42')
             const frames = watch.controls()
             const requests = frames.filter(frame => !frame.canceled)
             expect(requests.length).toBeGreaterThan(0)
-            expect(requests.every(frame => ampExtractControl({ payload: frame.payload })?.kind === 'permission')).toBe(true)
+            expect(requests.every(readsProviderPermission)).toBe(true)
             const permissionIds = new Set(requests.map(frame => frame.requestId))
             for (const frame of frames.filter(frame => frame.canceled))
               expect(permissionIds.has(frame.requestId)).toBe(true)

@@ -1,12 +1,18 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
 import { CODEBUDDY_CONTROL_ANSWER_FIELD } from '~/generated/contracts/codebuddy-protocol'
-import { CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
+import { CONTROL_ANSWER_MESSAGE } from '~/generated/contracts/control-answer'
+import { GENERIC_PERMISSION_PROMPT } from '~/test-support/controlRequests'
+import { } from '~/test-support/controlResponses'
 import { resolveControlResponseSummary } from '../../persistedControlResponse'
 import { codebuddyControls } from './pluginControls'
 
+/** The tools whose requests these cases answer. */
+type Tool = 'Bash' | 'ExitPlanMode'
+
 /** A stored can_use_tool request in the shape the worker publishes it. */
-function request(toolName: string): Record<string, unknown> {
+function request(toolName: Tool): Record<string, unknown> {
   return {
     type: 'control_request',
     request_id: 'perm_1',
@@ -19,8 +25,20 @@ function request(toolName: string): Record<string, unknown> {
   }
 }
 
-/** The answer that the worker translated and stored: CodeBuddy's own `{allowed, reason}` object. */
-function saved(toolName: string, answer: Record<string, unknown>): PersistedControlResponse {
+/** The prompt that the Worker records for the plan tool: the plan approval. */
+const PLAN_PROMPT: ControlPrompt = { kind: 'plan' }
+
+/** The prompt that the Worker records with the answer to each tool's request. */
+const PROMPTS: Record<Tool, ControlPrompt> = {
+  Bash: GENERIC_PERMISSION_PROMPT,
+  ExitPlanMode: PLAN_PROMPT,
+}
+
+/**
+ * The answer that the worker translated and stored: CodeBuddy's own `{allowed, reason}` object,
+ * with the native request and the prompt that the Worker read from it.
+ */
+function saved(toolName: Tool, answer: Record<string, unknown>): PersistedControlResponse {
   return {
     requestId: 'perm_1',
     claimToken: 'claim',
@@ -30,6 +48,7 @@ function saved(toolName: string, answer: Record<string, unknown>): PersistedCont
       request_id: 'perm_1',
       response: { subtype: 'success', request_id: 'perm_1', response: answer },
     },
+    prompt: PROMPTS[toolName],
   }
 }
 
@@ -48,7 +67,7 @@ describe('codebuddyControls controlResponseDisplay', () => {
   })
 
   it('reads a bare denial as the word its button carried', () => {
-    expect(display(saved('Bash', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: false, [CODEBUDDY_CONTROL_ANSWER_FIELD.Reason]: CONTROL_REJECTED_BY_USER_MESSAGE })))
+    expect(display(saved('Bash', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: false, [CODEBUDDY_CONTROL_ANSWER_FIELD.Reason]: CONTROL_ANSWER_MESSAGE.RejectedByUser })))
       .toStrictEqual({ kind: 'label', text: 'Deny' })
   })
 
@@ -65,17 +84,30 @@ describe('codebuddyControls controlResponseDisplay', () => {
   it('reads a plan answer with the words of the plan control', () => {
     expect(display(saved('ExitPlanMode', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: true })))
       .toStrictEqual({ kind: 'label', text: 'Approve' })
-    expect(display(saved('ExitPlanMode', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: false, [CODEBUDDY_CONTROL_ANSWER_FIELD.Reason]: CONTROL_REJECTED_BY_USER_MESSAGE })))
+    expect(display(saved('ExitPlanMode', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: false, [CODEBUDDY_CONTROL_ANSWER_FIELD.Reason]: CONTROL_ANSWER_MESSAGE.RejectedByUser })))
       .toStrictEqual({ kind: 'label', text: 'Reject' })
   })
 
-  // A stored row whose request is gone still states the decision. The permission words
-  // serve, because only a stored plan request can state the plan words.
-  it('reads an answer whose request was not saved with the permission words', () => {
+  // The recorded prompt is what the banner drew, so it decides the words, and the
+  // native request does not.
+  it('takes the words from the recorded prompt, not from the native request', () => {
     expect(display({
       ...saved('ExitPlanMode', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: true }),
-      request: undefined,
+      prompt: GENERIC_PERMISSION_PROMPT,
     }))
+      .toStrictEqual({ kind: 'label', text: 'Allow' })
+    expect(display({
+      ...saved('Bash', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: false }),
+      prompt: PLAN_PROMPT,
+    }))
+      .toStrictEqual({ kind: 'label', text: 'Reject' })
+  })
+
+  // A row that states no prompt still states the decision. The permission words
+  // serve, because only a recorded plan prompt can state the plan words.
+  it('reads an answer whose row states no prompt with the permission words', () => {
+    const { prompt: _prompt, ...unprompted } = saved('ExitPlanMode', { [CODEBUDDY_CONTROL_ANSWER_FIELD.Allowed]: true })
+    expect(display(unprompted))
       .toStrictEqual({ kind: 'label', text: 'Allow' })
   })
 

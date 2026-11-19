@@ -8,12 +8,13 @@ import (
 )
 
 // MCPElicitationMetaRule decides whether an accepted elicitation answer may
-// carry the `_meta.persist` scope the frontend sent. requestPayload is the
+// carry the `_meta.persist` scope that the answer states. requestPayload is the
 // stored request, so a provider can check the scopes that request offered.
 type MCPElicitationMetaRule func(requestPayload json.RawMessage, persist string) bool
 
 // ResolveMCPElicitationResponse restores the request's exact JSON-RPC identifier.
-// The frontend uses the shared control envelope to keep wide IDs and string IDs intact.
+// agent.AnswerElicitation answers in the shared control envelope, which keeps wide IDs
+// and string IDs intact.
 //
 // method is the elicitation method the calling provider speaks: the resolution
 // answers a stored request of that method and passes on anything else. acceptMeta
@@ -73,8 +74,8 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 	return result, true
 }
 
-// MCPElicitationControlResponse is the control envelope in which the frontend
-// answers an MCP elicitation. Pi reads the same envelope for its MCP approval.
+// MCPElicitationControlResponse is the control envelope in which
+// agent.AnswerElicitation answers an MCP elicitation. Pi reads the same envelope for its MCP approval.
 type MCPElicitationControlResponse struct {
 	Response struct {
 		RequestID string `json:"request_id"`

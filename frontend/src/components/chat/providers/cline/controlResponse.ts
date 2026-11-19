@@ -1,9 +1,8 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
-import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { CLINE_APPROVAL_REPLY, CLINE_CAPABILITY_REPLY, CLINE_DECLINE_REASON, CLINE_EVENT, CLINE_PERMISSION_MODE, CLINE_TOOL } from '~/generated/contracts/cline-protocol'
+import type { ControlDecisionWords, PersistedControlResponse } from '../../persistedControlResponse'
+import { CLINE_APPROVAL_REPLY, CLINE_CAPABILITY_REPLY, CLINE_DECLINE_REASON, CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { CONTROL_DECISION_WORDS, feedbackOrLabel, label } from '../../persistedControlResponse'
-import { clinePayload } from './protocol'
+import { controlDecisionWords, feedbackOrLabel, label } from '../../persistedControlResponse'
 
 /** The words of each mode an approved plan can switch to. */
 const PLAN_MODE_WORDS: ReadonlyMap<string, string> = new Map([
@@ -17,27 +16,28 @@ const PLAN_MODE_WORDS: ReadonlyMap<string, string> = new Map([
  * The saved row holds the answer the worker sent, in Cline's own shape: an approval
  * reply `{approvalId, approved, reason?, permissionMode?}`, or a capability reply
  * `{requestId, ok, payload: {result}}` for a question and `{requestId, ok: false,
- * error}` for a declined one. The stored request is Cline's own event, which states
- * which of the two it answers.
+ * error}` for a declined one. The prompt that the Worker recorded with the row states
+ * which of the two it answers: a question takes the capability reply, and a
+ * permission or a plan takes the approval reply.
  */
 export function clineControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const reply = cr.response
   if (!isObject(reply))
     return null
-  const approval = clinePayload(cr.request, CLINE_EVENT.ApprovalRequested)
-  if (approval)
-    return approvalSummary(pickString(approval, 'toolName'), reply)
-  if (clinePayload(cr.request, CLINE_EVENT.CapabilityRequested))
-    return questionSummary(reply)
-  return null
+  switch (cr.prompt?.kind) {
+    case 'question':
+      return questionSummary(reply)
+    case 'permission':
+    case 'plan':
+      return approvalSummary(controlDecisionWords(cr.prompt), reply)
+    default:
+      return null
+  }
 }
 
-function approvalSummary(toolName: string, reply: Record<string, unknown>): ControlResponseSummary | null {
+function approvalSummary(words: ControlDecisionWords, reply: Record<string, unknown>): ControlResponseSummary | null {
   if (typeof reply[CLINE_APPROVAL_REPLY.Approved] !== 'boolean')
     return null
-  const words = toolName === CLINE_TOOL.SwitchToActMode
-    ? CONTROL_DECISION_WORDS.plan
-    : CONTROL_DECISION_WORDS.permission
   if (reply[CLINE_APPROVAL_REPLY.Approved] === true) {
     const mode = PLAN_MODE_WORDS.get(pickString(reply, CLINE_APPROVAL_REPLY.PermissionMode))
     return label(mode

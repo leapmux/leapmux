@@ -131,7 +131,7 @@ type Provider interface {
 	// the provider-neutral plan-mode operation the service layer should run.
 	// Unknown or non-plan controls return PlanModeControlNone.
 	PlanModeControl(toolName string) PlanModeControlKind
-	// ResolveControlResponse interprets a frontend control response against the
+	// ResolveControlResponse interprets a control response against the
 	// stored provider-native control request. It is pure: providers may normalize
 	// the response bytes and prune the request into the minimal render context
 	// persisted alongside it (plus plan-mode metadata), but the service owns
@@ -141,9 +141,9 @@ type Provider interface {
 	// without waiting into the input that the provider reads. It is pure: no I/O.
 	QuestionReply(requestPayload json.RawMessage, answer string) (string, error)
 	// ControlResponseRequestID extracts the stored-control-request lookup id from a raw
-	// frontend control response, so the service can find the pending control_request row to
+	// control response, so the service can find the pending control_request row to
 	// answer. Both wire shapes it reads -- the neutral approve/reject envelope
-	// ({response:{request_id, ...}}, emitted by buildAllowResponse/buildDenyResponse for EVERY
+	// ({response:{request_id, ...}}, emitted by AllowResponse/DenyResponse for EVERY
 	// provider) and a top-level JSON-RPC id (used by the ACP family and Codex) -- are
 	// cross-provider, so every provider delegates to defaultControlResponseRequestID. The method
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
@@ -283,6 +283,22 @@ type Provider interface {
 	// browser's plugins. testdata/reply_text_conformance.json pins each
 	// implementation to the browser's extraction.
 	ReplyText(message MessageContent) (text string, ok bool)
+	// ReadControlRequest reads one control request of this provider into
+	// the neutral prompt that a client draws: a permission with its options,
+	// a plan, questions, an MCP elicitation form, or an extension dialog. It
+	// never returns nil; a request that it does not recognize reads as
+	// GenericPermissionPrompt.
+	//
+	// A permission prompt always states its options. A runtime that states
+	// none gets LeapMux's own (AllowDenyOptions, or a provider's own once,
+	// session and deny), so every answer is the choice of one option.
+	ReadControlRequest(input ControlRequestInput) *leapmuxv1.ControlPrompt
+	// AnswerControlRequest builds this provider's answer to one decision
+	// about the prompt that ReadControlRequest read. The Worker claims and
+	// records the answer's content, and ResolveControlResponse then turns it
+	// into the runtime's own answer. A decision that does not answer the
+	// prompt fails with ErrInvalidControlDecision.
+	AnswerControlRequest(input ControlAnswerInput) (ControlAnswer, error)
 }
 
 // PlanExitModeDeferrer is a RUNNING provider that cannot apply the permission

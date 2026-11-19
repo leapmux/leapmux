@@ -122,3 +122,10 @@ func TestReplyTextTrimsTheReplyAsTheBrowsersQuoteDoes(t *testing.T) {
 	_, ok := ReplyText(provider, MessageContent{Original: []byte(`{"type":"native"}`)})
 	assert.False(t, ok, "a provider that reads no reply keeps none, whatever text it returns")
 }
+
+func TestTrimJavaScriptSpace(t *testing.T) {
+	assert.Equal(t, "a b", TrimJavaScriptSpace("\uFEFF\t a b \u00A0\u2028\n"))
+	assert.Equal(t, "\u0085a\u0085", TrimJavaScriptSpace(" \u0085a\u0085 "), "JavaScript keeps U+0085, which Go's unicode.IsSpace removes")
+	assert.Empty(t, TrimJavaScriptSpace(" \u3000 "))
+	assert.Empty(t, TrimJavaScriptSpace(""))
+}

@@ -1,5 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentEditorPanelProps } from './AgentEditorPanel'
+import type { ControlAnswer, ControlAnswerHandler } from './controls/types'
+import type { PlanDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { create } from '@bufbuild/protobuf'
@@ -20,6 +22,7 @@ import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
+import { ALLOW_DENY_OPTIONS, testControlRequest } from '~/test-support/controlRequests'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { AgentEditorPanel } from './AgentEditorPanel'
@@ -106,7 +109,7 @@ interface RenderPanelOptions {
   workerId?: string
   agentProvider?: AgentProvider
   controlStore?: ReturnType<typeof createControlStore>
-  onControlResponse?: AgentEditorPanelProps['onControlResponse']
+  onControlAnswer?: AgentEditorPanelProps['onControlAnswer']
   onSettingChange?: AgentEditorPanelProps['onSettingChange']
   onInterrupt?: AgentEditorPanelProps['onInterrupt']
   agentActivity?: AgentActivityState
@@ -159,8 +162,8 @@ function renderPanel(options: RenderPanelOptions = {}) {
               onQuestionsOpenChange: (open: boolean) => panelControlStore.setQuestionsOpen('a1', open),
             }
           : {})}
-        {...(options.onControlResponse !== undefined
-          ? { onControlResponse: options.onControlResponse }
+        {...(options.onControlAnswer !== undefined
+          ? { onControlAnswer: options.onControlAnswer }
           : {})}
         {...(options.onSettingChange !== undefined
           ? { onSettingChange: options.onSettingChange }
@@ -202,43 +205,65 @@ function renderPanel(options: RenderPanelOptions = {}) {
   ))
 }
 
-/** A control request payload that specifies the tool the agent asks permission to run. */
-function toolRequestPayload(toolName: string): Record<string, unknown> {
+/** The fields of a control request: its native payload, and the prompt that the Worker reads from it. */
+type RequestFields = Pick<ControlRequest, 'payload' | 'prompt'>
+
+/** A permission request for one tool, which the Worker reads with LeapMux's own Allow and Deny. */
+function permissionRequest(toolName = 'Bash'): RequestFields {
   return {
-    request: { tool_name: toolName, input: {} },
+    payload: {
+      request: { tool_name: toolName, input: {} },
+    },
+    prompt: {
+      kind: 'permission',
+      permission: {
+        title: toolName,
+        options: [...ALLOW_DENY_OPTIONS],
+      },
+    },
+  }
+}
+
+/** A plan approval with no plan text, as the Worker reads Claude Code's ExitPlanMode. */
+function planRequest(): RequestFields {
+  return {
+    payload: {
+      request: { tool_name: 'ExitPlanMode', input: {} },
+    },
+    prompt: { kind: 'plan' },
   }
 }
 
 /**
- * A two-question AskUserQuestion payload, so the paging and the per-page draft
- * keys the editor really writes are live. `toolRequestPayload` cannot stand in:
- * `activeDraftKey` adds the `-q-<page>` suffix only for a question request.
+ * A two-question request, so the paging and the per-page draft keys the editor
+ * really writes are live. `permissionRequest` cannot stand in: `activeDraftKey`
+ * adds the `-q-<page>` suffix only for a question request.
  */
-function questionRequestPayload(): Record<string, unknown> {
+function questionRequest(): RequestFields {
+  const questions = [
+    {
+      question: 'Which database?',
+      options: [
+        { label: 'Postgres' },
+        { label: 'MySQL' },
+      ],
+    },
+    {
+      question: 'Which runtime?',
+      options: [
+        { label: 'Bun' },
+        { label: 'Node' },
+      ],
+    },
+  ]
   return {
-    request: {
-      tool_name: 'AskUserQuestion',
-      input: {
-        questions: [
-          {
-            id: 'q1',
-            question: 'Which database?',
-            options: [
-              { label: 'Postgres' },
-              { label: 'MySQL' },
-            ],
-          },
-          {
-            id: 'q2',
-            question: 'Which runtime?',
-            options: [
-              { label: 'Bun' },
-              { label: 'Node' },
-            ],
-          },
-        ],
+    payload: {
+      request: {
+        tool_name: 'AskUserQuestion',
+        input: { questions },
       },
     },
+    prompt: { kind: 'question', questions },
   }
 }
 
@@ -253,39 +278,30 @@ describe('agent editor panel question selection notes', () => {
 
   it.each([
     {
-      label: 'a provider that preserves notes',
+      label: 'a prompt that preserves notes',
       provider: AgentProvider.GROK_BUILD,
-      payload: {
-        jsonrpc: '2.0',
-        id: 'ask-note',
-        method: '_x.ai/ask_user_question',
-        params: {
-          sessionId: 'session',
-          questions: [question],
-        },
-      },
       preserves: true,
     },
     {
-      label: 'a provider with mutually exclusive answers',
+      label: 'a prompt with mutually exclusive answers',
       provider: AgentProvider.CLAUDE_CODE,
-      payload: {
-        request: {
-          tool_name: 'AskUserQuestion',
-          input: {
-            questions: [question],
-          },
-        },
-      },
       preserves: false,
     },
-  ])('honors the selection policy of $label after the editor debounce', async ({ provider, payload, preserves }) => {
+  ])('honors the selection policy of $label after the editor debounce', async ({ provider, preserves }) => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'ask-note', claimToken: 'claim-note', payload })
+    addControlRequest(controlStore, {
+      requestId: 'ask-note',
+      claimToken: 'claim-note',
+      prompt: {
+        kind: 'question',
+        questions: [question],
+        preservesSelectionNotes: preserves,
+      },
+    })
     renderPanel({
       agentProvider: provider,
       controlStore,
-      onControlResponse: async () => {},
+      onControlAnswer: async () => true,
     })
     await vi.waitFor(() => expect(screen.getByTestId('question-option-Postgres')).toBeVisible())
     fireEvent.click(screen.getByTestId('question-option-Postgres'))
@@ -311,6 +327,38 @@ describe('agent editor panel question selection notes', () => {
       expect(option).toBeDisabled()
     }
   })
+
+  // The user's own requirement: on a multiple choice, the typed text joins the chosen
+  // options, so typing leaves the selection in place.
+  it('keeps the chosen options of a multiple choice while the editor holds text', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, {
+      requestId: 'ask-many',
+      claimToken: 'claim-many',
+      prompt: {
+        kind: 'question',
+        questions: [
+          { ...question, multiSelect: true },
+        ],
+      },
+    })
+    renderPanel({
+      controlStore,
+      onControlAnswer: async () => true,
+    })
+    await vi.waitFor(() => expect(screen.getByTestId('question-option-Postgres')).toBeVisible())
+    fireEvent.click(screen.getByTestId('question-option-Postgres'))
+    await vi.waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    const editor = getEditorRef('a1')
+    if (!editor)
+      throw new Error('The mounted editor registered no handle.')
+    editor.set('MariaDB')
+    await vi.advanceTimersByTimeAsync(1_000)
+    const option = screen.getByTestId('question-option-Postgres').querySelector('input')
+    expect(option).toBeChecked()
+    expect(option).not.toBeDisabled()
+    expect(editor.get()).toBe('MariaDB')
+  })
 })
 
 /** The mutable permission-mode catalog that Claude reports. */
@@ -326,11 +374,18 @@ function claudePermissionModeGroup(currentValue: string = CLAUDE_MODE.Default): 
   })
 }
 
+/** The plan decision of one answer, or a failure for an answer of another kind. */
+function planDecisionOf(answer: ControlAnswer | undefined): PlanDecision {
+  if (answer?.kind !== 'decision' || answer.decision.kind.case !== 'plan')
+    throw new Error('the panel sent no plan decision')
+  return answer.decision.kind.value
+}
+
 function addControlRequest(
   controlStore: ReturnType<typeof createControlStore>,
-  request: Omit<ControlRequest, 'agentId'>,
+  request: Pick<ControlRequest, 'requestId'> & Partial<ControlRequest>,
 ) {
-  controlStore.addRequest('a1', { agentId: 'a1', ...request })
+  controlStore.addRequest('a1', testControlRequest({ agentId: 'a1', ...request }))
 }
 
 /** Waits until the saved answer for the active request is ready. */
@@ -401,7 +456,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'permission',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
       claimToken: 'claim',
     })
     renderPanel({ controlStore })
@@ -411,40 +466,56 @@ describe('AgentEditorPanel', () => {
     expect(controlStore.getRequests('a1')).toHaveLength(1)
   })
 
-  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CURSOR, AgentProvider.PI])('disables pending decisions and retains the request after failed delivery for provider %s', async (agentProvider) => {
+  it.each([
+    {
+      label: 'a permission',
+      fields: permissionRequest(),
+      approve: 'control-allow-btn',
+      word: 'Allow',
+    },
+    {
+      label: 'a plan',
+      fields: {
+        prompt: { kind: 'plan', text: 'Keep the response.' },
+      } as const,
+      approve: 'plan-approve-btn',
+      word: 'Approve',
+    },
+    {
+      label: 'a confirm dialog',
+      fields: {
+        prompt: {
+          kind: 'dialog',
+          dialog: { title: 'Confirm the request.', variant: 'confirm' },
+        },
+      } as const,
+      approve: 'control-allow-btn',
+      word: 'Approve',
+    },
+  ])('disables pending decisions and retains the request after failed delivery for $label', async ({ fields, approve, word }) => {
     const controlStore = createControlStore()
-    const payload = agentProvider === AgentProvider.CURSOR
-      ? {
-          method: 'cursor/create_plan',
-          params: { name: 'Plan', overview: 'Keep the response.' },
-        }
-      : agentProvider === AgentProvider.PI
-        ? { type: 'extension_ui_request', method: 'confirm', title: 'Confirm the request.' }
-        : toolRequestPayload('Bash')
-    addControlRequest(controlStore, { requestId: 'permission', payload, claimToken: 'claim' })
+    addControlRequest(controlStore, { requestId: 'permission', ...fields, claimToken: 'claim' })
     let resolveDelivery!: () => void
     let rejectDelivery!: (error: Error) => void
     const delivery = new Promise<void>((resolve, reject) => {
       resolveDelivery = resolve
       rejectDelivery = reject
     })
-    const onControlResponse = vi.fn().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
-    renderPanel({ controlStore, onControlResponse, agentProvider })
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockReturnValueOnce(delivery).mockResolvedValue(undefined)
+    renderPanel({ controlStore, onControlAnswer })
     try {
       await waitForControlActionsReady()
-      fireEvent.click(screen.getByTestId('control-allow-btn'))
+      fireEvent.click(screen.getByTestId(approve))
       expect(screen.getByTestId('control-actions')).toBeDisabled()
-      expect(onControlResponse).toHaveBeenCalledOnce()
+      expect(onControlAnswer).toHaveBeenCalledOnce()
       rejectDelivery(new Error('offline'))
       await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('offline'))
       expect(screen.getByTestId('control-actions')).not.toBeDisabled()
       expect(controlStore.getRequests('a1')).toHaveLength(1)
-      fireEvent.click(screen.getByTestId('control-allow-btn'))
-      await vi.waitFor(() => expect(onControlResponse).toHaveBeenCalledTimes(2))
+      fireEvent.click(screen.getByTestId(approve))
+      await vi.waitFor(() => expect(onControlAnswer).toHaveBeenCalledTimes(2))
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-      expect(screen.getByTestId('control-allow-btn')).toHaveTextContent(agentProvider === AgentProvider.CLAUDE_CODE
-        ? 'Allow'
-        : 'Approve')
+      expect(screen.getByTestId(approve)).toHaveTextContent(word)
     }
     finally {
       resolveDelivery()
@@ -513,7 +584,7 @@ describe('AgentEditorPanel', () => {
     expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', label)
     addControlRequest(controlStore, {
       requestId: 'permission',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
     expect(screen.queryByTestId('queue-pause-button')).not.toBeInTheDocument()
     controlStore.removeRequest('a1', 'permission')
@@ -524,7 +595,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
     })
     renderPanel({ controlStore })
 
@@ -543,11 +614,11 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
     })
     addControlRequest(controlStore, {
       requestId: 'bash-1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
     renderPanel({ controlStore })
 
@@ -568,7 +639,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
     })
     renderPanel({ controlStore })
 
@@ -579,7 +650,7 @@ describe('AgentEditorPanel', () => {
 
     addControlRequest(controlStore, {
       requestId: 'bash-1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
 
     expect(screen.getByTestId('control-banner')).toHaveTextContent('Plan Ready for Review')
@@ -595,14 +666,14 @@ describe('AgentEditorPanel', () => {
   // writes, so the panel rebuilds the footer whatever the slot keys on.)
   it('empties the plan switches for a re-ask of the same request id', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     const plan = (claimToken: string) => ({
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken,
     })
     addControlRequest(controlStore, plan('claim-1'))
-    renderPanel({ controlStore, onControlResponse })
+    renderPanel({ controlStore, onControlAnswer })
 
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
     await waitForControlActionsReady()
@@ -618,12 +689,10 @@ describe('AgentEditorPanel', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     // The click above produced the call; `?? []` is the type-level guard alone.
-    const [request, content] = onControlResponse.mock.calls[0] ?? []
-    const claimToken = request?.claimToken
-    expect(claimToken).toBe('claim-2')
-    // `buildAllowResponse` adds the key only for a checked switch, so its
-    // absence is what proves the cancelled instance's choice did not carry.
-    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('clearContext')
+    const [request, answer] = onControlAnswer.mock.calls[0] ?? []
+    expect(request?.claimToken).toBe('claim-2')
+    // An unchecked switch is what proves the cancelled instance's choice did not carry.
+    expect(planDecisionOf(answer)).toMatchObject({ approve: true, clearContext: false })
   })
 
   // The footer answers with the request instance it RENDERED, so the worker's
@@ -631,29 +700,24 @@ describe('AgentEditorPanel', () => {
   // click time would lose both values as soon as the store changed.
   it('answers with the rendered request id and its per-instance claim token', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
-    renderPanel({ controlStore, onControlResponse })
+    renderPanel({ controlStore, onControlAnswer })
 
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect(onControlResponse).toHaveBeenCalledOnce()
+    expect(onControlAnswer).toHaveBeenCalledOnce()
     // Called once above; `?? []` is the type-level guard alone.
-    const [request, content] = onControlResponse.mock.calls[0] ?? []
+    const [request, answer] = onControlAnswer.mock.calls[0] ?? []
     expect(request?.agentId).toBe('a1')
     expect(request?.requestId).toBe('plan-1')
     expect(request?.claimToken).toBe('claim-1')
-    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toMatchObject({
-      response: {
-        request_id: 'plan-1',
-        response: { behavior: 'allow' },
-      },
-    })
+    expect(planDecisionOf(answer)).toMatchObject({ approve: true })
   })
 
   // A request that predates the worker's per-instance token carries none. The
@@ -661,19 +725,19 @@ describe('AgentEditorPanel', () => {
   // must pass the absent token through rather than substitute a placeholder.
   it('answers with no claim token when the rendered request carries none', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
     })
-    renderPanel({ controlStore, onControlResponse })
+    renderPanel({ controlStore, onControlAnswer })
 
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect(onControlResponse).toHaveBeenCalledOnce()
+    expect(onControlAnswer).toHaveBeenCalledOnce()
     // Called once above; `?? []` is the type-level guard alone.
-    const [request] = onControlResponse.mock.calls[0] ?? []
+    const [request] = onControlAnswer.mock.calls[0] ?? []
     expect(request?.requestId).toBe('plan-1')
     expect(request?.claimToken).toBeUndefined()
   })
@@ -683,7 +747,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
     })
     saveDraft('a1-ctrl-plan-1', 'no handler', 0)
     renderPanel({ controlStore })
@@ -706,14 +770,14 @@ describe('AgentEditorPanel', () => {
   // wider key.
   it('clears only the answered request drafts and ask state', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
     })
     addControlRequest(controlStore, {
       requestId: 'bash-1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
     saveDraft('a1-ctrl-plan-1', 'rejection reason', 0)
     saveDraft('a1-ctrl-bash-1', 'queued sibling reason', 0)
@@ -731,7 +795,7 @@ describe('AgentEditorPanel', () => {
         0: ['MySQL'],
       },
     })
-    renderPanel({ controlStore, onControlResponse })
+    renderPanel({ controlStore, onControlAnswer })
 
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
@@ -753,14 +817,14 @@ describe('AgentEditorPanel', () => {
   // under a page key it could never write must not be swept away with it.
   it('clears every per-page draft of the answered question set', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
       requestId: 'ask-1',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
     })
     addControlRequest(controlStore, {
       requestId: 'bash-1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
     saveDraft('a1-ctrl-ask-1-q-0', 'note for the first question', 0)
     saveDraft('a1-ctrl-ask-1-q-1', 'note for the second question', 0)
@@ -772,12 +836,12 @@ describe('AgentEditorPanel', () => {
       },
       currentPage: 1,
     }).durable).toBe(true)
-    renderPanel({ controlStore, onControlResponse })
+    renderPanel({ controlStore, onControlAnswer })
 
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('control-submit-btn'))
 
-    expect(onControlResponse).toHaveBeenCalledOnce()
+    expect(onControlAnswer).toHaveBeenCalledOnce()
     expect((await loadDraft('a1-ctrl-ask-1-q-0')).content).toBe('')
     expect((await loadDraft('a1-ctrl-ask-1-q-1')).content).toBe('')
     expect((await loadDraft('a1-ctrl-bash-1')).content).toBe('queued sibling reason')
@@ -796,7 +860,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
     renderPanel({
@@ -824,7 +888,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
 
@@ -846,7 +910,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'bash-1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
       claimToken: 'claim-1',
     })
     const pill = () => within(screen.getByRole('radiogroup', { name: 'Permissions' }))
@@ -883,7 +947,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
     const bypassRadio = () => within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass' })
@@ -914,10 +978,10 @@ describe('AgentEditorPanel', () => {
 
   it('blocks plan approval until the saved permission choice restores', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
     const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
@@ -927,7 +991,7 @@ describe('AgentEditorPanel', () => {
 
     renderPanel({
       controlStore,
-      onControlResponse,
+      onControlAnswer,
       onSettingChange: vi.fn(),
       optionGroups: [
         claudePermissionModeGroup(),
@@ -937,27 +1001,23 @@ describe('AgentEditorPanel', () => {
     const approve = screen.getByTestId('plan-approve-btn')
     expect(approve).toBeDisabled()
     fireEvent.click(approve)
-    expect(onControlResponse).not.toHaveBeenCalled()
+    expect(onControlAnswer).not.toHaveBeenCalled()
 
     await waitFor(() => expect(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass' })).toBeChecked())
     expect(approve).not.toBeDisabled()
     fireEvent.click(approve)
 
-    await waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
+    await waitFor(() => expect(onControlAnswer).toHaveBeenCalledOnce())
     // Called once above; `?? []` is the type-level guard alone.
-    const [, content, options] = onControlResponse.mock.calls[0] ?? []
-    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('permissionMode')
-    expect(options).toHaveProperty(
-      'planApproval.permissionMode',
-      CLAUDE_MODE.BypassPermissions,
-    )
+    const [, answer] = onControlAnswer.mock.calls[0] ?? []
+    expect(planDecisionOf(answer)).toMatchObject({ approve: true, permissionMode: CLAUDE_MODE.BypassPermissions })
   })
 
   it('restores the plan switches of the rendered request instance after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
@@ -974,19 +1034,27 @@ describe('AgentEditorPanel', () => {
     await waitFor(() => expect(clearContext()).toBeChecked())
   })
 
-  // The same record covers the pill groups that a control request draws.
-  // A Codex permission prompt stores its Allow-as selection in that record.
-  it('restores a Codex permission prompt allow choice after a remount', async () => {
+  // The same record covers the pill groups that a control request draws. A
+  // permission prompt with a session grant, as the Worker reads Codex's, stores
+  // its scope selection in that record.
+  it('restores the allow scope of a permission prompt after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'perm-1',
       claimToken: 'claim-1',
-      payload: {
-        method: 'item/permissions/requestApproval',
-        params: {
-          permissions: {
-            read: ['/repo'],
-          },
+      prompt: {
+        kind: 'permission',
+        permission: {
+          options: [
+            { optionId: 'turn', kind: 'allow_once', name: 'Allow' },
+            {
+              optionId: 'session',
+              kind: 'allow_always',
+              name: 'Allow for Session',
+              scope: 'session',
+            },
+            { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+          ],
         },
       },
     })
@@ -1010,13 +1078,13 @@ describe('AgentEditorPanel', () => {
   // storage that nothing can ever read again.
   it('discards the persisted switches of the answered request', async () => {
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const onControlAnswer = vi.fn<ControlAnswerHandler>().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
       requestId: 'plan-1',
-      payload: toolRequestPayload('ExitPlanMode'),
+      ...planRequest(),
       claimToken: 'claim-1',
     })
-    renderPanel({ controlStore, onControlResponse })
+    renderPanel({ controlStore, onControlAnswer })
     const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
 
     await waitForControlActionsReady()
@@ -1029,12 +1097,9 @@ describe('AgentEditorPanel', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     await vi.waitFor(async () => expect(await localStorageLoad(key)).toBeUndefined())
-    // The choice still reached the response; only the saved copy is gone.
-    const planCall = onControlResponse.mock.calls[0]
-    expect(planCall).toBeDefined()
-    const [, content, options] = planCall ?? []
-    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('clearContext')
-    expect(options).toHaveProperty('planApproval.clearContext', true)
+    // The choice still reached the decision; only the saved copy is gone.
+    const [, answer] = onControlAnswer.mock.calls[0] ?? []
+    expect(planDecisionOf(answer)).toMatchObject({ approve: true, clearContext: true })
   })
 
   // A cancel and re-ask reuses the request id with a FRESH claim token, so the
@@ -1046,17 +1111,29 @@ describe('AgentEditorPanel', () => {
   // instance that went away.
   it('empties the answers for a question that reuses the request id', async () => {
     const controlStore = createControlStore()
-    const revised = questionRequestPayload()
-    // The fixture always carries one question; the guard is the type-level check alone.
-    const firstQuestion = (revised.request as { input: { questions: { question: string }[] } }).input.questions[0]
-    if (firstQuestion !== undefined)
-      firstQuestion.question = 'Which cache?'
+    const original = questionRequest()
+    // The re-ask asks a different first question.
+    const revisedQuestions = original.prompt.kind === 'question'
+      ? original.prompt.questions.map((question, index) => index === 0
+          ? { ...question, question: 'Which cache?' }
+          : question)
+      : []
     addControlRequest(controlStore, {
       requestId: 'ask-1',
-      payload: questionRequestPayload(),
+      ...original,
       claimToken: 'claim-1',
     })
-    addControlRequest(controlStore, { requestId: 'ask-1', payload: revised, claimToken: 'claim-2' })
+    addControlRequest(controlStore, {
+      requestId: 'ask-1',
+      payload: {
+        request: {
+          tool_name: 'AskUserQuestion',
+          input: { questions: revisedQuestions },
+        },
+      },
+      prompt: { kind: 'question', questions: revisedQuestions },
+      claimToken: 'claim-2',
+    })
     renderPanel({ controlStore })
 
     fireEvent.click(screen.getByTestId('question-option-Postgres'))
@@ -1075,7 +1152,7 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'ask-1',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
       claimToken: 'claim-1',
     })
     localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-1`, {
@@ -1151,7 +1228,7 @@ describe('agent editor panel pending questions', () => {
     try {
       addControlRequest(controlStore, {
         requestId: 'late-request',
-        payload: questionRequestPayload(),
+        ...questionRequest(),
       })
       await fireEvent.change(input, {
         target: {
@@ -1174,7 +1251,7 @@ describe('agent editor panel pending questions', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'waiting-question',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
       nonBlocking: true,
     })
     renderPanel({ controlStore })
@@ -1196,7 +1273,7 @@ describe('agent editor panel pending questions', () => {
     addControlRequest(controlStore, {
       requestId: 'q1',
       claimToken: 'tok-q1',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
       nonBlocking: true,
     })
     renderPanel({ controlStore })
@@ -1216,12 +1293,12 @@ describe('agent editor panel pending questions', () => {
     addControlRequest(controlStore, {
       requestId: 'q1',
       claimToken: 'tok-q1',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
       nonBlocking: true,
     })
     renderPanel({
       controlStore,
-      onControlResponse: async () => {},
+      onControlAnswer: async () => true,
     })
 
     fireEvent.click(screen.getByTestId('pending-questions-answer'))
@@ -1241,7 +1318,7 @@ describe('agent editor panel pending questions', () => {
     addControlRequest(controlStore, {
       requestId: 'b1',
       claimToken: 'tok-b1',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
     })
     renderPanel({ controlStore })
 
@@ -1305,7 +1382,7 @@ describe('agent editor panel composer emptiness', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'r1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
     renderPanel({ controlStore })
     expect((await registeredHandle()).hasPendingInput()).toBe(true)
@@ -1317,7 +1394,7 @@ describe('agent editor panel composer emptiness', () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'r1',
-      payload: questionRequestPayload(),
+      ...questionRequest(),
     })
     renderPanel({ controlStore })
     expect((await registeredHandle()).hasPendingInput()).toBe(false)
@@ -1335,19 +1412,16 @@ describe('agent editor panel', () => {
     const onRecoverInputProcess = vi.fn()
     const onSetQueuePaused = vi.fn(async () => {})
     const controlStore = createControlStore()
-    const onControlResponse = vi.fn(async () => {})
+    const onControlAnswer = vi.fn<ControlAnswerHandler>(async () => true)
     if (blockingControl) {
       addControlRequest(controlStore, {
         requestId: 'pending-permission',
-        payload: {
-          method: 'item/commandExecution/requestApproval',
-          params: { command: 'pwd', cwd: '/tmp' },
-        },
+        ...permissionRequest(),
       })
     }
     renderPanel({
       controlStore,
-      onControlResponse,
+      onControlAnswer,
       agentProvider: AgentProvider.CODEX,
       inputQueue: create(AgentInputQueueSnapshotSchema, { processRecovery: recovery }),
       onRecoverInputProcess,
@@ -1357,7 +1431,7 @@ describe('agent editor panel', () => {
     await fireEvent.click(screen.getByTestId('queue-pause-button'))
     expect(onRecoverInputProcess).toHaveBeenCalledExactlyOnceWith(recovery)
     expect(onSetQueuePaused).not.toHaveBeenCalled()
-    expect(onControlResponse).not.toHaveBeenCalled()
+    expect(onControlAnswer).not.toHaveBeenCalled()
     expect(controlStore.getRequests('a1')).toHaveLength(blockingControl ? 1 : 0)
   })
 
@@ -2561,11 +2635,11 @@ describe('agent editor panel schedule send', () => {
     addControlRequest(controlStore, {
       requestId: 'perm-1',
       claimToken: 'claim-1',
-      payload: toolRequestPayload('Bash'),
+      ...permissionRequest(),
     })
     renderPanel({
       controlStore,
-      onControlResponse: async () => {},
+      onControlAnswer: async () => true,
     })
     await vi.waitFor(() => expect(screen.getByTestId('control-banner')).toBeInTheDocument())
     // The control-response action cluster carries no schedule trigger: a reply

@@ -72,14 +72,7 @@ func chunkMessageID(_ agent.AssembledMessageKind, metadata map[string]json.RawMe
 // kiroFields reads the `_meta.kiro` object of one update into its fields. It is
 // nil for an update that carries none.
 func kiroFields(raw json.RawMessage) map[string]json.RawMessage {
-	if len(raw) == 0 {
-		return nil
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return nil
-	}
-	return fields
+	return providerkit.RawFields(raw)
 }
 
 // fieldString reads one string field, or "" for a field that is absent or not a

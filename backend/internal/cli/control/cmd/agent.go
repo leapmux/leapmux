@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -134,6 +135,125 @@ It prints the state of each agent in both cases.`,
 			Run:      runAgentWait,
 		}),
 		cli.NewLeaf(cli.Leaf{
+			Use:   "requests [agent]...",
+			Short: "List the permission prompts, plans and questions that agents wait on (default: every agent)",
+			Args:  map[string]string{"agent": resolve.KindAgent.Help() + " Without one, the command lists the requests of every agent."},
+			Long: `List the pending control requests of agents: permission prompts, plans
+to approve, questions, MCP elicitation forms and extension dialogs.
+
+Each request prints with its handle. "agent approve", "agent deny" and
+"agent answer" take the agent and the handle, or a unique prefix of the
+handle. A request that the agent replaces gets a new handle, so an answer
+never reaches a request that you did not read.
+
+The text form prints each request in full, with the numbers that --option
+takes. --json prints each prompt as data.`,
+			Examples: []cli.Example{
+				{Command: "leapmux control agent requests"},
+				{Comment: "List the requests of one agent, as JSON.", Command: "leapmux control agent requests 87a19d5f --json"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("workspace", "", `without an agent, list only the agents of this workspace (an id, a prefix, "title:<title>" or "self")`)
+			},
+			Complete: completeTargets,
+			Run:      runAgentRequests,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "approve <agent> <request>",
+			Short:   "Approve a permission prompt or a plan, or confirm a dialog",
+			Mutates: true,
+			Args:    map[string]string{"agent": resolve.KindAgent.HelpWithoutSelf(), "request": requestArgHelp},
+			Long: `Approve a pending request:
+
+  - A permission prompt: its one-time approval. Choose another option, such
+    as an approval for the session, with "agent answer --option".
+  - A plan: the approval. --permission-mode and --clear-context set how the
+    agent implements it.
+  - An MCP elicitation: the accept, with the form's default values. Fill a
+    form with "agent answer --field".
+  - A confirm dialog: the confirmation.
+
+An agent cannot answer its own requests.`,
+			Examples: []cli.Example{
+				{Command: "leapmux control agent approve 87a19d5f 3kQ9xZ1b"},
+				{Comment: "Approve a plan, and implement it in a fresh context.", Command: "leapmux control agent approve 87a19d5f 3kQ9 --permission-mode acceptEdits --clear-context"},
+			},
+			Flags:    addPlanApprovalFlags,
+			Complete: completeTargets,
+			Run:      runAgentApprove,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "deny <agent> <request>",
+			Short:   "Refuse a permission prompt, a plan, a question or a dialog",
+			Mutates: true,
+			Args:    map[string]string{"agent": resolve.KindAgent.HelpWithoutSelf(), "request": requestArgHelp},
+			Long: `Refuse a pending request:
+
+  - A permission prompt: its one-time refusal, with --message as the reason.
+  - A plan: the refusal, with --message as what to change.
+  - A question: the refusal to answer, with --message as the reason.
+  - An MCP elicitation: the decline.
+  - A dialog: the refusal of a confirm dialog, or the cancel of another.
+
+An agent cannot answer its own requests.`,
+			Examples: []cli.Example{
+				{Command: `leapmux control agent deny 87a19d5f 3kQ9xZ1b --message "Run the unit tests only"`},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("message", "", "the reason of the refusal, which the agent reads")
+			},
+			Complete: completeTargets,
+			Run:      runAgentDeny,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "answer <agent> <request> [text]...",
+			Short:   "Answer a question, fill a form, or choose any offered option",
+			Mutates: true,
+			Args: map[string]string{
+				"agent":   resolve.KindAgent.HelpWithoutSelf(),
+				"request": requestArgHelp,
+				"text":    `A typed answer, or "-" to read it from standard input. With several questions, write "<question>:<text>".`,
+			},
+			Long: `Answer a pending request with any answer that it offers. "agent requests"
+numbers the options of each request.
+
+  - A question: --option chooses an option, and a text argument is a
+    typed answer. A multiple-choice question takes both: the answer then
+    holds the chosen options and the text. With several questions, write
+    each value as "<question>:<value>", such as --option 2:1 or
+    "1:Use the cache". A question that no --option answers keeps the
+    options that the agent selected for it, which "agent requests" shows
+    as its default. With no value at all, the command sends those
+    defaults, which must answer every question that needs an answer.
+  - A permission prompt: --option chooses any option, such as an approval
+    for the session. --message gives the reason of a refusing option.
+  - A plan: --option chooses one of its choices. --message gives what to
+    change, and --permission-mode and --clear-context apply to an approval.
+  - An MCP elicitation: --field fills the form, once for each field, or
+    once for each value of a list field. A field that "agent requests"
+    lists with a condition takes a value only when the condition holds,
+    and a field that it does not list keeps its default. --option chooses
+    an accept choice.
+  - An input or editor dialog: the text.
+
+An agent cannot answer its own requests.`,
+			Examples: []cli.Example{
+				{Comment: "Choose the second option of a question.", Command: "leapmux control agent answer 87a19d5f 3kQ9 --option 2"},
+				{Comment: "Choose two options of a multiple-choice question, and type one more answer.", Command: `leapmux control agent answer 87a19d5f 3kQ9 --option 1 --option 3 "Metrics"`},
+				{Comment: "Answer two questions.", Command: `leapmux control agent answer 87a19d5f 3kQ9 --option 1:2 "2:Use the staging database"`},
+				{Comment: "Approve a command for the rest of the session.", Command: "leapmux control agent answer 87a19d5f 3kQ9 --option 2"},
+				{Comment: "Fill an MCP form.", Command: "leapmux control agent answer 87a19d5f 3kQ9 --field repository=leapmux --field private=true"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.StringArray("option", nil, `an option by its number, or "<question>:<number>" with several questions; repeat it for more than one`)
+				fs.StringArray("field", nil, "a form field as <name>=<value>; repeat it for more than one")
+				fs.String("message", "", "the reason of a refusing option or choice, which the agent reads")
+				addPlanApprovalFlags(fs)
+			},
+			Complete: completeTargets,
+			Run:      runAgentAnswer,
+		}),
+		cli.NewLeaf(cli.Leaf{
 			Use:     "interrupt <agent>",
 			Short:   "Stop an agent's current turn",
 			Mutates: true,
@@ -239,6 +359,34 @@ func nonEmptyText(text string) (string, error) {
 		return "", cli.Usagef("the text is empty")
 	}
 	return text, nil
+}
+
+// workerAgents are agents of one Worker, which one channel to that Worker
+// serves.
+type workerAgents struct {
+	workerID string
+	agentIDs []string
+}
+
+// groupAgentsByWorker groups the agents by Worker, in the order of the first
+// agent of each, and lists the agents in the order of the arguments. An
+// agent that two arguments give counts once, at its first place.
+func groupAgentsByWorker(targets []tabTarget) (groups []workerAgents, agentIDs []string) {
+	seen := map[string]bool{}
+	for _, t := range targets {
+		if seen[t.ID] {
+			continue
+		}
+		seen[t.ID] = true
+		agentIDs = append(agentIDs, t.ID)
+		i := slices.IndexFunc(groups, func(g workerAgents) bool { return g.workerID == t.WorkerID })
+		if i < 0 {
+			groups = append(groups, workerAgents{workerID: t.WorkerID})
+			i = len(groups) - 1
+		}
+		groups[i].agentIDs = append(groups[i].agentIDs, t.ID)
+	}
+	return groups, agentIDs
 }
 
 // agentResult is the result of a command that acted on an agent and has

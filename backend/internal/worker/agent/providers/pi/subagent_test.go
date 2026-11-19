@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"

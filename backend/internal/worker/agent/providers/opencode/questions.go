@@ -870,11 +870,12 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 	return true, nil
 }
 
-// openCodeAnswerResult is the answer envelope the BROWSER writes and this reads back.
+// openCodeAnswerResult is the answer envelope that providerkit.AnswerOpenCodeQuestions
+// writes and this reads back.
 //
 // A Go struct tag cannot hold a constant, so the two field names are literals here
 // and TestOpenCodeAnswerTagsMatchTheContract pins them to
-// contracts/opencode-protocol.json, which the browser reads the same names from. A
+// contracts/opencode-protocol.json, whose constants the writer spells them with. A
 // rename on one side alone used to leave `Answers` nil, so `reply` never ran and the
 // daemon's question tool blocked for the rest of the session with nothing logged.
 type openCodeAnswerResult struct {

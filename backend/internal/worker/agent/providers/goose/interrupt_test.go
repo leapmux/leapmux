@@ -63,8 +63,8 @@ func TestACPAgent_Interrupt_AnswersAnOutstandingPermissionRequest(t *testing.T) 
 	assert.Contains(t, answer, `"outcome":"cancelled"`, "the reader gave no decision, and none is invented")
 }
 
-// A request the reader already answered is not answered twice: the response the
-// browser sent clears it, and the cancel then has nothing of its own to send.
+// A request the reader already answered is not answered twice: the reader's
+// answer clears it, and the cancel then has nothing of its own to send.
 func TestACPAgent_Interrupt_SkipsARequestTheReaderAlreadyAnswered(t *testing.T) {
 	t.Parallel()
 

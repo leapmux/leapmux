@@ -84,18 +84,19 @@ func (svc *Service) loadControlResponseRequestMetadata(agentID, requestID string
 	return completeControlRequestMetadata(meta), nil
 }
 
+// completeControlRequestMetadata reads the tool of the stored request with
+// the readers of package agent, which the provider tests read through too.
+// Each field reads alone, so a sibling of the wrong type hides nothing. Only
+// a payload that is no JSON object, such as the empty payload of a gone
+// request, leaves the request unread.
 func completeControlRequestMetadata(meta controlResponseRequestMetadata) controlResponseRequestMetadata {
-	var body struct {
-		Request struct {
-			ToolName  string `json:"tool_name"`
-			ToolUseID string `json:"tool_use_id"`
-		} `json:"request"`
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(meta.Payload, &envelope) != nil {
+		return meta
 	}
-	if json.Unmarshal(meta.Payload, &body) == nil {
-		meta.ToolName = body.Request.ToolName
-		meta.ToolUseID = body.Request.ToolUseID
-		meta.Loaded = true
-	}
+	meta.ToolName = agent.ControlToolName(meta.Payload)
+	meta.ToolUseID = agent.ControlToolUseID(meta.Payload)
+	meta.Loaded = true
 	return meta
 }
 
@@ -125,7 +126,7 @@ func resolveControlResponsePlan(plugin agent.Provider, requestMeta controlRespon
 		plan.decision.Response.Response.Message = agent.NormalizeRejectionMessage(plan.decision.Response.Response.Message)
 		if plan.decision.Response.RequestID != "" {
 			switch plan.decision.Response.Response.Behavior {
-			case agent.ControlBehaviorAllow, agent.ControlBehaviorDeny:
+			case contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny:
 				plan.hasDecision = true
 			}
 		}
@@ -148,10 +149,25 @@ func (plan controlResponsePlan) isPlanPrompt() bool {
 	return plan.resolution.PlanModeControl == agent.PlanModeControlPrompt
 }
 
-// processControlResponse retains the chosen answer before delivery and finalizes it after receipt.
-// Uncertain delivery keeps its reservation and cannot resend automatically.
-func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.SendControlResponseRequest) error {
-	agentID, content, claimToken := dbAgent.ID, request.GetContent(), request.GetClaimToken()
+// workerAnswer is one answer that the Worker delivers for one request
+// instance: the content that the provider's AnswerControlRequest built, the
+// plan settings that the answer applies, and the input that the answer queues
+// after itself for a runtime whose answer cannot carry the user's feedback.
+// No client sends answer content: AnswerControl builds it from a decision.
+type workerAnswer struct {
+	claimToken   string
+	content      []byte
+	planApproval *leapmuxv1.PlanApprovalSettings
+	followUp     agent.ControlFollowUp
+}
+
+// processControlAnswer retains the chosen answer before delivery and
+// finalizes it after receipt. Uncertain delivery keeps its reservation and
+// cannot resend automatically. The answer's follow-up joins the
+// resolution's, so it is stored with the answer and queued when the answer
+// is finalized, as a follow-up of the resolution is.
+func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) error {
+	agentID, content, claimToken, followUp := dbAgent.ID, chosen.content, chosen.claimToken, chosen.followUp
 	plugin := svc.Agents.Registry().Plugin(dbAgent.AgentProvider)
 	requestID := plugin.ControlResponseRequestID(content)
 	readAnswer := func() (db.ControlResponseAnswer, error) {
@@ -172,7 +188,13 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	if err != nil {
 		return fmt.Errorf("read the control request: %w", err)
 	}
-	plan := resolveControlResponsePlan(plugin, meta, content, request.GetPlanApproval())
+	plan := resolveControlResponsePlan(plugin, meta, content, chosen.planApproval)
+	if followUp != (agent.ControlFollowUp{}) {
+		if plan.resolution.FollowUp != (agent.ControlFollowUp{}) {
+			return errors.New("the answer and its resolution both state a follow-up")
+		}
+		plan.resolution.FollowUp = followUp
+	}
 	// An agent restart, a context clear, or a provider-side cancel deletes the
 	// request row. LeapMux then refuses the answer instead of keeping it.
 	// StoreControlResponseAnswer repeats the same condition in SQL (WHERE EXISTS),
@@ -217,7 +239,7 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 			return fmt.Errorf("validate the response input: %w", err)
 		}
 	}
-	if plan.settings != nil && (!plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow ||
+	if plan.settings != nil && (!plan.hasDecision || plan.behavior() != contracts.ControlAnswerBehaviorAllow ||
 		!plan.isPlanPrompt() && plan.resolution.PlanModeControl != agent.PlanModeControlExit) {
 		return errors.New("plan settings require an approval for a matching plan request")
 	}
@@ -266,7 +288,7 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 
 // approvedClearContext identifies an approval that requests a fresh context.
 func (plan controlResponsePlan) approvedClearContext() bool {
-	return plan.behavior() == agent.ControlBehaviorAllow && plan.settings.GetClearContext()
+	return plan.behavior() == contracts.ControlAnswerBehaviorAllow && plan.settings.GetClearContext()
 }
 
 // exitPlanClearingContext identifies a plan exit that replaces the provider session.
@@ -284,14 +306,14 @@ func (plan controlResponsePlan) exitPlanClearingContext() bool {
 // deliberate (#258). An agent restart deletes the request row, and the delivered
 // answer that ListControlResponsesAwaitingRecording recovers still draws its row.
 // An answer that ARRIVES after the request row disappeared never reaches this
-// point, because processControlResponse refuses it.
+// point, because processControlAnswer refuses it.
 func (plan controlResponsePlan) needsTranscriptRow() bool {
 	// A question answer's queued input writes the row that shows it, as plan
 	// feedback does.
 	if plan.resolution.FollowUp.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		return false
 	}
-	if plan.isPlanPrompt() && plan.behavior() == agent.ControlBehaviorDeny && plan.rejectionMessage() != "" {
+	if plan.isPlanPrompt() && plan.behavior() == contracts.ControlAnswerBehaviorDeny && plan.rejectionMessage() != "" {
 		return false
 	}
 	if plan.requestMeta.RequestID == "" {
@@ -306,7 +328,7 @@ func (plan controlResponsePlan) needsTranscriptRow() bool {
 // applyControlResponsePlanModeMutations records a plan-mode decision for its validated provider session.
 // The caller holds the lifecycle lock. Native approval applies its own mode; a context clear prepares the next session's mode.
 func (svc *Service) applyControlResponsePlanModeMutations(dbAgent db.Agent, plan controlResponsePlan) error {
-	if !plan.requestMeta.Loaded || !plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow {
+	if !plan.requestMeta.Loaded || !plan.hasDecision || plan.behavior() != contracts.ControlAnswerBehaviorAllow {
 		return nil
 	}
 
@@ -332,7 +354,7 @@ func (svc *Service) applyControlResponsePlanModeMutations(dbAgent db.Agent, plan
 			return persistMode(enterMode)
 		}
 	case agent.PlanModeControlExit:
-		// The mode the frontend attached wins; otherwise the provider's own exit mode.
+		// The mode that the plan decision states wins; otherwise the provider's own exit mode.
 		targetMode := resolveTargetMode(plan.settings.GetPermissionMode(), plugin.PlanModePermissionMode(agent.PlanModeControlExit))
 		if targetMode != "" {
 			if err := persistMode(targetMode); err != nil {
@@ -361,11 +383,21 @@ func resolveTargetMode(permissionMode, defaultMode string) string {
 }
 
 // controlResponseMessageContent preserves the sent bytes and the complete matching request separately.
-// Worker request identity belongs to metadata, outside both provider payloads.
-func controlResponseMessageContent(plan controlResponsePlan) (agent.MessageContent, error) {
+// Worker request identity belongs to metadata, outside both provider payloads, and
+// so does the prompt that the request showed: the row's display reads which
+// control the answer belongs to from it, so the browser reads no provider's
+// request format. A nil prompt states none.
+func controlResponseMessageContent(plan controlResponsePlan, prompt *leapmuxv1.ControlPrompt) (agent.MessageContent, error) {
 	fields := map[string]any{
 		contracts.MessageMetadataFieldControlRequestID:         plan.requestMeta.RequestID,
 		contracts.MessageMetadataFieldControlRequestClaimToken: plan.requestMeta.ClaimToken,
+	}
+	if prompt != nil {
+		encoded, err := protojson.Marshal(prompt)
+		if err != nil {
+			return agent.MessageContent{}, fmt.Errorf("encode the control prompt: %w", err)
+		}
+		fields[contracts.MessageMetadataFieldControlPrompt] = json.RawMessage(encoded)
 	}
 	if plan.settings != nil && len(plan.settingsJSON) == 0 {
 		// The plan carries settings that nothing encoded, so this row would drop

@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -127,40 +126,11 @@ func codexAsyncQuestionOptions(options []string) []string {
 // encodeCodexQuestionItemID builds the identity that Codex's reply carries for
 // one question: the compact JSON the browser's own JSON.stringify produces.
 func encodeCodexQuestionItemID(itemID string, index int) (string, error) {
-	encoded, err := encodeCodexJSON([]any{codexAsyncQuestionTool, itemID, index})
+	encoded, err := providerkit.JSONStringify([]any{codexAsyncQuestionTool, itemID, index})
 	if err != nil {
 		return "", err
 	}
 	return string(encoded), nil
-}
-
-// encodeCodexJSON encodes like the browser's JSON.stringify. Go's encoder
-// escapes <, > and & by default, and the browser's does not.
-func encodeCodexJSON(value any) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, err
-	}
-	encoded := bytes.TrimRight(buffer.Bytes(), "\n")
-	output := encoded[:0]
-	for index := 0; index < len(encoded); {
-		if encoded[index] != '\\' || index+1 == len(encoded) {
-			output = append(output, encoded[index])
-			index++
-			continue
-		}
-		// JSON.stringify retains these separators. Escaped backslashes stay unchanged.
-		if index+6 <= len(encoded) && bytes.Equal(encoded[index:index+5], []byte(`\u202`)) && (encoded[index+5] == '8' || encoded[index+5] == '9') {
-			output = append(output, 0xe2, 0x80, 0xa8+encoded[index+5]-'8')
-			index += 6
-			continue
-		}
-		output = append(output, encoded[index:index+2]...)
-		index += 2
-	}
-	return output, nil
 }
 
 // resolveCodexAsyncQuestionResponse reads the neutral answer to one async
@@ -181,14 +151,14 @@ func resolveCodexAsyncQuestionResponse(res agent.ControlResponseResolution, cont
 	}
 	answer := strings.TrimSpace(envelope.Response.Response.Answer)
 	switch strings.TrimSpace(envelope.Response.Response.Behavior) {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		if answer == "" {
 			res.Refuse(agent.RefusalUnreadableAnswer)
 			return res
 		}
 		res.LeapMuxOwned = true
 		res.FollowUp = agent.QuestionAnswerFollowUp(answer)
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		res.LeapMuxOwned = true
 	default:
 		res.Refuse(agent.RefusalUnreadableAnswer)
@@ -227,7 +197,7 @@ func (codexProvider) QuestionReply(requestPayload json.RawMessage, answer string
 		Question       string `json:"question"`
 		QuestionItemID string `json:"questionItemId"`
 	}{Answer: answer, Question: question, QuestionItemID: input.QuestionItemID}
-	encoded, err := encodeCodexJSON([]any{entry})
+	encoded, err := providerkit.JSONStringify([]any{entry})
 	if err != nil {
 		return "", fmt.Errorf("encode the question reply: %w", err)
 	}
@@ -254,8 +224,9 @@ func codexQuestionLine(title string) string {
 // question, a form that asks for data, and a decision request that offers no plain
 // approval.
 //
-// The browser's Allow sends the same shapes; testdata/codex_approval_answer_conformance.json
-// states both answers for each request kind, and both suites replay it.
+// The answer to the user's Allow sends the same shapes;
+// testdata/codex_approval_answer_conformance.json states both answers for each
+// request kind, and a test replays each half.
 func codexStandingApprovalAnswer(payload []byte) (answer any, ok bool) {
 	var request struct {
 		Method string          `json:"method"`
@@ -287,7 +258,7 @@ func codexStandingApprovalAnswer(payload []byte) (answer any, ok bool) {
 
 // codexStandingDecision returns the approval decision that a standing approval sends:
 // accept when Codex offers it, else acceptForSession. A request that lists no
-// decisions offers accept, as the browser also assumes.
+// decisions offers accept, as codexDecisionChoices also assumes.
 func codexStandingDecision(params json.RawMessage) (string, bool) {
 	var request struct {
 		AvailableDecisions []json.RawMessage `json:"availableDecisions"`

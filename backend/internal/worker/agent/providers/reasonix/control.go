@@ -124,10 +124,10 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 	}
 	var option string
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		option = "allow_once"
 		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		option = "reject_once"
 		result.FollowUp = agent.FeedbackFollowUp(message)
 	default:
@@ -161,7 +161,7 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 }
 
 // isReasonixJSONRPCReply distinguishes a native reply from the neutral
-// allow/deny envelope that the shared plan surface sends.
+// allow/deny envelope that agent.AnswerNeutralPlan builds.
 func isReasonixJSONRPCReply(content []byte) bool {
 	var reply map[string]json.RawMessage
 	if json.Unmarshal(content, &reply) != nil {

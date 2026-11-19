@@ -22,8 +22,8 @@ const (
 	kimiStoredQuestion     = `{"type":"interaction","kind":"question","status":"pending","interaction_id":"question_1","agent_id":"main","session_id":"session_1","request":{"questions":[{"id":"q_0","question":"Color?","options":[{"id":"opt_0_0","label":"Red"},{"id":"opt_0_1","label":"Blue"}],"allow_other":true},{"id":"q_1","question":"Tags?","options":[{"id":"opt_1_0","label":"a"},{"id":"opt_1_1","label":"b"}],"multi_select":true}]}}`
 )
 
-// browserAnswer is the neutral envelope the browser sends, with the Kimi fields
-// beside the behavior.
+// browserAnswer is the neutral envelope that AnswerControlRequest builds, with
+// the Kimi fields beside the behavior.
 func browserAnswer(t *testing.T, requestID, behavior string, fields map[string]any) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
@@ -92,7 +92,7 @@ func TestKimiResolvePermission(t *testing.T) {
 
 	t.Run("a refusal with the placeholder reason carries none", func(t *testing.T) {
 		t.Parallel()
-		res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "deny", map[string]any{"message": agent.ControlRejectedByUserMessage}), nil)
+		res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "deny", map[string]any{"message": contracts.ControlAnswerMessageRejectedByUser}), nil)
 		assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected"}, nativeResponse(t, res.Content))
 	})
 
@@ -359,7 +359,7 @@ func TestKimiResolveQuestion(t *testing.T) {
 
 	t.Run("a refusal with no reason dismisses the question and sends nothing", func(t *testing.T) {
 		t.Parallel()
-		for _, fields := range []map[string]any{nil, {"message": agent.ControlRejectedByUserMessage}} {
+		for _, fields := range []map[string]any{nil, {"message": contracts.ControlAnswerMessageRejectedByUser}} {
 			res := resolve(t, "question_1", kimiStoredQuestion, browserAnswer(t, "question_1", "deny", fields), nil)
 			require.False(t, res.Withhold)
 			assert.Equal(t, map[string]any{"kind": "question", "dismissed": true}, nativeResponse(t, res.Content))

@@ -20,7 +20,7 @@ func TestResolveControlResponse_ClaudeSelfDisplayAndPlanMode(t *testing.T) {
 
 	assert.True(t, res.SelfDisplayed)
 	assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl)
-	// The tool name is all the frontend needs to render Claude's Approved / Rejected / feedback.
+	// The browser draws Claude's Approved / Rejected / feedback from the recorded prompt and the response.
 }
 
 func TestClaudeResolveControlResponse_PreservesTheResponseWithoutARequest(t *testing.T) {

@@ -104,7 +104,7 @@ func TestNarrowerPolicyKeepsAnUnclaimedToolForManualApproval(t *testing.T) {
 	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval", "")))
 }
 
-// answerFor resolves a browser answer against the request the sink stored, as
+// answerFor resolves a neutral answer against the request the sink stored, as
 // the service does, and returns what SendRawInput receives.
 func answerFor(t *testing.T, rig *kimiTestRig, requestID, behavior string, fields map[string]any, plan *leapmuxv1.PlanApprovalSettings) []byte {
 	t.Helper()

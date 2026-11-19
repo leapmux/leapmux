@@ -13,6 +13,7 @@ import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchEventsViaChannel, workerAgent } from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
+import { ControlEditorPurpose, ControlPayloadFault, ControlPromptSchema, PermissionPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, AgentTodoSnapshotSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessagePageAnchor, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -41,6 +42,7 @@ import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { deferred } from '~/test-support/async'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -1115,13 +1117,12 @@ describe('handleAgentInactive', () => {
   it('retains a confirmed response that still needs recording', () => {
     createRoot((dispose) => {
       const stores = makeStores()
-      stores.controlStore.addRequest('agent-1', {
+      stores.controlStore.addRequest('agent-1', testControlRequest({
         requestId: 'record',
         agentId: 'agent-1',
-        payload: {},
         claimToken: 'record-claim',
         responseState: ControlResponseState.DELIVERED,
-      })
+      }))
       handleAgentInactive('agent-1', {} as AgentStatusChange, 'live', stores)
       expect(stores.controlStore.getRequests('agent-1').map(request => request.requestId)).toEqual(['record'])
       dispose()
@@ -1132,12 +1133,11 @@ describe('handleAgentInactive', () => {
     const tabs = makeTabStores()
     tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
     const controlStore = createControlStore()
-    controlStore.addRequest('agent-1', {
+    controlStore.addRequest('agent-1', testControlRequest({
       requestId: 'r1',
       agentId: 'agent-1',
-      payload: {},
       claimToken: 'tok-r1',
-    })
+    }))
     return {
       controlStore,
       agentSessionStore: createAgentSessionStore(),
@@ -2534,23 +2534,31 @@ describe('extracted handleAgentEvent branch handlers', () => {
       } as unknown as AgentControlRequest
     }
 
+    /** A request whose payload the Worker could not read, with the prompt that states its fault. */
+    function unreadable(bytes: string, fault: ControlPayloadFault): AgentControlRequest {
+      return create(AgentControlRequestSchema, {
+        requestId: 'r1',
+        payload: enc(bytes),
+        prompt: create(ControlPromptSchema, {
+          kind: { case: 'unreadable', value: fault },
+          editorPurpose: ControlEditorPurpose.NONE,
+        }),
+      })
+    }
+
     // The provider waits for the control answer. Retain an unreadable request and its bytes so the
     // user can inspect it and stop the agent.
 
     it.each([
-      ['malformed', '{"method":'],
-      ['not-an-object', '[1,2]'],
-      ['not-an-object', '"a string"'],
-      ['not-an-object', 'null'],
-    ])('keeps a request whose payload is %s (%s)', (fault, bytes) => {
+      ['malformed', '{"method":', ControlPayloadFault.MALFORMED],
+      ['not-an-object', '[1,2]', ControlPayloadFault.NOT_AN_OBJECT],
+      ['not-an-object', '"a string"', ControlPayloadFault.NOT_AN_OBJECT],
+      ['not-an-object', 'null', ControlPayloadFault.NOT_AN_OBJECT],
+    ] as const)('keeps a request whose payload is %s (%s)', (fault, bytes, wireFault) => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
-        const request = {
-          requestId: 'r1',
-          agentId: 'a1',
-          payload: enc(bytes),
-        } as unknown as AgentControlRequest
+        const request = unreadable(bytes, wireFault)
         handleControlRequest('a1', request, 'live', s)
         const [kept] = s.controlStore.getRequests('a1')
         expect(kept).toBeDefined()
@@ -2559,6 +2567,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
         expect(kept?.payload).toEqual({})
         // The bytes that arrived are still there, so Copy JSON shows what the agent sent.
         expect(new TextDecoder().decode(kept?.originalPayload)).toBe(bytes)
+        expect(kept?.editorRole).toBe('none')
         dispose()
       })
     })
@@ -2629,14 +2638,39 @@ describe('extracted handleAgentEvent branch handlers', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
-        const malformed = {
-          requestId: 'r1',
-          agentId: 'a1',
-          payload: enc('{not json'),
-        } as unknown as AgentControlRequest
-        expect(() => handleControlRequest('a1', malformed, 'live', s)).not.toThrow()
+        expect(() => handleControlRequest('a1', unreadable('{not json', ControlPayloadFault.MALFORMED), 'live', s)).not.toThrow()
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
         expect(s.controlStore.getRequests('a1')[0]?.payloadFault).toBe('malformed')
+        dispose()
+      })
+    })
+
+    // The Worker states the fault. A payload that the Worker read but that this browser
+    // cannot decode still keeps its prompt, which is what the banner draws, and keeps
+    // the bytes for Copy JSON.
+    it('keeps a request whose payload the Worker read but the browser cannot decode, with its prompt', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
+        const request = create(AgentControlRequestSchema, {
+          requestId: 'r1',
+          payload: enc('{not json'),
+          prompt: create(ControlPromptSchema, {
+            kind: {
+              case: 'permission',
+              value: create(PermissionPromptSchema, { title: 'Bash', options: [] }),
+            },
+          }),
+        })
+        expect(() => handleControlRequest('a1', request, 'live', s)).not.toThrow()
+        const [kept] = s.controlStore.getRequests('a1')
+        expect(kept?.payloadFault).toBeUndefined()
+        expect(kept?.payload).toEqual({})
+        expect(kept?.prompt).toEqual({
+          kind: 'permission',
+          permission: { title: 'Bash', options: [] },
+        })
+        expect(kept?.editorRole).toBe('feedback')
         dispose()
       })
     })
@@ -2752,12 +2786,12 @@ describe('extracted handleAgentEvent branch handlers', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
-        s.controlStore.addRequest('a1', {
+        s.controlStore.addRequest('a1', testControlRequest({
           requestId: 'r1',
           agentId: 'a1',
           payload: { method: 'x' },
           claimToken: 'tok-r1',
-        })
+        }))
         const sc = {
           status: AgentStatus.INACTIVE,
           optionGroups: [],

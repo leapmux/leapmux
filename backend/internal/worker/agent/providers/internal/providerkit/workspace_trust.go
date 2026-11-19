@@ -323,8 +323,9 @@ func (w *WorkspaceTrust) Retire(sink agent.ProviderServices) {
 	}
 }
 
-// ResolveWorkspaceTrustResponse turns the browser's neutral decision on a
-// workspace-trust question into the saved answer, {decision}. It reports false
+// ResolveWorkspaceTrustResponse turns the neutral allow or deny on a
+// workspace-trust question (AnswerWorkspaceTrust) into the saved answer,
+// {decision}. It reports false
 // for a stored request that is not a workspace-trust question, which the
 // provider then resolves itself.
 func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.ControlResponseResolution, bool) {
@@ -333,7 +334,7 @@ func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.Cont
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
 	requestID, behavior, _, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		result.Refuse(agent.RefusalNoDecision)
 		return result, true
 	}
@@ -342,7 +343,7 @@ func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.Cont
 		return result, true
 	}
 	decision := contracts.WorkspaceTrustDecisionReject
-	if behavior == agent.ControlBehaviorAllow {
+	if behavior == contracts.ControlAnswerBehaviorAllow {
 		decision = contracts.WorkspaceTrustDecisionTrust
 	}
 	content, err := json.Marshal(map[string]any{

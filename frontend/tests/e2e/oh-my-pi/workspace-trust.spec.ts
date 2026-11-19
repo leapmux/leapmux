@@ -1,13 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { ohMyPiExtractControl } from '../../../src/components/chat/providers/ohmypi/extractControl'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit } from '../helpers/nativeWorkspaceTrustLimit'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 ohMyPiTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
-  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-always-ask', classify: ohMyPiExtractControl })
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-always-ask' })
 })
 
 ohMyPiTest('loads an executable project extension without a workspace trust decision', async ({ native }) => {

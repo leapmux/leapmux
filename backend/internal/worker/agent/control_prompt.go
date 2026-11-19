@@ -1,0 +1,376 @@
+package agent
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+// ControlRequestInput is one control request as a provider reads it.
+//
+// A provider reads its own payload. Some prompts state part of their content
+// elsewhere, and the two loaders read it when the provider asks:
+//
+//   - Source reads the transcript row that the request came from (its
+//     source seq): Pi and Oh My Pi read a dialog's question from it, and
+//     Gemini its plan.
+//   - SpanRequest reads the request row of one tool call: an Agent Client
+//     Protocol permission states its tool call in a compact form, and the
+//     arguments live on that call's own row.
+//
+// Each returns the row as ResolveMessageContent resolves it, with the
+// provider section of its supplement, and false when no such row exists.
+type ControlRequestInput struct {
+	Payload        []byte
+	AgentSessionID string
+	Source         func() (MessageContent, bool)
+	SpanRequest    func(spanID string) (MessageContent, bool)
+}
+
+// NewControlRequestInput is the input for payload alone: both loaders find
+// no row. A test and a caller with no transcript start from it.
+func NewControlRequestInput(payload []byte) ControlRequestInput {
+	return ControlRequestInput{
+		Payload:     payload,
+		Source:      func() (MessageContent, bool) { return MessageContent{}, false },
+		SpanRequest: func(string) (MessageContent, bool) { return MessageContent{}, false },
+	}
+}
+
+// ControlAnswerInput is one decision about one control request.
+type ControlAnswerInput struct {
+	Request ControlRequestInput
+	// RequestID is the stored id of the request, which the answer echoes.
+	RequestID string
+	// Prompt is what ReadControlRequest read from the same request.
+	Prompt   *leapmuxv1.ControlPrompt
+	Decision *leapmuxv1.ControlDecision
+}
+
+// ControlAnswer is a provider's answer to one control request: the content
+// that the Worker claims and records for the request instance.
+// ResolveControlResponse then turns that content into the runtime's own
+// answer.
+type ControlAnswer struct {
+	Content []byte
+	// PlanApproval is the LeapMux settings that a plan approval applies.
+	PlanApproval *leapmuxv1.PlanApprovalSettings
+	// FollowUp is text that the Worker sends as a message after the answer,
+	// for a runtime whose answer cannot carry the user's feedback.
+	FollowUp string
+}
+
+// ErrInvalidControlDecision is the cause of a decision that does not answer
+// its prompt: another kind, or an option that the prompt does not offer.
+var ErrInvalidControlDecision = errors.New("the decision does not answer the control request")
+
+// InvalidControlDecision returns ErrInvalidControlDecision with a reason.
+func InvalidControlDecision(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidControlDecision, fmt.Sprintf(format, args...))
+}
+
+// AllowDenyOptions are LeapMux's own answers to a permission prompt whose
+// runtime states no options: allow once, and deny. Their ids
+// (contracts.ControlAnswerOption*) are also the refusal that a provider adds
+// to a runtime's list with no refusal (WithRefusal).
+func AllowDenyOptions() []*leapmuxv1.PermissionOption {
+	return []*leapmuxv1.PermissionOption{
+		{OptionId: contracts.ControlAnswerOptionAllow, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE},
+		{OptionId: contracts.ControlAnswerOptionDeny, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE},
+	}
+}
+
+// GenericPermissionPrompt is the prompt of a request that the provider does
+// not recognize: LeapMux's allow and deny, with no arguments. The arguments
+// stay out on purpose: the answer sends the request's own input back, and a
+// prompt that drew the whole envelope as arguments would show one part of
+// the payload while the answer sent another.
+func GenericPermissionPrompt() *leapmuxv1.ControlPrompt {
+	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{
+		Permission: &leapmuxv1.PermissionPrompt{Options: AllowDenyOptions()},
+	}}
+}
+
+// WithEditorPurpose states the editor purpose of prompt, so every client
+// reads one: a purpose that the provider stated stays, and otherwise the kind
+// decides it:
+//
+//   - A question takes the typed text as an answer. A client still offers
+//     none for a question whose allow_custom_text is false.
+//   - An MCP elicitation and a dialog draw their own fields and buttons, so
+//     the text is no part of them.
+//   - Any other request takes the text as the reason of a refusal.
+func WithEditorPurpose(prompt *leapmuxv1.ControlPrompt) *leapmuxv1.ControlPrompt {
+	if prompt.GetEditorPurpose() != leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_UNSPECIFIED {
+		return prompt
+	}
+	switch prompt.GetKind().(type) {
+	case *leapmuxv1.ControlPrompt_Question:
+		prompt.EditorPurpose = leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_ANSWER
+	case *leapmuxv1.ControlPrompt_Elicitation, *leapmuxv1.ControlPrompt_Dialog, *leapmuxv1.ControlPrompt_Unreadable:
+		prompt.EditorPurpose = leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE
+	default:
+		prompt.EditorPurpose = leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_FEEDBACK
+	}
+	return prompt
+}
+
+// ReadControlPrompt is the prompt that the Worker records and sends for one
+// control request, as every client draws it:
+//
+//   - A payload that is not a JSON object reaches no provider: its prompt
+//     states the fault (UnreadableControlPrompt).
+//   - Otherwise the provider reads the payload, and a provider that returns
+//     no prompt states the generic one, so a client always has a prompt to
+//     draw.
+//
+// Every prompt states its editor purpose (WithEditorPurpose).
+func ReadControlPrompt(plugin Provider, input ControlRequestInput) *leapmuxv1.ControlPrompt {
+	if unreadable, ok := UnreadableControlPrompt(input.Payload); ok {
+		return unreadable
+	}
+	prompt := plugin.ReadControlRequest(input)
+	if prompt.GetKind() == nil {
+		prompt = GenericPermissionPrompt()
+	}
+	return WithEditorPurpose(prompt)
+}
+
+// UnreadableControlPrompt returns the prompt of a request whose payload is
+// not a JSON object, and false for a payload that a provider can read. No
+// provider reads such a payload: it states no option and no decision
+// vocabulary, so the prompt offers no answer, and the composer's text is a
+// message.
+func UnreadableControlPrompt(payload []byte) (*leapmuxv1.ControlPrompt, bool) {
+	fault := controlPayloadFault(payload)
+	if fault == leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED {
+		return nil, false
+	}
+	return &leapmuxv1.ControlPrompt{
+		Kind:          &leapmuxv1.ControlPrompt_Unreadable{Unreadable: fault},
+		EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE,
+	}, true
+}
+
+// controlPayloadFault is why payload cannot be read as a JSON object, or
+// UNSPECIFIED for an object.
+func controlPayloadFault(payload []byte) leapmuxv1.ControlPayloadFault {
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_MALFORMED
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_NOT_AN_OBJECT
+	}
+	return leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED
+}
+
+// PermissionDecisionOf returns the permission decision of input and the
+// option that it chooses, checked against the options of its prompt. The
+// feedback is the reason of a refusal, so only a refusing option takes it: no
+// runtime's answer has a place for a reason beside an approval.
+func PermissionDecisionOf(input ControlAnswerInput) (*leapmuxv1.PermissionDecision, *leapmuxv1.PermissionOption, error) {
+	decision := input.Decision.GetPermission()
+	prompt := input.Prompt.GetPermission()
+	if decision == nil || prompt == nil {
+		return nil, nil, InvalidControlDecision("a permission prompt takes a permission decision")
+	}
+	i := slices.IndexFunc(prompt.GetOptions(), func(option *leapmuxv1.PermissionOption) bool {
+		return option.GetOptionId() == decision.GetOptionId()
+	})
+	if i < 0 {
+		return nil, nil, InvalidControlDecision("the prompt offers no option %q", decision.GetOptionId())
+	}
+	option := prompt.GetOptions()[i]
+	if decision.GetFeedback() != "" && !IsRefusalOption(option) {
+		return nil, nil, InvalidControlDecision("feedback is the reason of a refusal, and %q does not refuse the call", option.GetOptionId())
+	}
+	return decision, option, nil
+}
+
+// IsAllowOption reports whether option allows the call.
+func IsAllowOption(option *leapmuxv1.PermissionOption) bool {
+	switch option.GetKind() {
+	case leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE,
+		leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsRefusalOption reports whether option refuses the call.
+func IsRefusalOption(option *leapmuxv1.PermissionOption) bool {
+	switch option.GetKind() {
+	case leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
+		leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ALWAYS:
+		return true
+	default:
+		return false
+	}
+}
+
+// WithRefusal completes a runtime's option list so that a client can always
+// refuse: an empty list becomes LeapMux's allow and deny, and a list with no
+// refusing option gains refusal, a provider's own way to refuse there.
+func WithRefusal(options []*leapmuxv1.PermissionOption, refusal *leapmuxv1.PermissionOption) []*leapmuxv1.PermissionOption {
+	if len(options) == 0 {
+		return AllowDenyOptions()
+	}
+	if slices.ContainsFunc(options, IsRefusalOption) {
+		return options
+	}
+	return append(options, refusal)
+}
+
+// ReadControlRequest defaults to the generic permission prompt.
+func (ProviderDefaults) ReadControlRequest(ControlRequestInput) *leapmuxv1.ControlPrompt {
+	return GenericPermissionPrompt()
+}
+
+// AnswerControlRequest defaults to the answer of the generic permission
+// prompt: the neutral allow, which sends the request's input back unchanged,
+// or the neutral deny.
+func (ProviderDefaults) AnswerControlRequest(input ControlAnswerInput) (ControlAnswer, error) {
+	return AnswerAllowDeny(input)
+}
+
+// AnswerAllowDeny answers a permission prompt of LeapMux's allow and deny
+// options with the neutral envelope.
+func AnswerAllowDeny(input ControlAnswerInput) (ControlAnswer, error) {
+	decision, option, err := PermissionDecisionOf(input)
+	if err != nil {
+		return ControlAnswer{}, err
+	}
+	if IsAllowOption(option) {
+		return ControlAnswer{Content: AllowResponse(input.RequestID, ControlToolInput(input.Request.Payload))}, nil
+	}
+	return ControlAnswer{Content: DenyResponse(input.RequestID, decision.GetFeedback())}, nil
+}
+
+// controlRequestField returns one field of payload.request, the request
+// shape that Claude Code's control protocol defined and the neutral answers
+// echo. Each field reads alone, so a sibling of the wrong type never hides it.
+func controlRequestField(payload []byte, name string) json.RawMessage {
+	var envelope map[string]json.RawMessage
+	var request map[string]json.RawMessage
+	if json.Unmarshal(payload, &envelope) != nil || json.Unmarshal(envelope["request"], &request) != nil {
+		return nil
+	}
+	return request[name]
+}
+
+// ControlToolName returns payload.request.tool_name, or "" when it is
+// absent or not a string.
+func ControlToolName(payload []byte) string {
+	return controlRequestString(payload, "tool_name")
+}
+
+// ControlToolUseID returns payload.request.tool_use_id, or "" when it is
+// absent or not a string.
+func ControlToolUseID(payload []byte) string {
+	return controlRequestString(payload, "tool_use_id")
+}
+
+// controlRequestString returns one text field of payload.request, or "" when
+// it is absent or not a string.
+func controlRequestString(payload []byte, name string) string {
+	var value string
+	if json.Unmarshal(controlRequestField(payload, name), &value) != nil {
+		return ""
+	}
+	return value
+}
+
+// ControlToolInput returns payload.request.input as a JSON object, or {}
+// when the request states none or states a value that is not an object.
+func ControlToolInput(payload []byte) json.RawMessage {
+	input := controlRequestField(payload, "input")
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) != nil || fields == nil {
+		return json.RawMessage("{}")
+	}
+	return input
+}
+
+// ControlResponseEnvelope wraps response in the control_response envelope
+// that every neutral answer travels in.
+func ControlResponseEnvelope(requestID string, response any) []byte {
+	encoded, err := json.Marshal(map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": requestID,
+			"response":   response,
+		},
+	})
+	if err != nil {
+		panic(fmt.Sprintf("agent: encode a control response: %v", err))
+	}
+	return encoded
+}
+
+// AllowResponse is the neutral allow, with the input that the call runs with.
+func AllowResponse(requestID string, updatedInput json.RawMessage) []byte {
+	return ControlResponseEnvelope(requestID, map[string]any{
+		"behavior":     contracts.ControlAnswerBehaviorAllow,
+		"updatedInput": updatedInput,
+	})
+}
+
+// DenyResponse is the neutral deny. An empty message states
+// contracts.ControlAnswerMessageRejectedByUser, because Claude Code turns a deny into an error
+// tool result, and the Anthropic API refuses an empty one.
+func DenyResponse(requestID, message string) []byte {
+	if message == "" {
+		message = contracts.ControlAnswerMessageRejectedByUser
+	}
+	return ControlResponseEnvelope(requestID, map[string]any{
+		"behavior": contracts.ControlAnswerBehaviorDeny,
+		"message":  message,
+	})
+}
+
+// JSONRPCResult is a JSON-RPC result that answers the stored request
+// requestID. The id stays the Worker's own key of the request, as a string:
+// ResolveControlResponse restores the runtime's id from the stored request.
+func JSONRPCResult(requestID string, result any) []byte {
+	return mustJSON(map[string]any{"jsonrpc": "2.0", "id": requestID, "result": result})
+}
+
+// SelectedOptionResult is the Agent Client Protocol answer that selects one
+// permission option. The OpenCode protocol shares it.
+func SelectedOptionResult(requestID, optionID string) []byte {
+	return JSONRPCResult(requestID, map[string]any{
+		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
+	})
+}
+
+// WithControlChoice adds the id of one offered choice beside the behavior of
+// a neutral answer. See ControlBehaviorEnvelope.Choice.
+func WithControlChoice(content []byte, choice string) []byte {
+	var envelope map[string]json.RawMessage
+	var outer map[string]json.RawMessage
+	var inner map[string]json.RawMessage
+	if json.Unmarshal(content, &envelope) != nil ||
+		json.Unmarshal(envelope["response"], &outer) != nil ||
+		json.Unmarshal(outer["response"], &inner) != nil || inner == nil {
+		panic("agent: WithControlChoice needs a neutral answer")
+	}
+	inner["choice"] = mustJSON(choice)
+	outer["response"] = mustJSON(inner)
+	envelope["response"] = mustJSON(outer)
+	return mustJSON(envelope)
+}
+
+func mustJSON(v any) json.RawMessage {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("agent: encode JSON: %v", err))
+	}
+	return encoded
+}

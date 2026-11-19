@@ -1459,12 +1459,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
         agentId={agentId()}
         actionStateStore={opts.agentComposerActionStates}
         {...editorOptionalProps()}
-        {...optionalProp('messageContext', messageContext(focusedAgentTab()?.workerId ?? '', agentId()))}
         queueClientId={opts.clientId()}
         repoGitStore={repoGitStore}
         onSendMessage={queueOps.sendMessage}
         onRetryPendingSend={queueOps.retryPendingMessage}
-        onSendControlFeedback={queueOps.sendControlFeedback}
         onBeginQueueEdit={queueOps.beginQueueEdit}
         onUpdateQueueItem={queueOps.updateQueueItem}
         onCancelQueueEdit={queueOps.cancelQueueEdit}
@@ -1479,7 +1477,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
-        onControlResponse={agentOps.handleControlResponse}
+        onControlAnswer={agentOps.handleControlAnswer}
         onQuestionsOpenChange={open => controlStore.setQuestionsOpen(agentId(), open)}
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}

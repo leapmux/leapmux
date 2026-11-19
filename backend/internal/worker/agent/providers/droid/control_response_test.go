@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // permissionRequestPayload is the control request that onRequestPermission
@@ -51,8 +52,8 @@ func colorAndSizeQuestions() []map[string]any {
 	}
 }
 
-// decision is the browser's neutral control response around the fields of one
-// decision.
+// decision is the neutral control response around the fields of one decision,
+// as AnswerControlRequest builds it.
 func decision(t *testing.T, requestID string, fields map[string]any) []byte {
 	t.Helper()
 	content, err := json.Marshal(map[string]any{
@@ -62,13 +63,10 @@ func decision(t *testing.T, requestID string, fields map[string]any) []byte {
 	return content
 }
 
-// resolve runs the provider's resolution for one stored request and one decision.
+// resolve resolves one decision to one stored request, as the Worker does. A
+// test builds the decision as content, so it carries no plan settings.
 func resolve(requestPayload, content []byte) agent.ControlResponseResolution {
-	return droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-request",
-		RequestPayload:  requestPayload,
-		ResponseContent: content,
-	})
+	return agenttest.ResolveAnswer(droidProvider{}, requestPayload, droidTestRequestID, agent.ControlAnswer{Content: content})
 }
 
 // replyResult reads the id and the `result` of the JSON-RPC response that a
@@ -249,11 +247,11 @@ func TestResolveControlResponseSendsAQuestionRefusalReasonAsFeedback(t *testing.
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, resolution.FollowUp.Kind)
 }
 
-// The browser fills the reason of a bare rejection with a placeholder. That is
+// DenyResponse fills the reason of a bare rejection with a placeholder. That is
 // no reason, so it must not reach the model as the user's words.
 func TestResolveControlResponseSendsNoFeedbackForABareRejection(t *testing.T) {
 	t.Parallel()
-	for _, message := range []string{agent.ControlRejectedByUserMessage, "", "   "} {
+	for _, message := range []string{contracts.ControlAnswerMessageRejectedByUser, "", "   "} {
 		permission := resolve(permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit, contracts.DroidPermissionOptionCancel),
 			decision(t, "droid-perm-1", map[string]any{"behavior": "deny", "message": message}))
 		_, result := replyResult(t, permission)
@@ -281,7 +279,7 @@ func TestResolveControlResponseSendsNoFeedbackForAnApproval(t *testing.T) {
 
 // Droid identifies each answer by the `index` of its question. The reply lists
 // the answers in Droid's own question order, with Droid's own numbers and
-// question words, whatever order the browser lists them in.
+// question words, whatever order the answer lists them in.
 func TestResolveControlResponseAnswersEachQuestionByItsNativeIndex(t *testing.T) {
 	t.Parallel()
 	resolution := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...), decision(t, "droid-ask-1", map[string]any{

@@ -212,7 +212,7 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	byWorker, agentIDs := groupWaitTargets(targets)
+	byWorker, agentIDs := groupAgentsByWorker(targets)
 	spec.agentIDs = agentIDs
 
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -329,12 +329,6 @@ func waitTimeoutFlag(inv *cli.Invocation) (time.Duration, error) {
 	return timeout, nil
 }
 
-// waitTargets are the agents of one Worker that a wait watches.
-type waitTargets struct {
-	workerID string
-	agentIDs []string
-}
-
 // resolveWaitTargets resolves each agent input, in order. A wait on the
 // calling agent is refused: its own turn runs the wait, so the agent cannot
 // settle while the wait runs.
@@ -353,27 +347,6 @@ func resolveWaitTargets(s *session, inputs []string) ([]tabTarget, error) {
 		targets = append(targets, got)
 	}
 	return targets, nil
-}
-
-// groupWaitTargets groups the agents by Worker, in the order of the first
-// agent of each, and lists the agents in the order of the arguments. An
-// agent that two arguments give counts once, at its first place.
-func groupWaitTargets(targets []tabTarget) (groups []waitTargets, agentIDs []string) {
-	seen := map[string]bool{}
-	for _, t := range targets {
-		if seen[t.ID] {
-			continue
-		}
-		seen[t.ID] = true
-		agentIDs = append(agentIDs, t.ID)
-		i := slices.IndexFunc(groups, func(g waitTargets) bool { return g.workerID == t.WorkerID })
-		if i < 0 {
-			groups = append(groups, waitTargets{workerID: t.WorkerID})
-			i = len(groups) - 1
-		}
-		groups[i].agentIDs = append(groups[i].agentIDs, t.ID)
-	}
-	return groups, agentIDs
 }
 
 // refuseSelfWait refuses a wait on the calling agent.

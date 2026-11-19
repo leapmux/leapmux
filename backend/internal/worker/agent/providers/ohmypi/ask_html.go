@@ -80,7 +80,7 @@ func askOneLine(value string) string {
 
 // askHTMLLabelText interprets the label string needed to match the native RPC
 // dialog. The unchanged markup, rather than presentation derived here, reaches
-// the browser for descriptions and previews.
+// the control prompt reader (readChoiceMarkup) for descriptions and previews.
 func askHTMLLabelText(node *html.Node) string {
 	return askOneLine(askHTMLSpansText(node))
 }

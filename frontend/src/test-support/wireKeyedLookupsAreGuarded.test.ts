@@ -31,7 +31,7 @@ import { collectFiles, frontendRoot, posixRelative } from '~/test-support/source
 // THE THREE SAFE FORMS, all of which this guard leaves alone. Each is correct, each
 // says so at its own table, and the rule pushes toward none of them in particular:
 //
-//   - `Object.hasOwn(TABLE, key)` before the read (copilot's `permissionOptions`,
+//   - `Object.hasOwn(TABLE, key)` before the read (copilot's `controlResponse`,
 //     kilo's `toolKinds`). The guard accepts a read whose enclosing function holds one
 //     for the SAME table.
 //   - A `ReadonlyMap` with `.get(key) ?? fallback` (claude, pi and zcode's tool kinds).
@@ -84,11 +84,9 @@ const KNOWN_STRING_KEYED_TABLES = [
   'AGENT_TYPES',
   'CLAUDE_CONTENT_CLASSIFIERS',
   'CLAUDE_NOTIFICATION_CLASSIFIERS',
-  'CODEX_APPROVAL_TITLES',
   'CODEX_ITEM_CLASSIFIERS',
   'CODEX_STATUS_ITEM_TITLES',
   'COPILOT_TOOL_KINDS',
-  'DECISION_KINDS',
   'DECISION_OPTION_IDS',
   'GOAL_TRANSITION_VERBS',
   'KILO_TOOL_KINDS',
@@ -312,7 +310,7 @@ describe('a wire-keyed lookup is guarded', () => {
 
   // The guard must belong to the table that is read. `Object.hasOwn` on a SIBLING table
   // proves nothing about this one, and two tables beside each other is the exact shape
-  // `permissionOptions` holds.
+  // copilot's `controlResponse` holds.
   it('reads an index whose only guard tests another table', () => {
     expect(offencesOf(
       'const T: Record<string, string> = { a: \'1\' }\n'

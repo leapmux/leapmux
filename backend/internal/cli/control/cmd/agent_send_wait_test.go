@@ -425,7 +425,7 @@ func TestAgentReplyEnded(t *testing.T) {
 		outcome replyWaitOutcome
 		notice  string
 	}{
-		"waiting":          {agentReplyResult{ID: "a-1", Message: messageDelivered, State: "waiting_for_user"}, replyWaitWaiting, "agent a-1 waits for an answer to a permission prompt; answer it in the agent's tab\n"},
+		"waiting":          {agentReplyResult{ID: "a-1", Message: messageDelivered, State: "waiting_for_user"}, replyWaitWaiting, "agent a-1 waits for an answer to a permission prompt; list it with \"leapmux control agent requests a-1\"\n"},
 		"timeout, queued":  {agentReplyResult{ID: "a-1", Message: messageQueued, State: "working"}, replyWaitTimedOut, "the wait ended after 2m0s; the message is still in the input queue of agent a-1\n"},
 		"timeout, working": {agentReplyResult{ID: "a-1", Message: messageDelivered, State: "working"}, replyWaitTimedOut, "the wait ended after 2m0s; agent a-1 is still working on the message\n"},
 	} {

@@ -9,9 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/id"
-
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"

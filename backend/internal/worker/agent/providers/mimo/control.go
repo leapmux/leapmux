@@ -38,8 +38,9 @@ import (
 // The shared request header supplies the tool name and native part ID.
 // Plan approval also carries the text from the plan file.
 //
-// ResolveControlResponse checks the browser answer. SendRawInput sends it to MiMo.
-// The answer keeps the browser's shape because the persisted answer row uses that shape.
+// ResolveControlResponse checks the answer that AnswerControlRequest built.
+// SendRawInput sends it to MiMo. The answer keeps that shape because the
+// persisted answer row uses that shape.
 // parseElicitationAnswer converts the shared MCP action to MiMo's native answer.
 //
 // An interactive command is refused at once, and nothing about it is stored:
@@ -84,8 +85,8 @@ type mimoControl struct {
 }
 
 // mimoControlHeader is the shared request header of a stored payload. The
-// service reads the tool name to classify a plan approval, and the browser's
-// shared controls read the tool call.
+// service reads the tool name to classify a plan approval, and
+// ReadControlRequest reads it to tell the plan approval from a question.
 type mimoControlHeader struct {
 	ToolName  string          `json:"tool_name"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
@@ -120,7 +121,8 @@ type mimoQuestionAsked struct {
 
 // mimoQuestionKeyPlanExit is the `key` of the one question that the plan
 // agent's `plan_exit` tool asks. Only the worker reads it: it records the
-// request under the plan tool's name, and the browser dispatches on that name.
+// request under the plan tool's name, and ReadControlRequest dispatches on
+// that name.
 const mimoQuestionKeyPlanExit = "plan_exit"
 
 // planPath returns the path that a plan approval specifies.
@@ -551,14 +553,15 @@ func (a *Agent) rejectQuestionLater(questionID string) {
 	}()
 }
 
-// mimoAnswer is one browser answer, read into what MiMo takes.
+// mimoAnswer is one answer that AnswerControlRequest built, read into what
+// MiMo takes.
 type mimoAnswer struct {
 	requestID  string
 	permission mimoPermissionReplyBody
 	answers    [][]string
 	reject     bool
-	// elicitation marks answers that the browser's elicitation form wrote as an
-	// MCP action. Only a question that offers MiMo's word for that action can take
+	// elicitation marks answers that state an MCP action in the shared
+	// elicitation envelope (agent.AnswerElicitation). Only a question that offers MiMo's word for that action can take
 	// them (see answerFitsRequest).
 	elicitation bool
 }
@@ -579,8 +582,8 @@ const (
 	elicitationAnswerCancel  = "Cancel"
 )
 
-// mimoJSONRPCAnswer is the answer envelope a browser control writes for a
-// question or a chosen permission option. The two answer fields come from the
+// mimoJSONRPCAnswer is the answer envelope that AnswerControlRequest writes for
+// a question or a chosen permission option. The two answer fields come from the
 // OpenCode contract; TestMiMoAnswerTagsMatchTheContract pins the tags.
 type mimoJSONRPCAnswer struct {
 	Result struct {
@@ -593,7 +596,7 @@ type mimoJSONRPCAnswer struct {
 	} `json:"result"`
 }
 
-// readControlAnswer reads one browser answer to a stored request of kind, and
+// readControlAnswer reads one answer to a stored request of kind, and
 // checks it against that request. Both the answer check and the reply read here,
 // so the two cannot accept different answers. Its error is the reason the reader
 // sees for the refusal.
@@ -668,7 +671,7 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 	return mimoAnswer{requestID: requestID, answers: [][]string{{word}}, elicitation: true}, true, nil
 }
 
-// parseControlAnswer reads one browser answer to a request of kind.
+// parseControlAnswer reads one answer to a request of kind.
 //
 // Three envelopes reach here. The shared allow/deny envelope answers a
 // permission and a plan approval, and a deny answers a question as a rejection.
@@ -679,17 +682,17 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(content); ok && requestID != "" && behavior != "" {
 		answer := mimoAnswer{requestID: requestID}
 		switch {
-		case behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny:
+		case behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny:
 			return mimoAnswer{}, errors.New(agent.RefusalNoDecision)
-		case kind == controlPermission && behavior == agent.ControlBehaviorAllow:
+		case kind == controlPermission && behavior == contracts.ControlAnswerBehaviorAllow:
 			answer.permission = mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyOnce}
 		case kind == controlPermission:
 			answer.permission = mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject, Message: message}
-		case kind == controlPlan && behavior == agent.ControlBehaviorAllow:
+		case kind == controlPlan && behavior == contracts.ControlAnswerBehaviorAllow:
 			answer.answers = [][]string{{planAnswerYes}}
 		case kind == controlPlan:
 			answer.answers = [][]string{{planFeedback(message)}}
-		case behavior == agent.ControlBehaviorDeny:
+		case behavior == contracts.ControlAnswerBehaviorDeny:
 			answer.reject = true
 		default:
 			return mimoAnswer{}, errors.New("an allow does not answer a question")

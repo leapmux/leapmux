@@ -36,7 +36,7 @@ import (
 //
 // The worker keys every request by the hub's own id: the approval id, or the
 // capability request id. The stored request payload is Cline's own event
-// envelope, which the browser reads.
+// envelope, which ReadControlRequest reads into the prompt.
 
 // safeAutoApproveTools are the tools that Plan and Act approve at once. They are
 // the tools that Cline's interactive CLI approves by itself when its
@@ -287,8 +287,8 @@ func (a *Agent) withdrawAllControls() {
 var errUnknownControl = errors.New("the Cline request no longer waits for an answer")
 
 // SendRawInput delivers a control answer. The answer is the native reply that
-// the provider's ResolveControlResponse built from the browser's decision:
-// an approval reply or a capability reply.
+// the provider's ResolveControlResponse built from the neutral answer of
+// AnswerControlRequest: an approval reply or a capability reply.
 func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if a.IsStopped() {
 		return errAgentStopped
@@ -424,8 +424,8 @@ func (a *Agent) sendInBackground(send func() error) {
 
 // Control answers.
 //
-// The browser sends the neutral approve/reject envelope that every control
-// surface produces, and for a question the answer beside it. The resolution
+// AnswerControlRequest builds the neutral approve/reject envelope, and for a
+// question the answer beside it. The resolution
 // turns that into Cline's own reply -- an approval.respond or a
 // capability.respond payload -- which the service stores and SendRawInput
 // sends. It is pure: the running agent sends the reply.
@@ -446,7 +446,7 @@ const declinedToolReason = contracts.ClineDeclineReasonTool
 // words of their own.
 const declinedQuestionError = contracts.ClineDeclineReasonQuestion
 
-// resolveControlResponse turns the browser's answer into Cline's reply.
+// resolveControlResponse turns the neutral answer into Cline's reply.
 //
 // A withheld answer states one of the shared reasons for the reader. Several
 // causes share a reason, so the worker log states the cause as well.
@@ -465,13 +465,13 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 		return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored request does not decode: %v", err))
 	}
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return withhold(agent.RefusalNoDecision, "the answer states neither allow nor deny")
 	}
 	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
 		return withhold(agent.RefusalOtherRequest, fmt.Sprintf("the answer is for request %s, and the stored request is %s", requestID, ctx.RequestID))
 	}
-	allow := behavior == agent.ControlBehaviorAllow
+	allow := behavior == contracts.ControlAnswerBehaviorAllow
 
 	var native any
 	switch request.Event {
@@ -556,7 +556,7 @@ func planExitMode(picked string) string {
 	return contracts.ClinePermissionModeAct
 }
 
-// innerResponse returns the inner response object of the browser's envelope,
+// innerResponse returns the inner response object of the neutral envelope,
 // or an empty object.
 func innerResponse(content []byte) json.RawMessage {
 	var envelope struct {
@@ -570,8 +570,8 @@ func innerResponse(content []byte) json.RawMessage {
 	return envelope.Response.Response
 }
 
-// questionAnswer reads the answer to a question from the browser's inner
-// response, and reports whether it states one.
+// questionAnswer reads the answer to a question from the inner response of
+// the neutral envelope, and reports whether it states one.
 func questionAnswer(content []byte) (string, bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(innerResponse(content), &fields) != nil {

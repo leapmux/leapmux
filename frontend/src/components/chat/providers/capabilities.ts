@@ -1,7 +1,8 @@
 // The provider plugin's capabilities, grouped by the reader that asks for them.
 //
 // A plugin groups its hooks into four capabilities.
-// The transcript reader uses `transcript`. The control banner uses `controls`.
+// The transcript reader uses `transcript`. The control-response row and the
+// permission presets use `controls`.
 // The connection uses `session`. Agent settings use `configuration`.
 // Each reader uses the capability that owns its work.
 // A single interface of optional hooks let each reader access unrelated hooks.
@@ -12,27 +13,19 @@
 // Their members remain optional only where the protocol supplies no value.
 // A provider without a control channel omits `controls`.
 
-import type { Component } from 'solid-js'
-import type { DialogResponder } from '../controls/DialogRequestControl'
-import type { SendPermissionOption } from '../controls/PermissionDecisionActions'
-import type { ActionsProps, ControlAnswerState, ControlResponseSender } from '../controls/types'
 import type { MessageCategory } from '../messageClassifier'
 import type { AssistantTextSegment } from '../model/assistantText'
-import type { ControlPrompt } from '../model/controlPrompt'
 import type { TurnEnd } from '../model/divider'
 import type { CompactionDetails, NotificationEntry } from '../model/notification'
-import type { ControlQuestion } from '../model/question'
 import type { ChatRow } from '../model/row'
 import type { ToolCall } from '../model/toolCall'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
 import type { ResolvedMessageContent, RowExtractionInput } from '../rowExtractionTypes'
-import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import type { ContextUsageInfo, RateLimitUpdate } from '~/models/agentSession'
-import type { ControlRequest } from '~/stores/control.store'
 
 export interface AttachmentCapabilities {
   text: boolean
@@ -54,30 +47,6 @@ export interface StartupOptionGroup {
   readonly defaultValue: string
   readonly readOnlyReason: string
   readonly options: readonly StartupOption[]
-}
-
-export interface ProviderAskUserQuestion {
-  isRequest: (payload: Record<string, unknown>) => boolean
-  extractQuestions: (payload: Record<string, unknown>, source?: ParsedMessageContent) => ControlQuestion[]
-  /**
-   * Answers ONE request instance.
-   *
-   * The request travels whole, rather than as an agent id, a request id and a
-   * payload in three separate argument positions. Those three belong to one
-   * instance, and a caller that sourced them separately could pair values from
-   * two -- which is the exact pairing the worker's idempotency claim keys on.
-   */
-  sendAnswer: (
-    request: ControlRequest,
-    sendControlResponse: ControlResponseSender,
-    questions: ControlQuestion[],
-    answerState: ControlAnswerState,
-  ) => Promise<void>
-  sendReject: (
-    request: ControlRequest,
-    sendControlResponse: ControlResponseSender,
-    message: string,
-  ) => Promise<void>
 }
 
 /**
@@ -117,22 +86,6 @@ export interface ClassificationContext {
    * can. A child transcript has no subagent of its own to prompt.
    */
   isChildTranscript?: boolean
-}
-
-/**
- * What {@link ProviderControlCapability.extractControl} answers: every control
- * shape but a question.
- *
- * A question takes its own path -- `askUserQuestion.isRequest` recognizes it and the
- * control surface asks that first -- so a reader that answered one here handed back a
- * value the caller dropped. Naming the type is what keeps that copy from returning.
- */
-export type ExtractedControlRequest = Exclude<ControlPrompt, { kind: 'question' }>
-
-export interface ControlExtractionInput {
-  payload: Record<string, unknown>
-  source?: ParsedMessageContent
-  request?: ParsedMessageContent
 }
 
 /**
@@ -247,56 +200,15 @@ export interface ProviderTranscriptCapability {
 }
 
 /**
- * Answering the requests a provider's agent makes of the reader: permissions,
- * plans, questions, elicitation, and the responses those leave behind.
+ * The control facts that a provider states in the browser: how a recorded answer
+ * reads, and the presets of its permission actions.
+ *
+ * Nothing here reads a control request or builds an answer. The Worker does both
+ * (`Provider.ReadControlRequest` and `Provider.AnswerControlRequest` in Go): the
+ * browser draws the neutral prompt that the Worker sends, and sends back a neutral
+ * decision.
  */
 export interface ProviderControlCapability {
-  /**
-   * Read one control request into the shared control model.
-   *
-   * The ONE reader of a provider's control payload. The banner switches over the model
-   * and draws it; `buildControlResponse` and `askUserQuestion` answer it. Before this
-   * hook every provider shipped its own `ControlContent` and `ControlActions`
-   * components, and the five shared bodies they all dispatched to drifted apart in
-   * which fields each provider bothered to pass.
-   *
-   * Returns null for a payload the provider does not recognize, which the caller
-   * draws as the generic permission row -- the same answer an unnamed tool takes in
-   * the transcript.
-   *
-   * A QUESTION is not one of the shapes this answers. `askUserQuestion.isRequest` is
-   * the one recognizer, and the control surface asks it first -- so every provider
-   * that also recognized one here was a second, weaker copy of that test, and the
-   * caller threw the answer away. The return type states it, so the copy cannot
-   * come back.
-   */
-  extractControl?: (input: ControlExtractionInput) => ExtractedControlRequest | null
-
-  /**
-   * The tool call one control request is about, as a span id, or "" for a request
-   * that identifies none.
-   *
-   * The Agent Client Protocol family states its permission's tool call in a compact
-   * form and keeps the ARGUMENTS on that call's own row, so the banner has to load
-   * that row. The path to the id is the provider's own wire shape, which is why the
-   * plugin answers it rather than the loader.
-   */
-  controlToolSpanId?: (payload: Record<string, unknown>) => string
-
-  /** Complete support for the shared question UI. */
-  askUserQuestion?: ProviderAskUserQuestion
-
-  /**
-   * True when an AskUserQuestion option selection and the free-text note
-   * coexist (the agent accepts both), so picking an option does NOT clear the
-   * custom text and vice versa. Omit (mutually exclusive) for providers where
-   * an answer and a note are alternatives. Codex preserves both.
-   */
-  preservesSelectionNotes?: boolean
-
-  /** Extract a native MCP input request for the shared form. */
-  elicitation?: (payload: Record<string, unknown>, source?: ParsedMessageContent) => ElicitationRequest | undefined
-
   /**
    * Derive the human-facing display for a persisted control-response row
    * (`{isSynthetic, controlResponse:{provider, requestId, request, response}}` -- see
@@ -312,65 +224,6 @@ export interface ProviderControlCapability {
    * envelope, else the generic "Responded" label).
    */
   controlResponseDisplay?: ControlResponseDeriver
-
-  /**
-   * Build the wire-format control-response object for a *non-AskUserQuestion*
-   * control request. The shared layer serializes the result and ships it.
-   *
-   * Receives the editor `content` (empty when the user hit Send with no
-   * input), the original `payload`, and the `requestId`. Each provider
-   * selects the native response shape and its decision or feedback fields.
-   * LeapMux settings travel separately through ControlResponseOptions.
-   *
-   * ACP-based providers get `acpBuildControlResponse` from
-   * `providers/acp/controlResponse` through `registerACPProvider`.
-   */
-  buildControlResponse?: (
-    payload: Record<string, unknown>,
-    content: string,
-    requestId: string,
-  ) => unknown
-
-  /** Reports whether typed feedback needs a separate user message. */
-  controlFeedbackAsFollowUpMessage?: (payload: Record<string, unknown>) => boolean
-
-  /** Select the shared editor's purpose when the request uses native controls. */
-  controlEditorPurpose?: (payload: Record<string, unknown>) => 'answer' | 'feedback' | 'none'
-
-  /**
-   * The actions for a request this provider answers ITSELF, or undefined to let
-   * the shared switch answer it from {@link extractControl}'s model.
-   *
-   * Three providers answer some request of their own. Codex states its decisions
-   * as WORDS that vary per request, and one of them carries a policy amendment as
-   * an object rather than an id. Pi's plan menu answers with its own action words
-   * and a fresh-context choice. Cursor's create-plan sends a plan verdict that its
-   * own worker transforms. Everything else answers through the shared plan,
-   * permission and dialog rows, so it states nothing here.
-   *
-   * It takes the PAYLOAD because the answer is per-request, not per-provider:
-   * Cursor answers its create-plan itself and lets the shared row answer every
-   * Agent Client Protocol permission beside it.
-   */
-  controlActionsFor?: (payload: Record<string, unknown>) => Component<ActionsProps> | undefined
-
-  /**
-   * How this provider sends ONE chosen permission option.
-   *
-   * A provider whose `extractControl` states a non-empty option list must state
-   * this beside it: the reader picks one of the runtime's own answers, and the id
-   * travels back in that runtime's own envelope.
-   */
-  sendPermissionOption?: SendPermissionOption
-
-  /**
-   * How this provider answers an extension dialog, in its own envelopes.
-   *
-   * A provider whose `extractControl` returns a `dialog` must state this beside it:
-   * the shared dialog actions send the reader's confirm, text or dismissal through
-   * it.
-   */
-  dialogResponder?: DialogResponder
 
   /** Provider-native presets for standard permission actions. */
   permissionPresets?: ProviderPermissionPresets

@@ -54,7 +54,7 @@ func TestAToolApprovalIsPublishedWithItsCall(t *testing.T) {
 	controls := r.sink.PublishedControls()
 	require.Len(t, controls, 1)
 	assert.Equal(t, "158b2ba5001bfb93", controls[0].RequestID)
-	assert.JSONEq(t, frameApprovalDialog, string(controls[0].Payload), "the whole dialog reaches the browser")
+	assert.JSONEq(t, frameApprovalDialog, string(controls[0].Payload), "the whole dialog is the published request, which ReadControlRequest reads")
 	assert.Equal(t, int64(1), controls[0].SourceSeq, "the request points at the row of the call it asks about")
 }
 
@@ -465,7 +465,7 @@ func TestSendRawInputPassesADialogAnswerThrough(t *testing.T) {
 	require.NoError(t, r.agent.SendRawInput([]byte(answer), agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
-	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the browser's answer unchanged")
+	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the answer unchanged")
 }
 
 func TestFailedDialogAnswerKeepsTheRequest(t *testing.T) {

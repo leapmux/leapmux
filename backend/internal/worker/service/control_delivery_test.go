@@ -38,14 +38,14 @@ func TestControlResponseRecordsDeliveryBeforeItsRecoveryRead(t *testing.T) {
 	})
 	sends := 0
 	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
-	request := &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", ClaimToken: "claim", Content: []byte(`{"id":"request","result":{"decision":"accept"}}`)}
-	require.Error(t, svc.processControlResponse(row, request))
+	answer := workerAnswer{claimToken: "claim", content: []byte(`{"id":"request","result":{"decision":"accept"}}`)}
+	require.Error(t, svc.processControlAnswer(row, answer))
 	require.Equal(t, 1, sends, "a recovery read must not strand a known-unsent reservation")
 	svc.Queries = db.New(svc.DB)
-	answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "request", ClaimToken: "claim"})
+	stored, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "request", ClaimToken: "claim"})
 	require.NoError(t, err)
-	require.Equal(t, storedStateDelivered, answer.State)
-	require.NoError(t, svc.processControlResponse(row, request))
+	require.Equal(t, storedStateDelivered, stored.State)
+	require.NoError(t, svc.processControlAnswer(row, answer))
 	require.Equal(t, 1, sends)
 }
 

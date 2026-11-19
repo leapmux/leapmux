@@ -78,7 +78,7 @@ func cursorPlanCancelAnswer() any {
 	return map[string]any{"outcome": map[string]any{"outcome": cursorPlanOutcomeRejected}}
 }
 
-// transformCursorControlResponse rewrites the frontend's neutral approve/reject envelope for a
+// transformCursorControlResponse rewrites the neutral approve/reject envelope for a
 // Cursor create-plan control request into the ACP outcome Cursor expects on its stdin, returning
 // ok=false (and the caller forwards the response unchanged) when the bytes aren't a create-plan
 // decision that matches the stored request id.
@@ -110,10 +110,10 @@ func transformCursorControlResponse(ctx agent.ControlResponseContext) ([]byte, b
 	outcome := cursorPlanOutcomeAccepted
 	reason := ""
 	switch behavior {
-	case agent.ControlBehaviorAllow:
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorAllow:
+	case contracts.ControlAnswerBehaviorDeny:
 		outcome = cursorPlanOutcomeRejected
-		// message is already trimmed and the ControlRejectedByUserMessage placeholder collapsed
+		// message is already trimmed and the contracts.ControlAnswerMessageRejectedByUser placeholder collapsed
 		// to "" by DecodeControlBehavior, so a bare rejection carries no reason.
 		reason = message
 	default:

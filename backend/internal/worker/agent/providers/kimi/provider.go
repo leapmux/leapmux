@@ -4,9 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/leapmux/leapmux/internal/util/optionmap"
-
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -76,7 +75,7 @@ func (kimiProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) strin
 	return ""
 }
 
-// ResolveControlResponse turns the browser's decision into the server's own
+// ResolveControlResponse turns the neutral answer into the server's own
 // answer body. See control_response.go.
 func (kimiProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	if result, ok := providerkit.ResolveWorkspaceTrustResponse(ctx); ok {

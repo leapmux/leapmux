@@ -3,10 +3,9 @@ import type { PlanChoice } from '../model/controlPrompt'
 import type { ControlDecisionAction } from './ControlDecisionFooter'
 import type { ActionsProps } from './types'
 
-import { buildAllowResponse, buildDenyResponse, getToolInput, withControlChoice } from '~/utils/controlResponse'
+import { approvePlanDecision, planChoiceDecision } from './controlDecision'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 import { createPlanApprovalState, planApprovalSwitches } from './planApproval'
-import { sendResponse } from './types'
 
 export const ExitPlanModeActions: Component<ActionsProps & {
   /**
@@ -16,41 +15,29 @@ export const ExitPlanModeActions: Component<ActionsProps & {
   choices?: readonly PlanChoice[] | undefined
 }> = (props) => {
   const planApproval = createPlanApprovalState(props)
-  const planApprovalSettings = () => ({
-    planApproval: {
-      permissionMode: planApproval.permissionMode() ?? '',
-      clearContext: planApproval.clearContext(),
-    },
+  const approval = () => ({
+    permissionMode: planApproval.permissionMode() ?? '',
+    clearContext: planApproval.clearContext(),
   })
 
   const handleReject = () => {
-    // The send handler uses the editor text as rejection feedback.
+    // The composer sends the refusal, with the editor text as what to change.
     props.onTriggerSend()
   }
 
-  const handleApprove = () => sendResponse(
-    props.onRespond,
-    buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)),
-    planApprovalSettings(),
-  )
+  const handleApprove = () => props.onDecide(approvePlanDecision(approval()))
 
   // An approving choice carries the same plan settings as Approve, because it approves
-  // the same plan. A refusing one carries none: the service refuses plan settings on
+  // the same plan. Any other choice carries none: the Worker refuses plan settings on
   // anything but an approval.
   const choiceActions = (): ControlDecisionAction[] => (props.choices ?? []).map((choice, index) => ({
     label: choice.label,
     testId: `plan-choice-${index}`,
-    destructive: !choice.approves,
+    destructive: choice.effect === 'refuse',
     ...(choice.description
       ? { description: choice.description }
       : {}),
-    onSelect: () => choice.approves
-      ? sendResponse(
-          props.onRespond,
-          withControlChoice(buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)), choice.id),
-          planApprovalSettings(),
-        )
-      : sendResponse(props.onRespond, withControlChoice(buildDenyResponse(props.request.requestId), choice.id)),
+    onSelect: () => props.onDecide(planChoiceDecision(choice, approval())),
   }))
 
   return (

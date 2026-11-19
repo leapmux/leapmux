@@ -125,8 +125,8 @@ type assistantMessage struct {
 }
 
 // canUseToolAnswer is the object the Qoder control_response carries for a
-// can_use_tool decision. The browser sends the neutral behavior envelope; the
-// worker translates it here.
+// can_use_tool decision. AnswerControlRequest builds the neutral behavior
+// envelope; the worker translates it here.
 //
 // Qoder accepts an outcome or a behavior with its associated fields.
 // The native outcomes are:

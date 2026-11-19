@@ -74,11 +74,12 @@ func (mimoProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) strin
 	}
 }
 
-// ResolveControlResponse checks a browser answer against its stored request.
+// ResolveControlResponse checks an answer against its stored request.
 //
-// It changes no byte. The answer keeps the shape the browser wrote, because
-// the persisted answer row shows that shape and the browser labels it, and
-// SendRawInput reads the same shape when it sends the answer to MiMo. What this
+// It changes no byte. The answer keeps the shape that AnswerControlRequest
+// wrote, because the persisted answer row shows that shape and the browser
+// labels it, and SendRawInput reads the same shape when it sends the answer to
+// MiMo. What this
 // adds is the refusal: an answer that does not fit its request is withheld, so
 // MiMo keeps waiting and the user can answer again.
 func (mimoProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {

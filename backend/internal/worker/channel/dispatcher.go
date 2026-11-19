@@ -115,7 +115,7 @@ type Dispatcher struct {
 	cleanup *drain.Counter
 	// gate admits handlers while the worker is live and joins them, up to a
 	// limit, at shutdown. Every handler -- tracked or not -- counts: an untracked
-	// handler such as UpdateAgentSettings or SendControlResponse can reach
+	// handler such as UpdateAgentSettings or AnswerControl can reach
 	// the closed database, and the Cleanup wait in Shutdown ran once, so a
 	// later tracked Add was neither joined nor safe. CloseAdmission flips the gate, and the
 	// refusal of a closed gate states the shutdown instead of racing it.

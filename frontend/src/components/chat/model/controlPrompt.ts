@@ -2,6 +2,12 @@ import type { ControlQuestion } from './question'
 import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 
 /**
+ * Why the Worker could not read a control request's payload: the bytes are not JSON
+ * (`malformed`), or they are JSON but not an object (`not-an-object`).
+ */
+export type ControlPayloadFault = 'malformed' | 'not-an-object'
+
+/**
  * How far an always-allow reaches: this session, the workspace, the project, or
  * every project of the user.
  */
@@ -19,11 +25,11 @@ export interface PermissionOption {
   scope?: PermissionScope
 }
 
-export const KIND_ALLOW_ALWAYS = 'allow_always'
-export const KIND_REJECT_ONCE = 'reject_once'
-export const KIND_REJECT_ALWAYS = 'reject_always'
+export const KIND_ALLOW_ALWAYS = ACP_PERMISSION_KIND.AllowAlways
+export const KIND_REJECT_ONCE = ACP_PERMISSION_KIND.RejectOnce
+export const KIND_REJECT_ALWAYS = ACP_PERMISSION_KIND.RejectAlways
 
-export const CANONICAL_KINDS = [
+export const CANONICAL_KINDS: readonly string[] = [
   ACP_PERMISSION_KIND.AllowOnce,
   KIND_ALLOW_ALWAYS,
   KIND_REJECT_ONCE,
@@ -44,20 +50,26 @@ export interface PlanPermission {
 }
 
 /**
+ * What one plan choice does with the plan: the agent implements it (`approve`), keeps
+ * planning or leaves plan mode without it (`refuse`), or neither, such as saving the
+ * plan for later (`other`).
+ */
+export type PlanChoiceEffect = 'approve' | 'refuse' | 'other'
+
+/**
  * One answer a plan approval offers beside its plain Approve and Reject.
  *
  * A runtime can offer the reader more than a yes or a no to a plan: the approaches the
- * plan itself lists, a request for revisions, a refusal that also ends plan mode. Each
- * one approves or refuses the plan, and the answer carries its `id` back so the
- * provider can map it onto its own wire answer. The ids are the provider's own words.
+ * plan itself lists, a request for revisions, a refusal that also ends plan mode, or an
+ * extension's own action. The answer carries the `id` back, and the Worker's provider
+ * maps it onto the runtime's own answer. The ids are the provider's own words.
  */
 export interface PlanChoice {
   /** What the answer carries back, which the provider maps onto its own answer. */
   id: string
   label: string
   description?: string
-  /** True for a choice that approves the plan, false for one that refuses it. */
-  approves: boolean
+  effect: PlanChoiceEffect
 }
 
 /** Conditions use typed earlier answers; an absent answer never matches. */
@@ -83,7 +95,7 @@ export interface ElicitationRequest {
   url?: string
   arguments?: unknown
   argumentNotice?: string
-  acceptChoices?: { key: string, label: string, metadata?: Record<string, unknown> }[]
+  acceptChoices?: { key: string, label: string }[]
 }
 
 /**
@@ -167,11 +179,11 @@ export interface DialogPrompt {
  * What ONE control request asks, apart from how it is drawn.
  *
  * A CLOSED union, and the reason is the one every closed set in this model has: the
- * shared banner switches exhaustively over it, so a provider that returned a shape
- * no component knew would be a compile error rather than a blank banner. Each
- * provider maps its own payload onto one variant in its own plugin
- * (`Provider.extractControl`), so the banner holds no provider's wire format and no
- * `switch` on provider.
+ * shared banner switches exhaustively over it, so a shape that no component knew
+ * would be a compile error rather than a blank banner. The Worker's provider package
+ * reads its own payload into one variant (`Provider.ReadControlRequest` in Go), and
+ * `controlPromptFromWire` brings it here, so the browser holds no provider's wire
+ * format and no `switch` on provider.
  *
  * A `plan` carries the two optional lists the approval draws beside the plan, the
  * plan TEXT when its own request carries one, and the extra answers the runtime offers
@@ -181,8 +193,16 @@ export interface DialogPrompt {
  * pointing at a row the reader would have to find.
  */
 export type ControlPrompt
-  = | { kind: 'question', questions: ControlQuestion[] }
-    | { kind: 'elicitation', elicitation: ElicitationRequest }
-    | { kind: 'plan', text?: string, permissions?: readonly PlanPermission[], details?: readonly string[], choices?: readonly PlanChoice[] }
-    | { kind: 'permission', permission: PermissionPrompt }
-    | { kind: 'dialog', dialog: DialogPrompt }
+  = | {
+    kind: 'question'
+    questions: ControlQuestion[]
+    /**
+     * An option selection and a typed note coexist in one answer, instead of
+     * replacing each other.
+     */
+    preservesSelectionNotes?: boolean
+  }
+  | { kind: 'elicitation', elicitation: ElicitationRequest }
+  | { kind: 'plan', text?: string, permissions?: readonly PlanPermission[], details?: readonly string[], choices?: readonly PlanChoice[] }
+  | { kind: 'permission', permission: PermissionPrompt }
+  | { kind: 'dialog', dialog: DialogPrompt }

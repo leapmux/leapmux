@@ -1,11 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { qwenExtractControl } from '../../../src/components/chat/providers/qwen/extractControl'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration } from '../helpers/nativeWorkspaceTrustLimit'
 import { qwenTest } from '../qwen-fixtures'
 
 qwenTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
-  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-default', classify: qwenExtractControl })
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'permissionMode-default' })
 })
 
 /** The context file of the project. Qwen Code reads no file of this name unless its project settings give the name. */

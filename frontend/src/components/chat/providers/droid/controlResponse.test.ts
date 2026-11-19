@@ -1,7 +1,9 @@
+import type { ControlPrompt } from '../../model/controlPrompt'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { DroidConfirmationType, DroidPermissionOption } from '~/generated/contracts/droid-protocol'
 import { describe, expect, it } from 'vitest'
 import { DROID_CONFIRMATION_TYPE, DROID_PERMISSION_OPTION, DROID_TOOL } from '~/generated/contracts/droid-protocol'
+import { GENERIC_PERMISSION_PROMPT } from '~/test-support/controlRequests'
 import { resolveControlResponseSummary } from '../../persistedControlResponse'
 import { droidControls } from './pluginControls'
 
@@ -87,13 +89,25 @@ function questionRequest(questions: DroidQuestion[]): Record<string, unknown> {
   }
 }
 
-/** One saved row, as `parsePersistedControlResponse` gives it to the renderer. */
-function saved(request: Record<string, unknown> | undefined, response: Record<string, unknown>): PersistedControlResponse {
+/** One stored request: the native payload, and the prompt that the Worker read from it. */
+interface StoredRequest {
+  payload: Record<string, unknown>
+  prompt: ControlPrompt
+}
+
+/**
+ * One saved row, as `parsePersistedControlResponse` gives it to the renderer. An absent
+ * request leaves out both the native request and the prompt.
+ */
+function saved(request: StoredRequest | undefined, response: Record<string, unknown>): PersistedControlResponse {
   return {
     requestId: 'droid-request',
     claimToken: 'claim-1',
-    request,
+    request: request?.payload,
     response,
+    ...(request
+      ? { prompt: request.prompt }
+      : {}),
   }
 }
 
@@ -104,42 +118,74 @@ function display(cr: PersistedControlResponse) {
 
 const ALL_OPTIONS: readonly DroidPermissionOption[] = Object.values(DROID_PERMISSION_OPTION)
 
+/** The prompt that the Worker records for a spec review whose details state no plan. */
+const PLAN_PROMPT: ControlPrompt = { kind: 'plan' }
+
 // One request carries every option. The saved words depend on the option, and on
-// whether the request is a plan review. They depend on nothing else in the request.
-const CREATE_REQUEST = permissionRequest(
-  {
-    type: 'tool_use',
-    id: 'create-1',
-    name: DROID_TOOL.Create,
-    input: { file_path: '/work/notes.txt', content: 'a' },
+// whether the recorded prompt is a plan review. They depend on nothing else in the
+// request. The display reads only the kind of a permission prompt, so the generic
+// one stands for the Worker's.
+const CREATE_REQUEST: StoredRequest = {
+  payload: permissionRequest(
+    {
+      type: 'tool_use',
+      id: 'create-1',
+      name: DROID_TOOL.Create,
+      input: { file_path: '/work/notes.txt', content: 'a' },
+    },
+    DROID_CONFIRMATION_TYPE.Create,
+    ALL_OPTIONS,
+  ),
+  prompt: GENERIC_PERMISSION_PROMPT,
+}
+const SPEC_REQUEST: StoredRequest = {
+  payload: permissionRequest(
+    {
+      type: 'tool_use',
+      id: 'exit-1',
+      name: DROID_TOOL.ExitSpecMode,
+      input: { plan: '# Native plan' },
+    },
+    DROID_CONFIRMATION_TYPE.ExitSpecMode,
+    ALL_OPTIONS,
+  ),
+  prompt: PLAN_PROMPT,
+}
+const QUESTIONS: StoredRequest = {
+  payload: questionRequest([
+    {
+      index: 1,
+      question: 'Which color?',
+      options: ['Blue', 'Red'],
+      multiSelect: false,
+    },
+    {
+      index: 2,
+      question: 'Which size?',
+      options: ['Small', 'Large'],
+      multiSelect: false,
+    },
+  ]),
+  prompt: {
+    kind: 'question',
+    questions: [
+      {
+        question: 'Which color?',
+        options: [
+          { value: 'Blue', label: 'Blue' },
+          { value: 'Red', label: 'Red' },
+        ],
+      },
+      {
+        question: 'Which size?',
+        options: [
+          { value: 'Small', label: 'Small' },
+          { value: 'Large', label: 'Large' },
+        ],
+      },
+    ],
   },
-  DROID_CONFIRMATION_TYPE.Create,
-  ALL_OPTIONS,
-)
-const SPEC_REQUEST = permissionRequest(
-  {
-    type: 'tool_use',
-    id: 'exit-1',
-    name: DROID_TOOL.ExitSpecMode,
-    input: { plan: '# Native plan' },
-  },
-  DROID_CONFIRMATION_TYPE.ExitSpecMode,
-  ALL_OPTIONS,
-)
-const QUESTIONS = questionRequest([
-  {
-    index: 1,
-    question: 'Which color?',
-    options: ['Blue', 'Red'],
-    multiSelect: false,
-  },
-  {
-    index: 2,
-    question: 'Which size?',
-    options: ['Small', 'Large'],
-    multiSelect: false,
-  },
-])
+}
 
 /** The words a permission answer shows, for each option that a tool permission offers. */
 const PERMISSION_LABELS = {
@@ -224,7 +270,16 @@ describe('droidControls controlResponseDisplay', () => {
       .toEqual({ kind: 'label', text: 'Approve' })
   })
 
-  it('uses the permission words when the stored request is absent', () => {
+  // The recorded prompt is what the banner drew, so it decides the words, and the
+  // native request does not.
+  it('takes the words from the recorded prompt, not from the native request', () => {
+    expect(display(saved({ ...SPEC_REQUEST, prompt: GENERIC_PERMISSION_PROMPT }, storedReply('rpc-exit-1', { selectedOption: DROID_PERMISSION_OPTION.ProceedOnce }))))
+      .toEqual({ kind: 'label', text: 'Allow' })
+    expect(display(saved({ ...CREATE_REQUEST, prompt: PLAN_PROMPT }, storedReply('rpc-create-1', { selectedOption: DROID_PERMISSION_OPTION.Cancel }))))
+      .toEqual({ kind: 'label', text: 'Reject' })
+  })
+
+  it('uses the permission words when the row states no prompt', () => {
     expect(display(saved(undefined, storedReply('rpc-exit-1', { selectedOption: DROID_PERMISSION_OPTION.ProceedOnce }))))
       .toEqual({ kind: 'label', text: 'Allow' })
     expect(display(saved(undefined, storedReply('rpc-exit-1', { selectedOption: DROID_PERMISSION_OPTION.Cancel }))))

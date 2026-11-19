@@ -168,7 +168,8 @@ func userInputEvent(seq uint64, inputID string) []byte {
 	})
 }
 
-// neutralResponse is the shared control response the browser sends.
+// neutralResponse is the neutral control response that AnswerControlRequest
+// builds.
 func neutralResponse(t *testing.T, requestID string, response map[string]any) []byte {
 	t.Helper()
 	return mustJSON(t, map[string]any{
@@ -312,14 +313,6 @@ func TestQuestionAnswers(t *testing.T) {
 			},
 		},
 		{
-			name:     "the shared control's map by question text",
-			response: map[string]any{"behavior": "allow", "updatedInput": map[string]any{"answers": map[string]any{"Which color?": "Red", "Sizes": "S, M"}}},
-			want: []any{
-				map[string]any{"id": "color", "label": "Red", "value": "Red"},
-				map[string]any{"id": "sizes", "label": "Other", "value": "S, M"},
-			},
-		},
-		{
 			name:     "a bare decline",
 			response: map[string]any{"behavior": "deny", "message": "Rejected by user."},
 			want: []any{
@@ -378,6 +371,9 @@ func TestQuestionAnswerWithAnUnaddressedAnswerIsWithheld(t *testing.T) {
 		"an answer with no id": {"behavior": "allow", "updatedInput": map[string]any{"answers": []map[string]any{{"label": "Red", "value": "Red"}}}},
 		"no answers at all":    {"behavior": "allow", "updatedInput": map[string]any{}},
 		"answers of no shape":  {"behavior": "allow", "updatedInput": map[string]any{"answers": 7}},
+		// Only codewhaleQuestionAnswer builds an answer, and it builds the
+		// runtime's own list, so no other shape names a question.
+		"a map by question text": {"behavior": "allow", "updatedInput": map[string]any{"answers": map[string]any{"Which color?": "Red"}}},
 	} {
 		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored, ResponseContent: neutralResponse(t, "user_input:q1", response)})
 		assert.True(t, res.Withhold, name)
@@ -686,21 +682,4 @@ func TestDeclinedAnswersSkipAQuestionWithNoID(t *testing.T) {
 	assert.Equal(t, []userInputAnswer{{ID: "a", Label: contracts.CodewhaleAnswerLabelOther, Value: "No."}}, declinedAnswers(request, "No."))
 	assert.Empty(t, declinedAnswers(nil, "No."), "a request with no questions declines nothing")
 	assert.Empty(t, declinedAnswers([]byte(`not json`), "No."))
-}
-
-// The shared question control keys each answer by the question's text, or by
-// its header. An answer that addresses no question, and a question with no id,
-// send nothing.
-func TestAnswersFromTheSharedControlsMap(t *testing.T) {
-	t.Parallel()
-	request := mustJSON(t, map[string]any{"questions": []map[string]any{
-		{"id": "color", "header": "Color", "question": "Which color?", "options": []map[string]any{{"label": "Red"}}},
-		{"header": "Orphan", "question": "No id?"},
-	}})
-	response := neutralResponse(t, "user_input:q1", map[string]any{"behavior": "allow", "updatedInput": map[string]any{"answers": map[string]any{
-		"Color": "Red", "No id?": "x", "Not asked?": "y",
-	}}})
-	answers, ok := answersFromResponse(response, request)
-	require.True(t, ok)
-	assert.Equal(t, []userInputAnswer{{ID: "color", Label: "Red", Value: "Red"}}, answers, "the header finds the question when the text does not")
 }

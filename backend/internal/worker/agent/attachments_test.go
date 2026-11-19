@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

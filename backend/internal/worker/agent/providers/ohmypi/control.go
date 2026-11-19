@@ -18,8 +18,8 @@ import (
 // dialogHeader takes the routing fields of an extension_ui_request frame.
 //
 // Every dialog blocks omp until the host answers it with an extension_ui_response
-// that echoes `id`. The whole frame is what the control request publishes, so the
-// browser can read every method-specific field.
+// that echoes `id`. The whole frame is what the control request publishes, so
+// ReadControlRequest can read every method-specific field.
 type dialogHeader struct {
 	ID       string   `json:"id"`
 	Method   string   `json:"method"`
@@ -353,8 +353,8 @@ func (a *Agent) withdrawDialog(targetID string) {
 // omp's approval dialog states the tool NAME in its title ("Allow tool: bash") and
 // no call id. omp sends it after the call's tool_execution_start, so the call is
 // one of the calls in progress: when exactly one call of that name runs, it is the
-// one, and the control request carries its row so the browser can show the call's
-// arguments. With two or more, no row is stated rather than a wrong one.
+// one, and the control request carries its row so the prompt can show the call's
+// arguments (approvalArgs). With two or more, no row is stated rather than a wrong one.
 func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 	name := head.approvalTool()
 	if name == "" {
