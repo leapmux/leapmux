@@ -336,6 +336,8 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 		GrantedScopes:    granted,
 		InstallationName: req.installation,
 		ExpiresAt:        h.now().Add(AuthorizationCodeTTL),
+		StepUpSessionID:  req.stepUp.sessionID,
+		StepUpTokenID:    req.stepUp.tokenID,
 	}); err != nil {
 		writeInternalError(w, "authorization code creation failed", err)
 		return

@@ -767,9 +767,7 @@ func TestApp_OpenChannelRelay_AbandonsWhenConnectionSwappedDuringDial(t *testing
 	<-dialing
 
 	// A mode transition swaps the connection while the dial is parked.
-	app.lifecycleMu.Lock()
 	swapped := installTestConnection(app, mustNewProxy(t, server.URL), nil, server.URL)
-	app.lifecycleMu.Unlock()
 
 	close(release)
 	err := <-relayDone

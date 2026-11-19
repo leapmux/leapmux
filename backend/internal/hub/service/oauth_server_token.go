@@ -421,8 +421,8 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 		return
 	}
 	secure := h.secureCookies(r.Context())
-	auth.BuildSessionCookie(created.Token, created.ExpiresAt, secure)
 	http.SetCookie(w, auth.BuildSessionCookie(created.Token, created.ExpiresAt, secure))
+	http.SetCookie(w, auth.ClearSessionCookie(!secure))
 	writeJSON(w, http.StatusOK, map[string]bool{"signed_in": true})
 }
 
@@ -440,10 +440,21 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 // must not let a different app's caller revoke it.
 func (h *OAuthServerHandler) revokeReplayedCode(ctx context.Context, code string, app *store.OAuthClient) {
 	row, err := h.store.OAuthAuthorizationCodes().Get(ctx, code)
-	if err != nil || row.MintedTokenID == "" {
+	if err != nil || (row.MintedTokenID == "" && row.MintedSessionID == "") {
 		return
 	}
 	if row.ClientID != app.ClientID {
+		return
+	}
+	if row.MintedSessionID != "" {
+		if _, err := h.store.Sessions().Revoke(ctx, row.MintedSessionID); err != nil {
+			slog.ErrorContext(ctx, "could not revoke the session a replayed authorization code minted",
+				"session_id", row.MintedSessionID, "err", err)
+			return
+		}
+		h.lifecycle.SessionRevoked(row.MintedSessionID)
+		slog.WarnContext(ctx, "an authorization code was presented twice; the session it minted is revoked",
+			"session_id", row.MintedSessionID)
 		return
 	}
 	if _, err := h.store.APITokens().Revoke(ctx, row.MintedTokenID); err != nil {
