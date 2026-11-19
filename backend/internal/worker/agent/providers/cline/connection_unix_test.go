@@ -160,7 +160,7 @@ func cancelClineWhileDraining(t *testing.T, candidate, wrapper string) error {
 }
 
 func TestClineKeepsAnObservedBindFailureAfterItsDiscoveryDeadline(t *testing.T) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, "0"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 	port := listener.Addr().(*net.TCPAddr).Port

@@ -2,6 +2,7 @@ package agenttest
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -37,4 +38,15 @@ func AcceptProcessPeer(t *testing.T, listener *net.TCPListener, timeout time.Dur
 	identity, present := procutil.IdentifyProcess(pid)
 	require.True(t, present)
 	return identity, conn
+}
+
+// RequireProcessPeerClosed checks that the peer released its socket while
+// the test still holds its own end open.
+func RequireProcessPeerClosed(t *testing.T, conn net.Conn) {
+	t.Helper()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
+	var unexpected [1]byte
+	size, err := conn.Read(unexpected[:])
+	require.Zero(t, size, "the peer must close without sending another record")
+	require.ErrorIs(t, err, io.EOF, "the peer must close its socket")
 }

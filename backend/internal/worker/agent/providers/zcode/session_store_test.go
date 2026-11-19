@@ -634,7 +634,7 @@ func TestZCodeStorageQueryStopsAnActiveProfileAtTheOutputLimit(t *testing.T) {
 		path, err := newZCodeStorageQuery(&spec).DatabasePath(ctx, request)
 		result <- outcome{path, err}
 	}()
-	identity, conn := awaitInheritedStorageWriter(t, listener)
+	_, conn := awaitInheritedStorageWriter(t, listener)
 	_, err = fmt.Fprintln(conn, "write")
 	require.NoError(t, err)
 	guard, stop := context.WithTimeout(t.Context(), 10*time.Second)
@@ -643,7 +643,7 @@ func TestZCodeStorageQueryStopsAnActiveProfileAtTheOutputLimit(t *testing.T) {
 	case got := <-result:
 		assert.Empty(t, got.path)
 		require.ErrorContains(t, got.err, "the ZCode storage query exceeds the output limit")
-		assert.False(t, identity.Runs(), "the rejected query must stop its active profile writer")
+		agenttest.RequireProcessPeerClosed(t, conn)
 	case <-guard.Done():
 		cancel()
 		<-result

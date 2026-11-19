@@ -51,7 +51,12 @@ func prepareWrappedWriter(t *testing.T, spec launch.Spec, body string) *launch.P
 
 func startWrappedProcess(t *testing.T, prepared *launch.PreparedLaunch, clock quartz.Clock, cancel func()) (*Process, *ProcessPipes) {
 	t.Helper()
-	pipes, err := SetupLaunchPipes(prepared, cancel)
+	return startWrappedProcessWithExitObserver(t, prepared, clock, cancel, nil)
+}
+
+func startWrappedProcessWithExitObserver(t *testing.T, prepared *launch.PreparedLaunch, clock quartz.Clock, cancel func(), observer procutil.ProcessExitObserver) (*Process, *ProcessPipes) {
+	t.Helper()
+	pipes, err := SetupLaunchPipesWithExitObserver(prepared, cancel, observer)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pipes.Close() })
 	process := NewProcessFrom(ProcessConfig{
@@ -65,6 +70,21 @@ func startWrappedProcess(t *testing.T, prepared *launch.PreparedLaunch, clock qu
 	return &process, pipes
 }
 
+type observedFixtureExits map[procutil.ProcessIdentity]error
+
+func (exits observedFixtureExits) ObserveExit(_ context.Context, identity procutil.ProcessIdentity, nativeErr error) error {
+	exits[identity] = nativeErr
+	return nil
+}
+
+func (exits observedFixtureExits) requireExit(t *testing.T, identity procutil.ProcessIdentity) {
+	t.Helper()
+	// An exited orphan can retain its PID until the system reaps it.
+	nativeErr, observed := exits[identity]
+	require.True(t, observed, "teardown must observe exit of process %d", identity.PID)
+	require.NoError(t, nativeErr)
+}
+
 func TestWrappedProcessLateStopKeepsTheNativeExitClassification(t *testing.T) {
 	t.Parallel()
 	writer := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
@@ -76,7 +96,8 @@ func TestWrappedProcessLateStopKeepsTheNativeExitClassification(t *testing.T) {
 	t.Cleanup(drain.Close)
 	stop := clock.Trap().NewTimer(ProcessStopGraceTimerTag)
 	t.Cleanup(stop.Close)
-	process, pipes := startWrappedProcess(t, prepared, clock, func() {})
+	exits := make(observedFixtureExits)
+	process, pipes := startWrappedProcessWithExitObserver(t, prepared, clock, func() {}, exits)
 	output := captureWrappedOutput(process, pipes)
 	_, child, root := writer.Accept(t)
 	require.Equal(t, process.owner.PID(), root.PID)
@@ -116,7 +137,7 @@ func TestWrappedProcessLateStopKeepsTheNativeExitClassification(t *testing.T) {
 	var exit *exec.ExitError
 	require.ErrorAs(t, process.Wait(), &exit)
 	assert.Equal(t, 37, exit.ExitCode())
-	assert.False(t, child.Runs(), "the verified writer must exit before ProcessDone closes")
+	exits.requireExit(t, child)
 }
 
 func TestWrappedProcessForcedDrainKeepsTheUnverifiedWriterAndReportsExitBeforeCancel(t *testing.T) {
@@ -169,7 +190,8 @@ func TestWrappedProcessStopBeforeReadinessClosesTheAttachedWriter(t *testing.T) 
 	clock := testutil.NewQuartzMock(t)
 	stop := clock.Trap().NewTimer(ProcessStopGraceTimerTag)
 	t.Cleanup(stop.Close)
-	process, pipes := startWrappedProcess(t, prepared, clock, func() {})
+	exits := make(observedFixtureExits)
+	process, pipes := startWrappedProcessWithExitObserver(t, prepared, clock, func() {}, exits)
 	process.DrainStderr(pipes.Stderr())
 	go process.ReadLines(agent.NewStdoutScanner(pipes.Stdout()), func(line []byte) { t.Errorf("unexpected provider output %q", line) })
 	_, child, root := writer.Accept(t)
@@ -183,7 +205,7 @@ func TestWrappedProcessStopBeforeReadinessClosesTheAttachedWriter(t *testing.T) 
 	awaitProcessDone(t, deadline, process)
 	_ = process.Wait()
 	assert.Equal(t, agent.MessageCompletionInterrupted, process.ProcessExitCompletion())
-	assert.False(t, child.Runs())
+	exits.requireExit(t, child)
 	assert.False(t, root.Runs())
 	assert.False(t, process.Ready())
 }
@@ -420,9 +442,10 @@ func TestWrappedProcessCapturesItsWriterBeforeDispatchingTheFirstLine(t *testing
 			clock := testutil.NewQuartzMock(t)
 			drain := clock.Trap().NewTimer(WrappedProcessDrainTimerTag)
 			t.Cleanup(drain.Close)
-			process, pipes := startWrappedProcess(t, prepared, clock, func() {})
+			exits := make(observedFixtureExits)
+			process, pipes := startWrappedProcessWithExitObserver(t, prepared, clock, func() {}, exits)
 			output := captureWrappedOutput(process, pipes)
-			conn, child, root := writer.Accept(t)
+			_, child, root := writer.Accept(t)
 			require.Equal(t, process.owner.PID(), root.PID)
 			require.NoError(t, process.WriteStdin([]byte("send output\n")))
 			deadline := testutil.DeadlineContext(t)
@@ -442,8 +465,7 @@ func TestWrappedProcessCapturesItsWriterBeforeDispatchingTheFirstLine(t *testing
 			require.ErrorAs(t, process.Wait(), &exit)
 			assert.Equal(t, 37, exit.ExitCode())
 			assert.Equal(t, agent.MessageCompletionError, process.ProcessExitCompletion())
-			assert.False(t, child.Runs(), "natural teardown must reap the child verified before the handler ran")
-			require.NoError(t, conn.CloseWrite())
+			exits.requireExit(t, child)
 		})
 	}
 }

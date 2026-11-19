@@ -350,7 +350,7 @@ func TestRunCLIPreservesCancellationWhenTheLiveCommandExitsDuringIt(t *testing.T
 		})
 		done <- err
 	}()
-	_, child, root := fixture.Accept(t)
+	conn, _, root := fixture.Accept(t)
 	require.True(t, root.Runs())
 	cancel()
 	select {
@@ -361,5 +361,5 @@ func TestRunCLIPreservesCancellationWhenTheLiveCommandExitsDuringIt(t *testing.T
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the CLI did not finish after cancellation")
 	}
-	assert.False(t, child.Runs(), "the worker must stop the verified writer")
+	agenttest.RequireProcessPeerClosed(t, conn)
 }

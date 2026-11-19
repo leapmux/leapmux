@@ -83,11 +83,12 @@ func TestPipeCloseCapturesChildrenBeforeClosingInput(t *testing.T) {
 			t.Cleanup(func() { _ = listener.Close() })
 			require.NoError(t, listener.SetDeadline(time.Now().Add(15*time.Second)))
 			cmd := ownerClosePeerCommand(t, "owner-before-close-root", listener.Addr().String())
+			exits := make(observedFixtureExits)
 			var pipes *ProcessPipes
 			if prepared {
-				pipes, err = SetupLaunchPipes(&launch.PreparedLaunch{Cmd: cmd}, nil)
+				pipes, err = SetupLaunchPipesWithExitObserver(&launch.PreparedLaunch{Cmd: cmd}, nil, exits)
 			} else {
-				pipes, err = SetupProcessPipes(cmd, nil)
+				pipes, err = SetupProcessPipesWithExitObserver(cmd, nil, exits)
 			}
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = pipes.Close() })
@@ -121,7 +122,7 @@ func TestPipeCloseCapturesChildrenBeforeClosingInput(t *testing.T) {
 			pipes.stdin = waitForRootOnStdinClose{WriteCloser: pipes.stdin, done: wait}
 			require.NoError(t, pipes.Close())
 			require.False(t, root.Runs(), "the owned root finishes before Close returns")
-			require.False(t, child.Runs(), "the owner must stop the verified child before its parent can exit on stdin EOF")
+			exits.requireExit(t, child)
 		})
 	}
 }

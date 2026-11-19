@@ -97,7 +97,7 @@ func TestClaudeStartupDeadlineStopsABlockedProfile(t *testing.T) {
 		}
 		outcome <- err
 	}()
-	identity, _ := agenttest.AcceptProcessPeer(t, listener, 15*time.Second)
+	identity, conn := agenttest.AcceptProcessPeer(t, listener, 15*time.Second)
 	t.Cleanup(func() { _, _ = identity.Kill() })
 	select {
 	case err := <-outcome:
@@ -106,5 +106,5 @@ func TestClaudeStartupDeadlineStopsABlockedProfile(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("startup did not return after the configured deadline")
 	}
-	assert.False(t, identity.Runs(), "the worker owns the process that blocked its profile")
+	agenttest.RequireProcessPeerClosed(t, conn)
 }
