@@ -1,13 +1,12 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { LettaMcpCliCapture, LettaMcpCliIdentity, LettaMcpCliReceipt } from './mcpCliReceipt'
 import { Buffer } from 'node:buffer'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stopProcess } from '../helpers/process'
-import { listProcesses } from '../helpers/processTree'
 import { waitForFileSignal } from '../helpers/toolOutputControl'
 import { parseLettaMcpCatalog } from './mcpCatalog'
 import { readLettaMcpCliReceipt, writeLettaMcpCliCapture } from './mcpCliReceipt'
@@ -57,6 +56,34 @@ function runCapture(capture: LettaMcpCliCapture, args: string[], executable = pr
     }))
   })
   return { child, closed, expected }
+}
+
+function fixtureProcessRuns(pid: number, script: string): boolean {
+  if (process.platform === 'linux') {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').includes(script)
+    }
+    catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && (error.code === 'ENOENT' || error.code === 'ESRCH'))
+        return false
+      throw error
+    }
+  }
+  const result = spawnSync('ps', [
+    '-ww',
+    '-p',
+    String(pid),
+    '-o',
+    'command=',
+  ], { encoding: 'utf8' })
+  if (result.error)
+    throw result.error
+  if (result.signal === null && result.status === 1 && result.stdout === '' && result.stderr === '')
+    return false
+  const command = result.stdout.replace(/\n$/, '')
+  if (result.signal !== null || result.status !== 0 || result.stderr !== '' || command === '' || command.includes('\n'))
+    throw new Error(`Could not inspect fixture process ${pid}`)
+  return command.endsWith(` ${script}`)
 }
 
 describe('writeLettaMcpCliCapture', () => {
@@ -138,13 +165,12 @@ setImmediate(() => {
     const pid = Number(readFileSync(ready, 'utf8'))
     expect(Number.isSafeInteger(pid) && pid > 0).toBe(true)
     // A new process can reuse the PID once the capture reaps the native child.
-    const nativeIsRunning = () => listProcesses().some(row => row.pid === pid && row.command.includes(native))
-    expect(nativeIsRunning()).toBe(true)
+    expect(fixtureProcessRuns(pid, native)).toBe(true)
     expect(operation.child.kill('SIGTERM')).toBe(true)
     const result = await operation.closed
     expect(result.signal).toBe('SIGTERM')
     expect(result.code).toBeNull()
-    expect(nativeIsRunning()).toBe(false)
+    expect(fixtureProcessRuns(pid, native)).toBe(false)
     const receipt = readLettaMcpCliReceipt(capture.receiptPath, result.nativeResult, operation.expected)
     expect(receipt.signal).toBe('SIGTERM')
     expect(receipt.exitCode).toBeNull()

@@ -732,7 +732,7 @@ func (a *Agent) Stop() {
 	a.cancelStoppedZCodeTurnLocked()
 	stopped, turnActive, sessionID := a.StoppedLocked(), a.turnActive || a.compactionSessionID != "", a.sessionID
 	a.Mu.Unlock()
-	if !stopped && turnActive && sessionID != "" {
+	if !stopped && a.IntentionalStopRequested() && turnActive && sessionID != "" {
 		// Best-effort: a failure falls through to the hard tear-down below.
 		_, _ = a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
 	}
@@ -740,13 +740,14 @@ func (a *Agent) Stop() {
 	a.stopAllZCodeTurnWatchers()
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
-	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
+	completion := a.ProcessExitCompletion()
+	a.flushZCodeGeneration(completion)
 	a.Mu.Lock()
 	a.compactionSessionID = ""
 	// The tear-down clears every turn owner: nothing survives the process.
 	a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
-	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
+	a.persistIncompleteZCodeTools(completion)
 	if stopWasPending {
 		a.persistZCodeStopRow()
 	}

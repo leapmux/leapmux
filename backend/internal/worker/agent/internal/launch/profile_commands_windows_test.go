@@ -21,25 +21,7 @@ func TestProfileCandidateWindowsExhaustionReportsEveryName(t *testing.T) {
 	for _, name := range []string{"powershell", "pwsh"} {
 		t.Run(name, func(t *testing.T) {
 			shell := requireProfileShell(t, name, name)
-			const first = "leapmux-profile-absent-a"
-			const second = "leapmux-profile-absent-b"
-			spec, err := Binaries(first, second).Resolve(t.Context(), shell, false, "Missing candidate test")
-			require.NoError(t, err)
-			prepared, err := Wrap(t.Context(), WrapSpec{Shell: shell, Launch: spec})
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, prepared.Close()) })
-			diagnostics := prepared.NewDiagnostics(1024)
-			prepared.Cmd.Stderr = diagnostics
-			output, err := prepared.Cmd.Output()
-			diagnostics.Finish()
-			err = diagnostics.ExitError(err, false)
-			require.ErrorIs(t, err, ErrNoCandidate)
-			var exit *exec.ExitError
-			require.ErrorAs(t, err, &exit)
-			assert.Equal(t, 127, exit.ExitCode())
-			assert.ErrorContains(t, err, first)
-			assert.ErrorContains(t, err, second)
-			assert.NotContains(t, string(output), prepared.Delimiter)
+			assertProfileCandidateExhaustion(t, shell, "leapmux-profile-absent-a", "leapmux-profile-absent-b")
 		})
 	}
 }
@@ -199,7 +181,7 @@ func assertWindowsPowerShellExplicitDiscovery(t *testing.T, shell, directory, ca
 	names := []string{missing, candidate}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	probe, err := newShellCommand(ctx, shell, false, renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false), directory)
+	probe, err := newShellCommand(ctx, shell, false, renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false), directory, nil)
 	require.NoError(t, err)
 	configure(probe)
 	output, err := probe.CombinedOutput()
@@ -221,22 +203,34 @@ func assertWindowsPowerShellFunction(t *testing.T, shell, directory string, conf
 
 var gitBashProfileVersion = regexp.MustCompile(`^\d+\.\d+\.\d+.*\([^)]*(?:msys|mingw)[^)]*\)$`)
 
-func assertWindowsGitBashProfileReads(t *testing.T, witness, mode, profile string, count int) {
+func readWindowsProfileWitness(t *testing.T, witness string, count int) [][4]string {
 	t.Helper()
 	data, err := os.ReadFile(witness)
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimRight(string(data), "\r\n"), "\n")
 	require.Len(t, lines, count)
-	for _, line := range lines {
+	rows := make([][4]string, len(lines))
+	for index, line := range lines {
 		fields := strings.Split(strings.TrimSuffix(line, "\r"), "\t")
 		require.Len(t, fields, 4, "%q", line)
-		assert.Regexp(t, gitBashProfileVersion, fields[0])
-		assert.Equal(t, "bash", terminal.ShellBaseName(fields[1]))
-		assert.Equal(t, "msys", fields[2])
-		assert.Equal(t, mode, fields[3])
+		copy(rows[index][:], fields)
 	}
-	t.Logf("windows Git Bash %s, %s via %s, %d profile reads, native external/alias/function argv, environment, live streams, exit and cancellation",
-		strings.Split(lines[0], "\t")[0], mode, profile, count)
+	return rows
+}
+
+func assertWindowsGitBashProfileReads(t *testing.T, witness, mode, profile string, count int) {
+	t.Helper()
+	rows := readWindowsProfileWitness(t, witness, count)
+	t.Run("version "+rows[0][0]+" "+mode, func(t *testing.T) {
+		for _, fields := range rows {
+			assert.Regexp(t, gitBashProfileVersion, fields[0])
+			assert.Equal(t, "bash", terminal.ShellBaseName(fields[1]))
+			assert.Equal(t, "msys", fields[2])
+			assert.Equal(t, mode, fields[3])
+		}
+		t.Logf("windows Git Bash %s, %s via %s, %d profile reads, native external/alias/function argv, environment, live streams, exit and cancellation",
+			rows[0][0], mode, profile, count)
+	})
 }
 
 // Windows PowerShell 5.1 treats an unmarked script as ANSI.

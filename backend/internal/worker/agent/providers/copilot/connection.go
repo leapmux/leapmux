@@ -8,6 +8,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -46,6 +47,10 @@ const copilotAutoUpdateEnv = "COPILOT_AUTO_UPDATE=false"
 //
 // verifyNativeProtocol completes the startup. Keep the three calls in that order.
 func startCopilotConnection(parent context.Context, opts agent.Options) (*copilotConnection, error) {
+	return startCopilotConnectionWithClock(parent, opts, nil)
+}
+
+func startCopilotConnectionWithClock(parent context.Context, opts agent.Options, clock quartz.Clock) (*copilotConnection, error) {
 	ctx, cancel := context.WithCancel(parent)
 	registration := Registration()
 	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
@@ -62,7 +67,6 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		cancel()
 		return nil, err
 	}
-	delimiter, prefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
@@ -72,7 +76,7 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	connection := &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
-		Process:      providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "copilot", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix}, pipes, ctx, cancel),
+		Process:      providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "copilot", ShutdownGrace: registration.ShutdownGrace, Clock: clock}, pipes, ctx, cancel),
 		FrameMessage: frameCopilotJSON,
 	}}
 	if err := connection.StartCmd(); err != nil {
@@ -82,7 +86,7 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		return nil, err
 	}
 	connection.DrainStderr(stderr)
-	connection.pendingScanner = newCopilotScanner(stdout, delimiter, agent.ConfiguredMaxMessageSize())
+	connection.pendingScanner = newCopilotScanner(stdout, prepared.Delimiter, agent.ConfiguredMaxMessageSize())
 	return connection, nil
 }
 

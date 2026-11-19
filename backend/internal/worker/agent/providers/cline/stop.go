@@ -89,7 +89,7 @@ func (a *Agent) endRunlessTurnLocked(completion agent.MessageCompletion, reason 
 
 // Stop ends the agent: it aborts the running turn, asks the daemon to shut down
 // with its own token, stops the daemon's process group, and then finishes what
-// the turn left unfinished, as interrupted. It returns once the daemon exited.
+// the turn left unfinished. It returns once the daemon exited.
 //
 // The daemon does not end when its stdin closes or when the worker exits, so
 // the shutdown request is what ends it gracefully. Process.Stop then closes
@@ -105,7 +105,7 @@ func (a *Agent) stop() {
 	a.NoteIntentionalStop()
 	a.Mu.Lock()
 	// A settling turn has no run to abort (turnState.settling).
-	active, sessionID := a.turn.active && !a.turn.settling, a.sessionID
+	active, sessionID := a.IntentionalStopRequested() && a.turn.active && !a.turn.settling, a.sessionID
 	if active {
 		a.turn.interruptRequested = true
 	}
@@ -126,7 +126,7 @@ func (a *Agent) stop() {
 	}
 	a.hub.wait()
 	a.background.Wait()
-	a.teardown(agent.MessageCompletionInterrupted, "")
+	a.teardownAfterProcessExit()
 }
 
 // Wait blocks until the daemon exits, and then tears the agent down. An exit
@@ -139,13 +139,17 @@ func (a *Agent) Wait() error {
 	a.hub.close()
 	a.hub.wait()
 	a.background.Wait()
+	a.teardownAfterProcessExit()
+	return err
+}
+
+func (a *Agent) teardownAfterProcessExit() {
 	completion := a.ProcessExitCompletion()
 	message := ""
 	if completion == agent.MessageCompletionError {
 		message = a.describeExit()
 	}
 	a.teardown(completion, message)
-	return err
 }
 
 // teardown ends what the daemon's end left, once, whether Stop or Wait comes

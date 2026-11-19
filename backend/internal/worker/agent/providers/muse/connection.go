@@ -40,14 +40,13 @@ func prepareConnection(ctx context.Context, opts agent.Options, registration age
 		cancel()
 		return nil, err
 	}
-	delimiter, prefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinned...)
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
-	c := &connection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Muse Code", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix}, pipes, ctx, cancel)}}
+	c := &connection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Muse Code", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)}}
 	c.stdout, c.stderr = pipes.Stdout(), pipes.Stderr()
 	return c, nil
 }
@@ -72,7 +71,7 @@ func (c *connection) initialize(opts agent.Options, handle providerkit.LineHandl
 	c.DrainStderr(c.stderr)
 	go func() {
 		defer close(c.outputDone)
-		c.ReadOutputLoop(agent.NewStdoutScanner(c.stdout), func(line *providerkit.ParsedLine) {
+		c.ReadOutputLoop(c.NewOutputScanner(c.stdout), func(line *providerkit.ParsedLine) {
 			if handle != nil {
 				handle(line)
 			} else if line.HasID() {

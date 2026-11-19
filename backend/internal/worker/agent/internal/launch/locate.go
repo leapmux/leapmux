@@ -1,7 +1,6 @@
 package launch
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -44,10 +43,11 @@ type Spec struct {
 	// PrefixArgs precede the provider's own BaseArgs -- the script path an
 	// interpreter must receive before the script's own arguments.
 	PrefixArgs []string
-	// Env are extra KEY=VALUE entries the launched program needs, pinned onto the
-	// spawned environment (ELECTRON_RUN_AS_NODE=1 for ZCode's Electron-as-Node
-	// fallback). Empty for a plain interpreter.
+	// Env supplies provider defaults to the shell before the profile runs.
 	Env []string
+	// RequiredEnv states interpreter requirements that must survive the profile.
+	// It takes precedence over other post-profile assignments for the same key.
+	RequiredEnv []string
 }
 
 // ShellCommands prepares an ordered choice without consulting the profile.
@@ -142,7 +142,11 @@ func ProgramPath(ctx context.Context, shellPath string, loginShell bool, name st
 }
 
 func probeCommands(ctx context.Context, shellPath string, loginShell bool, names []string, nativeOnly bool) (map[string]ProbeResult, string) {
-	if !validCandidates(names) || ctx.Err() != nil {
+	validNames := validCandidates(names)
+	if nativeOnly {
+		validNames = len(names) == 1 && validNativeProgramName(names[0])
+	}
+	if !validNames || ctx.Err() != nil {
 		return nil, ""
 	}
 	shell := terminal.ShellBaseName(shellPath)
@@ -154,27 +158,18 @@ func probeCommands(ctx context.Context, shellPath string, loginShell bool, names
 	return parseCommandProbe(output, nonce, names, nativeOnly)
 }
 
+func validNativeProgramName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\\x00\r\n")
+}
+
 const maxCommandProbeOutput = 1 << 20
 
-type commandProbeOutput struct {
-	buffer   bytes.Buffer
-	exceeded bool
-}
-
-func (o *commandProbeOutput) Write(data []byte) (int, error) {
-	if len(data) > maxCommandProbeOutput-o.buffer.Len() {
-		o.exceeded = true
-		return len(data), nil
-	}
-	return o.buffer.Write(data)
-}
-
 func runShellProbe(ctx context.Context, shellPath string, loginShell bool, script string) string {
-	cmd, err := newShellCommand(ctx, shellPath, loginShell, script, os.TempDir())
+	cmd, err := newShellCommand(ctx, shellPath, loginShell, script, os.TempDir(), nil)
 	if err != nil && !pathFallbackAllowed(ctx) {
 		return ""
 	}
-	var stdout commandProbeOutput
+	stdout := LimitedBuffer{Limit: maxCommandProbeOutput}
 	cmd.Stdout = &stdout
 	owner := procutil.PrepareProcess(cmd)
 	cmd.WaitDelay = time.Second
@@ -184,33 +179,38 @@ func runShellProbe(ctx context.Context, shellPath string, loginShell bool, scrip
 	}
 	waitErr := owner.Wait()
 	cleanupErr := owner.Close()
-	if waitErr != nil || cleanupErr != nil || ctx.Err() != nil || stdout.exceeded {
+	if waitErr != nil || cleanupErr != nil || ctx.Err() != nil || stdout.Truncated {
 		return ""
 	}
-	return stdout.buffer.String()
+	return stdout.String()
 }
 
 // parseCommandProbe rejects an incomplete batch, including a duplicated or
-// out-of-order record. Profile output before the start record is unrestricted.
+// out-of-order record. Profiles can write before the frame and in exit hooks.
 func parseCommandProbe(output, nonce string, names []string, nativeOnly bool) (map[string]ProbeResult, string) {
-	if !strings.HasSuffix(output, "\n") {
-		return nil, ""
-	}
 	results := make(map[string]ProbeResult, len(names))
 	started, complete := false, false
 	index := 0
 	path := ""
-	for line := range strings.SplitSeq(output, "\n") {
+	for len(output) != 0 {
+		line, rest, hasNewline := strings.Cut(output, "\n")
+		output = rest
 		line = strings.TrimSuffix(line, "\r")
+		if complete {
+			if strings.HasPrefix(line, nonce) {
+				return nil, ""
+			}
+			continue
+		}
+		if !hasNewline {
+			return nil, ""
+		}
 		if !started {
 			started = line == nonce+":start"
 			continue
 		}
 		if line == "" {
 			continue
-		}
-		if complete {
-			return nil, ""
 		}
 		if line == nonce+":complete" && index == len(names) {
 			complete = true

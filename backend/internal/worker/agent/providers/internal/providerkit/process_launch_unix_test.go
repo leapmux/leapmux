@@ -72,14 +72,12 @@ func TestWrappedProcessLateStopKeepsTheNativeExitClassification(t *testing.T) {
 		"launch_test_wrapper() { "+writer.ShellCommand+
 			" &\n  IFS= read -r release\n  printf 'last native line\\n'\n  IFS= read -r release\n  return 37\n}")
 	clock := testutil.NewQuartzMock(t)
-	drain := clock.Trap().NewTimer("wrapped-process-drain")
+	drain := clock.Trap().NewTimer(WrappedProcessDrainTimerTag)
 	t.Cleanup(drain.Close)
-	stop := clock.Trap().NewTimer("process-stop-grace")
+	stop := clock.Trap().NewTimer(ProcessStopGraceTimerTag)
 	t.Cleanup(stop.Close)
 	process, pipes := startWrappedProcess(t, prepared, clock, func() {})
-	process.DrainStderr(pipes.Stderr())
-	output := make(chan string, 1)
-	go process.ReadLines(agent.NewStdoutScanner(pipes.Stdout()), func(line []byte) { output <- string(line) })
+	output := captureWrappedOutput(process, pipes)
 	_, child, root := writer.Accept(t)
 	require.Equal(t, process.owner.PID(), root.PID)
 	require.NoError(t, process.WriteStdin([]byte("send output\n")))
@@ -127,7 +125,7 @@ func TestWrappedProcessForcedDrainKeepsTheUnverifiedWriterAndReportsExitBeforeCa
 	prepared := prepareWrappedWriter(t, launch.ShellCommands("launch_test_definitely_missing"),
 		writer.ShellCommand+" &\nIFS= read -r release\nprintf 'profile diagnostic' >&2")
 	clock := testutil.NewQuartzMock(t)
-	drain := clock.Trap().NewTimer("wrapped-process-drain")
+	drain := clock.Trap().NewTimer(WrappedProcessDrainTimerTag)
 	t.Cleanup(drain.Close)
 	canceledAfterDone := make(chan bool, 2)
 	var process *Process
@@ -169,7 +167,7 @@ func TestWrappedProcessStopBeforeReadinessClosesTheAttachedWriter(t *testing.T) 
 	writer := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
 	prepared := prepareWrappedWriter(t, launch.ShellCommands("launch_test_definitely_missing"), writer.ShellCommand)
 	clock := testutil.NewQuartzMock(t)
-	stop := clock.Trap().NewTimer("process-stop-grace")
+	stop := clock.Trap().NewTimer(ProcessStopGraceTimerTag)
 	t.Cleanup(stop.Close)
 	process, pipes := startWrappedProcess(t, prepared, clock, func() {})
 	process.DrainStderr(pipes.Stderr())
@@ -221,7 +219,7 @@ func TestWrappedProcessClassifiesTheFinalStderrReadAfterForcedClosure(t *testing
 	t.Parallel()
 	prepared := prepareWrappedWriter(t, launch.ShellCommands("launch_test_definitely_missing"), "printf 'profile diagnostic' >&2")
 	clock := testutil.NewQuartzMock(t)
-	wrappedDrain := clock.Trap().NewTimer("wrapped-process-drain")
+	wrappedDrain := clock.Trap().NewTimer(WrappedProcessDrainTimerTag)
 	t.Cleanup(wrappedDrain.Close)
 	stderrDrain := clock.Trap().NewTimer("stderr-drain")
 	t.Cleanup(stderrDrain.Close)
@@ -285,8 +283,8 @@ func TestProfileCommandPreambleAfterAnUnterminatedBanner(t *testing.T) {
 	assert.Equal(t, "provider stderr\n", process.Stderr())
 	assert.True(t, process.Ready())
 	requireClosedPipeEnd(t, pipes.Stdin().(*os.File))
-	requireClosedPipeEnd(t, pipes.Stdout().(*os.File))
-	requireClosedPipeEnd(t, pipes.Stderr().(*os.File))
+	requireClosedPipeEnd(t, outputPipeFile(pipes.Stdout()))
+	requireClosedPipeEnd(t, outputPipeFile(pipes.Stderr()))
 }
 
 func TestSetupLaunchPipesReleasesNushellInvocationFiles(t *testing.T) {
@@ -337,13 +335,11 @@ func TestSetupLaunchPipesReleasesNushellInvocationFiles(t *testing.T) {
 				awaitProcessDone(t, testutil.DeadlineContext(t), &process)
 				assert.Error(t, process.Wait())
 				assert.ErrorIs(t, ctx.Err(), context.Canceled)
-				requireClosedPipeEnd(t, pipes.Stdout().(*os.File))
-				requireClosedPipeEnd(t, pipes.Stderr().(*os.File))
+				requireClosedPipeEnd(t, outputPipeFile(pipes.Stdout()))
+				requireClosedPipeEnd(t, outputPipeFile(pipes.Stderr()))
 			default:
 				process, pipes := startWrappedProcess(t, prepared, quartz.NewReal(), cancel)
-				process.DrainStderr(pipes.Stderr())
-				output := make(chan string, 1)
-				go process.ReadLines(agent.NewStdoutScanner(pipes.Stdout()), func(line []byte) { output <- string(line) })
+				output := captureWrappedOutput(process, pipes)
 				deadline := testutil.DeadlineContext(t)
 				if phase == "stop" {
 					select {
@@ -359,8 +355,8 @@ func TestSetupLaunchPipesReleasesNushellInvocationFiles(t *testing.T) {
 				require.NoError(t, process.Wait(), process.Stderr())
 				assert.True(t, process.Ready())
 				requireClosedPipeEnd(t, pipes.Stdin().(*os.File))
-				requireClosedPipeEnd(t, pipes.Stdout().(*os.File))
-				requireClosedPipeEnd(t, pipes.Stderr().(*os.File))
+				requireClosedPipeEnd(t, outputPipeFile(pipes.Stdout()))
+				requireClosedPipeEnd(t, outputPipeFile(pipes.Stderr()))
 			}
 			assert.NoDirExists(t, filepath.Dir(artifact))
 		})
@@ -422,12 +418,10 @@ func TestWrappedProcessCapturesItsWriterBeforeDispatchingTheFirstLine(t *testing
 			}
 			prepared := prepareWrappedWriter(t, spec, profile)
 			clock := testutil.NewQuartzMock(t)
-			drain := clock.Trap().NewTimer("wrapped-process-drain")
+			drain := clock.Trap().NewTimer(WrappedProcessDrainTimerTag)
 			t.Cleanup(drain.Close)
 			process, pipes := startWrappedProcess(t, prepared, clock, func() {})
-			process.DrainStderr(pipes.Stderr())
-			output := make(chan string, 1)
-			go process.ReadLines(agent.NewStdoutScanner(pipes.Stdout()), func(line []byte) { output <- string(line) })
+			output := captureWrappedOutput(process, pipes)
 			conn, child, root := writer.Accept(t)
 			require.Equal(t, process.owner.PID(), root.PID)
 			require.NoError(t, process.WriteStdin([]byte("send output\n")))
@@ -526,9 +520,7 @@ func TestFinalizeStartupCauseKeepsEarlierFailuresAfterActualCleanup(t *testing.T
 	prepared := prepareWrappedWriter(t, launch.ShellCommands("launch_test_wrapper"),
 		"launch_test_wrapper() { printf 'waiting for startup\\n'; IFS= read -r release; return 37; }")
 	process, pipes := startWrappedProcess(t, prepared, quartz.NewReal(), func() {})
-	process.DrainStderr(pipes.Stderr())
-	output := make(chan string, 1)
-	go process.ReadLines(agent.NewStdoutScanner(pipes.Stdout()), func(line []byte) { output <- string(line) })
+	output := captureWrappedOutput(process, pipes)
 	select {
 	case line := <-output:
 		require.Equal(t, "waiting for startup", line)
@@ -576,4 +568,11 @@ func TestFinalizeStartupCausePreservesTheNativeStatusAfterServerOrTransportFailu
 		assert.ErrorIs(t, reported, exit)
 		assert.EqualError(t, reported, "server start: "+cause.Error()+" (agent process exited with code 37); stderr: native diagnostic")
 	}
+}
+
+func captureWrappedOutput(process *Process, pipes *ProcessPipes) <-chan string {
+	process.DrainStderr(pipes.Stderr())
+	lines := make(chan string, 1)
+	go process.ReadLines(agent.NewStdoutScanner(pipes.Stdout()), func(line []byte) { lines <- string(line) })
+	return lines
 }

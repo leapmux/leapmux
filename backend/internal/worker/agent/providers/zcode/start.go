@@ -44,7 +44,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	abortPreparation := func(err error) (agent.Agent, error) {
 		cancel()
 		return nil, errors.Join(err, prepared.Close())
@@ -56,7 +55,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 	// Read credentials before the process starts, using its finalized environment
 	// and shell profile. Current desktops can sign in without config.json.
-	accountEnvironment, err := resolveZCodeAccountEnvironment(ctx, opts, cmd.Environ())
+	reusableEnvironment := prepared.ReusableEnvironment()
+	accountEnvironment, err := resolveZCodeAccountEnvironment(ctx, opts, reusableEnvironment)
 	if err != nil {
 		return abortPreparation(err)
 	}
@@ -67,7 +67,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return abortPreparation(err)
 	}
 	storeLocation, err := zcodeToolStorePaths(ctx, agent.StoredSessionQuery{
-		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: cmd.Environ(),
+		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: reusableEnvironment,
 		Shell: opts.Shell, LoginShell: opts.LoginShell,
 	}, newZCodeStorageQuery(&spec))
 	if err != nil {
@@ -81,7 +81,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		sink:                      sink,
 		workingDir:                opts.WorkingDir,
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
@@ -127,7 +127,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.DrainStderr(stderrPipe)
 
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.ReadOutput(scanner, a.interceptResponse, a.handleOutput)
 
 	cleanup := func() {

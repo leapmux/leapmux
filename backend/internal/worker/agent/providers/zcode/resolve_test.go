@@ -158,7 +158,7 @@ func TestResolveZCodeLaunch_BundledRuntimeIsPreferredOverPathNode(t *testing.T) 
 	assert.Equal(t, launch.Found, res)
 	assert.Equal(t, bundled[0], spec.Program)
 	assert.Equal(t, []string{script}, spec.PrefixArgs)
-	assert.Equal(t, []string{zcodeElectronAsNodeEnv}, spec.Env,
+	assert.Equal(t, []string{zcodeElectronAsNodeEnv}, spec.RequiredEnv,
 		"the bundled runtime is Electron, which starts the desktop application without this")
 	assert.Equal(t, []string{bundled[0]}, stub.calls,
 		"a complete installation spawns ONE subprocess and never touches the shell")

@@ -845,3 +845,33 @@ func TestClineReportsTheNativeStatusOfTheLastBindFailure(t *testing.T) {
 	assert.Equal(t, 38, native.ExitCode())
 	assert.Equal(t, 2, attempts)
 }
+
+func TestClineLogsOnlyAnAttemptItActuallyRetries(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(canceled), func(t *testing.T) {
+			log := testutil.CaptureDefaultLogger(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			attempts := 0
+			_, err := retryDaemonPort(ctx, "log-test", func(int) (*daemonStart, error) {
+				attempts++
+				if canceled {
+					cancel()
+				}
+				if attempts == 2 {
+					assert.Equal(t, 1, strings.Count(log.String(), "retrying with another"))
+				}
+				return nil, errAddressInUse
+			})
+			if canceled {
+				assert.ErrorIs(t, err, context.Canceled)
+				assert.Equal(t, 1, attempts)
+				assert.NotContains(t, log.String(), "retrying with another")
+			} else {
+				assert.ErrorIs(t, err, errAddressInUse)
+				assert.Equal(t, 2, attempts)
+				assert.Equal(t, 1, strings.Count(log.String(), "retrying with another"))
+			}
+		})
+	}
+}

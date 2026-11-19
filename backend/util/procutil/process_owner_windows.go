@@ -3,6 +3,7 @@
 package procutil
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -117,6 +118,24 @@ func initialThreadID(pid uint32) (id uint32, result error) {
 		return 0, errors.New("the suspended process has no initial thread")
 	}
 	return id, nil
+}
+
+func (o *ProcessOwner) findDescendantsLocked(ctx context.Context) ([]ProcessIdentity, error) {
+	var members []ProcessIdentity
+	var jobErr error
+	// The owner mutex keeps the job open while its membership is queried.
+	if o.platform.job != nil {
+		if handle := o.platform.job.handle.Load(); handle != 0 {
+			members, jobErr = readWindowsJobMembers(ctx, windows.Handle(handle))
+		}
+	}
+	if o.cmd != nil {
+		return members, jobErr
+	}
+	// Windows does not add preexisting children when we adopt a running
+	// process. Recover their identities through verified ancestry too.
+	children, ancestryErr := o.findHostDescendantsLocked(ctx)
+	return append(members, children...), errors.Join(jobErr, ancestryErr)
 }
 
 func (p *processOwnerPlatform) cancel(ProcessIdentity) error {

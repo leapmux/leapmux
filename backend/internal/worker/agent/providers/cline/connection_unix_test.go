@@ -4,17 +4,21 @@ package cline
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -129,9 +133,9 @@ func cancelClineWhileDraining(t *testing.T, candidate, wrapper string) error {
 	defer cancel()
 	deadline := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
-	drain := clock.Trap().NewTimer("wrapped-process-drain")
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
 	t.Cleanup(drain.Close)
-	stop := clock.Trap().NewTimer("process-stop-grace")
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
 	t.Cleanup(stop.Close)
 	outcome := make(chan error, 1)
 	attempts := 0
@@ -149,13 +153,58 @@ func cancelClineWhileDraining(t *testing.T, candidate, wrapper string) error {
 	testutil.WaitForTimer(t, deadline, stop)
 	require.NoError(t, writer.CloseWrite())
 
+	err := agenttest.AwaitStartupOutcome(t, deadline, outcome)
+	assert.NotErrorIs(t, err, errAddressInUse)
+	assert.Equal(t, 1, attempts)
+	return err
+}
+
+func TestClineKeepsAnObservedBindFailureAfterItsDiscoveryDeadline(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	port := listener.Addr().(*net.TCPAddr).Port
+	profile := agenttest.InstallStartupExhaustionProfile(t, "TestClineStartupExhaustionPeer", false)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	filename := os.Getenv("BASH_ENV")
+	startup, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filename, append(startup,
+		("leapmux_cline_bind() { "+failedBindWitnessEnv+"=37 "+shellquote.POSIX.Quote(executable)+
+			" -test.run=^TestClineBindFailureWitness$; }\n")...), 0o600))
+
+	dir := t.TempDir()
+	clock := testutil.NewQuartzMock(t)
+	discovery := clock.Trap().NewTimer("cline", "discovery-deadline")
+	t.Cleanup(discovery.Close)
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
+	t.Cleanup(drain.Close)
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
+	t.Cleanup(stop.Close)
+	deadline := testutil.DeadlineContext(t)
+	const timeout = 50 * time.Millisecond
+	opts := agent.Options{Shell: profile.Shell, WorkingDir: dir, StartupTimeout: timeout}
+	outcome := make(chan error, 1)
+	go func() {
+		_, err := startDaemonOnPort(deadline, opts, launch.ShellCommands("leapmux_cline_bind"), dir, port, clock)
+		outcome <- err
+	}()
+	require.Equal(t, timeout, testutil.WaitForTimer(t, deadline, discovery))
+	writer := profile.FinishSelection(t)
+	testutil.WaitForTimer(t, deadline, drain)
+	advanced := clock.Advance(timeout)
+	testutil.WaitForTimer(t, deadline, stop)
+	advanced.MustWait(deadline)
+	require.NoError(t, writer.CloseWrite())
 	select {
 	case err := <-outcome:
-		assert.NotErrorIs(t, err, errAddressInUse)
-		assert.Equal(t, 1, attempts)
-		return err
+		require.ErrorIs(t, err, errAddressInUse)
+		assert.ErrorContains(t, err, strconv.Itoa(port))
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		assert.Equal(t, 37, exit.ExitCode())
 	case <-deadline.Done():
-		t.Fatal("Cline did not return after the writer closed stdout")
-		return nil
+		t.Fatal("Cline did not return its finalized bind failure")
 	}
 }

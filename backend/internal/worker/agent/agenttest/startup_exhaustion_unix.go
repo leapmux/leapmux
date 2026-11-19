@@ -4,6 +4,7 @@ package agenttest
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -101,15 +102,24 @@ type InheritedWriter struct {
 
 func NewInheritedWriter(t *testing.T, peerTest string) InheritedWriter {
 	t.Helper()
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	require.NoError(t, listener.SetDeadline(time.Now().Add(30*time.Second)))
+	listener := ListenForProcessPeer(t, 30*time.Second)
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	command := inheritedWriterAddress + "=" + shellquote.POSIX.Quote(listener.Addr().String()) +
 		" " + inheritedWriterShellPID + "=$$ " + shellquote.POSIX.Quote(executable) + " -test.run=^" + peerTest + "$"
 	return InheritedWriter{ShellCommand: command, listener: listener}
+}
+
+// AwaitStartupOutcome waits for the startup goroutine after releasing its writer.
+func AwaitStartupOutcome(t *testing.T, deadline context.Context, outcome <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-outcome:
+		return err
+	case <-deadline.Done():
+		t.Fatal("startup did not return after the writer closed stdout")
+		return nil
+	}
 }
 
 // Accept returns the connection and the exact identities of the peer and its

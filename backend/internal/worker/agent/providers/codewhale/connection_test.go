@@ -8,14 +8,60 @@ import (
 	"testing"
 	"time"
 
+	gopsnet "github.com/shirou/gopsutil/v4/net"
+
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRuntimeListenerSnapshotReadsOnceAndAcceptsOnlyAUniqueOwnedListener(t *testing.T) {
+	t.Parallel()
+	self, found := procutil.IdentifyProcess(os.Getpid())
+	require.True(t, found)
+	parent, found := procutil.IdentifyProcess(os.Getppid())
+	require.True(t, found)
+	const port = 8291
+	socket := func(pid int, status, ip string, port uint32) gopsnet.ConnectionStat {
+		return gopsnet.ConnectionStat{Pid: int32(pid), Status: status, Laddr: gopsnet.Addr{IP: ip, Port: port}}
+	}
+	owned := socket(self.PID, "LISTEN", "127.0.0.1", port)
+	other := socket(parent.PID, "LISTEN", "127.0.0.1", port)
+	readCount := 0
+	readConnections := func(_ context.Context, kind string) ([]gopsnet.ConnectionStat, error) {
+		readCount++
+		assert.Equal(t, "tcp4", kind)
+		return []gopsnet.ConnectionStat{
+			other, owned, owned,
+			socket(parent.PID, "ESTABLISHED", "127.0.0.1", port),
+			socket(parent.PID, "LISTEN", "0.0.0.0", port),
+			socket(parent.PID, "LISTEN", "127.0.0.1", port+1),
+		}, nil
+	}
+	staleParent := parent
+	staleParent.StartTime++
+	identity, found := runtimeListenerFromSnapshot(t.Context(), []procutil.ProcessIdentity{self, staleParent}, port, readConnections)
+	require.True(t, found)
+	assert.Equal(t, self, identity)
+	assert.Equal(t, 1, readCount)
+	identity, found = runtimeListenerFromSnapshot(t.Context(), []procutil.ProcessIdentity{self, parent}, port, readConnections)
+	assert.False(t, found)
+	assert.Zero(t, identity)
+	assert.Equal(t, 2, readCount)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	identity, found = runtimeListenerFromSnapshot(ctx, []procutil.ProcessIdentity{self}, port, func(context.Context, string) ([]gopsnet.ConnectionStat, error) {
+		cancel()
+		return []gopsnet.ConnectionStat{owned}, nil
+	})
+	assert.False(t, found)
+	assert.Zero(t, identity)
+}
 
 func TestRuntimeEnvPinsTheStoreAndTheToken(t *testing.T) {
 	t.Parallel()

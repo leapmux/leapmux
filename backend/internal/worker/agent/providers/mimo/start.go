@@ -64,7 +64,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = mimoLaunchEnv(cmd.Environ(), secret, opts)
@@ -75,14 +74,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 	a := newAgentState(sink, mimoRPC{timeout: opts.EffectiveAPITimeout()}, opts.WorkingDir, quartz.NewReal())
-	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, StopSignal: mimoStopSignal}, pipes, ctx, cancel)
+	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, StopSignal: mimoStopSignal}, pipes, ctx, cancel)
 	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 	a.DrainStderr(stderrPipe)
 
 	listening := providerkit.NewListenWaiter(mimoListenPattern)
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		if !listening.Observe(line) {
 			slog.Debug("mimo stdout", "agent_id", a.AgentID(), "line", string(line))
 		}

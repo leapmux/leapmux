@@ -155,7 +155,6 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		cancel()
 		return nil, errors.Join(err, directory.Close())
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
@@ -168,7 +167,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 
 	a := &Agent{
 		directory:     directory,
-		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "omp", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, Clock: clock}, pipes, ctx, cancel),
+		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "omp", ShutdownGrace: registration.ShutdownGrace, Clock: clock}, pipes, ctx, cancel),
 		sink:          agent.NewModelProgressResetSink(sink),
 		workingDir:    opts.WorkingDir,
 		ready:         make(chan readyFrame, 1),
@@ -183,7 +182,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		return nil, errors.Join(err, directory.Close())
 	}
 	a.DrainStderr(stderrPipe)
-	go a.ReadOutput(agent.NewStdoutScanner(stdout), a.interceptFrame, a.handleFrame)
+	go a.ReadOutput(a.NewOutputScanner(stdout), a.interceptFrame, a.handleFrame)
 
 	cleanup := func() {
 		a.Stop()

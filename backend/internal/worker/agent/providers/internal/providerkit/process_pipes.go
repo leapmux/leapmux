@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coder/quartz"
@@ -16,6 +15,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/util/procutil"
 )
+
+// WrappedProcessDrainTimerTag identifies the Quartz timer for the wrapped output drain.
+const WrappedProcessDrainTimerTag = "wrapped-process-drain"
 
 // ProcessPipes constructs one command and its owner together. Callers cannot replace either field.
 type ProcessPipes struct {
@@ -28,14 +30,11 @@ type ProcessPipes struct {
 	childPipes         []io.Closer
 	childCloseOnce     sync.Once
 	childCloseErr      error
-	stderrCloseOnce    sync.Once
-	stderrCloseErr     error
+	closeStderr        func() error
 	nativeExitObserved chan struct{}
-	outputDrainExpired atomic.Bool
 	readersClosed      chan struct{}
 	closeReadersOnce   sync.Once
-	stdoutCloseOnce    sync.Once
-	stdoutCloseErr     error
+	closeStdout        func() error
 }
 
 func (p *ProcessPipes) Stdin() io.WriteCloser { return p.stdin }
@@ -74,6 +73,8 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessEx
 		return nil, errors.Join(errors.New("the process command is absent"), prepared.Close())
 	}
 	pipes := &ProcessPipes{prepared: prepared, cmd: cmd, owner: procutil.PrepareProcessWithExitObserver(cmd, observer)}
+	pipes.closeStdout = sync.OnceValue(func() error { return closeOwnedPipe(pipes.stdout) })
+	pipes.closeStderr = sync.OnceValue(func() error { return closeOwnedPipe(pipes.stderr) })
 	fail := func(cause error) (*ProcessPipes, error) {
 		if closeErr := pipes.Close(); closeErr != nil {
 			cause = errors.Join(cause, closeErr)
@@ -105,7 +106,7 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessEx
 		if err != nil {
 			return fail(fmt.Errorf("stdout pipe: %w", err))
 		}
-		pipes.stdout, cmd.Stdout = reader, writer
+		pipes.stdout, cmd.Stdout = newProcessOutputPipe(reader), writer
 		pipes.nativeExitObserved = make(chan struct{})
 		pipes.readersClosed = make(chan struct{})
 	}
@@ -120,6 +121,9 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessEx
 		return fail(fmt.Errorf("stderr pipe: %w", err))
 	}
 	pipes.stderr, cmd.Stderr = reader, writer
+	if prepared != nil {
+		pipes.stderr = newProcessOutputPipe(reader)
+	}
 	pipes.childPipes = append(pipes.childPipes, writer)
 	return pipes, nil
 }
@@ -153,14 +157,13 @@ func (p *ProcessPipes) waitAndLimitDrain(clock quartz.Clock, drainLimit time.Dur
 	}
 	close(p.nativeExitObserved)
 
-	timer := clock.NewTimer(drainLimit, "wrapped-process-drain")
-	defer timer.Stop("wrapped-process-drain")
+	timer := clock.NewTimer(drainLimit, WrappedProcessDrainTimerTag)
+	defer timer.Stop(WrappedProcessDrainTimerTag)
 	select {
 	case <-p.readersClosed:
 	case <-timer.C:
-		p.outputDrainExpired.Store(true)
-		_ = p.closeStdoutReader()
-		_ = p.closeStderrReader()
+		finishPipeDrain(p.stdout, p.closeStdout)
+		finishPipeDrain(p.stderr, p.closeStderr)
 	}
 }
 
@@ -170,7 +173,7 @@ func (p *ProcessPipes) copyOutput(stdout, stderr io.Writer) error {
 	results := make(chan error, 2)
 	copyStream := func(dst io.Writer, src io.Reader) {
 		_, err := io.Copy(dst, src)
-		if p.outputDrainExpired.Load() && errors.Is(err, os.ErrClosed) {
+		if DrainLimitReached(err) {
 			err = nil
 		}
 		results <- err
@@ -184,7 +187,8 @@ func (p *ProcessPipes) copyOutput(stdout, stderr io.Writer) error {
 	return second
 }
 
-// Wait returns the native status without consuming either reader.
+// Wait returns the native status. For raw commands, drain stdout first
+// because exec.Cmd.Wait closes that reader.
 func (p *ProcessPipes) Wait() error { return p.owner.Wait() }
 
 // NativeExitObserved reports whether the owner has recorded the process exit.
@@ -228,17 +232,12 @@ func (p *ProcessPipes) closeChildPipes() error {
 	return p.childCloseErr
 }
 
-func (p *ProcessPipes) closeStderrReader() error {
-	if p == nil {
-		return nil
+func finishPipeDrain(reader io.ReadCloser, closeReader func() error) {
+	if pipe, ok := reader.(*processOutputPipe); ok {
+		pipe.stopDraining()
+	} else {
+		_ = closeReader()
 	}
-	p.stderrCloseOnce.Do(func() { p.stderrCloseErr = closeOwnedPipe(p.stderr) })
-	return p.stderrCloseErr
-}
-
-func (p *ProcessPipes) closeStdoutReader() error {
-	p.stdoutCloseOnce.Do(func() { p.stdoutCloseErr = closeOwnedPipe(p.stdout) })
-	return p.stdoutCloseErr
 }
 
 func (p *ProcessPipes) Close() error {
@@ -252,6 +251,6 @@ func (p *ProcessPipes) closeProcess() error {
 	if p.readersClosed != nil {
 		p.closeReadersOnce.Do(func() { close(p.readersClosed) })
 	}
-	return errors.Join(p.closeChildPipes(), closeOwnedPipe(p.stdin), p.closeStdoutReader(),
-		p.closeStderrReader(), p.owner.Close())
+	// Closing a pipe can make the root exit and reparent a child before capture.
+	return errors.Join(p.owner.Close(), p.closeChildPipes(), closeOwnedPipe(p.stdin), p.closeStdout(), p.closeStderr())
 }

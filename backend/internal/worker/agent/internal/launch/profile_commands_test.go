@@ -30,8 +30,9 @@ const profilePeerStripEnv = "LEAPMUX_TEST_PROFILE_COMMAND_STRIP"
 const profilePeerLiteralEnv = "LEAPMUX_TEST_PROFILE_COMMAND_LITERAL"
 
 type profilePeerEnvironment struct {
-	Stripped *string
-	Literal  *string
+	Stripped  *string
+	Literal   *string
+	Transport []string
 }
 
 func profilePeerEnvironmentValue(name string) *string {
@@ -64,8 +65,9 @@ func TestProfileCommandPeer(t *testing.T) {
 		}
 		if os.Getenv(profilePeerEnvironmentEnv) == "1" {
 			environment := profilePeerEnvironment{
-				Stripped: profilePeerEnvironmentValue(profilePeerStripEnv),
-				Literal:  profilePeerEnvironmentValue(profilePeerLiteralEnv),
+				Stripped:  profilePeerEnvironmentValue(profilePeerStripEnv),
+				Literal:   profilePeerEnvironmentValue(profilePeerLiteralEnv),
+				Transport: testPinVariableNames(),
 			}
 			if err := encoder.Encode(environment); err != nil {
 				os.Exit(2)
@@ -105,6 +107,29 @@ func wrapTestCommand(t *testing.T, ctx context.Context, spec WrapSpec) (*exec.Cm
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
 	return prepared.Cmd, prepared.Delimiter, prepared.MetaPrefix
+}
+
+func assertProfileCandidateExhaustion(t *testing.T, shell string, names ...string) string {
+	t.Helper()
+	spec, err := Binaries(names...).Resolve(t.Context(), shell, false, "Missing candidate test")
+	require.NoError(t, err)
+	prepared, err := Wrap(t.Context(), WrapSpec{Shell: shell, Launch: spec})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	diagnostics := prepared.NewDiagnostics(1024)
+	prepared.Cmd.Stderr = diagnostics
+	output, waitErr := prepared.Cmd.Output()
+	diagnostics.Finish()
+	err = diagnostics.ExitError(waitErr, false)
+	require.ErrorIs(t, err, ErrNoCandidate)
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 127, exit.ExitCode())
+	for _, name := range names {
+		assert.ErrorContains(t, err, name)
+	}
+	assert.NotContains(t, string(output), prepared.Delimiter)
+	return diagnostics.String()
 }
 
 const requiredProfileShellsEnv = "LEAPMUX_REQUIRE_PROFILE_SHELLS"
@@ -158,7 +183,7 @@ func TestProfileCommandPowerShellRegistrySizedProbe(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			script := renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false)
-			cmd, err := newShellCommand(ctx, shell, false, script, t.TempDir())
+			cmd, err := newShellCommand(ctx, shell, false, script, t.TempDir(), nil)
 			require.NoError(t, err)
 			quote := shellquote.PowerShell.Quote
 			prependPowerShellProfile(cmd, "$env:PATH = "+quote(filepath.Dir(shell))+"\n"+
@@ -241,6 +266,13 @@ func assertProfileCommandExchangeWithEnvironment(t *testing.T, cmd *exec.Cmd, de
 	assert.Contains(t, diagnostics.String(), "provider diagnostic")
 }
 
+type observedProfileExits map[procutil.ProcessIdentity]error
+
+func (exits observedProfileExits) ObserveExit(_ context.Context, identity procutil.ProcessIdentity, err error) error {
+	exits[identity] = err
+	return nil
+}
+
 func assertProfileCommandCancellation(t *testing.T, ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, childMustDiffer bool) {
 	t.Helper()
 	cmd.Env = append(cmd.Environ(), profilePeerIdentityEnv+"=1")
@@ -249,7 +281,8 @@ func assertProfileCommandCancellation(t *testing.T, ctx context.Context, cancel 
 	defer func() { _ = stdin.Close() }()
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
-	owner := procutil.PrepareProcess(cmd)
+	exits := make(observedProfileExits)
+	owner := procutil.PrepareProcessWithExitObserver(cmd, exits)
 	require.NoError(t, owner.Start())
 	t.Cleanup(func() { assert.NoError(t, owner.Close()); _ = owner.Wait() })
 
@@ -278,5 +311,8 @@ func assertProfileCommandCancellation(t *testing.T, ctx context.Context, cancel 
 	require.Error(t, owner.Wait())
 	require.NoError(t, owner.Close())
 	assert.False(t, root.Runs())
-	assert.False(t, child.Runs())
+	// An exited child can keep its PID until its parent reaps it.
+	exit, observed := exits[child]
+	require.True(t, observed, "the owner must observe the exit of provider process %d", child.PID)
+	assert.NoError(t, exit)
 }

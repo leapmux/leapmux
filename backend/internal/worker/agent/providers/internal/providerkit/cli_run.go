@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -106,7 +105,7 @@ func RunCLI(ctx context.Context, run CLIRun) (output []byte, resultErr error) {
 			output, resultErr = nil, errors.Join(resultErr, err)
 		}
 	}()
-	stdout := LimitedBuffer{Limit: run.MaxOutput}
+	stdout := launch.LimitedBuffer{Limit: run.MaxOutput}
 	stderr := prepared.NewDiagnostics(maxCLIStderr)
 	// Observe the native exit without waiting for inherited writers to close.
 	// Keep the CLI's output drain limit, even when the command has exited.
@@ -161,38 +160,3 @@ func AfterPreamble(output []byte, delimiter string) ([]byte, bool) {
 	}
 	return nil, false
 }
-
-// LimitedBuffer keeps at most Limit bytes and records whether it dropped any.
-// It keeps accepting writes past the limit, so a child never stalls on a full
-// pipe.
-//
-// It holds its buffer in a field rather than embedding it. An embedded
-// bytes.Buffer would promote ReadFrom. io.Copy prefers ReadFrom to Write,
-// so the limit would never apply.
-type LimitedBuffer struct {
-	buf       bytes.Buffer
-	Limit     int
-	Truncated bool
-}
-
-func (b *LimitedBuffer) Write(data []byte) (int, error) {
-	room := b.Limit - b.buf.Len()
-	if room <= 0 {
-		b.Truncated = b.Truncated || len(data) > 0
-		return len(data), nil
-	}
-	if len(data) > room {
-		b.Truncated = true
-		_, _ = b.buf.Write(data[:room])
-		return len(data), nil
-	}
-	return b.buf.Write(data)
-}
-
-// Bytes returns what the buffer kept.
-func (b *LimitedBuffer) Bytes() []byte { return b.buf.Bytes() }
-
-// String returns what the buffer kept.
-func (b *LimitedBuffer) String() string { return b.buf.String() }
-
-var _ io.Writer = (*LimitedBuffer)(nil)

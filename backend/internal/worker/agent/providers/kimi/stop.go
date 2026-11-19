@@ -57,11 +57,6 @@ func (a *Agent) Stop() {
 	a.Mu.Unlock()
 	a.cancelMediaSession(sessionID)
 	a.shutdownServer()
-	// Close the stream before Process.Stop so it cannot redial during local
-	// shutdown. Wait joins its goroutines.
-	if a.stream != nil {
-		a.stream.close()
-	}
 	a.Process.Stop()
 	if a.endpoint != nil {
 		a.endpoint.Close()
@@ -88,23 +83,13 @@ func (a *Agent) captureServerOwnership() bool {
 // shutdownServer runs the native protocol steps while this instance remains
 // live. Descendants can change during abort, so shutdown captures them again.
 func (a *Agent) shutdownServer() {
-	if a.api == nil {
-		return
+	allowed := a.abortTurnForShutdown()
+	// Close the stream before the server starts closing connections.
+	// Wait joins the stream goroutines.
+	if a.stream != nil {
+		a.stream.close()
 	}
-	a.Mu.Lock()
-	sessionID, active := a.sessionID, a.turnActive
-	a.Mu.Unlock()
-	if active && kimiCheckID("session", sessionID) == nil {
-		if !a.captureServerOwnership() {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
-		if err := a.api.post(ctx, kimiSessionPath(sessionID, kimiActionAbort), nil, nil); err != nil {
-			slog.Debug("kimi abort on stop", "agent_id", a.AgentID(), "error", err)
-		}
-		cancel()
-	}
-	if !a.captureServerOwnership() {
+	if !allowed || !a.captureServerOwnership() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
@@ -112,6 +97,26 @@ func (a *Agent) shutdownServer() {
 	if err := a.api.post(ctx, kimiRouteShutdown, nil, nil); err != nil {
 		slog.Debug("kimi shutdown request", "agent_id", a.AgentID(), "error", err)
 	}
+}
+
+func (a *Agent) abortTurnForShutdown() bool {
+	if a.api == nil {
+		return false
+	}
+	a.Mu.Lock()
+	sessionID, active := a.sessionID, a.turnActive
+	a.Mu.Unlock()
+	if active && kimiCheckID("session", sessionID) == nil {
+		if !a.captureServerOwnership() {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
+		if err := a.api.post(ctx, kimiSessionPath(sessionID, kimiActionAbort), nil, nil); err != nil {
+			slog.Debug("kimi abort on stop", "agent_id", a.AgentID(), "error", err)
+		}
+		cancel()
+	}
+	return true
 }
 
 // Wait waits for the server to exit. It then ends the event stream, waits until

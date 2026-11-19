@@ -49,7 +49,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	delimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pins...)
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
@@ -62,7 +61,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		sink: agent.NewModelProgressResetSink(sink), rpc: openCodeRPC{timeout: opts.EffectiveAPITimeout()},
 		runs: make(map[string]*openCodeRun), nativeCancel: cancel,
 	}
-	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "opencode", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)
+	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "opencode", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)
 	if err := a.StartCmd(); err != nil {
 		cancel()
 		return nil, err
@@ -70,12 +69,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	defer func() {
 		if retErr != nil {
 			a.Stop()
-			retErr = errors.Join(retErr, a.Wait())
+			waitErr := a.Wait()
+			retErr = errors.Join(a.FinalizeStartupCause(retErr), waitErr)
 		}
 	}()
 	a.DrainStderr(stderr)
 	listener := providerkit.NewListenWaiter(openCodeListenPattern)
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		if !listener.Observe(line) {
 			slog.Debug("OpenCode emitted a non-readiness stdout line", "agent_id", a.AgentID(), "bytes", len(line))
 		}

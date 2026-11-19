@@ -55,6 +55,6 @@ func TestClaudeStartupKeepsCandidateExhaustionAfterAnEarlyTransportError(t *test
 		require.ErrorAs(t, err, &status)
 		assert.Equal(t, 127, status.ExitCode())
 	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("startup did not return after the bounded output drain")
+		t.Fatal("startup did not return by the test deadline after cancellation during the output drain")
 	}
 }

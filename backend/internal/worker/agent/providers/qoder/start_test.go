@@ -8,6 +8,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,9 +55,10 @@ func TestQoderStartupReportsTheMissingCommand(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 	home := t.TempDir()
+	dirs := agentdirtest.NewDirs(t, []agentdir.Spec{agentDirSpec()})
 	started, err := Start(t.Context(), agent.Options{
 		AgentID: "missing-qoder", HomeDir: home, WorkingDir: home, Shell: "/bin/sh",
-		StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
+		AgentDirs: dirs, StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Nil(t, started)
 	require.ErrorIs(t, err, launch.ErrNoCandidate)

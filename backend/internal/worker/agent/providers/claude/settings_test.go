@@ -228,7 +228,7 @@ func TestClaudeModelEffortGate(t *testing.T) {
 	cmd, metaPrefix := prepared.Cmd, prepared.MetaPrefix
 
 	for _, v := range gate.EnvVars {
-		assert.Contains(t, cmd.Args[2], `[ -n "$`+v+`" ]`)
+		assert.Contains(t, cmd.Args[2], `[ -n "${`+v+`-}" ]`)
 	}
 	assert.Contains(t, cmd.Args[2], metaPrefix+"can_change_model_and_effort=false")
 	assert.Contains(t, cmd.Args[2], metaPrefix+"can_change_model_and_effort=true")

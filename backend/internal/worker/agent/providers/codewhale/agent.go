@@ -420,7 +420,7 @@ func (a *Agent) Stop() {
 	stopped := a.StoppedLocked()
 	threadID, turnID := a.threadID, a.turnID
 	a.Mu.Unlock()
-	if !stopped && threadID != "" && turnID != "" && a.endpoint != nil {
+	if !stopped && a.IntentionalStopRequested() && threadID != "" && turnID != "" && a.endpoint != nil {
 		_ = a.interruptTurn(threadID, turnID, codewhaleStopInterruptTimeout)
 	}
 	a.children.stopAll()
@@ -435,7 +435,7 @@ func (a *Agent) Stop() {
 	// After waitForStream, for the same happens-before as Wait's join: the
 	// stream goroutine is the only spawner of catalog refreshes.
 	a.catalogRefreshes.Wait()
-	a.finishAfterExit(agent.MessageCompletionInterrupted)
+	a.finishAfterExit(a.ProcessExitCompletion())
 	if a.endpoint != nil {
 		a.endpoint.Close()
 	}

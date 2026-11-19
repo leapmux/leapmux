@@ -49,7 +49,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, errors.Join(err, directory.Close())
 	}
-	delimiter, meta := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinnedEnv...)
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
@@ -58,7 +57,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	a := newAgent(agent.NewModelProgressResetSink(sink), opts.WorkingDir)
-	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "dsh", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: meta}, pipes, ctx, cancel)
+	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "dsh", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)
 	a.directory = directory
 	a.imageReceipts = imageReceipts
 	a.sink = agent.NewModelProgressResetSink(newToolTranscript(ctx, sink, a))
@@ -68,7 +67,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.DrainStderr(stderr)
 	listen := providerkit.NewListenWaiter(nativeListenPattern)
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		listen.Observe(line)
 		if !nativeListenPattern.Match(line) {
 			slog.Debug("DeepSeek Harness stdout", "agent_id", a.AgentID(), "line", string(line))

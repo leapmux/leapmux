@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -10,8 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,10 +75,7 @@ func TestClaudeStartupDeadlineStopsABlockedProfile(t *testing.T) {
 	}
 	shell, err := exec.LookPath("bash")
 	require.NoError(t, err)
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	require.NoError(t, listener.SetDeadline(time.Now().Add(15*time.Second)))
+	listener := agenttest.ListenForProcessPeer(t, 15*time.Second)
 	dir := t.TempDir()
 	executable, err := os.Executable()
 	require.NoError(t, err)
@@ -104,16 +97,7 @@ func TestClaudeStartupDeadlineStopsABlockedProfile(t *testing.T) {
 		}
 		outcome <- err
 	}()
-	conn, err := listener.Accept()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(15*time.Second)))
-	line, err := bufio.NewReader(conn).ReadString('\n')
-	require.NoError(t, err)
-	pid, err := strconv.Atoi(strings.TrimSpace(line))
-	require.NoError(t, err)
-	identity, present := procutil.IdentifyProcess(pid)
-	require.True(t, present)
+	identity, _ := agenttest.AcceptProcessPeer(t, listener, 15*time.Second)
 	t.Cleanup(func() { _, _ = identity.Kill() })
 	select {
 	case err := <-outcome:

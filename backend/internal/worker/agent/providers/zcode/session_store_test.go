@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
@@ -506,11 +506,7 @@ func TestZCodeStorageReportsSelectedExitWithoutAcknowledgement(t *testing.T) {
 				inheritedStorageWriterEnv+"=", activeStorageWriterEnv+"=")
 			var listener *net.TCPListener
 			if test.hold {
-				var err error
-				listener, err = net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-				require.NoError(t, err)
-				t.Cleanup(func() { _ = listener.Close() })
-				require.NoError(t, listener.SetDeadline(time.Now().Add(10*time.Second)))
+				listener = agenttest.ListenForProcessPeer(t, 10*time.Second)
 				env = append(env, inheritedStorageWriterEnv+"="+listener.Addr().String())
 			}
 			executable, err := os.Executable()
@@ -521,7 +517,7 @@ func TestZCodeStorageReportsSelectedExitWithoutAcknowledgement(t *testing.T) {
 			if test.exceed {
 				clock := testutil.NewQuartzMock(t)
 				storage.clock = clock
-				drain := clock.Trap().NewTimer("wrapped-process-drain")
+				drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
 				t.Cleanup(drain.Close)
 				env = append(env, activeStorageWriterEnv+"=oversized-line")
 				releaseWriter = func(conn net.Conn) {
@@ -571,10 +567,7 @@ func TestZCodeStorageReportsExhaustionWhileAProfileWriterHoldsStdout(t *testing.
 		t.Skip("uses a POSIX shell profile")
 	}
 	dir := t.TempDir()
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	require.NoError(t, listener.SetDeadline(time.Now().Add(10*time.Second)))
+	listener := agenttest.ListenForProcessPeer(t, 10*time.Second)
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	shell := filepath.Join(dir, "profile-shell")
@@ -620,10 +613,7 @@ func TestZCodeStorageQueryStopsAnActiveProfileAtTheOutputLimit(t *testing.T) {
 	require.NoError(t, err)
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	require.NoError(t, listener.SetDeadline(time.Now().Add(15*time.Second)))
+	listener := agenttest.ListenForProcessPeer(t, 15*time.Second)
 
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "profile")
@@ -663,16 +653,7 @@ func TestZCodeStorageQueryStopsAnActiveProfileAtTheOutputLimit(t *testing.T) {
 
 func awaitInheritedStorageWriter(t *testing.T, listener *net.TCPListener) (procutil.ProcessIdentity, net.Conn) {
 	t.Helper()
-	conn, err := listener.Accept()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(10*time.Second)))
-	line, err := bufio.NewReader(conn).ReadString('\n')
-	require.NoError(t, err)
-	pid, err := strconv.Atoi(strings.TrimSpace(line))
-	require.NoError(t, err)
-	identity, present := procutil.IdentifyProcess(pid)
-	require.True(t, present)
+	identity, conn := agenttest.AcceptProcessPeer(t, listener, 10*time.Second)
 	t.Cleanup(func() {
 		_ = conn.Close()
 		_, _ = identity.Kill()

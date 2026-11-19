@@ -117,7 +117,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
@@ -136,7 +135,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// reader reads the permission settings to decide a standing approval, so a write
 	// after `go ReadOutputLoop` would race it.
 	a := &Agent{
-		JSONRPCProcess:    providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)},
+		JSONRPCProcess:    providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)},
 		model:             opts.Model(),
 		effort:            opts.Effort(),
 		workingDir:        opts.WorkingDir,
@@ -156,7 +155,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.DrainStderr(stderrPipe)
 
 	// Read stdout JSONL in background.
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.ReadOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {

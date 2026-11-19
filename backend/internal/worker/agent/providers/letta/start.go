@@ -51,7 +51,6 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
@@ -64,7 +63,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "letta", ShutdownGrace: shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "letta", ShutdownGrace: shutdownGrace}, pipes, ctx, cancel),
 		sink:          agent.NewModelProgressResetSink(sink),
 		workingDir:    opts.WorkingDir,
 		taskLogRoot:   taskLogRoot,
@@ -78,7 +77,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	a.DrainStderr(stderrPipe)
 
 	ready := newLettaReadyReader()
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		if ready.observe(line) {
 			return
 		}

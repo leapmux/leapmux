@@ -11,11 +11,10 @@ import (
 // ErrNoCandidate reports that the launch shell completed selection without finding a command.
 var ErrNoCandidate = errors.New("none of the provider commands were found")
 
-// Diagnostics retains bounded stderr and recognizes the launch record even
-// after the display buffer fills. Its caller serializes access.
+// Diagnostics retains stderr up to its display limit and recognizes the
+// launch record after the display buffer fills. The caller serializes access.
 type Diagnostics struct {
-	text        bytes.Buffer
-	limit       int
+	text        LimitedBuffer
 	marker      []byte
 	candidates  []string
 	pending     []byte
@@ -25,12 +24,11 @@ type Diagnostics struct {
 
 // NewDiagnostics prepares a separate stderr reader for this invocation.
 func (p *PreparedLaunch) NewDiagnostics(limit int) *Diagnostics {
-	return &Diagnostics{limit: limit, marker: []byte(p.exhaustedMarker), candidates: p.candidates}
+	return &Diagnostics{text: LimitedBuffer{Limit: limit}, marker: []byte(p.exhaustedMarker), candidates: p.candidates}
 }
 
 func (d *Diagnostics) keep(data []byte) {
-	length := min(len(data), max(0, d.limit-d.text.Len()))
-	_, _ = d.text.Write(data[:length])
+	_, _ = d.text.Write(data)
 }
 
 func (d *Diagnostics) Write(data []byte) (int, error) {
@@ -71,6 +69,9 @@ func (d *Diagnostics) Finish() {
 }
 
 func (d *Diagnostics) String() string { return d.text.String() }
+
+// DisplayFull reports whether stderr has reached its display limit.
+func (d *Diagnostics) DisplayFull() bool { return d.text.Full() }
 
 // ExitError adds the attempted command names only for a confirmed
 // exhaustion record and keeps the original process status available to callers.

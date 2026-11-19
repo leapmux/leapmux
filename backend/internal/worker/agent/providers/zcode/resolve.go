@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -288,13 +289,11 @@ func (s *zcodeInterpreterSearch) try(candidates ...zcodeInterpreter) (launch.Spe
 	for _, c := range candidates {
 		res := s.deps.probeInterpreter(s.ctx, c.program, c.env)
 		if res == launch.ProbeYes {
-			env := make([]string, 0, len(c.env)+len(s.launchEnv))
-			env = append(env, c.env...)
-			env = append(env, s.launchEnv...)
 			return launch.Spec{
-				Program:    c.program,
-				PrefixArgs: []string{s.script},
-				Env:        env,
+				Program:     c.program,
+				PrefixArgs:  []string{s.script},
+				Env:         slices.Clone(s.launchEnv),
+				RequiredEnv: slices.Clone(c.env),
 			}, true
 		}
 		if !res.Settled() {

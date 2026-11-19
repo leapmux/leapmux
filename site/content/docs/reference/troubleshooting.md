@@ -597,7 +597,7 @@ Install the CLI on the Worker or define a forwarding alias or function in a prof
 
 The Worker requests login mode by default for provider discovery and launch when the configured shell supports it. To omit the login flags, set `use_login_shell: false` in the Worker or Solo configuration file, or pass `--use-login-shell=false` to `leapmux worker` or `leapmux solo` when starting or restarting the service. The shell may still read profiles in its default mode. Windows PowerShell 5.1 loads profiles without a login flag.
 
-Agent launches support Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Xonsh, Windows PowerShell 5.1 (`powershell.exe`), and PowerShell 7 (`pwsh`). Nushell 0.114 or newer supports profile wrappers through deferred parsing. Earlier Nushell versions can launch executable commands. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
+Agent launches support Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Xonsh, Windows PowerShell 5.1 (`powershell.exe`), and PowerShell 7 (`pwsh`). Use a current Nushell release for agent commands. LeapMux uses deferred parsing to invoke Nushell profile wrappers. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
 
 ### ZCode isn't in the picker
 

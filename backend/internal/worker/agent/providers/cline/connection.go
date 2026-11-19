@@ -238,6 +238,7 @@ func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spe
 
 func retryDaemonPort(ctx context.Context, agentID string, start func(port int) (*daemonStart, error)) (*daemonStart, error) {
 	var lastErr error
+	var rejectedPort int
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -245,6 +246,9 @@ func retryDaemonPort(ctx context.Context, agentID string, start func(port int) (
 		port, err := freePort()
 		if err != nil {
 			return nil, err
+		}
+		if attempt > 0 {
+			slog.Info("cline hub port was taken; retrying with another", "agent_id", agentID, "port", rejectedPort)
 		}
 		started, err := start(port)
 		if err == nil {
@@ -254,7 +258,7 @@ func retryDaemonPort(ctx context.Context, agentID string, start func(port int) (
 		if !errors.Is(err, errAddressInUse) {
 			return nil, err
 		}
-		slog.Info("cline hub port was taken; retrying with another", "agent_id", agentID, "port", port)
+		rejectedPort = port
 	}
 	return nil, lastErr
 }
@@ -276,7 +280,6 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
@@ -285,7 +288,7 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 		return nil, err
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
-	process := providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "cline", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, Clock: clock}, pipes, procCtx, cancel)
+	process := providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "cline", ShutdownGrace: registration.ShutdownGrace, Clock: clock}, pipes, procCtx, cancel)
 	if err := ctx.Err(); err != nil {
 		cancel()
 		return nil, errors.Join(err, pipes.Close())
@@ -296,7 +299,7 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 	process.DrainStderr(stderr)
 	// The daemon prints nothing that the worker reads on stdout, but the pipe
 	// must drain, or a daemon that logs there would block.
-	go process.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go process.ReadLines(process.NewOutputScanner(stdout), func(line []byte) {
 		slog.Debug("cline hub output", "agent_id", opts.AgentID, "line", string(line))
 	})
 
@@ -314,14 +317,12 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 			}
 			return nil, process.FormatStartupError("hub start", cause)
 		}
+		cause := process.FinalizeStartupCause(err)
 		var exit *exec.ExitError
-		if errors.Is(err, errDaemonExited) && errors.As(waitErr, &exit) {
-			if process.Ready() && exit.ExitCode() > 0 && strings.Contains(process.Stderr(), "EADDRINUSE") {
-				return nil, process.FormatStartupError("hub start", fmt.Errorf("%w (%w)", errAddressInUse, waitErr))
-			}
-			err = fmt.Errorf("%w (%w)", err, waitErr)
+		if process.Ready() && errors.As(cause, &exit) && exit.ExitCode() > 0 && strings.Contains(process.Stderr(), "EADDRINUSE") {
+			return nil, process.FormatStartupError("hub start", fmt.Errorf("%w (%w)", errAddressInUse, cause))
 		}
-		return nil, process.FormatStartupError("hub start", fmt.Errorf("%w; %s", err, protocolHint))
+		return nil, process.FormatStartupError("hub start", fmt.Errorf("%w; %s", cause, protocolHint))
 	}
 	if err := checkProtocol(record); err != nil {
 		stopDaemonAt(record)

@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,9 +102,9 @@ func TestCodebuddyStartupKeepsCandidateExhaustionAfterInitializationFails(t *tes
 	clock := testutil.NewQuartzMock(t)
 	reply := clock.Trap().NewTimer(codebuddyControlTimerTag)
 	t.Cleanup(reply.Close)
-	drain := clock.Trap().NewTimer("wrapped-process-drain")
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
 	t.Cleanup(drain.Close)
-	stop := clock.Trap().NewTimer("process-stop-grace")
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
 	t.Cleanup(stop.Close)
 	outcome := make(chan error, 1)
 	go func() {
@@ -129,15 +130,11 @@ func TestCodebuddyStartupKeepsCandidateExhaustionAfterInitializationFails(t *tes
 	testutil.WaitForTimer(t, deadline, stop)
 	drainCall.MustRelease(deadline)
 	require.NoError(t, writer.CloseWrite())
-	select {
-	case err := <-outcome:
-		require.ErrorIs(t, err, launch.ErrNoCandidate)
-		assert.ErrorContains(t, err, "(codebuddy, cbc)")
-		assert.ErrorContains(t, err, "provider absent diagnostic")
-		var status *exec.ExitError
-		require.ErrorAs(t, err, &status)
-		assert.Equal(t, 127, status.ExitCode())
-	case <-deadline.Done():
-		t.Fatal("startup did not return after the writer closed stdout")
-	}
+	startupErr := agenttest.AwaitStartupOutcome(t, deadline, outcome)
+	require.ErrorIs(t, startupErr, launch.ErrNoCandidate)
+	assert.ErrorContains(t, startupErr, "(codebuddy, cbc)")
+	assert.ErrorContains(t, startupErr, "provider absent diagnostic")
+	var status *exec.ExitError
+	require.ErrorAs(t, startupErr, &status)
+	assert.Equal(t, 127, status.ExitCode())
 }

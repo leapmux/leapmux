@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/coder/quartz"
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -32,6 +33,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 }
 
 func startNativeCopilot(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	return startNativeCopilotWithClock(ctx, opts, sink, nil)
+}
+
+func startNativeCopilotWithClock(ctx context.Context, opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) (agent.Agent, error) {
 	// Fleet is LeapMux's own setting, so its stored value is checked before the
 	// process starts: a value nobody can choose must not start the agent.
 	fleet, err := copilotFleetFromOptions(opts.Options)
@@ -42,7 +47,7 @@ func startNativeCopilot(ctx context.Context, opts agent.Options, sink agent.Prov
 		sink: agent.NewModelProgressResetSink(sink), opts: opts,
 		options: optionmap.Map{copilotOptionFleet: strconv.FormatBool(fleet)},
 	}
-	connection, err := startCopilotConnection(ctx, opts)
+	connection, err := startCopilotConnectionWithClock(ctx, opts, clock)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +83,8 @@ func startNativeCopilot(ctx context.Context, opts agent.Options, sink agent.Prov
 	a.sessionID = id
 	a.stateMu.Unlock()
 	if _, err := connection.openSession(opts, id, opts.ResumeSessionID != "", opts.EffectiveStartupTimeout()); err != nil {
-		return cleanup(connection.FormatStartupError("native session initialization", err))
+		_, err = cleanup(err)
+		return nil, connection.FormatStartupError("native session initialization", err)
 	}
 	a.sink.UpdateSessionID(id)
 	// Startup subscribes and then READS the runtime's own settings, because a new

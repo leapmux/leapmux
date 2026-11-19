@@ -4,6 +4,7 @@ package launch
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -120,26 +121,9 @@ func TestProfileCandidateFindsCheckoutLocalFallback(t *testing.T) {
 }
 
 func TestProfileCandidateExhaustionReportsEveryName(t *testing.T) {
-	const first = "leapmux-profile-absent-first"
-	const second = "leapmux-profile-absent-second"
 	shell := useBashProfile(t, "printf 'profile stderr' >&2\n")
-	spec, err := Binaries(first, second).Resolve(t.Context(), shell, false, "Missing candidate test")
-	require.NoError(t, err)
-	prepared, err := Wrap(t.Context(), WrapSpec{Shell: shell, Launch: spec})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
-	diagnostics := prepared.NewDiagnostics(1024)
-	prepared.Cmd.Stderr = diagnostics
-	output, err := prepared.Cmd.Output()
-	diagnostics.Finish()
-	err = diagnostics.ExitError(err, false)
-	require.ErrorIs(t, err, ErrNoCandidate)
-	var exit *exec.ExitError
-	require.ErrorAs(t, err, &exit)
-	assert.Equal(t, 127, exit.ExitCode())
-	assert.ErrorContains(t, err, first)
-	assert.ErrorContains(t, err, second)
-	assert.NotContains(t, string(output), prepared.Delimiter)
+	diagnostic := assertProfileCandidateExhaustion(t, shell, "leapmux-profile-absent-first", "leapmux-profile-absent-second")
+	assert.Equal(t, "profile stderr\n", diagnostic)
 }
 
 func TestProgramPathFindsTheExternalBehindAProfileFunction(t *testing.T) {
@@ -431,12 +415,15 @@ func TestProfileCommandRecordsIgnoreProfileShadows(t *testing.T) {
 				cmd, delimiter, prefix := wrapTestCommand(t, t.Context(), WrapSpec{
 					Shell: shell, LoginShell: true, Launch: target, EnvGated: testEnvGate("optional"),
 				})
-				output, err := cmd.CombinedOutput()
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				output, err := cmd.Output()
 				var exit *exec.ExitError
 				require.ErrorAs(t, err, &exit, "%s", output)
 				assert.Equal(t, 37, exit.ExitCode(), "%s", output)
 				assert.Contains(t, string(output), "profile banner\n"+prefix+"test_gate_open=true\n"+delimiter+"\nprovider payload\n")
 				assert.NotContains(t, string(output), "intercepted-")
+				assert.NotContains(t, stderr.String(), "intercepted-")
 			}
 			prepared, err := Wrap(t.Context(), WrapSpec{Shell: shell, LoginShell: true, Launch: ShellCommands(missing)})
 			require.NoError(t, err)
@@ -615,27 +602,27 @@ func TestProfileCommandDialectMatrix(t *testing.T) {
 			require.NoError(t, err)
 
 			for _, tc := range []struct {
-				name      string
-				gateEnv   string
-				wantGated bool
+				name             string
+				gateEnv          string
+				wantOptionalArgs bool
 			}{
-				{name: "stripped value allows optional argv", gateEnv: profilePeerStripEnv, wantGated: true},
+				{name: "stripped value allows optional argv", gateEnv: profilePeerStripEnv, wantOptionalArgs: true},
 				{name: "pinned value withholds optional argv", gateEnv: profilePeerLiteralEnv},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 					defer cancel()
 					args := []string{"", "a b", `a"b`, "it's", `two\\slashes\`, "*.txt", "!event", "--flag", "한글"}
-					gated := []string{"--model", `literal # ! \ ' "$HOME" [x] *`}
+					optionalArgs := []string{"--model", `literal # ! \ ' "$HOME" [x] *`}
 					literal := `/not a path/'quote'\tail ! $HOME *.txt 한글\`
 					cmd, delimiter, _ := wrapTestCommand(t, ctx, WrapSpec{
 						Shell: shell, LoginShell: login, Launch: spec, BaseArgs: args,
 						StripEnvKeys: []string{profilePeerStripEnv}, SetEnv: []string{profilePeerLiteralEnv + "=" + literal},
-						EnvGated: &EnvGatedArgs{EnvVars: []string{tc.gateEnv}, MetaKey: "optional_argv", Args: gated},
+						EnvGated: &EnvGatedArgs{EnvVars: []string{tc.gateEnv}, MetaKey: "optional_argv", Args: optionalArgs},
 					})
 					wantArgs := slices.Clone(args)
-					if tc.wantGated {
-						wantArgs = append(wantArgs, gated...)
+					if tc.wantOptionalArgs {
+						wantArgs = append(wantArgs, optionalArgs...)
 					}
 					assertProfileCommandExchangeWithEnvironment(t, cmd, delimiter, wantArgs, &profilePeerEnvironment{Literal: &literal})
 					profileReads(t)
@@ -724,29 +711,6 @@ func installDialectProfile(t *testing.T, shell, dir, peer, witness string) {
 	}
 	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o700))
 	require.NoError(t, os.WriteFile(file, []byte(body), 0o600))
-}
-
-func TestProfileCandidateNushellWithoutDeferredParsingUsesExecutables(t *testing.T) {
-	shell := os.Getenv("LEAPMUX_TEST_OLD_NUSHELL")
-	if shell == "" {
-		t.Skip("set LEAPMUX_TEST_OLD_NUSHELL to a Nushell executable before 0.114")
-	}
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "bin")
-	require.NoError(t, os.Mkdir(bin, 0o700))
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("PATH", bin)
-	require.NoError(t, os.Mkdir(filepath.Join(dir, "nushell"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "nushell", "config.nu"),
-		[]byte("def leapmux-old-nu-wrapper [] { exit 38 }\n"), 0o600))
-	testutil.WriteExecutable(t, filepath.Join(bin, "leapmux-old-nu-executable"), "#!/bin/sh\nprintf 'native fallback\\n'\n")
-	require.Equal(t, ProbeNo, CheckBinary(t.Context(), shell, true, "leapmux-old-nu-wrapper"))
-	cmd, delimiter, _ := wrapTestCommand(t, t.Context(), WrapSpec{
-		Shell: shell, LoginShell: true, Launch: ShellCommands("leapmux-old-nu-wrapper", "leapmux-old-nu-executable"),
-	})
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	assert.Contains(t, string(output), delimiter+"\nnative fallback\n")
 }
 
 func TestProfileCommandNushellDirectProgramKeepsStreams(t *testing.T) {

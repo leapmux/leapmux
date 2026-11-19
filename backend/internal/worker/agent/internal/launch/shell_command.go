@@ -11,11 +11,7 @@ import (
 )
 
 // newShellCommand prepares the same shell environment for discovery and launch.
-func newShellCommand(ctx context.Context, shell string, loginShell bool, script, dir string) (*exec.Cmd, error) {
-	return newShellCommandWithEnvironment(ctx, shell, loginShell, script, dir, nil)
-}
-
-func newShellCommandWithEnvironment(ctx context.Context, shell string, loginShell bool, script, dir string, environment []string) (*exec.Cmd, error) {
+func newShellCommand(ctx context.Context, shell string, loginShell bool, script, dir string, environment []string) (*exec.Cmd, error) {
 	prepared := &exec.Cmd{Dir: dir, Env: slices.Clone(environment)}
 	pathErr := RefreshCommandPath(prepared)
 	program, lookupErr := resolvePreparedShell(prepared, shell)

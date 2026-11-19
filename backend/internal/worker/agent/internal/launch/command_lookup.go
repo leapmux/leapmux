@@ -23,8 +23,10 @@ func posixProtocolSetup(shell string) string {
 	// Bash's POSIX mode gives the unset builtin precedence over functions.
 	dispatch := `\unset -f command
 	\command "$@"`
+	exhaust := "(__leapmux_builtin exit 127)"
 	switch shell {
 	case "bash":
+		exhaust = "(POSIXLY_CORRECT=y; \\exit 127)"
 		dispatch = `POSIXLY_CORRECT=y
 	if \unset -f builtin 2>/dev/null; then
 		\builtin "$@"
@@ -36,6 +38,7 @@ func posixProtocolSetup(shell string) string {
 		` + posixFormatterFallback(shell) + `
 	fi`
 	case "zsh":
+		exhaust = `(if (( !$+functions[exit] )); then \exit 127; else __leapmux_builtin exit 127; fi)`
 		dispatch = `if (( !$+functions[builtin] )); then
 		\builtin "$@"
 	elif (( !$+functions[unfunction] )); then
@@ -49,7 +52,8 @@ func posixProtocolSetup(shell string) string {
 	return `__leapmux_builtin() (
 	` + dispatch + `
 )
-` + "__leapmux_print() { __leapmux_builtin printf \"$@\"; }\n"
+` + "__leapmux_print() { __leapmux_builtin printf \"$@\"; }\n" +
+		"__leapmux_missing() " + exhaust + "\n"
 }
 
 // The shell can run its own formatter in the common case. Fall back to a
@@ -112,20 +116,29 @@ func posixLookupSetup(shell string) string {
 	functionTest := `[ "$(__leapmux_builtin -v "$1" 2>/dev/null)" = "$1" ] &&
 			[ "$(\unset -f command; \unset -f "$1" 2>/dev/null; \command -v "$1" 2>/dev/null)" != "$1" ]`
 	aliasTest := `__leapmux_builtin alias "$1" >/dev/null 2>&1`
-	defaultPath := "__leapmux_builtin -p getconf PATH"
+	pathSetup := "__lm_rest=${PATH-}"
+	bashHash := `if __lm_path=$(__leapmux_builtin hash -t -- "$1" 2>/dev/null) && __leapmux_path_usable "$2"; then return 0; fi
+	`
 	cachedPath := ""
 	switch shell {
 	case "bash":
 		functionTest = `[ "$(__leapmux_builtin type -t "$1")" = function ]`
-		cachedPath = `if __lm_path=$(__leapmux_builtin hash -t -- "$1" 2>/dev/null) && __leapmux_path_usable "$2"; then return 0; fi
-	`
-		defaultPath = "__leapmux_builtin command -p getconf PATH"
+		cachedPath = bashHash
 	case "zsh":
-		aliasTest = `(( $+aliases[$1] || $+galiases[$1] ))`
+		aliasTest = `[[ -o aliases ]] && (( $+aliases[$1] || $+galiases[$1] ))`
 		functionTest = `(( $+functions[$1] ))`
-		defaultPath = "\\command -p getconf PATH"
+		cachedPath = `__lm_path=${commands[$1]-}
+	if [ -n "$__lm_path" ] && __leapmux_path_usable "$2"; then return 0; fi
+	`
+		pathSetup = `[ "${PATH+x}" ] || return 1
+	__lm_rest=$PATH`
 	case "ksh":
 		functionTest = `__leapmux_builtin typeset -f "$1" >/dev/null 2>&1`
+		pathSetup = `__lm_rest=${PATH-$(__leapmux_builtin -p getconf PATH 2>/dev/null)}
+	[ -n "$__lm_rest" ] || return 1`
+	default:
+		cachedPath = `if [ -n "${BASH_VERSION-}" ]; then ` + bashHash + `fi
+	`
 	}
 	return `
 __leapmux_path_usable() {
@@ -133,7 +146,7 @@ __leapmux_path_usable() {
 }
 
 __leapmux_lookup_path() {
-	` + cachedPath + `__lm_rest=${PATH-$(` + defaultPath + ` 2>/dev/null)}
+	` + cachedPath + pathSetup + `
 	while :; do
 		__lm_dir=${__lm_rest%%:*}
 		__lm_path=${__lm_dir:-.}/$1
@@ -195,36 +208,63 @@ func cshQuote(value string) string {
 }
 
 func cshLookupSetup(nativeOnly bool) string {
-	mode := "command"
 	if nativeOnly {
-		mode = "path"
+		return ""
 	}
 	// Csh has no functions. A private alias shares the lookup and keeps its
 	// result in the launch shell. The single-line if defers the source call
-	// until the child removes the source and which aliases.
+	// until the child removes the aliases for source and which.
 	body := "set __lm_kind = missing; set __lm_path = ''; set __lm_alias = '';" +
-		" if ( \"$__lm_lookup_mode\" == command ) set __lm_alias = \"`alias $__lm_name`\";" +
+		" set __lm_alias = \"`alias $__lm_name`\";" +
 		" if ( \"$__lm_alias\" != '' ) set __lm_kind = alias;" +
 		" if ( \"$__lm_kind\" == missing ) set __lm_path = \"`/usr/bin/printf 'which %s\\n' \"$__lm_name\" | ( unalias which; unalias $__lm_name; unalias source; if ( 1 ) source /dev/stdin )`\";" +
 		" if ( \"$__lm_kind\" == missing && -f \"$__lm_path\" && -x \"$__lm_path\" ) set __lm_kind = external"
-	return "set __lm_lookup_mode = " + mode + "\nalias __leapmux_lookup " + cshQuote(body) + "\n"
+	return "alias __leapmux_lookup " + cshQuote(body) + "\n"
 }
 
 func cshLookup(name string) string {
 	return "set __lm_name = " + cshQuote(name) + "\n__leapmux_lookup\n"
 }
 
+// Native interpreter names are data. Check files without sourcing code that
+// contains the name.
+func cshNativeProbe(name, present, absent string) string {
+	source := fmt.Sprintf(`set __lm_kind = missing
+set __lm_path = ''
+if ( $?path ) then
+foreach __lm_directory ( $path:q )
+if ( "$__lm_directory" == '' ) set __lm_directory = .
+set __lm_path = "$__lm_directory/$__lm_name"
+if ( -f "$__lm_path" && -x "$__lm_path" ) then
+set __lm_kind = external
+break
+endif
+end
+endif
+if ( "$__lm_kind" == external ) then
+if ( "$__lm_path" !~ /* ) set __lm_path = "$cwd/$__lm_path"
+'/bin/echo' '%s:'"$__lm_path"
+else
+'/bin/echo' '%s'
+endif
+`, present, absent)
+	// Sourcing a stream keeps Csh's loop parser consistent in -c and -ic.
+	// The fixed source cannot reinterpret the interpreter name as shell code.
+	return "set __lm_name = " + cshQuote(name) + "\n" +
+		"'/usr/bin/printf' '%b' " + cshQuote(strings.ReplaceAll(source, "\n", "\\n")) +
+		" | ( unalias source; if ( 1 ) source /dev/stdin )\n"
+}
+
 const nuLookupSetup = `
-let __lm_version = (version | get version | split row '.')
-let __lm_deferred = (($__lm_version.0 | into int) > 0 or ($__lm_version.1 | into int) >= 114)
-def leapmux-lookup [name: string, allow_callable: bool, native_only: bool] {
-	which --all $name | where {|result|
-		if $result.type == 'external' {
+def leapmux-lookup [name: string, native_only: bool] {
+	%which --all $name | %each {|result|
+		let allowed = if $result.type == 'external' {
 			not $native_only or $nu.os-info.name != 'windows' or $result.path =~ '(?i)\.(exe|com)$'
 		} else {
-			$allow_callable and $result.type in ['alias', 'custom']
+			not $native_only and $result.type in ['alias', 'custom']
 		}
-	} | get -o 0
+		if $allowed { $result }
+	} | %take 1 | %get -o 0
 }
 `
 
@@ -302,6 +342,15 @@ func lookupSetup(shell string, nativeOnly bool) string {
 func renderCommandProbe(shell, nonce string, names []string, nativeOnly bool) string {
 	var script strings.Builder
 	script.WriteString(lookupSetup(shell, nativeOnly))
+	if shell == "bash" && !nativeOnly {
+		fmt.Fprintf(&script, "__lm_probe_records=('' '%s:start')\n", nonce)
+		for index, name := range names {
+			fmt.Fprintf(&script, "__leapmux_lookup %s command\n", shellquote.POSIX.Quote(name))
+			fmt.Fprintf(&script, "if [ \"$__lm_kind\" = missing ]; then __lm_probe_records+=('%s:%d:no'); else __lm_probe_records+=('%s:%d:yes'); fi\n", nonce, index, nonce, index)
+		}
+		fmt.Fprintf(&script, "__leapmux_print '%%s\\n' \"${__lm_probe_records[@]}\" '%s:complete'\n", nonce)
+		return script.String()
+	}
 	if nativeOnly && terminal.IsPwsh(shell) {
 		script.WriteString(pwshNativeLookupSetup())
 	}
@@ -365,13 +414,12 @@ func commandProbeResult(shell, name, prefix string, nativeOnly bool) string {
 		return fmt.Sprintf("if ($null -ne (__leapmux_lookup %s)) { [Console]::Out.WriteLine('%s') } else { [Console]::Out.WriteLine('%s') }\n",
 			shellquote.PowerShell.Quote(name), present, absent)
 	case shell == "nu":
-		allow, value := "$__lm_deferred", nuQuote(present)
+		value := nuQuote(present)
 		if nativeOnly {
-			allow = "false"
-			value = "(" + nuQuote(present+":") + " + ($__lm_result.path | path expand))"
+			value = "(" + nuQuote(present+":") + " + ($__lm_result.path | %path expand))"
 		}
-		return fmt.Sprintf("let __lm_result = (leapmux-lookup %s %s %t); if $__lm_result != null { %%print %s } else { %%print '%s' }\n",
-			nuQuote(name), allow, nativeOnly, value, absent)
+		return fmt.Sprintf("let __lm_result = (leapmux-lookup %s %t); if $__lm_result != null { %%print %s } else { %%print '%s' }\n",
+			nuQuote(name), nativeOnly, value, absent)
 	case shell == "xonsh":
 		return xonshProbeResult(name, present, absent, nativeOnly)
 	case shell == "fish":
@@ -382,11 +430,10 @@ func commandProbeResult(shell, name, prefix string, nativeOnly bool) string {
 		return fmt.Sprintf("__leapmux_lookup %s command\nif test \"$__lm_kind\" != missing; builtin printf '%%s\\n' '%s'; else; builtin printf '%%s\\n' '%s'; end\n",
 			fishQuote(name), present, absent)
 	case isCsh(shell):
-		result := cshLookup(name)
 		if nativeOnly {
-			return result + fmt.Sprintf("if ( \"$__lm_kind\" == external ) then\nif ( \"$__lm_path\" !~ /* ) set __lm_path = \"$cwd/$__lm_path\"\n'/bin/echo' '%s:'\"$__lm_path\"\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
+			return cshNativeProbe(name, present, absent)
 		}
-		return result + fmt.Sprintf("if ( \"$__lm_kind\" != missing ) then\n'/bin/echo' '%s'\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
+		return cshLookup(name) + fmt.Sprintf("if ( \"$__lm_kind\" != missing ) then\n'/bin/echo' '%s'\nelse\n'/bin/echo' '%s'\nendif\n", present, absent)
 	default:
 		setup := "__leapmux_lookup " + quoted + " " + mode + "\n"
 		if !nativeOnly {

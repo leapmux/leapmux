@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	delimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
@@ -54,7 +54,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a := newAgentState(sink, antigravityRPC{timeout: opts.EffectiveAPITimeout()}, opts.WorkingDir, quartz.NewReal())
 	a.JSONRPCProcess = providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{
 		ProviderName: "agy", ShutdownGrace: registration.ShutdownGrace,
-		PreambleDelimiter: delimiter, PreambleMetaPrefix: metaPrefix, StopSignal: antigravityStopSignal,
+		StopSignal: antigravityStopSignal,
 	}, pipes, ctx, cancel)}
 	a.agentDir = directory
 	a.logPath = logPath
@@ -80,13 +80,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 	a.DrainStderr(pipes.Stderr())
-	go a.ReadOutputLoop(agent.NewStdoutScanner(pipes.Stdout()), a.RefuseUnsupportedRequest)
+	go a.ReadOutputLoop(a.NewOutputScanner(pipes.Stdout()), a.RefuseUnsupportedRequest)
 	cleanup := func(stage string, cause error) (agent.Agent, error) {
 		logTail := lastLogLines(logPath, 20)
 		a.Stop()
 		_ = a.Wait()
 		cause = a.FinalizeStartupCause(cause)
-		if opts.ResumeSessionID != "" && cause != errAntigravitySignIn {
+		if opts.ResumeSessionID != "" && !errors.Is(cause, errAntigravitySignIn) {
 			return nil, cause
 		}
 		if logTail != "" {

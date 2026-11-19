@@ -101,7 +101,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = qoderAgentEnv(cmd.Environ())
@@ -120,7 +119,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "qoder", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "qoder", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		sink:           agent.NewModelProgressResetSink(sink),
 		opts:           opts,
 		model:          opts.Model(),
@@ -139,7 +138,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	transferred = true
 	a.DrainStderr(stderrPipe)
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.readOutputLoop(scanner)
 
 	if err := a.startDaemon(workerArgs); err != nil {

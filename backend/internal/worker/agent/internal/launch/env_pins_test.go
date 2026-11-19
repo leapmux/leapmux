@@ -19,13 +19,33 @@ import (
 func TestPinnedEnvironmentNeverAppearsInCommandArguments(t *testing.T) {
 	t.Parallel()
 	const secret = "private-server-test-credential-12345"
-	for _, shell := range []string{"/bin/sh", "/bin/zsh", "fish", "nu", "pwsh", "csh"} {
+	for _, shell := range []string{"/bin/sh", "/bin/zsh", "fish", "nu", "pwsh", "csh", "xonsh"} {
 		t.Run(shell, func(t *testing.T) {
 			t.Parallel()
-			cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: shell, Launch: Spec{Program: "provider"}, SetEnv: []string{"PRIVATE_TOKEN=" + secret}})
-			assert.NotContains(t, strings.Join(cmd.Args, " "), secret)
+			for _, launch := range []Spec{{Program: "provider"}, ShellCommands("provider")} {
+				cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: shell, Launch: launch, SetEnv: []string{"PRIVATE_TOKEN=" + secret}})
+				assert.NotContains(t, strings.Join(cmd.Args, " "), secret)
+			}
 		})
 	}
+}
+
+func TestReusableEnvironmentDropsOnlyTheCurrentLaunchPins(t *testing.T) {
+	t.Parallel()
+	prepared, err := Wrap(t.Context(), WrapSpec{
+		Shell: "/bin/sh", Launch: ShellCommands("provider"),
+		Environment: []string{"__LEAPMUX_PIN_inherited=preserved", "SHELL_VALUE=initial"},
+		SetEnv:      []string{"PRIVATE_TOKEN=temporary-value"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	require.Len(t, prepared.pinSources, 1)
+	transport := prepared.pinSources[0] + "=temporary-value"
+	assert.Contains(t, prepared.Cmd.Environ(), transport)
+	snapshot := prepared.ReusableEnvironment()
+	assert.NotContains(t, snapshot, transport)
+	assert.Contains(t, snapshot, "__LEAPMUX_PIN_inherited=preserved")
+	assert.Contains(t, snapshot, "SHELL_VALUE=initial")
 }
 
 func TestPinnedEnvironmentSurvivesAProfileWithoutLeakingTransportVariables(t *testing.T) {
@@ -77,16 +97,9 @@ func TestPinnedEnvironmentChild(t *testing.T) {
 	if os.Getenv("LEAPMUX_PIN_TEST_HELPER") != "1" {
 		return
 	}
-	var transport []string
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "__LEAPMUX_PIN_") {
-			name, _, _ := strings.Cut(entry, "=")
-			transport = append(transport, name)
-		}
-	}
 	_, stripped := os.LookupEnv("LEAPMUX_TEST_STRIPPED")
 	emptyValue, emptyPresent := os.LookupEnv("LEAPMUX_TEST_EMPTY")
-	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: transport, Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue})
+	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue})
 	if err != nil {
 		os.Exit(2)
 	}
@@ -94,11 +107,22 @@ func TestPinnedEnvironmentChild(t *testing.T) {
 	os.Exit(0)
 }
 
+func testPinVariableNames() []string {
+	var names []string
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "__LEAPMUX_PIN_") {
+			name, _, _ := strings.Cut(entry, "=")
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func TestPinnedEnvironmentRunsInEveryInstalledShell(t *testing.T) {
 	t.Parallel()
 	binary, err := os.Executable()
 	require.NoError(t, err)
-	for _, name := range []string{"sh", "bash", "zsh", "fish", "nu", "pwsh", "csh", "tcsh"} {
+	for _, name := range []string{"sh", "bash", "zsh", "fish", "nu", "pwsh", "csh", "tcsh", "xonsh"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			shell, err := exec.LookPath(name)

@@ -75,7 +75,6 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		cleanupSettings()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
@@ -88,7 +87,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:         providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "droid", ShutdownGrace: launchConfig.shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:         providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "droid", ShutdownGrace: launchConfig.shutdownGrace}, pipes, ctx, cancel),
 		sink:            agent.NewModelProgressResetSink(sink),
 		workingDir:      opts.WorkingDir,
 		homeDir:         opts.HomeDir,
@@ -109,7 +108,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		_ = a.Wait()
 	}
 
-	go a.ReadLines(agent.NewStdoutScanner(stdout), a.handleFrame)
+	go a.ReadLines(a.NewOutputScanner(stdout), a.handleFrame)
 
 	if err := a.handshake(opts); err != nil {
 		cleanup()

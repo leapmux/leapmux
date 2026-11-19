@@ -19,7 +19,7 @@ import (
 func TestCopilotFramingPreservesPreambleAndPayloads(t *testing.T) {
 	first := []byte(" {\n\"id\":9007199254740993,\"text\":\"한글\"\n} ")
 	second := []byte(`{"method":"session.event","params":{}}`)
-	data := append([]byte("shell output\n READY \n"), frameCopilotJSON(first)...)
+	data := append([]byte("shell output\nREADY\r\n"), frameCopilotJSON(first)...)
 	data = append(data, frameCopilotJSON(second)...)
 	scanner := newCopilotScanner(bytes.NewReader(data), "READY", 1024)
 	base := providerkit.NewProcessFrom(providerkit.ProcessConfig{PreambleDelimiter: "READY"})

@@ -357,6 +357,9 @@ exec `+program+` "$@"
 
 func TestZCodeStartDiscoversAndRunsTheBundledRuntime(t *testing.T) {
 	opts, calls, witness := zcodeBundleStartupFixture(t)
+	profile := filepath.Join(t.TempDir(), "profile")
+	require.NoError(t, os.WriteFile(profile, []byte("unset ELECTRON_RUN_AS_NODE\n"), 0o600))
+	t.Setenv("BASH_ENV", profile)
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 	t.Cleanup(func() { started.Stop(); _ = started.Wait() })

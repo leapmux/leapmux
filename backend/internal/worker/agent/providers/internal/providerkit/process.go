@@ -32,6 +32,9 @@ const maxStderrSize = 1 << 20
 // outlive the process and prevent the drain from finishing.
 const stderrDrainWait = 3 * time.Second
 
+// ProcessStopGraceTimerTag identifies the Quartz timer for the grace period before terminating an agent.
+const ProcessStopGraceTimerTag = "process-stop-grace"
+
 // Process contains the shared lifecycle state and methods.
 // claude.Agent embeds it directly.
 // opencode.Agent and cursor.Agent use the Agent Client Protocol (ACP).
@@ -53,6 +56,8 @@ type Process struct {
 	// The native wait supplies nativeExitErr. Cleanup can add a different
 	// exit error to waitErr. Mu protects both fields until processDone closes.
 	nativeExitErr *exec.ExitError
+	// Mu protects dispatchFinished. Buffered stdout can arrive after native exit.
+	dispatchFinished bool
 	// Mu protects framingCancelRequested, which records an early stdout failure
 	// that can cause the native process to exit.
 	framingCancelRequested bool
@@ -375,8 +380,8 @@ func (p *Process) Stop() {
 	if grace <= 0 {
 		grace = 3 * time.Second
 	}
-	timer := p.Clock().NewTimer(grace, "process-stop-grace")
-	defer timer.Stop("process-stop-grace")
+	timer := p.Clock().NewTimer(grace, ProcessStopGraceTimerTag)
+	defer timer.Stop(ProcessStopGraceTimerTag)
 	select {
 	case <-p.processDone:
 		return
@@ -697,14 +702,13 @@ func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 	const maxPreambleLines = 50
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		trimmed := bytes.TrimSpace(line)
-		if bytes.Equal(trimmed, delimBytes) {
+		if bytes.Equal(line, delimBytes) {
 			p.ready.Store(true)
 			agent.TraceStartupPhase(p.agentID, "preamble_delimiter_seen")
 			break
 		}
-		if len(metaPrefixBytes) > 0 && bytes.HasPrefix(trimmed, metaPrefixBytes) {
-			kv := string(trimmed[len(metaPrefixBytes):])
+		if len(metaPrefixBytes) > 0 && bytes.HasPrefix(line, metaPrefixBytes) {
+			kv := string(line[len(metaPrefixBytes):])
 			if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
 				p.Mu.Lock()
 				p.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
@@ -806,6 +810,10 @@ func NewProcessFrom(c ProcessConfig) Process {
 	var owner *procutil.ProcessOwner
 	if c.pipes != nil {
 		cmd, stdin, owner = c.pipes.cmd, c.pipes.stdin, c.pipes.owner
+		if prepared := c.pipes.prepared; prepared != nil {
+			c.PreambleDelimiter = prepared.Delimiter
+			c.PreambleMetaPrefix = prepared.MetaPrefix
+		}
 	}
 	return Process{
 		owner:              owner,
@@ -884,6 +892,7 @@ func (p *Process) StartCmd() error {
 	}
 	// No output reader starts after this failure. Finish the lifecycle here so cleanup can wait safely.
 	p.recordProcessExit(startErr)
+	p.finishDispatch()
 	close(p.processDone)
 	if p.cancel != nil {
 		p.cancel()
@@ -976,6 +985,21 @@ func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor
 	})
 }
 
+// NewOutputScanner applies the live line limit and exact shell framing.
+func (p *Process) NewOutputScanner(stdout io.Reader) *bufio.Scanner {
+	return agent.NewLaunchStdoutScanner(stdout, p.preambleDelimiter)
+}
+
+// OutputDispatchFinishedLocked reports whether the stdout reader has finished.
+// Hold Mu when calling it.
+func (p *Process) OutputDispatchFinishedLocked() bool { return p.dispatchFinished }
+
+func (p *Process) finishDispatch() {
+	p.Mu.Lock()
+	p.dispatchFinished = true
+	p.Mu.Unlock()
+}
+
 // ReadLines reads the process's stdout as plain text lines and hands each
 // non-empty line to handle, until stdout closes. It then records the process
 // exit. ReadOutput reads its JSON lines through it, so both keep one loop: the
@@ -994,13 +1018,16 @@ func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 
 	firstLineTraced := false
 	for scanner.Scan() {
+		if p.pipes != nil && p.pipes.prepared != nil && scanner.Err() != nil {
+			break
+		}
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		if !firstLineTraced {
 			if p.pipes != nil && p.pipes.prepared != nil {
-				if err := p.owner.CaptureBeforeStop(); err != nil {
+				if _, err := p.owner.ObserveTree(context.Background()); err != nil {
 					slog.Debug("capture launch descendants", "agent_id", p.agentID, "error", err)
 				}
 			}
@@ -1018,11 +1045,17 @@ func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 	p.finishOutput(scanner)
 }
 
+// ObserveProcessTree returns the process identities verified by this owner.
+func (p *Process) ObserveProcessTree(ctx context.Context) ([]procutil.ProcessIdentity, error) {
+	return p.owner.ObserveTree(ctx)
+}
+
 // finishOutput runs after stdout closes. It records a framing failure, waits for
 // the process, and closes processDone, which is what Wait and every stop path
 // block on.
 func (p *Process) finishOutput(scanner *bufio.Scanner) {
-	if err := scanner.Err(); err != nil && !p.stdoutClosedAfterNativeExit(err) {
+	p.finishDispatch()
+	if err := scanner.Err(); err != nil && !DrainLimitReached(err) {
 		slog.Warn("agent stdout read error",
 			"agent_id", p.agentID,
 			"error", err,
@@ -1037,7 +1070,9 @@ func (p *Process) finishOutput(scanner *bufio.Scanner) {
 		// ProcessConfig permits a test to supply its own started command.
 		waitErr = p.cmd.Wait()
 	}
-	p.recordNativeProcessExit(waitErr)
+	if p.pipes == nil || p.pipes.nativeExitObserved == nil {
+		p.recordNativeProcessExit(waitErr)
+	}
 	p.closeStdin()
 	p.finalizeStderr()
 	p.stderrMu.Lock()
@@ -1075,10 +1110,6 @@ func (p *Process) cancelAfterFramingFailure() {
 	}
 }
 
-func (p *Process) stdoutClosedAfterNativeExit(err error) bool {
-	return p.pipes != nil && errors.Is(err, fs.ErrClosed) && p.pipes.outputDrainExpired.Load()
-}
-
 // MessageWithToolUses captures the completed tool count as separate worker metadata.
 func (p *Process) MessageWithToolUses(original []byte) agent.MessageContent {
 	p.Mu.Lock()
@@ -1093,7 +1124,7 @@ func (p *Process) finalizeStderr() {
 	if p.stderrDraining.Load() && !p.waitForStderrDrain() {
 		slog.Debug("stderr drain outlived the process; a descendant may hold the pipe", "agent_id", p.agentID)
 		if p.pipes != nil {
-			_ = p.pipes.closeStderrReader()
+			finishPipeDrain(p.pipes.stderr, p.pipes.closeStderr)
 		}
 		if p.stderrUsesOwnedPipe.Load() {
 			// Closing the owned reader interrupts a pending read. The drain
@@ -1156,7 +1187,9 @@ func (p *Process) DrainStderr(r io.Reader) {
 				p.stderrMu.Lock()
 				if !p.stderrFrozen.Load() {
 					if p.diagnostics != nil {
-						_, _ = p.diagnostics.Write(buf[:n])
+						if !p.Ready() || !p.diagnostics.DisplayFull() {
+							_, _ = p.diagnostics.Write(buf[:n])
+						}
 					} else if total < maxStderrSize {
 						limit := min(int64(n), maxStderrSize-total)
 						p.stderrBuf.Write(buf[:limit])
@@ -1166,7 +1199,7 @@ func (p *Process) DrainStderr(r io.Reader) {
 				p.stderrMu.Unlock()
 			}
 			if readErr != nil {
-				if readErr != io.EOF {
+				if readErr != io.EOF && !DrainLimitReached(readErr) {
 					slog.Debug("stderr drain error", "agent_id", p.agentID, "error", readErr)
 				}
 				break

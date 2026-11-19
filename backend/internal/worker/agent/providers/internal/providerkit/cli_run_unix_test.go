@@ -288,7 +288,7 @@ func TestRunCLIKeepsCandidateExhaustionWhenCanceledDuringDrain(t *testing.T) {
 		require.ErrorAs(t, result.err, &exit)
 		assert.Equal(t, 127, exit.ExitCode())
 	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the CLI did not finish its bounded drain")
+		t.Fatal("the CLI did not return by the test deadline after cancellation during the output drain")
 	}
 	assert.True(t, writerIdentity.Runs(), "an unverified inherited writer remains outside the worker's process ownership")
 	require.NoError(t, writer.CloseWrite())
@@ -331,7 +331,7 @@ func TestRunCLIReportsNativeFailureWhenCanceledDuringDrain(t *testing.T) {
 		assert.Equal(t, 37, exit.ExitCode())
 		assert.ErrorContains(t, err, "native diagnostic")
 	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the CLI did not finish its bounded drain")
+		t.Fatal("the CLI did not return by the test deadline after cancellation during the output drain")
 	}
 	assert.True(t, writerIdentity.Runs(), "the worker must leave an unverified writer alive")
 	require.NoError(t, writer.CloseWrite())

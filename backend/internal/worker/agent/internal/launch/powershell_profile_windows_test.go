@@ -147,22 +147,19 @@ func assertWindowsPowerShellProfileReads(t *testing.T, witness, shell, mode stri
 	if shell == "powershell" {
 		edition, prefix = "Desktop", "5.1."
 	}
-	data, err := os.ReadFile(witness)
-	require.NoError(t, err)
-	lines := strings.Split(strings.TrimRight(string(data), "\r\n"), "\n")
-	require.Len(t, lines, count)
-	for _, line := range lines {
-		fields := strings.Split(strings.TrimSuffix(line, "\r"), "\t")
-		require.Len(t, fields, 4, "%q", line)
-		assert.True(t, strings.HasPrefix(fields[0], prefix), "interpreter version %q", fields[0])
-		assert.Equal(t, edition, fields[1])
-		assert.True(t, filepath.IsAbs(fields[2]), "%q", fields[2])
-		assert.Equal(t, shell, terminal.ShellBaseName(fields[2]))
-		assert.Equal(t, mode, fields[3])
-	}
-	evidence := "native alias argv, environment, live streams, exit and cancellation"
-	if mode == "explicit script block" {
-		evidence = "native direct and alias argv, environment, live streams, exit and cancellation plus pure-function argv, gating and live streams"
-	}
-	t.Logf("windows %s %s, %s, %d profile reads, %s", shell, strings.Split(lines[0], "\t")[0], mode, count, evidence)
+	rows := readWindowsProfileWitness(t, witness, count)
+	t.Run("version "+rows[0][0]+" "+mode, func(t *testing.T) {
+		for _, fields := range rows {
+			assert.True(t, strings.HasPrefix(fields[0], prefix), "interpreter version %q", fields[0])
+			assert.Equal(t, edition, fields[1])
+			assert.True(t, filepath.IsAbs(fields[2]), "%q", fields[2])
+			assert.Equal(t, shell, terminal.ShellBaseName(fields[2]))
+			assert.Equal(t, mode, fields[3])
+		}
+		evidence := "native alias argv, environment, live streams, exit and cancellation"
+		if mode == "explicit script block" {
+			evidence = "native direct and alias argv, environment, live streams, exit and cancellation plus pure-function argv and live streams with environment-controlled optional arguments"
+		}
+		t.Logf("windows %s %s, %s, %d profile reads, %s", shell, rows[0][0], mode, count, evidence)
+	})
 }

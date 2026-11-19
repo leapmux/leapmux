@@ -179,7 +179,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = claudeAgentEnv(cmd.Environ(), opts.LoginShell)
@@ -194,7 +193,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:                providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "claude", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:                providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "claude", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		model:                  launchModel,
 		sessionID:              sessionArgs[1],
 		effort:                 opts.Effort(),
@@ -217,7 +216,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Read stdout in a background goroutine. Output will only arrive after
 	// the first message is sent to stdin (Claude Code behavior with
 	// --input-format stream-json).
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.readOutputLoop(scanner)
 
 	// cleanup terminates the agent process and waits for it to exit.

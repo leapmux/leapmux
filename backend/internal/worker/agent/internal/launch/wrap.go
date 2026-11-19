@@ -15,7 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
-	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -23,7 +22,8 @@ import (
 type WrapSpec struct {
 	Shell      string // the user's shell path (terminal.ShellBaseName picks the dialect)
 	LoginShell bool   // invoke the shell with interactive+login flags so profile scripts are sourced
-	// Environment is the initial shell environment. Nil inherits the Worker environment.
+	// Environment supplies the shell's initial environment. Nil inherits the
+	// Worker environment. A non-nil empty slice supplies an empty environment.
 	Environment []string
 	// Launch selects an ordered shell command or invokes an explicit program.
 	Launch Spec
@@ -93,6 +93,13 @@ type PreparedLaunch struct {
 	candidates      []string
 	exhaustedMarker string
 	closeFiles      func() error
+	pinSources      []string
+}
+
+// ReusableEnvironment returns the shell environment without this launch's
+// private pin variables.
+func (p *PreparedLaunch) ReusableEnvironment() []string {
+	return envutil.FilterEnv(p.Cmd.Environ(), p.pinSources...)
 }
 
 // Close releases files after the native process finishes or preparation fails.
@@ -121,6 +128,9 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 			spec.EnvGated = nil
 		}
 	}
+	if len(spec.Launch.RequiredEnv) != 0 {
+		spec.SetEnv = append(slices.Clone(spec.SetEnv), spec.Launch.RequiredEnv...)
+	}
 	checkSetEnv(spec.SetEnv)
 	token := id.Short()
 	prepared := &PreparedLaunch{
@@ -135,16 +145,22 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	if shell == "cmd" {
 		return nil, errors.New("cmd.exe cannot launch agents. Configure a PowerShell or Bash shell for the Worker")
 	}
-
-	cmd, _ := newShellCommandWithEnvironment(ctx, spec.Shell, spec.LoginShell, "", spec.WorkingDir, spec.Environment)
+	// Native lookup errors remain on cmd.Err. A launch can use the last known
+	// Windows PATH when the refresh fails.
+	cmd, _ := newShellCommand(ctx, spec.Shell, spec.LoginShell, "", spec.WorkingDir, spec.Environment)
+	// Seed profile-overridable provider defaults in the shell environment.
 	if len(spec.Launch.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), spec.Launch.Env...)
 	}
 	envutil.ScrubAppImageEnv(cmd)
-	environment := cmd.Environ()
-	shellSpec := prepareShellLaunch(spec, token, environment)
-	if len(shellSpec.pins) > 0 {
+	shellSpec := shellLaunchSpec{WrapSpec: spec}
+	if len(spec.SetEnv) != 0 {
+		environment := cmd.Environ()
+		shellSpec = prepareShellLaunch(spec, token, environment)
 		cmd.Env = shellSpec.pinEnvironment(environment)
+		for _, pin := range shellSpec.pins {
+			prepared.pinSources = append(prepared.pinSources, pin.source)
+		}
 	}
 
 	var script string
@@ -152,7 +168,7 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	case terminal.IsPwsh(shell):
 		script = buildPwshCommand(shellSpec, prepared)
 	case shell == "nu" && len(prepared.candidates) != 0:
-		scripts, err := prepared.writeNuInvocations()
+		scripts, err := prepared.writeNuInvocations(spec)
 		if err != nil {
 			return nil, err
 		}
@@ -163,62 +179,64 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 		script = buildFishCommand(shellSpec, prepared)
 	case shell == "xonsh":
 		script = buildXonshCommand(shellSpec, prepared)
-	case isCsh(shell) && len(prepared.candidates) != 0:
-		script = buildCshSelection(shellSpec, prepared)
 	case isCsh(shell):
-		script = buildCshCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
-	case len(prepared.candidates) != 0:
-		script = buildPosixSelection(shell, shellSpec, prepared)
+		script = buildCshCommand(shellSpec, prepared)
 	default:
-		script = buildPosixCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+		script = buildPosixCommand(shell, shellSpec, prepared)
 	}
-
+	// CommandArgs places the command text after all shell flags.
 	cmd.Args[len(cmd.Args)-1] = script
 	prepared.Cmd = cmd
 	return prepared, nil
 }
 
-func (p *PreparedLaunch) writeNuInvocations() (map[string]string, error) {
+type nuInvocationFiles struct {
+	base     string
+	optional string
+}
+
+func (p *PreparedLaunch) writeNuInvocations(spec WrapSpec) (map[string]nuInvocationFiles, error) {
 	dir, err := os.MkdirTemp("", "leapmux-nu-launch-")
 	if err != nil {
 		return nil, fmt.Errorf("create Nushell invocation directory: %w", err)
 	}
 	p.closeFiles = sync.OnceValue(func() error { return os.RemoveAll(dir) })
-	scripts := make(map[string]string, len(p.candidates))
+	var optionalDir string
+	optionalCount := 0
+	if spec.EnvGated != nil && len(spec.EnvGated.Args) != 0 {
+		optionalDir = filepath.Join(dir, "optional")
+		optionalCount = len(spec.BaseArgs) + len(spec.EnvGated.Args)
+		if err := os.Mkdir(optionalDir, 0o700); err != nil {
+			return nil, errors.Join(fmt.Errorf("create Nushell optional invocation directory: %w", err), p.Close())
+		}
+	}
+	scripts := make(map[string]nuInvocationFiles, len(p.candidates))
 	for _, name := range p.candidates {
-		path := filepath.Join(dir, name+".nu")
-		script := "def main [arguments: list<string>] { " + name + " ...$arguments }\n"
-		if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		files := nuInvocationFiles{base: filepath.Join(dir, name+".nu")}
+		if err := writeNuInvocation(files.base, name, len(spec.BaseArgs)); err != nil {
 			return nil, errors.Join(fmt.Errorf("write Nushell invocation: %w", err), p.Close())
 		}
-		scripts[name] = path
+		if optionalDir != "" {
+			files.optional = filepath.Join(optionalDir, name+".nu")
+			if err := writeNuInvocation(files.optional, name, optionalCount); err != nil {
+				return nil, errors.Join(fmt.Errorf("write Nushell optional invocation: %w", err), p.Close())
+			}
+		}
+		scripts[name] = files
 	}
 	return scripts, nil
 }
 
-// buildPosixCommand builds the inner command string for POSIX-like shells.
-// The command is always prefixed with `exec` so the shell process is
-// replaced. When spec.EnvGated is set, a conditional is emitted to check its
-// env vars at runtime.
-func buildPosixCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
-	shell := terminal.ShellBaseName(spec.Shell)
-	program := shellquote.POSIX.Quote(spec.Launch.Program)
-	baseArgs := strings.Join(quotedArguments(spec.BaseArgs, shellquote.POSIX.Quote), " ")
+// Nushell checks positional requirements when it parses this call. A spread
+// argument alone cannot satisfy a required position or a fixed signature.
+func writeNuInvocation(path, name string, count int) error {
 	var script strings.Builder
-	script.WriteString(posixProtocolSetup(shell))
-	script.WriteString(posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.pins))
-	gate := spec.EnvGated
-	if gate == nil {
-		script.WriteString(protocolLine(shell, delimiter, true))
-		fmt.Fprintf(&script, "exec %s %s", program, baseArgs)
-		return script.String()
+	script.WriteString("def main [arguments: list<string>] { " + name)
+	for index := range count {
+		fmt.Fprintf(&script, " $arguments.%d", index)
 	}
-	gatedArgs := strings.Join(quotedArguments(gate.Args, shellquote.POSIX.Quote), " ")
-	fmt.Fprintf(&script, "if %s; then\n%sexec %s %s\nelse\n%sexec %s %s %s\nfi",
-		posixEnvCondition(gate.EnvVars),
-		protocolLine(shell, metaPrefix+gate.MetaKey+"=false", true)+protocolLine(shell, delimiter, false), program, baseArgs,
-		protocolLine(shell, metaPrefix+gate.MetaKey+"=true", true)+protocolLine(shell, delimiter, false), program, baseArgs, gatedArgs)
-	return script.String()
+	script.WriteString(" }\n")
+	return os.WriteFile(path, []byte(script.String()), 0o600)
 }
 
 // buildNuCommand builds the inner command string for Nushell.
@@ -258,61 +276,6 @@ func legacyNativeArgument(argument string) string {
 	return token.String()
 }
 
-// buildCshCommand builds the inner command string for tcsh and csh.
-//
-// csh is NOT a POSIX shell, and the POSIX builder emits three things it cannot run.
-// `unset` there removes a shell variable, not an environment one, so a StripEnvKeys
-// entry survived into the agent's environment; `unsetenv` is the csh spelling.
-// `if ... then ... fi` needs csh's own `if (...) then ... else ... endif` form. And
-// `[ -n "$VAR" ]` on an UNSET name is a hard error -- csh answers
-// `VAR: Undefined variable.` -- which every env-gated launch hit, because a gate
-// always takes the conditional path.
-//
-// The command is MULTI-LINE on purpose, and cshEnvSeed says why: csh substitutes each
-// line's variables before it evaluates that line, so a guard and the read it guards
-// cannot share one line.
-//
-// The program word and the arguments use shellquote.POSIX.Quote. Both csh and tcsh accept
-// its concatenation of quoted segments and escaped literal single quotes.
-func buildCshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
-	quotedBase := make([]string, len(spec.BaseArgs))
-	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = cshQuote(arg)
-	}
-
-	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins)
-	program := cshQuote(spec.Launch.Program)
-
-	// Simple path: no env gate. See buildPosixCommand.
-	gate := spec.EnvGated
-	if gate == nil {
-		return fmt.Sprintf("%s'/bin/echo' ''\n'/bin/echo' '%s' && exec %s %s",
-			clearEnvPrefix, delimiter, program, baseArgsStr)
-	}
-
-	// Conditional path: check env vars at runtime.
-	quotedGated := make([]string, len(gate.Args))
-	for i, arg := range gate.Args {
-		quotedGated[i] = cshQuote(arg)
-	}
-	gatedArgsStr := strings.Join(quotedGated, " ")
-
-	return fmt.Sprintf(
-		"%s%s"+
-			"if ( $"+cshEnvGateVar+" ) then\n"+
-			"'/bin/echo' ''\n'/bin/echo' '%s%s=false' && "+
-			"'/bin/echo' '%s' && exec %s %s\n"+
-			"else\n"+
-			"'/bin/echo' ''\n'/bin/echo' '%s%s=true' && "+
-			"'/bin/echo' '%s' && exec %s %s %s\n"+
-			"endif",
-		clearEnvPrefix, cshEnvSeed(gate.EnvVars),
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr, gatedArgsStr,
-	)
-}
-
 // checkSetEnv panics when an entry of SetEnv is not `NAME=VALUE` with a plain
 // identifier as its name. Each provider states the names as constants, so a
 // bad one is a programming error that no input can reach.
@@ -325,18 +288,7 @@ func checkSetEnv(entries []string) {
 	}
 }
 
-// posixSetEnv exports each entry with its value quoted for the shell.
-func posixSetEnv(pins []environmentPin) string {
-	var b strings.Builder
-	for _, pin := range pins {
-		b.WriteString("export " + pin.target + `="$` + pin.source + `" || exit $?` + "\n")
-		b.WriteString("unset " + pin.source + " || exit $?\n")
-	}
-	return b.String()
-}
-
-// cshSetEnv sets each entry the csh way. `set` touches shell variables only, so
-// `setenv` is the one that reaches the launched program.
+// cshSetEnv exports each pin and removes its private transport variable.
 func cshSetEnv(pins []environmentPin) string {
 	var b strings.Builder
 	for _, pin := range pins {
@@ -348,7 +300,7 @@ func cshSetEnv(pins []environmentPin) string {
 func nuSetEnv(pins []environmentPin) string {
 	var b strings.Builder
 	for _, pin := range pins {
-		b.WriteString("$env." + pin.target + " = $env." + pin.source + "; hide-env " + pin.source + "; ")
+		b.WriteString("$env." + pin.target + " = $env." + pin.source + "; %hide-env " + pin.source + "; ")
 	}
 	return b.String()
 }
@@ -356,16 +308,9 @@ func nuSetEnv(pins []environmentPin) string {
 func pwshSetEnv(pins []environmentPin) string {
 	var b strings.Builder
 	for _, pin := range pins {
-		b.WriteString("$env:" + pin.target + " = $env:" + pin.source + "; Remove-Item -LiteralPath 'Env:" + pin.source + "' -ErrorAction SilentlyContinue; ")
+		b.WriteString("$env:" + pin.target + " = $env:" + pin.source + "; Microsoft.PowerShell.Management\\Remove-Item -LiteralPath 'Env:" + pin.source + "' -ErrorAction SilentlyContinue; ")
 	}
 	return b.String()
-}
-
-func posixClearEnv(keys []string) string {
-	if len(keys) == 0 {
-		return ""
-	}
-	return "unset " + strings.Join(keys, " ") + " || exit $?\n"
 }
 
 // cshClearEnv removes environment variables the csh way. `unset` there touches shell
@@ -410,7 +355,7 @@ func pwshClearEnv(keys []string) string {
 func posixEnvCondition(vars []string) string {
 	parts := make([]string, len(vars))
 	for i, v := range vars {
-		parts[i] = fmt.Sprintf(`[ -n "$%s" ]`, v)
+		parts[i] = fmt.Sprintf(`[ -n "${%s-}" ]`, v)
 	}
 	return strings.Join(parts, " || ")
 }

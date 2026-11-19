@@ -125,20 +125,49 @@ func (o *ProcessOwner) Start() error {
 
 // Capture records descendants before stdin closes or any root signal arrives.
 func (o *ProcessOwner) Capture(ctx context.Context) error {
+	_, err := o.captureTree(ctx, false)
+	return err
+}
+
+// ObserveTree records known identities without retaining an observation
+// failure as a cleanup error. Callers can use a partial observation as a
+// diagnostic, and must recheck an identity before using it.
+func (o *ProcessOwner) ObserveTree(ctx context.Context) ([]ProcessIdentity, error) {
+	if ctx == nil {
+		return nil, errors.New("the process capture context is absent")
+	}
+	ctx, cancel := context.WithTimeout(ctx, processCaptureTimeout)
+	defer cancel()
+	return o.captureTree(ctx, true)
+}
+
+func (o *ProcessOwner) captureTree(ctx context.Context, observing bool) ([]ProcessIdentity, error) {
 	if o == nil {
-		return nil
+		return nil, nil
 	}
 	if ctx == nil {
-		return errors.New("the process capture context is absent")
+		return nil, errors.New("the process capture context is absent")
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed || o.terminating {
-		return nil
+		return nil, nil
 	}
 	err := o.captureLocked(ctx)
+	if observing {
+		identities := make([]ProcessIdentity, 0, len(o.children)+1)
+		if !o.root.IsZero() {
+			identities = append(identities, o.root)
+		}
+		for child := range o.children {
+			if child != o.root {
+				identities = append(identities, child)
+			}
+		}
+		return identities, err
+	}
 	o.result = errors.Join(o.result, err)
-	return err
+	return nil, err
 }
 
 // CaptureBeforeStop records descendants before a stop closes stdin or signals the root.
@@ -250,6 +279,16 @@ func (o *ProcessOwner) captureLocked(ctx context.Context) error {
 	if !o.started || o.root.IsZero() || o.closed || o.terminating {
 		return nil
 	}
+	children, err := o.findDescendantsLocked(ctx)
+	for _, child := range children {
+		if child != o.root {
+			o.children[child] = struct{}{}
+		}
+	}
+	return err
+}
+
+func (o *ProcessOwner) findHostDescendantsLocked(ctx context.Context) ([]ProcessIdentity, error) {
 	roots := make([]ProcessIdentity, 0, len(o.children)+1)
 	if o.root.Runs() {
 		roots = append(roots, o.root)
@@ -260,20 +299,17 @@ func (o *ProcessOwner) captureLocked(ctx context.Context) error {
 		}
 	}
 	if len(roots) == 0 {
-		return nil
+		return nil, nil
 	}
 	table, snapshotErr := SnapshotProcessTable(ctx)
 	if snapshotErr != nil {
 		snapshotErr = fmt.Errorf("capture descendants of process %d: %w", o.root.PID, snapshotErr)
 	}
 	if table == nil {
-		return snapshotErr
+		return nil, snapshotErr
 	}
 	children, err := table.VerifiedForest(ctx, roots)
-	for _, child := range children {
-		o.children[child] = struct{}{}
-	}
-	return errors.Join(snapshotErr, err)
+	return children, errors.Join(snapshotErr, err)
 }
 
 // Cancel captures ownership before it signals descendants and then the root.

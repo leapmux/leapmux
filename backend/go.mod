@@ -40,6 +40,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.45.0
+	github.com/tklauser/go-sysconf v0.4.0
 	go.yaml.in/yaml/v4 v4.0.0
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb
 	golang.org/x/crypto v0.59.0
@@ -115,7 +116,6 @@ require (
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/stretchr/objx v0.8.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
-	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

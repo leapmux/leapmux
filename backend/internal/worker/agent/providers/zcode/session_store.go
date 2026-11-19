@@ -140,7 +140,7 @@ func (q zcodeNativeStorageQuery) DatabasePath(ctx context.Context, query agent.S
 	if readErr == nil && (!response.ready || !response.acknowledged) {
 		readErr = errors.New("the ZCode storage query ended without a complete acknowledgement")
 	}
-	if errors.Is(stderrErr, os.ErrClosed) {
+	if providerkit.DrainLimitReached(stderrErr) || closed && errors.Is(stderrErr, os.ErrClosed) {
 		stderrErr = nil
 	} else if stderrErr != nil {
 		stderrErr = fmt.Errorf("read the ZCode storage diagnostic: %w", stderrErr)
@@ -156,7 +156,7 @@ type zcodeStorageResponse struct {
 
 func readZCodeStorageResponse(ctx context.Context, pipes *providerkit.ProcessPipes, delimiter string) (zcodeStorageResponse, error) {
 	limited := &io.LimitedReader{R: pipes.Stdout(), N: zcodeStorageQueryOutput + 1}
-	scanner := agent.NewStdoutScanner(limited)
+	scanner := agent.NewLaunchStdoutScanner(limited, delimiter)
 	response := zcodeStorageResponse{ready: delimiter == ""}
 	for {
 		hasLine := scanner.Scan()

@@ -152,7 +152,6 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = codebuddyAgentEnv(cmd.Environ())
@@ -170,7 +169,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 	}
 
 	a := &Agent{
-		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codebuddy", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, Clock: clock}, pipes, ctx, cancel),
+		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codebuddy", ShutdownGrace: registration.ShutdownGrace, Clock: clock}, pipes, ctx, cancel),
 		sink:           agent.NewModelProgressResetSink(sink),
 		opts:           opts,
 		swarmMode:      swarm,
@@ -194,7 +193,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		return nil, a.FormatStartupError(phase, err)
 	}
 	a.DrainStderr(stderrPipe)
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.readOutputLoop(scanner)
 	initialization, err := a.initializeCapabilities(opts.EffectiveStartupTimeout())
 	if err != nil {

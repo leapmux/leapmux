@@ -100,7 +100,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	preambleDelimiter, metaPrefix := prepared.Delimiter, prepared.MetaPrefix
 	cmd := prepared.Cmd
 
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
@@ -112,7 +111,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "pi", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "pi", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		model:         opts.Model(),
 		thinkingLevel: opts.Effort(),
 		provider:      cmp.Or(opts.Options[OptionProvider], DefaultProvider),
@@ -126,7 +125,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.DrainStderr(stderrPipe)
 
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.ReadOutput(scanner, a.handlePiResponse, a.handleOutput)
 
 	cleanup := func() {
