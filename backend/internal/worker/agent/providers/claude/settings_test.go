@@ -218,7 +218,7 @@ func TestClaudeModelEffortGate(t *testing.T) {
 	assert.Equal(t, []string{"--model", "opus"}, gate.Args)
 
 	prepared, wrapErr := launch.Wrap(context.Background(), launch.WrapSpec{
-		Shell:      "/bin/bash",
+		Shell:      "/bin/sh",
 		Launch:     launch.Spec{Program: "claude"},
 		EnvGated:   gate,
 		WorkingDir: "/tmp",

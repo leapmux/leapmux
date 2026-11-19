@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestKimiStartReadsThePlanUsage(t *testing.T) {
 // changes the count.
 
 func TestKimiStopEndsTheEventStream(t *testing.T) {
-	installFakeKimi(t)
+	installFakeKimi(t, kimiHelperScenarioEnv+"=unused-http-connection")
 	readers, dispatchers := kimiStreamLoops()
 	started, _, err := startKimiForTest(t, agent.Options{})
 	require.NoError(t, err)
@@ -299,8 +300,38 @@ func runFakeKimi(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	server := &http.Server{Handler: fake, ReadHeaderTimeout: 10 * time.Second}
+	connections := &fakeKimiHTTPConnections{waiting: make(map[net.Conn]struct{})}
+	var accepted chan struct{}
+	if scenario == "unused-http-connection" {
+		accepted = make(chan struct{}, 1)
+	}
+	server := &http.Server{
+		Handler: fake, ReadHeaderTimeout: 10 * time.Second,
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			connections.observe(conn, state)
+			if state == http.StateNew {
+				select {
+				case accepted <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}
 	go func() { _ = server.Serve(listener) }()
+	if accepted != nil {
+		conn, err := net.DialTimeout("tcp4", listener.Addr().String(), 30*time.Second)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer func() { _ = conn.Close() }()
+		select {
+		case <-accepted:
+		case <-time.After(30 * time.Second):
+			fmt.Fprintln(os.Stderr, "the fixture server did not accept its unused connection")
+			return 1
+		}
+	}
 
 	// A log line first, as pino prints at the warn level, then the ready line.
 	fmt.Printf("{\"level\":40,\"msg\":\"a warning\"}\n")
@@ -318,10 +349,47 @@ func runFakeKimi(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	fake.closeConnections()
+	connections.closeBeforeHeaders()
 	if err := server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return 1
 	}
 	return 0
+}
+
+type fakeKimiHTTPConnections struct {
+	mu      sync.Mutex
+	waiting map[net.Conn]struct{}
+	closing bool
+}
+
+func (connections *fakeKimiHTTPConnections) observe(conn net.Conn, state http.ConnState) {
+	connections.mu.Lock()
+	if state != http.StateNew {
+		delete(connections.waiting, conn)
+		connections.mu.Unlock()
+		return
+	}
+	if connections.closing {
+		connections.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	connections.waiting[conn] = struct{}{}
+	connections.mu.Unlock()
+}
+
+// Go's graceful shutdown waits for new connections to send headers or
+// age out. Close those sockets so the fixture can finish within the
+// Worker's grace period while active requests complete.
+func (connections *fakeKimiHTTPConnections) closeBeforeHeaders() {
+	connections.mu.Lock()
+	connections.closing = true
+	waiting := connections.waiting
+	connections.waiting = nil
+	connections.mu.Unlock()
+	for conn := range waiting {
+		_ = conn.Close()
+	}
 }
 
 // The server launch disables automatic updates after the shell profile runs.

@@ -4,6 +4,7 @@ package procutil
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 	"unsafe"
@@ -91,6 +92,26 @@ func TestWindowsJobProcessListGrowsToTheReportedCount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, queries)
 	assert.Equal(t, want, pids)
+}
+
+func TestWindowsJobProcessListKeepsReturnedIDsWhenProcessesExit(t *testing.T) {
+	const livePID = uintptr(2345)
+	for _, returned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("member remains=%t", returned), func(t *testing.T) {
+			var want []uintptr
+			if returned {
+				want = []uintptr{livePID}
+			}
+			pids, err := readJobProcessIDs(t.Context(), func(buffer []uintptr) error {
+				header := (*jobProcessListHeader)(unsafe.Pointer(&buffer[0]))
+				header.returned = uint32(copy(buffer[jobProcessHeaderWords:], want))
+				header.assigned = header.returned + 1
+				return nil
+			})
+			require.NoError(t, err)
+			assert.ElementsMatch(t, want, pids)
+		})
+	}
 }
 
 func TestWindowsJobProcessListGrowsWithNativeMembers(t *testing.T) {

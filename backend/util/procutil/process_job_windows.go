@@ -100,7 +100,9 @@ func readJobProcessIDs(ctx context.Context, query func([]uintptr) error) ([]uint
 		if header.returned > uint32(capacity) || header.returned > header.assigned {
 			return nil, errors.New("the Windows job returned an invalid process count")
 		}
-		if err == nil && header.returned == header.assigned {
+		// Members can exit during a successful query. With room for all
+		// assigned processes, the returned count identifies the valid IDs.
+		if err == nil && header.assigned <= uint32(capacity) {
 			return buffer[jobProcessHeaderWords : jobProcessHeaderWords+int(header.returned)], nil
 		}
 		if header.assigned <= uint32(capacity) {
