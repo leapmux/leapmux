@@ -197,6 +197,10 @@ func (p *channelPool) getOrOpen(
 			key:    key,
 		}
 		p.inflight[key] = open
+		// Neither branch sets KeyPin, so a tunnel channel has no
+		// trust-on-first-use key pin. Each open trusts the Worker keys that
+		// the Hub reports at that moment, and a Hub that substitutes a key can
+		// read tunneled traffic. https://github.com/leapmux/leapmux/issues/660
 		opts := tunnelpkg.OpenChannelOptions{LifetimeContext: p.epoch.ctx}
 		if p.chanOpts != nil {
 			opts = *p.chanOpts
