@@ -52,22 +52,23 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 
 	assert.Equal(t, "/bin/bash", cmd.Path)
 	assert.Equal(t, "/tmp", cmd.Dir)
+	script := renderedWrapScript(t, cmd)
 	require.Len(t, cmd.Args, 5) // bash -i -l -c <cmd>
 	assert.Equal(t, "-i", cmd.Args[1])
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
 	for _, state := range []string{"false", "true"} {
-		assert.Contains(t, cmd.Args[4],
+		assert.Contains(t, script,
 			"__leapmux_print '\\n%s\\n' '"+metaPrefix+"test_gate_open="+state+"' || exit $?\n__leapmux_invoke")
 	}
-	assert.Contains(t, cmd.Args[4], "__leapmux_invoke() {\n__leapmux_print '%s\\n' '"+delimiter+"'")
-	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "__lm_path='claude'")
-	assert.Contains(t, cmd.Args[4], "'--output-format'")
-	assert.Contains(t, cmd.Args[4], "'--model'")
-	assert.Contains(t, cmd.Args[4], "'opus'")
+	assert.Contains(t, script, "__leapmux_invoke() {\n__leapmux_print '%s\\n' '"+delimiter+"'")
+	assert.Contains(t, script, "unset CLAUDECODE")
+	assert.Contains(t, script, "__lm_path='claude'")
+	assert.Contains(t, script, "'--output-format'")
+	assert.Contains(t, script, "'--model'")
+	assert.Contains(t, script, "'opus'")
 	// Verify conditional structure
-	assert.Contains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
+	assert.Contains(t, script, "LEAPMUX_TEST_GATE_A")
 }
 
 func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
@@ -78,7 +79,7 @@ func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
 	assert.Equal(t, "/bin/bash", cmd.Path)
 	require.Len(t, cmd.Args, 3) // bash -c <cmd>
 	assert.Equal(t, "-c", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "__lm_path='claude'")
+	assert.Contains(t, renderedWrapScript(t, cmd), "__lm_path='claude'")
 }
 
 func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
@@ -349,10 +350,11 @@ func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
-	assert.Contains(t, cmd.Args[4], "'--output-format'")
-	assert.NotContains(t, cmd.Args[4], "'--model'")
-	assert.NotContains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
-	assert.NotContains(t, cmd.Args[4], "test_gate_open")
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, "'--output-format'")
+	assert.NotContains(t, script, "'--model'")
+	assert.NotContains(t, script, "LEAPMUX_TEST_GATE_A")
+	assert.NotContains(t, script, "test_gate_open")
 }
 
 func TestBuildShellWrappedCommand_NoModelEffort_Nu(t *testing.T) {
@@ -384,7 +386,7 @@ func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, testEnvGate(), "/tmp",
 	)
 	require.NotEmpty(t, metaPrefix, "a gate writes a metadata prefix even with no gated args")
-	inner := cmd.Args[4]
+	inner := renderedWrapScript(t, cmd)
 	// The probe and both capability lines are emitted.
 	assert.Contains(t, inner, "LEAPMUX_TEST_GATE_A")
 	assert.Contains(t, inner, metaPrefix+"test_gate_open=false")
@@ -565,9 +567,10 @@ func TestBuildShellWrappedCommand_PrefixArgsPrecedeTheBaseArgs(t *testing.T) {
 		WorkingDir: "/tmp",
 	})
 
-	assert.Contains(t, cmd.Args[2], "__lm_path='/usr/local/bin/node'")
-	assert.Contains(t, cmd.Args[2], delimiter)
-	assert.True(t, strings.HasSuffix(cmd.Args[2],
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, "__lm_path='/usr/local/bin/node'")
+	assert.Contains(t, script, delimiter)
+	assert.True(t, strings.HasSuffix(script,
 		"__leapmux_invoke '/Applications/ZCode.app/zcode.cjs' 'app-server' '--stdio'\n"))
 }
 
@@ -609,7 +612,7 @@ func TestBuildShellWrappedCommand_EveryDialectPrependsThePrefixArgs(t *testing.T
 				BaseArgs:   []string{"app-server"},
 				WorkingDir: "/tmp",
 			})
-			inner := cmd.Args[len(cmd.Args)-1]
+			inner := renderedWrapScript(t, cmd)
 			script := strings.Index(inner, "zcode.cjs")
 			serve := strings.Index(inner, "app-server")
 			require.NotEqual(t, -1, script, "the script must reach the command line")
@@ -628,8 +631,9 @@ func TestBuildShellWrappedCommand_EnvGateWithoutVarsIsUnconditional(t *testing.T
 		nil, []string{"--base"}, &EnvGatedArgs{MetaKey: "unused", Args: []string{"--gated"}}, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
-	assert.Contains(t, cmd.Args[2], delimiter)
-	assert.True(t, strings.HasSuffix(cmd.Args[2], "__leapmux_invoke '--base' '--gated'\n"))
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, delimiter)
+	assert.True(t, strings.HasSuffix(script, "__leapmux_invoke '--base' '--gated'\n"))
 }
 
 // TestBuildShellWrappedCommand_EnvGateRejectsUnsafeNames pins that the wrapper
@@ -672,7 +676,7 @@ func TestBuildShellWrappedCommand_EveryDialectSetsTheSetEnvEntries(t *testing.T)
 				BaseArgs:     []string{"--port", "4321"},
 				WorkingDir:   "/tmp",
 			})
-			inner := cmd.Args[len(cmd.Args)-1]
+			inner := renderedWrapScript(t, cmd)
 			for _, want := range c.want {
 				assert.Contains(t, inner, want)
 			}

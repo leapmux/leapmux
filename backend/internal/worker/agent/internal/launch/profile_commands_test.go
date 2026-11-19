@@ -109,6 +109,29 @@ func wrapTestCommand(t *testing.T, ctx context.Context, spec WrapSpec) (*exec.Cm
 	return prepared.Cmd, prepared.Delimiter, prepared.MetaPrefix
 }
 
+func bashInvocationPath(t *testing.T, command string) (string, bool) {
+	t.Helper()
+	quoted, found := strings.CutPrefix(command, bashInvocationPrefix)
+	if !found {
+		return "", false
+	}
+	require.GreaterOrEqual(t, len(quoted), 2)
+	require.True(t, strings.HasPrefix(quoted, "'") && strings.HasSuffix(quoted, "'"))
+	return filepath.FromSlash(strings.ReplaceAll(quoted[1:len(quoted)-1], `'\''`, "'")), true
+}
+
+func renderedWrapScript(t *testing.T, cmd *exec.Cmd) string {
+	t.Helper()
+	script := cmd.Args[len(cmd.Args)-1]
+	path, found := bashInvocationPath(t, script)
+	if !found {
+		return script
+	}
+	file, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(file)
+}
+
 func assertProfileCandidateExhaustion(t *testing.T, shell string, names ...string) string {
 	t.Helper()
 	spec, err := Binaries(names...).Resolve(t.Context(), shell, false, "Missing candidate test")

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -184,6 +185,13 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	default:
 		script = buildPosixCommand(shell, shellSpec, prepared)
 	}
+	if runtime.GOOS == "windows" && shell == "bash" {
+		var err error
+		script, err = prepared.writeBashInvocation(script)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// CommandArgs places the command text after all shell flags.
 	cmd.Args[len(cmd.Args)-1] = script
 	prepared.Cmd = cmd
@@ -195,12 +203,20 @@ type nuInvocationFiles struct {
 	optional string
 }
 
+func (p *PreparedLaunch) makeInvocationDirectory(prefix string) (string, error) {
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", err
+	}
+	p.closeFiles = sync.OnceValue(func() error { return os.RemoveAll(dir) })
+	return dir, nil
+}
+
 func (p *PreparedLaunch) writeNuInvocations(spec WrapSpec) (map[string]nuInvocationFiles, error) {
-	dir, err := os.MkdirTemp("", "leapmux-nu-launch-")
+	dir, err := p.makeInvocationDirectory("leapmux-nu-launch-")
 	if err != nil {
 		return nil, fmt.Errorf("create Nushell invocation directory: %w", err)
 	}
-	p.closeFiles = sync.OnceValue(func() error { return os.RemoveAll(dir) })
 	var optionalDir string
 	optionalCount := 0
 	if spec.EnvGated != nil && len(spec.EnvGated.Args) != 0 {

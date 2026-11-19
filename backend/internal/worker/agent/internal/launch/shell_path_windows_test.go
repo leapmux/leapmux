@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,8 +72,10 @@ func TestWindowsScanAndLaunchUseUpdatedSavedPath(t *testing.T) {
 
 	saved = []string{newDir}
 	assert.Equal(t, []Resolution{Missing, Found}, ScanAvailability(t.Context(), powershell, false, list))
+	// Keep the Windows shell's environment and replace only the snapshot PATH.
+	exactEnvironment := envutil.PinEnv(os.Environ(), "Path="+oldDir)
 	snapshot, result := ShellEnv(t.Context(), ShellEnvOptions{
-		Shell: "powershell", Env: []string{"Path=" + oldDir}, Variables: []string{"PATH"},
+		Shell: "powershell", Env: exactEnvironment, Variables: []string{"PATH"},
 	})
 	require.Equal(t, ProbeYes, result)
 	assert.Equal(t, oldDir, snapshot.Values["PATH"])

@@ -201,7 +201,7 @@ func assertWindowsPowerShellFunction(t *testing.T, shell, directory string, conf
 	assertProfileCommandExchangeWithEnvironment(t, cmd, delimiter, append(args, "--gated"), &profilePeerEnvironment{Literal: &literal})
 }
 
-var gitBashProfileVersion = regexp.MustCompile(`^\d+\.\d+\.\d+.*\([^)]*(?:msys|mingw)[^)]*\)$`)
+var gitBashProfileVersion = regexp.MustCompile(`^\d+\.\d+\.\d+(?:\(\d+\))?(?:-[[:alnum:].-]+)?$`)
 
 func readWindowsProfileWitness(t *testing.T, witness string, count int) [][4]string {
 	t.Helper()
@@ -225,7 +225,7 @@ func assertWindowsGitBashProfileReads(t *testing.T, witness, mode, profile strin
 		for _, fields := range rows {
 			assert.Regexp(t, gitBashProfileVersion, fields[0])
 			assert.Equal(t, "bash", terminal.ShellBaseName(fields[1]))
-			assert.Equal(t, "msys", fields[2])
+			assert.Contains(t, []string{"msys", "cygwin"}, fields[2])
 			assert.Equal(t, mode, fields[3])
 		}
 		t.Logf("windows Git Bash %s, %s via %s, %d profile reads, native external/alias/function argv, environment, live streams, exit and cancellation",

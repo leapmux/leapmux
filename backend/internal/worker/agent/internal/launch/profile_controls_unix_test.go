@@ -15,6 +15,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBashInvocationSourcesExactArgumentsAfterProfile(t *testing.T) {
+	shell := useBashProfile(t, "function . { printf 'profile dot\\n'; }\nfunction set { printf 'profile set\\n'; }\n")
+	parent := filepath.Join(t.TempDir(), "directory with 'quotes'")
+	require.NoError(t, os.Mkdir(parent, 0o700))
+	t.Setenv("TMPDIR", parent)
+
+	const source = `printf '%s\n' "$SHELLOPTS" 'two\\slashes\'`
+	prepared := &PreparedLaunch{}
+	entry, err := prepared.writeBashInvocation(source)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	path, found := bashInvocationPath(t, entry)
+	require.True(t, found)
+	require.FileExists(t, path)
+	assert.NotContains(t, entry, source)
+	assert.True(t, strings.HasSuffix(renderedWrapScript(t, &exec.Cmd{Args: []string{entry}}), source))
+
+	output, err := exec.CommandContext(testutil.DeadlineContext(t), shell, "-c", entry).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	lines := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+	require.Len(t, lines, 2, "%s", output)
+	assert.NotContains(t, strings.Split(lines[0], ":"), "posix")
+	assert.Equal(t, `two\\slashes\`, lines[1])
+
+	require.NoError(t, prepared.Close())
+	_, err = os.Stat(filepath.Dir(path))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestProfileCommandProtectsBashLaunchSetup(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "leapmux-control-fixture")

@@ -25,6 +25,7 @@ func TestPinnedEnvironmentNeverAppearsInCommandArguments(t *testing.T) {
 			for _, launch := range []Spec{{Program: "provider"}, ShellCommands("provider")} {
 				cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: shell, Launch: launch, SetEnv: []string{"PRIVATE_TOKEN=" + secret}})
 				assert.NotContains(t, strings.Join(cmd.Args, " "), secret)
+				assert.NotContains(t, renderedWrapScript(t, cmd), secret)
 			}
 		})
 	}
