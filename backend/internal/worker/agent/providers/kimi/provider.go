@@ -28,44 +28,21 @@ func (kimiProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 		return agent.NotificationClassification{}
 	}
 	switch head.Type {
-	case contracts.KimiEventTranscriptOps:
-		return classifyTranscriptNotification(raw)
+	case contracts.KimiConversationRecordKindItem:
+		view, err := decodeKimiConversationRecord(raw)
+		if err == nil && view.item != nil && view.item.Type == contracts.KimiConversationItemKindSystem &&
+			view.item.SystemKind == contracts.KimiConversationSystemKindCompaction && view.item.Status == contracts.KimiConversationStatusEnded {
+			return agent.CompactionBoundaryNotification()
+		}
+		return agent.NotificationClassification{}
+	case contracts.KimiConversationRecordKindRetry:
+		if _, err := decodeKimiConversationRecord(raw); err == nil {
+			return agent.APIRetryNotification()
+		}
+		return agent.NotificationClassification{}
 	default:
 		return agent.NotificationClassification{}
 	}
-}
-
-func classifyTranscriptNotification(raw json.RawMessage) agent.NotificationClassification {
-	row, valid := readKimiTranscriptRecord(raw)
-	if !valid {
-		return agent.NotificationClassification{}
-	}
-	op := row.operation
-	switch op.Op {
-	case contracts.KimiTranscriptOperationStepUpsert:
-		var step struct {
-			Kind   string               `json:"kind"`
-			StepID string               `json:"stepId"`
-			State  string               `json:"state"`
-			Retry  *kimiTranscriptRetry `json:"retry"`
-		}
-		if op.TurnID != "" && json.Unmarshal(op.Step, &step) == nil && step.Kind == contracts.KimiTranscriptNodeStep && step.StepID != "" && step.State == contracts.KimiTranscriptStepRunning && step.Retry.valid() {
-			return agent.APIRetryNotification()
-		}
-	case contracts.KimiTranscriptOperationMarkerUpsert:
-		var item struct {
-			Kind     string `json:"kind"`
-			MarkerID string `json:"markerId"`
-			Marker   string `json:"marker"`
-			Payload  struct {
-				Phase string `json:"phase"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal(op.Item, &item) == nil && item.Kind == contracts.KimiTranscriptNodeMarker && item.MarkerID != "" && item.Marker == contracts.KimiTranscriptMarkerCompaction && (item.Payload.Phase == contracts.KimiCompactionPhaseCompleted || item.Payload.Phase == contracts.KimiCompactionPhaseCancelled) {
-			return agent.CompactionBoundaryNotification()
-		}
-	}
-	return agent.NotificationClassification{}
 }
 
 // IsInterrupt recognizes the raw abort frame that SendRawInput takes. The

@@ -10,6 +10,30 @@ import { AskUserQuestionActions, AskUserQuestionContent, buildAskAnswers, contro
 import { createControlAnswerState } from './types'
 import '../providers'
 
+describe('AskUserQuestionContent', () => {
+  it('shows form context separately from the question label', () => {
+    const context = 'Policy  applies  everywhere\nKeep values.'
+    const questions = [
+      {
+        context,
+        question: 'Choose target',
+        options: [
+          { label: 'Alpha' },
+        ],
+      },
+    ]
+    render(() => (
+      <AskUserQuestionContent
+        request={{ requestId: 'context-question', agentId: 'a1', payload: {} }}
+        answerState={createControlAnswerState()}
+        questions={questions}
+      />
+    ))
+    expect(screen.getByTestId('control-question-context').textContent).toBe(context)
+    expect(screen.getByText('Choose target')).toHaveTextContent('Choose target')
+  })
+})
+
 describe('trySubmitAskUserQuestion', () => {
   it('keeps selected-only answers intact when an indirect caller supplies custom text', () => {
     const state = createControlAnswerState({

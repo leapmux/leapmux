@@ -2,6 +2,7 @@ package kimi
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,12 +39,10 @@ func TestKimiPendingChildInputResumesRealQueueAfterUnrelatedTurn(t *testing.T) {
 	rig := newKimiServiceTestRig(t)
 	provider, fake, root, database := rig.agent, rig.fake, rig.sink, rig.database
 	native := &kimiOutputRig{agent: provider}
-	seedKimiChildInvocation(t, native)
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"completed","origin":{"kind":"other"}}}`)
-	child, linked := provider.children.get("agent-0")
-	require.True(t, linked)
+	childID := adoptNativeKimiChild(t, provider, "agent-0")
+	run := provider.run("agent-0")
+	waitFor(t, func() bool { return run.conversationRecovery.Load() == nil }, "the adopted child receives its native page")
+	awaitKimiTestOutput(t, root)
 	fake.reply("POST "+kimiSessionPath("session_1", "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
 		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "queued"}
 	}})
@@ -51,12 +50,14 @@ func TestKimiPendingChildInputResumesRealQueueAfterUnrelatedTurn(t *testing.T) {
 	dispatcher := &kimiPendingQueueDispatcher{provider: provider, key: "session_1/agent-0", attempts: make(chan error, 2)}
 	queue := inputqueue.NewManager(store, dispatcher, inputqueue.NopObserver{})
 	t.Cleanup(queue.StopAndWait)
+	var readySignals atomic.Int32
 	// PlanWriterFor uses the real captured native-source validator. This checks
 	// actual child registration expiry without adding a state or transcript row.
 	dispatcher.ready = func(captured agent.CapturedTranscript) error {
-		_, err := root.ChildSink(child.childAgentID).PlanWriterFor(captured)
+		_, err := root.ChildSink(childID).PlanWriterFor(captured)
 		if err == nil {
-			queue.NotifyDependencyReady(child.childAgentID)
+			readySignals.Add(1)
+			queue.NotifyDependencyReady(childID)
 		}
 		return nil
 	}
@@ -66,12 +67,10 @@ func TestKimiPendingChildInputResumesRealQueueAfterUnrelatedTurn(t *testing.T) {
 	requests := fake.requestsTo("POST " + kimiSessionPath("session_1", "/prompts"))
 	require.Len(t, requests, 1)
 	promptID := decodePrompt(t, requests[0]).PromptID
-	native.transcriptAgentOps(t, "agent-0", 2,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"unrelated","state":"running","triggerPromptId":"external","origin":{"kind":"user"}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"unrelated","state":"completed","triggerPromptId":"external","origin":{"kind":"user"}}}`)
-	_, err = store.Enqueue(t.Context(), inputqueue.NewItem{ID: "Q", AgentID: child.childAgentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Queued Q"})
+	deliverKimiChildPromptTurn(t, native, kimiTestChildPromptTurn{id: "unrelated", ordinal: 0, promptID: "external", outcome: "completed"})
+	_, err = store.Enqueue(t.Context(), inputqueue.NewItem{ID: "Q", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Queued Q"})
 	require.NoError(t, err)
-	queue.NotifyDependencyReady(child.childAgentID)
+	queue.NotifyDependencyReady(childID)
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case err := <-dispatcher.attempts:
@@ -80,10 +79,15 @@ func TestKimiPendingChildInputResumesRealQueueAfterUnrelatedTurn(t *testing.T) {
 		t.Fatal("Q did not reach the pending native admission")
 	}
 	require.Eventually(t, func() bool {
-		snapshot, err := store.Snapshot(t.Context(), child.childAgentID)
+		snapshot, err := store.Snapshot(t.Context(), childID)
 		return err == nil && !snapshot.ActiveTurn && len(snapshot.Items) == 1 && snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
 	}, 30*time.Second, time.Millisecond)
-	native.transcriptAgentOps(t, "agent-0", 3, fmt.Sprintf(`{"op":"prompt.upsert","prompt":{"promptId":%q,"status":"aborted","createdAt":"2026-11-16T00:00:00Z"}}`, promptID))
+	provider.HandleOutput(kimiConversationTestFrame(t, native.sessionID(), "agent-0", `{"type":"turn.started","turn":{"turn_id":"pending-prompt","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+	provider.HandleOutput(kimiConversationTestFrame(t, native.sessionID(), "agent-0", fmt.Sprintf(`{"type":"item.ended","turn_id":"pending-prompt","item":{"type":"user_message","item_id":"owned-user-item","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Pending P","prompt_ids":[%q],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]}}`, promptID)))
+	awaitKimiTestOutput(t, root)
+	require.True(t, provider.ActiveChildTurnState(dispatcher.key).Active)
+	require.Zero(t, readySignals.Load(), "a consumed prompt still owns an active native turn")
+	provider.HandleOutput(kimiConversationTestFrame(t, native.sessionID(), "agent-0", `{"type":"turn.ended","turn":{"turn_id":"pending-prompt","ordinal":1,"kind":"agent","status":"ended","outcome":"interrupted","end_reason":"aborted","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
 	select {
 	case err := <-dispatcher.attempts:
 		require.NoError(t, err)
@@ -91,9 +95,10 @@ func TestKimiPendingChildInputResumesRealQueueAfterUnrelatedTurn(t *testing.T) {
 		t.Fatal("P readiness did not automatically dispatch Q after unrelated child cleanup")
 	}
 	require.Eventually(t, func() bool {
-		snapshot, err := store.Snapshot(t.Context(), child.childAgentID)
+		snapshot, err := store.Snapshot(t.Context(), childID)
 		return err == nil && len(snapshot.Items) == 0 && !snapshot.ActiveTurn
 	}, 30*time.Second, time.Millisecond)
+	assert.EqualValues(t, 1, readySignals.Load())
 	assert.False(t, provider.ActiveChildTurnState(dispatcher.key).Active)
 	assert.Len(t, fake.requestsTo("POST "+kimiSessionPath("session_1", "/prompts")), 2)
 }

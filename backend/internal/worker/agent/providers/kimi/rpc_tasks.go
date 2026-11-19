@@ -54,9 +54,9 @@ func (s *kimiStream) requestTask(ctx context.Context, operation, sessionID, owne
 			return kimiFrame{}, err
 		}
 	}
-	response, err := s.requestFrame(ctx, "task", func(id string) any {
+	response, err := s.requestFrame(ctx, kimiFrameRequest{operation: "task", build: func(id string) any {
 		return map[string]any{"type": operation, "request_id": id, "session_id": sessionID, "agent_id": ownerAgentID, "task_id": taskID}
-	})
+	}})
 	if err != nil {
 		return kimiFrame{}, err
 	}

@@ -93,7 +93,7 @@ func TestKimiReadyReader(t *testing.T) {
 // The startup stamps its attach to the session it opens from the agent's clock.
 func TestKimiOpenStartupSessionStampsTheAttachFromTheClock(t *testing.T) {
 	t.Parallel()
-	fake, server := newFakeKap(t)
+	_, server := newFakeKap(t)
 	a, sink, opts := newConnectedKimiAgent(t, server.URL, agent.Options{})
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
@@ -102,5 +102,24 @@ func TestKimiOpenStartupSessionStampsTheAttachFromTheClock(t *testing.T) {
 	a.clock = clock
 
 	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
-	assertAttachFiltersHistoricalNotices(t, &kimiTestRig{agent: a, fake: fake, sink: sink}, attach)
+	a.Mu.Lock()
+	attachedAt := a.attachedAt
+	a.Mu.Unlock()
+	require.Equal(t, attach, attachedAt)
+
+	main := a.run(kimiMainAgentID)
+	waitFor(t, func() bool { return main.conversationRecovery.Load() == nil }, "the initial public page reaches dispatch")
+	rig := &kimiOutputRig{agent: a, sink: sink}
+	for range 2 {
+		rig.conversationFrame(t, kimiPublicCompactionFixtureSnapshot)
+	}
+	awaitKimiTestOutput(t, a.sink)
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	view, err := decodeKimiConversationRecord(rows[0].Content)
+	require.NoError(t, err)
+	require.NotNil(t, view.item)
+	assert.Equal(t, "compact", view.item.ItemID)
+	assert.True(t, rows[1].TurnEnd)
+	assert.False(t, a.PublishTurnActive().Active)
 }

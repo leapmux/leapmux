@@ -372,13 +372,13 @@ func claudeTaskStartedTitle(ev *claudeTaskEnvelope, known claudeKnownTask, resta
 func (a *Agent) openClaudeTaskChild(ev *claudeTaskEnvelope, known claudeKnownTask, restart claudeRestartEvidence, title string) {
 	// Prefer known.childID and call EnsureChildAgent only when the registry supplies no child link.
 	// A repeated registration's ev.ToolUseID identifies SendMessage rather than the spawn span.
-	// Passing it to EnsureChildAgent can miss both row linkage and GetChildAgentBySpawnSpan.
+	// Passing it to EnsureChildAgent can miss both row linkage and GetChildAgentsBySpawnSpan.
 	// That would create a second transcript under the wrong ID and link the row to that orphan.
 	// The existing registry child link keeps both resolution paths on the same transcript.
 	childID, err := known.childID, error(nil)
 	// Never create a child from a SendMessage ID.
 	// EnsureChildAgent expects a spawn span, while a repeated registration's tool_use_id identifies its restarting call.
-	// Using that ID can miss the row link and GetChildAgentBySpawnSpan, then create a child that later original-span envelopes duplicate.
+	// Using that ID can miss the row link and GetChildAgentsBySpawnSpan, then create a child that later original-span envelopes duplicate.
 	//
 	// A linked row skips this check because its stored child link survives display eviction.
 	// This path instead sees a row whose initial EnsureChildAgent failed or whose registry cannot be read.

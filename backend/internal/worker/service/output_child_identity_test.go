@@ -63,9 +63,11 @@ func TestChildNativeKeyCollisionDoesNotPublishOrRelinkTheRegistry(t *testing.T) 
 		RegistryRole:     bgtask.RoleChildTask,
 		ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"})
 	require.NoError(t, err)
+	_, err = svc.DB.ExecContext(t.Context(), "UPDATE agents SET provider_child_key = ? WHERE id = ?", "conflicting-native-key", childID)
+	require.NoError(t, err)
 	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole:     bgtask.RoleChildTask,
-		ProviderChildKey: "native-b", SpawnSpanID: "spawn", Title: "Wrong child"})
+		ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "Wrong child"})
 	require.Error(t, err)
 	retained := rows()
 	require.Len(t, retained, 1, "a rejected native identity must not create a registry row")
@@ -73,7 +75,7 @@ func TestChildNativeKeyCollisionDoesNotPublishOrRelinkTheRegistry(t *testing.T) 
 	assert.Equal(t, childID, retained[0].ChildAgentID)
 	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
-	assert.Equal(t, "native-a", child.ProviderChildKey)
+	assert.Equal(t, "conflicting-native-key", child.ProviderChildKey)
 }
 
 func TestConcurrentUnlinkedNativeChildCreatesOneOwnedAgent(t *testing.T) {

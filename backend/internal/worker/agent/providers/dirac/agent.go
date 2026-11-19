@@ -21,13 +21,12 @@ const diracSteerMethod = "dev.dirac/whisper"
 // Agent manages one Dirac ACP process.
 type Agent struct {
 	acp.Base
-	root       string
-	clock      quartz.Clock
-	childMu    sync.Mutex
-	childState map[string]*diracChildState
-	childDone  map[string]struct{}
-	childStop  chan struct{}
-	archiveWG  sync.WaitGroup
+	root         string
+	clock        quartz.Clock
+	childMu      sync.Mutex
+	childStop    chan struct{}
+	archiveWG    sync.WaitGroup
+	taskletWatch *diracTaskletWatch
 	// claimedMu guards claimedCards, the tool calls whose cards the notice
 	// observer consumed (see observeDiracNotice).
 	claimedMu    sync.Mutex

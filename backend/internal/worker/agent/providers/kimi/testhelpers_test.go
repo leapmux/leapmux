@@ -3,6 +3,7 @@ package kimi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,7 +73,8 @@ type fakeKapSession struct {
 	SwarmMode  bool
 	// Busy is the status's `busy`: some agent of the session runs, or a
 	// background task does. It decides the status of a prompt the session takes.
-	Busy bool
+	Busy       bool
+	Compacting bool
 	// Goal supplies the native subscription snapshot, or nil for no goal.
 	Goal any
 	// ReplayFrames are complete native frames sent when this session is subscribed.
@@ -81,12 +83,11 @@ type fakeKapSession struct {
 
 // fakeKapSubscribe is one subscribe frame the fake received.
 type fakeKapSubscribe struct {
-	SessionID  string            `json:"session_id"`
-	Transcript map[string]string `json:"transcript"`
-	IDs        []string          `json:"-"`
-	Since      map[string]int64  `json:"transcript_since"`
-	WireType   string            `json:"-"`
-	Payload    json.RawMessage   `json:"-"`
+	RequestID string          `json:"request_id"`
+	SessionID string          `json:"session_id"`
+	AgentIDs  []string        `json:"agent_ids"`
+	WireType  string          `json:"-"`
+	Payload   json.RawMessage `json:"-"`
 }
 
 type fakeKap struct {
@@ -116,16 +117,17 @@ type fakeKap struct {
 	refuseSockets int
 	subscribes    []fakeKapSubscribe
 	unsubscribes  [][]string
-	pongs         []string
-	// ackFor answers one subscribe. nil accepts every session the fake knows and
-	// lists every other one under not_found.
-	ackFor func(sub fakeKapSubscribe) (code int, ack kimiAck)
+	pongs         []json.RawMessage
+	// subscribeCodeFor returns the native response code for one subscription.
+	// Nil accepts known sessions and returns SESSION_NOT_FOUND for the rest.
+	subscribeCodeFor func(sub fakeKapSubscribe) int
 	// beforeReplay pauses an accepted subscription before native state and replay.
-	beforeReplay   func(fakeKapSubscribe)
-	taskCommands   []fakeKimiTaskCommand
-	taskCommandFor func(fakeKimiTaskCommand) (int, string)
-	taskStateFor   func(fakeKimiTaskCommand) any
-	taskOutputsFor func(fakeKimiTaskCommand) []any
+	beforeReplay       func(fakeKapSubscribe)
+	beforeConversation func(fakeKapSubscribe, string)
+	taskCommands       []fakeKimiTaskCommand
+	taskCommandFor     func(fakeKimiTaskCommand) (int, string)
+	taskStateFor       func(fakeKimiTaskCommand) any
+	taskOutputsFor     func(fakeKimiTaskCommand) []any
 	// onShutdown runs when POST /shutdown arrives.
 	onShutdown func()
 }
@@ -143,7 +145,7 @@ type fakeKapConn struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
 	// The fake's mutex protects subscriptions with its session state.
-	subscriptions map[string]bool
+	subscriptions map[string]map[string]bool
 }
 
 func (c *fakeKapConn) write(ctx context.Context, frame any) error {
@@ -200,11 +202,11 @@ func (f *fakeKap) setUsage(usage any) {
 	f.usage = usage
 }
 
-// setAckFor replaces the subscribe answer. See fakeKap.ackFor.
-func (f *fakeKap) setAckFor(ackFor func(sub fakeKapSubscribe) (code int, ack kimiAck)) {
+// setSubscribeCodeFor replaces the subscribe answer. See fakeKap.subscribeCodeFor.
+func (f *fakeKap) setSubscribeCodeFor(subscribeCodeFor func(sub fakeKapSubscribe) int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.ackFor = ackFor
+	f.subscribeCodeFor = subscribeCodeFor
 }
 
 // setFeatures replaces the GET /meta feature list.
@@ -266,7 +268,7 @@ func (f *fakeKap) sessionStateFrames(id string) []any {
 	return []any{
 		map[string]any{
 			"type": contracts.KimiEventAgent, "session_id": id, "agent_id": kimiMainAgentID, "event_created_at": at,
-			"status": status, "model": session.Model, "thinking": session.Thinking, "permission_mode": session.Permission,
+			"status": status, "compacting": session.Compacting, "model": session.Model, "thinking": session.Thinking, "permission_mode": session.Permission,
 			"plan_mode": session.PlanMode, "swarm_mode": session.SwarmMode, "tower_mode": false,
 		},
 		map[string]any{
@@ -280,7 +282,7 @@ func (f *fakeKap) publishSessionState(ctx context.Context, id string) {
 	f.mu.Lock()
 	var targets []*fakeKapConn
 	for _, conn := range f.conns {
-		if conn.subscriptions[id] {
+		if conn.subscriptions[id][kimiMainAgentID] {
 			targets = append(targets, conn)
 		}
 	}
@@ -328,10 +330,10 @@ func (f *fakeKap) unsubscribeFrames() [][]string {
 	return append([][]string(nil), f.unsubscribes...)
 }
 
-func (f *fakeKap) pongNonces() []string {
+func (f *fakeKap) pongFrames() []json.RawMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.pongs...)
+	return append([]json.RawMessage(nil), f.pongs...)
 }
 
 func (f *fakeKap) connectionCount() int {
@@ -568,21 +570,20 @@ func (f *fakeKap) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	wrapped := &fakeKapConn{conn: conn, subscriptions: make(map[string]bool)}
+	wrapped := &fakeKapConn{conn: conn, subscriptions: make(map[string]map[string]bool)}
 	f.mu.Lock()
 	f.conns = append(f.conns, wrapped)
 	f.mu.Unlock()
 	ctx := r.Context()
-	_ = wrapped.write(ctx, map[string]any{"type": kimiFrameServerHello, "payload": map[string]any{"heartbeat_ms": 10000}})
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			return
 		}
 		var frame struct {
-			Type    string          `json:"type"`
-			ID      string          `json:"id"`
-			Payload json.RawMessage `json:"payload"`
+			Type      string          `json:"type"`
+			RequestID string          `json:"request_id"`
+			Payload   json.RawMessage `json:"payload"`
 		}
 		if json.Unmarshal(data, &frame) != nil {
 			continue
@@ -614,65 +615,127 @@ func (f *fakeKap) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		case kimiFramePong:
-			var pong struct {
-				Nonce string `json:"nonce"`
-			}
-			_ = json.Unmarshal(frame.Payload, &pong)
 			f.mu.Lock()
-			f.pongs = append(f.pongs, pong.Nonce)
+			f.pongs = append(f.pongs, append(json.RawMessage(nil), data...))
 			f.mu.Unlock()
 		case kimiFrameSubscribe:
 			var sub fakeKapSubscribe
-			_ = json.Unmarshal(frame.Payload, &sub)
-			sub.IDs = []string{sub.SessionID}
+			_ = json.Unmarshal(data, &sub)
 			sub.WireType = frame.Type
-			sub.Payload = append(json.RawMessage(nil), frame.Payload...)
+			sub.Payload = append(json.RawMessage(nil), data...)
 			f.mu.Lock()
 			f.subscribes = append(f.subscribes, sub)
-			ackFor := f.ackFor
+			subscribeCodeFor := f.subscribeCodeFor
 			beforeReplay := f.beforeReplay
+			beforeConversation := f.beforeConversation
 			f.mu.Unlock()
-			code, ack := f.defaultAck(sub)
-			if ackFor != nil {
-				code, ack = ackFor(sub)
+			code := f.defaultSubscribeCode(sub)
+			if subscribeCodeFor != nil {
+				code = subscribeCodeFor(sub)
 			}
-			if code == kimiCodeOK && slices.Contains(ack.Accepted, sub.SessionID) {
+			reply := map[string]any{"type": kimiFrameTaskResponse, "request_id": frame.RequestID, "code": code}
+			if code != kimiCodeOK {
+				reply["msg"] = "refused"
+			}
+			_ = wrapped.write(ctx, reply)
+			if code == kimiCodeOK {
 				f.mu.Lock()
-				first := !wrapped.subscriptions[sub.SessionID]
-				wrapped.subscriptions[sub.SessionID] = true
+				if wrapped.subscriptions[sub.SessionID] == nil {
+					wrapped.subscriptions[sub.SessionID] = make(map[string]bool)
+				}
+				desired := sub.AgentIDs
+				if len(desired) == 0 {
+					desired = []string{kimiMainAgentID}
+				}
+				var added []string
+				for _, agentID := range desired {
+					if !wrapped.subscriptions[sub.SessionID][agentID] {
+						wrapped.subscriptions[sub.SessionID][agentID] = true
+						added = append(added, agentID)
+					}
+				}
 				f.mu.Unlock()
-				if first && ackFor == nil {
-					if beforeReplay != nil {
+				if subscribeCodeFor == nil {
+					if len(added) != 0 && beforeReplay != nil {
 						beforeReplay(sub)
-					}
-					for _, state := range f.sessionStateFrames(sub.SessionID) {
-						_ = wrapped.write(ctx, state)
-					}
-					if goal, enabled := f.initialGoalFrame(sub.SessionID); enabled {
-						_ = wrapped.write(ctx, goal)
 					}
 					if session, exists := f.session(sub.SessionID); exists {
 						for _, replay := range session.ReplayFrames {
-							_ = wrapped.write(ctx, replay)
+							encoded, err := json.Marshal(replay)
+							if err != nil {
+								continue
+							}
+							var owner struct {
+								Type      string `json:"type"`
+								SessionID string `json:"session_id"`
+							}
+							if json.Unmarshal(encoded, &owner) == nil && owner.Type == contracts.KimiFrameInteraction && owner.SessionID == sub.SessionID {
+								_ = wrapped.write(ctx, replay)
+							}
+						}
+						for _, agentID := range added {
+							for _, state := range f.sessionStateFrames(sub.SessionID) {
+								fields := state.(map[string]any)
+								fields["agent_id"] = agentID
+								if agentID != kimiMainAgentID && fields["type"] == contracts.KimiEventAgent {
+									fields["status"] = "idle"
+									fields["compacting"] = false
+								}
+								_ = wrapped.write(ctx, fields)
+							}
+							if goal, enabled := f.initialGoalFrame(sub.SessionID); enabled && agentID == kimiMainAgentID {
+								_ = wrapped.write(ctx, goal)
+							}
+							if beforeConversation != nil {
+								beforeConversation(sub, agentID)
+							}
+							var replayFrames []any
+							hasPage := false
+							for _, replay := range session.ReplayFrames {
+								encoded, err := json.Marshal(replay)
+								if err != nil {
+									continue
+								}
+								var owner struct {
+									Type      string `json:"type"`
+									SessionID string `json:"session_id"`
+									AgentID   string `json:"agent_id"`
+								}
+								if json.Unmarshal(encoded, &owner) != nil || owner.SessionID != sub.SessionID || owner.AgentID != agentID || owner.Type == contracts.KimiFrameInteraction {
+									continue
+								}
+								hasPage = hasPage || owner.Type == contracts.KimiFrameTurns
+								replayFrames = append(replayFrames, replay)
+							}
+							if !hasPage {
+								_ = wrapped.write(ctx, map[string]any{"type": contracts.KimiFrameTurns, "session_id": sub.SessionID,
+									"agent_id": agentID, "event_created_at": time.Now().UTC().Format(time.RFC3339Nano),
+									"turns": []any{}, "has_more": false})
+							}
+							for _, replay := range replayFrames {
+								_ = wrapped.write(ctx, replay)
+							}
 						}
 					}
 				}
 			}
-			reply := map[string]any{"type": kimiFrameAck, "id": frame.ID, "payload": ack}
-			if code != kimiCodeOK {
-				reply["code"] = code
-				reply["msg"] = "refused"
-			}
-			_ = wrapped.write(ctx, reply)
 		case kimiFrameUnsubscribe:
 			var unsub struct {
-				SessionID string `json:"session_id"`
+				SessionID string   `json:"session_id"`
+				AgentIDs  []string `json:"agent_ids"`
 			}
-			_ = json.Unmarshal(frame.Payload, &unsub)
+			_ = json.Unmarshal(data, &unsub)
 			f.mu.Lock()
 			f.unsubscribes = append(f.unsubscribes, []string{unsub.SessionID})
-			delete(wrapped.subscriptions, unsub.SessionID)
+			if len(unsub.AgentIDs) == 0 {
+				delete(wrapped.subscriptions, unsub.SessionID)
+			} else {
+				for _, agentID := range unsub.AgentIDs {
+					delete(wrapped.subscriptions[unsub.SessionID], agentID)
+				}
+			}
 			f.mu.Unlock()
+			_ = wrapped.write(ctx, map[string]any{"type": kimiFrameTaskResponse, "request_id": frame.RequestID, "code": 0})
 		}
 	}
 }
@@ -704,18 +767,13 @@ func (f *fakeKap) initialGoalFrame(sessionID string) (any, bool) {
 	return frame, true
 }
 
-func (f *fakeKap) defaultAck(sub fakeKapSubscribe) (int, kimiAck) {
+func (f *fakeKap) defaultSubscribeCode(sub fakeKapSubscribe) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ack := kimiAck{}
-	for _, id := range sub.IDs {
-		if f.sessions[id] == nil {
-			ack.NotFound = append(ack.NotFound, id)
-			continue
-		}
-		ack.Accepted = append(ack.Accepted, id)
+	if f.sessions[sub.SessionID] == nil {
+		return kimiCodeSessionNotFound
 	}
-	return kimiCodeOK, ack
+	return kimiCodeOK
 }
 
 // --- the agent under test ---
@@ -729,6 +787,7 @@ type kimiTestRig struct {
 
 // newKimiTestRig connects an agent with no process behind it to a new fake
 // server and opens a session with opts.
+// It waits for the initial conversation page before returning a ready test agent.
 //
 // No process is started: the tests drive the server's REST routes and events,
 // which is everything the provider does after the ready line. start_test.go
@@ -736,7 +795,12 @@ type kimiTestRig struct {
 func newKimiTestRig(t *testing.T, opts agent.Options) *kimiTestRig {
 	t.Helper()
 	fake, server := newFakeKap(t)
-	return connectKimiTestRig(t, fake, server.URL, opts)
+	rig := connectKimiTestRig(t, fake, server.URL, opts)
+	main := rig.agent.run(kimiMainAgentID)
+	waitFor(t, func() bool {
+		return main.conversationRecovery.Load() == nil && !agent.OutputQueueFor(rig.agent.sink).HasPending()
+	}, "the initial native conversation page and its output complete")
+	return rig
 }
 
 func connectKimiTestRig(t *testing.T, fake *fakeKap, url string, opts agent.Options) *kimiTestRig {
@@ -744,7 +808,7 @@ func connectKimiTestRig(t *testing.T, fake *fakeKap, url string, opts agent.Opti
 	a, sink, opts := newConnectedKimiAgent(t, url, opts)
 	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
 	fake.mu.Lock()
-	waitForGoal := fake.ackFor == nil && a.features[kimiFeatureGoal]
+	waitForGoal := fake.subscribeCodeFor == nil && a.features[kimiFeatureGoal]
 	fake.mu.Unlock()
 	if waitForGoal {
 		waitFor(t, func() bool {
@@ -878,4 +942,16 @@ func options(pairs ...string) optionmap.Map {
 		out[pairs[i]] = pairs[i+1]
 	}
 	return out
+}
+
+// Await an output ticket rather than assuming admission already reached storage.
+func awaitKimiTestOutput(t *testing.T, sink agent.TranscriptServices) {
+	t.Helper()
+	queue := agent.OutputQueueFor(sink)
+	require.NotNil(t, queue)
+	completed := queue.Append(agent.OutputWrite{Owner: agent.NewOutputOwner(), Label: "observe committed Kimi test output", Run: func() error { return nil }})[0]
+	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		require.NoError(t, err)
+	}
+	waitFor(t, completed.Done, "accepted Kimi output reaches its ordered completion ticket")
 }

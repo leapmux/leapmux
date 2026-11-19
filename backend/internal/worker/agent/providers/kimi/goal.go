@@ -34,21 +34,20 @@ type kimiGoalSnapshot struct {
 	TurnsUsed   *int32          `json:"turnsUsed"`
 	TokensUsed  *int64          `json:"tokensUsed"`
 	WallClockMs *int64          `json:"wallClockMs"`
-	Budget      *struct {
-		TokenBudget *int64 `json:"tokenBudget"`
-	} `json:"budget"`
+	Budget      *kimiGoalBudget `json:"budget"`
 }
 
-type kimiGoalChange struct {
-	Reason string `json:"reason"`
+type kimiGoalBudget struct {
+	TokenBudget *int64 `json:"tokenBudget"`
 }
 
 // kimiGoalState is what the agent remembers about the session's goal.
 type kimiGoalState struct {
 	// The objective and creation time identify a goal when the native frame
 	// supplies no goal ID. The worker records when it first sees the goal.
-	snapshot  kimiGoalSnapshot
-	createdAt time.Time
+	snapshot        kimiGoalSnapshot
+	createdAt       time.Time
+	metadataRequest *kimiGoalMetadataRequest
 }
 
 // handleNativeGoal reads the pushed state, including the initial subscription snapshot.
@@ -91,7 +90,10 @@ func (a *Agent) handleNativeGoal(frame kimiFrame) {
 	snapshot := !a.goalPushSeen
 	a.goalPushSeen = true
 	a.Mu.Unlock()
-	a.applyGoal(goal, nil, snapshot)
+	a.applyGoal(goal, snapshot)
+	if goal != nil {
+		a.requestGoalMetadata(frame.SessionID, goal.Objective, goal.Status)
+	}
 }
 
 // kimiGoalStatus maps a goal status word onto the neutral status. A word this
@@ -114,7 +116,7 @@ func kimiGoalStatus(status string) agent.GoalStatus {
 
 // applyGoal records one goal report. snapshot marks a report that restates the
 // goal -- the read at a resume -- rather than a change.
-func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapshot bool) {
+func (a *Agent) applyGoal(goal *kimiGoalSnapshot, snapshot bool) {
 	if goal == nil || strings.TrimSpace(goal.Objective) == "" {
 		a.Mu.Lock()
 		// A goal that completed is gone by the server's rule, and its completion is
@@ -143,9 +145,6 @@ func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapsh
 
 	detail, _ := providerkit.RawString(goal.EndReason)
 	detail = strings.TrimSpace(detail)
-	if detail == "" && change != nil {
-		detail = strings.TrimSpace(change.Reason)
-	}
 	if detail == "" {
 		detail = goal.Status
 	}
@@ -227,7 +226,7 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 			// LeapMux's copy goes here too. dispatchMu keeps the removal in order
 			// with the goal events.
 			a.dispatchMu.Lock()
-			a.applyGoal(nil, nil, false)
+			a.applyGoal(nil, false)
 			a.finishDispatch()
 		}
 		return agent.GoalOutcome{}, nil

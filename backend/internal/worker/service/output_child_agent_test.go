@@ -2174,11 +2174,15 @@ func TestEnsureChildAgentReportsTypedNativeKeyRefusal(t *testing.T) {
 		RegistryRole: bgtask.RoleChildTask,
 		SpawnSpanID:  "shared-spawn", ProviderChildKey: "native-first"})
 	require.NoError(t, err)
+	// The registry still identifies native-first. A conflicting native key on
+	// that exact child must be refused without changing either identity.
+	_, err = svc.DB.ExecContext(t.Context(), "UPDATE agents SET provider_child_key = ? WHERE id = ?", "conflicting-native-key", childID)
+	require.NoError(t, err)
 	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
 	resolved, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
-		SpawnSpanID:  "shared-spawn", ProviderChildKey: "native-second"})
+		SpawnSpanID:  "shared-spawn", ProviderChildKey: "native-first"})
 	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, resolved)
 	after, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -2297,11 +2301,14 @@ func TestEnsureChildAgentAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	continuedMessages, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
 	require.NoError(t, err)
 	assert.Equal(t, before, continuedMessages)
-	wrong := spec
-	wrong.ProviderChildKey = "ses-different-native-child"
-	rejected, err := parent.EnsureChildAgent(wrong)
-	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
-	assert.Empty(t, rejected)
+	sibling := spec
+	sibling.ProviderChildKey = "ses-different-native-child"
+	siblingID, err := parent.EnsureChildAgent(sibling)
+	require.NoError(t, err)
+	assert.NotEqual(t, childID, siblingID)
+	replayed, err := parent.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	assert.Equal(t, childID, replayed)
 	otherParentID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
 		SpawnSpanID:  "other-parent-span", ProviderChildKey: "other-parent-key"})
@@ -2309,7 +2316,7 @@ func TestEnsureChildAgentAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	otherParent := parent.ChildSink(otherParentID)
 	beforeRefusal, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
-	rejected, err = otherParent.EnsureChildAgent(spec)
+	rejected, err := otherParent.EnsureChildAgent(spec)
 	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, rejected)
 	final, err := svc.Queries.GetAgentByID(t.Context(), childID)

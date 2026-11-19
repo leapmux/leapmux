@@ -70,6 +70,18 @@ function releaseGatedDraft(): void {
   gateResolvers = []
 }
 
+/**
+ * Yield to the real task queue until `done` holds.
+ *
+ * A swap reads storage through fake-indexeddb, which needs a few real tasks.
+ * `vi.waitFor` cannot be used here because it advances the fake clock that these cases control explicitly.
+ */
+async function settleUntil(done: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 1000 && !done(); turn++)
+    await new Promise<void>(resolve => setImmediate(resolve))
+  expect(done()).toBe(true)
+}
+
 // A draft is on the ASYNCHRONOUS storage tier, which has no in-memory mirror, so
 // a round trip here needs a database to round-trip through. Without one the
 // write never leaves the write-behind queue and `loadDraft` answers from that
@@ -271,6 +283,50 @@ describe('MarkdownEditor draft key swaps', () => {
     clearDraft(KEY_B)
     clearDraft(KEY_C)
     releaseGatedDraft()
+  })
+
+  it('does not report outgoing text to the host while the incoming draft waits', async () => {
+    saveDraft(KEY_A, 'the outgoing prompt', -1)
+    await flushStorageWrites()
+    const [key, setKey] = createSignal(KEY_A)
+    const report = vi.fn()
+    let insert: ((text: string) => void) | undefined
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{
+            key: key(),
+          }}
+          onSend={() => {}}
+          onMarkdownChange={report}
+          imperative={{
+            insertRef: fn => insert = fn,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(insert).toBeTypeOf('function'))
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'Date'],
+    })
+    try {
+      insert?.(' still outgoing')
+      gateDraftRead(KEY_B)
+      setKey(KEY_B)
+      await settleUntil(gatedReadStarted)
+      report.mockClear()
+      await vi.advanceTimersByTimeAsync(200)
+      expect(container.querySelector('.ProseMirror')).toHaveTextContent('the outgoing prompt still outgoing')
+      expect(report).not.toHaveBeenCalled()
+      releaseGatedDraft()
+      await settleUntil(() => container.querySelector('.ProseMirror')?.textContent === '')
+      expect(report).toHaveBeenLastCalledWith('')
+    }
+    finally {
+      releaseGatedDraft()
+      vi.useRealTimers()
+    }
   })
 
   it('keeps the current draft editable when only its metadata changes', async () => {
@@ -528,19 +584,6 @@ describe('MarkdownEditor draft saves', () => {
     releaseGatedDraft()
     vi.useRealTimers()
   })
-
-  /**
-   * Yield to the real task queue until `done` holds.
-   *
-   * The condition decides, not a duration: a swap reads storage through
-   * fake-indexeddb, which needs a few real tasks, and `waitFor` cannot be used
-   * here because `vi.waitFor` moves the fake clock that these cases place by hand.
-   */
-  async function settleUntil(done: () => boolean): Promise<void> {
-    for (let turn = 0; turn < 1000 && !done(); turn++)
-      await new Promise<void>(resolve => setImmediate(resolve))
-    expect(done()).toBe(true)
-  }
 
   interface MountedComposer {
     send: () => void | Promise<void>

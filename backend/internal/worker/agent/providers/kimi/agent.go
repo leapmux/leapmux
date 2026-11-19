@@ -39,9 +39,9 @@ type Agent struct {
 	// dispatchMu serializes handleFrame calls from the event stream and HandleOutput.
 	// Without it, a tool result could precede its opener and leave the card active indefinitely.
 	dispatchMu kimiPublicationMutex
-	// Registry writes share one readiness owner across dispatch and session mutations.
-	registryOnce  sync.Once
-	registryOwner *agent.OutputOwner
+	// Queued provider writes share one readiness owner across dispatch and session mutations.
+	publicationOnce  sync.Once
+	publicationOwner *agent.OutputOwner
 	// The launch stamp is immutable. dispatchMu protects the warning fingerprints.
 	serverLaunchedAt      time.Time
 	storedConfigWarnings  map[kimiConfigWarningKey]struct{}
@@ -55,11 +55,13 @@ type Agent struct {
 	approvalWork           providerkit.CoalescingWork
 	taskRecoveryWork       providerkit.CoalescingWork
 	taskReportWork         providerkit.CoalescingWork
+	goalMetadataWork       providerkit.CoalescingWork
 	transcriptRecoveryWork providerkit.CoalescingWork
 	// dispatchMu protects bytes retained for native transcript recovery.
 	pendingNativeBytes int64
 	// dispatchMu protects the applied native restoration fence.
 	invocationRecovery *kimiInvocationRecovery
+	controlReplay      *kimiControlReplay
 	// dispatchMu protects locally submitted prompt identities and child admission.
 	promptSubmissions map[string]*kimiPromptSubmission
 	// usageWork reads the plan usage of the Kimi Code account. See
@@ -75,11 +77,8 @@ type Agent struct {
 	// turnActive is true while the MAIN agent runs a turn, whoever started it.
 	turnActive bool
 	// turnSteerable is true while the running main turn takes a steer: a
-	// tracked prompt started it (kimiOriginTakesSteer).
+	// tracked prompt started it.
 	turnSteerable bool
-	// manualCompactionActive keeps the input queue closed until the native
-	// compaction result arrives. A manual compact emits no turn.ended event.
-	manualCompactionActive bool
 	// settings is the live configuration of the main agent. See settings.go.
 	settings kimiSettings
 	// catalog is the model list GET /models reported, and the configured
@@ -149,7 +148,8 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 		return errors.New("agent is stopped")
 	}
-	sessionID, busy, steerable, model := a.sessionID, a.turnActive, a.turnSteerable, a.settings.model
+	inputState := a.inputStateLocked(kimiMainAgentID)
+	sessionID, busy, steerable, model := a.sessionID, inputState.Active, inputState.Steerable, a.settings.model
 	a.Mu.Unlock()
 	if sessionID == "" {
 		return errors.New("agent has no Kimi Code session")
@@ -230,7 +230,7 @@ func classifyKimiDeliveryError(err error) error {
 // SupportsSteering is always true: the server queues a prompt that arrives
 // during a turn, and `prompts:steer` moves it into the running turn at its next
 // step. A turn that no tracked prompt started takes no steer, and the turn
-// state says so (kimiOriginTakesSteer).
+// state says so.
 func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running main turn.
@@ -245,7 +245,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 // until the turn ends.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.Mu.Lock()
-	sessionID, active, steerable, stopped, model := a.sessionID, a.turnActive, a.turnSteerable, a.StoppedLocked(), a.settings.model
+	inputState := a.inputStateLocked(kimiMainAgentID)
+	sessionID, active, steerable, stopped, model := a.sessionID, inputState.Active, inputState.Steerable, a.StoppedLocked(), a.settings.model
 	a.Mu.Unlock()
 	if stopped {
 		return errors.New("agent is stopped")
@@ -309,13 +310,31 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 const kimiCodePromptNotPending = 40402
 
 // PublishTurnActive reports a main turn or manual compaction to the input queue.
-// Only a running user turn takes a steer (kimiOriginTakesSteer).
+// Only a running user turn takes a steer.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	state := agent.TurnState{Active: a.turnActive || a.manualCompactionActive, Steerable: a.turnActive && a.turnSteerable && !a.manualCompactionActive}
+	state := a.inputStateLocked(kimiMainAgentID)
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	return providerkit.PublishTurnStateTo(a.sink, state, seq)
+}
+
+// inputStateLocked is the common authority for publication and prompt admission.
+// The caller holds Mu; the lookup creates no native run.
+func (a *Agent) inputStateLocked(nativeAgentID string) agent.TurnState {
+	if a.StoppedLocked() || a.ProcessExitedLocked() {
+		return agent.TurnState{}
+	}
+	run := a.runs[nativeAgentID]
+	active, blocked, steerable := false, false, false
+	if run != nil {
+		active = run.turnActive
+		blocked = run.compacting || run.conversationRecovery.Load() != nil
+	}
+	if nativeAgentID == kimiMainAgentID {
+		active, steerable = a.turnActive, a.turnSteerable
+	}
+	return agent.TurnState{Active: active || blocked, Steerable: active && steerable && !blocked}
 }
 
 // SendRawInput delivers a raw frame: a control response, or the raw abort

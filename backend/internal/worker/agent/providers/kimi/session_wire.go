@@ -3,7 +3,6 @@ package kimi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
@@ -12,6 +11,7 @@ import (
 type kimiAgentState struct {
 	AgentID    string `json:"agent_id"`
 	Status     string `json:"status"`
+	Compacting *bool  `json:"compacting"`
 	Model      string `json:"model"`
 	Thinking   string `json:"thinking"`
 	Permission string `json:"permission_mode"`
@@ -26,7 +26,7 @@ type kimiUsageState struct {
 	MaxContextTokens *int64 `json:"max_context_tokens"`
 }
 
-// kimiSessionPushState projects the push stream. A new connection rebuilds it before its subscribe acknowledgement.
+// kimiSessionPushState projects the push stream. Initial state follows the subscribe acknowledgement.
 type kimiSessionPushState struct {
 	agent *kimiAgentState
 	usage *kimiUsageState
@@ -35,7 +35,7 @@ type kimiSessionPushState struct {
 func decodeKimiAgentState(frame kimiFrame) (*kimiAgentState, bool) {
 	var state kimiAgentState
 	if frame.SessionID == "" || json.Unmarshal(frame.Raw, &state) != nil || state.AgentID == "" ||
-		(state.Status != "idle" && state.Status != "running") || state.PlanMode == nil || state.SwarmMode == nil || state.TowerMode == nil ||
+		(state.Status != "idle" && state.Status != "running") || state.Compacting == nil || state.PlanMode == nil || state.SwarmMode == nil || state.TowerMode == nil ||
 		(state.Permission != "" && !kimiValidPermission(state.Permission)) {
 		return nil, false
 	}
@@ -109,6 +109,13 @@ func (s *kimiStream) sessionStatus(sessionID string) (kimiStatus, bool) {
 	return s.sessionStatusLocked(sessionID)
 }
 
+func (s *kimiStream) tracksSession(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, tracked := s.sessions[sessionID]
+	return tracked
+}
+
 func (s *kimiStream) sessionStatusLocked(sessionID string) (kimiStatus, bool) {
 	state := s.states[sessionID]
 	if state.agent == nil {
@@ -143,9 +150,6 @@ func (s *kimiStream) waitSessionStatus(ctx context.Context, sessionID string, ac
 		}
 		if exists && accept(status) {
 			return status, nil
-		}
-		if !exists {
-			return kimiStatus{}, errors.New("the Kimi subscription supplied no main-agent state")
 		}
 		select {
 		case <-changed:

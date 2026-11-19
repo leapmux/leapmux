@@ -1,5 +1,5 @@
 {
-  "_readme": "Dirac owns the session modes and tool names. Both languages read these values. The worker maps subagent cards to registry rows. The browser draws those cards and the plan toggle. Dirac identifies a tool through rawInput.tool or the native name field.\n\nDirac reports a saved command-log path in the original final result. The browser shows that path beside the original preview. LeapMux reads no command-log body. `notices` holds the exact text of the notice chunks Dirac emits beside the model stream: the retry notice, a cancelled hook, and the two shell-integration lines. The worker matches a chunk whose whole text equals one notice. The Yolo config ID connects the browser Bypass preset to the worker policy for pending native tool approvals.",
+  "_readme": "Dirac owns the session modes and tool names. Both languages read these values. The worker joins native spawn receipts to root-qualified tasklet records and maps them to registry rows. It reads live native API and presentation histories for each child. Worker transcript records retain exact ownership and unchanged native blocks. Later native presentation views use revision-checked supplemental data. Request context retains the native API-status index and deleted range. API status precedes the user API entry, so its assistant presentation has the next index. A committed tasklet outcome settles only a still-unfinished request; it never replaces an explicit request result. The browser draws those cards and the plan toggle. Dirac identifies a tool through rawInput.tool or the native name field.\n\nDirac reports a saved command-log path in the original final result. The browser shows that path beside the original preview. LeapMux reads no saved command-log body. `notices` holds the exact text of the notice chunks Dirac emits beside the model stream: the retry notice, a cancelled hook, and the two shell-integration lines. The worker matches a chunk whose whole text equals one notice. The Yolo config ID connects the browser Bypass preset to the native option.",
   "modes": {
     "Act": "act",
     "Plan": "plan"
@@ -7,10 +7,11 @@
   "defaultMode": "Act",
   "configIds": {
     "ReasoningEffort": "reasoning_effort",
+    "AutoApprove": "auto_approve",
     "Yolo": "yolo"
   },
   "toolNames": {
-    "UseSubagents": "use_subagents",
+    "Subagents": "subagents",
     "ExecuteCommand": "execute_command"
   },
   "notices": {
@@ -18,5 +19,123 @@
     "HookCancelled": "\nHook execution cancelled by user",
     "ShellIntegrationUnavailable": "Shell integration is not available.",
     "ShellIntegrationSuggestion": "Shell integration is not available. Consider using background execution mode for better performance."
+  },
+  "recordKinds": {
+    "Tool": "leapmux.dirac.tool",
+    "Message": "leapmux.dirac.message"
+  },
+  "recordRoles": {
+    "Request": "request",
+    "Result": "result",
+    "Retained": "retained"
+  },
+  "nativeBlocks": {
+    "ToolUse": "tool_use",
+    "ToolResult": "tool_result"
+  },
+  "recordFields": {
+    "Type": "type",
+    "SessionID": "session_id",
+    "ParentSessionID": "parent_session_id",
+    "TaskletID": "tasklet_id",
+    "Role": "role",
+    "Declaration": "declaration",
+    "Result": "result",
+    "Message": "message",
+    "RequestContext": "request_context",
+    "TaskletOutcome": "tasklet_outcome"
+  },
+  "structs": {
+    "DiracTranscriptRecord": {
+      "doc": "DiracTranscriptRecord preserves a native tasklet tool block or presentation message and its exact conversation ownership.",
+      "table": "recordFields",
+      "fields": [
+        {
+          "key": "Type",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "ParentSessionID",
+          "type": "string"
+        },
+        {
+          "key": "TaskletID",
+          "type": "string"
+        },
+        {
+          "key": "Role",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Declaration",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Result",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Message",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "RequestContext",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "TaskletOutcome",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    },
+    "DiracRequestContext": {
+      "doc": "DiracRequestContext retains the native request identity, conversation position and completion fields associated with one presentation message.",
+      "table": "requestContext",
+      "fields": [
+        {
+          "key": "MessageID",
+          "type": "string"
+        },
+        {
+          "key": "HistoryIndex",
+          "type": "*int64"
+        },
+        {
+          "key": "DeletedRange",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "CancelReason",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "StopReason",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    }
+  },
+  "supplementRoots": {
+    "Message": "dirac_message"
+  },
+  "requestContext": {
+    "MessageID": "message_id",
+    "HistoryIndex": "conversation_history_index",
+    "DeletedRange": "deleted_range",
+    "CancelReason": "cancel_reason",
+    "StopReason": "stop_reason"
   }
 }

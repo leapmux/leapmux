@@ -1,21 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { typedResult } from '../../../model/toolCall'
 import { input } from '../../testUtils'
 import '../../index'
 
 function command(output: string, failed: boolean) {
-  const call = providerToolCall(AgentProvider.KIMI_CODE, kimiTranscriptToolFrame({
-    toolCallId: 'native-call',
+  const call = providerToolCall(AgentProvider.KIMI_CODE, kimiConversationToolRecord('result', {
+    item_id: 'native-call',
     name: 'Bash',
     input: { command: 'run the native command' },
-    state: failed ? 'error' : 'done',
-    output,
+    status: 'ended',
+    outcome: failed ? 'failed' : 'completed',
+    ...(failed
+      ? { error: output }
+      : { output }),
   }), {
-    request: input(kimiTranscriptToolFrame({
-      toolCallId: 'native-call',
+    request: input(kimiConversationToolRecord('request', {
+      item_id: 'native-call',
       name: 'Bash',
       input: { command: 'run the native command' },
     }), undefined, AgentProvider.KIMI_CODE),

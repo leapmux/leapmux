@@ -153,19 +153,19 @@ func (a *Agent) linkSubagent(payload kimiChildAdoption, parentAgent string, spaw
 		if !a.activateChildLifetime(child) {
 			return
 		}
-		// The model resumed a subagent that already has a transcript. Its row
-		// comes back to Running; the resumed run's prompt reaches the transcript
-		// through its native turn header.
+		// The model resumed a linked subagent. Its public user item supplies
+		// the new prompt when the conversation subscription delivers it.
 		a.children.update(payload.SubagentID, func(c *kimiChild) {
 			c.ended = false
 		})
 		providerkit.LogRegistryRefusal("kimi", "revive", a.queueRegistryRevive(a.sink, existing.rowKey))
+		a.subscribeChildConversation(child)
 		return
 	}
 
 	childID, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildActivity,
-		SpawnSpanID:  kimiChildSpawnSpan(spawn, payload.SubagentID), ProviderChildKey: rowKey, Title: title})
+		SpawnSpanID:  kimiChildSpawnSpan(spawn, payload.SubagentID), ProviderChildKey: rowKey, Title: title, AgentSessionID: sessionID})
 	if err != nil {
 		slog.Warn("kimi subagent ensure child failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
 		return
@@ -187,27 +187,16 @@ func (a *Agent) linkSubagent(payload kimiChildAdoption, parentAgent string, spaw
 	}
 	providerkit.LogRegistryRefusal("kimi", "upsert", a.queueRegistryUpsert(parentSink, upsert))
 
-	// A parent prompt opens the child transcript. A swarm member supplies its
-	// prompt in its native turn header, which replays after this link.
-	if spawn.prompt != "" {
-		if err := parentSink.PersistChildPrompt(childID, spawn.prompt); err != nil {
-			slog.Warn("kimi subagent persist prompt failed", "agent_id", a.AgentID(), "child", childID, "error", err)
-		}
-	}
-	a.replayPendingNativeTranscript(child)
+	a.subscribeChildConversation(child)
 	a.publishNativeTodo(child)
 	a.replayNativeTasksOwnedBy(payload.SubagentID)
 }
 
 // kimiChildSpawnSpan is the spawn span a child transcript records.
 //
-// The worker keeps one child transcript for each spawn span of a parent: the
-// `agents` table has a unique index on (parent_agent_id, spawn_span_id), and
-// EnsureChildAgent returns the transcript a span already has. An Agent call
-// starts one subagent, so its own span is the spawn span. An AgentSwarm call
-// starts many from ONE span, so each member takes the call's span qualified by
-// its own id; the call's span alone would give every member the first member's
-// transcript.
+// An Agent call supplies its own span. An AgentSwarm call supplies one span
+// for several children, so each member qualifies it with its native agent ID.
+// The Worker uses the native child key to identify the transcript.
 func kimiChildSpawnSpan(spawn kimiSpawn, subagentID string) string {
 	if spawn.spanID == "" {
 		return ""
@@ -225,7 +214,7 @@ func (a *Agent) attachChildSpawnSpan(sink agent.ProviderServices, child kimiChil
 	}
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildActivity,
-		SpawnSpanID:  spanID, ProviderChildKey: child.rowKey, Title: child.title})
+		SpawnSpanID:  spanID, ProviderChildKey: child.rowKey, Title: child.title, AgentSessionID: sink.MessageSessionID()})
 	if err != nil {
 		slog.Warn("attach Kimi child spawn span", "agent_id", a.AgentID(), "row_key", child.rowKey, "error", err)
 		return false
@@ -272,90 +261,19 @@ func (a *Agent) closeSubagentRegistryRow(subagentID string, child kimiChild, sta
 	return err
 }
 
-// --- a resync ---
-
-// --- a subagent's own turns ---
-
-func (a *Agent) startChildTranscriptTurn(run *kimiRun, origin, promptText string) {
-	child, linked := a.children.get(run.agentID)
-	if !linked {
-		return
-	}
-	if !a.activateChildLifetime(run) || !a.reviveNativeChildRow(run) {
-		return
-	}
-	a.Mu.Lock()
-	wasActive := run.turnActive
-	run.turnActive = true
-	run.userTurn = origin == contracts.KimiOriginUser
-	resumed := run.started
-	run.started = true
-	a.Mu.Unlock()
-	run.generation.Reset()
-	prompt := kimiStripGitContext(promptText)
-
-	if !wasActive {
-		a.publishChildTurn(run, true)
-	}
-	switch {
-	case origin == contracts.KimiOriginUser:
-		// A message from the subagent's own tab. LeapMux recorded the message
-		// itself. The shared activation above returns its row to Running.
-	case resumed && prompt != "":
-		// The model resumed the subagent with a new prompt, which lands in the
-		// middle of its transcript.
-		if err := run.childLifetime.parent.PersistChildUserMessage(child.childAgentID, prompt); err != nil {
-			slog.Warn("kimi subagent persist message failed", "agent_id", a.AgentID(), "child", child.childAgentID, "error", err)
-		}
-	default:
-		// The subagent's first turn. Its prompt opens the transcript, unless the
-		// spawn's own prompt already did: PersistChildPrompt writes nothing into
-		// a transcript that holds a row.
-		if err := run.childLifetime.parent.PersistChildPrompt(child.childAgentID, prompt); err != nil {
-			slog.Warn("kimi subagent persist prompt failed", "agent_id", a.AgentID(), "child", child.childAgentID, "error", err)
-		}
-	}
-}
-
-// kimiChildTurnStatus is the registry status a subagent's own turn leaves.
-func kimiChildTurnStatus(reason string) bgtask.Status {
-	switch reason {
-	case contracts.KimiTranscriptTurnCompleted:
-		return bgtask.StatusSucceeded
-	case contracts.KimiTranscriptTurnCancelled:
-		return bgtask.StatusStopped
-	default:
-		return bgtask.StatusFailed
-	}
-}
-
-// publishChildTurn reports a subagent's turn on its own tab. A subagent's turn
+// publishChildInputState reports a subagent's turn on its own tab. A subagent's turn
 // takes no steering: the server steers the main agent's queue alone.
-func (a *Agent) publishChildTurn(run *kimiRun, active bool) {
+func (a *Agent) publishChildInputState(run *kimiRun) {
 	writer := a.runSink(run)
 	if writer == nil {
 		return
 	}
 	a.Mu.Lock()
+	state := a.inputStateLocked(run.agentID)
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	providerkit.PublishTurnStateTo(writer, agent.TurnState{Active: active}, seq)
-}
-
-// kimiStripGitContext drops the `<git-context>` block the server puts in front
-// of a subagent's prompt. It is the engine's own injection, not the instruction
-// the subagent was given.
-func kimiStripGitContext(prompt string) string {
-	trimmed := strings.TrimSpace(prompt)
-	const open, close = "<git-context>", "</git-context>"
-	if !strings.HasPrefix(trimmed, open) {
-		return trimmed
-	}
-	end := strings.Index(trimmed, close)
-	if end < 0 {
-		return trimmed
-	}
-	return strings.TrimSpace(trimmed[end+len(close):])
+	providerkit.PublishTurnStateTo(writer, state, seq)
+	a.queueChildPromptReadiness(run)
 }
 
 // --- child input and interrupt ---
@@ -369,7 +287,7 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
 	a.Mu.Lock()
-	busy := a.runLocked(agentID).turnActive
+	busy := a.inputStateLocked(agentID).Active
 	model := a.settings.model
 	a.Mu.Unlock()
 	if busy {
@@ -395,7 +313,7 @@ func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildI
 		return nil, err
 	}
 	a.Mu.Lock()
-	busy := a.runLocked(agentID).turnActive
+	busy := a.inputStateLocked(agentID).Active
 	a.Mu.Unlock()
 	child, linked := a.children.get(agentID)
 	if !linked {
@@ -437,7 +355,7 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	return agent.TurnState{Active: a.runLocked(agentID).turnActive}
+	return a.inputStateLocked(agentID)
 }
 
 // errKimiChildUnknown reports a row key that identifies no subagent of the

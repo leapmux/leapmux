@@ -314,6 +314,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       : dk.agentId
   })
 
+  // The key whose document the editor holds. Undefined before the first effect
+  // run, and null when that document has no draft. It moves only when a replace
+  // lands, so the debounced save, every swap save and the save at unmount write
+  // under the key that owns the text on screen.
+  let prevDraftKey: string | null | undefined
+
   /**
    * Editor wrapper sizing.
    *
@@ -377,6 +383,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    * that only drifts.
    */
   const emitDocument = (markdown: string) => {
+    // A pending draft swap still displays the outgoing document. Its debounced
+    // report must not change the incoming host's answer or layout state.
+    if ((prevDraftKey ?? null) !== (untrack(getDraftKey) ?? null))
+      return
     onMarkdownChangeRef?.(markdown)
     onContentChangeRef?.(markdown.trim().length > 0)
   }
@@ -633,12 +643,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   const draftSaveDebounce: { current: TrailingDebounced | undefined } = { current: undefined }
-  // The key whose document the editor holds. Undefined before the first effect
-  // run, and null when that document has no draft. It moves only when a replace
-  // lands, so the debounced save, every swap save and the save at unmount write
-  // under the key that owns the text on screen.
-  let prevDraftKey: string | null | undefined
-
   /**
    * Build the editor and attach everything that depends on it.
    *
@@ -740,8 +744,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           return
         readyDraft = draft
         editor.action(replaceAll(draft.content))
-        emitDocument(draft.content)
         prevDraftKey = initialReadyDraftKey ?? null
+        emitDocument(draft.content)
       })
       // Checked AGAIN, for the same reason it is checked after `buildEditor`:
       // nothing below this line would ever be torn down.
@@ -1031,8 +1035,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         try {
           swapTarget.action(replaceAll(draft.content))
           restoreCursor(swapTarget, draft.cursor)
-          emitDocument(draft.content)
           prevDraftKey = newDraftKey
+          emitDocument(draft.content)
         }
         catch {
           setBuildFailed(true)

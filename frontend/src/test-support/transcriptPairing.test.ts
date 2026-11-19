@@ -4,7 +4,7 @@ import { isFinishedToolCallStatus } from '~/components/chat/model/toolCallStatus
 import { openCodeToolPart } from '~/components/chat/providers/opencode/toolResults.fixtures'
 import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
@@ -376,20 +376,21 @@ const CASES: PairCase[] = [
     label: 'Kimi Code',
     provider: AgentProvider.KIMI_CODE,
     spanType: 'Bash',
-    request: kimiTranscriptToolFrame({
-      toolCallId: 'kimi-call',
+    request: kimiConversationToolRecord('request', {
+      item_id: 'kimi-call',
       name: 'Bash',
       input: { command: 'printf kimi' },
     }),
-    result: kimiTranscriptToolFrame({
-      toolCallId: 'kimi-call',
+    result: kimiConversationToolRecord('result', {
+      item_id: 'kimi-call',
       name: 'Bash',
       input: { command: 'printf kimi' },
-      state: 'error',
+      status: 'ended',
+      outcome: 'failed',
       output: 'kimi failed\nCommand failed with exit code: 1.',
     }),
     kind: 'execute',
-    // The native error state preserves the failure, including when the request row renders it.
+    // The native failed outcome preserves the failure, including when the request row renders it.
     status: 'failed',
   },
   {

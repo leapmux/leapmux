@@ -3,9 +3,10 @@ package kimi
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
+	"sync/atomic"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -17,12 +18,22 @@ const (
 
 type kimiMediaJob struct {
 	run           *kimiRun
-	media         *kimiTranscriptMedia
+	sessionID     string
+	agentID       string
+	itemIDs       []string
+	reads         []kimiMediaSupplementRead
 	batch         *agent.CapturedTranscriptBatch
-	operation     agent.CapturedTranscriptOperation
+	operations    []agent.CapturedTranscriptOperation
+	prepared      atomic.Pointer[[]agent.CapturedTranscriptOperation]
 	ctx           context.Context
 	cancel        context.CancelFunc
 	retainedBytes int
+}
+
+type kimiMediaSupplementRead struct {
+	operationIndex int
+	itemID         string
+	read           func(context.Context, chan struct{}) ([]byte, error)
 }
 
 type kimiMediaService struct {
@@ -51,26 +62,36 @@ func (a *Agent) mediaService() *kimiMediaService {
 	return a.media
 }
 
-// retainMediaResult reserves the complete closing row before dispatch proceeds.
-// A refused reservation leaves the native tool retryable.
-func (a *Agent) retainMediaResult(run *kimiRun, sink agent.ProviderServices, media *kimiTranscriptMedia, original []byte, span agent.SpanInfo) (bool, error) {
-	if a.IntentionalStopRequested() || a.IsStopped() || a.Context().Err() != nil {
-		return false, nil
+// retainMediaBatch accepts only already captured operations. Quota refusal
+// leaves the caller's original representation available without recapturing it.
+func (a *Agent) retainMediaBatch(run *kimiRun, sink agent.ProviderServices, sessionID, agentID string, batch *agent.CapturedTranscriptBatch, operations []agent.CapturedTranscriptOperation, reads []kimiMediaSupplementRead) bool {
+	if len(reads) == 0 || a.IntentionalStopRequested() || a.IsStopped() || a.Context().Err() != nil {
+		return false
+	}
+	retainedBytes := 0
+	for _, operation := range operations {
+		content := operation.FrozenContent()
+		if len(content.Original) > kimiMediaMaxQueuedBytes-retainedBytes {
+			return false
+		}
+		retainedBytes += len(content.Original)
+		if len(content.Supplemental) > kimiMediaMaxQueuedBytes-retainedBytes {
+			return false
+		}
+		retainedBytes += len(content.Supplemental)
 	}
 	service := a.mediaService()
 	service.mu.Lock()
-	defer service.mu.Unlock()
-	if service.closed || a.IntentionalStopRequested() || len(service.jobs) >= kimiMediaMaxJobs || len(original) > kimiMediaMaxQueuedBytes-service.retainedBytes {
+	if service.closed || a.IntentionalStopRequested() || len(service.jobs) >= kimiMediaMaxJobs || retainedBytes > kimiMediaMaxQueuedBytes-service.retainedBytes {
+		service.mu.Unlock()
 		slog.Warn("retain Kimi tool result without media because the media queue cannot accept it", "agent_id", a.AgentID())
-		return false, nil
+		return false
 	}
-	batch, err := agent.ReserveCapturedTranscriptBatch(sink)
-	if err != nil {
-		return false, err
-	}
-	operation := agent.CaptureTranscript(sink, agent.MessageContent{Original: original}, span).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
 	ctx, cancel := a.requestContext()
-	job := &kimiMediaJob{run: run, media: media, batch: batch, operation: operation, ctx: ctx, cancel: cancel, retainedBytes: len(original)}
+	job := &kimiMediaJob{run: run, sessionID: sessionID, agentID: agentID, batch: batch, operations: slices.Clone(operations), reads: slices.Clone(reads), ctx: ctx, cancel: cancel, retainedBytes: retainedBytes}
+	for _, read := range reads {
+		job.itemIDs = append(job.itemIDs, read.itemID)
+	}
 	service.jobs[job] = struct{}{}
 	service.retainedBytes += job.retainedBytes
 	// A prepared result can remain behind another row or a failed storage write.
@@ -80,34 +101,76 @@ func (a *Agent) retainMediaResult(run *kimiRun, sink agent.ProviderServices, med
 		Run: func() error { service.release(job); return nil },
 	})
 	service.queue <- job
-	return true, nil
+	service.mu.Unlock()
+	if err := job.prepare(operations[:reads[0].operationIndex]); !agent.OutputRetained(err) {
+		slog.Warn("prepare the ordered Kimi media output", "error", err)
+	}
+	return true
+}
+
+// The reservation publishes records that precede the first image result while
+// the downloader prepares the rest. It still blocks every later queue entry.
+func (job *kimiMediaJob) prepare(prefix []agent.CapturedTranscriptOperation) error {
+	index := 0
+	return job.batch.PrepareStream(func() (agent.CapturedTranscriptOperation, bool, error) {
+		if index < len(prefix) {
+			operation := prefix[index]
+			index++
+			return operation, false, nil
+		}
+		prepared := job.prepared.Load()
+		if prepared == nil {
+			return agent.CapturedTranscriptOperation{}, false, agent.ErrOutputInFlight
+		}
+		if index == len(*prepared) {
+			return agent.CapturedTranscriptOperation{}, true, nil
+		}
+		operation := (*prepared)[index]
+		index++
+		return operation, false, nil
+	})
 }
 
 func (a *Agent) completeMediaJob(service *kimiMediaService, job *kimiMediaJob) {
 	defer job.cancel()
-	supplement, err := a.readTranscriptMedia(job.ctx, job.media, service.permits)
-	if err != nil {
-		slog.Warn("recover Kimi tool images", "agent_id", a.AgentID(), "error", err)
+	supplements := make([][]byte, len(job.reads))
+	for index, read := range job.reads {
+		supplement, err := read.read(job.ctx, service.permits)
+		if err != nil {
+			slog.Warn("recover Kimi tool images", "agent_id", a.AgentID(), "item_id", read.itemID, "error", err)
+			continue
+		}
+		supplements[index] = supplement
 	}
 	a.dispatchMu.Lock()
 	a.Mu.Lock()
 	// Admission fixes the representation while the original session and run still own it.
 	// A later session switch cannot move this captured write to the new session.
-	includeMedia := err == nil && job.ctx.Err() == nil && !a.StoppedLocked() && !a.IntentionalStopRequested() &&
-		a.sessionID == job.media.identity.sessionID && a.runs[job.media.identity.agentID] == job.run
+	includeMedia := job.ctx.Err() == nil && !a.StoppedLocked() && !a.IntentionalStopRequested() &&
+		a.sessionID == job.sessionID && a.runs[job.agentID] == job.run
 	a.Mu.Unlock()
 	a.finishDispatch()
-	operation := job.operation
-	if includeMedia && service.retainSupplement(job, len(supplement)) {
-		if enriched, enrichErr := operation.WithSupplementalContent(supplement); enrichErr == nil {
-			operation = enriched
-		} else {
-			service.releaseSupplement(job, len(supplement))
-			slog.Warn("retain Kimi tool result without rejected media", "agent_id", a.AgentID(), "error", enrichErr)
+	operations := slices.Clone(job.operations)
+	if includeMedia {
+		for index, supplement := range supplements {
+			if len(supplement) == 0 || !service.retainSupplement(job, len(supplement)) {
+				continue
+			}
+			at := job.reads[index].operationIndex
+			if enriched, enrichErr := operations[at].WithSupplementalContent(supplement); enrichErr == nil {
+				operations[at] = enriched
+			} else {
+				service.releaseSupplement(job, len(supplement))
+				slog.Warn("retain Kimi tool result without rejected media", "agent_id", a.AgentID(), "error", enrichErr)
+			}
 		}
 	}
-	// Preparation can invoke persistence callbacks. Keep it outside provider locks.
-	if err := job.batch.Prepare(func() []agent.CapturedTranscriptOperation { return []agent.CapturedTranscriptOperation{operation} }); err != nil && !agent.OutputRetained(err) {
+	service.mu.Lock()
+	job.run, job.reads, job.operations = nil, nil, nil
+	service.mu.Unlock()
+	job.prepared.Store(&operations)
+	// Waking the stream can invoke persistence callbacks. Keep it outside provider locks.
+	if err := job.batch.FlushAfterReady(); !agent.OutputRetained(err) {
 		slog.Error("persist Kimi media result", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -149,7 +212,7 @@ func (a *Agent) cancelMediaSession(sessionID string) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	for job := range service.jobs {
-		if job.media.identity.sessionID == sessionID {
+		if job.sessionID == sessionID {
 			job.cancel()
 		}
 	}

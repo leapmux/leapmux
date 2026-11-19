@@ -102,14 +102,16 @@ func (s *kimiRegisteredChildServices) PersistChildUserMessage(childID, prompt st
 
 func TestKimiNestedChildWritesKeepTheirDirectParent(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	tree := &kimiChildRegistrationTree{current: make(map[string]*kimiRegisteredChildServices)}
 	rig.agent.sink = &kimiRegisteredChildServices{ProviderServices: rig.agent.sink, tree: tree, id: "root"}
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-0","task_id":"nested","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-1"}`))
-	rig.transcriptAgentOps(t, "agent-1", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"},"prompt":"Review the nested change."}}`)
-	rig.transcriptAgentOps(t, "agent-1", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
-	rig.transcriptAgentOps(t, "agent-1", 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"other"},"prompt":"Review another change."}}`)
+	rig.startPublicTurn(t, "agent-1", "t0", 0)
+	rig.publicOpener(t, "agent-1", "t0", `{"kind":"system"}`)
+	rig.endPublicTurn(t, "agent-1", "t0", 0, "completed")
+	rig.startPublicTurn(t, "agent-1", "t1", 1)
+	rig.publicOpener(t, "agent-1", "t1", `{"kind":"system"}`)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-0","task_id":"nested","kind":"subagent","status":"ended","outcome":"failed","error":"Nested review failed.","detached":false,"child_agent_id":"agent-1"}`))
 	tree.mu.Lock()
 	assert.Empty(t, tree.violations)
@@ -130,7 +132,7 @@ func TestKimiNestedChildRenewsAfterItsParentLifetime(t *testing.T) {
 	for _, retired := range []bool{false, true} {
 		t.Run(fmt.Sprintf("descendant_already_retired=%t", retired), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			tree := &kimiChildRegistrationTree{current: make(map[string]*kimiRegisteredChildServices)}
 			rig.agent.sink = &kimiRegisteredChildServices{ProviderServices: rig.agent.sink, tree: tree, id: "root"}
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
@@ -139,8 +141,12 @@ func TestKimiNestedChildRenewsAfterItsParentLifetime(t *testing.T) {
 				rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-0","task_id":"nested","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-1"}`))
 			}
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0"}`))
-			rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"user"}}}`)
-			rig.transcriptAgentOps(t, "agent-1", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"user"}}}`, `{"op":"frame.upsert","turnId":"t1","stepId":"t1.1","frame":{"kind":"tool","frameId":"read","toolCallId":"read","name":"Read","state":"done","input":{},"output":"renewed nested output"}}`)
+			rig.startPublicTurn(t, "agent-0", "t1", 0)
+			rig.publicOpener(t, "agent-0", "t1", `{"kind":"user"}`)
+			rig.startPublicTurn(t, "agent-1", "t1", 0)
+			rig.publicOpener(t, "agent-1", "t1", `{"kind":"user"}`)
+			rig.conversationAgentFrame(t, "agent-1", `{"type":"item.ended","turn_id":"t1","item":{"type":"tool_call","item_id":"read","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Read","input":{},"output":"renewed nested output"}}`)
+			require.NoError(t, agent.FlushPendingOutput(rig.agent.run("agent-1").childLifetime.writer))
 			row, exists := rig.sink.BackgroundTask("session_1/agent-1")
 			require.True(t, exists)
 			tree.mu.Lock()
@@ -149,6 +155,13 @@ func TestKimiNestedChildRenewsAfterItsParentLifetime(t *testing.T) {
 			assert.True(t, current, "the renewed parent must own the grandchild's current writer")
 			assert.Empty(t, tree.violations)
 			tree.mu.Unlock()
+			parent, parentFound := rig.sink.BackgroundTask("session_1/agent-0")
+			require.True(t, parentFound)
+			rows := rig.sink.Child(parent.ChildAgentID).Child(row.ChildAgentID).Messages()
+			require.Len(t, rows, 2)
+			assert.True(t, rows[1].Closing)
+			assert.Equal(t, rows[0].SpanID, rows[1].SpanID)
+			assert.Contains(t, string(rows[1].Content), "renewed nested output")
 		})
 	}
 }
@@ -158,7 +171,7 @@ func TestKimiParentCleanupPreservesDescendantMedia(t *testing.T) {
 	for _, resumed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("parent_resumes=%t", resumed), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			tree := &kimiChildRegistrationTree{current: make(map[string]*kimiRegisteredChildServices)}
 			rig.agent.sink = &kimiRegisteredChildServices{ProviderServices: rig.agent.sink, tree: tree, id: "root"}
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
@@ -179,17 +192,17 @@ func TestKimiParentCleanupPreservesDescendantMedia(t *testing.T) {
 				case <-request.Context().Done():
 				}
 			})
-			rig.transcriptAgentOps(t, "agent-1", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"}}}`, kimiMediaTestOperation(t, "image", id))
+			rig.startConversationMediaTurn(t, "agent-1")
+			rig.publishConversationMediaResult(t, "agent-1", "image", id)
 			awaitKimiMediaRequest(t, entered)
 			lifetime := rig.agent.run("agent-1").childLifetime
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0"}`))
-			rig.transcriptAgentOps(t, "agent-0", 1,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"parent-attempt","state":"running","origin":{"kind":"other"}}}`,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"parent-attempt","state":"completed","origin":{"kind":"other"}}}`)
+			rig.conversationAgentFrame(t, "agent-0", `{"type":"turn.started","turn":{"turn_id":"parent-attempt","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+			rig.conversationAgentFrame(t, "agent-0", `{"type":"turn.ended","turn":{"turn_id":"parent-attempt","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 			parentQueue := agent.OutputQueueFor(rig.agent.runSink(rig.agent.run("agent-0")))
 			require.True(t, parentQueue.HasPending(), "the parent cleanup waits for its descendant")
 			if resumed {
-				rig.transcriptAgentOps(t, "agent-0", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"user"}}}`)
+				rig.conversationAgentFrame(t, "agent-0", `{"type":"turn.started","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:01Z","steps":[]}}`)
 			}
 			tree.mu.Lock()
 			registered := tree.current[childRow.ChildAgentID]
@@ -197,14 +210,14 @@ func TestKimiParentCleanupPreservesDescendantMedia(t *testing.T) {
 			tree.mu.Unlock()
 			assert.Same(t, lifetime, rig.agent.run("agent-1").childLifetime, "parent renewal preserves the running descendant's captured scope")
 			release()
-			waitFor(t, func() bool { return child.MessageCount() == 1 }, "the grandchild's current image result persists")
-			message := child.Messages()[0]
+			waitFor(t, func() bool { return child.MessageCount() == 2 }, "the grandchild's current image result persists")
+			message := child.Messages()[1]
 			assert.NotEmpty(t, message.SupplementalContent)
 			assert.False(t, message.TranscriptOnly)
-			rig.transcriptAgentOps(t, "agent-1", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
+			rig.conversationAgentFrame(t, "agent-1", `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-0","task_id":"nested","kind":"subagent","status":"ended","outcome":"completed","detached":true,"child_agent_id":"agent-1"}`))
 			if resumed {
-				rig.transcriptAgentOps(t, "agent-0", 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"completed","origin":{"kind":"user"}}}`)
+				rig.conversationAgentFrame(t, "agent-0", `{"type":"turn.ended","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:01Z","steps":[]}}`)
 			}
 			assert.False(t, parentQueue.HasPending())
 			assert.Equal(t, []bool{true, false}, child.TurnActives())
@@ -225,11 +238,14 @@ func TestKimiRetiredSessionReleasesDescendantCleanupDependencies(t *testing.T) {
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-0","task_id":"nested","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-1"}`))
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0"}`))
-			native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-			native.transcriptAgentOps(t, "agent-1", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child-attempt","state":"running","origin":{"kind":"other"}}}`)
-			native.transcriptAgentOps(t, "agent-0", 1,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"parent-attempt","state":"running","origin":{"kind":"other"}}}`,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"parent-attempt","state":"completed","origin":{"kind":"other"}}}`)
+			parentRun, childRun := rig.agent.run("agent-0"), rig.agent.run("agent-1")
+			waitFor(t, func() bool {
+				return parentRun.conversationRecovery.Load() == nil && childRun.conversationRecovery.Load() == nil
+			}, "both owned child subscriptions restore their native pages")
+			rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-1", `{"type":"turn.started","turn":{"turn_id":"child-attempt","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+			rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"turn.started","turn":{"turn_id":"parent-attempt","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+			rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"turn.ended","turn":{"turn_id":"parent-attempt","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+			assert.True(t, rig.agent.ActiveChildTurnState("session_1/agent-1").Active)
 			rig.agent.dispatchMu.Lock()
 			parent := rig.agent.run("agent-0").childLifetime
 			graph := parent.graph
@@ -241,7 +257,9 @@ func TestKimiRetiredSessionReleasesDescendantCleanupDependencies(t *testing.T) {
 				assert.False(t, graph.retired.Load(), "requesting Worker replacement must not pretend the old runtime ended")
 				assert.True(t, parent.queue.HasPending())
 			}
-			rig.agent.settleAfterExit(agent.MessageCompletionInterrupted)
+			rig.agent.SetStoppedForTest(true)
+			rig.agent.SimulateExitForTest()
+			require.NoError(t, rig.agent.Wait())
 			assert.True(t, graph.retired.Load())
 			assert.False(t, parent.queue.HasPending(), "obsolete cleanup must not block later output")
 			graph.mu.Lock()
@@ -279,25 +297,26 @@ func TestKimiRetiringChildLifetimePreservesNewWork(t *testing.T) {
 	for _, userTurn := range []bool{false, true} {
 		t.Run(fmt.Sprintf("independent_user_turn=%t", userTurn), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			failure := &kimiTaskProjectionFailureSink{ControlSink: rig.sink}
 			trace := &kimiChildResetLifecycleSink{ProviderServices: agent.NewModelProgressResetSink(agent.NewProviderServices(failure)), registry: rig.sink}
 			rig.agent.sink = trace
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
-			rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"}}}`)
+			rig.startPublicTurn(t, "agent-0", "t0", 0)
 			failure.closeErr = errors.New("registry storage unavailable")
-			rig.transcriptAgentOps(t, "agent-0", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
+			rig.endPublicTurn(t, "agent-0", "t0", 0, "completed")
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0"}`))
 			require.True(t, rig.agent.run("agent-0").childLifetime.retiring)
 			row, child := childOf(t, rig.sink, "session_1/agent-0")
 			assert.Equal(t, bgtask.StatusRunning, row.Status)
-			origin := "other"
+			origin := "system"
 			if userTurn {
 				origin = "user"
 			} else {
 				rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"new","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
 			}
-			rig.transcriptAgentOps(t, "agent-0", 3, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":%q}}}`, origin))
+			rig.startPublicTurn(t, "agent-0", "t1", 1)
+			rig.publicOpener(t, "agent-0", "t1", fmt.Sprintf(`{"kind":%q}`, origin))
 			require.False(t, rig.agent.run("agent-0").childLifetime.retiring)
 			failure.closeErr = nil
 			require.NoError(t, agent.FlushPendingOutput(rig.agent.sink))
@@ -307,12 +326,14 @@ func TestKimiRetiringChildLifetimePreservesNewWork(t *testing.T) {
 			}
 			trace.mu.Unlock()
 			assert.True(t, rig.agent.ActiveChildTurnState("session_1/agent-0").Active)
-			rig.transcriptAgentOps(t, "agent-0", 4, `{"op":"frame.upsert","turnId":"t1","stepId":"t1.1","frame":{"kind":"tool","frameId":"read","toolCallId":"read","name":"Read","state":"done","input":{"path":"new.go"},"output":"new lifetime output"}}`)
+			rig.conversationAgentFrame(t, "agent-0", `{"type":"item.ended","turn_id":"t1","item":{"type":"tool_call","item_id":"read","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Read","input":{"path":"new.go"},"output":"new lifetime output"}}`)
+			require.NoError(t, agent.FlushPendingOutput(rig.agent.run("agent-0").childLifetime.writer))
 			messages := child.Messages()
 			require.NotEmpty(t, messages)
 			assert.Contains(t, string(messages[len(messages)-1].Content), "new lifetime output")
 			assert.False(t, messages[len(messages)-1].TranscriptOnly)
-			rig.transcriptAgentOps(t, "agent-0", 5, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"completed","origin":{"kind":%q}}}`, origin))
+			rig.endPublicTurn(t, "agent-0", "t1", 1, "completed")
+			awaitKimiTestOutput(t, rig.agent.sink)
 			if !userTurn {
 				rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"new","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0"}`))
 			}
@@ -336,11 +357,11 @@ func TestKimiChildCleanupWaitsForMediaAndInactivity(t *testing.T) {
 	for _, taskFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("task_ends_first=%t", taskFirst), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			trace := &kimiChildResetLifecycleSink{ProviderServices: rig.agent.sink, registry: rig.sink}
 			rig.agent.sink = trace
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"reader","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
-			rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"}}}`)
+			rig.startConversationMediaTurn(t, "agent-0")
 			id, data := kimiMediaTestFile("retained child image")
 			entered, released := make(chan string, 1), make(chan struct{})
 			release := sync.OnceFunc(func() { close(released) })
@@ -354,7 +375,7 @@ func TestKimiChildCleanupWaitsForMediaAndInactivity(t *testing.T) {
 				case <-request.Context().Done():
 				}
 			})
-			rig.transcriptAgentOps(t, "agent-0", 2, kimiMediaTestOperation(t, "image", id))
+			rig.publishConversationMediaResult(t, "agent-0", "image", id)
 			awaitKimiMediaRequest(t, entered)
 			endTask := func() {
 				rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"reader","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0"}`))
@@ -362,7 +383,7 @@ func TestKimiChildCleanupWaitsForMediaAndInactivity(t *testing.T) {
 			if taskFirst {
 				endTask()
 			}
-			rig.transcriptAgentOps(t, "agent-0", 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
+			rig.conversationAgentFrame(t, "agent-0", `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 			if !taskFirst {
 				endTask()
 			}
@@ -386,9 +407,10 @@ func TestKimiChildCleanupWaitsForMediaAndInactivity(t *testing.T) {
 				return len(trace.events) > 0 && trace.events[len(trace.events)-1].kind == "cleanup"
 			}, "the image, inactivity and captured cleanup drain in order")
 			messages := child.Messages()
-			require.Len(t, messages, 1)
-			assert.Contains(t, string(messages[0].Content), id)
-			assert.NotEmpty(t, messages[0].SupplementalContent)
+			require.Len(t, messages, 3)
+			assert.Contains(t, string(messages[1].Content), id)
+			assert.NotEmpty(t, messages[1].SupplementalContent)
+			assert.True(t, messages[2].TurnEnd)
 			assert.Equal(t, []bool{true, false}, child.TurnActives())
 			trace.mu.Lock()
 			events := append([]kimiChildResetLifecycleEvent(nil), trace.events...)

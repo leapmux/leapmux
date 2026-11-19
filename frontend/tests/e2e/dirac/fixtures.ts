@@ -11,6 +11,7 @@ import { agentOpenOptions } from '../agentSettings'
 import { diracTest } from '../dirac-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
+import { diracTestState } from '../helpers/diracEnvironment'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
 import { createMockAgentEnvironment, MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { withPrivateNativeWorkspace } from '../helpers/privateNativeWorkspace'
@@ -30,11 +31,7 @@ interface AnthropicDiracWorkspace extends WorkspaceFixture {
 export function prepareAnthropicDirac(runDirectory: string, mockModelUrl: string, model: string): PrivateWorkerSetup<undefined> {
   const privateHome = join(runDirectory, 'dirac-home')
   mkdirSync(join(privateHome, 'data'), { recursive: true })
-  writeFileSync(join(privateHome, 'data', 'globalState.json'), JSON.stringify({
-    telemetrySetting: 'disabled',
-    autoApproveAllToggled: true,
-    yoloModeToggled: true,
-  }), { mode: 0o600 })
+  writeFileSync(join(privateHome, 'data', 'globalState.json'), JSON.stringify(diracTestState()), { mode: 0o600 })
   return {
     env: {
       DIRAC_DIR: privateHome,

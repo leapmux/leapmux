@@ -1478,6 +1478,13 @@ describe('validateCodingAgentMatrix', () => {
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
       expect(counts).toEqual({ 'supported': 1225, 'agent-limit': 448, 'leapmux-limit': 1 })
+      expect(checklist.cells['subagent-live-transcript'].goose).toMatchObject({
+        support: 'agent-limit',
+        audit: 'unsupported',
+        testStatus: 'passed',
+        verified: true,
+        spec: 'frontend/tests/e2e/goose/subagent-live-transcript.spec.ts',
+      })
       expect(checklist.cells['interrupt-a-subagent'].codewhale).toMatchObject({
         support: 'supported',
         audit: 'source-verified',

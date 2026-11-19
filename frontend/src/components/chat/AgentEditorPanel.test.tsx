@@ -1105,6 +1105,43 @@ describe('AgentEditorPanel', () => {
 // reader opens the question from the banner and closes it again with "Answer
 // later".
 describe('agent editor panel pending questions', () => {
+  it('keeps native defaults when the sent prompt raises a question before acknowledgement', async () => {
+    vi.useRealTimers()
+    const controlStore = createControlStore()
+    saveDraft('a1', 'Ask the optional languages form.', -1)
+    const send = vi.fn(async () => {
+      addControlRequest(controlStore, {
+        requestId: 'native-languages',
+        claimToken: 'native-languages-token',
+        payload: {
+          type: 'leapmux_ask',
+          id: 'native-languages',
+          questions: [
+            {
+              id: 'langs',
+              question: 'Languages',
+              multi: true,
+              allowEmpty: true,
+              allowCustomText: true,
+              initialSelections: ['0', '2'],
+              options: [
+                { value: '0', label: 'Go' },
+                { value: '1', label: 'Rust' },
+              ],
+            },
+          ],
+        },
+      })
+    })
+    renderPanel({ controlStore, agentProvider: AgentProvider.OH_MY_PI, onSendMessage: send })
+    await waitFor(() => expect(getEditorRef('a1')?.get()).toBe('Ask the optional languages form.'))
+    await waitFor(() => expect(screen.getByTestId('send-button')).not.toBeDisabled())
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => expect(send).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.getByTestId('question-option-Go').querySelector('input')).toBeChecked())
+    expect(screen.getByTestId('question-option-Rust').querySelector('input')).not.toBeChecked()
+  })
+
   it('rejects a file selection after a blocking request takes the composer', async () => {
     const controlStore = createControlStore()
     renderPanel({ controlStore })

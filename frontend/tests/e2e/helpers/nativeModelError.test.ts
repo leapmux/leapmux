@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
@@ -29,7 +30,9 @@ vi.mock('@playwright/test', () => ({
         toBeVisible: async () => { expect(errorRows.count).toBeGreaterThan(0) },
         toHaveCount: async (count: number) => {
           errorRows.checks.push(count)
-          expect(errorRows.count).toBe(count)
+          expect('readCount' in value && typeof value.readCount === 'function'
+            ? value.readCount()
+            : errorRows.count).toBe(count)
         },
       }
     : expect(value),
@@ -80,6 +83,35 @@ describe('exerciseModelError', () => {
     else
       errorRows.afterReload = 2
     await expect(exerciseModelError(context(), { queueAfterFailure: 'paused' })).rejects.toThrow('expected 2 to be 1')
+  })
+
+  it('checks the selected error surface live and after reload', async () => {
+    errorRows.count = 2
+    errorRows.afterReload = 2
+    const filter = vi.fn(() => ({
+      errorRows: true,
+      readCount: () => 1,
+    }))
+    await exerciseModelError(context(), {
+      queueAfterFailure: 'paused',
+      errorContents: { filter } as unknown as Locator,
+    })
+    expect(filter).toHaveBeenCalledTimes(2)
+    expect(filter.mock.calls[0]).toEqual(filter.mock.calls[1])
+    expect(errorRows.checks).toEqual([1, 1])
+  })
+
+  it.each(['live', 'stored'])('rejects duplicate errors on the selected %s surface', async (phase) => {
+    const filter = () => ({
+      errorRows: true,
+      readCount: () => errorRows.events.includes('reload') === (phase === 'stored')
+        ? 2
+        : 1,
+    })
+    await expect(exerciseModelError(context(), {
+      queueAfterFailure: 'paused',
+      errorContents: { filter } as unknown as Locator,
+    })).rejects.toThrow('expected 2 to be 1')
   })
 })
 

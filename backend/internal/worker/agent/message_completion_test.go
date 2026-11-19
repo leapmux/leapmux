@@ -10,6 +10,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMessageCompletionFromProtoCoversStoredOutcomes(t *testing.T) {
+	t.Parallel()
+	for ordinal := range leapmuxv1.MessageCompletion_name {
+		value := leapmuxv1.MessageCompletion(ordinal)
+		token := MessageCompletionFromProto(value)
+		_, restored := MessageMetadata(MessageContent{Completion: token})
+		assert.Equal(t, value, restored)
+		if ordinal != 0 {
+			assert.NotEmpty(t, token)
+		}
+	}
+	assert.Empty(t, MessageCompletionFromProto(-1))
+	assert.Empty(t, MessageCompletionFromProto(999))
+}
+
 func TestMarshalAssembledMessageKeepsCompletionState(t *testing.T) {
 	t.Parallel()
 

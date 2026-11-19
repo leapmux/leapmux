@@ -21,7 +21,6 @@ func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 		{Id: contracts.GooseModeAuto, Name: "Auto"},
 		{Id: contracts.GooseModeApprove, Name: "Approve"},
 		{Id: contracts.GooseModeSmartApprove, Name: "Smart Approve"},
-		{Id: contracts.GooseModeChat, Name: "Chat"},
 	}
 	acp.OrderModesPreferredFirst(modes, contracts.GooseModeSmartApprove)
 	return modes

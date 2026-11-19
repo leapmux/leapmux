@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,7 +47,7 @@ func TestKimiCreateSession(t *testing.T) {
 	assert.Less(t, create, profile, "the new session gets its profile before anything uses it")
 	subscribes := rig.fake.subscribeFrames()
 	require.Len(t, subscribes, 1)
-	assert.Equal(t, []string{"session_1"}, subscribes[0].IDs)
+	assert.Equal(t, "session_1", subscribes[0].SessionID)
 }
 
 func TestKimiRuntimeExitEndsRootAndChildCompaction(t *testing.T) {
@@ -53,7 +55,7 @@ func TestKimiRuntimeExitEndsRootAndChildCompaction(t *testing.T) {
 	rig := newKimiTestRig(t, agent.Options{})
 	childID := adoptNativeKimiChild(t, rig.agent, "agent-1")
 	for _, id := range []string{kimiMainAgentID, "agent-1"} {
-		rig.publishMarker(t, id, "compaction", map[string]any{"agentId": id, "trigger": "auto", "phase": "started"})
+		rig.agent.HandleOutput(kimiCompactingStateFrame(t, id, true))
 	}
 	rig.agent.settleAfterExit(agent.MessageCompletionInterrupted)
 	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
@@ -245,7 +247,7 @@ func TestKimiResumeSession(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual"})
-		fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{NotFound: sub.IDs} })
+		fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int { return kimiCodeSessionNotFound })
 		a, _, opts := newConnectedKimiAgent(t, server.URL, agent.Options{ResumeSessionID: "session_stored"})
 		require.ErrorIs(t, a.openStartupSession(opts, 30*time.Second), errKimiSessionUnavailable)
 	})
@@ -274,7 +276,7 @@ func TestKimiFreshStartupRefusesUnusableSession(t *testing.T) {
 				fake.reply("POST "+kimiSessionPath("session_1", "/profile"), fakeKapReply{Code: 50000, Msg: "profile locked"})
 				want = "profile locked"
 			case "subscribe":
-				fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{NotFound: sub.IDs} })
+				fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int { return kimiCodeSessionNotFound })
 				want = "subscribe to the Kimi Code session"
 			}
 			err := a.openStartupSession(opts, 30*time.Second)
@@ -323,26 +325,99 @@ func TestKimiReconnectReadsBackTheStatusTheStreamMissed(t *testing.T) {
 	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot")))
 }
 
+func TestKimiNativeReconnectCompletionRequiresConversationDispatch(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	ctx := testutil.DeadlineContext(t)
+	pageHeld := make(chan struct{})
+	releasePage := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releasePage) })
+	defer release()
+	var hold sync.Once
+	rig.fake.mu.Lock()
+	rig.fake.beforeConversation = func(sub fakeKapSubscribe, agentID string) {
+		if sub.SessionID != rig.sessionID() || agentID != kimiMainAgentID {
+			return
+		}
+		hold.Do(func() {
+			close(pageHeld)
+			select {
+			case <-releasePage:
+			case <-ctx.Done():
+			}
+		})
+	}
+	rig.fake.mu.Unlock()
+	finished := beginNativeKimiReconnect(t, rig)
+	select {
+	case <-pageHeld:
+	case <-ctx.Done():
+		t.Fatal("the reconnect did not reach its initial conversation page")
+	}
+	assert.False(t, finished(), "the subscribe response cannot prove conversation dispatch")
+	release()
+	waitFor(t, finished, "the native initial page reaches dispatch without an obsolete sequence marker")
+	waitFor(t, func() bool {
+		return rig.agent.run(kimiMainAgentID).conversationRecovery.Load() == nil
+	}, "native conversation recovery completes")
+}
+
 // beginNativeKimiReconnect supplies native replay frames and returns their dispatch completion check.
 func beginNativeKimiReconnect(t *testing.T, rig *kimiTestRig, frames ...any) func() bool {
 	t.Helper()
-	rig.agent.dispatchMu.Lock()
-	sequence := rig.agent.run(kimiMainAgentID).transcript.seq + 1000
-	rig.agent.dispatchMu.Unlock()
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
 	sessionID := rig.sessionID()
-	marker := map[string]any{"type": contracts.KimiEventTranscriptOps, "session_id": sessionID,
-		"payload": map[string]any{"type": contracts.KimiEventTranscriptOps, "agent_id": kimiMainAgentID, "seq": sequence, "ops": []any{}}}
-	replay := append(append([]any(nil), frames...), marker)
-	before := len(rig.fake.subscribeFrames())
-	rig.fake.update(sessionID, func(session *fakeKapSession) { session.ReplayFrames = replay })
-	rig.fake.setAckFor(nil)
+	replaying := make(chan struct{})
+	requestDone := make(chan struct{})
+	requestResult := make(chan error, 1)
+	var dispatched atomic.Bool
+	t.Cleanup(func() {
+		cancel()
+		<-requestDone
+	})
+	go func() {
+		defer close(requestDone)
+		select {
+		case <-replaying:
+		case <-ctx.Done():
+			return
+		}
+		// The fake reads this command after writing the initial replay. Its response
+		// barrier therefore follows every frame of that replay in the dispatcher.
+		err := rig.agent.stream.sendSessionSubscribe(ctx, sessionID, func(frame kimiFrame) {
+			if frame.Type == kimiFrameTaskResponse && frame.Code == kimiCodeOK {
+				rig.agent.stream.queueResponseBarrier(func() { dispatched.Store(true) })
+			}
+		})
+		requestResult <- err
+	}()
+	rig.fake.mu.Lock()
+	previous := rig.fake.beforeReplay
+	var started sync.Once
+	rig.fake.beforeReplay = func(sub fakeKapSubscribe) {
+		if previous != nil {
+			previous(sub)
+		}
+		if sub.SessionID == sessionID {
+			started.Do(func() {
+				rig.fake.mu.Lock()
+				rig.fake.beforeReplay = previous
+				rig.fake.mu.Unlock()
+				close(replaying)
+			})
+		}
+	}
+	rig.fake.mu.Unlock()
+	rig.fake.update(sessionID, func(session *fakeKapSession) { session.ReplayFrames = append([]any(nil), frames...) })
+	rig.fake.setSubscribeCodeFor(nil)
 	rig.fake.closeConnections()
 	return func() bool {
-		if len(rig.fake.subscribeFrames()) <= before || agent.OutputQueueFor(rig.agent.sink).HasPending() || !rig.agent.dispatchMu.TryLock() {
-			return false
+		select {
+		case err := <-requestResult:
+			require.NoError(t, err, "the native replay barrier receives its own response")
+		default:
 		}
-		defer rig.agent.dispatchMu.Unlock()
-		return rig.agent.run(kimiMainAgentID).transcript.seq >= sequence
+		return dispatched.Load() && !agent.OutputQueueFor(rig.agent.sink).HasPending()
 	}
 }
 
@@ -356,13 +431,9 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		approval["session_id"], approval["tool_call_id"] = "session_1", "call_9"
 		question := questionEvent("question_9")
 		question["session_id"], question["agent_id"] = "session_1", "agent-0"
-		rig.fake.update("session_1", func(session *fakeKapSession) {
-			session.ReplayFrames = []any{
-				json.RawMessage(`{"type":"transcript.reset","session_id":"session_1","payload":{"agent_id":"main","seq":1,"snapshot":{"items":[],"interactions":[{"interactionId":"approval_9","interactionKind":"approval","state":"pending","toolCallId":"call_9"}]}}}`), approval, question,
-			}
-		})
-		rig.fake.closeConnections()
-		waitFor(t, func() bool { return rig.sink.PublishedControlCount() == 2 }, "both native interactions reach the user")
+		finished := beginNativeKimiReconnect(t, rig, approval, question)
+		waitFor(t, finished, "the native pending interactions complete replay")
+		require.Equal(t, 2, rig.sink.PublishedControlCount(), "session-wide replay includes a child's control without its conversation subscription")
 		byID := map[string]map[string]any{}
 		for _, control := range rig.sink.PublishedControls() {
 			var payload map[string]any
@@ -377,34 +448,46 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_9", "allow", nil, nil), agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "interactions", "approval_9", "")), 1)
 	})
-	t.Run("withdraws a request the server resolved during the gap", func(t *testing.T) {
+	t.Run("withdraws only controls absent from the confirmed native replay", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 		rig.feed(t, approvalEvent("approval_2", map[string]any{"kind": "command", "command": "pwd"}))
-		rig.fake.update("session_1", func(session *fakeKapSession) {
-			session.ReplayFrames = []any{json.RawMessage(`{"type":"transcript.reset","session_id":"session_1","payload":{"agent_id":"main","seq":1,"snapshot":{"items":[],"interactions":[{"interactionId":"approval_2","interactionKind":"approval","state":"pending"}]}}}`)}
-		})
-		rig.fake.closeConnections()
-		waitFor(t, func() bool { return len(rig.sink.CanceledControls()) == 1 }, "the complete native reset withdraws the resolved banner")
+		rig.agent.Mu.Lock()
+		previous := rig.agent.controls["approval_2"]
+		rig.agent.Mu.Unlock()
+		kept := approvalEvent("approval_2", map[string]any{"kind": "command", "command": "pwd"})
+		kept["session_id"] = rig.sessionID()
+		finished := beginNativeKimiReconnect(t, rig, kept)
+		waitFor(t, finished, "the native reconnect replays only its pending interaction")
+		waitFor(t, func() bool { return len(rig.sink.CanceledControls()) == 1 }, "the confirmed replay withdraws the resolved control")
 		assert.Equal(t, []string{"approval_1"}, rig.sink.CanceledControls())
-		assert.Equal(t, 2, rig.sink.PublishedControlCount(), "an already published pending request is not published twice")
+		assert.Equal(t, 2, rig.sink.PublishedControlCount(), "a replayed pending request keeps its claim without a duplicate publication")
+		rig.agent.Mu.Lock()
+		assert.Len(t, rig.agent.controls, 1, "replay leaves one active card rather than a duplicate")
+		assert.Same(t, previous, rig.agent.controls["approval_2"])
+		_, stale := rig.agent.controls["approval_1"]
+		rig.agent.Mu.Unlock()
+		assert.False(t, stale)
 		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), errKimiControlGone)
+		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_2", "allow", nil, nil), agent.StopContext{}))
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")))
+		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_2", "")), 1)
 	})
 	t.Run("clears an ended main turn while background work keeps the session busy", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
-		rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Bash","state":"running","input":{}}}`)
-		rig.fake.update("session_1", func(session *fakeKapSession) {
-			session.Busy = true
-			session.ReplayFrames = []any{
-				json.RawMessage(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"background","kind":"shell","status":"running","detached":true,"description":"Background work"}`),
-				json.RawMessage(`{"type":"transcript.reset","session_id":"session_1","payload":{"agent_id":"main","seq":3,"snapshot":{"items":[{"kind":"turn","turnId":"t0","state":"cancelled","origin":{"kind":"user"},"steps":[{"kind":"step","stepId":"t0.1","ordinal":1,"state":"interrupted","frames":[{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Bash","state":"running","input":{}}]}]}],"interactions":[]}}}`),
-			}
-		})
-		rig.fake.closeConnections()
-		waitFor(t, func() bool { last, _ := rig.sink.LastTurnActive(); return !last }, "the native cancelled turn releases the main input queue")
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const tool = `{"type":"tool_call","item_id":"call_1","status":"running","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","stage":"executing","input":{"command":"run the held command"}}`
+		native.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":`+tool+`}`)
+		rig.fake.update("session_1", func(session *fakeKapSession) { session.Busy = true })
+		page := json.RawMessage(kimiConversationTestFrame(t, rig.sessionID(), "main", `{"type":"turns","has_more":false,"turns":[{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"interrupted","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[`+tool+`]}]}`))
+		finished := beginNativeKimiReconnect(t, rig,
+			json.RawMessage(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"background","kind":"shell","status":"running","detached":true,"description":"Background work"}`), page)
+		waitFor(t, finished, "the native ended turn and background state complete replay")
+		last, _ := rig.sink.LastTurnActive()
+		assert.False(t, last, "the native interrupted turn releases the main input queue")
 		var closing *agenttest.Message
 		for _, message := range rig.sink.Messages() {
 			if message.Closing {
@@ -414,6 +497,11 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		}
 		require.NotNil(t, closing)
 		assert.Equal(t, agent.MessageCompletionInterrupted, closing.Completion)
+		view, err := decodeKimiConversationRecord(closing.Content)
+		require.NoError(t, err)
+		require.NotNil(t, view.item)
+		assert.Equal(t, "call_1", view.item.ItemID)
+		assert.Equal(t, "running", view.item.Status, "interruption does not fabricate an ended native tool")
 		messages := rig.sink.Messages()
 		require.NotEmpty(t, messages)
 		assert.True(t, messages[len(messages)-1].TurnEnd)
@@ -423,33 +511,29 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 	t.Run("starts a main turn that started during the gap", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.fake.update("session_1", func(session *fakeKapSession) {
-			session.Busy = true
-			session.ReplayFrames = []any{json.RawMessage(`{"type":"transcript.reset","session_id":"session_1","payload":{"agent_id":"main","seq":1,"snapshot":{"items":[{"kind":"turn","turnId":"t3","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger"}},"steps":[]}],"interactions":[]}}}`)}
-		})
-		rig.fake.closeConnections()
-		waitFor(t, func() bool { last, _ := rig.sink.LastTurnActive(); return last }, "the recovered native running turn holds the queue")
-		assert.Equal(t, agent.TurnState{Active: true}, rig.agent.PublishTurnActive(), "an autonomous native origin takes no steer")
+		rig.fake.update("session_1", func(session *fakeKapSession) { session.Busy = true })
+		page := json.RawMessage(kimiConversationTestFrame(t, rig.sessionID(), "main", `{"type":"turns","has_more":false,"turns":[{"turn_id":"t3","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[]}]}`))
+		finished := beginNativeKimiReconnect(t, rig, page)
+		waitFor(t, finished, "the recovered native running turn completes replay")
+		assert.Equal(t, agent.TurnState{Active: true}, rig.agent.PublishTurnActive(), "a turn without a steerable user item takes no steer")
 		var busy *agent.AgentBusyError
 		require.ErrorAs(t, rig.agent.SendInput("Next.", nil), &busy)
-		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t3","state":"completed","origin":{"kind":"other","payload":{"kind":"system_trigger"}}}}`)
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t3","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 		last, _ := rig.sink.LastTurnActive()
 		assert.False(t, last)
 	})
 	t.Run("keeps a main user turn that still runs", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
-		rig.fake.update("session_1", func(session *fakeKapSession) {
-			session.Busy = true
-			session.ReplayFrames = []any{json.RawMessage(`{"type":"transcript.reset","session_id":"session_1","payload":{"agent_id":"main","seq":2,"snapshot":{"items":[{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"},"steps":[]}],"interactions":[]}}}`)}
-		})
-		rig.fake.closeConnections()
-		waitFor(t, func() bool {
-			rig.agent.dispatchMu.Lock()
-			defer rig.agent.dispatchMu.Unlock()
-			return rig.agent.run("main").transcript.seq == 2
-		}, "the native reset applies its authoritative running header")
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const prompt = `{"type":"user_message","item_id":"prompt","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Keep working.","prompt_ids":[],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]}`
+		native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":`+prompt+`}`)
+		rig.fake.update("session_1", func(session *fakeKapSession) { session.Busy = true })
+		page := json.RawMessage(kimiConversationTestFrame(t, rig.sessionID(), "main", `{"type":"turns","has_more":false,"turns":[{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[`+prompt+`]}]}`))
+		finished := beginNativeKimiReconnect(t, rig, page)
+		waitFor(t, finished, "the native page applies its authoritative running header and user item")
 		assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, rig.agent.PublishTurnActive())
 		assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot")))
 	})
@@ -457,11 +541,11 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		var dropped sync.Once
-		rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+		rig.fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int {
 			first := false
 			dropped.Do(func() { first = true })
 			if first {
-				return 0, kimiAck{NotFound: sub.IDs}
+				return kimiCodeSessionNotFound
 			}
 			for _, state := range rig.fake.sessionStateFrames(sub.SessionID) {
 				rig.fake.push(t, state)
@@ -469,7 +553,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 			approval := approvalEvent("approval_9", map[string]any{"kind": "command", "command": "ls"})
 			approval["session_id"] = sub.SessionID
 			rig.fake.push(t, approval)
-			return 0, kimiAck{Accepted: sub.IDs}
+			return kimiCodeOK
 		})
 		rig.fake.closeConnections()
 		waitFor(t, func() bool { return rig.sink.PublishedControlCount() == 1 }, "the loaded native session re-emits its pending request")
@@ -485,6 +569,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 type kimiRecoveryChild struct {
 	agentID, callID, taskID string
 	background              bool
+	omitTaskReference       bool
 }
 
 func (child kimiRecoveryChild) taskState(status, outcome string) map[string]any {
@@ -496,51 +581,73 @@ func (child kimiRecoveryChild) taskState(status, outcome string) map[string]any 
 	return state
 }
 
-func (child kimiRecoveryChild) start(t *testing.T, rig *kimiTestRig) {
+const kimiRecoveryNativeParent = `{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}`
+const kimiRecoveryNativeAnswer = `{"type":"assistant_message","item_id":"answer","step_index":1,"status":"running","created_at":"2026-11-18T00:00:00Z","text":"Found it."}`
+
+func (child kimiRecoveryChild) nativeInvocation(result string) map[string]any {
+	ref := map[string]any{"agent_id": child.agentID, "role": "child"}
+	if child.taskID != "" && !child.omitTaskReference {
+		ref["task_id"] = child.taskID
+	}
+	item := map[string]any{"type": "tool_call", "item_id": child.callID, "name": "Agent", "status": "running",
+		"created_at": "2026-11-18T00:00:00Z", "started_at": "2026-11-18T00:00:00Z", "step_index": 1,
+		"stage": "executing", "agent_refs": []any{ref},
+		"input": map[string]any{"description": "Reviewer", "prompt": "Review the diff.", "run_in_background": child.background}}
+	if result != "" {
+		item["status"], item["outcome"], item["output"] = "ended", "completed", result
+		delete(item, "stage")
+	}
+	return item
+}
+
+func kimiRecoveryNativeParentPage(t *testing.T, rig *kimiTestRig, items ...map[string]any) json.RawMessage {
+	t.Helper()
+	var turn map[string]any
+	require.NoError(t, json.Unmarshal([]byte(kimiRecoveryNativeParent), &turn))
+	turn["items"] = items
+	raw, err := json.Marshal(turn)
+	require.NoError(t, err)
+	return kimiConversationTestPage(t, rig.sessionID(), "main", raw)
+}
+
+func (child kimiRecoveryChild) startNative(t *testing.T, rig *kimiTestRig) {
 	t.Helper()
 	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-	rig.agent.dispatchMu.Lock()
-	sequence := rig.agent.run(kimiMainAgentID).transcript.seq + 1
-	rig.agent.dispatchMu.Unlock()
-	native.transcriptOps(t, sequence,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`,
-		fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":%q,"toolCallId":%q,"name":"Agent","state":"running","input":{"description":"Reviewer","prompt":"Review the diff.","run_in_background":%t},"agentRefs":[{"agentId":%q,"role":"child"}]}}`, child.callID, child.callID, child.background, child.agentID))
+	native.conversationFrame(t, `{"type":"turn.started","turn":`+kimiRecoveryNativeParent+`}`)
+	item, err := json.Marshal(child.nativeInvocation(""))
+	require.NoError(t, err)
+	native.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":`+string(item)+`}`)
 	task := child.taskState("running", "")
 	task["type"], task["session_id"], task["agent_id"] = contracts.KimiEventTask, rig.sessionID(), kimiMainAgentID
 	raw, err := json.Marshal(task)
 	require.NoError(t, err)
 	rig.agent.HandleOutput(raw)
-	native.transcriptAgentOps(t, child.agentID, 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"},"prompt":"Review the diff."}}`,
-		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Found it."}}`)
+	run := rig.agent.run(child.agentID)
+	waitFor(t, func() bool { return run.conversationRecovery.Load() == nil }, "the child receives its initial native page")
+	rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), child.agentID, `{"type":"turn.started","turn":`+kimiRecoveryNativeParent+`}`))
+	rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), child.agentID, `{"type":"item.started","turn_id":"t0","item":`+kimiRecoveryNativeAnswer+`}`))
+	awaitKimiTestOutput(t, rig.agent.sink)
 }
 
-func (child kimiRecoveryChild) reset(t *testing.T, rig *kimiTestRig, turnState, stepState, failure string) json.RawMessage {
+func (child kimiRecoveryChild) nativePage(t *testing.T, rig *kimiTestRig, outcome, failure string) json.RawMessage {
 	t.Helper()
-	rig.agent.Mu.Lock()
-	endedAt := rig.agent.attachedAt.Add(time.Second).UTC().Format(time.RFC3339Nano)
-	rig.agent.Mu.Unlock()
-	turn := map[string]any{"kind": "turn", "turnId": "t0", "ordinal": 0, "state": turnState,
-		"origin": map[string]any{"kind": "other"}, "prompt": "Review the diff.",
-		"endedAt": endedAt,
-		"steps": []any{map[string]any{"kind": "step", "stepId": "t0.1", "turnId": "t0", "ordinal": 1, "state": stepState,
-			"frames": []any{map[string]any{"kind": "text", "frameId": "answer", "role": "assistant", "text": "Found it."}}}}}
-	if failure != "" {
-		turn["error"] = failure
+	var turn map[string]any
+	require.NoError(t, json.Unmarshal([]byte(kimiRecoveryNativeParent), &turn))
+	turn["items"] = []json.RawMessage{json.RawMessage(kimiRecoveryNativeAnswer)}
+	if outcome != "" {
+		rig.agent.Mu.Lock()
+		endedAt := rig.agent.attachedAt.Add(time.Second).UTC().Format(time.RFC3339Nano)
+		rig.agent.Mu.Unlock()
+		turn["status"], turn["outcome"], turn["ended_at"] = "ended", outcome, endedAt
+		turn["steps"] = []any{map[string]any{"index": 1, "outcome": outcome,
+			"started_at": "2026-11-18T00:00:00Z", "ended_at": endedAt}}
+		if failure != "" {
+			turn["error"] = map[string]any{"code": "model_error", "message": failure}
+		}
 	}
-	return nativeKimiRecoveryReset(t, rig.sessionID(), child.agentID, 20, turn)
-}
-
-func nativeKimiRecoveryReset(t *testing.T, sessionID, agentID string, sequence int64, items ...map[string]any) json.RawMessage {
-	t.Helper()
-	if items == nil {
-		items = []map[string]any{}
-	}
-	raw, err := json.Marshal(map[string]any{"type": contracts.KimiEventTranscriptReset, "session_id": sessionID,
-		"payload": map[string]any{"type": contracts.KimiEventTranscriptReset, "agent_id": agentID, "seq": sequence, "has_more_older": false,
-			"snapshot": map[string]any{"items": items, "interactions": []any{}, "attachments": []any{}, "prompts": []any{}}}})
+	raw, err := json.Marshal(turn)
 	require.NoError(t, err)
-	return raw
+	return kimiConversationTestPage(t, rig.sessionID(), child.agentID, raw)
 }
 
 func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
@@ -554,19 +661,19 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		turn, step, outcome, report, failure string
-		status                               bgtask.Status
-		completion                           agent.MessageCompletion
+		turn, outcome, report, failure string
+		status                         bgtask.Status
+		completion                     agent.MessageCompletion
 	}{
-		"completed": {turn: "completed", step: "completed", outcome: "completed", report: "All good.", status: bgtask.StatusSucceeded, completion: agent.MessageCompletionComplete},
-		"failed":    {turn: "failed", step: "failed", outcome: "failed", failure: "provider exploded", status: bgtask.StatusFailed, completion: agent.MessageCompletionError},
-		"cancelled": {turn: "cancelled", step: "interrupted", outcome: "killed", status: bgtask.StatusStopped, completion: agent.MessageCompletionInterrupted},
+		"completed": {turn: "completed", outcome: "completed", report: "All good.", status: bgtask.StatusSucceeded, completion: agent.MessageCompletionComplete},
+		"failed":    {turn: "failed", outcome: "failed", failure: "provider exploded", status: bgtask.StatusFailed, completion: agent.MessageCompletionError},
+		"cancelled": {turn: "interrupted", outcome: "killed", status: bgtask.StatusStopped, completion: agent.MessageCompletionInterrupted},
 	} {
 		t.Run("a subagent that "+name+" during the gap closes with the status the server reports", func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
 			spec := kimiRecoveryChild{agentID: "agent-0", callID: "call_child", taskID: "task-child"}
-			spec.start(t, rig)
+			spec.startNative(t, rig)
 			rig.fake.mu.Lock()
 			rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
 				assert.Equal(t, spec.taskID, command.TaskID)
@@ -584,12 +691,14 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 			rig.fake.mu.Unlock()
 			frames := []any{
 				json.RawMessage(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[]}`),
-				spec.reset(t, rig, tc.turn, tc.step, tc.failure),
+				kimiRecoveryNativeParentPage(t, rig, spec.nativeInvocation("")),
+				spec.nativePage(t, rig, tc.turn, tc.failure),
 			}
 			finished := beginNativeKimiReconnect(t, rig, frames...)
 			waitFor(t, finished, "the native reconnect restores the child transcript")
 			waitFor(t, rowStatus(rig, "session_1/agent-0"), "task.watch restores the missed outcome")
 			waitFor(t, rig.agent.taskRecoveryWork.Idle, "the task outcome finishes recovery")
+			awaitKimiTestOutput(t, rig.agent.sink)
 			row, child := childOf(t, rig.sink, "session_1/agent-0")
 			markerStatus := tc.status
 			if tc.turn == "completed" {
@@ -601,20 +710,22 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 			require.True(t, exists)
 			assert.Equal(t, bgtask.RoleTaskOutcome, task.Role)
 			assert.Equal(t, tc.status, task.Status)
-			assert.Equal(t, []bool{true, false}, child.TurnActives())
+			assert.Equal(t, agent.TurnState{}, rig.agent.ActiveChildTurnState(row.RowKey))
 			var foundText, foundFailure bool
 			for _, message := range child.Messages() {
-				var assembled map[string]string
-				if json.Unmarshal(message.Content, &assembled) != nil || assembled[contracts.AssembledMessageFieldType] != contracts.AssembledMessageType {
-					continue
-				}
-				if assembled[contracts.AssembledMessageFieldText] == "Found it." {
+				if view, err := decodeKimiConversationRecord(message.Content); err == nil && view.item != nil && view.item.ItemID == "answer" {
+					require.NotNil(t, view.item.Text)
+					assert.Equal(t, "Found it.", *view.item.Text)
+					assert.Equal(t, tc.completion, message.Completion)
 					foundText = true
-					assert.Equal(t, string(tc.completion), assembled[contracts.AssembledMessageFieldCompletion])
 				}
-				if tc.failure != "" && assembled[contracts.AssembledMessageFieldText] == tc.failure {
-					foundFailure = true
-					assert.Equal(t, string(agent.MessageCompletionError), assembled[contracts.AssembledMessageFieldCompletion])
+				if tc.failure != "" && eventType(t, message) == contracts.AssembledMessageType {
+					_, diagnostic := assembledRow(t, message)
+					if diagnostic == tc.failure {
+						foundFailure = true
+						assert.Equal(t, string(agent.MessageCompletionError), assembledCompletion(t, message))
+						assert.True(t, message.TranscriptOnly)
+					}
 				}
 			}
 			assert.True(t, foundText, "the authoritative recovered text retains its native completion")
@@ -640,21 +751,25 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-		native.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"}}}`)
-		result := "agent_id: agent-2\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nDone.\n\nresume_hint: Continue with Agent(resume=\"agent-2\", prompt=\"...\")."
-		parent := map[string]any{"kind": "turn", "turnId": "t0", "ordinal": 0, "state": "running", "origin": map[string]any{"kind": "user"},
-			"steps": []any{map[string]any{"kind": "step", "stepId": "t0.1", "ordinal": 1, "state": "running", "frames": []any{
-				map[string]any{"kind": "tool", "frameId": "spawn", "toolCallId": "call_gone", "name": "Agent", "state": "done", "input": map[string]any{"description": "Reviewer", "prompt": "Review it."}, "output": result,
-					"agentRefs": []any{map[string]any{"agentId": "agent-2", "role": "child"}}},
-			}}}}
+		native.conversationFrame(t, `{"type":"turn.started","turn":`+kimiRecoveryNativeParent+`}`)
+		result := "agent_id: agent-2\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nDone."
 		child := kimiRecoveryChild{agentID: "agent-2", callID: "call_gone"}
-		finished := beginNativeKimiReconnect(t, rig, nativeKimiRecoveryReset(t, rig.sessionID(), kimiMainAgentID, 20, parent), child.reset(t, rig, "completed", "", ""))
-		waitFor(t, finished, "the reconnect applies the parent result and completed child transcript")
+		finished := beginNativeKimiReconnect(t, rig, kimiRecoveryNativeParentPage(t, rig, child.nativeInvocation(result)), child.nativePage(t, rig, "completed", ""))
+		waitFor(t, finished, "the reconnect applies the parent result")
+		waitFor(t, func() bool {
+			for _, sub := range rig.fake.subscribeFrames() {
+				if slices.Contains(sub.AgentIDs, child.agentID) && rig.agent.run(child.agentID).conversationRecovery.Load() == nil {
+					return true
+				}
+			}
+			return false
+		}, "the newly discovered child completes its own subscription")
+		awaitKimiTestOutput(t, rig.agent.sink)
 		row, _ := childOf(t, rig.sink, "session_1/agent-2")
 		assert.Equal(t, bgtask.RoleChildActivity, row.Role)
 		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
 		assert.Equal(t, bgtask.KindSubagent, row.Kind)
-		identity := kimiTranscriptToolIdentity{sessionID: rig.sessionID(), agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "spawn", toolCallID: "call_gone"}
+		identity := kimiInvocationIdentity{sessionID: rig.sessionID(), agentID: "main", turnID: "t0", toolCallID: "call_gone"}
 		outcome := invocationOutcomeOf(t, rig.sink, identity, "agent-2")
 		assert.Equal(t, bgtask.StatusSucceeded, outcome.Status)
 		assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath(rig.sessionID(), "/snapshot")))
@@ -665,8 +780,11 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		foreground := kimiRecoveryChild{agentID: "agent-0", callID: "call_child", taskID: "foreground-task"}
 		background := kimiRecoveryChild{agentID: "agent-1", callID: "call_background", taskID: "background-task", background: true}
-		foreground.start(t, rig)
-		background.start(t, rig)
+		foreground.startNative(t, rig)
+		background.startNative(t, rig)
+		_, foregroundSink := childOf(t, rig.sink, "session_1/agent-0")
+		_, backgroundSink := childOf(t, rig.sink, "session_1/agent-1")
+		foregroundBefore, backgroundBefore := len(foregroundSink.TurnActives()), len(backgroundSink.TurnActives())
 		rig.fake.mu.Lock()
 		rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
 			assert.Equal(t, foreground.taskID, command.TaskID)
@@ -676,15 +794,20 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		list, err := json.Marshal(map[string]any{"type": contracts.KimiEventTaskList, "session_id": rig.sessionID(), "agent_id": kimiMainAgentID,
 			"tasks": []any{background.taskState("running", "")}})
 		require.NoError(t, err)
-		finished := beginNativeKimiReconnect(t, rig, json.RawMessage(list), foreground.reset(t, rig, "cancelled", "interrupted", ""))
+		finished := beginNativeKimiReconnect(t, rig, json.RawMessage(list), kimiRecoveryNativeParentPage(t, rig, foreground.nativeInvocation(""), background.nativeInvocation("")), foreground.nativePage(t, rig, "interrupted", ""), background.nativePage(t, rig, "", ""))
 		waitFor(t, finished, "the reconnect restores the stopped foreground transcript")
 		waitFor(t, rig.agent.taskRecoveryWork.Idle, "the missing foreground task outcome is recovered")
+		awaitKimiTestOutput(t, rig.agent.sink)
+		assert.Equal(t, bgtask.StatusStopped, nativeTaskOf(t, rig.sink, foreground.taskID).Status)
+		assert.Equal(t, bgtask.StatusRunning, nativeTaskOf(t, rig.sink, background.taskID).Status)
 		row, child := childOf(t, rig.sink, "session_1/agent-0")
 		assert.Equal(t, bgtask.StatusStopped, row.Status)
-		assert.Equal(t, []bool{true, false}, child.TurnActives())
-		backgroundRow, backgroundSink := childOf(t, rig.sink, "session_1/agent-1")
+		assert.False(t, rig.agent.ActiveChildTurnState(row.RowKey).Active)
+		assert.Contains(t, child.TurnActives()[foregroundBefore:], false)
+		backgroundRow, _ := childOf(t, rig.sink, "session_1/agent-1")
 		assert.Equal(t, bgtask.StatusRunning, backgroundRow.Status)
-		assert.Equal(t, []bool{true}, backgroundSink.TurnActives())
+		assert.True(t, rig.agent.ActiveChildTurnState(backgroundRow.RowKey).Active)
+		assert.NotContains(t, backgroundSink.TurnActives()[backgroundBefore:], false)
 		last, _ := rig.sink.LastTurnActive()
 		assert.True(t, last)
 	})
@@ -693,43 +816,52 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-		native.transcriptOps(t, 1,
-			`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`,
-			`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"swarm","toolCallId":"call_swarm","name":"AgentSwarm","state":"running","input":{"description":"Audit the packages","items":["A","B"],"prompt_template":"Check {{item}}."},"agentRefs":[{"agentId":"agent-0","role":"member"},{"agentId":"agent-1","role":"member"}]}}`)
+		native.conversationFrame(t, `{"type":"turn.started","turn":`+kimiRecoveryNativeParent+`}`)
+		var swarm map[string]any
+		require.NoError(t, json.Unmarshal([]byte(`{"type":"tool_call","item_id":"call_swarm","status":"running","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"AgentSwarm","stage":"executing","input":{"description":"Audit the packages","items":["A","B"],"prompt_template":"Check {{item}}."},"agent_refs":[{"agent_id":"agent-0","role":"member","swarm_index":0,"task_id":"member-0"},{"agent_id":"agent-1","role":"member","swarm_index":1,"task_id":"member-1"}]}`), &swarm))
+		item, err := json.Marshal(swarm)
+		require.NoError(t, err)
+		native.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":`+string(item)+`}`)
 		states := make([]map[string]any, 0, 2)
 		for i, id := range []string{"agent-0", "agent-1"} {
 			spec := kimiRecoveryChild{agentID: id, callID: "call_swarm", taskID: fmt.Sprintf("member-%d", i)}
 			state := spec.taskState("running", "")
-			state["swarm_index"], state["description"] = i+1, id
+			state["swarm_index"], state["description"] = i, id
 			states = append(states, state)
-			// Seed each task through a live task frame; partial lists would imply a missing sibling.
 			live := maps.Clone(state)
 			live["type"], live["session_id"], live["agent_id"] = contracts.KimiEventTask, rig.sessionID(), kimiMainAgentID
 			raw, err := json.Marshal(live)
 			require.NoError(t, err)
 			rig.agent.HandleOutput(raw)
-			native.transcriptAgentOps(t, id, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"},"prompt":"Check it."}}`)
+			run := rig.agent.run(id)
+			waitFor(t, func() bool { return run.conversationRecovery.Load() == nil }, "each swarm member receives its initial native page")
+			rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), id, `{"type":"turn.started","turn":`+kimiRecoveryNativeParent+`}`))
 		}
-		native.transcriptAgentOps(t, "agent-1", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"failed","origin":{"kind":"other"}}}`)
-		states[0]["phase"] = "suspended"
-		states[1]["phase"] = "working"
+		const failed = `{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"failed","started_at":"2026-11-18T00:00:00Z","steps":[]}`
+		const retry = `{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:01Z","steps":[],"items":[]}`
+		firstPage := json.RawMessage(failed[:len(failed)-1] + `,"items":[]}`)
+		rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-1", `{"type":"turn.ended","turn":`+failed+`}`))
+		states[0]["phase"], states[1]["phase"] = "suspended", "working"
 		list, err := json.Marshal(map[string]any{"type": contracts.KimiEventTaskList, "session_id": rig.sessionID(), "agent_id": kimiMainAgentID, "tasks": states})
 		require.NoError(t, err)
-		rig.agent.Mu.Lock()
-		endedAt := rig.agent.attachedAt.Add(time.Second).UTC().Format(time.RFC3339Nano)
-		rig.agent.Mu.Unlock()
-		failed := map[string]any{"kind": "turn", "turnId": "t0", "ordinal": 0, "state": "failed", "origin": map[string]any{"kind": "other"}, "prompt": "Check it.", "endedAt": endedAt, "steps": []any{}}
-		retry := map[string]any{"kind": "turn", "turnId": "t1", "ordinal": 1, "state": "running", "origin": map[string]any{"kind": "other", "payload": map[string]any{"kind": "retry"}}, "steps": []any{}}
-		finished := beginNativeKimiReconnect(t, rig, json.RawMessage(list), nativeKimiRecoveryReset(t, rig.sessionID(), "agent-0", 20, failed), nativeKimiRecoveryReset(t, rig.sessionID(), "agent-1", 20, failed, retry))
-		waitFor(t, finished, "the reconnect restores suspended and retrying native child turns")
 		_, suspended := childOf(t, rig.sink, "session_1/agent-0")
 		_, working := childOf(t, rig.sink, "session_1/agent-1")
-		assert.Equal(t, []bool{true, false}, suspended.TurnActives())
-		assert.Equal(t, []bool{true, false, true}, working.TurnActives())
-		repeated := beginNativeKimiReconnect(t, rig, nativeKimiRecoveryReset(t, rig.sessionID(), "agent-1", 21, failed, retry))
-		waitFor(t, repeated, "a fresh reset confirms the already-running retry")
-		assert.Equal(t, []bool{true, false, true, true}, working.TurnActives(), "each complete reset publishes its final state once")
-		identity := kimiTranscriptToolIdentity{sessionID: rig.sessionID(), agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "swarm", toolCallID: "call_swarm"}
+		beforeSuspended, beforeWorking := len(suspended.TurnActives()), len(working.TurnActives())
+		frames := []any{json.RawMessage(list), kimiRecoveryNativeParentPage(t, rig, swarm),
+			json.RawMessage(kimiConversationTestPage(t, rig.sessionID(), "agent-0", firstPage)),
+			json.RawMessage(kimiConversationTestPage(t, rig.sessionID(), "agent-1", firstPage, json.RawMessage(retry)))}
+		finished := beginNativeKimiReconnect(t, rig, frames...)
+		waitFor(t, finished, "the reconnect restores suspended and retrying native child turns")
+		suspendedEvents, workingEvents := suspended.TurnActives()[beforeSuspended:], working.TurnActives()[beforeWorking:]
+		require.NotEmpty(t, suspendedEvents)
+		assert.False(t, suspendedEvents[len(suspendedEvents)-1])
+		require.NotEmpty(t, workingEvents)
+		assert.True(t, workingEvents[len(workingEvents)-1])
+		beforeRepeat := len(working.TurnActives())
+		repeated := beginNativeKimiReconnect(t, rig, frames...)
+		waitFor(t, repeated, "a fresh page confirms the already-running retry")
+		assert.NotContains(t, working.TurnActives()[beforeRepeat:], false, "replayed historical failure cannot end the current retry")
+		identity := kimiInvocationIdentity{sessionID: rig.sessionID(), agentID: "main", turnID: "t0", toolCallID: "call_swarm"}
 		for i, actor := range []string{"agent-0", "agent-1"} {
 			marker, exists := rig.sink.BackgroundTask("session_1/" + actor)
 			require.True(t, exists)
@@ -745,8 +877,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 			assert.Equal(t, bgtask.RoleTaskOutcome, task.Role)
 			assert.Equal(t, bgtask.KindWorkflow, task.Kind)
 			assert.Equal(t, bgtask.StatusRunning, task.Status)
-			outcome := invocationOutcomeOf(t, rig.sink, identity, actor)
-			assert.Equal(t, kimiInvocationGroupKey(identity), outcome.GroupKey)
+			assert.Equal(t, kimiInvocationGroupKey(identity), task.GroupKey)
 		}
 	})
 
@@ -768,20 +899,28 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		rig.agent.Mu.Lock()
 		oldEnd := rig.agent.attachedAt.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
 		rig.agent.Mu.Unlock()
-		tool := func(id, taskID, command string) map[string]any {
-			return map[string]any{"kind": "tool", "frameId": id, "toolCallId": id, "name": "Bash", "state": "done", "input": map[string]any{"command": command, "run_in_background": true},
-				"output": "task_id: " + taskID + "\npid: 123\ndescription: " + command + "\nstatus: running\nautomatic_notification: true\n\nThe completion arrives automatically."}
+		tool := func(id, taskID, command, startedAt string) map[string]any {
+			return map[string]any{"type": "tool_call", "item_id": id, "name": "Bash", "status": "ended", "outcome": "completed",
+				"created_at": startedAt, "started_at": startedAt, "task_id": taskID,
+				"input": map[string]any{"command": command, "run_in_background": true}, "output": "Background work continues."}
 		}
-		oldTurn := map[string]any{"kind": "turn", "turnId": "old", "ordinal": 0, "state": "completed", "endedAt": oldEnd, "origin": map[string]any{"kind": "user"},
-			"steps": []any{map[string]any{"kind": "step", "stepId": "old.1", "ordinal": 1, "state": "completed", "frames": []any{tool("historical", "task_3", "make old")}}}}
-		current := map[string]any{"kind": "turn", "turnId": "current", "ordinal": 1, "state": "running", "origin": map[string]any{"kind": "user"},
-			"steps": []any{map[string]any{"kind": "step", "stepId": "current.1", "ordinal": 1, "state": "running", "frames": []any{tool("missed", "task_4", "sleep 100")}}}}
+		const currentStart = "2026-11-18T00:00:00Z"
+		oldTurn := map[string]any{"turn_id": "old", "ordinal": 0, "kind": "agent", "status": "ended", "outcome": "completed",
+			"started_at": oldEnd, "ended_at": oldEnd, "steps": []any{}, "items": []any{tool("historical", "task_3", "make old", oldEnd)}}
+		current := map[string]any{"turn_id": "current", "ordinal": 1, "kind": "agent", "status": "running",
+			"started_at": currentStart, "steps": []any{}, "items": []any{tool("missed", "task_4", "sleep 100", currentStart)}}
+		oldRaw, err := json.Marshal(oldTurn)
+		require.NoError(t, err)
+		currentRaw, err := json.Marshal(current)
+		require.NoError(t, err)
 		list := json.RawMessage(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[{"task_id":"task_2","kind":"shell","status":"running","detached":true,"command":"npm run watch","description":"Watch"},{"task_id":"task_5","kind":"other","status":"running","detached":false}]}`)
-		finished := beginNativeKimiReconnect(t, rig, list, nativeKimiRecoveryReset(t, rig.sessionID(), kimiMainAgentID, 20, oldTurn, current))
-		waitFor(t, finished, "the reconnect applies the native running list and retained tool output")
+		page := json.RawMessage(kimiConversationTestPage(t, rig.sessionID(), "main", oldRaw, currentRaw))
+		finished := beginNativeKimiReconnect(t, rig, list, page)
+		waitFor(t, finished, "the reconnect applies the native running list and public references")
 		waitFor(t, rig.agent.taskRecoveryWork.Idle, "the exact native task outcomes finish recovery")
+		awaitKimiTestOutput(t, rig.agent.sink)
 		row, exists := rig.sink.BackgroundTask("session_1/task/main/task_4")
-		require.True(t, exists, "a task discovered from retained output opens and closes")
+		require.True(t, exists, "a task discovered from its public reference opens and closes")
 		assert.Equal(t, bgtask.StatusStopped, row.Status)
 		row, exists = rig.sink.BackgroundTask("session_1/task/main/task_1")
 		require.True(t, exists)
@@ -802,8 +941,10 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 	t.Run("recovers a running background child and a missed background completion", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		older := kimiRecoveryChild{agentID: "agent-1", callID: "call_background", taskID: "older-background", background: true}
-		older.start(t, rig)
+		older := kimiRecoveryChild{agentID: "agent-1", callID: "call_background", taskID: "older-background", background: true, omitTaskReference: true}
+		older.startNative(t, rig)
+		newer := kimiRecoveryChild{agentID: "agent-9", callID: "call_gone", taskID: "newer-background", background: true}
+		newer.startNative(t, rig)
 		rig.fake.mu.Lock()
 		rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
 			assert.Equal(t, older.taskID, command.TaskID)
@@ -813,8 +954,6 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 			return []any{map[string]any{"type": "task.output", "session_id": command.SessionID, "agent_id": command.AgentID, "task_id": command.TaskID, "offset": 0, "text": "The earlier background audit completed."}}
 		}
 		rig.fake.mu.Unlock()
-		newer := kimiRecoveryChild{agentID: "agent-9", callID: "call_gone", taskID: "newer-background", background: true}
-		newer.start(t, rig)
 		unjoined := kimiRecoveryChild{agentID: "agent-10", callID: "unjoined-call", taskID: "unjoined-background", background: true}
 		unjoinedState := unjoined.taskState("running", "")
 		unjoinedState["description"] = "Unjoined background audit"
@@ -822,20 +961,25 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		state["description"] = "Background audit"
 		list, err := json.Marshal(map[string]any{"type": contracts.KimiEventTaskList, "session_id": rig.sessionID(), "agent_id": kimiMainAgentID, "tasks": []any{state, unjoinedState}})
 		require.NoError(t, err)
-		turn := map[string]any{"kind": "turn", "turnId": "t0", "ordinal": 0, "state": "running", "origin": map[string]any{"kind": "other"}, "prompt": "Run the background audit.", "steps": []any{}}
-		finished := beginNativeKimiReconnect(t, rig, json.RawMessage(list), older.reset(t, rig, "completed", "completed", ""), nativeKimiRecoveryReset(t, rig.sessionID(), newer.agentID, 2, turn), nativeKimiRecoveryReset(t, rig.sessionID(), unjoined.agentID, 1, turn))
-		waitFor(t, finished, "the reconnect restores both background child transcripts")
-		waitFor(t, rig.agent.taskRecoveryWork.Idle, "the missed background completion is recovered")
+		_, newerSink := childOf(t, rig.sink, "session_1/agent-9")
+		beforeNewer := len(newerSink.TurnActives())
+		finished := beginNativeKimiReconnect(t, rig, json.RawMessage(list), kimiRecoveryNativeParentPage(t, rig, older.nativeInvocation(""), newer.nativeInvocation("")),
+			older.nativePage(t, rig, "completed", ""), newer.nativePage(t, rig, "", ""), unjoined.nativePage(t, rig, "", ""))
+		waitFor(t, finished, "the reconnect progresses past the original subscriptions")
+		waitFor(t, rig.agent.taskRecoveryWork.Idle, "the missed background completion and discovered subscription finish")
+		waitFor(t, func() bool {
+			return rig.agent.ActiveChildTurnState("session_1/agent-10").Active && rig.agent.run("agent-10").conversationRecovery.Load() == nil
+		}, "the unjoined child projects its native page")
+		awaitKimiTestOutput(t, rig.agent.sink)
 		row, child := childOf(t, rig.sink, "session_1/agent-9")
 		assert.Equal(t, bgtask.StatusRunning, row.Status)
-		task, exists := rig.sink.BackgroundTask("session_1/task/main/newer-background")
-		require.True(t, exists)
+		task := nativeTaskOf(t, rig.sink, "newer-background")
 		assert.Equal(t, "Background audit", task.Title)
-		assert.Equal(t, []bool{true, true}, child.TurnActives(), "the live turn and its replay both publish the known running state")
-		unjoinedRow, unjoinedSink := childOf(t, rig.sink, "session_1/agent-10")
+		assert.Contains(t, child.TurnActives()[beforeNewer:], true, "the running activity survives replay")
+		assert.NotContains(t, child.TurnActives()[beforeNewer:], false)
+		unjoinedRow, _ := childOf(t, rig.sink, "session_1/agent-10")
 		assert.Equal(t, bgtask.StatusRunning, unjoinedRow.Status)
 		assert.Equal(t, "Unjoined background audit", unjoinedRow.Title)
-		assert.Equal(t, []bool{true}, unjoinedSink.TurnActives())
 		// Native task state carries no child turn identity. Two new records alone
 		// cannot authorize stopping that particular running turn.
 		require.ErrorIs(t, interruptKimiChild(rig.agent, "session_1/agent-10", agent.StopContext{}), agent.ErrChildOperationUnsupported)
@@ -855,7 +999,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		oldTask, exists := rig.sink.BackgroundTask("session_1/task/main/older-background")
 		require.True(t, exists)
 		assert.Equal(t, bgtask.StatusSucceeded, oldTask.Status)
-		assert.Equal(t, []bool{true, false}, endedSink.TurnActives())
+		assert.False(t, rig.agent.ActiveChildTurnState(ended.RowKey).Active)
 		waitFor(t, func() bool {
 			return len(endedSink.LeapMuxNotifications()) == 1
 		}, "the historical report reaches the child without inventing a parent invocation")
@@ -882,10 +1026,12 @@ func TestKimiResyncWaitsForTheSubagentRegistryUpdate(t *testing.T) {
 			pauseRegistration()
 		}
 	}
+	var swarm map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"tool_call","item_id":"call_swarm","status":"running","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"AgentSwarm","stage":"executing","input":{"description":"Audit the packages","items":["A"],"prompt_template":"Check {{item}}."},"agent_refs":[{"agent_id":"agent-9","role":"member","swarm_index":0,"task_id":"swarm-member"}]}`), &swarm))
+	childPage := json.RawMessage(kimiConversationTestPage(t, rig.sessionID(), "agent-9", json.RawMessage(`{"turn_id":"child-turn","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[]}`)))
 	finished := beginNativeKimiReconnect(t, rig,
-		json.RawMessage(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[{"task_id":"swarm-member","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-9","parent_tool_call_id":"call_swarm","swarm_index":1,"description":"Audit #1"}]}`),
-		json.RawMessage(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"swarm","toolCallId":"call_swarm","name":"AgentSwarm","state":"running","input":{"description":"Audit the packages"},"agentRefs":[{"agentId":"agent-9","role":"member"}]}}]}}`),
-		json.RawMessage(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"agent-9","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child-turn","state":"running","origin":{"kind":"other"},"prompt":"Check package A."}}]}}`))
+		json.RawMessage(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[{"task_id":"swarm-member","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-9","parent_tool_call_id":"call_swarm","swarm_index":0,"description":"Audit #1"}]}`),
+		kimiRecoveryNativeParentPage(t, rig, swarm), childPage)
 	select {
 	case <-entered:
 	case <-ctx.Done():
@@ -894,58 +1040,90 @@ func TestKimiResyncWaitsForTheSubagentRegistryUpdate(t *testing.T) {
 	assert.False(t, finished(), "receiving frames does not complete a paused registry update")
 	releaseRegistration()
 	waitFor(t, finished, "the native replay completes its registry update")
-	row, child := childOf(t, rig.sink, "session_1/agent-9")
+	waitFor(t, func() bool {
+		return rig.agent.ActiveChildTurnState("session_1/agent-9").Active && rig.agent.run("agent-9").conversationRecovery.Load() == nil
+	}, "the adopted child publishes its native running turn")
+	awaitKimiTestOutput(t, rig.agent.sink)
+	row, _ := childOf(t, rig.sink, "session_1/agent-9")
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.Equal(t, bgtask.RoleChildActivity, row.Role)
 	assert.Equal(t, bgtask.KindSubagent, row.Kind)
-	identity := kimiTranscriptToolIdentity{sessionID: rig.sessionID(), agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "swarm", toolCallID: "call_swarm"}
-	outcome := invocationOutcomeOf(t, rig.sink, identity, "agent-9")
+	identity := kimiInvocationIdentity{sessionID: rig.sessionID(), agentID: "main", turnID: "t0", toolCallID: "call_swarm"}
+	outcome := nativeTaskOf(t, rig.sink, "swarm-member")
 	assert.Equal(t, bgtask.KindWorkflow, outcome.Kind)
 	assert.Equal(t, kimiInvocationGroupKey(identity), outcome.GroupKey)
 	assert.Equal(t, "Audit the packages", outcome.GroupLabel)
 	assert.Equal(t, "Audit the packages", row.Title)
-	nativeTask, exists := rig.sink.BackgroundTask("session_1/task/main/swarm-member")
-	require.True(t, exists)
-	assert.Equal(t, "Audit #1", nativeTask.Title)
-	assert.Equal(t, []bool{true}, child.TurnActives(), "the native header alone publishes running activity")
+	assert.Equal(t, "Audit #1", outcome.Title)
+	assert.Equal(t, row.ChildAgentID, outcome.ChildAgentID)
 	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot")))
 }
 
-// A complete native reset determines activity. Flat settings alone do not prove a turn ended.
+// A complete native page determines activity. Flat settings do not prove a turn ended.
 func TestKimiResyncUsesNativeTranscriptActivity(t *testing.T) {
 	t.Parallel()
-
-	for name, tc := range map[string]struct {
-		items  string
-		active bool
-	}{
-		"an empty complete reset clears the turn":                     {items: `[]`, active: false},
-		"a running reset keeps the turn active":                       {items: `[{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"},"steps":[]}]`, active: true},
-		"absent transcript restoration keeps the last known activity": {active: true},
-	} {
-		t.Run(name, func(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprintf("running=%t", running), func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
-			rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
-			var frames []any
-			if tc.items != "" {
-				frames = append(frames, json.RawMessage(fmt.Sprintf(`{"type":"transcript.reset","session_id":"session_1","payload":{"type":"transcript.reset","agent_id":"main","seq":2,"has_more_older":false,"snapshot":{"items":%s,"interactions":[],"attachments":[],"prompts":[]}}}`, tc.items)))
+			native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+			const turn = `{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[]}`
+			native.conversationFrame(t, `{"type":"turn.started","turn":`+turn+`}`)
+			turns := `[]`
+			if running {
+				turns = `[` + turn + `]`
 			}
-			finished := beginNativeKimiReconnect(t, rig, frames...)
-			waitFor(t, finished, "the native reconnect dispatches its complete replay")
+			page := json.RawMessage(kimiConversationTestFrame(t, rig.sessionID(), "main", `{"type":"turns","turns":`+turns+`,"has_more":false}`))
+			finished := beginNativeKimiReconnect(t, rig, page)
+			waitFor(t, finished, "the native reconnect dispatches its complete page")
 			last, _ := rig.sink.LastTurnActive()
-			assert.Equal(t, tc.active, last)
+			assert.Equal(t, running, last)
 			assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot")))
 		})
 	}
+	t.Run("keeps the last activity until the initial page arrives", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTestRig(t, agent.Options{})
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		ctx := testutil.DeadlineContext(t)
+		pageHeld, releasePage := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(releasePage) })
+		defer release()
+		var hold sync.Once
+		rig.fake.mu.Lock()
+		rig.fake.beforeConversation = func(fakeKapSubscribe, string) {
+			hold.Do(func() {
+				close(pageHeld)
+				select {
+				case <-releasePage:
+				case <-ctx.Done():
+				}
+			})
+		}
+		rig.fake.mu.Unlock()
+		finished := beginNativeKimiReconnect(t, rig)
+		select {
+		case <-pageHeld:
+		case <-ctx.Done():
+			t.Fatal("the reconnect did not reach its held page")
+		}
+		assert.False(t, finished())
+		last, _ := rig.sink.LastTurnActive()
+		assert.True(t, last, "the subscribe response and flat idle state cannot end the last known turn")
+		release()
+		waitFor(t, finished, "the complete empty page reaches dispatch")
+		last, _ = rig.sink.LastTurnActive()
+		assert.False(t, last, "only the complete page clears the previous turn")
+	})
 }
 
 func TestKimiResyncIgnoresASessionItDoesNotDrive(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
 	before := len(rig.fake.routes())
-	rig.agent.resyncSession(context.Background(), "session_other", false)
-	rig.agent.resyncSession(context.Background(), "../x", true)
+	rig.agent.resyncSession(context.Background(), "session_other")
+	rig.agent.resyncSession(context.Background(), "../x")
 	assert.Len(t, rig.fake.routes(), before, "a session of the past, or an id the server would not issue, sends nothing")
 }
 
@@ -956,10 +1134,20 @@ func TestKimiRuntimeExitSettlesNativeChildTools(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
 	spec := kimiRecoveryChild{agentID: "agent-0", callID: "call-child", taskID: "child-task"}
-	spec.start(t, rig)
+	spec.startNative(t, rig)
 	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-	native.transcriptAgentOps(t, "agent-0", 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"grep","toolCallId":"call_grep","name":"Grep","state":"running","input":{"pattern":"x"}}}`)
+	native.conversationAgentFrame(t, "agent-0", `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"call_grep","step_index":1,"name":"Grep","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"pattern":"x"}}}`)
 	_, child := childOf(t, rig.sink, "session_1/agent-0")
+	var grepSpan string
+	for _, message := range child.Messages() {
+		view, err := decodeKimiConversationRecord(message.Content)
+		require.NoError(t, err)
+		if view.item != nil && view.item.ItemID == "call_grep" && view.record.Role == contracts.KimiConversationRecordRoleRequest {
+			grepSpan = message.SpanID
+		}
+	}
+	require.NotEmpty(t, grepSpan)
+
 	rig.agent.SetStoppedForTest(true)
 	rig.agent.SimulateExitForTest()
 	require.NoError(t, rig.agent.Wait())
@@ -967,7 +1155,7 @@ func TestKimiRuntimeExitSettlesNativeChildTools(t *testing.T) {
 	require.NotEmpty(t, messages)
 	var closed bool
 	for _, message := range messages {
-		if message.SpanID == "session_1/"+kimiTranscriptScope("agent-0", "t0", "t0.1", "grep") && message.Closing {
+		if message.SpanID == grepSpan && message.Closing {
 			closed = true
 			assert.Equal(t, agent.MessageCompletionInterrupted, message.Completion)
 		}
@@ -1001,8 +1189,8 @@ func TestKimiResyncStopsWhenSessionSubscriptionFails(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
 	rig.agent.stream.forget("session_1")
-	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{NotFound: sub.IDs} })
-	rig.agent.resyncSession(t.Context(), "session_1", false)
+	rig.fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int { return kimiCodeSessionNotFound })
+	rig.agent.resyncSession(t.Context(), "session_1")
 	assert.Len(t, rig.fake.subscribeFrames(), 2, "the native subscription reports the unavailable session")
 	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot")))
 }
@@ -1014,13 +1202,11 @@ func TestKimiResyncWithoutTheTaskListClosesNoUnlistedSubagent(t *testing.T) {
 		t.Run(fmt.Sprintf("refused_watch=%t", refusedWatch), func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
-			native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-			native.transcriptOps(t, 1,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`,
-				`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer"},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
-			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-child","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
-			native.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child-turn","state":"running","origin":{"kind":"other"},"prompt":"Review the diff."}}`)
-			var frames []any
+			spec := kimiRecoveryChild{agentID: "agent-0", callID: "spawn", taskID: "task-child", omitTaskReference: true}
+			spec.startNative(t, rig)
+			_, child := childOf(t, rig.sink, "session_1/agent-0")
+			before := len(child.TurnActives())
+			frames := []any{kimiRecoveryNativeParentPage(t, rig, spec.nativeInvocation("")), spec.nativePage(t, rig, "", "")}
 			if refusedWatch {
 				rig.fake.mu.Lock()
 				rig.fake.taskCommandFor = func(command fakeKimiTaskCommand) (int, string) {
@@ -1035,9 +1221,12 @@ func TestKimiResyncWithoutTheTaskListClosesNoUnlistedSubagent(t *testing.T) {
 			finished := beginNativeKimiReconnect(t, rig, frames...)
 			waitFor(t, finished, "the native reconnect applies its replay")
 			waitFor(t, rig.agent.taskRecoveryWork.Idle, "the attempted task recovery finishes")
-			row, child := childOf(t, rig.sink, "session_1/agent-0")
+			awaitKimiTestOutput(t, rig.agent.sink)
+			row, _ := childOf(t, rig.sink, "session_1/agent-0")
 			assert.Equal(t, bgtask.StatusRunning, row.Status)
-			assert.Equal(t, []bool{true}, child.TurnActives())
+			assert.True(t, rig.agent.ActiveChildTurnState(row.RowKey).Active)
+			assert.NotContains(t, child.TurnActives()[before:], false)
+			assert.Equal(t, bgtask.StatusRunning, nativeTaskOf(t, rig.sink, spec.taskID).Status)
 			last, _ := rig.sink.LastTurnActive()
 			assert.True(t, last)
 			rig.fake.mu.Lock()
@@ -1056,45 +1245,6 @@ func TestKimiResyncWithoutTheTaskListClosesNoUnlistedSubagent(t *testing.T) {
 	}
 }
 
-func TestKimiReconcileNativeTurns(t *testing.T) {
-	t.Parallel()
-	t.Run("a newer native turn replaces the old running turn", func(t *testing.T) {
-		t.Parallel()
-		rig := newKimiOutputRig(t)
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
-		rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Bash","state":"running","input":{}}}`)
-		rig.transcriptReset(t, 3,
-			`{"kind":"turn","turnId":"t0","state":"cancelled","origin":{"kind":"user"},"steps":[{"kind":"step","stepId":"t0.1","ordinal":1,"state":"interrupted","frames":[{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Bash","state":"running","input":{}}]}]}`,
-			`{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger"}},"steps":[]}`)
-		var closed bool
-		for _, message := range rig.sink.Messages() {
-			if message.Closing {
-				closed = true
-				assert.Equal(t, `session_1/kimi/"main"/"t0"/"t0.1"/"call_1"`, message.SpanID)
-				assert.Equal(t, agent.MessageCompletionInterrupted, message.Completion)
-			}
-		}
-		assert.True(t, closed)
-		assert.Equal(t, agent.TurnState{Active: true}, rig.agent.PublishTurnActive())
-		rig.agent.dispatchMu.Lock()
-		activeTurn := rig.agent.run("main").transcript.activeTurn
-		rig.agent.dispatchMu.Unlock()
-		assert.Equal(t, "t1", activeTurn)
-		rig.transcriptOps(t, 4, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"completed","origin":{"kind":"other","payload":{"kind":"system_trigger"}}}}`)
-		assert.False(t, rig.agent.PublishTurnActive().Active)
-	})
-	t.Run("an empty native snapshot leaves an idle main agent idle", func(t *testing.T) {
-		t.Parallel()
-		rig := newKimiOutputRig(t)
-		rig.transcriptReset(t, 1)
-		assert.Equal(t, []bool{false}, rig.sink.TurnActives())
-		assert.Zero(t, rig.sink.ResetSpanCount())
-	})
-}
-
-// A context clear runs while the stream dispatches the old session's events.
-// dispatchMu orders the two, so each event either lands before the switch or
-// is dropped as another session's, and none reopens a turn afterwards.
 func TestKimiRuntimeReplacementRejectsLateOldEvents(t *testing.T) {
 	t.Parallel()
 	old := newKimiServiceTestRig(t)
@@ -1109,21 +1259,25 @@ func TestKimiRuntimeReplacementRejectsLateOldEvents(t *testing.T) {
 	require.NoError(t, replacement.connect(replacement.Context(), server.URL, fakeKapToken, opts, 30*time.Second))
 	t.Cleanup(replacement.closeStream)
 	require.NoError(t, replacement.openStartupSession(opts, 30*time.Second))
+	// The ACK precedes initial state. Capture only after that state has finished
+	// changing the replacement's scope, so only late old events remain under test.
+	main := replacement.run(kimiMainAgentID)
+	waitFor(t, func() bool {
+		return main.conversationRecovery.Load() == nil && !agent.OutputQueueFor(replacement.sink).HasPending()
+	}, "the replacement applies its initial conversation page and output")
 	replacement.HandleOutput([]byte(`{"type":"todo","session_id":"session_2","agent_id":"main","items":[{"title":"Replacement list","status":"pending"}]}`))
 	captured := agent.CaptureTranscript(replacementSink, agent.MessageContent{}, agent.SpanInfo{})
 	var frames [][]byte
-	for turn := range 50 {
-		turnID, stepID := fmt.Sprintf("t%d", turn), fmt.Sprintf("t%d.1", turn)
-		operations := []any{
-			map[string]any{"op": "turn.upsert", "turn": map[string]any{"kind": "turn", "turnId": turnID, "state": "running", "origin": map[string]any{"kind": "user"}}},
-			map[string]any{"op": "frame.upsert", "turnId": turnID, "stepId": stepID, "frame": map[string]any{"kind": "tool", "frameId": "call_1", "toolCallId": "call_1", "name": "Bash", "state": "running", "input": map[string]any{}}},
-			map[string]any{"op": "frame.upsert", "turnId": turnID, "stepId": stepID, "frame": map[string]any{"kind": "text", "frameId": "answer", "role": "assistant", "text": "text"}},
-			map[string]any{"op": "turn.upsert", "turn": map[string]any{"kind": "turn", "turnId": turnID, "state": "completed", "origin": map[string]any{"kind": "user"}}},
-		}
-		for _, operation := range operations {
-			frame, err := json.Marshal(map[string]any{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"type": "transcript.ops", "agent_id": "main", "seq": len(frames) + 1, "ops": []any{operation}}})
-			require.NoError(t, err)
-			frames = append(frames, frame)
+	for ordinal := range 50 {
+		turnID := fmt.Sprintf("stale-%d", ordinal)
+		header := fmt.Sprintf(`"turn_id":%q,"ordinal":%d,"kind":"agent","started_at":"2026-11-18T00:00:00Z","steps":[]`, turnID, ordinal)
+		for _, frame := range []string{
+			`{"type":"turn.started","turn":{` + header + `,"status":"running"}}`,
+			fmt.Sprintf(`{"type":"item.started","turn_id":%q,"item":{"type":"tool_call","item_id":"call","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","input":{}}}`, turnID),
+			fmt.Sprintf(`{"type":"item.ended","turn_id":%q,"item":{"type":"assistant_message","item_id":"answer","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:01Z","text":"Stale answer"}}`, turnID),
+			`{"type":"turn.ended","turn":{` + header + `,"status":"ended","outcome":"completed"}}`,
+		} {
+			frames = append(frames, kimiConversationTestFrame(t, "session_1", kimiMainAgentID, frame))
 		}
 	}
 
@@ -1145,25 +1299,11 @@ func TestKimiRuntimeReplacementRejectsLateOldEvents(t *testing.T) {
 	assert.Equal(t, agent.TurnState{}, replacement.PublishTurnActive())
 }
 
-// assertAttachFiltersHistoricalNotices checks the attachment clock through native retention.
-// A reset keeps the notice after attachment and omits the earlier notice.
-func assertAttachFiltersHistoricalNotices(t *testing.T, rig *kimiTestRig, attach time.Time) {
-	t.Helper()
-	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-	native.transcriptReset(t, 100,
-		fmt.Sprintf(`{"kind":"marker","markerId":"old","marker":"notice","at":%q,"payload":{"level":"warning","message":"Historical notice before attachment"}}`, attach.Add(-time.Millisecond).Format(time.RFC3339Nano)),
-		fmt.Sprintf(`{"kind":"marker","markerId":"new","marker":"notice","at":%q,"payload":{"level":"warning","message":"Fresh notice after attachment"}}`, attach.Add(time.Millisecond).Format(time.RFC3339Nano)))
-	rows := rig.sink.PersistedNotifications()
-	require.Len(t, rows, 1)
-	assert.Contains(t, string(rows[0].Content), "Fresh notice after attachment")
-	assert.NotContains(t, string(rows[0].Content), "Historical notice before attachment")
-}
-
 func TestKimiNewSessionRetainsStateBeforeSubscriptionAcknowledgement(t *testing.T) {
 	t.Parallel()
 	fake, server := newFakeKap(t)
 	a, sink, opts := newConnectedKimiAgent(t, server.URL, agent.Options{})
-	fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+	fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int {
 		for _, state := range fake.sessionStateFrames(sub.SessionID) {
 			data, err := json.Marshal(state)
 			assert.NoError(t, err)
@@ -1174,7 +1314,7 @@ func TestKimiNewSessionRetainsStateBeforeSubscriptionAcknowledgement(t *testing.
 		}
 		raw := fmt.Sprintf(`{"type":"goal","session_id":%q,"agent_id":"main","goal":{"objective":"Initial goal","status":"paused","turns_used":0,"tokens_used":0,"wall_clock_ms":0}}`, sub.SessionID)
 		a.HandleOutput([]byte(raw))
-		return 0, kimiAck{Accepted: []string{sub.SessionID}}
+		return kimiCodeOK
 	})
 	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
 	goal, exists := sink.LastGoal()
@@ -1187,10 +1327,10 @@ func TestKimiFreshStartupRefusalDiscardsUnacceptedState(t *testing.T) {
 	t.Parallel()
 	fake, server := newFakeKap(t)
 	a, sink, opts := newConnectedKimiAgent(t, server.URL, agent.Options{})
-	fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+	fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int {
 		raw := fmt.Sprintf(`{"type":"goal","session_id":%q,"agent_id":"main","goal":{"objective":"Unaccepted goal","status":"active","turns_used":0,"tokens_used":0,"wall_clock_ms":0}}`, sub.SessionID)
 		a.HandleOutput([]byte(raw))
-		return 40001, kimiAck{}
+		return 40001
 	})
 	err := a.openStartupSession(opts, 30*time.Second)
 	require.Error(t, err)
@@ -1223,7 +1363,7 @@ func TestKimiSessionAdmissionLimitsEmptyFramesAndDiscardsOverflow(t *testing.T) 
 func TestKimiReconnectUsesNativeStateWithoutRemovedRESTRoutes(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
-	rig.agent.resyncSession(t.Context(), rig.sessionID(), true)
+	rig.agent.resyncSession(t.Context(), rig.sessionID())
 	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath(rig.sessionID(), "/snapshot")))
 	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath(rig.sessionID(), "/tasks")))
 }

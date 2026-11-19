@@ -5,17 +5,46 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func kimiMediaFixtureItem(t *testing.T, itemID string, fileIDs ...string) json.RawMessage {
+	t.Helper()
+	parts := make([]map[string]string, 0, len(fileIDs))
+	for _, id := range fileIDs {
+		parts = append(parts, map[string]string{"kind": "image", "file_id": id})
+	}
+	raw, err := json.Marshal(map[string]any{
+		"type": "tool_call", "item_id": itemID, "name": "ReadMediaFile",
+		"status": "ended", "outcome": "completed", "created_at": "2026-11-18T00:00:00Z", "started_at": "2026-11-18T00:00:00Z",
+		"input": map[string]string{"path": "original.png"}, "output": "Loaded original.png", "media": parts,
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func readKimiMediaFixture(t *testing.T, api *kimiClient, originalSize int, fileIDs ...string) ([]byte, error) {
+	t.Helper()
+	plan, err := prepareKimiConversationMedia(contracts.KimiConversationRecord{
+		Type: contracts.KimiConversationRecordKindItem, Role: contracts.KimiConversationRecordRoleResult,
+		SessionID: "session_1", AgentID: "main", TurnID: "turn", Item: kimiMediaFixtureItem(t, "image", fileIDs...),
+	}, originalSize)
+	if err != nil {
+		return nil, err
+	}
+	require.NotNil(t, plan)
+	return plan.read(testutil.DeadlineContext(t), api, make(chan struct{}, kimiMediaConcurrency))
+}
 
 func TestKimiNativeMediaResultRetainsExactServerBytes(t *testing.T) {
 	t.Parallel()
@@ -28,23 +57,23 @@ func TestKimiNativeMediaResultRetainsExactServerBytes(t *testing.T) {
 	_, err = hash.Write(data)
 	require.NoError(t, err)
 	fileID := "f_" + hex.EncodeToString(hash.Sum(nil))
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	rig.agent.api = newKimiTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer "+fakeKapToken, r.Header.Get("Authorization"))
 		assert.Equal(t, "/api/v1/sessions/session_1/media/"+fileID, r.URL.Path)
 		w.Header().Set("Content-Type", mimeType)
 		_, _ = w.Write(data)
 	})
-	op := fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"t0.1.image","toolCallId":"image","name":"ReadMediaFile","state":"done","input":{"path":"original.png"},"display":{"path":"/work/original.png"},"output":[{"type":"image","source":{"kind":"session_media","file_id":%q}}]}}`, fileID)
-	rig.transcriptOps(t, 1, op)
-	waitFor(t, func() bool { return len(rig.sink.Messages()) == 1 }, "the native media result persists")
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":`+string(kimiMediaFixtureItem(t, "image", fileID))+`}`)
+	waitFor(t, func() bool { return len(rig.sink.Messages()) == 2 }, "the native request and image result persist")
 	messages := rig.sink.Messages()
-	require.Equal(t, 1, len(messages))
-	assert.Contains(t, string(messages[0].Content), fileID)
-	assert.NotContains(t, string(messages[0].Content), base64.StdEncoding.EncodeToString(data))
-	require.NotEmpty(t, messages[0].SupplementalContent)
-	assert.Contains(t, string(messages[0].SupplementalContent), fileID)
-	assert.Contains(t, string(messages[0].SupplementalContent), base64.StdEncoding.EncodeToString(data))
+	require.Len(t, messages, 2)
+	assert.Contains(t, string(messages[1].Content), fileID)
+	assert.NotContains(t, string(messages[1].Content), base64.StdEncoding.EncodeToString(data))
+	require.NotEmpty(t, messages[1].SupplementalContent)
+	assert.Contains(t, string(messages[1].SupplementalContent), fileID)
+	assert.Contains(t, string(messages[1].SupplementalContent), base64.StdEncoding.EncodeToString(data))
 }
 
 func TestKimiNativeMediaRejectsInvalidResponses(t *testing.T) {
@@ -66,7 +95,7 @@ func TestKimiNativeMediaRejectsInvalidResponses(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			var requests atomic.Int32
 			rig.agent.api = newKimiTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
@@ -75,9 +104,7 @@ func TestKimiNativeMediaRejectsInvalidResponses(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
 			})
-			frame, err := json.Marshal(map[string]any{"frameId": "frame", "toolCallId": "call", "output": []any{map[string]any{"type": "image", "source": map[string]string{"kind": "session_media", "file_id": tc.id}}}})
-			require.NoError(t, err)
-			supplement, err := rig.agent.recoverTranscriptMedia("session_1", "main", kimiTranscriptOperation{TurnID: "turn", StepID: "step", Frame: frame}, []byte("original"))
+			supplement, err := readKimiMediaFixture(t, rig.agent.api, len("original"), tc.id)
 			require.ErrorContains(t, err, tc.expected)
 			assert.Empty(t, supplement)
 			if tc.name == "invalid ID" {
@@ -89,16 +116,16 @@ func TestKimiNativeMediaRejectsInvalidResponses(t *testing.T) {
 
 func TestKimiNativeMediaFailurePreservesOriginalResult(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	rig.agent.api = newKimiTestClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
 	id := "f_" + strings.Repeat("a", 64)
-	op := fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"image","toolCallId":"image","name":"ReadMediaFile","state":"done","input":{"path":"original.png"},"output":[{"type":"image","source":{"kind":"session_media","file_id":%q}}]}}`, id)
-	rig.transcriptOps(t, 1, op)
-	waitFor(t, func() bool { return len(rig.sink.Messages()) == 1 }, "the native media result persists")
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":`+string(kimiMediaFixtureItem(t, "image", id))+`}`)
+	waitFor(t, func() bool { return len(rig.sink.Messages()) == 2 }, "the native request and image result persist")
 	messages := rig.sink.Messages()
-	require.Len(t, messages, 1)
-	assert.Contains(t, string(messages[0].Content), id)
-	assert.Empty(t, messages[0].SupplementalContent)
+	require.Len(t, messages, 2)
+	assert.Contains(t, string(messages[1].Content), id)
+	assert.Empty(t, messages[1].SupplementalContent)
 }
 
 func TestKimiNativeMediaEnforcesMessageSize(t *testing.T) {
@@ -108,22 +135,21 @@ func TestKimiNativeMediaEnforcesMessageSize(t *testing.T) {
 		available  int
 		expected   string
 	}{
-		{"no remaining bytes", "image", 0, "message size limit"},
+		{"no remaining bytes", "image", 0, "available message space"},
 		{"binary read limit", "more than six bytes", 8, "remaining message size limit"},
-		{"supplement overhead", "abc", 8, "complete Kimi tool supplement"},
+		{"supplement overhead", "abc", 8, "exceeds the message size limit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			digest := sha256.Sum256(append([]byte("image/png\x00"), []byte(tc.data)...))
 			id := "f_" + hex.EncodeToString(digest[:])
 			rig.agent.api = newKimiTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "image/png")
 				_, _ = w.Write([]byte(tc.data))
 			})
-			frame := json.RawMessage(fmt.Sprintf(`{"frameId":"frame","toolCallId":"call","output":[{"type":"image","source":{"kind":"session_media","file_id":%q}}]}`, id))
-			original := make([]byte, agent.LiveMaxMessageSize()-1024-tc.available)
-			supplement, err := rig.agent.recoverTranscriptMedia("session_1", "main", kimiTranscriptOperation{TurnID: "turn", StepID: "step", Frame: frame}, original)
+			originalSize := agent.LiveMaxMessageSize() - 1024 - tc.available
+			supplement, err := readKimiMediaFixture(t, rig.agent.api, originalSize, id)
 			require.ErrorContains(t, err, tc.expected)
 			assert.Empty(t, supplement)
 		})
@@ -132,7 +158,7 @@ func TestKimiNativeMediaEnforcesMessageSize(t *testing.T) {
 
 func TestKimiNativeMediaFetchesRepeatedReferenceOnce(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	data := []byte("exact native bytes")
 	digest := sha256.Sum256(append([]byte("image/png\x00"), data...))
 	id := "f_" + hex.EncodeToString(digest[:])
@@ -142,9 +168,7 @@ func TestKimiNativeMediaFetchesRepeatedReferenceOnce(t *testing.T) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(data)
 	})
-	part := fmt.Sprintf(`{"type":"image","source":{"kind":"session_media","file_id":%q}}`, id)
-	frame := json.RawMessage(fmt.Sprintf(`{"frameId":"frame","toolCallId":"call","output":[%s,%s]}`, part, part))
-	supplement, err := rig.agent.recoverTranscriptMedia("session_1", "main", kimiTranscriptOperation{TurnID: "turn", StepID: "step", Frame: frame}, []byte("original"))
+	supplement, err := readKimiMediaFixture(t, rig.agent.api, len("original"), id, id)
 	require.NoError(t, err)
 	assert.Contains(t, string(supplement), base64.StdEncoding.EncodeToString(data))
 	assert.EqualValues(t, 1, requests.Load())

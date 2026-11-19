@@ -40,7 +40,7 @@ export function questionBodyMarkdown(questions: QuestionPrompt[]): string {
   return questions
     .map((entry) => {
       const options = entry.options.map(optionMarkdown).join('\n')
-      return [entry.question, options].filter(Boolean).join('\n\n')
+      return [entry.context, entry.question, options].filter(Boolean).join('\n\n')
     })
     .filter(Boolean)
     .join('\n\n')

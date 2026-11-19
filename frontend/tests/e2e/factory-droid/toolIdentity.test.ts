@@ -1,5 +1,22 @@
-import { describe, expect, it } from 'vitest'
-import { droidToolRowIdFromFrames, scriptedDroidCall } from './toolIdentity'
+import type { NativeContextFixtures } from '../helpers/nativeScenario'
+import { describe, expect, it, vi } from 'vitest'
+import { droidToolRowId, droidToolRowIdFromFrames, scriptedDroidCall } from './toolIdentity'
+
+vi.mock('../helpers/nativeMessages', () => ({
+  nativeMessageBody: (value: unknown) => value,
+  readNativeMessageSnapshot: async () => ({
+    messages: [
+      {
+        type: 'tool_call',
+        toolUse: {
+          id: 'native-identity',
+          name: 'Execute',
+          input: { command: 'printf 0' },
+        },
+      },
+    ],
+  }),
+}))
 
 const expected = {
   id: 'call_source',
@@ -20,6 +37,25 @@ describe('scriptedDroidCall', () => {
     [expected, expected],
   ].map(calls => ({ calls })))('refuses absent or duplicated identities %j', ({ calls }) => {
     expect(() => scriptedDroidCall(calls, 'source')).toThrow('one exact')
+  })
+})
+
+describe('droidToolRowId', () => {
+  it('keeps an already resolved native ID after verifying its Worker frame', async () => {
+    const context = {
+      modelScript: {
+        status: async () => ({
+          requests: [
+            {
+              response: {
+                toolCalls: [expected],
+              },
+            },
+          ],
+        }),
+      },
+    } as unknown as NativeContextFixtures
+    await expect(droidToolRowId(context, { agentId: 'agent', callId: 'native-identity' })).resolves.toBe('native-identity')
   })
 })
 

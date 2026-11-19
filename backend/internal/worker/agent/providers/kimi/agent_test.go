@@ -53,7 +53,7 @@ func TestKimiSendInput(t *testing.T) {
 	t.Run("refuses input while a turn runs", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
 		err := rig.agent.SendInput("Another message.", nil)
 		agenttest.AssertBusyRefusalRepublishesTheTurn(t, &rig.sink.Sink, rig.agent, err)
 		var busy *agent.AgentBusyError
@@ -156,7 +156,7 @@ func TestKimiSteerInput(t *testing.T) {
 
 	startTurn := func(t *testing.T, rig *kimiTestRig) {
 		t.Helper()
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
 		rig.fake.setBusy(rig.sessionID(), true)
 	}
 
@@ -181,7 +181,7 @@ func TestKimiSteerInput(t *testing.T) {
 	t.Run("delivers a prompt that started a turn of its own", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
 		// The server ended the turn before the prompt arrived, so the prompt ran.
 		require.NoError(t, rig.agent.SteerInput("Also this.", nil))
 		for _, route := range rig.fake.routes() {
@@ -275,57 +275,45 @@ func TestKimiSteerInput(t *testing.T) {
 func TestKimiTurnSteerability(t *testing.T) {
 	t.Parallel()
 
-	for _, origin := range []string{contracts.KimiOriginUser, contracts.KimiOriginSkillActivation, contracts.KimiOriginPluginCommand} {
-		t.Run("a turn of origin "+origin+" takes a steer", func(t *testing.T) {
-			t.Parallel()
-			rig := newKimiTestRig(t, agent.Options{})
-			nativeKind := "other"
-			if origin == contracts.KimiOriginUser {
-				nativeKind = "user"
-			}
-			rig.transcriptOps(t, 1, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":%q,"payload":{"kind":%q}}}}`, nativeKind, origin))
-			assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, rig.agent.PublishTurnActive())
-			var busy *agent.AgentBusyError
-			require.ErrorAs(t, rig.agent.SendInput("More.", nil), &busy)
-			assert.True(t, busy.ActiveTurnSteerable)
-		})
-	}
-
-	for _, origin := range []string{
-		contracts.KimiOriginSystemTrigger, contracts.KimiOriginTask, contracts.KimiOriginBackgroundTask,
-		contracts.KimiOriginCronJob, contracts.KimiOriginRetry, contracts.KimiOriginHookResult, "",
+	for _, test := range []struct {
+		name, origin string
+		steerable    bool
+	}{
+		{"human prompt", `{"kind":"user"}`, true},
+		{"skill command", `{"kind":"skill","name":"review"}`, true},
+		{"plugin command", `{"kind":"plugin_command","plugin_id":"checks","command":"review"}`, true},
+		{"system prompt", `{"kind":"system"}`, false},
+		{"goal continuation", `{"kind":"goal"}`, false},
+		{"scheduler", `{"kind":"cron","job_id":"daily","schedule":"0 9 * * *","recurring":true,"coalesced_count":0,"stale":false}`, false},
+		{"retry", `{"kind":"retry"}`, false},
+		{"hook", `{"kind":"hook","hook_event":"UserPromptSubmit"}`, false},
+		{"an opener has not arrived", "", false},
 	} {
-		t.Run("a turn of origin "+origin+" takes no steer", func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
-			nativeKind := "other"
-			if origin == contracts.KimiOriginUser {
-				nativeKind = "user"
-			}
-			rig.transcriptOps(t, 1, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":%q,"payload":{"kind":%q}}}}`, nativeKind, origin))
+			rig.startPublicMainTurn(t, "t0", 0, test.origin)
 			rig.fake.setBusy(rig.sessionID(), true)
-			assert.Equal(t, agent.TurnState{Active: true, Steerable: false}, rig.agent.PublishTurnActive(),
-				"the queue waits for the turn to end")
-			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, rig.sink.TurnKinds()[0], "the native header publication states it too")
-
+			assert.Equal(t, agent.TurnState{Active: true, Steerable: test.steerable}, rig.agent.PublishTurnActive())
 			var busy *agent.AgentBusyError
 			require.ErrorAs(t, rig.agent.SendInput("More.", nil), &busy)
-			assert.False(t, busy.ActiveTurnSteerable)
-
-			err := rig.agent.SteerInput("More.", nil)
-			require.ErrorAs(t, err, &busy, "the turn runs, so the message waits for it")
-			assert.False(t, busy.ActiveTurnSteerable)
-			assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/prompts")),
-				"nothing reaches the server's queue, where it would wait behind the turn")
+			assert.Equal(t, test.steerable, busy.ActiveTurnSteerable)
+			if !test.steerable {
+				assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, rig.sink.TurnKinds()[0])
+				require.ErrorAs(t, rig.agent.SteerInput("More.", nil), &busy)
+				assert.False(t, busy.ActiveTurnSteerable)
+			}
+			assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/prompts")))
 		})
 	}
 
 	t.Run("a turn end clears the steerability with the turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
-		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
-		rig.transcriptOps(t, 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"cron","payload":{"kind":"cron_job"}}}}`)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+		rig.startPublicMainTurn(t, "t1", 1, `{"kind":"cron","job_id":"daily","schedule":"0 9 * * *","recurring":true,"coalesced_count":0,"stale":false}`)
 		assert.Equal(t, agent.TurnState{Active: true, Steerable: false}, rig.agent.PublishTurnActive())
 	})
 }
@@ -336,7 +324,7 @@ func TestKimiSendRawInput(t *testing.T) {
 	t.Run("the raw abort frame interrupts the running turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
 		require.NoError(t, rig.agent.SendRawInput([]byte(`{"action":"abort"}`), agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)), 1)
 	})
@@ -388,44 +376,51 @@ func TestKimiHandleOutputSkipsAFrameThatIsNotJSON(t *testing.T) {
 // must leave every call closed and publish a repeated request once.
 func TestKimiDispatchIsSafeForConcurrentFrames(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
 	const calls = 32
-	operations := make([]any, 0, calls*3)
+	approval := kimiEventFrame(t, "session_1", approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
+	var wg sync.WaitGroup
 	for i := range calls {
 		id := fmt.Sprintf("call_%d", i)
-		for _, state := range []string{"opening", "progress", "done"} {
-			frame := map[string]any{"kind": "tool", "frameId": id, "toolCallId": id, "name": "Read", "state": "running", "input": map[string]any{"path": id}}
-			if state == "progress" {
-				frame["progress"] = map[string]any{"kind": "stdout", "text": "x"}
-			}
-			if state == "done" {
-				frame["state"], frame["output"] = "done", "ok"
-			}
-			operations = append(operations, map[string]any{"op": "frame.upsert", "turnId": "t0", "stepId": "t0.1", "frame": frame})
-		}
-	}
-	batch, err := json.Marshal(map[string]any{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"type": "transcript.ops", "agent_id": "main", "seq": 2, "ops": operations}})
-	require.NoError(t, err)
-	approval := kimiEventFrame(t, "session_1", approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
-
-	var wg sync.WaitGroup
-	for range calls {
+		common := fmt.Sprintf(`"type":"tool_call","item_id":%q,"name":"Read","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"path":%q}`, id, id)
+		open := kimiConversationTestFrame(t, rig.sessionID(), kimiMainAgentID, `{"type":"item.started","turn_id":"t0","item":{`+common+`,"status":"running","stage":"executing"}}`)
+		progress := kimiConversationTestFrame(t, rig.sessionID(), kimiMainAgentID, fmt.Sprintf(`{"type":"item.delta","turn_id":"t0","item_id":%q,"field":"output","delta":"x"}`, id))
+		closed := kimiConversationTestFrame(t, rig.sessionID(), kimiMainAgentID, `{"type":"item.ended","turn_id":"t0","item":{`+common+`,"status":"ended","outcome":"completed","output":"ok"}}`)
 		wg.Go(func() {
-			rig.agent.HandleOutput(batch)
+			rig.agent.HandleOutput(open)
+			rig.agent.HandleOutput(progress)
+			rig.agent.HandleOutput(closed)
+			rig.agent.HandleOutput(closed)
 			rig.agent.HandleOutput(approval)
 		})
 	}
 	wg.Wait()
-
-	assert.Equal(t, 1, rig.sink.PublishedControlCount(), "a request that arrives many times at once publishes once")
-	closed := rig.sink.ClosedSpans()
-	for i := range calls {
-		assert.Contains(t, closed, "session_1/"+kimiTranscriptScope("main", "t0", "t0.1", fmt.Sprintf("call_%d", i)))
+	rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+	awaitKimiTestOutput(t, rig.agent.sink)
+	assert.Equal(t, 1, rig.sink.PublishedControlCount(), "a request delivered concurrently publishes once")
+	rows := rig.sink.Messages()
+	require.Len(t, rows, 2*calls+1)
+	requests := make(map[string]string, calls)
+	results := make(map[string]string, calls)
+	for _, row := range rows[:len(rows)-1] {
+		view, err := decodeKimiConversationRecord(row.Content)
+		require.NoError(t, err)
+		require.NotNil(t, view.item)
+		if view.record.Role == contracts.KimiConversationRecordRoleRequest {
+			assert.NotContains(t, requests, view.item.ItemID)
+			requests[view.item.ItemID] = row.SpanID
+		} else {
+			assert.Equal(t, contracts.KimiConversationRecordRoleResult, view.record.Role)
+			assert.True(t, row.Closing)
+			assert.NotContains(t, results, view.item.ItemID)
+			results[view.item.ItemID] = row.SpanID
+		}
 	}
-	rig.agent.Mu.Lock()
-	uses, open := rig.agent.TurnToolUses, len(rig.agent.runs[kimiMainAgentID].tools)
-	rig.agent.Mu.Unlock()
-	assert.EqualValues(t, calls, uses, "each result counts once")
-	assert.Zero(t, open, "every call that started also closed")
+	require.Len(t, requests, calls)
+	assert.Equal(t, requests, results, "each native tool closes its own span exactly once")
+	require.True(t, rows[len(rows)-1].TurnEnd)
+	count, present := metadataField(t, rows[len(rows)-1], contracts.MessageMetadataFieldToolUses)
+	require.True(t, present)
+	assert.JSONEq(t, fmt.Sprint(calls), string(count))
 }

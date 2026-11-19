@@ -1,0 +1,53 @@
+{
+  "_readme": "The Worker and native E2E receipt reader derive a tool span from the request record kind, session, agent, turn, request role and native item ID. Hash the UTF-8 Go JSON encoding of that string array with SHA-256. Keep HTML and Unicode line-separator escaping identical. Output/result data never enters this identity.",
+  "cases": [
+    {
+      "name": "native tool",
+      "session": "native-session",
+      "agent": "main",
+      "turn": "native-turn",
+      "item": "native-call",
+      "span": "kimi:conversation:e2f2166e920cce6f780e5637e184e3c79adbc92e347cd87a015a60e1b54fc1d1"
+    },
+    {
+      "name": "child tool",
+      "session": "native-session",
+      "agent": "agent-0",
+      "turn": "native-turn",
+      "item": "native-call",
+      "span": "kimi:conversation:3bff1bb1f7e3d3e7ae7c7e0b896a91c0be7497228c0f65d6af7cd9003e84bd40"
+    },
+    {
+      "name": "another turn",
+      "session": "native-session",
+      "agent": "main",
+      "turn": "another-turn",
+      "item": "native-call",
+      "span": "kimi:conversation:716ab04a1a148bce524775a39454ba8dd0ba74b40c2bb5a4c8fae4759a237edc"
+    },
+    {
+      "name": "unicode identities",
+      "session": "session-한",
+      "agent": "main",
+      "turn": "turn-🙂",
+      "item": "call-é",
+      "span": "kimi:conversation:0e49e50f74073b00388e265efca846dddddad6fb83f9cfecf4316fb3d19f3def"
+    },
+    {
+      "name": "escaped identities",
+      "session": "session-<>&",
+      "agent": "agent-\"quote\"",
+      "turn": "turn-\\path",
+      "item": "call-\tline",
+      "span": "kimi:conversation:956ae04b69fd0a857d4318f057fe0bc6d293e3ebb49bffea7f70afa730cb6847"
+    },
+    {
+      "name": "line separators",
+      "session": "session- ",
+      "agent": "main",
+      "turn": "turn- ",
+      "item": "native-call",
+      "span": "kimi:conversation:bbd742d2bcf60443fe85d2f59805172b2491fd07579d936ccb315641245c6c47"
+    }
+  ]
+}

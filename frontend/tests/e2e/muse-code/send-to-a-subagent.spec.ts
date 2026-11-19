@@ -7,7 +7,7 @@ import { assistantBubbles, sendMessage, tabById, userBubbles, waitForAgentIdle }
 import { openProviderAgent } from '../helpers/workspace'
 import { museTest } from '../muse-fixtures'
 import { MUSE_AGENT } from './scenarios'
-import { MUSE_CHILD_GATE, openMuseChild } from './subagent-common.muse'
+import { attachMuseChildReadinessFailure, MUSE_CHILD_GATE, openMuseChild } from './subagent-common.muse'
 
 for (const active of [true, false]) {
   museTest(`delivers a human note to the ${active ? 'running' : 'completed'} native child`, async ({ native }, testInfo) => {
@@ -44,7 +44,16 @@ for (const active of [true, false]) {
       else {
         await sendMessage(page, note)
       }
-      await expect.poll(async () => (await modelScript.status()).ruleMatches[rule] ?? 0).toBe(1)
+      try {
+        await expect.poll(async () => (await modelScript.status()).ruleMatches[rule] ?? 0).toBe(1)
+      }
+      catch (error) {
+        await attachMuseChildReadinessFailure(native, {
+          parentId: child.parentId,
+          childId: child.childId,
+        }, testInfo).catch(() => {})
+        throw error
+      }
       await waitForAgentIdle(page)
       const request = (await modelScript.status()).requests.find(request => request.rule === rule)
       if (!request)

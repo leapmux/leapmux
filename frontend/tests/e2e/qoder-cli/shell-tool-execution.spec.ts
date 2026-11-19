@@ -4,7 +4,7 @@ import { cssAttributeValue } from '../helpers/cssAttribute'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { nativeToolResult } from '../helpers/nativeToolResult'
+import { nativeToolResultContent } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, railedRows, toolCallRow } from '../helpers/ui'
 import { qoderTest } from '../qoder-fixtures'
@@ -65,7 +65,9 @@ qoderTest('keeps two native Bash calls and their different commands and outputs'
     if (!isObject(call.arguments) || typeof call.arguments.command !== 'string' || !call.arguments.command.trim())
       throw new Error('The scripted Qoder Bash call requires a nonempty command.')
     const command = call.arguments.command
-    expect(nativeToolResult(request, call.id)).toBe(output)
+    expect(nativeToolResultContent(request, call.id)).toEqual([
+      { type: 'text', text: output },
+    ])
     const rows = snapshot.messages.filter(message => message.agentSessionId === current.agentSessionId && message.spanId === call.id)
     expect(rows).toHaveLength(2)
     const originals = rows.map(nativeMessageBody)

@@ -13,6 +13,7 @@ import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-proto
 import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-protocol'
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek-harness-protocol'
+import { DIRAC_TOOL } from '../../../src/generated/contracts/dirac-protocol'
 import { FASTAGENT_TOOL } from '../../../src/generated/contracts/fastagent-protocol'
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
@@ -156,7 +157,7 @@ export interface SubagentRequest {
    * A builder whose native spawn call carries a background choice states it on every call, so a changed native
    * default cannot change the test. An absent value takes the default of that builder, which its comment states:
    * the foreground for most of them, and the background where the existing specs of the provider rely on it.
-   * A builder refuses a value that its native spawn cannot honor: Letta Code always runs a child in the background,
+   * A builder refuses a value that its native spawn cannot honor: Dirac and Letta Code always start a child asynchronously,
    * Oh My Pi lets its profile decide, and Cursor's task call carries no background choice. Other provider builders
    * ignore this field.
    */
@@ -531,19 +532,29 @@ function ohMyPiTaskToolCall(id: string, requests: readonly SubagentRequest[]): M
 }
 
 /**
- * Spawn Dirac children through one `use_subagents` call (dirac-cli 0.5.17). The tool starts every child of the call at
- * once and returns when all of them end. Its schema sets no item limit, and an empty list fails the call ("Missing
- * required parameter: subagents"). Each title states the row, in 5 words or 80 characters at most.
+ * Start one to sixteen Dirac assignments asynchronously through subagents create (dirac-cli 0.6.0).
+ * Acceptance returns native handles. A later committed outcome proves completion.
+ * Native headers have at most five words and eighty UTF-16 code units after whitespace normalization.
  */
 function diracSubagentsToolCall(id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
   if (requests.length === 0)
-    throw new Error('The native Dirac use_subagents call requires at least one subagent.')
+    throw new Error('The native Dirac subagents call requires at least one subagent.')
+  if (requests.length > 16)
+    throw new Error('The native Dirac subagents call accepts at most sixteen assignments.')
+  const assignments = requests.map((request) => {
+    if (request.background === false)
+      throw new Error('The native Dirac subagents call is always asynchronous.')
+    const header = request.description.trim().replace(/\s+/gu, ' ')
+    if (!header || header.length > 80 || header.split(' ').length > 5)
+      throw new Error('The native Dirac assignment header requires one to five words and at most eighty UTF-16 code units.')
+    if (!request.prompt.trim())
+      throw new Error('The native Dirac assignment requires a nonempty task description.')
+    return { type: 'default', task_header: request.description, task_description: request.prompt }
+  })
   return {
     id,
-    name: 'use_subagents',
-    arguments: {
-      subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })),
-    },
+    name: DIRAC_TOOL.Subagents,
+    arguments: { operation: 'create', assignments },
   }
 }
 
@@ -1861,7 +1872,7 @@ const TOOL_VOCABULARY = {
     workflowTools: null,
   },
   // Oh My Pi supplies these tool schemas in tools/*.ts.
-  // Native probes use omp 18.2.11.
+  // Native probes use omp 18.20.0.
   // The isolated E2E profile selects edit.mode=replace.
   // That edit mode accepts the old text and replacement text.
   // The default hashline mode requires a hash from a prior native file read.
@@ -3398,6 +3409,23 @@ export function spawnSubagentToolCall(provider: AgentProvider, id: string, reque
 /** Spawn several subagents in one native call, which runs them at the same time. */
 export function spawnSubagentBatchToolCall(provider: AgentProvider, id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
   return requireBuilder(vocabulary(provider).spawnSubagentBatch, provider, 'subagent batch spawn')(id, requests)
+}
+
+/** Resume the exact native Dirac tasklet through its parent's supervision tool. */
+export function diracResumeSubagentToolCall(id: string, taskletId: string, message?: string): MockModelToolCall {
+  if (!id.trim() || !taskletId.trim() || (message !== undefined && !message.trim()))
+    throw new Error('The native Dirac resume requires a call ID, a tasklet ID and nonempty provided text.')
+  return {
+    id,
+    name: 'subagents',
+    arguments: {
+      operation: 'resume',
+      tasklet_id: taskletId,
+      ...(message === undefined
+        ? {}
+        : { message }),
+    },
+  }
 }
 
 export function updateTodosToolCall(provider: AgentProvider, id: string, steps: TodoStep[]): MockModelToolCall {

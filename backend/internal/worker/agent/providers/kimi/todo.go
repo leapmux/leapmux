@@ -32,7 +32,7 @@ func kimiTodoStatus(word string) todoevents.Status {
 // The flat native feed owns current state. Tool cards retain their original
 // list, but older transcript replay cannot replace this unsequenced snapshot.
 func (a *Agent) handleNativeTodo(frame kimiFrame) {
-	if !a.nativeTranscriptSession(frame.SessionID) {
+	if !a.ownsNativeSession(frame.SessionID) {
 		return
 	}
 	var wire struct {
@@ -85,7 +85,7 @@ func (a *Agent) queueIdleStateCleanup(run *kimiRun) {
 	for run.agentID != kimiMainAgentID && !seen[run.agentID] {
 		seen[run.agentID] = true
 		a.Mu.Lock()
-		active := run.turnActive
+		active := a.inputStateLocked(run.agentID).Active
 		a.Mu.Unlock()
 		if !active {
 			a.queueChildCleanup(run)
@@ -102,7 +102,7 @@ func (a *Agent) publishNativeTodo(run *kimiRun) {
 	if snapshot == nil {
 		return
 	}
-	if !a.nativeTranscriptSession(snapshot.sessionID) || snapshot.publisher == nil || !snapshot.publisher.IsSessionCurrent() {
+	if !a.ownsNativeSession(snapshot.sessionID) || snapshot.publisher == nil || !snapshot.publisher.IsSessionCurrent() {
 		run.pendingTodo = nil
 		return
 	}

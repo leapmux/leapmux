@@ -128,6 +128,7 @@ func (a *Agent) connect(ctx context.Context, address, token string, opts agent.O
 
 	a.stream = newKimiStream(endpoint, a.AgentID(), a.clock, a.handleFrame, a.resyncSession)
 	a.stream.recovering = a.beginInvocationRecovery
+	a.stream.confirmControls = a.confirmControlReplay
 	if err := a.stream.start(a.Context(), timeout); err != nil {
 		return err
 	}
@@ -177,6 +178,7 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 			return err
 		}
 		a.applyStatus(status)
+		a.holdStartupConversationSnapshot(opts.ResumeSessionID)
 		return nil
 	}
 
@@ -205,6 +207,7 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 		return err
 	}
 	a.applyStatus(status)
+	a.holdStartupConversationSnapshot(sessionID)
 	return nil
 }
 

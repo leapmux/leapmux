@@ -3,15 +3,104 @@ package deepseekharness
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type lostResponseRequest struct {
+	id     string
+	key    string
+	method string
+	cookie string
+}
+
+// responseLossRPC returns a real HTTP peer that drops its second response after
+// reading the request. The first call establishes the connection that is reused.
+func responseLossRPC(t *testing.T) (remoteRPC, func() []lostResponseRequest) {
+	t.Helper()
+	var mu sync.Mutex
+	var requests []lostResponseRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var envelope struct {
+			ID string `json:"rpcId"`
+		}
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&envelope))
+		mu.Lock()
+		requests = append(requests, lostResponseRequest{
+			id: envelope.ID, key: request.Header.Get("Idempotency-Key"),
+			method: strings.TrimPrefix(request.URL.Path, "/api/"), cookie: request.Header.Get("Cookie"),
+		})
+		count := len(requests)
+		mu.Unlock()
+		if count == 2 {
+			connection, _, err := w.(http.Hijacker).Hijack()
+			require.NoError(t, err)
+			require.NoError(t, connection.Close())
+			return
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": envelope.ID, "result": map[string]any{"ok": true, "value": "read completed"}}))
+	}))
+	t.Cleanup(server.Close)
+	endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.Close)
+	return remoteRPC{endpoint: endpoint.WithHeader("Cookie", "native-cookie")}, func() []lostResponseRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(requests)
+	}
+}
+
+func TestRemoteRPCReadReplaysAReusedConnectionAfterResponseLoss(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"goals/get", "session/attachment", "session/projections", "session/modelCatalog", "permissionPresets/catalog", "session/page"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			rpc, requests := responseLossRPC(t)
+			_, err := rpc.value(t.Context(), method, nil)
+			require.NoError(t, err)
+			_, err = rpc.value(t.Context(), method, nil)
+			require.NoError(t, err, "a native read can replay after its reused connection closes before a response")
+			got := requests()
+			require.Len(t, got, 3)
+			assert.Equal(t, got[1], got[2], "replay preserves the native request, credential and idempotency key")
+			assert.NotEqual(t, got[0].id, got[1].id, "separate reads keep separate identities")
+			for _, request := range got {
+				assert.NotEmpty(t, request.id)
+				assert.Equal(t, request.id, request.key)
+				assert.Equal(t, method, request.method)
+				assert.Equal(t, "native-cookie", request.cookie)
+			}
+		})
+	}
+}
+
+func TestRemoteRPCMutationDoesNotReplayAfterResponseLoss(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"goals/create", "goals/edit", "goals/clear", "goals/pause", "goals/resume", "session/prompt", "session/create", "commands/execute", "fileUploads/upload", "session/selectModel", "session/cancel", "session/updateQueue", "subagents/prompt", "subagents/interruptByParent", "$events/result", "unknown/query"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			rpc, requests := responseLossRPC(t)
+			_, err := rpc.value(t.Context(), "goals/get", nil)
+			require.NoError(t, err)
+			_, err = rpc.value(t.Context(), method, nil)
+			require.ErrorIs(t, err, io.EOF)
+			got := requests()
+			require.Len(t, got, 2, "an uncertain native mutation must never run twice")
+			assert.Empty(t, got[1].key)
+			assert.Equal(t, method, got[1].method)
+		})
+	}
+}
 
 func TestRemoteRPCUsesExactNativeEnvelope(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

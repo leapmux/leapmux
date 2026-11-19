@@ -21,7 +21,12 @@ function droidNativeCall(request: MockModelRequestRecord | undefined, callId: st
       ? message.tool_calls
       : []).filter(isObject).filter(call => isObject(call.function) && call.function.name === expected.name && typeof call.function.arguments === 'string'
         && isDeepStrictEqual(JSON.parse(call.function.arguments), expected.arguments)).map(call => call.id)
-    matches = id => ids.includes(id)
+    const executions = request.scriptedToolCalls.filter(call => call.name === expected.name && isDeepStrictEqual(call.arguments, expected.arguments))
+    if (ids.length !== executions.length)
+      throw new Error(`The native request contains ${ids.length} tool calls for the original Droid call ${callId}. Exactly ${executions.length} scripted executions are required.`)
+    // Native history and the recorded model responses retain execution order.
+    // The same file can be read before and after an edit with identical input.
+    matches = id => id === ids[executions.indexOf(expected)]
   }
   const call = nativeToolCallArguments(request, matches, `the original Droid call ${callId}`)
   if (call.name !== toolName)
@@ -29,8 +34,8 @@ function droidNativeCall(request: MockModelRequestRecord | undefined, callId: st
   return call
 }
 
-/** The closing line that Droid writes before the snapshot of a finished Script. */
-const SCRIPT_CLOSING_LINE = /^\[Script completed · /
+/** Native display counters and call positions precede the authoritative JSON snapshot. */
+const SCRIPT_SNAPSHOT_HEADER = /^\[Script (?:completed|failed) · [^\r\n\]]+\]$/u
 
 /** The final native completion line states counters or the absence of a log. */
 const SCRIPT_COMPLETED_FOOTER = /^\[Script completed · (?:\d+\.\d s elapsed · )?\d+ calls? · (?:no log|[^\r\n]+ in sandbox · [^\r\n]+ emitted(?: · [^\r\n]+)?)\]$/u
@@ -38,18 +43,17 @@ const SCRIPT_COMPLETED_FOOTER = /^\[Script completed · (?:\d+\.\d s elapsed · 
 /**
  * Find the snapshot inside the result of a Script.
  *
- * Droid 0.233.0 joins the blocks of a finished Script with line breaks: the printed
- * output, the closing line, then the snapshot, which stays on one line. A failed run
- * states `Error: ` and the snapshot alone. The snapshot is always the last line and
- * the closing line always precedes it, so a line that the script printed cannot take
- * their place. A result of any other shape stays whole, and the caller reads it as
- * a snapshot or refuses it.
+ * Droid 0.233.0 joins printed output, a completion header and a single-line snapshot
+ * with line breaks. Failed results can instead state `Error: ` and the snapshot
+ * alone. Current Droid also writes failure headers before the snapshot.
+ * A header must be complete and immediately precede the final snapshot line.
+ * Other results stay whole: the caller reads a snapshot or refuses the result.
  */
 function scriptSnapshotText(text: string): string {
   const lines = text.split('\n')
   const closing = lines.at(-2)
   const snapshot = lines.at(-1)
-  return closing !== undefined && snapshot !== undefined && SCRIPT_CLOSING_LINE.test(closing)
+  return closing !== undefined && snapshot !== undefined && SCRIPT_SNAPSHOT_HEADER.test(closing)
     ? snapshot
     : text
 }

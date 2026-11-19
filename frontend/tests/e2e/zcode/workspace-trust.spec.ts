@@ -38,6 +38,7 @@ function writeHookProject(workingDir: string): string {
 }
 
 // Instruction files load without trust. Project hooks and MCP declarations have separate native trust controls.
+// LeapMux exposes hook trust only. Project MCP declaration reviews: https://github.com/leapmux/leapmux/issues/647.
 zcodeTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({
     page,

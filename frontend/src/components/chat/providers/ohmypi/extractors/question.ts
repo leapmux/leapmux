@@ -37,6 +37,7 @@ export function ohMyPiQuestionPrompts(records: unknown): Array<ControlQuestion &
         })
       : []
     const header = pickString(record, OH_MY_PI_ASK_QUESTION.Header)
+    const context = pickString(record, OH_MY_PI_ASK_QUESTION.Context)
     const multiSelect = record[OH_MY_PI_ASK_QUESTION.Multi] === true
     const allowEmpty = record[OH_MY_PI_ASK_QUESTION.AllowEmpty]
     const allowCustomText = record[OH_MY_PI_ASK_QUESTION.AllowCustomText]
@@ -50,6 +51,9 @@ export function ohMyPiQuestionPrompts(records: unknown): Array<ControlQuestion &
       {
         id: pickString(record, OH_MY_PI_ASK_QUESTION.ID),
         question,
+        ...(context
+          ? { context }
+          : {}),
         ...(header
           ? { header }
           : {}),

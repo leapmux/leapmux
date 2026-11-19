@@ -13,10 +13,11 @@ import (
 
 func TestKimiSeparateTaskOutcomesDoNotEndLiveChildActivity(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer"},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","prompt":"Review it."},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-a","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
-	rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"live","state":"running","origin":{"kind":"other"}}}`)
+	rig.startPublicTurn(t, "agent-0", "live", 0)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-a","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
 	activity, exists := rig.sink.BackgroundTask(kimiChildRowKey("session_1", "agent-0"))
 	require.True(t, exists)
@@ -32,12 +33,12 @@ func TestKimiSeparateTaskOutcomesDoNotEndLiveChildActivity(t *testing.T) {
 
 func TestKimiSeparateChildActivityCanIdleWhileItsTaskRemainsRunning(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer"},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","prompt":"Review it."},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"coordinator","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
-	rig.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"attempt","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"attempt","state":"completed","origin":{"kind":"other"}}}`)
+	rig.startPublicTurn(t, "agent-0", "attempt", 0)
+	rig.endPublicTurn(t, "agent-0", "attempt", 0, "completed")
 	activity, exists := rig.sink.BackgroundTask(kimiChildRowKey("session_1", "agent-0"))
 	require.True(t, exists)
 	assert.False(t, activity.Status.IsWorking(), "the completed native attempt settles canonical child activity")
@@ -50,8 +51,9 @@ func TestKimiSeparateChildActivityCanIdleWhileItsTaskRemainsRunning(t *testing.T
 
 func TestKimiSeparateNativeTasksRetainDifferentOutcomesForOneChild(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer"},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","prompt":"Review it."},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	for _, frame := range []string{
 		`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-a","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"older"}`,
 		`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-b","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"newer"}`,
@@ -72,20 +74,12 @@ func TestKimiSeparateNativeTasksRetainDifferentOutcomesForOneChild(t *testing.T)
 
 func TestKimiSeparateInvocationOutcomesSurviveReusedCallIDs(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	for index, frameID := range []string{"first", "second"} {
-		state, output := "done", "agent_id: agent-0\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nFinished."
-		if index == 1 {
-			state, output = "running", ""
-		}
-		frame := map[string]any{"kind": "tool", "frameId": frameID, "toolCallId": "reused", "name": "Agent", "state": state, "input": map[string]any{"description": frameID, "resume": "agent-0"}, "agentRefs": []any{map[string]any{"agentId": "agent-0", "role": "child"}}}
-		if output != "" {
-			frame["output"] = output
-		}
-		operation, err := json.Marshal(map[string]any{"op": "frame.upsert", "turnId": "t0", "stepId": "t0.1", "frame": frame})
-		require.NoError(t, err)
-		rig.transcriptOps(t, int64(index+1), string(operation))
-	}
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "first", 0)
+	rig.conversationFrame(t, `{"type":"item.ended","turn_id":"first","item":{"type":"tool_call","item_id":"reused","step_index":1,"name":"Agent","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"first","resume":"agent-0"},"output":"agent_id: agent-0\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nFinished.","agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
+	rig.endPublicTurn(t, kimiMainAgentID, "first", 0, "completed")
+	rig.startPublicTurn(t, kimiMainAgentID, "second", 1)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"second","item":{"type":"tool_call","item_id":"reused","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"second","resume":"agent-0"},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	var outcomes []bgtask.Item
 	for _, item := range rig.sink.BackgroundTasks() {
 		if item.Role == bgtask.RoleTaskOutcome {
@@ -105,8 +99,8 @@ func TestKimiSeparateInvocationOutcomesSurviveReusedCallIDs(t *testing.T) {
 
 func TestKimiSeparateEndedTaskAcceptsItsExactLateInvocationBinding(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	seedKimiChildInvocation(t, rig)
+	rig := newKimiConversationRig(t)
+	seedPublicKimiChildInvocation(t, rig)
 	state := kimiNativeTaskState{TaskID: "old-task", Kind: "subagent", Status: "ended", Outcome: "completed", ChildAgentID: "agent-0", ParentToolCallID: "spawn"}
 	rig.agent.dispatchMu.Lock()
 	rig.agent.applyNativeTaskState("main", state)
@@ -134,14 +128,13 @@ func TestKimiSeparateEndedTaskAcceptsItsExactLateInvocationBinding(t *testing.T)
 
 func TestKimiSeparateParentInvocationCannotReviveIdleChildActivity(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	seedKimiChildInvocation(t, rig)
-	rig.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"old","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"old","state":"completed","origin":{"kind":"other"}}}`)
+	rig := newKimiConversationRig(t)
+	seedPublicKimiChildInvocation(t, rig)
+	rig.startPublicTurn(t, "agent-0", "old", 0)
+	rig.endPublicTurn(t, "agent-0", "old", 0, "completed")
 	before, _ := rig.sink.BackgroundTask(kimiChildRowKey("session_1", "agent-0"))
 	require.False(t, before.Status.IsWorking())
-	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"new","toolCallId":"new","name":"Agent","state":"running","input":{"description":"New assignment","resume":"agent-0"},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"new","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"New assignment","resume":"agent-0"},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	after, _ := rig.sink.BackgroundTask(kimiChildRowKey("session_1", "agent-0"))
 	assert.Equal(t, before.Status, after.Status)
 	assert.False(t, rig.agent.ActiveChildTurnState(after.RowKey).Active)
@@ -153,16 +146,16 @@ func TestKimiSeparateSuspendedTaskDoesNotKeepRestoredIdleChildWorking(t *testing
 		for _, resetFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("empty=%t/reset_first=%t", empty, resetFirst), func(t *testing.T) {
 				t.Parallel()
-				rig := newKimiOutputRig(t)
+				rig := newKimiConversationRig(t)
 				attached := time.Date(2026, 11, 16, 1, 0, 0, 0, time.UTC)
 				rig.agent.Mu.Lock()
 				rig.agent.attachedAt = attached
 				rig.agent.Mu.Unlock()
-				var turns []map[string]any
+				var turns []json.RawMessage
 				if !empty {
-					turns = append(turns, map[string]any{"kind": "turn", "turnId": "old", "state": "completed", "endedAt": attached.Add(-time.Hour).Format(time.RFC3339Nano), "origin": map[string]any{"kind": "other"}, "steps": []any{}})
+					turns = append(turns, json.RawMessage(fmt.Sprintf(`{"turn_id":"old","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":%q,"ended_at":%q,"steps":[],"items":[]}`, attached.Add(-2*time.Hour).Format(time.RFC3339Nano), attached.Add(-time.Hour).Format(time.RFC3339Nano))))
 				}
-				reset := nativeKimiRecoveryReset(t, rig.sessionID(), "agent-0", 1, turns...)
+				reset := kimiConversationTestPage(t, rig.sessionID(), "agent-0", turns...)
 				if resetFirst {
 					rig.agent.HandleOutput(reset)
 				}
@@ -177,11 +170,11 @@ func TestKimiSeparateSuspendedTaskDoesNotKeepRestoredIdleChildWorking(t *testing
 				require.True(t, exists)
 				assert.Equal(t, bgtask.StatusRunning, task.Status)
 				assert.False(t, rig.agent.ActiveChildTurnState(child.RowKey).Active)
-				rig.transcriptAgentOps(t, "agent-0", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"retry","state":"running","origin":{"kind":"other"}}}`)
+				rig.startPublicTurn(t, "agent-0", "retry", 1)
 				child, _ = rig.sink.BackgroundTask(child.RowKey)
 				assert.True(t, child.Status.IsWorking(), "a genuine native retry revives activity")
 				assert.True(t, rig.agent.ActiveChildTurnState(child.RowKey).Active)
-				rig.transcriptAgentOps(t, "agent-0", 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"retry","state":"completed","origin":{"kind":"other"}}}`)
+				rig.endPublicTurn(t, "agent-0", "retry", 1, "completed")
 				child, _ = rig.sink.BackgroundTask(child.RowKey)
 				assert.False(t, child.Status.IsWorking())
 				task, _ = rig.sink.BackgroundTask(task.RowKey)

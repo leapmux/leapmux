@@ -177,8 +177,9 @@ export async function openChildTabFromRow(page: Page, row: Locator): Promise<str
     ...new Set([...before, childId]),
   ].sort()
   await row.click()
-  await expect(agentTabs).toHaveCount(expectedIds.length)
-  expect((await tabIds()).sort(), 'the row selects only its exact native child tab').toEqual(expectedIds)
+  await expect.poll(async () => (await tabIds()).sort(), {
+    message: 'the row selects only its exact native child tab',
+  }).toEqual(expectedIds)
   const childTab = page.locator(`${AGENT_TAB_SELECTOR}${tabIdSelector(childId)}:visible`)
   await expect(childTab).toBeVisible()
   await expect(childTab).toHaveAttribute('aria-selected', 'true')

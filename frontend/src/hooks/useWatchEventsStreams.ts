@@ -42,6 +42,7 @@ interface ReplayRequest {
   entry: Readonly<WatchAgentEntry>
   completed: boolean
   identity: string | undefined
+  abort: AbortController
 }
 
 interface WorkerStream {
@@ -74,7 +75,7 @@ export interface UseWatchEventsStreamsOpts {
   plans: () => Map<string, WatchPlan>
   onEvent: (workerId: string, resp: WatchEventsResponse) => void
   onWorkerOnline: (workerId: string, online: boolean) => void
-  /** Report accepted FULL promotions to the caller that loads initial messages. */
+  /** Report accepted FULL promotions to the caller that loads or refreshes messages. */
   onPromoted: (workerId: string, agentIds: string[]) => void
   onReplayRequested?: (workerId: string, replayId: bigint, entries: readonly WatchAgentEntry[], identities: ReadonlyMap<string, string>) => void
   onReplayRetired?: (workerId: string, replayId: bigint, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed' | 'replaced') => void
@@ -89,6 +90,7 @@ export interface UseWatchEventsStreamsOpts {
  */
 export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   abortSignalFor: (workerId: string) => AbortSignal | undefined
+  agentReplaySignal: (workerId: string, agentId: string) => AbortSignal | undefined
 } {
   const streams = new Map<string, WorkerStream>()
   let updateId = 0n
@@ -143,10 +145,12 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   function retireReplays(workerId: string, s: WorkerStream, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed' | 'replaced', requestId?: bigint): void {
     const groups = new Map<bigint, string[]>()
     for (const agentId of agentIds) {
-      const id = s.replayRequests.get(agentId)?.entry.replayId
+      const receipt = s.replayRequests.get(agentId)
+      const id = receipt?.entry.replayId
       if (id === undefined || (requestId !== undefined && id !== requestId))
         continue
       s.replayRequests.delete(agentId)
+      receipt?.abort.abort()
       const group = groups.get(id) ?? []
       group.push(agentId)
       groups.set(id, group)
@@ -190,10 +194,15 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         return { ...existing.entry }
       if (existing && existing.identity !== identity)
         retireReplays(workerId, s, [entry.agentId], 'replaced', existing.entry.replayId)
-      else if (existing && !existing.completed)
-        retireReplays(workerId, s, [entry.agentId], 'rejected', existing.entry.replayId)
+      else if (existing)
+        retireReplays(workerId, s, [entry.agentId], existing.completed ? 'replaced' : 'rejected', existing.entry.replayId)
       const fixed = Object.freeze(create(WatchAgentEntrySchema, { ...entry, replayId: requestId }))
-      s.replayRequests.set(entry.agentId, { entry: fixed, completed: false, identity })
+      s.replayRequests.set(entry.agentId, {
+        entry: fixed,
+        completed: false,
+        identity,
+        abort: new AbortController(),
+      })
       s.inflightReplays.set(entry.agentId, fixed.replayId)
       requested.push({ ...fixed })
       return { ...fixed }
@@ -626,5 +635,6 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
 
   return {
     abortSignalFor: (workerId: string) => streams.get(workerId)?.abort.signal,
+    agentReplaySignal: (workerId: string, agentId: string) => streams.get(workerId)?.replayRequests.get(agentId)?.abort.signal,
   }
 }

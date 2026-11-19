@@ -70,6 +70,13 @@ func (a *Agent) adoptSessionLocked(sessionID string, frames []kimiFrame) {
 	}
 }
 
+// ownsNativeSession reports whether the event belongs to the current session.
+func (a *Agent) ownsNativeSession(sessionID string) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return sessionID != "" && sessionID == a.sessionID
+}
+
 // createSession creates a session in the working directory, binds its profile
 // and subscribes to it. It returns the session id.
 func (a *Agent) createSession(ctx context.Context, settings kimiSettings) (string, error) {
@@ -91,7 +98,7 @@ func (a *Agent) createSession(ctx context.Context, settings kimiSettings) (strin
 	}
 	a.pendingSession = &kimiSessionAdmission{sessionID: created.ID}
 	a.finishDispatch()
-	if _, err := a.stream.subscribe(ctx, created.ID); err != nil {
+	if err := a.stream.subscribe(ctx, created.ID); err != nil {
 		a.dispatchMu.Lock()
 		if a.pendingSession != nil && a.pendingSession.sessionID == created.ID {
 			a.pendingSession = nil
@@ -140,7 +147,7 @@ func (a *Agent) ClearContext() (string, error) {
 }
 
 // CompactContext asks the server to compact the session's context. Progress
-// arrives as native compaction markers.
+// arrives through native agent state and conversation turns.
 func (a *Agent) CompactContext() error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
@@ -156,7 +163,7 @@ func (a *Agent) CompactContext() error {
 // resyncSession retries a subscription that supplied no native agent state.
 // Accepted subscriptions already supply flat state, transcript restoration and
 // pending controls. Their queued frames own reconciliation after the acknowledgement.
-func (a *Agent) resyncSession(ctx context.Context, sessionID string, _ bool) {
+func (a *Agent) resyncSession(ctx context.Context, sessionID string) {
 	a.Mu.Lock()
 	current := a.sessionID
 	a.Mu.Unlock()
@@ -168,7 +175,7 @@ func (a *Agent) resyncSession(ctx context.Context, sessionID string, _ bool) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, a.APITimeout())
 	defer cancel()
-	if _, err := a.stream.subscribe(ctx, sessionID); err != nil {
+	if err := a.stream.subscribe(ctx, sessionID); err != nil {
 		slog.Warn("Kimi session resubscription failed", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
 	}
 }

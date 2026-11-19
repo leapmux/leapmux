@@ -1,12 +1,14 @@
-import { KIMI_EVENT, KIMI_FRAME, KIMI_INTERACTION_KIND } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_RECORD_KIND, KIMI_FRAME, KIMI_INTERACTION_KIND } from '~/generated/contracts/kimi-protocol'
 
-/** One native transcript operation with its session and agent ownership. */
-export function kimiTranscriptFrame(operation: Record<string, unknown>, agentId = 'main', sessionId = 'session_1') {
+const retiredTranscriptOps = 'transcript.ops'
+
+/** A retired transcript envelope for rejection tests. */
+function kimiTranscriptFrame(operation: Record<string, unknown>, agentId: string, sessionId: string) {
   return {
-    type: KIMI_EVENT.TranscriptOps,
+    type: retiredTranscriptOps,
     session_id: sessionId,
     payload: {
-      type: KIMI_EVENT.TranscriptOps,
+      type: retiredTranscriptOps,
       agent_id: agentId,
       seq: 1,
       ops: [operation],
@@ -14,7 +16,7 @@ export function kimiTranscriptFrame(operation: Record<string, unknown>, agentId 
   }
 }
 
-/** A native tool frame with stable turn, step and call identities. */
+/** A retired tool frame with stable turn, step and call identities. */
 export function kimiTranscriptToolFrame(frame: Record<string, unknown>, agentId = 'main', sessionId = 'session_1') {
   const toolCallId = typeof frame.toolCallId === 'string'
     ? frame.toolCallId
@@ -33,7 +35,7 @@ export function kimiTranscriptToolFrame(frame: Record<string, unknown>, agentId 
   }, agentId, sessionId)
 }
 
-/** One exported native turn header with complete ownership. */
+/** A retired turn header with complete ownership. */
 export function kimiTranscriptTurnFrame(turn: Record<string, unknown>, agentId = 'main', sessionId = 'session_1') {
   return kimiTranscriptFrame({
     op: 'turn.upsert',
@@ -48,7 +50,7 @@ export function kimiTranscriptTurnFrame(turn: Record<string, unknown>, agentId =
   }, agentId, sessionId)
 }
 
-/** One native marker with its original diagnostic payload. */
+/** A retired marker with its original diagnostic payload. */
 export function kimiTranscriptMarkerFrame(marker: string, payload: Record<string, unknown> = {}, agentId = 'main', sessionId = 'session_1') {
   return kimiTranscriptFrame({
     op: 'marker.upsert',
@@ -61,12 +63,6 @@ export function kimiTranscriptMarkerFrame(marker: string, payload: Record<string
     },
   }, agentId, sessionId)
 }
-
-/**
- * Build persisted warning and diagnostic payloads. Their transport frame supplies
- * the session separately. Native tools use complete transcript operations above.
- * Control interactions use snake-case identity fields and a nested request.
- */
 
 /** One event row of the main agent, or of the given agent. */
 export function kimiFrame(type: string, fields: Record<string, unknown> = {}, agentId = 'main'): Record<string, unknown> {
@@ -106,5 +102,61 @@ export function kimiQuestionRequest(questions: Record<string, unknown>[]): KimiC
     agent_id: 'main',
     tool_call_id: 'call_ask',
     request: { questions },
+  }
+}
+
+interface KimiFixtureOwner {
+  sessionId?: string
+  agentId?: string
+  turnId?: string
+}
+
+const KIMI_FIXTURE_TIME = '2026-11-18T00:00:00Z'
+
+/** One retained public conversation item with an explicit Worker role. */
+export function kimiConversationItemRecord(item: Record<string, unknown>, role: 'item' | 'request' | 'result' = 'item', owner: KimiFixtureOwner = {}) {
+  return {
+    type: KIMI_CONVERSATION_RECORD_KIND.Item,
+    session_id: owner.sessionId ?? 'session_1',
+    agent_id: owner.agentId ?? 'main',
+    turn_id: owner.turnId ?? 't0',
+    role,
+    event_created_at: KIMI_FIXTURE_TIME,
+    item: {
+      item_id: 'item-1',
+      status: 'running',
+      created_at: KIMI_FIXTURE_TIME,
+      ...item,
+    },
+  }
+}
+
+/** One retained public tool request or result. A local result can still carry a running native item. */
+export function kimiConversationToolRecord(role: 'request' | 'result', tool: Record<string, unknown>, owner?: KimiFixtureOwner) {
+  return kimiConversationItemRecord({
+    type: 'tool_call',
+    started_at: KIMI_FIXTURE_TIME,
+    ...tool,
+  }, role, owner)
+}
+
+/** One retained public turn header. The caller specifies its native outcome. */
+export function kimiConversationTurnRecord(turn: Record<string, unknown>, owner: KimiFixtureOwner = {}) {
+  const turnId = owner.turnId ?? 't0'
+  return {
+    type: KIMI_CONVERSATION_RECORD_KIND.Turn,
+    session_id: owner.sessionId ?? 'session_1',
+    agent_id: owner.agentId ?? 'main',
+    turn_id: turnId,
+    event_created_at: KIMI_FIXTURE_TIME,
+    turn: {
+      turn_id: turnId,
+      kind: 'agent',
+      ordinal: 0,
+      status: 'running',
+      started_at: KIMI_FIXTURE_TIME,
+      steps: [],
+      ...turn,
+    },
   }
 }

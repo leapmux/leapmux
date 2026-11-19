@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createDiracEnvironment } from './diracEnvironment'
+import { createDiracEnvironment, diracAskingState } from './diracEnvironment'
 
 let homeDir: string
 
@@ -12,6 +12,58 @@ beforeEach(() => {
 })
 
 afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
+
+describe('diracAskingState', () => {
+  it('disables ordinary approvals as well as global bypass without changing the source', () => {
+    const original = {
+      telemetrySetting: 'disabled',
+      autoApproveAllToggled: true,
+      yoloModeToggled: true,
+      unrelated: { keep: true },
+    }
+    const before = structuredClone(original)
+    expect(diracAskingState(original)).toEqual({
+      ...original,
+      autoApproveAllToggled: false,
+      yoloModeToggled: false,
+      autoApprovalSettings: {
+        version: 1,
+        enabled: true,
+        favorites: [],
+        maxRequests: 20,
+        actions: {
+          readFiles: false,
+          readFilesExternally: false,
+          editFiles: false,
+          editFilesExternally: false,
+          executeCommands: false,
+          useBrowser: false,
+          applyDiff: false,
+        },
+        enableNotifications: false,
+      },
+    })
+    expect(original).toEqual(before)
+  })
+
+  it('replaces an existing permissive approval profile', () => {
+    const original = {
+      autoApproveAllToggled: true,
+      yoloModeToggled: true,
+      autoApprovalSettings: {
+        actions: { readFiles: true, editFiles: true, executeCommands: true },
+        enableNotifications: true,
+      },
+    }
+    const before = structuredClone(original)
+    const result = diracAskingState(original)
+    expect(result.autoApprovalSettings).toMatchObject({
+      actions: { readFiles: false, editFiles: false, executeCommands: false },
+      enableNotifications: false,
+    })
+    expect(original).toEqual(before)
+  })
+})
 
 describe('createDiracEnvironment', () => {
   it('points Dirac\'s OpenAI provider at the given endpoint and model, with its update off', () => {
@@ -37,7 +89,12 @@ describe('createDiracEnvironment', () => {
       modelKey: 'unit-key',
       modelID: 'unit-model',
     })
-    expect(JSON.parse(readFileSync(join(env.DIRAC_DIR!, 'data', 'globalState.json'), 'utf8'))).toEqual({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true })
+    expect(JSON.parse(readFileSync(join(env.DIRAC_DIR!, 'data', 'globalState.json'), 'utf8'))).toEqual({
+      telemetrySetting: 'disabled',
+      autoApproveAllToggled: true,
+      yoloModeToggled: true,
+      subagentsEnabled: true,
+    })
     expect(statSync(join(env.DIRAC_DIR!, 'data', 'state')).isDirectory()).toBe(true)
   })
 })

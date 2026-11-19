@@ -2334,6 +2334,17 @@ describe('checkProviderStructs', () => {
     })), 'is not one a generated struct may take')
   })
 
+  it.each(['int64', '*int64'])('accepts the fixed-width integer field type %s', (type) => {
+    expect(() => checkProviderStructs(spec, withStructs({
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type },
+        ],
+      },
+    }))).not.toThrow()
+  })
+
   it('rejects a reference to a struct the domain does not declare', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
       Probe: {

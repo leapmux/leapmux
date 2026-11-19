@@ -56,7 +56,12 @@ func (a *Agent) captureNativeTaskOutputAnchors(address kimiTaskAddress, task *ki
 func (a *Agent) taskParentOutputIsCurrent(address kimiTaskAddress, task *kimiTask) bool {
 	owner := a.run(address.ownerAgentID)
 	invocation := task.boundInvocation
-	return invocation != nil && invocation.present && owner.turnActive && owner.transcript.activeTurn == invocation.identity.turnID
+	if invocation == nil || !invocation.present || !owner.turnActive {
+		return false
+	}
+	output := owner.conversation
+	return output != nil && owner.conversationRecovery.Load() == nil &&
+		output.document.sessionID == invocation.identity.sessionID && output.activeTurnID == invocation.identity.turnID
 }
 
 func captureKimiTaskOutput(anchor *kimiTaskOutputAnchor, fallback agent.TranscriptServices, historical bool, source leapmuxv1.MessageSource, content agent.MessageContent) (agent.CapturedTranscript, error) {

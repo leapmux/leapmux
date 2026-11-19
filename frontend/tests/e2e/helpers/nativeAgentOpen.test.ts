@@ -14,6 +14,8 @@ const buttons = vi.hoisted(() => ({
   counts: [] as number[],
   button: undefined as unknown,
   visible: true,
+  selectionLag: [0, 0, 0],
+  selectionReads: [] as string[],
 }))
 
 const opened = vi.hoisted(() => ({
@@ -42,7 +44,16 @@ vi.mock('./ui', async importOriginal => ({
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
-  currentNativeAgent: async () => ({ id: buttons.ids[buttons.stage], agentProvider: buttons.providers[buttons.stage] }),
+  currentNativeAgent: async () => {
+    let selected = buttons.stage
+    if (buttons.selectionLag[selected]! > 0) {
+      buttons.selectionLag[selected]!--
+      selected--
+    }
+    const id = buttons.ids[selected]!
+    buttons.selectionReads.push(id)
+    return { id, agentProvider: buttons.providers[selected] }
+  },
   selectedAgentTabId: async () => {
     opened.events.push('selected tab')
     return opened.selected
@@ -64,6 +75,18 @@ vi.mock('@playwright/test', async (importOriginal) => {
   return { ...actual, expect: check }
 })
 
+// Sample one stale snapshot and its replacement without a timer. The wait's own suite covers its deadlines.
+vi.mock('./retryUntilPass', () => ({
+  retryUntilPass: async <T>(attempt: () => Promise<T>): Promise<T> => {
+    try {
+      return await attempt()
+    }
+    catch {
+      return attempt()
+    }
+  },
+}))
+
 beforeEach(() => {
   buttons.stage = 0
   buttons.ids = ['original', 'from-menu', 'from-button']
@@ -71,6 +94,8 @@ beforeEach(() => {
   buttons.counts = []
   buttons.button = undefined
   buttons.visible = true
+  buttons.selectionLag = [0, 0, 0]
+  buttons.selectionReads = []
   opened.events = []
   opened.selected = 'agent-1'
   opened.open.mockReset()
@@ -247,6 +272,25 @@ describe('exerciseProviderAgentButtons', () => {
     await exerciseProviderAgentButtons(buttonContext())
     expect(buttons.counts).toEqual([2, 3])
     expect(buttons.stage).toBe(2)
+  })
+
+  it.each([1, 2])('waits for selected metadata after the tab count advances at step %s', async (stage) => {
+    buttons.selectionLag[stage] = 1
+    await exerciseProviderAgentButtons(buttonContext())
+    expect(buttons.counts).toEqual([2, 3])
+    expect(buttons.selectionReads).toEqual(stage === 1
+      ? [
+          'original',
+          'original',
+          'from-menu',
+          'from-button',
+        ]
+      : [
+          'original',
+          'from-menu',
+          'from-menu',
+          'from-button',
+        ])
   })
 
   it('rejects the original selected agent after menu creation', async () => {

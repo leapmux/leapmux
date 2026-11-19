@@ -64,8 +64,9 @@ func (operation *catalogOperation) restart() bool {
 	if !operation.source.currentLocked() {
 		return false
 	}
-	operation.comparison = &catalogComparisonIdentity{marker: 1}
-	sink.catalogComparison = operation.comparison
+	// A retry must resample under the current comparison. Allocating another
+	// comparison here makes concurrent retries invalidate each other forever.
+	operation.comparison = sink.catalogComparison
 	return true
 }
 

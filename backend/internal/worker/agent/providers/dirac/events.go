@@ -79,6 +79,7 @@ func diracNoticeMatches(text string) bool {
 // routes to a child transcript never reaches this handler (see
 // Hooks.ChildUpdateRoute, which the base runs first).
 func (a *Agent) observeDiracNotice(updateType string, _ map[string]json.RawMessage, update json.RawMessage) bool {
+	a.observeTaskletCard(updateType, update)
 	switch updateType {
 	case contracts.ACPUpdateAgentMessageChunk:
 		var chunk struct {

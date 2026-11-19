@@ -15,15 +15,16 @@ func TestKimiNativeSwarmMetadataPreservesMemberAndGroupLabels(t *testing.T) {
 	for _, taskFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("task_first=%t", taskFirst), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
-			parent := `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"swarm","toolCallId":"call_swarm","name":"AgentSwarm","state":"running","input":{"description":"Audit the packages"},"agentRefs":[{"agentId":"agent-1","role":"member"}]}}`
+			rig := newKimiConversationRig(t)
+			rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+			parent := `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"call_swarm","step_index":1,"name":"AgentSwarm","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Audit the packages"},"agent_refs":[{"agent_id":"agent-1","role":"member","swarm_index":1}]}}`
 			task := []byte(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[{"task_id":"swarm-member","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-1","parent_tool_call_id":"call_swarm","swarm_index":1,"description":"Audit #1"}]}`)
 			if taskFirst {
 				rig.agent.HandleOutput(task)
 			}
-			rig.transcriptOps(t, 1, parent)
+			rig.conversationFrame(t, parent)
 			rig.agent.HandleOutput(task)
-			rig.transcriptOps(t, 2, parent)
+			rig.conversationFrame(t, parent)
 			marker, exists := rig.sink.BackgroundTask("session_1/agent-1")
 			require.True(t, exists)
 			assert.Equal(t, bgtask.RoleChildActivity, marker.Role)
@@ -33,7 +34,7 @@ func TestKimiNativeSwarmMetadataPreservesMemberAndGroupLabels(t *testing.T) {
 			assert.Equal(t, bgtask.KindWorkflow, row.Kind)
 			assert.Equal(t, bgtask.StatusRunning, row.Status)
 			assert.Empty(t, row.GroupKey, "the bare parent call ID cannot identify a complete invocation")
-			identity := kimiTranscriptToolIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "swarm", toolCallID: "call_swarm"}
+			identity := kimiInvocationIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", toolCallID: "call_swarm"}
 			invocation := rig.agent.run("main").childInvocations[identity]
 			require.NotNil(t, invocation)
 			outcome, exists := rig.sink.BackgroundTask(kimiInvocationOutcomeKey(invocation, "agent-1"))
@@ -47,7 +48,10 @@ func TestKimiNativeSwarmMetadataPreservesMemberAndGroupLabels(t *testing.T) {
 			assert.Len(t, rig.sink.BackgroundTasks(), 3)
 			span, err := rig.sink.ChildSpawnSpan(row.ChildAgentID)
 			require.NoError(t, err)
-			assert.Equal(t, `session_1/kimi/"main"/"t0"/"t0.1"/"swarm"#agent-1`, span)
+			rows := rig.sink.Messages()
+			require.Len(t, rows, 1)
+			require.NotEmpty(t, rows[0].SpanID)
+			assert.Equal(t, rows[0].SpanID+"#agent-1", span)
 		})
 	}
 }
@@ -62,24 +66,30 @@ func TestKimiTaskFirstChildAdoptionAttachesTheCanonicalParentSpan(t *testing.T) 
 			t.Run(fmt.Sprintf("%s/prior_call=%t", test.tool, priorCall), func(t *testing.T) {
 				t.Parallel()
 				rig := newKimiTestRig(t, agent.Options{})
-				native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+				feed := func(raw string) { rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "main", raw)) }
 				if priorCall {
-					native.transcriptOps(t, 1, fmt.Sprintf(`{"op":"frame.upsert","turnId":"previous","stepId":"previous.1","frame":{"kind":"tool","frameId":"previous.spawn","toolCallId":"spawn","name":%q,"state":"error","input":{},"output":"no child was started"}}`, test.tool))
+					feed(`{"type":"turn.started","turn":{"turn_id":"previous","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+					feed(fmt.Sprintf(`{"type":"item.ended","turn_id":"previous","item":{"type":"tool_call","item_id":"spawn","name":%q,"status":"ended","outcome":"failed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{},"error":"No child was started."}}`, test.tool))
+					feed(`{"type":"turn.ended","turn":{"turn_id":"previous","ordinal":0,"kind":"agent","status":"ended","outcome":"failed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 				}
 				rig.agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[{"task_id":"task-child","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","description":"Reviewer"%s}]}`, test.member)))
+				awaitKimiTestOutput(t, rig.agent.sink)
 				row, exists := rig.sink.BackgroundTask("session_1/agent-0")
 				require.True(t, exists)
 				require.NotEmpty(t, row.ChildAgentID)
 				firstChildID := row.ChildAgentID
 				span, err := rig.sink.ChildSpawnSpan(firstChildID)
 				require.NoError(t, err)
-				assert.Empty(t, span, "the task supplies no native turn, step, or frame identity")
+				assert.Empty(t, span, "the bare task call ID does not identify its native parent turn")
 				require.ErrorIs(t, interruptKimiChild(rig.agent, "session_1/agent-0", agent.StopContext{}), agent.ErrChildOperationUnsupported)
 				before := len(rig.sink.Messages())
-				native.transcriptOps(t, 2, fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"t0.1.spawn","toolCallId":"spawn","name":%q,"state":"running","input":{},"agentRefs":[{"agentId":"agent-0","role":%q}]}}`, test.tool, test.role))
+				feed(`{"type":"turn.started","turn":{"turn_id":"current","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:01Z","steps":[]}}`)
+				feed(fmt.Sprintf(`{"type":"item.started","turn_id":"current","item":{"type":"tool_call","item_id":"spawn","name":%q,"status":"running","stage":"executing","created_at":"2026-11-18T00:00:01Z","started_at":"2026-11-18T00:00:01Z","input":{},"agent_refs":[{"agent_id":"agent-0","role":%q}]}}`, test.tool, test.role))
+				awaitKimiTestOutput(t, rig.agent.sink)
 				messages := rig.sink.Messages()
 				require.Len(t, messages, before+1)
 				want := messages[len(messages)-1].SpanID
+				require.NotEmpty(t, want)
 				if test.role == "member" {
 					want += "#agent-0"
 				}
@@ -91,7 +101,6 @@ func TestKimiTaskFirstChildAdoptionAttachesTheCanonicalParentSpan(t *testing.T) 
 				assert.Equal(t, firstChildID, row.ChildAgentID)
 				_, linked := rig.agent.children.get("agent-0")
 				require.True(t, linked)
-
 				assert.False(t, row.Status.IsWorking(), "attaching a parent span does not invent a running child turn")
 				task := nativeTaskOf(t, rig.sink, "task-child")
 				assert.Equal(t, bgtask.StatusRunning, task.Status)

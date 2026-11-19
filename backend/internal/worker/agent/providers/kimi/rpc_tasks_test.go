@@ -21,6 +21,10 @@ func TestKimiTaskResponseRetainsNativeState(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &fields))
 	require.Contains(t, fields, "task")
 	assert.JSONEq(t, task, string(fields["task"]))
+	var restored kimiFrame
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	assert.Equal(t, "r1", restored.RequestID)
+	assert.Zero(t, restored.Code)
 }
 
 func TestKimiTaskTransportSupportsNativeWatch(t *testing.T) {

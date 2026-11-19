@@ -3,6 +3,8 @@ package kimi
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
@@ -28,4 +30,19 @@ func TestKimiUnknownEventsPersist(t *testing.T) {
 		}
 		return sink
 	})
+}
+
+func TestKimiRetiredTranscriptEnvelopesDoNotPersist(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	for _, frame := range []string{
+		`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`,
+		`{"type":"transcript.reset","session_id":"session_1","payload":{"type":"future.event","agentId":"main"}}`,
+		`{"session_id":"session_1","payload":{"type":"transcript.reset","agentId":"main"}}`,
+	} {
+		rig.agent.HandleOutput([]byte(frame))
+	}
+	assert.Empty(t, rig.sink.Messages())
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	assert.Empty(t, rig.sink.TurnActives())
 }

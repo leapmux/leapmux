@@ -36,16 +36,6 @@ func parseKimiEvent(frame kimiFrame) (kimiEvent, bool) {
 	return event, true
 }
 
-// decode unmarshals the event's payload into v, and logs a payload that does
-// not fit.
-func (e kimiEvent) decode(v any) bool {
-	if err := json.Unmarshal(e.Raw, v); err != nil {
-		slog.Warn("kimi event payload does not decode", "type", e.Type, "error", err)
-		return false
-	}
-	return true
-}
-
 // handleFrame dispatches one event frame.
 //
 // Delayed events from another session must not reach the current transcript.
@@ -80,17 +70,16 @@ func (a *Agent) dispatchFrame(frame kimiFrame) {
 		a.handleGlobalFrame(frame)
 		return
 	}
-	if frame.Type == contracts.KimiEventTranscriptOps {
-		a.handleTranscriptOperations(frame)
-		return
-	}
-	if frame.Type == contracts.KimiEventTranscriptReset {
-		a.handleTranscriptReset(frame)
+	if isKimiConversationFrame(frame.Type) {
+		a.handleConversationFrame(frame)
 		return
 	}
 	if frame.Type == contracts.KimiEventAgent {
-		if state, valid := decodeKimiAgentState(frame); valid && state.AgentID == kimiMainAgentID {
-			a.foldStatus(state.status())
+		if state, valid := decodeKimiAgentState(frame); valid {
+			if state.AgentID == kimiMainAgentID {
+				a.foldStatus(state.status())
+			}
+			a.applyNativeCompactingState(state)
 		}
 		return
 	}
@@ -118,10 +107,18 @@ func (a *Agent) dispatchFrame(frame kimiFrame) {
 	}
 	event, ok := parseKimiEvent(frame)
 	if !ok {
-		slog.Debug("kimi frame carried no event", "agent_id", a.AgentID(), "type", frame.Type)
+		slog.Debug("Kimi frame carried no event", "agent_id", a.AgentID(), "type", frame.Type)
+		return
+	}
+	if isRetiredKimiTranscriptEnvelope(frame.Type) || isRetiredKimiTranscriptEnvelope(event.Type) {
 		return
 	}
 	a.persistEvent(a.runSink(a.run(event.AgentID)), event)
+}
+
+// Ignore retired transcript packets before they can become diagnostic rows.
+func isRetiredKimiTranscriptEnvelope(kind string) bool {
+	return kind == "transcript.ops" || kind == "transcript.reset"
 }
 
 // handleGlobalFrame keeps config warnings from this server launch. dispatchMu serializes its writes.

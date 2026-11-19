@@ -18,7 +18,8 @@ func TestKimiNativeAgentTaskRecoversItsReportWithoutResultSummary(t *testing.T) 
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
 			native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-			native.transcriptOps(t, 1, fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer","run_in_background":%t},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`, background))
+			native.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+			native.conversationFrame(t, fmt.Sprintf(`{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","run_in_background":%t},"agent_refs":[{"agent_id":"agent-0","role":"child","task_id":"task-report"}]}}`, background))
 			rig.agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-report","kind":"subagent","status":"running","detached":%t,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","description":"Reviewer"}`, background)))
 			_, child := childOf(t, rig.sink, "session_1/agent-0")
 			rig.fake.mu.Lock()
@@ -100,27 +101,30 @@ func TestKimiNativeTaskReportsDistinguishRepeatedTextFromDifferentTasks(t *testi
 
 func TestKimiNativeTaskCompletionDoesNotInterruptQueuedTranscriptResults(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
-	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"parent","stepId":"parent.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "parent", 0)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"parent","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-report","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
-	rig.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"read","toolCallId":"read","name":"Read","state":"running","input":{"path":"read.go"}}}`)
+	rig.startPublicTurn(t, "agent-0", "t0", 0)
+	rig.conversationAgentFrame(t, "agent-0", `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"read","step_index":1,"name":"Read","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"path":"read.go"}}}`)
 	_, child := childOf(t, rig.sink, "session_1/agent-0")
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-report","kind":"subagent","status":"ended","outcome":"completed","detached":false,"child_agent_id":"agent-0","result_summary":"native completed report"}`))
 	for _, message := range child.Messages() {
 		require.False(t, message.Closing, "task state does not prove that queued transcript operations were lost")
 	}
-	rig.transcriptAgentOps(t, "agent-0", 2,
-		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"read","toolCallId":"read","name":"Read","state":"done","input":{"path":"read.go"},"output":"final native tool output"}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
+	rig.conversationAgentFrame(t, "agent-0", `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"read","step_index":1,"name":"Read","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"path":"read.go"},"output":"final native tool output"}}`)
+	rig.endPublicTurn(t, "agent-0", "t0", 0, "completed")
+	awaitKimiTestOutput(t, rig.agent.sink)
 	closed := 0
 	for _, message := range child.Messages() {
 		if message.Closing {
 			closed++
 			assert.NotEqual(t, agent.MessageCompletionInterrupted, message.Completion)
-			assert.Contains(t, string(message.Content), `"state":"done"`)
-			assert.Contains(t, string(message.Content), "final native tool output")
+			view, err := decodeKimiConversationRecord(message.Content)
+			require.NoError(t, err)
+			require.NotNil(t, view.item)
+			assert.Equal(t, "completed", view.item.Outcome)
+			assert.JSONEq(t, `"final native tool output"`, string(view.item.Output))
 		}
 	}
 	assert.Equal(t, 1, closed)

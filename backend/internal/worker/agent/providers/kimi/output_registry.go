@@ -40,15 +40,15 @@ func (a *Agent) finishSessionMutation() {
 
 func (a *Agent) flushQueuedOutput() {
 	if queue := agent.OutputQueueFor(a.sink); queue != nil {
-		if err := queue.FlushOwnerAfterReady(a.registryOutputOwner()); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		if err := queue.FlushOwnerAfterReady(a.publicationOutputOwner()); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
 			slog.Debug("retain Kimi output after a state mutation", "error", err)
 		}
 	}
 }
 
-func (a *Agent) registryOutputOwner() *agent.OutputOwner {
-	a.registryOnce.Do(func() { a.registryOwner = agent.NewOutputOwner() })
-	return a.registryOwner
+func (a *Agent) publicationOutputOwner() *agent.OutputOwner {
+	a.publicationOnce.Do(func() { a.publicationOwner = agent.NewOutputOwner() })
+	return a.publicationOwner
 }
 
 func kimiRegistryPublicationLockError(dispatch, session *sync.Mutex) error {
@@ -66,16 +66,24 @@ func kimiRegistryPublicationLockError(dispatch, session *sync.Mutex) error {
 // queueRegistryWrite retains the physical writer and immutable mutation inputs.
 // The callback holds no provider lock and never resolves its writer through the Agent again.
 func (a *Agent) queueRegistryWrite(writer agent.BackgroundTaskServices, label string, write func(agent.BackgroundTaskServices) error) error {
+	if writer == nil {
+		return errors.New("the Kimi background task update has no writer")
+	}
+	return a.queueProviderWrite(label, func() error { return write(writer) })
+}
+
+// queueProviderWrite releases provider state before a queued write invokes observers.
+func (a *Agent) queueProviderWrite(label string, write func() error) error {
 	queue := agent.OutputQueueFor(a.sink)
-	if queue == nil || writer == nil {
-		return errors.New("the Kimi background task update has no output queue or writer")
+	if queue == nil || write == nil {
+		return errors.New("the Kimi provider write has no output queue or operation")
 	}
 	dispatch, session := a.dispatchMu.mutex(), a.sessionMu.mutex()
-	queue.Append(agent.OutputWrite{Owner: a.registryOutputOwner(), ScopeID: "kimi-registry", Label: label, Run: func() error {
+	queue.Append(agent.OutputWrite{Owner: a.publicationOutputOwner(), ScopeID: "kimi-provider-output", Label: label, Run: func() error {
 		if err := kimiRegistryPublicationLockError(dispatch, session); err != nil {
 			return err
 		}
-		return write(writer)
+		return write()
 	}})
 	if err := queue.Flush(); err != nil {
 		return &agent.PendingOutputError{Err: err}

@@ -26,8 +26,13 @@ export function droidToolRowIdFromFrames(frames: readonly unknown[], expected: M
 
 /** The model response and Worker transcript retain separate sides of native ID regeneration. */
 export async function droidToolRowId(context: NativeContextFixtures, query: NativeToolRowIdQuery): Promise<string> {
+  const snapshot = await readNativeMessageSnapshot(context, query.agentId)
+  const frames = snapshot.messages.map(nativeMessageBody)
+  // A native output receipt already resolved its model call ID. Verify the
+  // native identity in this agent's transcript before keeping that ID.
+  if (frames.some(frame => isObject(frame) && frame.type === 'tool_call' && isObject(frame.toolUse) && frame.toolUse.id === query.callId))
+    return query.callId
   const status = await context.modelScript.status()
   const expected = scriptedDroidCall(status.requests.flatMap(request => request.response?.toolCalls ?? []), query.callId)
-  const snapshot = await readNativeMessageSnapshot(context, query.agentId)
-  return droidToolRowIdFromFrames(snapshot.messages.map(nativeMessageBody), expected)
+  return droidToolRowIdFromFrames(frames, expected)
 }

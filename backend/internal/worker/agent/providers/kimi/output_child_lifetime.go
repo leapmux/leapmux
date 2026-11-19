@@ -198,6 +198,12 @@ func (a *Agent) ensureChildLifetime(run *kimiRun) bool {
 // queueChildCleanup follows the physical registry close and the child's admitted output.
 // Captured cleanup cannot retire a newer child lifetime.
 func (a *Agent) queueChildCleanup(run *kimiRun) {
+	a.Mu.Lock()
+	active := a.inputStateLocked(run.agentID).Active
+	a.Mu.Unlock()
+	if active || len(run.readyPromptSubmissions) != 0 {
+		return
+	}
 	// A native turn can finish while an unrelated input still awaits admission.
 	// Keep that input's original source current through readiness publication.
 	if child, linked := a.children.get(run.agentID); linked && child.pendingPrompt != nil {

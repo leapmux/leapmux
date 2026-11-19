@@ -19,13 +19,13 @@ diracTest('runs native tools under Bypass after reload and restores approval whe
     workspaceId: askingDiracWorkspace.workspaceId,
   })
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'false')
-  await expectNativeOptionValue(native, 'auto_approve', 'false')
+  await expectNativeOptionValue(native, DIRAC_CONFIG.AutoApprove, 'false')
   const before = await currentNativeAgent(native)
   const unchanged = before.optionGroups.filter(group => [
     'model',
     'permissionMode',
     'reasoning_effort',
-    'auto_approve',
+    DIRAC_CONFIG.AutoApprove,
   ].includes(group.id))
   await exerciseBypassPermissions(native, {
     settingsProof: (agent) => {
@@ -37,7 +37,7 @@ diracTest('runs native tools under Bypass after reload and restores approval whe
   await chooseSettingsOption(page, `${DIRAC_CONFIG.Yolo}-false`)
   await waitForSettingsIdle(page)
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'false')
-  await expectNativeOptionValue(native, 'auto_approve', 'false')
+  await expectNativeOptionValue(native, DIRAC_CONFIG.AutoApprove, 'false')
   await exerciseNativePermissionDecision(native, {
     toolCall: bashToolCall(native.provider, 'dirac-bypass-disabled', 'echo "DIRAC_BYPASS_DISABLED_$(printf 42)"'),
     decision: 'deny',
@@ -53,9 +53,10 @@ diracTest('approves the pending native tool and the next tool when Bypass change
     workspaceId: askingDiracWorkspace.workspaceId,
   })
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'false')
-  await expectNativeOptionValue(native, 'auto_approve', 'false')
+  await expectNativeOptionValue(native, DIRAC_CONFIG.AutoApprove, 'false')
   await exerciseMidTurnBypass(native)
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'true')
+  await exerciseNativeToolWrite(native, { permission: 'absent' })
 })
 
 const restartTest = createProviderProcessTest({ agent: DIRAC_AGENT, nativeContext })

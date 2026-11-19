@@ -159,8 +159,8 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 		}
 	case contracts.DroidNotificationSessionTitleUpdated, contracts.DroidNotificationSessionTokenUsageChanged,
 		contracts.DroidNotificationToolExecutionHeartbeat, contracts.DroidNotificationPermissionResolved,
-		droidNotificationChildSessionSettled:
-	// These receipts and counters supply no transcript content.
+		droidNotificationChildSessionSettled, droidNotificationQueuedMessagesChanged, droidNotificationScriptOracleChanged:
+	// These native state updates supply no transcript content.
 	case contracts.DroidNotificationHookExecutionStarted, contracts.DroidNotificationStructuredOutput:
 	// LeapMux asks for no structured output. A hook reports its result separately.
 	case contracts.DroidNotificationToolExecutionPhaseChanged:

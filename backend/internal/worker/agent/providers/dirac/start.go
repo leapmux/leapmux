@@ -21,19 +21,19 @@ const diracNoAutoUpdateEnv = "DIRAC_NO_AUTO_UPDATE=1"
 // `dirac --acp` is the launch. The provider route and the model come from the
 // DIRAC_PROVIDER / DIRAC_MODEL / DIRAC_API_KEY / DIRAC_BASE_URL environment,
 // which the E2E isolation recipe and a real installation both set. A resume
-// goes through `session/load`, because `session/resume` is unregistered in the
-// releases this package was written against.
+// uses `session/load` to load its session and replay the native history.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: Registration(),
 		ProviderName: "dirac",
-		BaseArgs:     []string{"--acp", "--subagents"},
-		PinnedEnv:    []string{diracNoAutoUpdateEnv},
+		// ACP reads the native subagentsEnabled preference. The CLI's
+		// --subagents option does not reach its ACP startup path.
+		BaseArgs:  []string{"--acp"},
+		PinnedEnv: []string{diracNoAutoUpdateEnv},
 		SessionConfig: acp.SessionConfig{
 			NewMethod: acp.MethodSessionNew,
-			// The ACP server of Dirac 0.5.17 answers -32601 to session/resume
-			// (the string serves its own client, not the server), so a resume
-			// loads the stored session instead.
+			// Load restores the native session and replays its history.
+			// The idle-output handler discards root history already stored here.
 			ResumeMethod: acp.MethodSessionLoad,
 		},
 		NewAgent: func() *Agent {
@@ -53,6 +53,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 	a.clock = clock
 	return acp.Hooks{
+		// Enabling these native settings can remove a permission card before
+		// Dirac's ACP bridge submits the reader's response to that card.
+		ConfigOptionRequiresIdle: func(id, value string) bool {
+			return value == "true" && (id == contracts.DiracConfigYolo || id == contracts.DiracConfigAutoApprove)
+		},
 		WithBypassPermission: func(claim func()) {
 			a.WithOptionValue(contracts.DiracConfigYolo, "true", claim)
 		},
@@ -66,14 +71,11 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		AdvertisedSteerMethod: func(response []byte) string {
 			return diracAdvertisedSteerMethod(response)
 		},
-		PromptParams:               diracPromptParams,
-		ExtraMethod:                a.handleExtraMethod,
-		SessionMetadataHandler:     a.observeDiracNotice,
-		SubagentFromToolCall:       a.subagentFromToolCall,
-		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
-		PromptEnded:                a.hydrateSubagentArchives,
-		ClearProviderState:         a.clearChildState,
-		BeforeWaitCleanup:          a.beforeWaitCleanup,
+		PromptParams:           diracPromptParams,
+		ExtraMethod:            a.handleExtraMethod,
+		SessionMetadataHandler: a.observeDiracNotice,
+		ClearProviderState:     a.clearChildState,
+		BeforeWaitCleanup:      a.beforeWaitCleanup,
 		// Dirac's `respond` tool is the control plane: a question rides
 		// elicitation and a plan defers its approval to the next prompt. The
 		// base answers both, so no provider control reader is needed.

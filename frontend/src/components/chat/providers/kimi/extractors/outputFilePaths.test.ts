@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
 import { outputFilePathFixture } from '~/test-support/outputFilePathFixture'
 import { providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
 import '../plugin'
@@ -8,14 +7,24 @@ import '../plugin'
 const path = '/native/kimi/sessions/wd_project_0123456789ab/session_1/agents/main/tasks/bash-123abcde/output.log'
 const preview = 'Tool output exceeded 50000 characters; the full output was saved to a file.\ntool_name: Bash\ntool_call_id: native-call\noutput_size_chars: 60000\noutput_path: /native/kimi/sessions/wd_project_0123456789ab/session_1/agents/main/tasks/bash-123abcde/output.log\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.\n\nnative inline preview'
 function withOutput(output: unknown) {
-  return kimiTranscriptToolFrame({
-    frameId: 't0.1.native-call',
-    toolCallId: 'native-call',
-    name: 'Bash',
-    state: 'done',
-    input: { command: 'printf output' },
-    output,
-  })
+  return {
+    type: 'leapmux.kimi.item',
+    session_id: 'session_1',
+    agent_id: 'main',
+    turn_id: 'native-turn',
+    role: 'result',
+    item: {
+      type: 'tool_call',
+      item_id: 'native-call',
+      name: 'Bash',
+      status: 'ended',
+      outcome: 'completed',
+      created_at: '2026-11-18T00:00:00Z',
+      started_at: '2026-11-18T00:00:00Z',
+      input: { command: 'printf output' },
+      output,
+    },
+  }
 }
 const frame = withOutput(preview)
 
@@ -26,15 +35,21 @@ const options = {
 }
 
 describe('registered output file paths', () => {
+  it('reads the current native wall-time envelope without rewriting its preview', () => {
+    const native = withOutput(`Wall time: 0.117 seconds\n${preview}`)
+    const before = structuredClone(native)
+    expect(providerToolCall(AgentProvider.KIMI_CODE, native, options)?.outputFilePaths).toStrictEqual([path])
+    expect(native).toStrictEqual(before)
+  })
+
+  it('reads the failed native result from error under the same pointer controls', () => {
+    const native = withOutput(undefined)
+    Object.assign(native.item, { outcome: 'failed', error: `<system>ERROR: Tool execution failed.</system>\n${preview}` })
+    expect(providerToolCall(AgentProvider.KIMI_CODE, native, options)?.outputFilePaths).toStrictEqual([path])
+  })
+
   it('reads the native tool result envelope and its owner', () => {
-    const native = kimiTranscriptToolFrame({
-      frameId: 't0.1.native-call',
-      toolCallId: 'native-call',
-      name: 'Bash',
-      state: 'done',
-      input: { command: 'printf output' },
-      output: preview,
-    })
+    const native = withOutput(preview)
     const before = structuredClone(native)
     const call = providerToolCall(AgentProvider.KIMI_CODE, native, options)
     expect(call?.outputFilePaths).toStrictEqual([path])

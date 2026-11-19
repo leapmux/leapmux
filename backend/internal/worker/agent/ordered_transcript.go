@@ -218,7 +218,7 @@ func (batch *CapturedTranscriptBatch) PrepareStream(next func() (CapturedTranscr
 	}
 	batch.stream = &capturedTranscriptStream{next: next}
 	batch.state.Store(capturedBatchReady)
-	return batch.flushPrepared()
+	return batch.FlushAfterReady()
 }
 
 func (batch *CapturedTranscriptBatch) persistStream() error {
@@ -304,7 +304,9 @@ func (batch *CapturedTranscriptBatch) validateStreamOperation(operation Captured
 	return nil
 }
 
-func (batch *CapturedTranscriptBatch) flushPrepared() error {
+// FlushAfterReady wakes a batch when its stream can supply another operation.
+// A concurrent drainer retains the readiness signal for this exact reservation.
+func (batch *CapturedTranscriptBatch) FlushAfterReady() error {
 	err := batch.queue.FlushAfterReady(batch.ticket)
 	if refusal := batch.rejection.Load(); refusal != nil {
 		_ = batch.queue.Flush()
@@ -375,7 +377,7 @@ func (batch *CapturedTranscriptBatch) Prepare(prepare func() []CapturedTranscrip
 	}
 	batch.state.Store(capturedBatchReady)
 	prepared = true
-	return batch.flushPrepared()
+	return batch.FlushAfterReady()
 }
 
 // PersistPreparedMessage reserves the row before capture or preparation can yield to another writer.

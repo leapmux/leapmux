@@ -8,7 +8,6 @@
   "required": [
     "_readme",
     "events",
-    "origins",
     "tools",
     "displayKinds",
     "decisions",
@@ -23,19 +22,19 @@
     "notificationEvents",
     "frames",
     "interactionKinds",
-    "transcriptOperations",
-    "transcriptFrameKinds",
-    "transcriptTurnStates",
-    "transcriptStepStates",
-    "transcriptToolStates",
-    "transcriptMarkers",
-    "compactionPhases",
-    "transcriptSupplement",
-    "transcriptNodeKinds",
-    "mediaSourceKinds",
-    "transcriptTextRoles",
     "noticeLevels",
-    "outputPartKinds"
+    "conversationRecordKinds",
+    "conversationRecordRoles",
+    "conversationItemKinds",
+    "conversationStatuses",
+    "conversationOutcomes",
+    "conversationOrigins",
+    "conversationSupplement",
+    "conversationFields",
+    "conversationMedia",
+    "conversationTurnKinds",
+    "conversationEndReasons",
+    "conversationSystemKinds"
   ],
   "$defs": {
     "table": {
@@ -153,9 +152,6 @@
     "events": {
       "$ref": "#/$defs/table"
     },
-    "origins": {
-      "$ref": "#/$defs/table"
-    },
     "tools": {
       "$ref": "#/$defs/table"
     },
@@ -209,43 +205,43 @@
     "interactionKinds": {
       "$ref": "#/$defs/table"
     },
-    "transcriptOperations": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptFrameKinds": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptTurnStates": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptStepStates": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptToolStates": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptMarkers": {
-      "$ref": "#/$defs/table"
-    },
-    "compactionPhases": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptSupplement": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptNodeKinds": {
-      "$ref": "#/$defs/table"
-    },
-    "mediaSourceKinds": {
-      "$ref": "#/$defs/table"
-    },
-    "transcriptTextRoles": {
-      "$ref": "#/$defs/table"
-    },
     "noticeLevels": {
       "$ref": "#/$defs/table"
     },
-    "outputPartKinds": {
+    "conversationRecordKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationRecordRoles": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationItemKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationOrigins": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationSupplement": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationFields": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationMedia": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationTurnKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationEndReasons": {
+      "$ref": "#/$defs/table"
+    },
+    "conversationSystemKinds": {
       "$ref": "#/$defs/table"
     }
   }

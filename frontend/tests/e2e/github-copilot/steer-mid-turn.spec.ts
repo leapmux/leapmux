@@ -1,7 +1,9 @@
 import { copilotTest } from '../copilot-fixtures'
 import { exerciseSteerBeforeTool, exerciseSteerDuringText, exerciseStopWithPendingSteer } from '../helpers/nativeToolSteering'
+import { COPILOT_STEER_COMPLETION_RULE } from './steeringScenario'
 
 copilotTest('places queued guidance in the next native model request', async ({ native }) => {
+  await native.modelScript.rule(COPILOT_STEER_COMPLETION_RULE)
   await exerciseSteerBeforeTool(native, { approveTool: true })
 })
 

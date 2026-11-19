@@ -1,7 +1,7 @@
-import { KIMI_DISPLAY, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_DISPLAY, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { pickString } from '~/lib/jsonPick'
+import { kimiConversationRow } from '../conversation'
 import { kimiDisplay } from '../protocol'
-import { kimiTranscriptTool } from '../transcript'
 
 /**
  * The plan an `ExitPlanMode` call proposes, or null for any other row.
@@ -12,10 +12,12 @@ import { kimiTranscriptTool } from '../transcript'
  * the row drawn agree.
  */
 export function kimiPlanText(parsed: unknown): string | null {
-  const start = kimiTranscriptTool(parsed)?.frame
-  if (!start || pickString(start, 'name') !== KIMI_TOOL.ExitPlanMode)
+  const row = kimiConversationRow(parsed)
+  if (row?.kind !== 'item' || row.item[KIMI_CONVERSATION_FIELD.Type] !== KIMI_CONVERSATION_ITEM_KIND.ToolCall
+    || row.item[KIMI_CONVERSATION_FIELD.Name] !== KIMI_TOOL.ExitPlanMode) {
     return null
-  const display = kimiDisplay(start)
+  }
+  const display = kimiDisplay(row.item)
   if (pickString(display, 'kind') !== KIMI_DISPLAY.PlanReview)
     return null
   const plan = pickString(display, 'plan')

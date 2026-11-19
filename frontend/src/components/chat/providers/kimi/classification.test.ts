@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { KIMI_EVENT, KIMI_NOTIFICATION_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiFrame, kimiTranscriptFrame, kimiTranscriptMarkerFrame, kimiTranscriptToolFrame, kimiTranscriptTurnFrame } from '~/test-support/kimiFixtures'
-import { providerFor } from '../registry'
+import { kimiConversationItemRecord, kimiConversationToolRecord, kimiConversationTurnRecord, kimiFrame, kimiTranscriptMarkerFrame, kimiTranscriptToolFrame, kimiTranscriptTurnFrame } from '~/test-support/kimiFixtures'
 import { input } from '../testUtils'
 import { classifyKimiMessage } from './classification'
 import '../index'
@@ -15,149 +14,103 @@ function classify(parent: Record<string, unknown>, extra: { completion?: Message
 }
 
 describe('classifyKimiMessage', () => {
-  it('classifies native start explanations and task text as notifications', () => {
-    for (const operation of [
-      {
-        op: 'turn.upsert',
-        turn: {
-          kind: 'turn',
-          turnId: 't0',
-          state: 'running',
-          origin: {
-            kind: 'cron',
-            payload: { kind: 'cron_job', name: 'daily' },
-          },
-        },
+  it('draws the public proposal exactly once across the tool span', () => {
+    const display = { kind: 'plan_review', plan: '# Native plan\n\n1. Keep the exact proposal.\n' }
+    const request = kimiConversationToolRecord('request', { name: KIMI_TOOL.ExitPlanMode, display })
+    const result = kimiConversationToolRecord('result', {
+      name: KIMI_TOOL.ExitPlanMode,
+      status: 'ended',
+      outcome: 'completed',
+      display: {
+        ...display,
+        review: { state: 'approved' },
       },
-      {
-        op: 'frame.upsert',
-        turnId: 't0',
-        stepId: 't0.1',
-        frame: {
-          kind: 'text',
-          frameId: 'f1',
-          role: 'user',
-          taskId: 'task-1',
-          text: 'Task finished',
-        },
-      },
-    ]) {
-      expect(classify(kimiTranscriptFrame(operation))).toMatchObject({
-        kind: 'notification',
-        entries: [
-          { kind: 'text' },
-        ],
-      })
-    }
+      output: 'Approved',
+    })
+    expect(classify(request)).toStrictEqual({ kind: 'assistant_plan' })
+    expect(classify(result)).toStrictEqual({ kind: 'hidden' })
+    expect(classify(kimiConversationToolRecord('result', { name: KIMI_TOOL.ExitPlanMode, display }), { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'hidden' })
+    expect(classify(kimiConversationToolRecord('request', { name: KIMI_TOOL.ExitPlanMode, input: {} }))).toStrictEqual({ kind: 'tool_use' })
+    expect(classify(kimiConversationToolRecord('request', { name: KIMI_TOOL.Bash, display }))).toStrictEqual({ kind: 'tool_use' })
   })
 
-  it('classifies native tool states and retained running frames', () => {
-    const frame = {
-      name: 'Bash',
-      input: { command: 'printf ok' },
-    }
-    expect(classify(kimiTranscriptToolFrame(frame))).toStrictEqual({ kind: 'tool_use' })
-    for (const state of ['done', 'error'])
-      expect(classify(kimiTranscriptToolFrame({ ...frame, state, output: 'result' }))).toStrictEqual({ kind: 'tool_result' })
-    expect(classify(kimiTranscriptToolFrame(frame), { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'tool_result' })
+  it('renders a goal opener as a notice when the worker retains it for that role', () => {
+    const record = kimiConversationItemRecord({
+      type: 'user_message',
+      status: 'ended',
+      outcome: 'completed',
+      prompt_ids: [],
+      placement: 'opener',
+      origin: { kind: 'goal' },
+      text: 'Native prompt text',
+      attachments: [],
+      skills: [],
+    })
+    expect(classify({ ...record, role: 'origin' })).toMatchObject({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Continuing the goal' },
+      ],
+    })
+    expect(classify(record)).toStrictEqual({ kind: 'user_text' })
   })
 
-  it('renders a native plan once and hides its closing copy', () => {
-    const frame = {
-      name: 'ExitPlanMode',
-      input: {},
-      display: { kind: 'plan_review', plan: '# Native plan' },
-    }
-    expect(classify(kimiTranscriptToolFrame(frame))).toStrictEqual({ kind: 'assistant_plan' })
-    expect(classify(kimiTranscriptToolFrame({ ...frame, state: 'done', output: 'approved' }))).toStrictEqual({ kind: 'hidden' })
-    expect(classify(kimiTranscriptToolFrame(frame), { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'hidden' })
+  it('classifies a public task outcome as a notification', () => {
+    const task = kimiConversationItemRecord({
+      type: 'notification',
+      status: 'ended',
+      outcome: 'completed',
+      notification_id: 'task-1-finished',
+      notification_type: 'task.completed',
+      source: { kind: 'background_task', id: 'task-1' },
+      title: 'Task finished',
+      body: 'The work passed.',
+      severity: 'info',
+    })
+    expect(classify(task)).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Task finished: The work passed.' },
+      ],
+    })
+    expect(classifyThread([task])).toStrictEqual(classify(task))
   })
 
-  it('reads a completed native transcript turn as the divider', () => {
-    expect(classify({
-      type: 'transcript.ops',
-      session_id: 'session_1',
-      payload: {
-        type: 'transcript.ops',
-        agent_id: 'main',
-        seq: 8,
-        ops: [
-          {
-            op: 'turn.upsert',
-            turn: {
-              kind: 'turn',
-              turnId: 't0',
-              ordinal: 0,
-              state: 'completed',
-              origin: { kind: 'user' },
-            },
-          },
-        ],
-      },
-    })).toStrictEqual({ kind: 'result_divider' })
-  })
-
-  it('reads a call start as a request and its result as the result', () => {
-    expect(classify(kimiTranscriptToolFrame({
-      toolCallId: 'c',
+  it('reads native requests, ended results and retained running results by role', () => {
+    const item = {
       name: KIMI_TOOL.Bash,
       input: { command: 'ls' },
-    }))).toStrictEqual({ kind: 'tool_use' })
+    }
+    const request = kimiConversationToolRecord('request', item)
+    expect(classify(request)).toStrictEqual({ kind: 'tool_use' })
+    expect(classify(request, { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'tool_use' })
+    for (const outcome of ['completed', 'failed'])
+      expect(classify(kimiConversationToolRecord('result', { ...item, status: 'ended', outcome }))).toStrictEqual({ kind: 'tool_result' })
+    expect(classify(kimiConversationToolRecord('result', item), { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'tool_result' })
+  })
+
+  it('keeps an obsolete tool envelope outside the native tool path', () => {
     expect(classify(kimiTranscriptToolFrame({
-      toolCallId: 'c',
       name: KIMI_TOOL.Bash,
       input: { command: 'ls' },
-      state: 'done',
-      output: 'a.go',
-    }), { spanType: KIMI_TOOL.Bash })).toStrictEqual({ kind: 'tool_result' })
+    }))).toStrictEqual({ kind: 'unknown' })
   })
 
-  it('reads a retained start as the result of its call', () => {
-    expect(classify(kimiTranscriptToolFrame({
-      toolCallId: 'c',
-      name: KIMI_TOOL.Bash,
-      input: { command: 'sleep 9' },
-    }), { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'tool_result' })
+  it('keeps an obsolete completed turn outside the divider path', () => {
+    expect(classify(kimiTranscriptTurnFrame({ state: 'completed' }))).toStrictEqual({ kind: 'unknown' })
   })
 
-  it('draws the plan an ExitPlanMode call proposes and hides its result', () => {
-    const start = kimiTranscriptToolFrame({
-      toolCallId: 'c',
-      name: KIMI_TOOL.ExitPlanMode,
-      input: {},
-      display: { kind: 'plan_review', plan: '# Plan\n1. Do it.' },
-    })
-    expect(classify(start)).toStrictEqual({ kind: 'assistant_plan' })
-    expect(classify(kimiTranscriptToolFrame({
-      toolCallId: 'c',
-      name: KIMI_TOOL.ExitPlanMode,
-      input: {},
-      state: 'done',
-      output: 'Exited plan mode.',
-      display: { kind: 'plan_review', plan: '# Plan\n1. Do it.' },
-    }), { spanType: KIMI_TOOL.ExitPlanMode })).toStrictEqual({ kind: 'hidden' })
-    // With no plan the call is an ordinary mode switch.
-    expect(classify(kimiTranscriptToolFrame({ toolCallId: 'c', name: KIMI_TOOL.ExitPlanMode, input: {} }))).toStrictEqual({ kind: 'tool_use' })
-  })
-
-  // A turn that ended while the plan waited for its answer stores the start AGAIN as
-  // the call's closing row. The start already drew the plan, and the closing row of a
-  // plan call is hidden, so the copy must not draw the plan a second time.
-  it('hides the retained copy of a plan start', () => {
-    const start = kimiTranscriptToolFrame({
-      toolCallId: 'c',
-      name: KIMI_TOOL.ExitPlanMode,
-      input: {},
-      display: { kind: 'plan_review', plan: '# Plan\n1. Do it.' },
-    })
+  it('hides every local closing copy and preserves a mode switch without a plan', () => {
+    const display = { kind: 'plan_review', plan: '# Plan\n1. Do it.' }
+    const closingCopy = kimiConversationToolRecord('result', { name: KIMI_TOOL.ExitPlanMode, input: {}, display })
     for (const completion of [MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR])
-      expect(classify(start, { completion, spanType: KIMI_TOOL.ExitPlanMode }), String(completion)).toStrictEqual({ kind: 'hidden' })
-    // A retained mode switch that proposed no plan still closes its call as a result.
-    expect(classify(kimiTranscriptToolFrame({ toolCallId: 'c', name: KIMI_TOOL.ExitPlanMode, input: {} }), { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'tool_result' })
+      expect(classify(closingCopy, { completion, spanType: KIMI_TOOL.ExitPlanMode }), String(completion)).toStrictEqual({ kind: 'hidden' })
+    const modeSwitch = kimiConversationToolRecord('result', { name: KIMI_TOOL.ExitPlanMode, input: {} })
+    expect(classify(modeSwitch, { completion: MessageCompletion.INTERRUPTED })).toStrictEqual({ kind: 'tool_result' })
   })
 
-  it('reads a turn end as the divider', () => {
-    expect(classify(kimiTranscriptTurnFrame({ state: 'completed' }))).toStrictEqual({ kind: 'result_divider' })
+  it('reads a native turn end as the divider', () => {
+    expect(classify(kimiConversationTurnRecord({ status: 'ended', outcome: 'completed' }))).toStrictEqual({ kind: 'result_divider' })
   })
 
   it('reads a notice as a notification', () => {
@@ -172,9 +125,7 @@ describe('classifyKimiMessage', () => {
 
   it('hides a notice it cannot word, and a user turn', () => {
     expect(classify(kimiFrame(KIMI_EVENT.Warning, {}))).toStrictEqual({ kind: 'hidden' })
-    expect(classify(kimiTranscriptTurnFrame({
-      origin: { kind: 'user' },
-    }))).toStrictEqual({ kind: 'hidden' })
+    expect(classify(kimiConversationTurnRecord({}))).toStrictEqual({ kind: 'hidden' })
   })
 
   it('classifies events without a current stored reader as unknown', () => {
@@ -186,11 +137,10 @@ describe('classifyKimiMessage', () => {
       expect(classify(kimiFrame(type)), type).toStrictEqual({ kind: 'unknown' })
   })
 
-  it('hides a native compaction start and identifies it for the shared history filter', () => {
-    const start = kimiTranscriptMarkerFrame('compaction', { phase: 'started', trigger: 'manual' })
+  it('hides a running compaction and rejects an obsolete start marker', () => {
+    const start = kimiConversationItemRecord({ type: 'system', kind: 'compaction', trigger: 'manual' })
     expect(classify(start)).toStrictEqual({ kind: 'hidden' })
-    expect(providerFor(AgentProvider.KIMI_CODE)?.transcript.compactionStart?.(start)).toBe(true)
-    expect(providerFor(AgentProvider.KIMI_CODE)?.transcript.compactionStart?.(kimiTranscriptMarkerFrame('compaction', { phase: 'completed' }))).toBe(false)
+    expect(classify(kimiTranscriptMarkerFrame('compaction', { phase: 'started' }))).toStrictEqual({ kind: 'unknown' })
   })
 
   it('reads the rows the service layer writes', () => {
@@ -206,9 +156,13 @@ describe('classifyKimiMessage', () => {
       old_seqs: [1, 2],
       messages: [
         kimiFrame(KIMI_EVENT.Warning, { message: 'A native warning.' }),
-        kimiTranscriptMarkerFrame('compaction', {
-          phase: 'completed',
-          result: { tokensBefore: 9000, tokensAfter: 1200 },
+        kimiConversationItemRecord({
+          type: 'system',
+          kind: 'compaction',
+          status: 'ended',
+          outcome: 'completed',
+          tokens_before: 9000,
+          tokens_after: 1200,
         }),
       ],
     }
@@ -228,9 +182,7 @@ describe('classifyKimiMessage', () => {
 
   it('keeps the worded entries of a thread and hides a thread that words nothing', () => {
     const silent = kimiFrame(KIMI_EVENT.Warning, {})
-    const userTurn = kimiTranscriptTurnFrame({
-      origin: { kind: 'user' },
-    })
+    const userTurn = kimiConversationTurnRecord({})
     expect(classifyThread([
       silent,
       kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' }),
@@ -256,21 +208,6 @@ describe('classifyKimiMessage', () => {
       { content: 'Hello.' },
     ])).toStrictEqual({ kind: 'unknown' })
     expect(classifyKimiMessage(input(undefined, undefined, AgentProvider.KIMI_CODE))).toStrictEqual({ kind: 'unknown' })
-  })
-
-  it('words a turn the agent started by itself', () => {
-    expect(classify(kimiTranscriptTurnFrame({
-      origin: {
-        kind: 'other',
-        payload: { kind: 'system_trigger', name: 'goal_continuation' },
-      },
-    })))
-      .toStrictEqual({
-        kind: 'notification',
-        entries: [
-          { kind: 'text', text: 'Continuing the goal' },
-        ],
-      })
   })
 
   it('reads every notice type it records as a notification when the notice words something', () => {

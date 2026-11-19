@@ -7,6 +7,8 @@ export interface QuestionOption {
 
 export interface QuestionPrompt {
   header?: string
+  /** Additional prompt text, excluded from short titles and saved answer labels. */
+  context?: string
   question: string
   options: QuestionOption[]
 }

@@ -1,20 +1,27 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { KIMI_NOTIFICATION_EVENT, KIMI_TRANSCRIPT_TOOL, KIMI_TRANSCRIPT_TURN } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_RECORD_ROLE, KIMI_CONVERSATION_STATUS, KIMI_CONVERSATION_TURN_KIND, KIMI_NOTIFICATION_EVENT } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
-import { retainedRowIsFinal } from '../registry'
+import { kimiConversationRow, kimiTurnIsBlocked } from './conversation'
 import { kimiNotificationEntry } from './extractors/notification'
 import { kimiPlanText } from './extractors/plan'
 import { kimiEvent } from './protocol'
-import { kimiTranscriptMarker, kimiTranscriptRetry, kimiTranscriptTaskText, kimiTranscriptTool, kimiTranscriptTurn } from './transcript'
 
 /** Whether one thread entry is a Kimi Code notice. */
 function kimiNotifies(entry: unknown): boolean {
-  if (kimiTranscriptMarker(entry) || kimiTranscriptRetry(entry))
+  const conversation = kimiConversationRow(entry)
+  if (conversation?.kind === 'notice' || conversation?.kind === 'failure' || conversation?.kind === 'retry')
     return true
+  if (conversation?.kind === 'item') {
+    const type = conversation.item[KIMI_CONVERSATION_FIELD.Type]
+    return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Origin
+      || type === KIMI_CONVERSATION_ITEM_KIND.Notification
+      || type === KIMI_CONVERSATION_ITEM_KIND.System
+      || (type === KIMI_CONVERSATION_ITEM_KIND.AssistantMessage && kimiTurnIsBlocked(conversation.turnContext))
+  }
   const event = kimiEvent(entry)
   return !!event && KIMI_NOTIFICATION_EVENT.has(event.type)
 }
@@ -38,37 +45,50 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
   if (!parent)
     return { kind: 'unknown' }
 
-  if (kimiTranscriptMarker(parent) || kimiTranscriptRetry(parent) || kimiTranscriptTaskText(parent) !== null)
+  const conversation = kimiConversationRow(parent)
+  if (conversation?.kind === 'retry')
     return notification([parent], 'hidden')
-
-  const nativeTurn = kimiTranscriptTurn(parent)
-  if (nativeTurn) {
-    switch (pickString(nativeTurn, 'state')) {
-      case KIMI_TRANSCRIPT_TURN.Completed:
-      case KIMI_TRANSCRIPT_TURN.Cancelled:
-      case KIMI_TRANSCRIPT_TURN.Failed:
-        return { kind: 'result_divider' }
-      case KIMI_TRANSCRIPT_TURN.Running:
-        return notification([parent], 'hidden')
-      case KIMI_TRANSCRIPT_TURN.Queued:
-        return { kind: 'hidden' }
+  if (conversation?.kind === 'item') {
+    switch (conversation.item[KIMI_CONVERSATION_FIELD.Type]) {
+      case KIMI_CONVERSATION_ITEM_KIND.AssistantMessage:
+        if (kimiTurnIsBlocked(conversation.turnContext)) {
+          const notice = notification([parent], 'hidden')
+          if (notice.kind === 'notification')
+            return notice
+        }
+        return { kind: 'assistant_text' }
+      case KIMI_CONVERSATION_ITEM_KIND.Reasoning:
+        return { kind: 'assistant_thinking' }
+      case KIMI_CONVERSATION_ITEM_KIND.UserMessage:
+        return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Origin
+          ? notification([parent], 'hidden')
+          : { kind: 'user_text' }
+      case KIMI_CONVERSATION_ITEM_KIND.ToolCall:
+        if (kimiPlanText(parent) !== null) {
+          return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Request
+            ? { kind: 'assistant_plan' }
+            : { kind: 'hidden' }
+        }
+        return {
+          kind: conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Request
+            ? 'tool_use'
+            : 'tool_result',
+        }
       default:
-        return { kind: 'unknown' }
+        return notification([parent], 'hidden')
     }
   }
-
-  const nativeTool = kimiTranscriptTool(parent)
-  if (nativeTool) {
-    const finished = nativeTool.state !== KIMI_TRANSCRIPT_TOOL.Running || retainedRowIsFinal(input.completion)
-    if (kimiPlanText(parent) !== null) {
-      return finished
-        ? { kind: 'hidden' }
-        : { kind: 'assistant_plan' }
+  if (conversation?.kind === 'turn') {
+    if (conversation.turn[KIMI_CONVERSATION_FIELD.Kind] !== KIMI_CONVERSATION_TURN_KIND.Agent || kimiTurnIsBlocked(conversation.turn))
+      return { kind: 'hidden' }
+    return {
+      kind: conversation.turn[KIMI_CONVERSATION_FIELD.Status] === KIMI_CONVERSATION_STATUS.Ended
+        ? 'result_divider'
+        : 'hidden',
     }
-    return finished
-      ? { kind: 'tool_result' }
-      : { kind: 'tool_use' }
   }
+  if (conversation?.kind === 'notice' || conversation?.kind === 'failure')
+    return notification([parent], 'hidden')
 
   const event = kimiEvent(parent)
   if (!event) {

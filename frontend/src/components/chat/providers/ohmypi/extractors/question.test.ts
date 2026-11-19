@@ -2,6 +2,28 @@ import { describe, expect, it } from 'vitest'
 import { ohMyPiQuestionAnswers, ohMyPiQuestionPrompts } from './question'
 
 describe('ohMyPiQuestionPrompts', () => {
+  it('keeps the native form context before its question', () => {
+    const context = 'Policy  applies  everywhere\nKeep values.'
+    const prompts = ohMyPiQuestionPrompts([
+      {
+        id: 'target',
+        question: 'Choose target',
+        context,
+        multi: true,
+        initialSelections: ['0'],
+        options: [
+          { value: '0', label: 'Alpha' },
+        ],
+      },
+    ])
+    expect(prompts[0]?.question).toBe('Choose target')
+    expect(prompts[0]).toHaveProperty('context', context)
+    expect(prompts[0]?.initialSelections).toEqual(['0'])
+    expect(prompts[0]?.options).toEqual([
+      { value: '0', label: 'Alpha' },
+    ])
+  })
+
   it('extracts rich labels and code previews from the retained native markup', () => {
     const prompts = ohMyPiQuestionPrompts([
       {

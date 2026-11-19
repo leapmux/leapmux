@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"golang.org/x/net/html"
 
@@ -23,20 +22,21 @@ type askHTMLOption struct {
 }
 
 type askHTMLField struct {
-	name, label, caption, section string
-	options                       []askHTMLOption
-	multi, menu, required         bool
+	name, label           string
+	options               []askHTMLOption
+	multi, menu, required bool
 }
 
 type askHTMLReader struct {
-	fields           []*askHTMLField
-	groups           map[string]*askHTMLField
-	labels           map[string]*html.Node
-	controlCounts    map[*html.Node]int
-	section, caption string
-	inline           strings.Builder
-	fieldsetDepth    int
-	err              error
+	sections      []*askHTMLSection
+	section       *askHTMLSection
+	groups        map[string]*askHTMLGroup
+	labels        map[string]*html.Node
+	controlCounts map[*html.Node]int
+	inline        []askHTMLSpan
+	fieldsetDepth int
+	metadataLeft  int
+	err           error
 }
 
 func askHTMLAttr(node *html.Node, key string) (string, bool) {
@@ -75,45 +75,14 @@ func askHTMLBlock(tag string) bool {
 
 // Native question and menu strings collapse JavaScript whitespace.
 func askOneLine(value string) string {
-	return strings.Join(strings.FieldsFunc(value, func(r rune) bool { return r == '\uFEFF' || r != '\u0085' && unicode.IsSpace(r) }), " ")
+	return strings.Join(strings.FieldsFunc(value, askHTMLSpace), " ")
 }
 
 // askHTMLLabelText interprets the label string needed to match the native RPC
 // dialog. The unchanged markup, rather than presentation derived here, reaches
 // the browser for descriptions and previews.
 func askHTMLLabelText(node *html.Node) string {
-	var text strings.Builder
-	var visit func(*html.Node)
-	visit = func(current *html.Node) {
-		if current.Type == html.TextNode {
-			text.WriteString(current.Data)
-			return
-		}
-		if current.Type != html.ElementNode {
-			return
-		}
-		if askHTMLSkipped(current.Data) || askHTMLControl(current) || current.Data == "svg" {
-			return
-		}
-		if current.Data == "br" {
-			text.WriteByte('\n')
-			return
-		}
-		if current.Data == "img" {
-			text.WriteString(askHTMLValue(current, "alt"))
-			return
-		}
-		if askHTMLBlock(current.Data) {
-			text.WriteByte(' ')
-		}
-		for child := current.FirstChild; child != nil; child = child.NextSibling {
-			visit(child)
-		}
-	}
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		visit(child)
-	}
-	return askOneLine(text.String())
+	return askOneLine(askHTMLSpansText(node))
 }
 
 func askHTMLTextContent(node *html.Node) string {
@@ -132,6 +101,9 @@ func askHTMLTextContent(node *html.Node) string {
 }
 
 func readAskChoiceQuestions(markup string) ([]contracts.OhMyPiAskQuestion, error) {
+	if len(markup) > contracts.MaxMessageSize {
+		return nil, fmt.Errorf("the ask form exceeds the Worker message limit")
+	}
 	document, err := html.Parse(strings.NewReader(markup))
 	if err != nil {
 		return nil, err
@@ -164,7 +136,8 @@ func readAskChoiceQuestions(markup string) ([]contracts.OhMyPiAskQuestion, error
 	if err := collect(root, 0); err != nil {
 		return nil, err
 	}
-	reader := askHTMLReader{groups: make(map[string]*askHTMLField), labels: make(map[string]*html.Node), controlCounts: make(map[*html.Node]int)}
+	reader := askHTMLReader{groups: make(map[string]*askHTMLGroup), labels: make(map[string]*html.Node), controlCounts: make(map[*html.Node]int), metadataLeft: contracts.MaxMessageSize}
+	reader.startSection("")
 	ids := make(map[string]struct{})
 	for _, node := range nodes {
 		if !askHTMLControl(node) {
@@ -189,46 +162,30 @@ func readAskChoiceQuestions(markup string) ([]contracts.OhMyPiAskQuestion, error
 			reader.labels[target] = node
 		}
 	}
-	reader.children(root)
+	reader.children(root, "")
 	reader.flush()
 	if reader.err != nil {
 		return nil, reader.err
 	}
-	var fields []contracts.OhMyPiAskQuestion
-	seen := make(map[string]struct{})
-	for _, field := range reader.fields {
-		if field.name == "" {
-			continue
-		}
-		if _, duplicate := seen[field.name]; duplicate {
-			return nil, fmt.Errorf("the ask form repeats a field name across independent controls")
-		}
-		seen[field.name] = struct{}{}
-		converted, err := field.nativeQuestion()
-		if err != nil {
-			return nil, err
-		}
-		fields = append(fields, converted)
-	}
-	return fields, nil
+	return reader.questions()
 }
 
 func (reader *askHTMLReader) flush() {
-	if text := askOneLine(reader.inline.String()); text != "" {
-		reader.caption = text
+	if text := askHTMLSpanText(reader.inline); text != "" {
+		reader.section.blocks = append(reader.section.blocks, &askHTMLFormBlock{text: text, isText: true})
 	}
-	reader.inline.Reset()
+	reader.inline = nil
 }
 
-func (reader *askHTMLReader) children(node *html.Node) {
+func (reader *askHTMLReader) children(node *html.Node, style string) {
 	for child := node.FirstChild; child != nil && reader.err == nil; child = child.NextSibling {
-		reader.walk(child)
+		reader.walk(child, style)
 	}
 }
 
-func (reader *askHTMLReader) walk(node *html.Node) {
+func (reader *askHTMLReader) walk(node *html.Node, style string) {
 	if node.Type == html.TextNode {
-		reader.inline.WriteString(node.Data)
+		appendAskHTMLSpan(&reader.inline, node.Data, style)
 		return
 	}
 	if node.Type != html.ElementNode || askHTMLSkipped(node.Data) {
@@ -268,25 +225,24 @@ func (reader *askHTMLReader) walk(node *html.Node) {
 			}
 		}
 		if reader.fieldsetDepth == 0 {
-			reader.section = ""
-			reader.caption = ""
+			title := ""
 			if legend != nil {
-				reader.section = askHTMLLabelText(legend)
+				title = askHTMLSpansText(legend)
 			}
+			reader.startSection(title)
 		} else if legend != nil {
-			reader.caption = askHTMLLabelText(legend)
+			reader.walk(legend, "")
 		}
 		reader.fieldsetDepth++
 		for child := node.FirstChild; child != nil && reader.err == nil; child = child.NextSibling {
 			if child != legend {
-				reader.walk(child)
+				reader.walk(child, "")
 			}
 		}
-		reader.fieldsetDepth--
 		reader.flush()
+		reader.fieldsetDepth--
 		if reader.fieldsetDepth == 0 {
-			reader.section = ""
-			reader.caption = ""
+			reader.startSection("")
 		}
 		return
 	case "table":
@@ -295,37 +251,53 @@ func (reader *askHTMLReader) walk(node *html.Node) {
 			return
 		}
 		reader.flush()
-		reader.caption = ""
+		if text, exists := askHTMLTableText(node); exists {
+			reader.section.blocks = append(reader.section.blocks, &askHTMLFormBlock{text: text})
+		}
 		return
-	case "pre", "svg":
+	case "pre":
 		reader.flush()
-		reader.caption = ""
+		text := strings.TrimRightFunc(strings.TrimPrefix(askHTMLTextContent(node), "\n"), askHTMLSpace)
+		reader.section.blocks = append(reader.section.blocks, &askHTMLFormBlock{text: text})
+		return
+	case "svg":
+		reader.flush()
+		reader.section.blocks = append(reader.section.blocks, &askHTMLFormBlock{})
 		return
 	case "img":
-		if askHTMLValue(node, "src") != "" {
+		if strings.TrimFunc(askHTMLValue(node, "src"), askHTMLSpace) != "" {
 			reader.flush()
-			reader.caption = ""
+			reader.section.blocks = append(reader.section.blocks, &askHTMLFormBlock{})
 		}
 		return
 	case "br":
-		reader.inline.WriteByte('\n')
+		appendAskHTMLSpan(&reader.inline, "\n", "")
 		return
 	case "hr":
 		reader.flush()
 		return
-	case "legend", "ul", "ol":
+	case "legend":
 		reader.flush()
-		reader.children(node)
+		reader.children(node, style)
 		reader.flush()
+		return
+	case "ul", "ol":
+		reader.flush()
+		if reader.controlCounts[node] > 0 {
+			reader.children(node, "")
+			reader.flush()
+		} else if text, exists := askHTMLListText(node, node.Data == "ol"); exists {
+			reader.section.blocks = append(reader.section.blocks, &askHTMLFormBlock{text: text})
+		}
 		return
 	}
 	if askHTMLBlock(node.Data) {
 		reader.flush()
-		reader.children(node)
+		reader.children(node, style)
 		reader.flush()
 		return
 	}
-	reader.children(node)
+	reader.children(node, askHTMLStyle(node.Data, style))
 }
 
 func (reader *askHTMLReader) control(node, labelNode *html.Node) {
@@ -344,23 +316,21 @@ func (reader *askHTMLReader) control(node, labelNode *html.Node) {
 			label = askOneLine(askHTMLValue(node, "title"))
 		}
 	}
-	if labelNode != nil {
-		var encoded bytes.Buffer
-		if err := html.Render(&encoded, labelNode); err != nil {
-			reader.err = err
-			return
-		}
-		markup = encoded.String()
-	}
 	name := askHTMLValue(node, "name")
 	_, required := askHTMLAttr(node, "required")
 	if node.Data == "select" {
 		_, multi := askHTMLAttr(node, "multiple")
-		field := &askHTMLField{name: name, label: label, caption: reader.caption, section: reader.section, multi: multi, menu: true, required: required}
+		field := &askHTMLField{name: name, label: label, multi: multi, menu: true, required: required}
 		var visit func(*html.Node)
 		visit = func(current *html.Node) {
+			if reader.err != nil {
+				return
+			}
 			if current.Type == html.ElementNode && current.Data == "option" {
 				text := askOneLine(askHTMLTextContent(current))
+				if !reader.retainMetadata(text) {
+					return
+				}
 				value, present := askHTMLAttr(current, "value")
 				if !present {
 					value = text
@@ -375,6 +345,9 @@ func (reader *askHTMLReader) control(node, labelNode *html.Node) {
 			}
 		}
 		visit(node)
+		if reader.err != nil {
+			return
+		}
 		if !multi {
 			anyChecked := false
 			for _, option := range field.options {
@@ -389,8 +362,7 @@ func (reader *askHTMLReader) control(node, labelNode *html.Node) {
 				}
 			}
 		}
-		reader.fields = append(reader.fields, field)
-		reader.caption = ""
+		reader.addField(field)
 		return
 	}
 	typeName := strings.ToLower(askHTMLValue(node, "type"))
@@ -413,30 +385,43 @@ func (reader *askHTMLReader) control(node, labelNode *html.Node) {
 			label = name
 		}
 	}
+	if labelNode != nil {
+		var encoded bytes.Buffer
+		if err := html.Render(&encoded, labelNode); err != nil {
+			reader.err = err
+			return
+		}
+		markup = encoded.String()
+	}
+	if !reader.retainMetadata(label, markup) {
+		return
+	}
 	_, checked := askHTMLAttr(node, "checked")
 	_, disabled := askHTMLAttr(node, "disabled")
 	option := askHTMLOption{label: label, value: value, markup: markup, checked: checked, disabled: disabled}
 	key := typeName + "\x00" + name
-	if field := reader.groups[key]; field != nil {
-		field.options = append(field.options, option)
-		field.required = field.required || required
+	if group := reader.groups[key]; group != nil {
+		group.field.options = append(group.field.options, option)
+		group.field.required = group.field.required || required
+		if group.section == reader.section && reader.section.blocks[len(reader.section.blocks)-1] != group.block {
+			group.block.optionsEnd = len(reader.section.blocks)
+		}
 		return
 	}
-	field := &askHTMLField{name: name, caption: reader.caption, section: reader.section, options: []askHTMLOption{option}, multi: typeName == "checkbox", required: required}
-	reader.fields = append(reader.fields, field)
-	reader.groups[key] = field
-	reader.caption = ""
+	field := &askHTMLField{name: name, options: []askHTMLOption{option}, multi: typeName == "checkbox", required: required}
+	block := reader.addField(field)
+	reader.groups[key] = &askHTMLGroup{field: field, section: reader.section, block: block}
 }
 
 var askOtherLabelPrefix = regexp.MustCompile(`(?i)^other\b`)
 
-func (field *askHTMLField) nativeQuestion() (contracts.OhMyPiAskQuestion, error) {
+func (field *askHTMLField) nativeQuestion(caption, section string) (contracts.OhMyPiAskQuestion, error) {
 	question := field.label
 	if question == "" {
-		question = field.caption
+		question = caption
 	}
 	if question == "" {
-		question = field.section
+		question = section
 	}
 	if question == "" && len(field.options) == 1 {
 		question = field.options[0].label
@@ -449,8 +434,8 @@ func (field *askHTMLField) nativeQuestion() (contracts.OhMyPiAskQuestion, error)
 		return contracts.OhMyPiAskQuestion{}, fmt.Errorf("the ask form has no usable native question title")
 	}
 	converted := contracts.OhMyPiAskQuestion{ID: field.name, Question: question, Multi: field.multi, AllowEmpty: field.multi && !field.required}
-	if field.section != "" && field.section != question {
-		converted.Header = field.section
+	if header := askOneLine(section); header != "" && header != question {
+		converted.Header = header
 	}
 	other := !field.menu && len(field.options) >= 2
 	for _, option := range field.options {

@@ -10,7 +10,7 @@ import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
-import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { providerRow } from '~/test-support/toolCallFixture'
@@ -175,16 +175,15 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
             },
           ]
         : provider === AgentProvider.KIMI_CODE
-          // The turn ended while the call ran, so the worker stored the call's own start
-          // again as its closing row, with the output it printed before it stopped.
+          // The Worker retains the running item with a result role when the turn ends.
           ? [
-              kimiTranscriptToolFrame({
-                toolCallId: id,
+              kimiConversationToolRecord('request', {
+                item_id: id,
                 name: 'Bash',
                 input: { command },
               }),
-              kimiTranscriptToolFrame({
-                toolCallId: id,
+              kimiConversationToolRecord('result', {
+                item_id: id,
                 name: 'Bash',
                 input: { command },
                 output,
@@ -464,20 +463,21 @@ function todoFrames(provider: AgentProvider): TranscriptFrame[] {
   }
   else if (provider === AgentProvider.KIMI_CODE) {
     spanType = 'TodoList'
-    request = kimiTranscriptToolFrame({
-      toolCallId: spanId,
+    request = kimiConversationToolRecord('request', {
+      item_id: spanId,
       name: 'TodoList',
       input: {
         todos: todos.map(todo => ({ title: todo.content, status: todo.status })),
       },
     })
-    result = kimiTranscriptToolFrame({
-      toolCallId: spanId,
+    result = kimiConversationToolRecord('result', {
+      item_id: spanId,
       name: 'TodoList',
       input: {
         todos: todos.map(todo => ({ title: todo.content, status: todo.status })),
       },
-      state: 'done',
+      status: 'ended',
+      outcome: 'completed',
       output: 'Todos updated',
     })
   }
@@ -1260,18 +1260,19 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
   }
   if (provider === AgentProvider.KIMI_CODE) {
     return [
-      frame('request', provider, 'parity-edit', 'Edit', kimiTranscriptToolFrame({
-        toolCallId: 'parity-edit',
+      frame('request', provider, 'parity-edit', 'Edit', kimiConversationToolRecord('request', {
+        item_id: 'parity-edit',
         name: 'Edit',
         input: { path, old_string: before, new_string: after },
         display: { kind: 'diff', path },
       })),
-      frame('result', provider, 'parity-edit', 'Edit', kimiTranscriptToolFrame({
-        toolCallId: 'parity-edit',
+      frame('result', provider, 'parity-edit', 'Edit', kimiConversationToolRecord('result', {
+        item_id: 'parity-edit',
         name: 'Edit',
         input: { path, old_string: before, new_string: after },
         display: { kind: 'diff', path },
-        state: 'done',
+        status: 'ended',
+        outcome: 'completed',
         output: 'Saved',
       })),
     ]

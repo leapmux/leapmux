@@ -1,14 +1,17 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,6 +29,8 @@ const openCodeCatalogAgentsFixture = `[
  {"id":"general","name":"General","mode":"subagent"},
  {"id":"hidden","name":"Hidden","mode":"primary","hidden":true}
 ]`
+
+const openCodePluginPendingFixture = `{"_tag":"ServiceUnavailableError","message":"Location plugins did not finish activating","service":"plugin"}`
 
 func openCodeCatalogFixture(t *testing.T) openCodeCatalog {
 	t.Helper()
@@ -179,6 +184,114 @@ func TestOpenCodeCatalogWaitsForActivationBeforeConcurrentCatalogReads(t *testin
 	}
 	close(release)
 	require.NoError(t, <-finished)
+}
+
+func TestOpenCodeCatalogWaitsWhenPluginActivationIsStillPending(t *testing.T) {
+	t.Parallel()
+	var defaultReads atomic.Int32
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/model/default":
+			if defaultReads.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = fmt.Fprint(w, openCodePluginPendingFixture)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"id":"model","providerID":"provider"}}`)
+		case "/api/model":
+			assert.EqualValues(t, 2, defaultReads.Load())
+			_, _ = fmt.Fprintf(w, `{"data":%s}`, openCodeCatalogModelsFixture)
+		case "/api/agent":
+			assert.EqualValues(t, 2, defaultReads.Load())
+			_, _ = fmt.Fprintf(w, `{"data":%s}`, openCodeCatalogAgentsFixture)
+		default:
+			t.Errorf("unexpected catalog route: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTimer(openCodeCatalogActivationPollTag)
+	t.Cleanup(trap.Close)
+	type readResult struct {
+		catalog openCodeCatalog
+		err     error
+	}
+	finished := make(chan readResult, 1)
+	go func() {
+		catalog, err := awaitOpenCodeCatalog(ctx, rpc, clock, time.Minute)
+		finished <- readResult{catalog, err}
+	}()
+	delay := testutil.WaitForTimer(t, ctx, trap)
+	assert.EqualValues(t, 1, defaultReads.Load())
+	clock.Advance(delay).MustWait(ctx)
+	select {
+	case result := <-finished:
+		require.NoError(t, result.err)
+		assert.Equal(t, openCodeModelRef{ProviderID: "provider", ID: "model"}, result.catalog.defaultModel)
+		assert.Equal(t, "build", result.catalog.defaultAgent)
+	case <-ctx.Done():
+		t.Fatal("the catalog read did not finish after activation")
+	}
+	assert.EqualValues(t, 2, defaultReads.Load())
+}
+
+func TestOpenCodeCatalogStopsWaitingWhenStartupIsCanceled(t *testing.T) {
+	t.Parallel()
+	var reads atomic.Int32
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/model/default", r.URL.Path)
+		reads.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, openCodePluginPendingFixture)
+	})
+	ctx := testutil.DeadlineContext(t)
+	startup, cancel := context.WithCancel(ctx)
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTimer(openCodeCatalogActivationPollTag)
+	t.Cleanup(trap.Close)
+	finished := make(chan error, 1)
+	go func() {
+		_, err := awaitOpenCodeCatalog(startup, rpc, clock, time.Minute)
+		finished <- err
+	}()
+	testutil.WaitForTimer(t, ctx, trap)
+	cancel()
+	select {
+	case err := <-finished:
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorContains(t, err, "Location plugins did not finish activating")
+	case <-ctx.Done():
+		t.Fatal("canceling startup did not stop the catalog wait")
+	}
+	assert.EqualValues(t, 1, reads.Load())
+}
+
+func TestOpenCodeCatalogDoesNotWaitOnUnrelatedAvailabilityErrors(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`{"_tag":"ServiceUnavailableError","service":"database","message":"Database unavailable"}`,
+		`{"_tag":"ServiceUnavailableError","service":"plugin","message":"Plugin loading is disabled"}`,
+		"service unavailable",
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			var reads atomic.Int32
+			rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/model/default", r.URL.Path)
+				reads.Add(1)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = fmt.Fprint(w, body)
+			})
+			_, err := awaitOpenCodeCatalog(testutil.DeadlineContext(t), rpc, testutil.NewQuartzMock(t), time.Minute)
+			var status *providerkit.HTTPStatusError
+			require.ErrorAs(t, err, &status)
+			assert.Equal(t, http.StatusServiceUnavailable, status.StatusCode)
+			assert.Equal(t, body, status.Body)
+			assert.EqualValues(t, 1, reads.Load())
+		})
+	}
 }
 
 func TestOpenCodeCatalogResolvesOnlyTheNativeDefaultOrder(t *testing.T) {

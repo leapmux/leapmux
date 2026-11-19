@@ -19,10 +19,19 @@ func goalSnapshot(status string) map[string]any {
 	}
 }
 
+func applyKimiRESTGoalForTest(t *testing.T, a *Agent, fields map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(fields)
+	require.NoError(t, err)
+	var goal *kimiGoalSnapshot
+	require.NoError(t, json.Unmarshal(raw, &goal))
+	a.applyGoal(goal, false)
+}
+
 func TestKimiGoalUpdated(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
+	applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("active"))
 
 	goal, ok := rig.sink.LastGoal()
 	require.True(t, ok)
@@ -42,7 +51,7 @@ func TestKimiGoalUpdated(t *testing.T) {
 	assert.False(t, goal.CreatedAt.IsZero())
 	created := goal.CreatedAt
 
-	rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("paused")})
+	applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("paused"))
 	goal, _ = rig.sink.LastGoal()
 	assert.Equal(t, agent.GoalStatusPaused, goal.Status)
 	assert.Equal(t, created, goal.CreatedAt, "the same goal keeps the time the worker first saw it")
@@ -53,23 +62,19 @@ func TestKimiGoalDetailStatesTheNativeReason(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		endReason any
-		change    any
 		want      string
 	}{
-		{"end reason first", "tests pass", map[string]any{"reason": "the change reason"}, "tests pass"},
-		{"change reason", nil, map[string]any{"reason": "waiting for input"}, "waiting for input"},
-		{"blank end reason", " ", map[string]any{"reason": " waiting for input "}, "waiting for input"},
-		{"status fallback", nil, nil, "blocked"},
-		{"blank change reason", nil, map[string]any{"reason": " "}, "blocked"},
-		{"malformed end reason", 7, map[string]any{"reason": "waiting for input"}, "waiting for input"},
-		{"malformed change", nil, "unknown", "blocked"},
-		{"malformed change reason", nil, map[string]any{"reason": 7}, "blocked"},
+		{"end reason", " tests pass ", "tests pass"},
+		{"blank end reason", " ", "blocked"},
+		{"status fallback", nil, "blocked"},
+		{"malformed end reason", 7, "blocked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newKimiOutputRig(t)
 			snapshot := goalSnapshot("blocked")
 			snapshot["terminalReason"] = tc.endReason
-			rig.publishGoalMarker(t, map[string]any{"snapshot": snapshot, "change": tc.change})
+			applyKimiRESTGoalForTest(t, rig.agent, snapshot)
 			goal, ok := rig.sink.LastGoal()
 			require.True(t, ok, "optional diagnostic fields must not discard a valid goal snapshot")
 			assert.Equal(t, agent.GoalStatusBlocked, goal.Status)
@@ -84,18 +89,18 @@ func TestKimiGoalRemoval(t *testing.T) {
 	t.Run("a goal that completed leaves quietly", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("complete")})
+		applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("complete"))
 		goal, _ := rig.sink.LastGoal()
 		assert.Equal(t, agent.GoalStatusDone, goal.Status)
-		rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
+		applyKimiRESTGoalForTest(t, rig.agent, nil)
 		assert.Equal(t, []bool{true}, rig.sink.GoalClearSnapshots(), "the completion is already in the transcript")
 	})
 
 	t.Run("a cancelled goal leaves with a row", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
-		rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
+		applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("active"))
+		applyKimiRESTGoalForTest(t, rig.agent, nil)
 		assert.Equal(t, []bool{false}, rig.sink.GoalClearSnapshots())
 	})
 
@@ -105,8 +110,8 @@ func TestKimiGoalRemoval(t *testing.T) {
 	t.Run("a removal clears the stored goal even when the provider knew of none", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
-		rig.publishGoalMarker(t, map[string]any{"snapshot": map[string]any{"objective": "  "}})
+		applyKimiRESTGoalForTest(t, rig.agent, nil)
+		applyKimiRESTGoalForTest(t, rig.agent, map[string]any{"objective": "  "})
 		assert.Equal(t, []bool{false, false}, rig.sink.GoalClearSnapshots())
 	})
 
@@ -114,7 +119,7 @@ func TestKimiGoalRemoval(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
 		adoptNativeKimiChild(t, rig.agent, "agent-0")
-		rig.publishGoalMarker(t, map[string]any{"agentId": "agent-0", "snapshot": goalSnapshot("active")})
+		rig.agent.HandleOutput([]byte(`{"type":"goal","session_id":"session_1","agent_id":"agent-0","goal":{"objective":"Child goal","status":"active","turns_used":0,"tokens_used":0,"wall_clock_ms":0}}`))
 		_, ok := rig.sink.LastGoal()
 		assert.False(t, ok)
 	})
@@ -174,7 +179,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a new objective replaces the running goal", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
+		applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("active"))
 		before := len(profileBodies(t, rig))
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionSet, "Another goal")
 		require.NoError(t, err)
@@ -224,7 +229,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a new objective is not created when the running goal cannot be cancelled", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
+		applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("active"))
 		before := len(profileBodies(t, rig))
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"), fakeKapReply{Code: 50000, Msg: "goal store locked"})
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionSet, "Another goal")
@@ -237,7 +242,9 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a pause succeeds when the abort of the running turn fails", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger"}}}}`)
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"user_message","item_id":"goal-opener","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","prompt_ids":[],"placement":"opener","origin":{"kind":"goal"},"text":"Continue the release goal.","attachments":[],"skills":[]}}`)
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort), fakeKapReply{Code: 50000, Msg: "no turn"})
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionPause, "")
 		require.NoError(t, err, "the goal is paused, which is what the reader asked for")
@@ -267,7 +274,9 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a pause stops the running turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger"}}}}`)
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"user_message","item_id":"goal-opener","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","prompt_ids":[],"placement":"opener","origin":{"kind":"goal"},"text":"Continue the release goal.","attachments":[],"skills":[]}}`)
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionPause, "")
 		require.NoError(t, err)
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)), 1)
@@ -279,7 +288,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a clear of a goal the server already removed succeeds", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
+		applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("active"))
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"), fakeKapReply{Code: kimiCodeGoalNotFound, Msg: "No current goal"})
 		outcome, err := rig.agent.PerformGoalAction(agent.GoalActionClear, "")
 		require.NoError(t, err, "the session has no goal, which is the state the reader asked for")
@@ -290,7 +299,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a new objective replaces a goal the server already removed", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
+		applyKimiRESTGoalForTest(t, rig.agent, goalSnapshot("active"))
 		before := len(profileBodies(t, rig))
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"),
 			fakeKapReply{Code: kimiCodeGoalNotFound, Msg: "No current goal"}, fakeKapReply{})
@@ -336,9 +345,9 @@ func TestKimiReadsTheGoalOfAResumedSession(t *testing.T) {
 func TestKimiGoalWithAbsentFields(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.publishGoalMarker(t, map[string]any{"snapshot": map[string]any{
+	applyKimiRESTGoalForTest(t, rig.agent, map[string]any{
 		"goalId": "goal_1", "objective": "Ship the release", "status": "active",
-	}})
+	})
 	goal, ok := rig.sink.LastGoal()
 	require.True(t, ok)
 	assert.Nil(t, goal.Iterations)
@@ -346,9 +355,9 @@ func TestKimiGoalWithAbsentFields(t *testing.T) {
 	assert.Nil(t, goal.TokenBudget)
 	assert.Nil(t, goal.TimeUsedSeconds)
 
-	rig.publishGoalMarker(t, map[string]any{"snapshot": map[string]any{
+	applyKimiRESTGoalForTest(t, rig.agent, map[string]any{
 		"goalId": "goal_1", "objective": "Ship the release", "status": "active", "budget": map[string]any{}, "wallClockMs": 999,
-	}})
+	})
 	goal, _ = rig.sink.LastGoal()
 	assert.Nil(t, goal.TokenBudget, "a budget that states no token limit sets none")
 	require.NotNil(t, goal.TimeUsedSeconds)
@@ -382,7 +391,7 @@ func TestKimiReadGoalOfAResumedSession(t *testing.T) {
 		assert.Empty(t, rig.sink.GoalClearSnapshots())
 	})
 
-	t.Run("a native goal restores without the REST goal route", func(t *testing.T) {
+	t.Run("a native goal restores when its optional REST read fails", func(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual", Goal: goalSnapshot("active")})
@@ -392,7 +401,9 @@ func TestKimiReadGoalOfAResumedSession(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, agent.GoalStatusActive, goal.Status)
 		assert.True(t, goal.Snapshot)
-		assert.Empty(t, fake.requestsTo("GET "+kimiSessionPath("session_stored", "/goal")))
+		waitFor(t, func() bool { return len(fake.requestsTo("GET "+kimiSessionPath("session_stored", "/goal"))) == 1 }, "the goal starts its optional read")
+		waitFor(t, rig.agent.goalMetadataWork.Idle, "the optional goal read finishes")
+		assert.Len(t, fake.requestsTo("GET "+kimiSessionPath("session_stored", "/goal")), 1)
 		assert.Empty(t, rig.sink.GoalClearSnapshots())
 		assert.Equal(t, "session_stored", rig.sessionID(), "the resume itself succeeds")
 	})
@@ -414,7 +425,7 @@ func TestKimiGoalCreatedAtFollowsTheGoalID(t *testing.T) {
 		t.Helper()
 		snapshot := goalSnapshot(status)
 		snapshot["goalId"] = goalID
-		rig.publishGoalMarker(t, map[string]any{"snapshot": snapshot})
+		applyKimiRESTGoalForTest(t, rig.agent, snapshot)
 		goal, ok := rig.sink.LastGoal()
 		require.True(t, ok)
 		return goal
@@ -426,7 +437,7 @@ func TestKimiGoalCreatedAtFollowsTheGoalID(t *testing.T) {
 	clock.Advance(time.Minute).MustWait(ctx)
 	assert.Equal(t, first.Add(2*time.Minute), report("goal_2", "active").CreatedAt, "a new goal id takes a new stamp")
 
-	rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
+	applyKimiRESTGoalForTest(t, rig.agent, nil)
 	clock.Advance(time.Minute).MustWait(ctx)
 	assert.Equal(t, first.Add(3*time.Minute), report("goal_2", "active").CreatedAt, "a goal that returns after a removal takes a new stamp")
 }

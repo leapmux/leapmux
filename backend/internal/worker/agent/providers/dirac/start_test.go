@@ -25,7 +25,7 @@ const diracStartupHelperEnv = "LEAPMUX_DIRAC_STARTUP_HELPER"
 const diracStartupLogEnv = "LEAPMUX_DIRAC_STARTUP_LOG"
 
 // TestMain runs the fake ACP peer before the Go test runner parses CLI flags.
-// The provider's real `--acp --subagents` flags then reach this test binary.
+// The provider's real `--acp` flag then reaches this test binary.
 func TestMain(m *testing.M) {
 	if os.Getenv(diracStartupHelperEnv) == "1" {
 		runDiracStartupPeer()
@@ -37,6 +37,9 @@ func TestMain(m *testing.M) {
 func runDiracStartupPeer() {
 	log, err := os.OpenFile(os.Getenv(diracStartupLogEnv), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
+		os.Exit(2)
+	}
+	if err := json.NewEncoder(log).Encode(map[string]any{"method": "test/launch", "args": os.Args[1:]}); err != nil {
 		os.Exit(2)
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -103,19 +106,27 @@ func TestStartAppliesTheRequestedNativePlanMode(t *testing.T) {
 	data, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	var nativeMode string
+	var arguments []string
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(line) == 0 {
 			continue
 		}
 		var request struct {
-			Method string `json:"method"`
+			Method string   `json:"method"`
+			Args   []string `json:"args"`
 			Params struct {
 				ModeID string `json:"modeId"`
 			} `json:"params"`
 		}
-		if json.Unmarshal(line, &request) == nil && request.Method == "session/set_mode" {
-			nativeMode = request.Params.ModeID
+		if json.Unmarshal(line, &request) == nil {
+			switch request.Method {
+			case "test/launch":
+				arguments = request.Args
+			case "session/set_mode":
+				nativeMode = request.Params.ModeID
+			}
 		}
 	}
+	assert.Equal(t, []string{"--acp"}, arguments, "ACP reads the native subagentsEnabled preference; the CLI flag is ignored")
 	assert.Equal(t, "plan", nativeMode, "the native session must enter Plan before its first prompt")
 }

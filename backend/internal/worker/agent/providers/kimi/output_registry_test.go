@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +17,7 @@ import (
 
 func TestKimiRegistryMutationUnlockWakesItsActiveDrainer(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	queue := agent.OutputQueueFor(rig.agent.sink)
 	require.NotNil(t, queue)
 	dispatch, session := rig.agent.dispatchMu.mutex(), rig.agent.sessionMu.mutex()
@@ -27,7 +26,7 @@ func TestKimiRegistryMutationUnlockWakesItsActiveDrainer(t *testing.T) {
 	defer release()
 	var attempts atomic.Int64
 	writer := rig.sink
-	queue.Append(agent.OutputWrite{Owner: rig.agent.registryOutputOwner(), Label: "publish the retained Kimi registry row", Run: func() error {
+	queue.Append(agent.OutputWrite{Owner: rig.agent.publicationOutputOwner(), Label: "publish the retained Kimi registry row", Run: func() error {
 		attempt := attempts.Add(1)
 		if err := kimiRegistryPublicationLockError(dispatch, session); err != nil {
 			if attempt == 1 {
@@ -74,7 +73,7 @@ func TestKimiIndependentChildCloseRemainsRetainedAfterStorageRefusal(t *testing.
 	for _, reset := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reset=%t", reset), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			failure := &kimiTaskProjectionFailureSink{ControlSink: rig.sink}
 			rig.agent.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(failure))
 			queue := agent.OutputQueueFor(rig.agent.sink)
@@ -83,15 +82,15 @@ func TestKimiIndependentChildCloseRemainsRetainedAfterStorageRefusal(t *testing.
 			queue.ConfigureRetry(t.Context(), clock, nil)
 			t.Cleanup(queue.StopRetries)
 			created, stopped := testutil.NewTimerTraps(t, clock, agent.OutputRetryTimerTag)
-			rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer","prompt":"Review it."},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
-			rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"},"prompt":"Review it."}}`)
+			rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+			rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","prompt":"Review it."},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
+			rig.startPublicTurn(t, "agent-0", "t0", 0)
+			rig.publicOpener(t, "agent-0", "t0", `{"kind":"user"}`)
 			failure.closeErr = errors.New("registry storage unavailable")
 			if reset {
-				turn := map[string]any{"kind": "turn", "turnId": "t0", "ordinal": 0, "state": "completed",
-					"origin": map[string]any{"kind": "user"}, "prompt": "Review it.", "endedAt": time.Now().UTC().Format(time.RFC3339Nano), "steps": []any{}}
-				rig.agent.HandleOutput(nativeKimiRecoveryReset(t, rig.sessionID(), "agent-0", 2, turn))
+				rig.conversationAgentFrame(t, "agent-0", `{"type":"turns","turns":[{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[{"type":"user_message","item_id":"opener","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","prompt_ids":["prompt-t0"],"placement":"opener","origin":{"kind":"user"},"text":"Read the workspace.","attachments":[],"skills":[]}]}],"has_more":false}`)
 			} else {
-				rig.transcriptAgentOps(t, "agent-0", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
+				rig.endPublicTurn(t, "agent-0", "t0", 0, "completed")
 			}
 			require.True(t, queue.HasPending(), "the output queue retains the refused independent-turn close")
 			ctx := testutil.DeadlineContext(t)
@@ -109,7 +108,7 @@ func TestKimiIndependentChildCloseRemainsRetainedAfterStorageRefusal(t *testing.
 
 func TestKimiRegistryPublicationAllowsAReentrantNativeInteraction(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	var reenter sync.Once
 	rig.sink.OnUpsertBackgroundTask = func(update bgtask.Upsert) {
 		if update.RowKey != "session_1/agent-0" {
@@ -123,13 +122,14 @@ func TestKimiRegistryPublicationAllowsAReentrantNativeInteraction(t *testing.T) 
 		reenter.Do(func() { rig.feed(t, questionEvent("registry-reentry")) })
 	}
 	defer func() { rig.sink.OnUpsertBackgroundTask = nil }()
-	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Reviewer","prompt":"Review it."},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","prompt":"Review it."},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
 	assert.Equal(t, 1, rig.sink.PublishedControlCount())
 }
 
 func TestKimiRegistryPublicationWaitsForSessionMutation(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	queue := agent.OutputQueueFor(rig.agent.sink)
 	require.NotNil(t, queue)
 	func() {

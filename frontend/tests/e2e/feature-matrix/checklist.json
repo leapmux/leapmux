@@ -3986,8 +3986,8 @@
       },
       "goose": {
         "support": "agent-limit",
-        "userNote": "Goose has no Plan mode over the connection that LeapMux uses. Its modes are Auto, Approve, Smart Approve, and Chat. Goose removed its planning mode, which existed only in its terminal interface ([pull request](https://github.com/aaif-goose/goose/pull/12061)).",
-        "detailNote": "Goose offers Auto and Approve modes on its ACP path. It also offers Smart Approve and Chat modes. Chat refuses tools, but the native catalog offers no Plan mode.\n\nClassified as an agent limit: Goose 1.53.0 lists the modes auto, approve, smart_approve, and chat, and the merged pull request aaif-goose/goose#12061 (2026-09-14) removed the CLI-only /plan command, which had no Desktop or ACP path (pull request fetched 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://github.com/aaif-goose/goose/pull/12061> (closed): The merged pull request removes the CLI planning mode (/plan and /endplan) and states that it had no Desktop or ACP path.",
+        "userNote": "Goose offers Auto, Approve, and Smart Approve. Its connection to LeapMux has no Plan mode. Goose removed the planning mode from its terminal interface. [Goose pull request](https://github.com/aaif-goose/goose/pull/12061)",
+        "detailNote": "The installed Goose 1.60.1 Agent Client Protocol (ACP) catalog offers auto, approve, and smart_approve. The native test checks all three modes and the absence of a Plan option after reload. Goose builds its ACP catalog from GooseMode::VARIANTS in crates/goose/src/acp/response_builder.rs. The merged pull request removed the CLI-only /plan and /endplan commands. [Goose pull request](https://github.com/aaif-goose/goose/pull/12061)",
         "spec": "frontend/tests/e2e/goose/plan-mode.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -4267,8 +4267,8 @@
       },
       "goose": {
         "support": "agent-limit",
-        "userNote": "Goose sends no plan for approval. Its Chat mode refuses tools but creates no plan approval request, so LeapMux shows no plan banner.",
-        "detailNote": "Goose sends no completed-plan approval request on its ACP path. Its Chat mode tool refusal does not create a plan approval banner.\n\nClassified as an agent limit: Goose 1.53.0 has no plan mode over ACP and no plan approval request, and the removed CLI planning mode had no ACP path (pull request aaif-goose/goose#12061 fetched 2026-10-05).",
+        "userNote": "Goose sends no plan for approval. LeapMux shows no plan approval banner for Goose.",
+        "detailNote": "Goose 1.60.1 treats /plan as ordinary input over the Agent Client Protocol (ACP). The test verifies that the model receives the literal input and completes a native shell tool turn. LeapMux shows no plan approval actions during the turn or after reload.",
         "spec": "frontend/tests/e2e/goose/plan-approval-banner.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -7404,7 +7404,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Kimi Code 2.5.3 flat to-do state supplies the current list, including an explicit empty list. Replayed historical tool output cannot overwrite a newer state snapshot. Native browser acceptance checks list updates and persistence after reload. Complete provider acceptance: 89 tests passed in e2e-iSL8yl.",
+        "detailNote": "Kimi Code 2.6.2 supplies the current list through flat to-do snapshots, including an explicit empty list. Replayed historical tool output cannot overwrite a newer state snapshot. The browser spec checks list updates and persistence after reload. Complete installed-provider acceptance passed all 89 cases across 60 files with zero retries or skips in e2e-EMJEDa.",
         "spec": "frontend/tests/e2e/kimi-code/to-do-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7685,7 +7685,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Kimi Code 2.5.3 publishes native shell tasks and coordinator task outcomes. Child headers control separate child activity rows. Queued tasks retain their identity before a child exists, and known task outcomes do not finish another child turn. Native browser acceptance checks background shell completion and child transcript routing. Complete provider acceptance: 89 tests passed in e2e-iSL8yl.",
+        "detailNote": "Kimi Code 2.6.2 publishes native shell tasks and coordinator outcomes. Its public turns control separate child activity rows. Queued tasks retain their identity before a child exists. A coordinator outcome leaves a separate child turn active. The browser spec checks background shell completion and child transcript routing. Complete installed-provider acceptance passed all 89 cases across 60 files with zero retries or skips in e2e-EMJEDa.",
         "spec": "frontend/tests/e2e/kimi-code/background-tasks-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8064,8 +8064,8 @@
       },
       "dirac": {
         "support": "supported",
-        "userNote": "Each Dirac subagent opens its own tab. The tab shows the prompt and loads the full history when the subagent ends. Dirac does not stream the full transcript while the subagent runs.",
-        "detailNote": "Dirac and Fast Agent open a child tab for each subagent. The tab shows its prompt and loads the native message history when the child ends. Neither agent streams its full child transcript while it runs. Fast Agent's [Agent Client Protocol (ACP) tracker](https://github.com/evalstate/fast-agent/blob/07c460ee395843b91e2bf71a5136f0b6b2886852/src/fast_agent/acp/tool_progress.py#L236-L260) creates a tool ID that differs from the model ID in its [child snapshot](https://github.com/evalstate/fast-agent/blob/07c460ee395843b91e2bf71a5136f0b6b2886852/src/fast_agent/agents/subagent_tool.py#L829-L833). Its [ACP completion](https://github.com/evalstate/fast-agent/blob/07c460ee395843b91e2bf71a5136f0b6b2886852/src/fast_agent/acp/tool_progress.py#L873-L900) sends result text without a child ID. When equal results cannot identify one archive, LeapMux closes the ambiguous child with an archive-unavailable report.",
+        "userNote": "Enable subagents in Dirac settings. Each child opens its own tab with live text and tool results.",
+        "detailNote": "Dirac 0.6.0 stores each child's native conversation and committed outcome in its [tasklet record](https://github.com/dirac-run/dirac/blob/b7ec7580c988598f09f55ee0857440f0e5673eb9/src/core/task/types/tasklet.ts). LeapMux joins the exact native spawn receipt card to its root-qualified tasklet and preserves its conversation identity. It reads native API and presentation histories while the child runs. Native tests verify assistant text order, tool output, reload persistence and separate child tabs after a context clear. Dirac's ACP startup reads the native subagentsEnabled preference; its --subagents CLI option does not reach that startup path.",
         "spec": "frontend/tests/e2e/dirac/subagent-transcript-tab.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8200,11 +8200,11 @@
         "verified": true
       },
       "goose": {
-        "support": "supported",
-        "userNote": "LeapMux shows the tool calls of a Goose subagent while it runs. Goose sends no text from the subagent.",
-        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. Goose streams the child's tool rows only, and its text never arrives. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.",
+        "support": "agent-limit",
+        "userNote": "The Goose child tab shows its prompt while it runs and its report when it finishes. Goose keeps the child's live tool calls and text inside its own session.",
+        "detailNote": "The installed Goose 1.60.1 completes a native subagent shell call before the test releases its final-output response. The child tab opens while the task runs and shows the child's prompt with no tool rows. The report appears after the response is released. The Goose source declares a subagent tool-request notification, but its child runner emits no such notification.",
         "spec": "frontend/tests/e2e/goose/subagent-live-transcript.spec.ts",
-        "audit": "source-verified",
+        "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
       },
@@ -8229,7 +8229,7 @@
       "zcode": {
         "support": "supported",
         "userNote": "LeapMux shows the tool calls of a ZCode subagent while it runs. The subagent's text arrives as the final report.",
-        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. Goose streams the child's tool rows only, and its text never arrives. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.",
+        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.",
         "spec": "frontend/tests/e2e/zcode/subagent-live-transcript.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8238,7 +8238,7 @@
       "codewhale": {
         "support": "supported",
         "userNote": "LeapMux shows each message of a CodeWhale subagent when that message ends, with about half a second of lag.",
-        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. Goose streams the child's tool rows only, and its text never arrives. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.",
+        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.",
         "spec": "frontend/tests/e2e/codewhale/subagent-live-transcript.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8265,7 +8265,7 @@
       "qwen-code": {
         "support": "supported",
         "userNote": "LeapMux shows a long text run of a subagent when its message ends, not word by word. Rows of a background subagent lag by about half a second.",
-        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. Goose streams the child's tool rows only, and its text never arrives. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.\n\nQwen Code streams a foreground subagent in the parent session as session updates. LeapMux tails a transcript file only for a background subagent. The statement above that Qwen Code tails a transcript file therefore holds for background subagents only (checked 2026-10-05).",
+        "detailNote": "A transcript streams at message boundaries: a long text run appears when its message or turn ends. ZCode streams the tool cards live and sends the child's text as the final report. Codewhale and Qwen Code tail a transcript file, with about half a second of lag.\n\nQwen Code streams a foreground subagent in the parent session as session updates. LeapMux tails a transcript file only for a background subagent. The statement above that Qwen Code tails a transcript file therefore holds for background subagents only (checked 2026-10-05).",
         "spec": "frontend/tests/e2e/qwen-code/subagent-live-transcript.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8344,11 +8344,11 @@
         "verified": true
       },
       "dirac": {
-        "support": "agent-limit",
-        "userNote": "While a Dirac subagent runs, its tab shows the prompt and short progress lines. Dirac gives the full tool transcript only after the subagent ends.",
-        "detailNote": "Dirac exposes the child prompt while the child runs, then restores its full tool transcript at the completed native archive boundary. A held native child Read produces no live tool row before that boundary.\n\nClassified as an agent limit with medium confidence. The Dirac 0.5.17 subagent card sends a trajectory of at most 80 events. Each text is cut to a fixed length. The card has no structured child tool rows (source checked 2026-10-05). LeapMux already shows the message and tool digest lines live. LeapMux restores the full tool transcript from the archive after the child ends. LeapMux drops the tool_result digest events, so a LeapMux limit is the alternative classification.",
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "Dirac 0.6.0 writes live API and presentation histories through its [native storage](https://github.com/dirac-run/dirac/blob/b7ec7580c988598f09f55ee0857440f0e5673eb9/src/core/storage/conversationHistory.ts). LeapMux reads their complete JSONL operations and baselines, validates the exact root/tasklet/conversation owner, and retains original native blocks. A held native child Read now exposes its full result while the child remains running. The complete native spec verifies exactly one result before and after reload, then after completion and another reload. The old 0.5.17 card-trajectory limitation no longer describes this protocol. Enable subagents in Dirac settings.",
         "spec": "frontend/tests/e2e/dirac/subagent-live-transcript.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8626,8 +8626,8 @@
       },
       "dirac": {
         "support": "agent-limit",
-        "userNote": "Dirac subagents run inside the parent task and take no input from you, so the subagent tab is read-only.",
-        "detailNote": "Dirac child transcripts are read-only through this integration. The Worker rejects input to the real running child and sends none of that input to its native model request.\n\nClassified as an agent limit. Dirac 0.5.17 runs each subagent in-process behind one use_subagents card. ACP session/prompt addresses only the parent session (source checked 2026-10-05).",
+        "userNote": "Dirac exposes no direct child-input operation through ACP, so the child tab is read-only.",
+        "detailNote": "Dirac 0.6.0's model-facing subagents tool can send addressed tasklet messages, but its [ACP method table](https://github.com/dirac-run/dirac/blob/b7ec7580c988598f09f55ee0857440f0e5673eb9/cli/src/acp/AcpAgent.ts) exposes no direct tasklet-input operation. The tasklet conversation ID is not a root ACP session that session/prompt can address. LeapMux rejects child input while the real child remains running and verifies that the input reaches no native model request.",
         "spec": "frontend/tests/e2e/dirac/send-to-a-subagent.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8809,7 +8809,7 @@
       "kimi-code": {
         "support": "agent-limit",
         "userNote": "Kimi exposes coordinator task cancellation but no exact cancellation address for the current child turn. The child tab has no Interrupt control.",
-        "detailNote": "Kimi Code 2.5.3 permits several suspended or running coordinator tasks to share one child transcript. Native task state carries no child turn or prompt identity. Cancelling a task selected through the child could therefore cancel a different assignment. LeapMux keeps native task outcomes separate from child activity and refuses direct child interruption. The browser spec checks the absent control and API refusal while a real child still runs. The complete installed Kimi suite passed all 89 tests without retries or skips in e2e-iSL8yl. Separate exact-row task controls are tracked in https://github.com/leapmux/leapmux/issues/644; they do not identify the current child turn.",
+        "detailNote": "Kimi Code 2.6.2 permits several suspended or running coordinator tasks to share one child transcript. Its native task state carries the child agent ID and may carry the parent tool call ID. It supplies no child turn or prompt ID. Cancelling a task selected through the child could cancel a different assignment. The browser spec checks the absent control and API refusal while a real child still runs. Separate exact-row task controls are tracked in https://github.com/leapmux/leapmux/issues/644. Complete installed-provider acceptance passed all 89 cases across 60 files with zero retries or skips in e2e-EMJEDa.",
         "spec": "frontend/tests/e2e/kimi-code/interrupt-a-subagent.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8907,8 +8907,8 @@
       },
       "dirac": {
         "support": "agent-limit",
-        "userNote": "Dirac cannot stop one subagent alone, so the subagent tab offers no Interrupt.",
-        "detailNote": "Dirac exposes no child-specific interrupt operation through the protocol that LeapMux uses. The Worker rejects a child interrupt while the real child remains running and its parent still accepts interruption.\n\nClassified as an agent limit. Dirac 0.5.17 passes the abort signal of the parent task to each subagent run. ACP session/cancel addresses the parent session only (source checked 2026-10-05).",
+        "userNote": "Dirac exposes no direct child-interrupt operation through ACP, so the child tab offers no Interrupt.",
+        "detailNote": "Dirac 0.6.0's model-facing subagents tool can interrupt an exact tasklet, but its [ACP method table](https://github.com/dirac-run/dirac/blob/b7ec7580c988598f09f55ee0857440f0e5673eb9/cli/src/acp/AcpAgent.ts) exposes no direct tasklet-interrupt operation. ACP session/cancel addresses the root session. LeapMux rejects a child interrupt while the real child remains running and retains parent interruption. The earlier claim that Dirac itself cannot stop one child was incorrect.",
         "spec": "frontend/tests/e2e/dirac/interrupt-a-subagent.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -9371,7 +9371,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Native AgentSwarm invocations group member outcomes by their complete parent tool identity. Native coordinator outcomes and canonical child activity remain separate rows; several rows can open the same child transcript. The complete browser spec checks the group, independent outcomes and transcript links across reload. Complete installed Kimi Code 2.5.3 acceptance: 89 tests passed in e2e-iSL8yl.",
+        "detailNote": "Kimi Code 2.6.2 AgentSwarm invocations group member outcomes by the owning session, agent, turn, and tool item. Native coordinator outcomes and child activity remain separate rows. Several rows can open the same child transcript. The browser spec checks the group, independent outcomes and transcript links across reload. Complete installed-provider acceptance passed all 89 cases across 60 files with zero retries or skips in e2e-EMJEDa.",
         "spec": "frontend/tests/e2e/kimi-code/workflow-grouping.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -11320,7 +11320,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Kimi Code 2.5.3 context clear stops the private runtime and its owned commands, then creates a fresh native session without a resume handle. The Worker and saved transcript remain available, and selected settings persist. The complete session-reset file proves the old runtime and held background command stop, the new session answers, and saved history remains visible. Complete installed provider acceptance: 89 tests passed in e2e-iSL8yl.",
+        "detailNote": "Clearing context stops the private Kimi Code 2.6.2 runtime and its owned commands, then opens a fresh native session. The Worker and saved transcript remain available, and selected settings persist. The browser spec proves that the old runtime and held background command stop, the new session answers, and saved history remains visible. Complete installed-provider acceptance passed all 89 cases across 60 files with zero retries or skips in e2e-EMJEDa.",
         "spec": "frontend/tests/e2e/kimi-code/session-reset.spec.ts",
         "audit": "source-verified",
         "verified": true,

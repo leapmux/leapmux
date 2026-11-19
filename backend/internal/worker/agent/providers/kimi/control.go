@@ -26,7 +26,7 @@ import (
 // it through the Kimi plugin. The answer comes back through
 // SendControlResponse: ResolveControlResponse (control_response.go) turns the
 // browser's decision into the server's own body, and deliverControlResponse
-// posts it. Transcript records also carry control lifecycle state. A subscription
+// posts it. A subscription
 // re-emits the current pending live frames after its acknowledgement.
 //
 // The server resolves a request by itself when the turn ends (an abort, a
@@ -134,6 +134,7 @@ func (a *Agent) dispatchInteraction(interaction kimiInteraction) {
 	if interaction.Status != kimiInteractionPending || interaction.Request == nil {
 		return
 	}
+	a.observeControlReplay(interaction)
 	switch interaction.Kind {
 	case contracts.KimiInteractionKindApproval:
 		a.handleApprovalRequested(interaction)
@@ -144,8 +145,6 @@ func (a *Agent) dispatchInteraction(interaction kimiInteraction) {
 
 func (a *Agent) handleApprovalRequested(interaction kimiInteraction) {
 	agentID := interaction.agent()
-	// Preserve the model's text above the control that asks about its next call.
-	a.flushAgentText(agentID)
 	display := interaction.Request.ToolInputDisplay
 	if display.Kind == contracts.KimiDisplayPlanReview && agentID == kimiMainAgentID {
 		if plan := strings.TrimSpace(display.Plan); plan != "" {
@@ -158,20 +157,13 @@ func (a *Agent) handleApprovalRequested(interaction kimiInteraction) {
 }
 
 func (a *Agent) handleQuestionRequested(interaction kimiInteraction) {
-	a.flushAgentText(interaction.agent())
 	a.publishControl(interaction, kimiControlQuestion, false)
 }
 
-// flushAgentText persists what an agent streamed so far. An empty id is the
-// main agent, as parseKimiEvent reads an event that states no agent.
-func (a *Agent) flushAgentText(agentID string) {
-	if agentID == "" {
-		agentID = kimiMainAgentID
-	}
-	run := a.run(agentID)
-	if sink := a.runSink(run); sink != nil {
-		a.flushRun(run, sink, agent.MessageCompletionComplete)
-	}
+// Retain the model's text before the control that asks about its next call.
+// Return whether the control must wait for a captured native text row.
+func (a *Agent) flushAgentText(agentID string) bool {
+	return a.flushConversationControlText(a.run(agentID))
 }
 
 // publishControl stores and broadcasts one control request.
@@ -196,9 +188,20 @@ func (a *Agent) publishControl(interaction kimiInteraction, kind kimiControlKind
 		payload: append([]byte(nil), interaction.Raw...), ready: bypass, publicationDone: make(chan struct{})}
 	a.controls[requestID] = pending
 	a.Mu.Unlock()
+	afterText := a.flushAgentText(pending.agentID)
 	if bypass {
 		a.queuePermissionApprovals()
 		return
+	}
+	if afterText {
+		err := a.queueProviderWrite("publish the Kimi control after its text", func() error {
+			a.publishRegisteredControl(requestID, pending)
+			return nil
+		})
+		if agent.OutputRetained(err) {
+			return
+		}
+		slog.Warn("retain the Kimi control publication", "error", err)
 	}
 	a.publishRegisteredControl(requestID, pending)
 }
@@ -349,10 +352,7 @@ func (a *Agent) resolveControl(interaction kimiInteraction) {
 	}
 	a.Mu.Lock()
 	pending := a.controls[requestID]
-	if pending != nil && (pending.sessionID != interaction.SessionID || pending.agentID != interaction.agent() ||
-		(pending.kind == kimiControlApproval && interaction.Kind != contracts.KimiInteractionKindApproval) ||
-		(pending.kind == kimiControlQuestion && interaction.Kind != contracts.KimiInteractionKindQuestion) ||
-		(pending.toolCallID != "" && interaction.ToolCallID != "" && pending.toolCallID != interaction.ToolCallID)) {
+	if pending != nil && !pending.matchesInteraction(interaction) {
 		a.Mu.Unlock()
 		return
 	}

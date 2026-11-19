@@ -149,6 +149,10 @@ func (a *Agent) routeAskDialog(head dialogHeader) bool {
 			a.handOffAsk(call)
 			return false
 		}
+		if len(payload) > contracts.MaxMessageSize {
+			a.handOffAsk(call)
+			return false
+		}
 		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: payload}); err != nil {
 			slog.Error("omp publish question request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 			a.cancelDialog(head.ID)
@@ -180,6 +184,7 @@ func (a *Agent) routeAskDialog(head dialogHeader) bool {
 func (a *Agent) handOffAsk(call *askCall) {
 	a.Mu.Lock()
 	call.handOff = true
+	call.requestID = ""
 	a.Mu.Unlock()
 }
 
@@ -411,10 +416,14 @@ func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhM
 
 func (plan *askPlan) title(questionIndex, selectedCount int) string {
 	question := plan.questions[questionIndex]
+	title := question.Question
 	if question.Multi && selectedCount > 0 {
-		return "(" + strconv.Itoa(selectedCount) + " selected) " + question.Question
+		title = "(" + strconv.Itoa(selectedCount) + " selected) " + title
 	}
-	return question.Question
+	if question.Context != "" {
+		return question.Context + "\n\n" + title
+	}
+	return title
 }
 
 func nativeAskOther(question contracts.OhMyPiAskQuestion) string {
@@ -491,7 +500,7 @@ func (plan *askPlan) respond(head dialogHeader) (string, error) {
 	value := action.value
 	switch action.kind {
 	case askInputOther:
-		if head.Method != contracts.OhMyPiDialogMethodInput || head.Title != question.Question {
+		if head.Method != contracts.OhMyPiDialogMethodInput || head.Title != plan.title(action.questionIndex, 0) {
 			return "", fmt.Errorf("%w: native custom input", errAskShape)
 		}
 	case askSelectOption, askSelectOther, askSelectDone:

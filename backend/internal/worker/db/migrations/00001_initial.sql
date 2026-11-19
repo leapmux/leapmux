@@ -123,10 +123,14 @@ CREATE INDEX idx_agents_closed_native_session
 -- whole table. The partial index covers open rows because the view's agents branch
 -- selects only those and closed rows stay for the retention window.
 CREATE INDEX idx_agents_open_working_dir ON agents(working_dir) WHERE closed_at IS NULL;
--- One child row per spawning tool_use: makes EnsureChildAgent replay
--- idempotency a constraint (worker restart mid-spawn), not a convention.
-CREATE UNIQUE INDEX idx_agents_spawn_span ON agents(parent_agent_id, spawn_span_id)
+-- One native call can create several children. Its span records their shared
+-- origin; an exact provider child key identifies each member.
+CREATE INDEX idx_agents_spawn_span ON agents(parent_agent_id, spawn_span_id)
     WHERE parent_agent_id IS NOT NULL AND spawn_span_id <> '';
+-- A span-only child is provisional until the provider supplies its native key.
+-- Keep at most one provisional identity for an origin across concurrent replay.
+CREATE UNIQUE INDEX idx_agents_provisional_spawn ON agents(parent_agent_id, spawn_span_id)
+    WHERE parent_agent_id IS NOT NULL AND spawn_span_id <> '' AND provider_child_key = '';
 -- Native keys preserve child identity when the provider omits a spawn span.
 CREATE UNIQUE INDEX idx_agents_provider_child_key ON agents(parent_agent_id, provider_child_key)
     WHERE parent_agent_id IS NOT NULL AND provider_child_key <> '';
@@ -780,6 +784,7 @@ DROP TABLE IF EXISTS tab_creations;
 DROP VIEW IF EXISTS tab_locations;
 DROP TABLE IF EXISTS agent_background_tasks;
 DROP INDEX IF EXISTS idx_agents_spawn_span;
+DROP INDEX IF EXISTS idx_agents_provisional_spawn;
 DROP INDEX IF EXISTS idx_agents_parent;
 DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_tab_payloads;

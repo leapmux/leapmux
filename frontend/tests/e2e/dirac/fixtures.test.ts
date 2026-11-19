@@ -109,7 +109,12 @@ describe('prepareAnthropicDirac', () => {
   it('writes the private Dirac home in the run directory and points Dirac at the mock', () => {
     const prepared = prepareAnthropicDirac(directory, 'http://127.0.0.1:7', 'claude-opus-5')
     const state = join(directory, 'dirac-home', 'data', 'globalState.json')
-    expect(JSON.parse(readFileSync(state, 'utf8'))).toEqual({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true })
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toEqual({
+      telemetrySetting: 'disabled',
+      autoApproveAllToggled: true,
+      yoloModeToggled: true,
+      subagentsEnabled: true,
+    })
     expect(statSync(state).mode & 0o777).toBe(privateFileMode)
     expect(prepared.agentEnv).toBeUndefined()
     expect(prepared.env).toEqual({

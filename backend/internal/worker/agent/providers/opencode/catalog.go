@@ -2,12 +2,15 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"golang.org/x/sync/errgroup"
@@ -45,8 +48,46 @@ type openCodeCatalog struct {
 	defaultAgent string
 }
 
+const openCodeCatalogActivationPollTag = "opencode-catalog-activation-poll"
+
 func (info openCodeAgentInfo) selectableAsPrimary() bool {
 	return !info.Hidden && (info.Mode == "primary" || info.Mode == "all")
+}
+
+// The stream greeting can arrive before the location's plugins finish activating.
+// OpenCode stops waiting after five seconds and reports that specific condition.
+// Keep waiting during startup so the catalog includes every enabled plugin.
+func awaitOpenCodeCatalog(ctx context.Context, rpc openCodeRPC, clock quartz.Clock, timeout time.Duration) (openCodeCatalog, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		catalog, err := loadOpenCodeCatalog(ctx, rpc)
+		if !openCodePluginActivationPending(err) {
+			return catalog, err
+		}
+		timer := clock.NewTimer(time.Second, openCodeCatalogActivationPollTag)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return openCodeCatalog{}, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func openCodePluginActivationPending(err error) bool {
+	var status *providerkit.HTTPStatusError
+	if !errors.As(err, &status) || status.StatusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	var response struct {
+		Tag     string `json:"_tag"`
+		Service string `json:"service"`
+		Message string `json:"message"`
+	}
+	return json.Unmarshal([]byte(status.Body), &response) == nil &&
+		response.Tag == "ServiceUnavailableError" && response.Service == "plugin" &&
+		response.Message == "Location plugins did not finish activating"
 }
 
 func loadOpenCodeCatalog(ctx context.Context, rpc openCodeRPC) (openCodeCatalog, error) {

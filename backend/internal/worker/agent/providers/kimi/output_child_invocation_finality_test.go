@@ -4,48 +4,73 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func kimiFinalityIdentity() kimiTranscriptToolIdentity {
-	return kimiTranscriptToolIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "spawn", toolCallID: "spawn"}
+func kimiFinalityIdentity() kimiInvocationIdentity {
+	return kimiInvocationIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", toolCallID: "spawn"}
 }
 
-func kimiFinalityOperation(t *testing.T, state, output string, background bool) string {
+type kimiFinalityTool struct {
+	outcome, output, taskID string
+	background              bool
+}
+
+func (tool kimiFinalityTool) item(t *testing.T) json.RawMessage {
 	t.Helper()
-	frame := map[string]any{"kind": "tool", "frameId": "spawn", "toolCallId": "spawn", "name": "Agent", "state": state,
-		"input":     map[string]any{"description": "Review", "prompt": "Review it.", "run_in_background": background},
-		"agentRefs": []any{map[string]any{"agentId": "agent-0", "role": "child"}}}
-	if state != "running" {
-		frame["output"] = output
+	ref := map[string]any{"agent_id": "agent-0", "role": "child"}
+	if tool.taskID != "" {
+		ref["task_id"] = tool.taskID
 	}
-	raw, err := json.Marshal(map[string]any{"op": "frame.upsert", "turnId": "t0", "stepId": "t0.1", "frame": frame})
+	item := map[string]any{"type": "tool_call", "item_id": "spawn", "name": "Agent", "status": "running",
+		"created_at": "2026-11-18T00:00:00Z", "started_at": "2026-11-18T00:00:00Z", "step_index": 1,
+		"input":      map[string]any{"description": "Review", "prompt": "Review it.", "run_in_background": tool.background},
+		"agent_refs": []any{ref}}
+	if tool.outcome == "" {
+		item["stage"] = "executing"
+	} else {
+		item["status"], item["outcome"] = "ended", tool.outcome
+		if tool.outcome == "completed" {
+			item["output"] = tool.output
+		} else {
+			item["error"] = tool.output
+		}
+	}
+	raw, err := json.Marshal(item)
 	require.NoError(t, err)
-	return string(raw)
+	return raw
+}
+
+func (tool kimiFinalityTool) publish(t *testing.T, rig *kimiOutputRig) {
+	t.Helper()
+	kind := "item.started"
+	if tool.outcome != "" {
+		kind = "item.ended"
+	}
+	raw, err := json.Marshal(map[string]any{"type": kind, "turn_id": "t0", "item": tool.item(t)})
+	require.NoError(t, err)
+	rig.conversationFrame(t, string(raw))
 }
 
 func newKimiFinalityRig(t *testing.T, background bool) *kimiOutputRig {
 	t.Helper()
-	rig := newKimiOutputRig(t)
-	rig.transcriptOps(t, 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"}}}`,
-		`{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"running"}}`,
-		kimiFinalityOperation(t, "running", "", background))
-	rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"independent","state":"running","origin":{"kind":"user"}}}`)
+	rig := newKimiConversationRig(t)
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	(kimiFinalityTool{background: background}).publish(t, rig)
+	rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"turn.started","turn":{"turn_id":"independent","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
 	return rig
 }
 
 func finalityOutcome(t *testing.T, rig *kimiOutputRig) bgtask.Item {
 	t.Helper()
+	awaitKimiTestOutput(t, rig.agent.sink)
 	row, exists := rig.sink.BackgroundTask(kimiInvocationOutcomeKey(&kimiChildInvocation{identity: kimiFinalityIdentity()}, "agent-0"))
 	require.True(t, exists)
 	assert.Equal(t, bgtask.RoleTaskOutcome, row.Role)
@@ -54,6 +79,7 @@ func finalityOutcome(t *testing.T, rig *kimiOutputRig) bgtask.Item {
 
 func assertKimiFinalityChildStillRuns(t *testing.T, rig *kimiOutputRig) {
 	t.Helper()
+	awaitKimiTestOutput(t, rig.agent.sink)
 	marker, exists := rig.sink.BackgroundTask("session_1/agent-0")
 	require.True(t, exists)
 	assert.Equal(t, bgtask.RoleChildActivity, marker.Role)
@@ -63,21 +89,27 @@ func assertKimiFinalityChildStillRuns(t *testing.T, rig *kimiOutputRig) {
 
 func TestKimiUnmatchedInvocationFinishesWithoutInventingAChildOutcome(t *testing.T) {
 	t.Parallel()
-	for _, finish := range []string{"tool done", "tool error", "parent completed", "parent cancelled", "withdrawn snapshot"} {
+	for _, finish := range []string{"tool done", "tool error", "parent completed", "parent interrupted", "withdrawn snapshot", "removed item", "removed turn"} {
 		t.Run(finish, func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiFinalityRig(t, false)
 			switch finish {
 			case "tool done":
-				rig.transcriptOps(t, 2, kimiFinalityOperation(t, "done", "No supported child result was retained.", false))
+				(kimiFinalityTool{outcome: "completed", output: "No supported child result was retained."}).publish(t, rig)
 			case "tool error":
-				rig.transcriptOps(t, 2, kimiFinalityOperation(t, "error", "Tool execution cancelled.", false))
-			case "parent completed":
-				rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
-			case "parent cancelled":
-				rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"cancelled","origin":{"kind":"user"}}}`)
+				(kimiFinalityTool{outcome: "failed", output: "Tool execution cancelled."}).publish(t, rig)
+			case "parent completed", "parent interrupted":
+				outcome := "completed"
+				if finish == "parent interrupted" {
+					outcome = "interrupted"
+				}
+				rig.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"`+outcome+`","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 			case "withdrawn snapshot":
-				rig.agent.HandleOutput(nativeKimiRecoveryReset(t, rig.sessionID(), "main", 2))
+				rig.agent.HandleOutput(kimiConversationTestPage(t, rig.sessionID(), "main"))
+			case "removed item":
+				rig.conversationFrame(t, `{"type":"item.removed","turn_id":"t0","item_id":"spawn"}`)
+			case "removed turn":
+				rig.conversationFrame(t, `{"type":"turns.removed","turn_ids":["t0"]}`)
 			}
 			assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, finalityOutcome(t, rig).Status)
 			assertKimiFinalityChildStillRuns(t, rig)
@@ -88,9 +120,9 @@ func TestKimiUnmatchedInvocationFinishesWithoutInventingAChildOutcome(t *testing
 func TestKimiUnmatchedUnknownOutcomeAcceptsLaterKnownNativeEvidence(t *testing.T) {
 	t.Parallel()
 	rig := newKimiFinalityRig(t, false)
-	rig.transcriptOps(t, 2, kimiFinalityOperation(t, "done", "No supported child result was retained.", false))
+	(kimiFinalityTool{outcome: "completed", output: "No supported child result was retained."}).publish(t, rig)
 	require.Equal(t, bgtask.StatusEndedWithUnknownOutcome, finalityOutcome(t, rig).Status)
-	rig.transcriptOps(t, 3, kimiFinalityOperation(t, "done", "agent_id: agent-0\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nA definitive completed result.", false))
+	(kimiFinalityTool{outcome: "completed", output: "agent_id: agent-0\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nA definitive completed result."}).publish(t, rig)
 	assert.Equal(t, bgtask.StatusSucceeded, finalityOutcome(t, rig).Status)
 	assertKimiFinalityChildStillRuns(t, rig)
 }
@@ -101,31 +133,34 @@ func TestKimiExactLocalNativeStateBindsInEitherArrivalOrder(t *testing.T) {
 	t.Parallel()
 	for _, taskFirst := range []bool{false, true} {
 		for _, ended := range []bool{false, true} {
-			t.Run(fmt.Sprintf("task_first=%t/ended=%t", taskFirst, ended), func(t *testing.T) {
-				t.Parallel()
-				rig := newKimiFinalityRig(t, true)
-				status, outcome := "running", ""
-				if ended {
-					status, outcome = "ended", "completed"
-				}
-				frame := []byte(fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-native","kind":"subagent","status":%q,"outcome":%q,"detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`, status, outcome))
-				if taskFirst {
-					rig.agent.HandleOutput(frame)
-				}
-				rig.transcriptOps(t, 2, kimiFinalityOperation(t, "done", kimiFinalityBackgroundResult, true))
-				if !taskFirst {
-					rig.agent.HandleOutput(frame)
-				}
-				native := nativeTaskOf(t, rig.sink, "task-native")
-				expected := bgtask.StatusRunning
-				if ended {
-					expected = bgtask.StatusSucceeded
-				}
-				assert.Equal(t, expected, native.Status)
-				_, exists := rig.sink.BackgroundTask(kimiInvocationOutcomeKey(&kimiChildInvocation{identity: kimiFinalityIdentity()}, "agent-0"))
-				assert.False(t, exists, "an exact native state already observed needs no live watch to prove this alias")
-				assertKimiFinalityChildStillRuns(t, rig)
-			})
+			for _, detached := range []bool{false, true} {
+				t.Run(fmt.Sprintf("task_first=%t/ended=%t/detached=%t", taskFirst, ended, detached), func(t *testing.T) {
+					t.Parallel()
+					rig := newKimiFinalityRig(t, detached)
+					status, outcome := "running", ""
+					if ended {
+						status, outcome = "ended", "completed"
+					}
+					frame := []byte(fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-native","kind":"subagent","status":%q,"outcome":%q,"detached":%t,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`, status, outcome, detached))
+					if taskFirst {
+						rig.agent.HandleOutput(frame)
+					}
+					(kimiFinalityTool{outcome: "completed", output: kimiFinalityBackgroundResult, background: detached, taskID: "task-native"}).publish(t, rig)
+					if !taskFirst {
+						rig.agent.HandleOutput(frame)
+					}
+					awaitKimiTestOutput(t, rig.agent.sink)
+					native := nativeTaskOf(t, rig.sink, "task-native")
+					expected := bgtask.StatusRunning
+					if ended {
+						expected = bgtask.StatusSucceeded
+					}
+					assert.Equal(t, expected, native.Status)
+					_, exists := rig.sink.BackgroundTask(kimiInvocationOutcomeKey(&kimiChildInvocation{identity: kimiFinalityIdentity()}, "agent-0"))
+					assert.False(t, exists, "an exact native state already observed needs no live watch to prove this alias")
+					assertKimiFinalityChildStillRuns(t, rig)
+				})
+			}
 		}
 	}
 }
@@ -133,21 +168,23 @@ func TestKimiExactLocalNativeStateBindsInEitherArrivalOrder(t *testing.T) {
 func TestKimiContinuingBackgroundDescriptorSurvivesParentCompletion(t *testing.T) {
 	t.Parallel()
 	rig := newKimiFinalityRig(t, true)
-	rig.transcriptOps(t, 2, kimiFinalityOperation(t, "done", kimiFinalityBackgroundResult, true),
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
-	assert.Equal(t, bgtask.StatusRunning, finalityOutcome(t, rig).Status, "the native background result describes continuing coordinator work")
+	(kimiFinalityTool{outcome: "completed", output: kimiFinalityBackgroundResult, background: true, taskID: "task-native"}).publish(t, rig)
+	rig.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	assert.Equal(t, bgtask.StatusRunning, finalityOutcome(t, rig).Status, "the native background reference describes continuing coordinator work")
 	assertKimiFinalityChildStillRuns(t, rig)
 }
 
 func TestKimiUnknownProvisionalOutcomeCannotEndAnIdentifiedRunningTask(t *testing.T) {
 	t.Parallel()
 	rig := newKimiFinalityRig(t, true)
-	rig.transcriptOps(t, 2, kimiFinalityOperation(t, "done", "An unrecognized provisional result.", true))
+	(kimiFinalityTool{outcome: "completed", output: "An unrecognized provisional result.", background: true}).publish(t, rig)
 	require.Equal(t, bgtask.StatusEndedWithUnknownOutcome, finalityOutcome(t, rig).Status)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-native","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
-	rig.transcriptOps(t, 3, kimiFinalityOperation(t, "done", kimiFinalityBackgroundResult, true))
+	(kimiFinalityTool{outcome: "completed", output: kimiFinalityBackgroundResult, background: true, taskID: "task-native"}).publish(t, rig)
+	awaitKimiTestOutput(t, rig.agent.sink)
 	assert.Equal(t, bgtask.StatusRunning, nativeTaskOf(t, rig.sink, "task-native").Status, "uncertainty about a parent result cannot close its now identified continuing task")
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-native","kind":"subagent","status":"ended","outcome":"completed","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
+	awaitKimiTestOutput(t, rig.agent.sink)
 	assert.Equal(t, bgtask.StatusSucceeded, nativeTaskOf(t, rig.sink, "task-native").Status)
 	_, exists := rig.sink.BackgroundTask(kimiInvocationOutcomeKey(&kimiChildInvocation{identity: kimiFinalityIdentity()}, "agent-0"))
 	assert.False(t, exists, "a definitive native outcome can safely collapse the uncertain provisional alias")
@@ -156,21 +193,17 @@ func TestKimiUnknownProvisionalOutcomeCannotEndAnIdentifiedRunningTask(t *testin
 
 func TestKimiLocalBindingRejectsContradictoryNativeMetadata(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name, kind, child, parent string
-		detached                  bool
-	}{
-		{"foreground task", "subagent", "agent-0", "spawn", false},
-		{"another child", "subagent", "agent-1", "spawn", true},
-		{"another parent call", "subagent", "agent-0", "another-call", true},
-		{"another task kind", "shell", "agent-0", "spawn", true},
+	for _, scenario := range []struct{ name, kind, child, parent string }{
+		{"another child", "subagent", "agent-1", "spawn"},
+		{"another parent call", "subagent", "agent-0", "another-call"},
+		{"another task kind", "shell", "agent-0", "spawn"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiFinalityRig(t, true)
-			raw := fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-native","kind":%q,"status":"running","detached":%t,"child_agent_id":%q,"parent_tool_call_id":%q,"command":"printf native"}`, test.kind, test.detached, test.child, test.parent)
+			raw := fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-native","kind":%q,"status":"running","detached":true,"child_agent_id":%q,"parent_tool_call_id":%q,"command":"printf native"}`, scenario.kind, scenario.child, scenario.parent)
 			rig.agent.HandleOutput([]byte(raw))
-			rig.transcriptOps(t, 2, kimiFinalityOperation(t, "done", kimiFinalityBackgroundResult, true))
+			(kimiFinalityTool{outcome: "completed", output: kimiFinalityBackgroundResult, background: true, taskID: "task-native"}).publish(t, rig)
 			rig.agent.Mu.Lock()
 			task := rig.agent.tasks[kimiTaskAddress{ownerAgentID: "main", taskID: "task-native"}]
 			var bound *kimiChildInvocation
@@ -187,13 +220,34 @@ func TestKimiLocalBindingRejectsContradictoryNativeMetadata(t *testing.T) {
 
 func TestKimiRecoveryBarrierPublishesWithdrawnUnmatchedOutcome(t *testing.T) {
 	t.Parallel()
-	rig := newKimiFinalityRig(t, false)
-	applied := rig.agent.beginInvocationRecovery(context.Background(), rig.sessionID())
+	connected := newKimiTestRig(t, agent.Options{})
+	rig := &kimiOutputRig{agent: connected.agent, sink: connected.sink}
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	const childTurn = `{"turn_id":"independent","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}`
+	(kimiFinalityTool{}).publish(t, rig)
+	child := rig.agent.run("agent-0")
+	waitFor(t, func() bool { return child.conversationRecovery.Load() == nil }, "the child receives its initial native page")
+	rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"turn.started","turn":`+childTurn+`}`))
+	applied := rig.agent.beginInvocationRecovery(t.Context(), rig.sessionID())
 	require.NotNil(t, applied)
-	rig.agent.HandleOutput(nativeKimiRecoveryReset(t, rig.sessionID(), "main", 2))
-	assert.Equal(t, bgtask.StatusRunning, finalityOutcome(t, rig).Status, "the incomplete recovery fence delays projection")
+	assert.Equal(t, bgtask.StatusRunning, finalityOutcome(t, rig).Status)
 	applied(true)
-	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, finalityOutcome(t, rig).Status, "the applied barrier must also publish withdrawn outcomes")
+	rig.agent.HandleOutput(kimiConversationTestPage(t, rig.sessionID(), "main"))
+	assert.Equal(t, bgtask.StatusRunning, finalityOutcome(t, rig).Status, "the child snapshot still holds the recovery fence")
+	rig.agent.HandleOutput(kimiConversationTestPage(t, rig.sessionID(), "agent-0", json.RawMessage(`{
+		"turn_id":"independent","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[]
+	}`)))
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, finalityOutcome(t, rig).Status, "complete native pages must also publish withdrawn outcomes")
+	assertKimiFinalityChildStillRuns(t, rig)
+}
+
+func TestKimiCompletePageKeepsAnInvocationThatStillExists(t *testing.T) {
+	t.Parallel()
+	rig := newKimiFinalityRig(t, false)
+	item := (kimiFinalityTool{}).item(t)
+	turn := json.RawMessage(`{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[` + string(item) + `]}`)
+	rig.agent.HandleOutput(kimiConversationTestPage(t, rig.sessionID(), "main", turn))
+	assert.Equal(t, bgtask.StatusRunning, finalityOutcome(t, rig).Status)
 	assertKimiFinalityChildStillRuns(t, rig)
 }
 
@@ -204,17 +258,17 @@ func TestKimiRecoveryRetainsNativeOutcomeWhenCreatorClaimsConflict(t *testing.T)
 	entered, released := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(released) })
 	defer release()
+	enteredOnce := sync.OnceFunc(func() { close(entered) })
 	rig.fake.mu.Lock()
 	rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
-		close(entered)
+		enteredOnce()
 		<-released
 		return map[string]any{"task_id": command.TaskID, "kind": "subagent", "status": "ended", "outcome": "completed", "detached": true, "child_agent_id": "agent-0", "result_summary": "The task definitely completed."}
 	}
 	rig.fake.mu.Unlock()
-	native.transcriptOps(t, 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"}}}`,
-		`{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"running"}}`,
-		kimiFinalityOperation(t, "done", kimiFinalityBackgroundResult, true))
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	tool := kimiFinalityTool{outcome: "completed", output: kimiFinalityBackgroundResult, background: true, taskID: "task-native"}
+	tool.publish(t, native)
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-entered:
@@ -223,19 +277,19 @@ func TestKimiRecoveryRetainsNativeOutcomeWhenCreatorClaimsConflict(t *testing.T)
 	}
 	applied := rig.agent.beginInvocationRecovery(context.Background(), rig.sessionID())
 	require.NotNil(t, applied)
-	defer applied(false)
-	firstRaw := kimiFinalityOperation(t, "done", kimiFinalityBackgroundResult, true)
-	secondRaw := strings.Replace(strings.Replace(firstRaw, `"frameId":"spawn"`, `"frameId":"other"`, 1), `"toolCallId":"spawn"`, `"toolCallId":"other-call"`, 1)
-	var first, second struct {
-		Frame map[string]any `json:"frame"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(firstRaw), &first))
-	require.NoError(t, json.Unmarshal([]byte(secondRaw), &second))
-	turn := map[string]any{"kind": "turn", "turnId": "t0", "state": "running", "ordinal": 0, "origin": map[string]any{"kind": "user"}, "steps": []any{map[string]any{"kind": "step", "stepId": "t0.1", "ordinal": 1, "state": "running", "frames": []any{first.Frame, second.Frame}}}}
-	rig.agent.HandleOutput(nativeKimiRecoveryReset(t, rig.sessionID(), "main", 2, turn))
+	applied(true)
+	var first, second map[string]any
+	require.NoError(t, json.Unmarshal(tool.item(t), &first))
+	require.NoError(t, json.Unmarshal(tool.item(t), &second))
+	second["item_id"] = "other-call"
+	turn := map[string]any{"turn_id": "t0", "ordinal": 0, "kind": "agent", "status": "running", "started_at": "2026-11-18T00:00:00Z", "steps": []any{}, "items": []any{first, second}}
+	raw, err := json.Marshal(turn)
+	require.NoError(t, err)
+	rig.agent.HandleOutput(kimiConversationTestPage(t, rig.sessionID(), "main", raw))
 	release()
 	waitFor(t, rig.agent.taskRecoveryWork.Idle, "the validated watch state finishes behind the creator fence")
-	applied(true)
+	rig.agent.HandleOutput(kimiConversationTestPage(t, rig.sessionID(), "agent-0"))
+	awaitKimiTestOutput(t, rig.agent.sink)
 	outcome := nativeTaskOf(t, rig.sink, "task-native")
 	assert.Equal(t, bgtask.StatusSucceeded, outcome.Status, "creator ambiguity cannot discard an exact native task outcome")
 	rig.agent.Mu.Lock()
@@ -246,7 +300,7 @@ func TestKimiRecoveryRetainsNativeOutcomeWhenCreatorClaimsConflict(t *testing.T)
 	}
 	rig.agent.Mu.Unlock()
 	assert.Nil(t, bound, "neither conflicting creator gains the task")
-	for _, identity := range []kimiTranscriptToolIdentity{kimiFinalityIdentity(), {sessionID: "session_1", agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "other", toolCallID: "other-call"}} {
+	for _, identity := range []kimiInvocationIdentity{kimiFinalityIdentity(), {sessionID: "session_1", agentID: "main", turnID: "t0", toolCallID: "other-call"}} {
 		_, exists := rig.sink.BackgroundTask(kimiInvocationOutcomeKey(&kimiChildInvocation{identity: identity}, "agent-0"))
 		assert.True(t, exists, "independent creator evidence cannot be removed by an ambiguous join")
 	}

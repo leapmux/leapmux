@@ -44,5 +44,9 @@ func newKimiServiceTestRig(t *testing.T) *kimiServiceTestRig {
 	require.NoError(t, provider.connect(provider.Context(), server.URL, fakeKapToken, opts, 30*time.Second))
 	t.Cleanup(provider.closeStream)
 	require.NoError(t, provider.openStartupSession(opts, 30*time.Second))
+	main := provider.run(kimiMainAgentID)
+	waitFor(t, func() bool {
+		return main.conversationRecovery.Load() == nil && !agent.OutputQueueFor(root).HasPending()
+	}, "the service rig applies its initial conversation page and output")
 	return &kimiServiceTestRig{agent: provider, fake: fake, output: handler, queries: queries, sink: root, database: database}
 }

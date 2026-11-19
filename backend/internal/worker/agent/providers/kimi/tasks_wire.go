@@ -188,9 +188,12 @@ func (a *Agent) applyNativeTaskStateBound(ownerAgentID string, state kimiNativeT
 	if invocation == nil && existing != nil && existing.kind == kimiTaskKindAgent && a.invocationRecovery == nil {
 		owner := a.run(ownerAgentID)
 		candidate := a.findTaskInvocation(existing, owner)
-		if candidate != nil && candidate.taskTarget != nil && a.currentDiscoveredTaskOwner(candidate.taskTarget) != nil && kimiDiscoveredTaskMatches(candidate.taskTarget, preserveNativeTaskMetadata(existing.native, state)) {
-			invocation = candidate
-			candidate.taskTarget.complete = true
+		if candidate != nil {
+			target := candidate.taskTargets[address]
+			if target != nil && a.currentDiscoveredTaskOwner(target) != nil && kimiDiscoveredTaskMatches(target, preserveNativeTaskMetadata(existing.native, state)) {
+				invocation = candidate
+				target.complete = true
+			}
 		}
 	}
 	if alreadyEnded {
@@ -229,11 +232,14 @@ func (a *Agent) applyNativeTaskStateBound(ownerAgentID string, state kimiNativeT
 		a.Mu.Unlock()
 		if invocation == nil && a.invocationRecovery == nil {
 			candidate := a.findTaskInvocation(existing, a.run(ownerAgentID))
-			if candidate != nil && candidate.taskTarget != nil && a.currentDiscoveredTaskOwner(candidate.taskTarget) != nil && kimiDiscoveredTaskMatches(candidate.taskTarget, state) {
-				a.Mu.Lock()
-				existing.boundInvocation = candidate
-				a.Mu.Unlock()
-				candidate.taskTarget.complete = true
+			if candidate != nil {
+				target := candidate.taskTargets[address]
+				if target != nil && a.currentDiscoveredTaskOwner(target) != nil && kimiDiscoveredTaskMatches(target, state) {
+					a.Mu.Lock()
+					existing.boundInvocation = candidate
+					a.Mu.Unlock()
+					target.complete = true
+				}
 			}
 		}
 		a.logNativeTaskProjection(address)

@@ -4,10 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
 type kimiInvocationRecovery struct {
@@ -28,15 +24,31 @@ func (a *Agent) beginInvocationRecovery(_ context.Context, sessionID string) fun
 	}
 	recovery := &kimiInvocationRecovery{sessionID: sessionID}
 	a.invocationRecovery = recovery
+	a.controlReplay = nil
 	return func(accepted bool) {
 		a.dispatchMu.Lock()
 		defer a.finishDispatch()
 		if a.invocationRecovery != recovery {
 			return
 		}
+		a.Mu.Lock()
+		current := a.sessionID == sessionID && !a.StoppedLocked() && !a.ProcessExitedLocked()
+		a.Mu.Unlock()
+		if !current {
+			a.invocationRecovery = nil
+			return
+		}
 		if !accepted {
 			a.invocationRecovery = nil
 			return
+		}
+		a.captureControlReplay(sessionID)
+		agents := []string{kimiMainAgentID}
+		if a.stream != nil {
+			agents = a.stream.subscribedAgents(sessionID)
+		}
+		for _, agentID := range agents {
+			a.awaitConversationSnapshot(a.run(agentID))
 		}
 		recovery.applied = true
 	}
@@ -55,7 +67,7 @@ func (a *Agent) finishInvocationRecoveryIfReady() {
 	}
 	runs := make([]*kimiRun, 0, len(a.runs))
 	for _, run := range a.runs {
-		if run.pendingNativeRecovery {
+		if run.conversationRecovery.Load() != nil {
 			a.Mu.Unlock()
 			return
 		}
@@ -132,56 +144,12 @@ func (a *Agent) recoverDiscoveredNativeTask(target *kimiDiscoveredTask) {
 	a.applyNativeTaskStateBound(target.address.ownerAgentID, state, target.invocation)
 }
 
-// retainDiscoveredTask keeps one immutable descriptor through repeated frame replay.
-func (invocation *kimiChildInvocation) retainDiscoveredTask(target *kimiDiscoveredTask) {
-	if previous := invocation.taskTarget; previous != nil && previous.address == target.address && previous.kind == target.kind && previous.childID == target.childID && previous.command == target.command && previous.explicitBackground == target.explicitBackground {
-		return
-	}
-	invocation.taskTarget = target
-}
-
-func kimiDiscoveredShellCommandMatches(target *kimiDiscoveredTask, state kimiNativeTaskState) bool {
-	parentMatches := state.ParentToolCallID == target.invocation.identity.toolCallID
-	if !target.explicitBackground && (!parentMatches || state.Command == "") {
-		return false
-	}
-	if state.Command == "" || state.Command == target.command {
-		return true
-	}
-	// Kimi rewrites Windows NUL redirects before recording the shell task.
-	// Require the native parent call too before accepting that alternate command.
-	return parentMatches && state.Command == kimiWindowsShellCommand(target.command)
-}
-
-// This is Kimi's Windows redirect rewrite, including JavaScript whitespace.
-var kimiWindowsNullRedirect = regexp.MustCompile(`(\d?&?>+[[:space:]\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*)[Nn][Uu][Ll]`)
-
-func kimiWindowsShellCommand(command string) string {
-	var result strings.Builder
-	position := 0
-	for _, match := range kimiWindowsNullRedirect.FindAllStringSubmatchIndex(command, -1) {
-		if match[1] < len(command) {
-			next, _ := utf8.DecodeRuneInString(command[match[1]:])
-			space := next == '\uFEFF' || next != '\u0085' && unicode.IsSpace(next)
-			if !space && !strings.ContainsRune("|&;)", next) {
-				continue
-			}
-		}
-		result.WriteString(command[position:match[3]])
-		result.WriteString("/dev/null")
-		position = match[1]
-	}
-	if position == 0 {
-		return command
-	}
-	result.WriteString(command[position:])
-	return result.String()
-}
-
+// The public item supplies the exact task identity. Command rewrites do not
+// change that identity; native kind, child and parent claims must still agree.
 func kimiDiscoveredTaskMatches(target *kimiDiscoveredTask, state kimiNativeTaskState) bool {
-	return state.validate() == nil && state.TaskID == target.address.taskID && state.Kind == target.kind && state.ChildAgentID == target.childID && state.Detached &&
+	return state.validate() == nil && state.TaskID == target.address.taskID && state.Kind == target.kind && state.ChildAgentID == target.childID &&
 		(state.ParentToolCallID == "" || state.ParentToolCallID == target.invocation.identity.toolCallID) &&
-		(target.kind != "shell" || kimiDiscoveredShellCommandMatches(target, state))
+		(target.kind != "shell" || state.Detached)
 }
 
 // The caller holds dispatchMu. Historical creator evidence remains valid after
@@ -192,7 +160,7 @@ func (a *Agent) observedDiscoveredTaskOwner(target *kimiDiscoveredTask) *kimiRun
 	current := a.sessionID == invocation.identity.sessionID && invocation.identity.agentID == target.address.ownerAgentID
 	owner := a.runs[target.address.ownerAgentID]
 	a.Mu.Unlock()
-	if !current || owner == nil || owner.childInvocations[invocation.identity] != invocation || invocation.taskTarget != target {
+	if !current || owner == nil || owner.childInvocations[invocation.identity] != invocation || invocation.taskTargets[target.address] != target {
 		return nil
 	}
 	return owner
@@ -215,10 +183,7 @@ func (a *Agent) currentDiscoveredTaskOwner(target *kimiDiscoveredTask) *kimiRun 
 		if other == invocation {
 			continue
 		}
-		if other.taskTarget != nil && other.taskTarget.address == target.address {
-			return nil
-		}
-		if target.kind == "shell" && !target.explicitBackground && other.identity.toolCallID == invocation.identity.toolCallID {
+		if other.taskTargets[target.address] != nil {
 			return nil
 		}
 	}

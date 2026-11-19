@@ -35,7 +35,9 @@ func TestKimiChildInterruptDoesNotGuessACoordinatorOrChangeNativeOutcomes(t *tes
 			native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
 			rig.agent.HandleOutput([]byte(kimiNativeInterruptTask))
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-b","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"other"}`))
-			native.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"retry","state":"running","origin":{"kind":"other"}}}`)
+			child := rig.agent.run("agent-0")
+			waitFor(t, func() bool { return child.conversationRecovery.Load() == nil }, "the child initial page precedes its running turn")
+			native.startPublicTurn(t, "agent-0", "retry", 0)
 			require.ErrorIs(t, interruptKimiChild(rig.agent, "session_1/agent-0", agent.StopContext{}), agent.ErrChildOperationUnsupported)
 			rig.agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-a","kind":"subagent","status":"ended","outcome":%q,"detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`, test.outcome)))
 			first, exists := rig.sink.BackgroundTask(kimiTaskRowKey("session_1", "main", "task-a"))

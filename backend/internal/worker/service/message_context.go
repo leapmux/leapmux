@@ -9,8 +9,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+func (s *agentOutputSink) ReadMessageByIdempotencyKey(sessionID, idempotencyKey string) (*agent.StoredMessage, error) {
+	if idempotencyKey == "" {
+		return nil, nil
+	}
+	row, err := s.h.queries.GetMessageByIdempotencyKey(bgCtx(), db.GetMessageByIdempotencyKeyParams{
+		AgentID: s.agentID, AgentSessionID: sessionID, IdempotencyKey: idempotencyKey,
+	})
+	return storedMessage("provider record", row, err)
+}
 
 func (s *agentOutputSink) ReadToolRequest(spanID string) (*agent.StoredMessage, error) {
 	return s.h.readToolRequest(s.agentID, s.currentMessageSessionID(), spanID)
@@ -32,7 +43,7 @@ func (s *agentOutputSink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, 
 	if err == nil && (row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || row.SpanID == "") {
 		return nil, nil
 	}
-	return storedSpanMessage(s.agentID, row.SpanID, "result", row, err)
+	return storedMessage("tool result", row, err)
 }
 
 // restoreMessageSession reports read failures to the constructor, which logs after unlocking.
@@ -86,7 +97,7 @@ func (h *OutputHandler) readToolRequest(agentID, sessionID, spanID string) (*age
 	row, err := h.queries.GetAgentMessageBySpanIDAndSource(bgCtx(), db.GetAgentMessageBySpanIDAndSourceParams{
 		AgentID: agentID, AgentSessionID: sessionID, SpanID: spanID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 	})
-	return storedSpanMessage(agentID, spanID, "request", row, err)
+	return storedMessage("tool request", row, err)
 }
 
 // readToolResult is the sibling lookup for the LAST row of a span -- the row that
@@ -98,23 +109,22 @@ func (h *OutputHandler) readToolResult(agentID, sessionID, spanID string) (*agen
 	row, err := h.queries.GetLatestMessageByAgentSpanAndSource(bgCtx(), db.GetLatestMessageByAgentSpanAndSourceParams{
 		AgentID: agentID, AgentSessionID: sessionID, SpanID: spanID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 	})
-	return storedSpanMessage(agentID, spanID, "result", row, err)
+	return storedMessage("tool result", row, err)
 }
 
-// storedSpanMessage decodes one message row for the two span reads above.
+// storedMessage decodes one stored row for a provider record or span read.
 //
-// kind identifies the read in a log line and in an error, so a failure states WHICH of the
-// two rows of a span could not be read.
-func storedSpanMessage(agentID, spanID, kind string, row db.Message, err error) (*agent.StoredMessage, error) {
+// kind identifies the read in its log and error messages.
+func storedMessage(kind string, row db.Message, err error) (*agent.StoredMessage, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read tool %s: %w", kind, err)
+		return nil, fmt.Errorf("read %s: %w", kind, err)
 	}
 	original, err := msgcodec.Decompress(row.Content, row.ContentCompression)
 	if err != nil {
-		return nil, fmt.Errorf("decode tool %s: %w", kind, err)
+		return nil, fmt.Errorf("decode %s: %w", kind, err)
 	}
 	content := agent.MessageContent{Original: original}
 	if len(row.SupplementalContent) > 0 {
@@ -123,9 +133,11 @@ func storedSpanMessage(agentID, spanID, kind string, row db.Message, err error) 
 			content, decodeErr = agent.DecodeMessageSupplement(original, supplemental)
 		}
 		if decodeErr != nil {
-			slog.Warn("decode tool "+kind+" supplement", "agent_id", agentID, "span_id", spanID, "error", decodeErr)
+			slog.Warn("decode "+kind+" supplement", "agent_id", row.AgentID, "span_id", row.SpanID, "error", decodeErr)
 		}
 	}
 	content.AgentSessionID = row.AgentSessionID
+	content.IdempotencyKey = row.IdempotencyKey
+	content.Completion = agent.MessageCompletionFromProto(workerdb.StorageEnumValue(row.Completion))
 	return &agent.StoredMessage{Content: content, Seq: row.Seq, Revision: row.SupplementalRevision}, nil
 }

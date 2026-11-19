@@ -5,12 +5,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
+	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
+
+// kimiInvocationIdentity is a tool item within a native conversation turn.
+type kimiInvocationIdentity struct {
+	sessionID, agentID, turnID, toolCallID string
+}
 
 type kimiInvocationPosition struct {
 	turn, step *int64
@@ -25,92 +30,166 @@ type kimiInvocationProjection struct {
 type kimiInvocationTarget struct {
 	status        bgtask.Status
 	actualProfile string
+	nativeTask    *kimiDiscoveredTask
 	// retained identifies the last projection accepted by the output queue.
 	retained kimiInvocationProjection
 }
 
 type kimiChildInvocation struct {
-	identity     kimiTranscriptToolIdentity
+	identity     kimiInvocationIdentity
 	position     kimiInvocationPosition
 	name         string
 	label        string
 	targets      map[string]*kimiInvocationTarget
+	linkedAgents map[string]struct{}
 	corroborated bool
 	restored     bool
 	present      bool
 	eligible     bool
 	finished     bool
 	resume       map[string]struct{}
-	taskTarget   *kimiDiscoveredTask
+	taskTargets  map[kimiTaskAddress]*kimiDiscoveredTask
 	parentOutput *kimiTaskOutputAnchor
 }
 
 type kimiDiscoveredTask struct {
-	address                kimiTaskAddress
-	kind, childID, command string
-	invocation             *kimiChildInvocation
-	complete               bool
-	explicitBackground     bool
+	address       kimiTaskAddress
+	kind, childID string
+	invocation    *kimiChildInvocation
+	complete      bool
 }
 
-func (a *Agent) observeChildInvocation(run *kimiRun, op kimiTranscriptOperation, frame kimiTranscriptToolFrame, source kimiFrame, position kimiInvocationPosition, eligible bool) *kimiChildInvocation {
-	if !kimiToolSpawns(frame.Name) && frame.Name != contracts.KimiToolBash {
+type kimiInvocationObservation struct {
+	identity                     kimiInvocationIdentity
+	position                     kimiInvocationPosition
+	name                         string
+	input, output                json.RawMessage
+	taskID                       string
+	refs                         []kimiConversationAgentRef
+	completion                   agent.MessageCompletion
+	eligible, restored, finished bool
+	parentOutput                 *kimiTaskOutputAnchor
+}
+
+func (a *Agent) observeInvocation(run *kimiRun, observation kimiInvocationObservation) *kimiChildInvocation {
+	if !kimiToolSpawns(observation.name) && observation.name != contracts.KimiToolBash {
 		return nil
 	}
-	id := kimiTranscriptToolIdentity{sessionID: source.SessionID, agentID: run.agentID, turnID: op.TurnID, stepID: op.StepID, frameID: frame.FrameID, toolCallID: frame.ToolCallID}
-	if id.sessionID == "" || id.turnID == "" || id.stepID == "" || id.frameID == "" || id.toolCallID == "" {
+	id := observation.identity
+	if id.sessionID == "" || id.agentID == "" || id.turnID == "" || id.toolCallID == "" {
 		return nil
 	}
 	var input struct {
 		Description string            `json:"description"`
 		Resume      string            `json:"resume"`
 		ResumeIDs   map[string]string `json:"resume_agent_ids"`
-		Command     string            `json:"command"`
-		Background  bool              `json:"run_in_background"`
 	}
-	if json.Unmarshal(frame.Input, &input) != nil {
+	if observation.name != contracts.KimiToolBash && json.Unmarshal(observation.input, &input) != nil {
 		return nil
 	}
-	refs := make(map[string]struct{}, len(frame.AgentRefs))
-	for _, ref := range frame.AgentRefs {
+	refs := make(map[string]struct{}, len(observation.refs))
+	referencedTasks := make(map[kimiTaskAddress]string)
+	for _, ref := range observation.refs {
 		if kimiCheckID("child agent", ref.AgentID) != nil || ref.AgentID == kimiMainAgentID || ref.AgentID == run.agentID {
 			return nil
 		}
 		if _, duplicate := refs[ref.AgentID]; duplicate {
 			return nil
 		}
-		if frame.Name == contracts.KimiToolAgent && ref.Role != "child" || frame.Name == contracts.KimiToolAgentSwarm && ref.Role != "member" {
+		if observation.name == contracts.KimiToolAgent && ref.Role != "child" || observation.name == contracts.KimiToolAgentSwarm && ref.Role != "member" {
 			return nil
 		}
-		if childRun := a.run(ref.AgentID); childRun.childParentAgentID != "" && childRun.childParentAgentID != run.agentID {
+		a.Mu.Lock()
+		childRun := a.runs[ref.AgentID]
+		conflictingParent := childRun != nil && childRun.childParentAgentID != "" && childRun.childParentAgentID != run.agentID
+		a.Mu.Unlock()
+		if conflictingParent {
 			return nil
 		}
 		refs[ref.AgentID] = struct{}{}
+		if ref.TaskID != "" {
+			if kimiCheckID("task", ref.TaskID) != nil {
+				return nil
+			}
+			address := kimiTaskAddress{ownerAgentID: run.agentID, taskID: ref.TaskID}
+			if _, duplicate := referencedTasks[address]; duplicate {
+				return nil
+			}
+			referencedTasks[address] = ref.AgentID
+		}
+	}
+	if observation.name == contracts.KimiToolAgent && input.Resume != "" {
+		if _, matches := refs[input.Resume]; !matches {
+			return nil
+		}
+		refs = map[string]struct{}{input.Resume: {}}
+		for address, childID := range referencedTasks {
+			if childID != input.Resume {
+				delete(referencedTasks, address)
+			}
+		}
+	}
+	taskKind := "subagent"
+	if observation.name == contracts.KimiToolBash {
+		taskKind = "shell"
+		if observation.taskID != "" {
+			if kimiCheckID("task", observation.taskID) != nil {
+				return nil
+			}
+			referencedTasks[kimiTaskAddress{ownerAgentID: run.agentID, taskID: observation.taskID}] = ""
+		}
+	}
+	var output string
+	hasOutput := json.Unmarshal(observation.output, &output) == nil
+	var agentResult kimiAgentResultEvidence
+	var hasAgentResult bool
+	if observation.name == contracts.KimiToolAgent && hasOutput {
+		agentResult, hasAgentResult = parseKimiAgentResult(output, observation.completion)
+		if hasAgentResult {
+			if _, matches := refs[agentResult.childID]; !matches {
+				return nil
+			}
+		}
 	}
 	if run.childInvocations == nil {
-		run.childInvocations = make(map[kimiTranscriptToolIdentity]*kimiChildInvocation)
+		run.childInvocations = make(map[kimiInvocationIdentity]*kimiChildInvocation)
 	}
 	invocation := run.childInvocations[id]
+	previousTasksByChild := make(map[string]*kimiDiscoveredTask)
+	if invocation != nil {
+		for _, previous := range invocation.taskTargets {
+			previousTasksByChild[previous.childID] = previous
+		}
+		for address, childID := range referencedTasks {
+			previous := invocation.taskTargets[address]
+			if previous != nil && (previous.kind != taskKind || previous.childID != childID) {
+				return nil
+			}
+			if previous := previousTasksByChild[childID]; previous != nil && previous.address != address {
+				return nil
+			}
+		}
+	}
 	if invocation == nil {
-		invocation = &kimiChildInvocation{identity: id, name: frame.Name, targets: make(map[string]*kimiInvocationTarget)}
+		invocation = &kimiChildInvocation{identity: id, name: observation.name, targets: make(map[string]*kimiInvocationTarget)}
 		run.childInvocations[id] = invocation
 
-	} else if invocation.name != frame.Name {
+	} else if invocation.name != observation.name {
 		return nil
 	}
 	invocation.label = input.Description
-	if kimiToolSpawns(frame.Name) && invocation.parentOutput == nil {
-		invocation.parentOutput = a.captureTaskOutputAnchor(a.runSink(run), source.Type == contracts.KimiEventTranscriptReset || run.transcript.activeTurn != id.turnID || !run.turnActive)
+	if kimiToolSpawns(observation.name) && invocation.parentOutput == nil {
+		invocation.parentOutput = observation.parentOutput
 	}
-	if position.turn != nil {
-		invocation.position.turn = position.turn
+	if observation.position.turn != nil {
+		invocation.position.turn = observation.position.turn
 	}
-	if position.step != nil {
-		invocation.position.step = position.step
+	if observation.position.step != nil {
+		invocation.position.step = observation.position.step
 	}
 	invocation.present = true
-	invocation.eligible = invocation.eligible || eligible
-	invocation.restored = source.Type == contracts.KimiEventTranscriptReset
+	invocation.eligible = invocation.eligible || observation.eligible
+	invocation.restored = observation.restored
 	invocation.resume = make(map[string]struct{})
 	if input.Resume != "" {
 		invocation.resume[input.Resume] = struct{}{}
@@ -118,11 +197,7 @@ func (a *Agent) observeChildInvocation(run *kimiRun, op kimiTranscriptOperation,
 	for childID := range input.ResumeIDs {
 		invocation.resume[childID] = struct{}{}
 	}
-	if frame.Name == contracts.KimiToolAgent && input.Resume != "" {
-		if _, matches := refs[input.Resume]; !matches {
-			return nil
-		}
-		refs = map[string]struct{}{input.Resume: {}}
+	if observation.name == contracts.KimiToolAgent && input.Resume != "" {
 		invocation.corroborated = true
 		for childID := range invocation.targets {
 			if childID != input.Resume {
@@ -137,20 +212,28 @@ func (a *Agent) observeChildInvocation(run *kimiRun, op kimiTranscriptOperation,
 	}
 	for childID := range refs {
 		if invocation.targets[childID] == nil {
-			invocation.targets[childID] = &kimiInvocationTarget{}
+			invocation.targets[childID] = &kimiInvocationTarget{nativeTask: previousTasksByChild[childID]}
 		}
 	}
-	invocation.finished = invocation.finished || frame.State == contracts.KimiTranscriptToolDone || frame.State == contracts.KimiTranscriptToolError || run.transcript.turn(op.TurnID).finished
+	for address, childID := range referencedTasks {
+		if invocation.taskTargets == nil {
+			invocation.taskTargets = make(map[kimiTaskAddress]*kimiDiscoveredTask)
+		}
+		if invocation.taskTargets[address] == nil {
+			invocation.taskTargets[address] = &kimiDiscoveredTask{address: address, kind: taskKind, childID: childID, invocation: invocation}
+		}
+		if target := invocation.targets[childID]; target != nil {
+			target.nativeTask = invocation.taskTargets[address]
+		}
+	}
+	invocation.finished = invocation.finished || observation.finished
 	defer invocation.finishUnmatchedTargets()
-	var output string
-	if json.Unmarshal(frame.Output, &output) != nil {
+	if !hasOutput {
 		return invocation
 	}
-	if frame.Name == contracts.KimiToolAgent {
-		if evidence, valid := parseKimiAgentResult(output, frame.State); valid {
-			if _, matches := refs[evidence.childID]; !matches {
-				return nil
-			}
+	if observation.name == contracts.KimiToolAgent {
+		if hasAgentResult {
+			evidence := agentResult
 			invocation.corroborated = true
 			invocation.targets[evidence.childID].actualProfile = evidence.actualProfile
 			for childID := range invocation.targets {
@@ -161,12 +244,9 @@ func (a *Agent) observeChildInvocation(run *kimiRun, op kimiTranscriptOperation,
 			if evidence.status != bgtask.StatusUnspecified {
 				invocation.targets[evidence.childID].status = evidence.status
 			}
-			if evidence.taskID != "" {
-				invocation.retainDiscoveredTask(&kimiDiscoveredTask{address: kimiTaskAddress{ownerAgentID: run.agentID, taskID: evidence.taskID}, kind: "subagent", childID: evidence.childID, invocation: invocation})
-			}
 		}
-	} else if frame.Name == contracts.KimiToolAgentSwarm && frame.State == contracts.KimiTranscriptToolDone {
-		evidence := parseKimiSwarmResult(frame.Input, output, refs)
+	} else if observation.name == contracts.KimiToolAgentSwarm && observation.completion == agent.MessageCompletionComplete {
+		evidence := parseKimiSwarmResult(observation.input, output, refs)
 		if evidence.finished {
 			invocation.corroborated = evidence.outcomes != nil
 			for childID, target := range invocation.targets {
@@ -180,16 +260,56 @@ func (a *Agent) observeChildInvocation(run *kimiRun, op kimiTranscriptOperation,
 				target.status = status
 			}
 		}
-	} else if frame.Name == contracts.KimiToolBash && frame.State == contracts.KimiTranscriptToolDone {
-		if taskID, valid := parseKimiBashTaskCandidate(output); valid {
-			invocation.retainDiscoveredTask(&kimiDiscoveredTask{address: kimiTaskAddress{ownerAgentID: run.agentID, taskID: taskID}, kind: "shell", command: input.Command, invocation: invocation, explicitBackground: input.Background})
-		}
 	}
 	return invocation
 }
 
+func (a *Agent) linkInvocationChildren(run *kimiRun, invocation *kimiChildInvocation, spawn kimiSpawn) {
+	if invocation == nil || !kimiToolSpawns(invocation.name) || !a.invocationTargetsTrusted(run, invocation) {
+		return
+	}
+	sink := a.runSink(run)
+	if sink == nil {
+		return
+	}
+	if invocation.linkedAgents == nil {
+		invocation.linkedAgents = make(map[string]struct{})
+	}
+	for childID := range invocation.targets {
+		if _, known := invocation.linkedAgents[childID]; known {
+			continue
+		}
+		if child, linked := a.children.get(childID); linked {
+			if a.attachChildSpawnSpan(sink, child, kimiChildSpawnSpan(spawn, childID)) {
+				if err := a.updateChildRegistryMetadata(sink, childID, bgtask.Upsert{Kind: bgtask.KindSubagent}); agent.OutputRetained(err) {
+					invocation.linkedAgents[childID] = struct{}{}
+				} else {
+					slog.Warn("update Kimi child spawn metadata", "agent_id", a.AgentID(), "child", childID, "error", err)
+				}
+			}
+			continue
+		}
+		a.linkSubagent(kimiChildAdoption{SubagentID: childID, Description: spawn.label}, run.agentID, spawn)
+		if _, linked := a.children.get(childID); linked {
+			invocation.linkedAgents[childID] = struct{}{}
+		}
+	}
+}
+
 func (a *Agent) invocationTargetsTrusted(run *kimiRun, invocation *kimiChildInvocation) bool {
 	if invocation.corroborated || !invocation.restored {
+		return true
+	}
+	referenced := len(invocation.targets) > 0
+	for childID, target := range invocation.targets {
+		reference := target.nativeTask
+		if reference == nil || reference.childID != childID || reference.address.ownerAgentID != run.agentID ||
+			reference.invocation != invocation || invocation.taskTargets[reference.address] != reference {
+			referenced = false
+			break
+		}
+	}
+	if referenced {
 		return true
 	}
 	for _, other := range run.childInvocations {
@@ -212,7 +332,7 @@ func (a *Agent) findTaskInvocation(task *kimiTask, owner *kimiRun) *kimiChildInv
 	}
 	var exact *kimiChildInvocation
 	for _, invocation := range owner.childInvocations {
-		target := invocation.taskTarget
+		target := invocation.taskTargets[kimiTaskAddress{ownerAgentID: owner.agentID, taskID: task.native.TaskID}]
 		if target == nil || target.address.taskID != task.native.TaskID || target.address.ownerAgentID != owner.agentID || target.childID != task.native.ChildAgentID {
 			continue
 		}
@@ -245,7 +365,7 @@ func (a *Agent) projectChildInvocation(run *kimiRun, invocation *kimiChildInvoca
 		}
 		rowKey := kimiInvocationOutcomeKey(invocation, childID)
 		var bound *kimiTask
-		if descriptor := invocation.taskTarget; descriptor != nil && descriptor.childID == childID {
+		if descriptor := target.nativeTask; descriptor != nil && descriptor.childID == childID {
 			a.Mu.Lock()
 			candidate := a.tasks[descriptor.address]
 			if candidate != nil && candidate.boundInvocation == invocation && candidate.native.ChildAgentID == childID {
@@ -296,71 +416,21 @@ func (a *Agent) projectChildInvocation(run *kimiRun, invocation *kimiChildInvoca
 			target.retained = desired
 		}
 	}
-	if invocation.taskTarget != nil {
-		a.scheduleDiscoveredNativeTask(run, invocation.taskTarget)
+	for _, target := range invocation.taskTargets {
+		a.scheduleDiscoveredNativeTask(run, target)
 	}
 }
 
-// preScanChildInvocations records full identities before replaying snapshot results.
-func (a *Agent) preScanChildInvocations(run *kimiRun, source kimiFrame, snapshot *kimiTranscriptSnapshot, previous kimiTranscript) {
-	for _, invocation := range run.childInvocations {
-		invocation.present = false
-	}
-	a.Mu.Lock()
-	attachedAt := a.attachedAt
-	a.Mu.Unlock()
-	for _, raw := range snapshot.Items {
-		var turn struct {
-			Kind, TurnID, State, EndedAt string
-			TriggerPromptID              string `json:"triggerPromptId"`
-			Ordinal                      *int64
-			Steps                        []json.RawMessage
-		}
-		if json.Unmarshal(raw, &turn) != nil || turn.Kind != contracts.KimiTranscriptNodeTurn || turn.TurnID == "" {
-			continue
-		}
-		transcriptTurn := run.transcript.turn(turn.TurnID)
-		if prior := previous.turns[turn.TurnID]; prior != nil {
-			transcriptTurn.triggerPromptID = prior.triggerPromptID
-		}
-		transcriptTurn.ordinal = turn.Ordinal
-		a.observePromptTrigger(run, transcriptTurn, source.SessionID, turn.TriggerPromptID)
-		eligible := turn.State == contracts.KimiTranscriptTurnRunning || turn.State == contracts.KimiTranscriptTurnQueued
-		if ended, err := time.Parse(time.RFC3339Nano, turn.EndedAt); err == nil && !ended.Before(attachedAt) {
-			eligible = true
-		}
-		for _, stepRaw := range turn.Steps {
-			var step struct {
-				StepID  string
-				Ordinal *int64
-				Frames  []json.RawMessage
-			}
-			if json.Unmarshal(stepRaw, &step) != nil || step.StepID == "" {
-				continue
-			}
-			transcriptTurn.step(step.StepID).ordinal = step.Ordinal
-			for _, rawFrame := range step.Frames {
-				a.observeConsumedPrompts(run, source.SessionID, turn.TurnID, step.StepID, rawFrame)
-				var frame kimiTranscriptToolFrame
-				if json.Unmarshal(rawFrame, &frame) != nil || frame.Kind != contracts.KimiTranscriptFrameTool {
-					continue
-				}
-				a.observeChildInvocation(run, kimiTranscriptOperation{TurnID: turn.TurnID, StepID: step.StepID}, frame, source, kimiInvocationPosition{turn: turn.Ordinal, step: step.Ordinal}, eligible)
-			}
-		}
-	}
-}
-
-// kimiInvocationGroupKey identifies the complete parent operation, including
-// repeated model call IDs in different native turns, steps, or frames.
-func kimiInvocationGroupKey(identity kimiTranscriptToolIdentity) string {
-	value := fmt.Sprintf("%q/%q/%q/%q/%q/%q", identity.sessionID, identity.agentID, identity.turnID, identity.stepID, identity.frameID, identity.toolCallID)
+// kimiInvocationGroupKey identifies a parent tool item in its owning turn.
+// A later native turn can use the same call ID.
+func kimiInvocationGroupKey(identity kimiInvocationIdentity) string {
+	value := fmt.Sprintf("%q/%q/%q/%q", identity.sessionID, identity.agentID, identity.turnID, identity.toolCallID)
 	digest := sha256.Sum256([]byte(value))
 	return identity.sessionID + "/invocation-group/" + hex.EncodeToString(digest[:])
 }
 
 // A finished parent operation supplies no child outcome by itself. A validated
-// background descriptor explicitly describes continuing coordinator work.
+// native task reference retains its independent coordinator outcome.
 func (invocation *kimiChildInvocation) finishUnmatchedTargets() {
 	if !invocation.finished {
 		return
@@ -369,7 +439,7 @@ func (invocation *kimiChildInvocation) finishUnmatchedTargets() {
 		if target.status != bgtask.StatusUnspecified {
 			continue
 		}
-		if continuation := invocation.taskTarget; continuation != nil && continuation.kind == "subagent" && continuation.childID == childID {
+		if continuation := target.nativeTask; continuation != nil && continuation.kind == "subagent" && continuation.childID == childID {
 			continue
 		}
 		target.status = bgtask.StatusEndedWithUnknownOutcome

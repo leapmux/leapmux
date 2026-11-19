@@ -54,7 +54,7 @@ func (s *kimiStream) readTaskOutput(ctx context.Context, sessionID string, addre
 		}
 		switch frame.Type {
 		case kimiFramePing:
-			s.pong(ctx, conn, frame)
+			s.pong(ctx, conn)
 		case kimiFrameTaskResponse:
 			if frame.RequestID != requestID {
 				continue

@@ -1,17 +1,13 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ToolSpanRole } from '~/lib/messageSpan'
-import { KIMI_TRANSCRIPT_TOOL } from '~/generated/contracts/kimi-protocol'
-import { retainedRowIsFinal } from '../registry'
-import { kimiTranscriptTool } from './transcript'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_RECORD_ROLE } from '~/generated/contracts/kimi-protocol'
+import { kimiConversationRow } from './conversation'
 
-/**
- * A running native tool frame opens a span, and its finished frame closes it.
- * The completion column identifies a retained closing copy of a running frame.
- */
+/** Read span ownership from the retained native request or result role. */
 export function kimiSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
-  const native = kimiTranscriptTool(parsed.parentObject)
-  if (native) {
-    return native.state === KIMI_TRANSCRIPT_TOOL.Running && !retainedRowIsFinal(parsed.completion)
+  const conversation = kimiConversationRow(parsed.parentObject)
+  if (conversation?.kind === 'item' && conversation.item[KIMI_CONVERSATION_FIELD.Type] === KIMI_CONVERSATION_ITEM_KIND.ToolCall) {
+    return conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Request
       ? 'request'
       : 'result'
   }

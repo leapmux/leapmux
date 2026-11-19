@@ -310,6 +310,27 @@ export function useControlResponseHandling(
     choices: answerState.choices(),
   })
 
+  // Defaults fill only absent draft fields. An explicit empty selection is an
+  // answer and must survive storage restoration and provider metadata updates.
+  const applyQuestionDefaults = (request: ControlRequest) => {
+    if (answerOwner !== request || !canAnswerControlRequest(request))
+      return
+    const questions = questionFor(request)?.questions
+    if (!questions)
+      return
+    answerState.setSelections((previous) => {
+      let next = previous
+      questions.forEach((question, index) => {
+        if (question.initialSelections === undefined || Object.hasOwn(previous, index))
+          return
+        if (next === previous)
+          next = { ...previous }
+        next[index] = [...question.initialSelections]
+      })
+      return next
+    })
+  }
+
   // Reset the user's in-progress answer when the active request INSTANCE changes.
   //
   // The dependency is the request, not its ID. The agent reuses a request_id,
@@ -391,36 +412,26 @@ export function useControlResponseHandling(
           answerState.setSwitches(saved.switches ?? {})
           answerState.setChoices(saved.choices ?? {})
         }
+        // A ready answer must already contain the native defaults. A later
+        // effect would expose an empty selection to the control's render first.
+        applyQuestionDefaults(request)
         answerState.setReady(true)
       }).catch(() => {
         if (token !== restoreToken)
           return
         restoringFor = null
+        applyQuestionDefaults(request)
         answerState.setReady(true)
       })
     },
   ))
 
-  // Defaults fill only absent draft fields. An explicit empty selection is an
-  // answer and must survive storage restoration and provider metadata updates.
+  // Provider metadata can add defaults after the stored answer was restored.
   createEffect(() => {
     const request = activeControlRequest()
-    if (!request || answerOwner !== request || !answerState.ready() || !canAnswerControlRequest(request) || restoringFor === request)
+    if (!request || !answerState.ready() || restoringFor === request)
       return
-    const questions = questionFor(request)?.questions
-    if (!questions)
-      return
-    answerState.setSelections((previous) => {
-      let next = previous
-      questions.forEach((question, index) => {
-        if (question.initialSelections === undefined || Object.hasOwn(previous, index))
-          return
-        if (next === previous)
-          next = { ...previous }
-        next[index] = [...question.initialSelections]
-      })
-      return next
-    })
+    applyQuestionDefaults(request)
   })
 
   // Persist the answers under the key of the request they BELONG to.

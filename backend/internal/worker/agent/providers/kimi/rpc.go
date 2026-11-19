@@ -119,29 +119,47 @@ func (c *kimiClient) post(ctx context.Context, path string, body, out any, accep
 	return c.call(ctx, "POST", path, body, out, accept...)
 }
 
+type kimiFrameRequest struct {
+	operation string
+	build     func(string) any
+	// beforeDispatch runs on the reader before it queues any following data.
+	// It may queue a barrier, but must not interpret conversation state.
+	beforeDispatch func(kimiFrame)
+}
+
+type kimiPendingResponse struct {
+	reply          chan kimiFrameResult
+	beforeDispatch func(kimiFrame)
+}
+
+type kimiFrameResult struct {
+	frame kimiFrame
+	err   error
+}
+
 // requestFrame owns one response waiter from admission through cleanup.
-func (s *kimiStream) requestFrame(ctx context.Context, operation string, build func(string) any) (kimiFrame, error) {
+func (s *kimiStream) requestFrame(ctx context.Context, request kimiFrameRequest) (kimiFrame, error) {
 	if err := ctx.Err(); err != nil {
 		return kimiFrame{}, err
 	}
 	s.mu.Lock()
 	s.nextID++
 	id := strconv.FormatInt(s.nextID, 10)
-	reply := make(chan kimiFrame, 1)
-	s.acks[id] = reply
+	reply := make(chan kimiFrameResult, 1)
+	s.acks[id] = kimiPendingResponse{reply: reply, beforeDispatch: request.beforeDispatch}
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.acks, id); s.mu.Unlock() }()
-	if err := s.write(build(id)); err != nil {
+	if err := s.write(request.build(id)); err != nil {
 		return kimiFrame{}, err
 	}
 	select {
 	case response, open := <-reply:
 		if open {
-			return response, nil
+			return response.frame, response.err
 		}
 		cause := ctx.Err()
 		if cause == nil {
-			cause = fmt.Errorf("the Kimi event stream closed before the %s response", operation)
+			cause = fmt.Errorf("the Kimi event stream closed before the %s response", request.operation)
 		}
 		return kimiFrame{}, fmt.Errorf("%w: %w", agent.ErrDeliveryUncertain, cause)
 	case <-ctx.Done():

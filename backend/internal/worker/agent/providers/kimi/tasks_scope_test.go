@@ -1,6 +1,7 @@
 package kimi
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -21,15 +22,16 @@ func TestKimiLateTaskOutputPreservesTheNewerTurnScope(t *testing.T) {
 		}
 		t.Run(label, func(t *testing.T) {
 			t.Parallel()
-			native := newKimiOutputRig(t)
-			seedKimiChildInvocation(t, native)
-			native.transcriptAgentOps(t, "agent-0", 1,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"running","origin":{"kind":"other"}}}`,
-				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"completed","origin":{"kind":"other"}}}`)
-			native.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"done","input":{"description":"Old assignment","prompt":"Review it."},"output":"task_id: old-task\nstatus: running\nagent_id: agent-0\nactual_subagent_type: explore\nautomatic_notification: true\n\ndescription: Old assignment","agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
-			native.transcriptOps(t, 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"completed","origin":{"kind":"user"}}}`)
-			native.transcriptOps(t, 4, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","ordinal":1,"state":"running","origin":{"kind":"user"}}}`)
-			native.transcriptAgentOps(t, "agent-0", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"user","state":"running","origin":{"kind":"user"}}}`)
+			native := newKimiConversationRig(t)
+			seedPublicKimiChildInvocation(t, native)
+			native.startPublicTurn(t, "agent-0", "first", 0)
+			native.endPublicTurn(t, "agent-0", "first", 0, "completed")
+			native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Old assignment","prompt":"Review it."},"output":"task_id: old-task\nstatus: running\nagent_id: agent-0\nactual_subagent_type: explore\nautomatic_notification: true\n\ndescription: Old assignment","agent_refs":[{"agent_id":"agent-0","role":"child","task_id":"old-task"}]}}`)
+			native.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+			native.startPublicTurn(t, kimiMainAgentID, "t1", 1)
+			native.publicOpener(t, kimiMainAgentID, "t1", `{"kind":"user"}`)
+			native.startPublicTurn(t, "agent-0", "user", 1)
+			native.publicOpener(t, "agent-0", "user", `{"kind":"user"}`)
 			_, child := childOf(t, native.sink, "session_1/agent-0")
 			writer := native.agent.runSink(native.agent.run("agent-0"))
 			writer.ReportProgress(agent.NativeTokenProgress("new-model", 17))
@@ -68,45 +70,90 @@ func TestKimiLateTaskOutputPreservesTheNewerTurnScope(t *testing.T) {
 	}
 }
 
+func TestKimiNativeTaskReportUsesItsExactCurrentParentTurn(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name, change string
+		historical   bool
+	}{
+		{name: "current parent turn"},
+		{name: "removed parent item", change: `{"type":"item.removed","turn_id":"t0","item_id":"spawn"}`, historical: true},
+		{name: "new parent turn", change: `{"type":"turn.started","turn":{"turn_id":"new","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:01Z","steps":[]}}`, historical: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiFinalityRig(t, true)
+			(kimiFinalityTool{background: true, taskID: "old-task"}).publish(t, rig)
+			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old-task","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`))
+			if scenario.change != "" {
+				rig.conversationFrame(t, scenario.change)
+			}
+			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old-task","kind":"subagent","status":"ended","outcome":"completed","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","result_summary":"Task finished independently."}`))
+			awaitKimiTestOutput(t, rig.agent.sink)
+			reports := rig.sink.PersistedNotifications()
+			require.Len(t, reports, 1)
+			assert.Contains(t, string(reports[0].Content), "Task finished independently.")
+			assert.Equal(t, scenario.historical, reports[0].TranscriptOnly)
+			_, child := childOf(t, rig.sink, "session_1/agent-0")
+			childReports := child.PersistedNotifications()
+			require.Len(t, childReports, 1)
+			assert.True(t, childReports[0].TranscriptOnly, "the coordinator does not own the child's running turn")
+			assertKimiFinalityChildStillRuns(t, rig)
+		})
+	}
+}
+
 func TestKimiRecoveredTaskPreservesTheUserScopeReplayedDuringAdoption(t *testing.T) {
 	t.Parallel()
-	native := newKimiOutputRig(t)
-	native.agent.sink.UpdateSessionID("session_1")
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"user","state":"running","origin":{"kind":"user"}}}`,
-		`{"op":"frame.upsert","turnId":"user","stepId":"user.1","frame":{"kind":"thinking","frameId":"thought","text":"This newer user turn must keep its reasoning progress while it runs."}}`)
-	native.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"unknown-old-task","kind":"subagent","status":"ended","outcome":"failed","detached":false,"child_agent_id":"agent-0","error":"The older unobserved task failed."}`))
-	_, linked := native.agent.children.get("agent-0")
-	require.True(t, linked)
+	rig := newKimiTestRig(t, agent.Options{})
+	turn := json.RawMessage(`{"turn_id":"user","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[
+		{"type":"user_message","item_id":"user-prompt","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Keep working.","prompt_ids":["native-user-prompt"],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]},
+		{"type":"reasoning","item_id":"thought","step_index":1,"status":"running","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","text":"Continue reasoning."}
+	]}`)
+	page := json.RawMessage(kimiConversationTestPage(t, rig.sessionID(), "agent-0", turn))
+	rig.fake.update(rig.sessionID(), func(session *fakeKapSession) { session.ReplayFrames = []any{page} })
+	const task = `{"type":"task","session_id":"session_1","agent_id":"main","task_id":"unknown-old-task","kind":"subagent","status":"ended","outcome":"failed","detached":false,"child_agent_id":"agent-0","error":"The older unobserved task failed."}`
+	rig.agent.HandleOutput([]byte(task))
+	run := rig.agent.run("agent-0")
+	waitFor(t, func() bool { return run.conversationRecovery.Load() == nil }, "the adopted child recovers its public conversation page")
+	rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"item.delta","turn_id":"user","item_id":"thought","field":"text","delta":" This newer user turn remains active."}`))
+	awaitKimiTestOutput(t, rig.agent.sink)
 
-	native.agent.Mu.Lock()
-	userTurn := native.agent.runLocked("agent-0").userTurn
-	native.agent.Mu.Unlock()
+	rig.agent.Mu.Lock()
+	userTurn := run.userTurn
+	rig.agent.Mu.Unlock()
 	assert.True(t, userTurn)
-	row, output := childOf(t, native.sink, "session_1/agent-0")
+	row, output := childOf(t, rig.sink, "session_1/agent-0")
 	assert.Equal(t, bgtask.StatusRunning, row.Status, "the current user assignment stays running")
-	assert.Greater(t, output.ProgressSnapshot().ThinkingTokens, int64(0))
+	progress := output.ProgressSnapshot()
+	assert.Greater(t, progress.ThinkingTokens, int64(0))
 	rows := output.Messages()
-	require.NotEmpty(t, rows)
-	diagnostic := rows[len(rows)-1]
+	require.Len(t, rows, 1)
+	diagnostic := rows[0]
 	assert.Contains(t, string(diagnostic.Content), "The older unobserved task failed.")
 	assert.True(t, diagnostic.TranscriptOnly, "unknown old work needs an explicit historical owner")
-	assert.Empty(t, diagnostic.AgentSessionID, "an unknown child session must not inherit the parent's native session")
-	assert.True(t, native.agent.ActiveChildTurnState("session_1/agent-0").Active)
+	assert.Empty(t, rig.sink.Messages(), "the child's task error stays in its child transcript")
+	assert.True(t, rig.agent.ActiveChildTurnState("session_1/agent-0").Active)
+	rig.agent.HandleOutput([]byte(task))
+	awaitKimiTestOutput(t, rig.agent.sink)
+	assert.Equal(t, progress, output.ProgressSnapshot(), "a repeated old diagnostic cannot reset the newer progress")
+	assert.Equal(t, rows, output.Messages())
+	assert.Equal(t, bgtask.StatusFailed, nativeTaskOf(t, rig.sink, "unknown-old-task").Status)
 }
 
 func TestKimiUnjoinedChildRetryCannotBorrowThePreviousTaskScope(t *testing.T) {
 	t.Parallel()
-	native := newKimiOutputRig(t)
-	seedKimiChildInvocation(t, native)
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger","name":"subagent"}}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"completed","origin":{"kind":"other","payload":{"kind":"system_trigger","name":"subagent"}}}}`)
+	native := newKimiConversationRig(t)
+	seedPublicKimiChildInvocation(t, native)
+	native.startPublicTurn(t, "agent-0", "first", 0)
+	native.publicOpener(t, "agent-0", "first", `{"kind":"system"}`)
+	native.endPublicTurn(t, "agent-0", "first", 0, "completed")
 	// The next assignment's parent and task frames have not reached this stream.
-	native.transcriptAgentOps(t, "agent-0", 2,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"unjoined","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger","name":"subagent"}}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"unjoined","state":"completed","origin":{"kind":"other","payload":{"kind":"system_trigger","name":"subagent"}}}}`)
-	native.transcriptAgentOps(t, "agent-0", 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"retry","state":"running","origin":{"kind":"retry"}}}`)
+	native.startPublicTurn(t, "agent-0", "unjoined", 1)
+	native.publicOpener(t, "agent-0", "unjoined", `{"kind":"system"}`)
+	native.endPublicTurn(t, "agent-0", "unjoined", 1, "completed")
+	native.startPublicTurn(t, "agent-0", "retry", 2)
+	native.publicOpener(t, "agent-0", "retry", `{"kind":"retry"}`)
 	_, child := childOf(t, native.sink, "session_1/agent-0")
 	writer := native.agent.runSink(native.agent.run("agent-0"))
 	writer.ReportProgress(agent.NativeTokenProgress("new-retry", 17))
@@ -124,17 +171,14 @@ func TestKimiUnjoinedChildRetryCannotBorrowThePreviousTaskScope(t *testing.T) {
 
 func TestKimiVerifiedTaskIdentityRejectsAReusedParentCall(t *testing.T) {
 	t.Parallel()
-	native := newKimiOutputRig(t)
+	native := newKimiConversationRig(t)
 	native.agent.sink.UpdateSessionID("session_1")
 	// Task A was observed without its original parent's transcript frame.
 	native.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-a","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"reused","description":"Old task"}`))
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"first","state":"completed","origin":{"kind":"other"}}}`)
-	native.transcriptOps(t, 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"new-parent","ordinal":1,"state":"running","origin":{"kind":"user"}}}`,
-		`{"op":"step.upsert","turnId":"new-parent","step":{"kind":"step","stepId":"new-step","ordinal":1,"state":"running"}}`,
-		`{"op":"frame.upsert","turnId":"new-parent","stepId":"new-step","frame":{"kind":"tool","frameId":"new-frame","toolCallId":"reused","name":"Agent","state":"done","input":{"resume":"agent-0","prompt":"New task."},"output":"task_id: task-b\nstatus: running\nagent_id: agent-0\nactual_subagent_type: explore\nautomatic_notification: true\n\ndescription: New task","agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+	native.startPublicTurn(t, "agent-0", "first", 0)
+	native.endPublicTurn(t, "agent-0", "first", 0, "completed")
+	native.startPublicTurn(t, kimiMainAgentID, "new-parent", 1)
+	native.conversationFrame(t, `{"type":"item.ended","turn_id":"new-parent","item":{"type":"tool_call","item_id":"reused","step_index":1,"name":"Agent","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"resume":"agent-0","prompt":"New task."},"output":"task_id: task-b\nstatus: running\nagent_id: agent-0\nactual_subagent_type: explore\nautomatic_notification: true\n\ndescription: New task","agent_refs":[{"agent_id":"agent-0","role":"child","task_id":"task-b"}]}}`)
 	native.agent.Mu.Lock()
 	task := native.agent.tasks[kimiTaskAddress{ownerAgentID: "main", taskID: "task-a"}]
 	native.agent.Mu.Unlock()

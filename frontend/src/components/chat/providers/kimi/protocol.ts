@@ -1,4 +1,4 @@
-import { KIMI_EVENT, KIMI_FRAME } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_EVENT, KIMI_FRAME } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
@@ -39,7 +39,7 @@ export function kimiEvent(parsed: unknown): KimiEventRow | null {
  * The server words a call for its own UI here: the command and its working directory,
  * the file operation, the plan of a plan review. Native transcript tool frames retain it with the result.
  */
-export function kimiDisplay(data: Record<string, unknown> | null | undefined, key: 'display' | 'tool_input_display' = 'display'): Record<string, unknown> | undefined {
+export function kimiDisplay(data: Record<string, unknown> | null | undefined, key: 'display' | 'tool_input_display' = KIMI_CONVERSATION_FIELD.Display): Record<string, unknown> | undefined {
   return pickObject(data, key, undefined)
 }
 
@@ -49,9 +49,6 @@ export function kimiInteractionRequest(payload: Record<string, unknown>, kind: s
     ? pickObject(payload, 'request', undefined)
     : undefined
 }
-
-/** The `system_trigger` name a goal's continuation turn carries. */
-export const KIMI_GOAL_CONTINUATION = 'goal_continuation'
 
 /** Native fields for tool result pointers. */
 export const KIMI_OUTPUT_FILE_CONTENT = {

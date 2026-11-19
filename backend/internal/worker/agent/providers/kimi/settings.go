@@ -126,8 +126,8 @@ func (a *Agent) readStatus(ctx context.Context, sessionID string) (kimiStatus, e
 	if err := ctx.Err(); err != nil {
 		return kimiStatus{}, err
 	}
-	if _, exists := a.stream.sessionStatus(sessionID); !exists {
-		if _, err := a.stream.subscribe(ctx, sessionID); err != nil {
+	if !a.stream.tracksSession(sessionID) {
+		if err := a.stream.subscribe(ctx, sessionID); err != nil {
 			return kimiStatus{}, err
 		}
 	}
@@ -179,7 +179,7 @@ func (a *Agent) applyStatusLocked(status kimiStatus) bool {
 }
 
 // foldStatus folds a status read into the settings and the context readout,
-// and reports what moved. A new connection receives current state before its
+// and reports what moved. A new connection receives current state after its
 // subscription acknowledgement.
 func (a *Agent) foldStatus(status kimiStatus) {
 	a.Mu.Lock()
@@ -472,14 +472,6 @@ func (a *Agent) applyApprovalPermissionMode(sessionID, mode string) error {
 	return nil
 }
 
-// kimiTokenUsage is one usage object: the tokens of a step, a turn or a model.
-type kimiTokenUsage struct {
-	InputOther         int64 `json:"inputOther"`
-	Output             int64 `json:"output"`
-	InputCacheRead     int64 `json:"inputCacheRead"`
-	InputCacheCreation int64 `json:"inputCacheCreation"`
-}
-
 // recordContextLocked records the context the main agent holds. The caller
 // holds a.Mu.
 func (a *Agent) recordContextLocked(tokens, window *int64) bool {
@@ -521,22 +513,17 @@ func (a *Agent) handleNativeUsage(frame kimiFrame) {
 	}
 }
 
-// recordStepUsage folds one step's token counts into the readout.
-func (a *Agent) recordStepUsage(event kimiEvent) {
-	var step struct {
-		Usage *kimiTokenUsage `json:"usage"`
-	}
-	if !event.decode(&step) || step.Usage == nil {
-		return
-	}
+func (a *Agent) publishContextTokenCounts(counts providerkit.ContextTokenCounts) {
 	a.Mu.Lock()
 	if a.contextUsage == nil {
-		a.contextUsage = providerkit.ContextUsageMap(providerkit.ContextTokenCounts{})
+		a.contextUsage = providerkit.ContextUsageMap(counts)
+	} else {
+		if providerkit.TokenCountsFrom(a.contextUsage) == counts {
+			a.Mu.Unlock()
+			return
+		}
+		counts.Into(a.contextUsage)
 	}
-	providerkit.ContextTokenCounts{
-		Input: step.Usage.InputOther, CacheRead: step.Usage.InputCacheRead,
-		CacheWrite: step.Usage.InputCacheCreation, Output: step.Usage.Output,
-	}.Into(a.contextUsage)
 	usage := maps.Clone(a.contextUsage)
 	a.Mu.Unlock()
 	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})

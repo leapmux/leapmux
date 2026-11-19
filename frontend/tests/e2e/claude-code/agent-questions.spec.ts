@@ -7,7 +7,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
-import { ASKED_QUESTIONS_CALL_ID, askQuestions, exerciseQuestionPages, exerciseQuestionPreviews, exerciseTypedQuestionAnswer, pickQuestionOption } from '../helpers/nativeQuestion'
+import { ASKED_QUESTIONS_CALL_ID, askQuestions, exerciseQuestionAnswer, exerciseQuestionPages, exerciseQuestionPreviews, exerciseTypedQuestionAnswer, pickQuestionOption } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { agentTabs, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
@@ -70,35 +70,27 @@ async function submitAnswers(page: Page): Promise<void> {
 
 claudeTest.describe('native question controls', () => {
   claudeTest('selects an option for a single native question', async ({ page, authenticatedWorkspace, modelScript }) => {
-    // Send a message that triggers AskUserQuestion
-    const before = await askQuestions(claude(page, modelScript), [COLOR_Q_3])
-
-    // Wait for the control banner
-    const banner = await waitForControlBanner(page)
-
-    // Verify question text and options (scoped to banner to avoid matching chat messages)
-    await expect(banner.getByText('Pick a color')).toBeVisible()
-    await expect(banner.getByTestId('question-option-Red')).toBeVisible()
-    await expect(banner.getByTestId('question-option-Blue')).toBeVisible()
-    await expect(banner.getByTestId('question-option-Green')).toBeVisible()
-
-    // Click "Blue" option
-    await pickQuestionOption(controlBanner(page), 'Blue')
-
-    // Verify Stop and Submit buttons are visible
-    await expect(controlButton(page, 'stop')).toBeVisible()
-    await expect(controlButton(page, 'submit')).toBeVisible()
-
-    await submitAnswers(page)
-
-    await waitForAgentIdle(page)
-    const status = await modelScript.status()
-    const answerRequest = status.requests.slice(before).find(request => request.fallback === true)
-    expect(answerRequest?.protocol).toBe('anthropic-messages')
-    const answer = nativeToolResult(answerRequest, ASKED_QUESTIONS_CALL_ID)
-    expect(answer).toContain('Blue')
-    expect(answer).not.toContain('Red color')
-    expect(answer).not.toContain('Green color')
+    const { result } = await exerciseQuestionAnswer(claude(page, modelScript), {
+      questions: [COLOR_Q_3],
+      callId: ASKED_QUESTIONS_CALL_ID,
+      reply: async (banner) => {
+        await expect(banner.getByText('Pick a color')).toBeVisible()
+        await expect(banner.getByTestId('question-option-Red')).toBeVisible()
+        await expect(banner.getByTestId('question-option-Blue')).toBeVisible()
+        await expect(banner.getByTestId('question-option-Green')).toBeVisible()
+        await pickQuestionOption(banner, 'Blue')
+        await expect(controlButton(page, 'stop')).toBeVisible()
+        await expect(controlButton(page, 'submit')).toBeVisible()
+        await submitAnswers(page)
+      },
+      readResult: (request, callId) => {
+        expect(request.protocol).toBe('anthropic-messages')
+        return nativeToolResult(request, callId)
+      },
+    })
+    expect(result).toContain('Blue')
+    expect(result).not.toContain('Red color')
+    expect(result).not.toContain('Green color')
   })
 
   claudeTest('keeps selected answers across native question pages', async ({ page, authenticatedWorkspace, modelScript }) => {

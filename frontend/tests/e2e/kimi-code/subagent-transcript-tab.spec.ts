@@ -1,4 +1,6 @@
 import { expect } from '@playwright/test'
+import { MarkType, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { nativeMessagesHoldingText, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, sendMessage, toolRows, userBubbles } from '../helpers/ui'
@@ -12,6 +14,7 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
 
   kimiTest('routes the prompt, tools, and final report into the child tab', async ({ native }) => {
     const { page, modelScript } = native
+    const childPrompt = 'Use Bash to run printf kimi-child-tool-ok, then reply with exactly KIMI_CHILD_PONG.'
     await expectNoRegistryRows(page, native.leapmuxServer)
 
     await modelScript.rule(
@@ -36,7 +39,7 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
         toolCalls: [
           spawnSubagentToolCall(native.provider, 'spawn-kimi', {
             description: 'Run the shell probe',
-            prompt: modelScript.prompt('Use Bash to run printf kimi-child-tool-ok, then reply with exactly KIMI_CHILD_PONG.'),
+            prompt: modelScript.prompt(childPrompt),
           }),
         ],
       },
@@ -49,10 +52,14 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
     const row = await requireRegistryRow(page)
     await expectRowBecomesFinal(page, row)
     await expect(row).toContainText('Run the shell probe')
-    await openChildTabFromRow(page, row)
+    const childId = await openChildTabFromRow(page, row)
 
     await expect(userBubbles(page).filter({ hasText: 'printf kimi-child-tool-ok' })).not.toHaveCount(0)
     await expect(toolRows(page).filter({ hasText: 'kimi-child-tool-ok' }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'KIMI_CHILD_PONG' })).not.toHaveCount(0)
+
+    const snapshot = await readNativeMessageSnapshot(native, childId)
+    const prompts = nativeMessagesHoldingText(snapshot.messages, childPrompt).filter(message => message.source === MessageSource.USER)
+    expect(prompts.map(message => message.markType)).toEqual([MarkType.USER_MESSAGE])
   })
 })

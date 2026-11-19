@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { expectRowBecomesFinal } from './helpers/subagentRegistry'
+import { expectRowBecomesFinal, openChildTabFromRow } from './helpers/subagentRegistry'
+import { AGENT_TAB_SELECTOR } from './helpers/tabSelectors'
 
 for (const secondary of [false, true]) {
   test(`reads a finished registry status with a ${secondary ? 'secondary label' : 'title label'}`, async ({ page }) => {
@@ -45,4 +46,43 @@ test('restores a task section that collapses after its final status arrives', as
   await expectRowBecomesFinal(page, row)
   expect(collapsed).toBe(true)
   await expect(row).toBeVisible()
+})
+
+test('waits for exact child tab identities after a tab bar rerender', async ({ page }) => {
+  await page.setContent('<div id="tabs"><button data-testid="tab" data-tab-type="agent" data-tab-id="parent" aria-selected="true">Parent</button></div><button id="open-child" data-child-agent-id="child">Open child</button>')
+  await page.evaluate(() => {
+    document.getElementById('open-child')!.addEventListener('click', () => {
+      document.getElementById('tabs')!.innerHTML = '<button data-testid="tab" data-tab-type="agent" data-tab-id="parent" aria-selected="false">Parent</button><button data-testid="tab" data-tab-type="agent" data-tab-id="child" aria-selected="true">Child</button>'
+    })
+  })
+  const row = page.locator('#open-child')
+  const tabs = page.locator(`${AGENT_TAB_SELECTOR}:visible`)
+  const readAll = tabs.evaluateAll.bind(tabs)
+  let identityReads = 0
+  tabs.evaluateAll = async (read, argument) => {
+    identityReads++
+    if (identityReads !== 2)
+      return readAll(read, argument)
+    const markup = await page.evaluate(() => {
+      const bar = document.getElementById('tabs')!
+      const markup = bar.innerHTML
+      bar.replaceChildren()
+      return markup
+    })
+    const result = await readAll(read, argument)
+    await page.evaluate(markup => document.getElementById('tabs')!.innerHTML = markup, markup)
+    return result
+  }
+  const locate = page.locator
+  page.locator = (selector, options) => selector === `${AGENT_TAB_SELECTOR}:visible`
+    ? tabs
+    : locate.call(page, selector, options)
+  try {
+    expect(await openChildTabFromRow(page, row)).toBe('child')
+    expect(identityReads).toBeGreaterThan(2)
+    await expect(tabs).toHaveCount(2)
+  }
+  finally {
+    page.locator = locate
+  }
 })

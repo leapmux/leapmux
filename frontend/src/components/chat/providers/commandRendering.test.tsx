@@ -12,7 +12,7 @@ import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource
 import { _resetTokenCache } from '~/lib/tokenCache'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
 import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
-import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord } from '~/test-support/kimiFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { toolFrame } from '~/test-support/mimoFixtures'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
@@ -1174,12 +1174,11 @@ describe('retained command completion', () => {
       }),
       spanType: 'bash',
     },
-    // Kimi Code sends no result for a call its turn cut off: the worker stores the
-    // call's own start again, with the output it printed before it stopped.
+    // The Worker closes the running native item with the output observed before interruption.
     {
       provider: AgentProvider.KIMI_CODE,
-      result: kimiTranscriptToolFrame({
-        toolCallId: 'call',
+      result: kimiConversationToolRecord('result', {
+        item_id: 'call',
         name: 'Bash',
         input: { command },
         output,
@@ -1278,12 +1277,13 @@ describe('canonical failure word across the two routes', () => {
     },
     {
       provider: AgentProvider.KIMI_CODE,
-      result: kimiTranscriptToolFrame({
-        toolCallId: 'call',
+      result: kimiConversationToolRecord('result', {
+        item_id: 'call',
         name: 'Bash',
         input: { command },
-        state: 'error',
-        output: `${output}\nCommand failed with exit code: 1.`,
+        status: 'ended',
+        outcome: 'failed',
+        error: `${output}\nCommand failed with exit code: 1.`,
       }),
       spanType: 'Bash',
     },
@@ -1457,8 +1457,8 @@ describe('retained file completion', () => {
     },
     {
       provider: AgentProvider.KIMI_CODE,
-      result: kimiTranscriptToolFrame({
-        toolCallId: 'read',
+      result: kimiConversationToolRecord('result', {
+        item_id: 'read',
         name: 'Read',
         input: { path: '/a.ts' },
         output: 'partial file output',

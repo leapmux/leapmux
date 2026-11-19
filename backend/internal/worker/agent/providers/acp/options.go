@@ -81,6 +81,8 @@ type optionState struct {
 	// unresolved records axes whose successful write returned no authoritative
 	// config-options snapshot. A later complete snapshot clears the set.
 	unresolved *boundedIDSet
+	// deferredWrites holds requested values that have not reached the native agent.
+	deferredWrites map[string]string
 	// folds counts the complete configOptions payloads that apply folded. Each
 	// one is newer than every payload before it.
 	folds uint64
@@ -266,6 +268,7 @@ func (g *optionState) forgetUnadvertised(advertised map[string]ConfigOption) {
 		if _, ok := advertised[id]; !ok {
 			g.known.remove(id)
 			delete(g.templates, id)
+			delete(g.deferredWrites, id)
 		}
 	}
 }
@@ -406,6 +409,18 @@ func configOptionValuesContain(values []ConfigOptionValue, value string) bool {
 // value is non-empty and not already offered, copying the slice first so a shared/stored option
 // list is never mutated. A no-op (returns options unchanged) for an empty or already-present value.
 // Shared by buildOptionGroup (a server's authoritative current absent from its own list) and
+// selectedValues returns a snapshot of the requested selections. Confirmed
+// native values remain separate until the deferred writes reach the provider.
+func (g *optionState) selectedValues() map[string]string {
+	if len(g.deferredWrites) == 0 {
+		return maps.Clone(g.values)
+	}
+	values := make(map[string]string, len(g.values)+len(g.deferredWrites))
+	maps.Copy(values, g.values)
+	maps.Copy(values, g.deferredWrites)
+	return values
+}
+
 // recordOptimistic (a value the server accepted but did not echo in its option list), so the
 // "current always has a matching option" invariant is established in one place.
 func appendConfigOptionValueIfMissing(options []ConfigOptionValue, value string) []ConfigOptionValue {
@@ -677,7 +692,7 @@ func (g *optionState) mergeOptionValues(base map[string]string) optionmap.Map {
 	// would drop the deletes when a complete payload clears EVERY option at once -- g.values
 	// goes empty, but a once-surfaced id still needs its stale stored value deleted, and the
 	// `len(g.values) == 0` guard would short-circuit past the delete-emission loop below.
-	if len(base) == 0 && len(g.values) == 0 && g.surfaced.len() == 0 {
+	if len(base) == 0 && len(g.values) == 0 && len(g.deferredWrites) == 0 && g.surfaced.len() == 0 {
 		return nil
 	}
 	merged := make(optionmap.Map, len(base)+len(g.values))
@@ -711,6 +726,7 @@ func (g *optionState) mergeOptionValues(base map[string]string) optionmap.Map {
 	for id, value := range g.values {
 		merged[id] = value
 	}
+	maps.Copy(merged, g.deferredWrites)
 	for k, v := range base {
 		merged[k] = v
 	}

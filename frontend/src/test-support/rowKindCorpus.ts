@@ -6,7 +6,7 @@ import { MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider as Provider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
-import { kimiTranscriptToolFrame, kimiTranscriptTurnFrame } from '~/test-support/kimiFixtures'
+import { kimiConversationToolRecord, kimiConversationTurnRecord } from '~/test-support/kimiFixtures'
 import { compactionFrame, errorFrame, openingFrame, statusFrame, toolFrame } from '~/test-support/mimoFixtures'
 
 /**
@@ -1137,11 +1137,11 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   },
 
   // --- Kimi Code ---------------------------------------------------------
-  // Native transcript operations for the tool and turn rows the Worker retains.
+  // The Worker retains public tool items and completed turn headers.
   {
     provider: Provider.KIMI_CODE,
     name: 'tool call started',
-    payload: kimiTranscriptToolFrame({
+    payload: kimiConversationToolRecord('request', {
       name: 'Bash',
       input: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
       display: {
@@ -1157,10 +1157,11 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.KIMI_CODE,
     name: 'tool result',
-    payload: kimiTranscriptToolFrame({
+    payload: kimiConversationToolRecord('result', {
       name: 'Bash',
       input: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
-      state: 'done',
+      status: 'ended',
+      outcome: 'completed',
       output: 'hi-from-bash\n',
     }),
     spanType: 'Bash',
@@ -1169,7 +1170,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.KIMI_CODE,
     name: 'turn end',
-    payload: kimiTranscriptTurnFrame({ state: 'completed', durationMs: 32 }),
+    payload: kimiConversationTurnRecord({ status: 'ended', outcome: 'completed', duration_ms: 32 }),
     category: 'result_divider',
   },
 

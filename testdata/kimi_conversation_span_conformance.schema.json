@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kimi_conversation_span_conformance.schema.json",
+  "title": "Kimi conversation tool span conformance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "cases"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "session",
+          "agent",
+          "turn",
+          "item",
+          "span"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "session": {
+            "type": "string",
+            "minLength": 1
+          },
+          "agent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "turn": {
+            "type": "string",
+            "minLength": 1
+          },
+          "item": {
+            "type": "string",
+            "minLength": 1
+          },
+          "span": {
+            "type": "string",
+            "pattern": "^kimi:conversation:[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

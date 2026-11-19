@@ -34,6 +34,9 @@ type Hooks struct {
 	// WithBypassPermission invokes the claim while the provider's settings lock
 	// confirms Bypass. The claim never waits for delivery or calls the sink.
 	WithBypassPermission func(claim func())
+	// ConfigOptionRequiresIdle identifies changes the native agent cannot safely
+	// apply during a prompt. The write waits until the next prompt is prepared.
+	ConfigOptionRequiresIdle func(id, value string) bool
 	// PermissionAllowsBypass distinguishes tool permissions from provider dialogs.
 	// A nil hook leaves every request under manual control.
 	PermissionAllowsBypass func(line *providerkit.ParsedLine) bool

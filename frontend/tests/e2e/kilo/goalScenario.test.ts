@@ -1,7 +1,9 @@
 import type { Page } from '@playwright/test'
 import type { WatchEventsResponse } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import type { MockModelStep } from '../helpers/mockModelScript'
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { create } from '@bufbuild/protobuf'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   WatchEventsRequestSchema,
   WatchEventsResponseSchema,
@@ -9,12 +11,24 @@ import {
   WorkerWatchService,
 } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { AGENT_WATCH_UPDATE_ID } from '../helpers/agentEventWatch'
-import { waitForKiloPromptEnd } from './goalScenario'
+import { exerciseKiloGoal, waitForKiloPromptEnd } from './goalScenario'
 
 const { stream, cancel, selectedAgentTabId } = vi.hoisted(() => ({
   stream: vi.fn(),
   cancel: vi.fn(),
   selectedAgentTabId: vi.fn(),
+}))
+
+const firstTurn = vi.hoisted(() => ({
+  steps: [] as MockModelStep[],
+  events: [] as string[],
+  held: undefined as string | undefined,
+  setGoal: vi.fn(),
+}))
+
+vi.mock('../helpers/goalsAndTodos', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/goalsAndTodos')>(),
+  setGoal: firstTurn.setGoal,
 }))
 
 vi.mock('../helpers/api', async (importOriginal) => {
@@ -31,6 +45,71 @@ vi.mock('../helpers/api', async (importOriginal) => {
 vi.mock('../helpers/nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../helpers/nativeScenario')>()
   return { ...actual, selectedAgentTabId }
+})
+
+describe('exerciseKiloGoal', () => {
+  beforeEach(() => {
+    firstTurn.steps = []
+    firstTurn.events = []
+    firstTurn.held = undefined
+    firstTurn.setGoal.mockReset()
+    firstTurn.setGoal.mockImplementation(async (_page: Page, _objective: unknown, afterSubmit?: () => Promise<void>) => {
+      firstTurn.held = firstTurn.steps[0]?.gate
+      if (!firstTurn.held)
+        throw new Error('The first model response ended before the active goal was checked.')
+      await afterSubmit?.()
+      firstTurn.events.push('active checked')
+    })
+  })
+
+  function firstTurnContext(): ManagedNativeScenarioContext {
+    return {
+      page: {},
+      modelScript: {
+        queue: async (...steps: MockModelStep[]) => {
+          firstTurn.steps = steps
+          return 0
+        },
+        prompt: (text: string) => text,
+        waitForGate: async (gate: string) => {
+          expect(firstTurn.held).toBe(gate)
+          firstTurn.events.push('held response observed')
+        },
+        releaseGateIfHeld: async (gate: string) => {
+          if (firstTurn.held === gate) {
+            firstTurn.held = undefined
+            firstTurn.events.push('first response released')
+          }
+          return true
+        },
+        waitForSteps: async () => {
+          expect(firstTurn.held).toBeUndefined()
+          firstTurn.events.push('completion checked')
+          throw new Error('The probe stopped after first completion.')
+        },
+      },
+    } as unknown as ManagedNativeScenarioContext
+  }
+
+  it('holds the first response until the active goal is checked and releases it before waiting for completion', async () => {
+    await expect(exerciseKiloGoal(firstTurnContext())).rejects.toThrow('The probe stopped after first completion.')
+    expect(firstTurn.events).toEqual([
+      'held response observed',
+      'active checked',
+      'first response released',
+      'completion checked',
+    ])
+  })
+
+  it('releases the held first response when the active goal check fails', async () => {
+    firstTurn.setGoal.mockImplementation(async () => {
+      firstTurn.held = firstTurn.steps[0]?.gate
+      throw new Error('The active goal check failed.')
+    })
+    await expect(exerciseKiloGoal(firstTurnContext())).rejects.toThrow('The active goal check failed.')
+    expect(firstTurn.held).toBeUndefined()
+    expect(firstTurn.events).toEqual(['first response released'])
+  })
 })
 
 describe('waitForKiloPromptEnd', () => {

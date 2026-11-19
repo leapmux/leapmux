@@ -347,6 +347,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   )
 
   let abortSignalFor: (workerId: string) => AbortSignal | undefined = () => undefined
+  let agentReplaySignal: (workerId: string, agentId: string) => AbortSignal | undefined = () => undefined
 
   /** Use the worker's root field, or a complete same-worker parent chain. */
   function replayRootFor(agentId: string, workerId: string): string | undefined {
@@ -783,12 +784,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     },
     onPromoted: (workerId, agentIds) => {
       for (const agentId of agentIds) {
-        void chatStore.loadInitialMessages(workerId, agentId).catch(warnChatHistoryLoadFailed)
+        const signal = agentReplaySignal(workerId, agentId)
+        if (!signal || signal.aborted)
+          continue
+        const load = chatStore.isInitialLoadComplete(agentId)
+          ? chatStore.refreshLoadedMessages(workerId, agentId, signal)
+          : chatStore.loadInitialMessages(workerId, agentId)
+        void load.catch(warnChatHistoryLoadFailed)
         void chatStore.loadMessageMarks(workerId, agentId, abortSignalFor(workerId))
       }
     },
   })
   abortSignalFor = streams.abortSignalFor
+  agentReplaySignal = streams.agentReplaySignal
 
   // Clear the live indicators of each offline worker's agents.
   // A terminal needs no write: its surfaces derive DISCONNECTED from the same store (terminalDisplayStatus).

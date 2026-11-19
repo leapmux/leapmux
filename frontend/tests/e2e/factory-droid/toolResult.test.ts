@@ -61,6 +61,74 @@ function scriptRequest(content: unknown, input: unknown = { script: '40 + 2' }, 
 }
 
 describe('readDroidToolResult', () => {
+  it.each(['before any call settled', 'after call 1'])('reads the final snapshot after a native failure %s', (position) => {
+    const nativeId = droidToolCallId('call_script-1')
+    const text = `[Script failed · 0.1 s elapsed · ${position}]\n${JSON.stringify({ toolCallId: nativeId, status: 'failed', error: 'Computed error 77' })}`
+    expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: true })
+  })
+
+  it.each([
+    '[Script failed · before any call',
+    'prefix[Script failed · before any call]',
+    '[Script failed · before any call]\nintervening output',
+  ])('refuses an incomplete or displaced failed header %j', (header) => {
+    const text = `${header}\n${JSON.stringify({ status: 'failed', error: 'Computed error 77' })}`
+    expect(() => readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toThrow(SyntaxError)
+  })
+
+  it('reads the current failed Script header with its matching final snapshot', () => {
+    const nativeId = droidToolCallId('call_script-1')
+    const text = `[Script failed · 0.0 s elapsed · before any call]\n${JSON.stringify({ toolCallId: nativeId, status: 'failed', error: 'Computed error 77' })}`
+    expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: true })
+  })
+
+  it('correlates repeated reads through their recorded execution order', () => {
+    const fileArguments = { file_path: '/private/current.txt' }
+    const calls = [
+      {
+        id: droidToolCallId('before'),
+        name: 'Read',
+        arguments: fileArguments,
+      },
+      {
+        id: droidToolCallId('after'),
+        name: 'Read',
+        arguments: fileArguments,
+      },
+    ]
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      scriptedToolCalls: calls,
+      body: {
+        messages: calls.flatMap((call, index) => [
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: `native-${index}`,
+                type: 'function',
+                function: {
+                  name: call.name,
+                  arguments: JSON.stringify(call.arguments),
+                },
+              },
+            ],
+          },
+          {
+            role: 'tool',
+            tool_call_id: `native-${index}`,
+            content: index === 0
+              ? 'OLD42\n'
+              : 'NEW42\n',
+          },
+        ]),
+      },
+    }
+    expect(readDroidToolResult(request, 'before', 'Read')).toEqual({ text: 'OLD42\n' })
+    expect(readDroidToolResult(request, 'after', 'Read')).toEqual({ text: 'NEW42\n' })
+  })
+
   it('reads the native completion footer when the script writes no log', () => {
     // e2e-akA04C, Droid 0.243.0.
     const text = 'NATIVECODE42\n[Script completed · 0.0 s elapsed · 0 calls · no log]'

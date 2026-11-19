@@ -2,12 +2,13 @@ import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
-import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
+import { batch, createRenderEffect, createRoot, createSignal, untrack } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { AgentActivityState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
+import * as browserStorage from '~/lib/browserStorage'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
@@ -44,19 +45,82 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
 }
 
 describe('questions with selected answers only', () => {
+  it('applies native defaults when a question arrives after the composer mounts', async () => {
+    const request: ControlRequest = {
+      agentId: 'late-default-agent',
+      requestId: 'late-default-question',
+      claimToken: 'late-default-token',
+      payload: {
+        type: 'leapmux_ask',
+        id: 'late-default-question',
+        questions: [
+          {
+            id: 'style',
+            question: 'Choose a style',
+            multi: true,
+            allowEmpty: true,
+            allowCustomText: false,
+            initialSelections: ['0'],
+            options: [
+              { value: '0', label: 'Alpha' },
+            ],
+          },
+        ],
+      },
+    }
+    const [requests, setRequests] = createSignal<ControlRequest[]>([])
+    const state = createControlAnswerState()
+    const { dispose } = createRoot((dispose) => {
+      useControlResponseHandling({
+        agentId: request.agentId!,
+        agent: { agentProvider: AgentProvider.OH_MY_PI },
+        get controlRequests() { return requests() },
+        questionsOpen: true,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, vi.fn())
+      return { dispose }
+    })
+    try {
+      expect(state.selections()).toEqual({})
+      setRequests([request])
+      await vi.waitFor(() => {
+        expect(state.ready()).toBe(true)
+        expect(state.selections()).toEqual({
+          0: ['0'],
+        })
+      })
+    }
+    finally {
+      dispose()
+    }
+  })
+
   it.each([
     {
       label: 'a fresh request',
       draft: undefined,
       expected: ['0'],
+      readFailure: false,
     },
-    { label: 'an explicit empty draft', draft: [], expected: [] },
+    {
+      label: 'an explicit empty draft',
+      draft: [],
+      expected: [],
+      readFailure: false,
+    },
     {
       label: 'a different saved selection',
       draft: ['1'],
       expected: ['1'],
+      readFailure: false,
     },
-  ])('restores native choice defaults for $label', async ({ label, draft, expected }) => {
+    {
+      label: 'a failed storage read',
+      draft: undefined,
+      expected: ['0'],
+      readFailure: true,
+    },
+  ])('restores native choice defaults for $label', async ({ label, draft, expected, readFailure }) => {
     const request: ControlRequest = {
       agentId: 'omp-default-agent',
       requestId: `omp-default-${label}`,
@@ -87,6 +151,11 @@ describe('questions with selected answers only', () => {
       await flushStorageWrites()
     }
     const state = createControlAnswerState()
+    const failedRead = readFailure
+      ? vi.spyOn(browserStorage, 'localStorageLoad').mockRejectedValueOnce(new Error('The stored answer is unavailable.'))
+      : undefined
+    const readySelections: Array<Record<number, string[]>> = []
+    let restoring = false
     const { dispose } = createRoot((dispose) => {
       useControlResponseHandling({
         agentId: request.agentId!,
@@ -95,6 +164,17 @@ describe('questions with selected answers only', () => {
         questionsOpen: true,
         onSendMessage: vi.fn(),
       }, state, () => undefined, vi.fn())
+      createRenderEffect(() => {
+        if (!state.ready()) {
+          restoring = true
+          return
+        }
+        if (restoring) {
+          readySelections.push({
+            ...untrack(state.selections),
+          })
+        }
+      })
       return { dispose }
     })
     try {
@@ -102,9 +182,15 @@ describe('questions with selected answers only', () => {
         expect(state.ready()).toBe(true)
         expect(state.selections()).toEqual({ 0: expected })
       })
+      expect(readySelections).toEqual([
+        { 0: expected },
+      ])
+      if (readFailure)
+        expect(failedRead).toHaveBeenCalledExactlyOnceWith(`${PREFIX_CONTROL_STATE}${request.agentId}:${request.requestId}:${request.claimToken}`)
     }
     finally {
       dispose()
+      failedRead?.mockRestore()
     }
   })
   it('restores a selected answer without hidden custom text', async () => {

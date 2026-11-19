@@ -5,13 +5,16 @@ import type { HeldNativeChild } from '../helpers/runningChildProof'
 import type { ProviderAgent } from '../helpers/workspace'
 import { randomUUID } from 'node:crypto'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { cleanupOnFailure, finishCleanup, withCleanup } from '../helpers/cleanup'
 import { managedNativeContext, nativeTextStep } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { diracRespondToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { expectRowBecomesFinal } from '../helpers/subagentRegistry'
+import { tabById } from '../helpers/ui'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
-import { diracChildResultRule } from './childResult'
+import { diracChildRequestMatcher } from './childRequest'
 import { waitForDiracCheckpoint } from './resumeCheckpoint'
 
 /** How a Dirac agent opens. */
@@ -49,24 +52,49 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
     description,
     prompt: context.modelScript.prompt(task),
   })
-  const matcher = { body: task }
+  const matcher = diracChildRequestMatcher(task)
   const finalStep = nativeTextStep(context, 'NATIVECHILDCOMPLETE')
-  return openRunningNativeChild(context, {
-    gate: `native-child-${randomUUID()}`,
-    child: options.childTool
-      ? { matcher, tool: options.childTool, finalStep }
-      : { matcher, finalStep },
-    spawn,
-    allowExistingRows: options.allowExistingRows ?? false,
-    rowText: description,
-    parentSteps: [
-      {
-        toolCalls: [spawn],
+  const gate = `native-child-${randomUUID()}`
+  const parentGate = `${gate}-parent`
+  const releaseParent = async () => {
+    await context.modelScript.releaseGateIfHeld(parentGate)
+  }
+  return cleanupOnFailure(async () => {
+    const child = await openRunningNativeChild(context, {
+      gate,
+      child: options.childTool
+        ? { matcher, tool: options.childTool, finalStep }
+        : { matcher, finalStep },
+      spawn,
+      allowExistingRows: options.allowExistingRows ?? false,
+      rowText: description,
+      parentSteps: [
+        {
+          toolCalls: [spawn],
+        },
+        {
+          ...nativeTextStep(context, 'The native parent completed.'),
+          gate: parentGate,
+        },
+      ],
+    })
+    await context.modelScript.waitForGate(parentGate)
+    return {
+      ...child,
+      finish: async () => {
+        await withCleanup(async () => {
+          await context.modelScript.releaseGateIfHeld(gate)
+          await tabById(context.page, child.parentId).click()
+          await expectRowBecomesFinal(context.page, child.row)
+        }, releaseParent)
+        await child.finish()
       },
-    ],
-    rules: [
-      diracChildResultRule(taskMarker, nativeTextStep(context, 'The native parent completed.')),
-    ],
+    }
+  }, async () => {
+    await finishCleanup([
+      context.modelScript.releaseGateIfHeld(gate),
+      releaseParent(),
+    ])
   })
 }
 

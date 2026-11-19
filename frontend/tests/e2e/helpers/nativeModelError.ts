@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import type { MockModelError, MockModelRequestRecord } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import type { QueueAfterFailure } from './ui'
@@ -13,6 +14,8 @@ interface NativeModelErrorOptions {
    */
   queueAfterFailure: QueueAfterFailure
   error?: MockModelError
+  /** Check this error surface when the provider also repeats the error in its turn divider. */
+  errorContents?: Locator
   prepare?: () => Promise<void>
   /**
    * How many model requests the native client sends for the one failed turn.
@@ -94,10 +97,11 @@ export async function exerciseModelError(
   await options.answerFailure?.(error)
   // The idle wait requires the visible thinking indicator to clear, so no second indicator check follows.
   await waitForAgentIdle(context.page)
-  await expect(messageContents(context.page).filter({ hasText: error.message })).toHaveCount(1)
+  const errorContents = options.errorContents ?? messageContents(context.page)
+  await expect(errorContents.filter({ hasText: error.message })).toHaveCount(1)
   await context.page.reload()
   await waitForAgentIdle(context.page)
-  await expect(messageContents(context.page).filter({ hasText: error.message })).toHaveCount(1)
+  await expect(errorContents.filter({ hasText: error.message })).toHaveCount(1)
   await resumeQueueAfterFailure(context.page, options.queueAfterFailure)
   await sendNativeAnswer(context, 'Reply once after the native service failure.', `RECOVERED${marker}`)
   return failed

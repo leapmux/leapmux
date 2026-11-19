@@ -79,7 +79,14 @@ func (r remoteRPC) value(ctx context.Context, method string, args map[string]any
 		ctx, cancel = context.WithTimeout(ctx, r.timeout)
 		defer cancel()
 	}
-	if err := r.endpoint.Do(ctx, http.MethodPost, "/api/"+method, request, &response); err != nil {
+	endpoint := r.endpoint
+	if isNativeReadMethod(method) {
+		// Native reads use POST. The key lets Go replay an idle-connection
+		// failure with the same request identity. A lost mutation reply does
+		// not prove its action failed, so mutations do not opt into replay.
+		endpoint = endpoint.WithHeader("Idempotency-Key", id)
+	}
+	if err := endpoint.Do(ctx, http.MethodPost, "/api/"+method, request, &response); err != nil {
 		return nil, err
 	}
 	if response.Type != "server-response" || response.ID != id || response.Result == nil || response.Result.OK == nil {
@@ -95,6 +102,16 @@ func (r remoteRPC) value(ctx context.Context, method string, args map[string]any
 		return nil, fmt.Errorf("DeepSeek Harness RPC success carries an error")
 	}
 	return response.Result.Value, nil
+}
+
+// isNativeReadMethod identifies the read-only endpoints that this adapter uses.
+func isNativeReadMethod(method string) bool {
+	switch method {
+	case "goals/get", "session/attachment", "session/projections", "session/modelCatalog", "permissionPresets/catalog", "session/page":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r remoteRPC) request(ctx context.Context, method string, request, out any) error {

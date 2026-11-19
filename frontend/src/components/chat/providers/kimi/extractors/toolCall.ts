@@ -13,7 +13,7 @@ import type { TriggerRequest } from '../../../model/tools/trigger'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
-import { KIMI_TOOL, KIMI_TRANSCRIPT_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_CONVERSATION_FIELD, KIMI_CONVERSATION_ITEM_KIND, KIMI_CONVERSATION_OUTCOME, KIMI_CONVERSATION_RECORD_ROLE, KIMI_CONVERSATION_STATUS, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { parseDataImageUrl } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
@@ -21,11 +21,12 @@ import { parseMcpToolName } from '../../../model/mcpToolCall'
 import { parseReadContent } from '../../../model/readFileResult'
 import { failedResult, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
-import { retainedOutcome, retainedRowIsFinal } from '../../registry'
+import { retainedOutcome } from '../../registry'
 import { kimiQuestionsFromToolInput } from '../askUserQuestion'
+import { kimiConversationAcceptsView, kimiConversationRow } from '../conversation'
 import { kimiDisplay } from '../protocol'
 import { kimiToolKind } from '../toolKinds'
-import { kimiTranscriptTool, kimiTranscriptToolsMatch } from '../transcript'
+import { kimiInlineImage } from './media'
 import { kimiTodoItems } from './todo'
 
 /**
@@ -45,6 +46,7 @@ export interface KimiToolRow {
   originalResult?: Record<string, unknown> | null
   /** True for a retained start: the turn ended while the call ran. */
   retained: boolean
+  truncated: boolean
   /** True when this row is the last one of its call. */
   finished: boolean
   lifecycle: ToolCallLifecycleFacts
@@ -61,43 +63,52 @@ export function kimiToolRow(
   completion: MessageCompletion | undefined,
   originalResult?: unknown,
 ): KimiToolRow | null {
-  const native = kimiTranscriptTool(parsed)
-  if (native) {
-    const original = kimiTranscriptTool(originalResult)
-    const retained = native.state === KIMI_TRANSCRIPT_TOOL.Running && retainedRowIsFinal(completion)
-    const finished = native.state !== KIMI_TRANSCRIPT_TOOL.Running || retained
-    const result = finished
-      ? native.state !== KIMI_TRANSCRIPT_TOOL.Running || Object.hasOwn(native.frame, 'output')
-        ? native.frame
-        : null
-      : null
-    return {
-      toolCallId: native.toolCallId,
-      toolName: native.name,
-      args: pickObject(native.frame, 'input') ?? {},
-      display: kimiDisplay(native.frame),
-      result,
-      originalResult: finished && kimiTranscriptToolsMatch(native, original)
-        ? original?.frame ?? null
-        : result,
-      retained,
-      finished,
-      lifecycle: {
-        frameStatus: native.state === KIMI_TRANSCRIPT_TOOL.Running
-          ? 'in_progress'
-          : native.state === KIMI_TRANSCRIPT_TOOL.Error
-            ? 'failed'
-            : 'completed',
-        providerOutcome: result?.state === KIMI_TRANSCRIPT_TOOL.Error
+  const conversation = kimiConversationRow(parsed)
+  if (conversation?.kind !== 'item' || conversation.item[KIMI_CONVERSATION_FIELD.Type] !== KIMI_CONVERSATION_ITEM_KIND.ToolCall)
+    return null
+  const item = conversation.item
+  const finished = conversation.role === KIMI_CONVERSATION_RECORD_ROLE.Result
+  const retained = finished && item[KIMI_CONVERSATION_FIELD.Status] === KIMI_CONVERSATION_STATUS.Running
+  const media = item[KIMI_CONVERSATION_FIELD.Media]
+  const hasOutput = typeof item[KIMI_CONVERSATION_FIELD.Output] === 'string'
+    || typeof item[KIMI_CONVERSATION_FIELD.Error] === 'string'
+    || (Array.isArray(media) && media.length > 0)
+  const result = finished && (!retained || hasOutput)
+    ? item
+    : null
+  const original = result
+    ? kimiConversationRow(originalResult)
+    : null
+  return {
+    toolCallId: pickString(item, KIMI_CONVERSATION_FIELD.ItemID),
+    toolName: pickString(item, KIMI_CONVERSATION_FIELD.Name),
+    args: pickObject(item, KIMI_CONVERSATION_FIELD.Input) ?? {},
+    display: kimiDisplay(item),
+    result,
+    originalResult: original?.kind === 'item' && kimiConversationAcceptsView(conversation, original)
+      ? original.item
+      : result,
+    retained,
+    truncated: conversation.record[KIMI_CONVERSATION_FIELD.OutputTruncated] === true,
+    finished,
+    lifecycle: {
+      frameStatus: !finished || retained
+        ? 'in_progress'
+        : item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Failed
           ? 'failed'
+          : item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Interrupted
+            ? 'cancelled'
+            : 'completed',
+      providerOutcome: item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Failed
+        ? 'failed'
+        : item[KIMI_CONVERSATION_FIELD.Outcome] === KIMI_CONVERSATION_OUTCOME.Interrupted
+          ? 'interrupted'
           : null,
-        retainedOutcome: retainedOutcome(retained ? completion : undefined),
-        rowFinal: finished,
-        resultFrameLanded: result !== null,
-      },
-    }
+      retainedOutcome: retainedOutcome(retained ? completion : undefined),
+      rowFinal: finished,
+      resultFrameLanded: finished && !retained,
+    },
   }
-  return null
 }
 
 /**
@@ -123,7 +134,11 @@ export interface KimiToolFacts {
 
 /** Collect the facts of one row and settle the kind it takes. */
 export function kimiToolFacts(row: KimiToolRow): KimiToolFacts {
-  const { text, images } = kimiOutput(row.result?.output)
+  const { images, links } = kimiConversationMedia(row.result)
+  const output = kimiToolResultText(row.result)
+  const text = (output
+    ? [output, ...links]
+    : links).join('\n')
   const kind = kimiToolKind(row.toolName)
   const facts: KimiToolFacts = {
     row,
@@ -132,16 +147,54 @@ export function kimiToolFacts(row: KimiToolRow): KimiToolFacts {
     input: kimiResolvedInput(kind, row),
     displayKind: pickString(row.display, 'kind'),
     text,
-    lifecycleText: kimiOutput(row.originalResult?.output ?? row.result?.output).text,
+    lifecycleText: kimiToolResultText(row.originalResult ?? row.result),
     images,
     failed: row.lifecycle.providerOutcome === 'failed',
-    truncated: row.result?.truncated === true,
+    truncated: row.truncated,
     resultAvailable: row.result !== null,
   }
   return {
     ...facts,
     kind: kimiReclassify(facts),
   }
+}
+
+/** The public item keeps images and other media separate from its output string. */
+function kimiConversationMedia(result: Record<string, unknown> | null): { images: ImageResultSource[], links: string[] } {
+  const images: ImageResultSource[] = []
+  const links: string[] = []
+  const media = result?.[KIMI_CONVERSATION_FIELD.Media]
+  if (!Array.isArray(media))
+    return { images, links }
+  for (const part of media) {
+    const url = pickString(part, KIMI_CONVERSATION_FIELD.URL)
+    if (!url)
+      continue
+    switch (pickString(part, KIMI_CONVERSATION_FIELD.Kind)) {
+      case 'image': {
+        const image = parseDataImageUrl(url)
+        if (image) {
+          const source = kimiInlineImage(image.mimeType, image.base64)
+          if (source)
+            images.push(source)
+        }
+        break
+      }
+      case 'audio':
+      case 'video':
+        links.push(url)
+        break
+    }
+  }
+  return { images, links }
+}
+
+/** Native conversation failures retain their text in error instead of output. */
+function kimiToolResultText(result: Record<string, unknown> | null): string {
+  const outcome = result?.[KIMI_CONVERSATION_FIELD.Outcome]
+  return pickString(result, outcome === KIMI_CONVERSATION_OUTCOME.Failed || outcome === KIMI_CONVERSATION_OUTCOME.Interrupted
+    ? KIMI_CONVERSATION_FIELD.Error
+    : KIMI_CONVERSATION_FIELD.Output)
 }
 
 /**
@@ -176,59 +229,6 @@ function kimiResolvedInput(kind: ToolKind, row: KimiToolRow): Record<string, unk
   return displayed
     ? { ...row.args, path: displayed }
     : row.args
-}
-
-/**
- * The words and the pictures a result's `output` states.
- *
- * The output is a string, or a list of content parts: text, and an image, audio or
- * video by URL. The text parts join, and an image part whose URL this build can draw
- * becomes a picture. A clip is stated by its URL alone.
- */
-export function kimiOutput(output: unknown): { text: string, images: ImageResultSource[] } {
-  if (typeof output === 'string')
-    return { text: output, images: [] }
-  if (!Array.isArray(output))
-    return { text: '', images: [] }
-  const texts: string[] = []
-  const images: ImageResultSource[] = []
-  for (const part of output) {
-    if (!isObject(part))
-      continue
-    switch (part.type) {
-      case 'image':
-        if (typeof part.mimeType === 'string' && typeof part.data === 'string' && part.data)
-          images.push({ mimeType: part.mimeType, data: part.data })
-        break
-      case 'text':
-        texts.push(pickString(part, 'text'))
-        break
-      case 'image_url': {
-        const url = pickString(pickObject(part, 'imageUrl'), 'url')
-        const data = parseDataImageUrl(url)
-        if (data)
-          images.push({ mimeType: data.mimeType, data: data.base64 })
-        else if (url)
-          images.push({ url })
-        break
-      }
-      case 'audio_url':
-      case 'video_url': {
-        const url = pickString(pickObject(part, part.type === 'audio_url'
-          ? 'audioUrl'
-          : 'videoUrl'), 'url')
-        if (url)
-          texts.push(url)
-        break
-      }
-      default:
-        break
-    }
-  }
-  return {
-    text: texts.join('\n'),
-    images,
-  }
 }
 
 /**
@@ -419,7 +419,7 @@ export const KIMI_TOOL_READERS: ToolCallSpecReaderTable<KimiToolFacts> = {
     // its trailer. Only a command that returned on its own succeeded.
     const exitCode = trailer
       ? Number(trailer[1])
-      : facts.failed || facts.row.retained
+      : facts.failed || facts.row.retained || facts.row.lifecycle.providerOutcome === 'interrupted'
         ? undefined
         : 0
     return {
@@ -958,10 +958,10 @@ function kimiQuestionResult(text: string): QuestionResult | null {
   const native = isObject(parsed)
     ? parsed
     : undefined
-  const answers = pickObject(native, 'answers')
+  const answers = pickObject(native, KIMI_CONVERSATION_FIELD.Answers)
   if (!answers)
     return null
-  const note = pickString(native, 'note').trim()
+  const note = pickString(native, KIMI_CONVERSATION_FIELD.Note).trim()
   return {
     answers: Object.entries(answers).map(([header, answer]) => ({
       header,

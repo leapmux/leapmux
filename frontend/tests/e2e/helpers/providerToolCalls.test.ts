@@ -62,6 +62,7 @@ import {
   diracCondenseToolCall,
   diracEditAnchorCapture,
   diracRespondToolCall,
+  diracResumeSubagentToolCall,
   droidExecuteToolCall,
   droidScriptToolCall,
   droidToolCallId,
@@ -2769,19 +2770,39 @@ describe('spawnSubagentBatchToolCall', () => {
     ])).toThrow('carries no background choice')
   })
 
-  it('puts each Dirac child in one use_subagents call', () => {
+  it('puts each Dirac child in one asynchronous subagents create call', () => {
     expect(spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [first, second])).toEqual({
       id: 'call-1',
-      name: 'use_subagents',
+      name: 'subagents',
       arguments: {
-        subagents: [
-          { task_title: 'Count the files', prompt: 'Count.' },
-          { task_title: 'List the files', prompt: 'List.' },
+        operation: 'create',
+        assignments: [
+          { type: 'default', task_header: 'Count the files', task_description: 'Count.' },
+          { type: 'default', task_header: 'List the files', task_description: 'List.' },
         ],
       },
     })
     expect(spawnSubagentToolCall(AgentProvider.DIRAC, 'call-1', first)).toEqual(spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [first]))
     expect(() => spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [])).toThrow('at least one subagent')
+  })
+
+  it('accepts sixteen Dirac assignments and refuses a larger batch', () => {
+    const requests = Array.from({ length: 16 }, (_, index) => ({ description: `Child ${index}`, prompt: `Inspect ${index}.` }))
+    const call = spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'native-batch', requests)
+    expect(call.arguments?.assignments).toHaveLength(16)
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'native-large-batch', [...requests, first])).toThrow('sixteen')
+  })
+
+  it('refuses a synchronous Dirac assignment and invalid native headers', () => {
+    expect(() => spawnSubagentToolCall(AgentProvider.DIRAC, 'native-sync', { ...first, background: false })).toThrow('asynchronous')
+    for (const description of [
+      '',
+      '  ',
+      'one two three four five six',
+      'x'.repeat(81),
+    ]) {
+      expect(() => spawnSubagentToolCall(AgentProvider.DIRAC, 'native-header', { ...first, description })).toThrow('header')
+    }
   })
 
   it('refuses a provider whose spawn tool starts one child for each call', () => {
@@ -3565,6 +3586,18 @@ describe('the Junie tool vocabulary', () => {
 describe('the Dirac tool vocabulary', () => {
   const dirac = AgentProvider.DIRAC
 
+  it('addresses one native tasklet for explicit resumption', () => {
+    expect(diracResumeSubagentToolCall('resume-call', 'Witten', 'Inspect the follow-up.')).toEqual({
+      id: 'resume-call',
+      name: 'subagents',
+      arguments: { operation: 'resume', tasklet_id: 'Witten', message: 'Inspect the follow-up.' },
+    })
+    expect(diracResumeSubagentToolCall('resume-call', 'Witten').arguments).not.toHaveProperty('message')
+    expect(() => diracResumeSubagentToolCall('', 'Witten')).toThrow('requires a call ID, a tasklet ID and nonempty provided text')
+    expect(() => diracResumeSubagentToolCall('resume-call', ' ')).toThrow('requires a call ID, a tasklet ID and nonempty provided text')
+    expect(() => diracResumeSubagentToolCall('resume-call', 'Witten', '')).toThrow('requires a call ID, a tasklet ID and nonempty provided text')
+  })
+
   it('returns the native compaction context through condense', () => {
     expect(diracCondenseToolCall('summary-1', 'Keep the branch state.')).toEqual({
       id: 'summary-1',
@@ -3629,13 +3662,14 @@ describe('the Dirac tool vocabulary', () => {
     })
   })
 
-  it('spawns a child with the native use_subagents array', () => {
+  it('spawns a child with the native subagents assignment array', () => {
     expect(spawnSubagentToolCall(dirac, 'c', { description: 'Count files', prompt: 'Count the files.' })).toEqual({
       id: 'c',
-      name: 'use_subagents',
+      name: 'subagents',
       arguments: {
-        subagents: [
-          { task_title: 'Count files', prompt: 'Count the files.' },
+        operation: 'create',
+        assignments: [
+          { type: 'default', task_header: 'Count files', task_description: 'Count the files.' },
         ],
       },
     })

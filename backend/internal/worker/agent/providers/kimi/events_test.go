@@ -3,7 +3,6 @@ package kimi
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -22,33 +21,42 @@ import (
 // TestKimiTurnFrames checks native main activity and keeps child activity separate.
 func TestKimiTurnFrames(t *testing.T) {
 	t.Parallel()
-	operation := func(agentID, op string) string {
-		return fmt.Sprintf(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":%q,"seq":1,"ops":[%s]}}`, agentID, op)
+	const header = `"turn_id":"t0","ordinal":0,"kind":"agent","started_at":"2026-11-18T00:00:00Z","steps":[]`
+	const start = `{"type":"turn.started","turn":{` + header + `,"status":"running"}}`
+	const end = `{"type":"turn.ended","turn":{` + header + `,"status":"ended","outcome":"completed"}}`
+	frame := func(agentID, event string) string {
+		return string(kimiConversationTestFrame(t, "session_1", agentID, event))
 	}
-	started := `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`
-	ended := `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`
 	cases := []agenttest.TurnFrameCase{
-		{Name: "main turn started", Line: operation("main", started), Moves: true},
-		{Name: "main turn ended", Line: operation("main", ended), Moves: true},
-		{Name: "missing native agent", Line: operation("", started)},
-		{Name: "child turn started", Line: operation("agent-0", started)},
-		{Name: "child turn ended", Line: operation("agent-0", ended)},
-		{Name: "assistant frame", Line: operation("main", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"hi"}}`)},
-		{Name: "tool opening", Line: operation("main", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c1","toolCallId":"c1","name":"Bash","state":"running","input":{}}}`)},
-		{Name: "tool result", Line: operation("main", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c1","toolCallId":"c1","name":"Bash","state":"done","input":{},"output":"ok"}}`)},
+		{Name: "main turn started", Line: frame(kimiMainAgentID, start), Moves: true},
+		{Name: "main turn ended", Line: frame(kimiMainAgentID, end), Moves: true},
+		{Name: "missing native agent", Line: frame("", start)},
+		{Name: "child turn started", Line: frame("agent-0", start)},
+		{Name: "child turn ended", Line: frame("agent-0", end)},
+		{Name: "assistant item", Line: frame(kimiMainAgentID, `{"type":"item.started","turn_id":"t0","item":{"type":"assistant_message","item_id":"answer","status":"running","created_at":"2026-11-18T00:00:00Z","text":"hi"}}`)},
+		{Name: "tool opening", Line: frame(kimiMainAgentID, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"call","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","input":{}}}`)},
+		{Name: "tool result", Line: frame(kimiMainAgentID, `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"call","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","input":{},"output":"ok"}}`)},
 		{Name: "flat usage", Line: `{"type":"usage","session_id":"session_1","agent_id":"main","context_tokens":1,"max_context_tokens":10}`},
-		{Name: "prompt update", Line: operation("main", `{"op":"prompt.upsert","prompt":{"promptId":"prompt-1","status":"running"}}`)},
-		{Name: "step interrupted", Line: operation("main", `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"interrupted"}}`)},
-		{Name: "unknown operation", Line: operation("main", `{"op":"future.operation"}`)},
-		{Name: "foreign session", Line: `{"type":"transcript.ops","session_id":"session_other","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[` + started + `]}}`},
-		{Name: "missing payload", Line: `{"type":"transcript.ops","session_id":"session_1"}`},
-		{Name: "invalid payload", Line: `{"type":"transcript.ops","session_id":"session_1","payload":"not an operation envelope"}`},
+		{Name: "step interrupted", Line: frame(kimiMainAgentID, `{"type":"turn.updated","turn_id":"t0","step":{"index":1,"outcome":"interrupted","started_at":"2026-11-18T00:00:00Z"}}`)},
+		{Name: "unknown frame", Line: frame(kimiMainAgentID, `{"type":"future.event"}`)},
+		{Name: "foreign session", Line: string(kimiConversationTestFrame(t, "session_other", kimiMainAgentID, end))},
+		{Name: "missing turn", Line: frame(kimiMainAgentID, `{"type":"turn.ended"}`)},
+		{Name: "invalid turn", Line: frame(kimiMainAgentID, `{"type":"turn.ended","turn":"not a turn"}`)},
 	}
 	agenttest.AssertTurnFrames(t, cases, func(t *testing.T, tc agenttest.TurnFrameCase) []bool {
-		sink := &agenttest.Sink{}
-		a := newOfflineKimiAgent(t, sink)
-		a.HandleOutput([]byte(tc.Line))
-		return sink.TurnActives()
+		rig := newKimiConversationRig(t)
+		if tc.Name != "main turn started" {
+			rig.conversationFrame(t, start)
+		}
+		if tc.Name == "child turn started" || tc.Name == "child turn ended" {
+			adoptNativeKimiChild(t, rig.agent, "agent-0")
+		}
+		if tc.Name == "child turn ended" {
+			rig.conversationAgentFrame(t, "agent-0", start)
+		}
+		before := len(rig.sink.TurnActives())
+		rig.agent.HandleOutput([]byte(tc.Line))
+		return rig.sink.TurnActives()[before:]
 	})
 }
 
@@ -68,27 +76,6 @@ func TestParseKimiEvent(t *testing.T) {
 	for _, payload := range []string{``, `{}`, `{"type":""}`, `[]`, `null`} {
 		_, ok := parseKimiEvent(kimiFrame{Payload: json.RawMessage(payload)})
 		assert.False(t, ok, payload)
-	}
-}
-
-func TestKimiBlockedPromptPersistsTheHookResult(t *testing.T) {
-	t.Parallel()
-	rig := newKimiOutputRig(t)
-	// The hook marker and prompt admission record describe a refusal without a turn.
-	rig.publishMarker(t, kimiMainAgentID, "hook", map[string]any{"hookEvent": "UserPromptSubmit", "content": "probe hook blocked this prompt", "blocked": true})
-	rig.transcriptOps(t, 2, `{"op":"prompt.upsert","prompt":{"promptId":"blocked-prompt","status":"blocked","createdAt":"2026-11-16T00:00:00Z"}}`)
-	require.Len(t, rig.sink.PersistedNotifications(), 1)
-	assert.Contains(t, string(rig.sink.PersistedNotifications()[0].Content), "probe hook blocked this prompt")
-	assert.Empty(t, rig.sink.Messages(), "a blocked prompt starts no turn and writes no divider")
-}
-
-func TestKimiPassedHookResultIsDropped(t *testing.T) {
-	t.Parallel()
-	for _, blocked := range []any{false, nil, "true"} {
-		rig := newKimiOutputRig(t)
-		rig.publishMarker(t, kimiMainAgentID, "hook", map[string]any{"hookEvent": "UserPromptSubmit", "content": "a hook detail", "blocked": blocked})
-		assert.Empty(t, rig.sink.PersistedNotifications())
-		assert.Empty(t, rig.sink.Messages())
 	}
 }
 

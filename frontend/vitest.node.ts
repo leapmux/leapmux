@@ -56,7 +56,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/deepseek-harness/nativeToolResultText.test.ts',
   'tests/e2e/deepseek-harness/outputFilePaths.test.ts',
   'tests/e2e/dirac/attachmentInput.test.ts',
-  'tests/e2e/dirac/childResult.test.ts',
+  'tests/e2e/dirac/childRequest.test.ts',
   'tests/e2e/dirac/codeExecution.test.ts',
   'tests/e2e/dirac/fixtures.test.ts',
   'tests/e2e/dirac/mcpConfiguration.test.ts',

@@ -62,6 +62,8 @@ func connectKimiOwnedTreeSession(t *testing.T, a *Agent, url string) {
 	require.NoError(t, a.connect(a.Context(), url, fakeKapToken, opts, opts.APITimeout))
 	t.Cleanup(a.closeStream)
 	require.NoError(t, a.openStartupSession(opts, opts.APITimeout))
+	main := a.run(kimiMainAgentID)
+	waitFor(t, func() bool { return main.conversationRecovery.Load() == nil }, "the first page has left startup recovery")
 }
 
 type kimiRootExitResult struct {
@@ -111,7 +113,8 @@ func TestKimiStopCapturesDetachedCommandsBeforeServerShutdown(t *testing.T) {
 	a, tree := startKimiOwnedTree(t, "owned-kimi-stop")
 	_, unrelated := startKimiOwnedTree(t, "unrelated-kimi-stop")
 	connectKimiOwnedTreeSession(t, a, server.URL)
-	a.HandleOutput([]byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`))
+	a.HandleOutput(kimiConversationTestFrame(t, "session_1", kimiMainAgentID, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+	require.True(t, a.PublishTurnActive().Active)
 	beforeReply, rootExit := newKimiRootExitHook(t, a, tree)
 	fake.reply("POST "+kimiRouteShutdown, fakeKapReply{BeforeReply: beforeReply})
 	stopKimiAndAwaitRootExit(t, a, rootExit)
@@ -148,7 +151,8 @@ func TestKimiStopSendsNoRequestsAfterNativeExit(t *testing.T) {
 			fake, server := newFakeKap(t)
 			a, tree := startKimiOwnedTree(t, "exited-kimi-stop")
 			connectKimiOwnedTreeSession(t, a, server.URL)
-			a.HandleOutput([]byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`))
+			a.HandleOutput(kimiConversationTestFrame(t, "session_1", kimiMainAgentID, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+			require.True(t, a.PublishTurnActive().Active)
 			require.NoError(t, a.BindDescendants(t.Context()))
 			killed, err := tree.Root.Kill()
 			require.NoError(t, err)
@@ -175,7 +179,8 @@ func TestKimiStopRetainsCommandsWhenTheServerExitsDuringAbort(t *testing.T) {
 	fake, server := newFakeKap(t)
 	a, tree := startKimiOwnedTree(t, "abort-exit-kimi-stop")
 	connectKimiOwnedTreeSession(t, a, server.URL)
-	a.HandleOutput([]byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`))
+	a.HandleOutput(kimiConversationTestFrame(t, "session_1", kimiMainAgentID, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+	require.True(t, a.PublishTurnActive().Active)
 	beforeReply, rootExit := newKimiRootExitHook(t, a, tree)
 	fake.reply("POST "+kimiSessionPath("session_1", kimiActionAbort), fakeKapReply{BeforeReply: beforeReply})
 	stopKimiAndAwaitRootExit(t, a, rootExit)

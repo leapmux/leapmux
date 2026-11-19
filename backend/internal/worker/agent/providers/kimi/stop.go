@@ -140,9 +140,17 @@ func (a *Agent) closeStream() {
 		a.stream.close()
 		a.stream.wait()
 	}
+	a.Mu.Lock()
+	for _, run := range a.runs {
+		if recovery := run.conversationRecovery.Load(); recovery != nil {
+			recovery.cancel()
+		}
+	}
+	a.Mu.Unlock()
 	a.transcriptRecoveryWork.CloseAndWait()
 	a.taskRecoveryWork.CloseAndWait()
 	a.taskReportWork.CloseAndWait()
+	a.goalMetadataWork.CloseAndWait()
 	a.closeMedia()
 	if a.endpoint != nil {
 		a.endpoint.Close()
@@ -165,7 +173,6 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	}
 	a.turnActive = false
 	a.turnSteerable = false
-	a.manualCompactionActive = false
 	a.Mu.Unlock()
 
 	// Each run writes to its own transcript, so the order of the runs does not
@@ -175,19 +182,19 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 		if sink == nil {
 			continue
 		}
-		a.flushRun(run, sink, completion)
-		a.closeOpenTools(run, sink, completion)
-		if run.compactionLive {
-			providerkit.EndCompaction(sink)
-			run.compactionLive = false
-		}
+		a.settleConversationAfterExit(run, completion)
 		a.Mu.Lock()
-		childTurn := run.agentID != kimiMainAgentID && run.turnActive
+		nativeCompacting := run.compacting
+		childTurn := run.agentID != kimiMainAgentID && (run.turnActive || nativeCompacting)
 		run.turnActive = false
+		run.compacting = false
 		a.Mu.Unlock()
+		if nativeCompacting {
+			providerkit.EndCompaction(sink)
+		}
 		if childTurn {
 			if _, linked := a.children.childOf(run.agentID); linked {
-				a.publishChildTurn(run, false)
+				a.publishChildInputState(run)
 			}
 		}
 		run.childGraph.abandon()

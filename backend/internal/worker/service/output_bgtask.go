@@ -643,8 +643,8 @@ func (h *OutputHandler) applyBackgroundTaskExit(rootID string, minimumGeneration
 // EnsureChildAgent resolves the stored child under this sink's agent.
 // Replays and Worker restarts resolve the same native child or spawn span.
 // NewRootSink in output.go specifies the registry root owner.
-// SpawnSpanID uses agents.spawn_span_id and the unique parent/span index.
-// ProviderChildKey can identify the child before its native spawn span arrives.
+// SpawnSpanID stores the parent origin, which several native children may share.
+// ProviderChildKey identifies one child even before its native origin arrives.
 // A supplied native session must match the stored child before registry changes.
 func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 	if !spec.RegistryRole.IsCanonicalChildActivity() {
@@ -824,17 +824,12 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 			return "", err
 		}
 	}
-	// Fallback: GetChildAgentBySpawnSpan covers a worker restart between the
-	// agent-row insert and the registry upsert. parent_agent_id for the new row
-	// is THIS sink's agentID (works for grandchild spawns too: the spawn span
-	// lives in this sink's own transcript).
-	if existing, err := reg.queries.GetChildAgentBySpawnSpan(ctx, db.GetChildAgentBySpawnSpanParams{
-		ParentAgentID: sqlString(s.agentID),
-		SpawnSpanID:   spawnSpanID,
-	}); err == nil {
-		return existing.ID, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	// The origin can identify a provisional child after a Worker restart.
+	// An exact native key must never select a different keyed sibling.
+	if existingID, err := s.childAtSpawnOrigin(ctx, reg, spec); err != nil {
 		return "", err
+	} else if existingID != "" {
+		return existingID, nil
 	}
 
 	// Create the child agent row. Copy working_dir/provider from THIS sink's
@@ -897,17 +892,41 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 				return "", fmt.Errorf("read native child after creation failed: %w", readErr)
 			}
 		}
-		// UNIQUE violation on idx_agents_spawn_span (race / replay): re-read.
-		if existing, rerr := reg.queries.GetChildAgentBySpawnSpan(ctx, db.GetChildAgentBySpawnSpanParams{
-			ParentAgentID: sqlString(s.agentID),
-			SpawnSpanID:   spawnSpanID,
-		}); rerr == nil {
-			childID = existing.ID
+		if existingID, readErr := s.childAtSpawnOrigin(ctx, reg, spec); readErr != nil {
+			return "", fmt.Errorf("resolve child after creation failed: %w", errors.Join(err, readErr))
+		} else if existingID != "" {
+			childID = existingID
 		} else {
 			return "", fmt.Errorf("create child agent: %w", err)
 		}
 	}
 	// The caller validates the resolved child before linking its registry row.
+	return childID, nil
+}
+
+// childAtSpawnOrigin returns only an unambiguous identity. A known native key
+// may adopt a provisional child, but never another keyed member of the batch.
+func (s *agentOutputSink) childAtSpawnOrigin(ctx context.Context, reg bgTaskView, spec agent.ChildAgentSpec) (string, error) {
+	if spec.SpawnSpanID == "" {
+		return "", nil
+	}
+	children, err := reg.queries.GetChildAgentsBySpawnSpan(ctx, db.GetChildAgentsBySpawnSpanParams{ParentAgentID: sqlString(s.agentID), SpawnSpanID: spec.SpawnSpanID})
+	if err != nil {
+		return "", err
+	}
+	var childID string
+	for _, child := range children {
+		if spec.ProviderChildKey != "" && child.ProviderChildKey != "" {
+			continue
+		}
+		if spec.ProviderChildKey != "" && spec.AgentSessionID != "" && child.AgentSessionID != "" && child.AgentSessionID != spec.AgentSessionID {
+			continue
+		}
+		if childID != "" && childID != child.ID {
+			return "", fmt.Errorf("the spawn origin identifies several native children: %w", agent.ErrChildIdentityRefused)
+		}
+		childID = child.ID
+	}
 	return childID, nil
 }
 

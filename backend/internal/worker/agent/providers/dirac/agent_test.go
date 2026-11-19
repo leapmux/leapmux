@@ -1,7 +1,6 @@
 package dirac
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -81,28 +80,6 @@ func TestDiracSteerInputRefusesWhenNoTurnRuns(t *testing.T) {
 	t.Parallel()
 	a, _ := newDiracAgent(t)
 	assert.ErrorIs(t, a.SteerInput("late", nil), agent.ErrNoActiveTurn)
-}
-
-func TestDiracSubagentFromToolCallMapsTheUseSubagentsCard(t *testing.T) {
-	t.Parallel()
-	tc := acp.ToolCallEnvelope{
-		ToolCallID: "card-1",
-		Title:      "Run Subagents",
-		RawInput:   json.RawMessage(`{"tool":"use_subagents","task_title":"Explore","prompt":"look around"}`),
-	}
-	obs := diracSubagentFromToolCall(tc)
-	require.NotNil(t, obs)
-	assert.Equal(t, "card-1", obs.RowKey)
-	assert.Equal(t, "Run Subagents", obs.Title)
-}
-
-func TestDiracSubagentFromToolCallIgnoresOtherTools(t *testing.T) {
-	t.Parallel()
-	assert.Nil(t, diracSubagentFromToolCall(acp.ToolCallEnvelope{
-		ToolCallID: "cmd-1",
-		RawInput:   json.RawMessage(`{"tool":"execute_command","command":"ls"}`),
-	}))
-	assert.Nil(t, diracSubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "bare"}))
 }
 
 // diracUpdateFrame is a session/update frame of one session that carries the

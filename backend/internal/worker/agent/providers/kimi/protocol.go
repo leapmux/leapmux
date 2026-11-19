@@ -23,9 +23,6 @@ const (
 	kimiPromptQueued    = "queued"
 	kimiPromptBlocked   = "blocked"
 	kimiPromptRunning   = "running"
-	kimiPromptCompleted = "completed"
-	kimiPromptFailed    = "failed"
-	kimiPromptAborted   = "aborted"
 	kimiGlobalSessionID = "__global__"
 )
 
@@ -36,9 +33,8 @@ const (
 // routes, the envelope codes, the WebSocket control frames, and the fields of
 // the requests the worker sends. No browser code reads any of them.
 
-// kimiBinaryName is the program the provider launches. The legacy Python
-// kimi-cli installs a program of the same name, which is why start.go checks
-// the version before it starts the server.
+// kimiBinaryName is the program the provider launches. The provider requires
+// the native web server command, which the legacy Python kimi-cli does not offer.
 const kimiBinaryName = "kimi"
 
 const (
@@ -84,9 +80,9 @@ const (
 	kimiRouteWS       = kimiAPIPrefix + "/ws"
 )
 
-// kimiSafeID matches every id the server issues: a session, an approval, a
-// question, a task, a prompt. A route is built by joining ids, so an id outside
-// this set could reach a different route than the one the caller means.
+// kimiSafeID admits IDs used in REST routes. Conversation item IDs can contain
+// colons and do not use this validator. A route joins its IDs, so an ID outside
+// this set could reach a different route than the caller intends.
 var kimiSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // kimiCheckID refuses an id that is not one the server issues.
@@ -129,12 +125,10 @@ const (
 
 // The WebSocket control frames.
 const (
-	kimiFrameServerHello = "server_hello"
 	kimiFramePing        = "ping"
 	kimiFramePong        = "pong"
-	kimiFrameAck         = "ack"
-	kimiFrameSubscribe   = "subscribe_v2"
-	kimiFrameUnsubscribe = "unsubscribe_v2"
+	kimiFrameSubscribe   = "subscribe"
+	kimiFrameUnsubscribe = "unsubscribe"
 )
 
 // kimiMainAgentID identifies the session's main agent in every event. Each
@@ -194,12 +188,6 @@ const (
 	kimiTaskStatusTimedOut  = "timed_out"
 	kimiTaskStatusKilled    = "killed"
 	kimiTaskStatusLost      = "lost"
-)
-
-// The `frame.progress.kind` words that carry one chunk of command output.
-const (
-	kimiProgressStdout = "stdout"
-	kimiProgressStderr = "stderr"
 )
 
 // The `goal.updated.snapshot.status` words.

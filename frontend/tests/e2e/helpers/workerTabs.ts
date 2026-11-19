@@ -39,6 +39,8 @@ import { waitTimeoutBeforeTestDeadline } from './testDeadline'
  * reading the branch off disk, or closing a sibling tab and expecting the
  * worktree to still be referenced -- has to wait for startup, not for arrival.
  * Reading immediately is a race that fails more often than it passes.
+ * Use the test's remaining wait budget by default so a slow native handshake
+ * can finish while the test still has time.
  */
 export async function waitForAgentStartupViaAPI(
   hubUrl: string,
@@ -46,7 +48,7 @@ export async function waitForAgentStartupViaAPI(
   workerId: string,
   workspaceId: string,
   expectedCount = 1,
-  timeoutMs = 30_000,
+  timeoutMs = waitTimeoutBeforeTestDeadline() || 30_000,
   intervalMs = API_POLL_INTERVAL_MS,
 ): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
   const deadline = Date.now() + timeoutMs

@@ -28,6 +28,7 @@ function copyFixture(clipboard: () => string, overwrite?: string) {
   const fixture = createClipboardPageFixture()
   const { events, page } = fixture
   const copy = {
+    hover: async () => events.push('hover:copy-button'),
     click: async () => {
       events.push('click')
       await fixture.copy(clipboard())
@@ -36,7 +37,7 @@ function copyFixture(clipboard: () => string, overwrite?: string) {
     },
   }
   const view = {
-    hover: async () => events.push('hover'),
+    hover: async () => events.push('hover:output-row'),
     getByRole: () => copy,
   }
   const result = {
@@ -51,10 +52,10 @@ describe('copyNativeToolOutputPreview', () => {
     await copyNativeToolOutputPreview(f.page, f.result, 'native preview')
     expect(f.text()).toBe(otherText)
   })
-  it('grants the clipboard permissions before it clicks Copy', async () => {
+  it('hovers the Copy button after granting permission and before clicking it', async () => {
     const f = copyFixture(() => 'native preview')
     await copyNativeToolOutputPreview(f.page, f.result, 'native preview')
-    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'hover', 'click'])
+    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'hover:copy-button', 'click'])
   })
 
   it('refuses empty preview text before it grants a permission', async () => {
@@ -66,7 +67,7 @@ describe('copyNativeToolOutputPreview', () => {
   it('fails when Copy writes text that differs from the preview', async () => {
     const f = copyFixture(() => 'native preview with another tail')
     await expect(copyNativeToolOutputPreview(f.page, f.result, 'native preview')).rejects.toThrow(/toEqual/)
-    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'hover', 'click'])
+    expect(f.events).toEqual(['grant:clipboard-read,clipboard-write', 'hover:copy-button', 'click'])
   })
 })
 

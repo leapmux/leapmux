@@ -102,7 +102,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err := a.stream.awaitConnected(ctx, opts.EffectiveStartupTimeout()); err != nil {
 		return nil, a.FormatStartupError("event stream", err)
 	}
-	catalog, err := loadOpenCodeCatalog(ctx, a.rpc)
+	catalog, err := awaitOpenCodeCatalog(ctx, a.rpc, a.Clock(), opts.EffectiveStartupTimeout())
 	if err != nil {
 		return nil, a.FormatStartupError("model catalog", err)
 	}

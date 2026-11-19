@@ -75,6 +75,9 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 	}
 	a.stateMu.Unlock()
 	return acp.Hooks{
+		// A dismissed question lets Kiro's model continue. Cancel the native
+		// turn before releasing its controls so interruption cannot start another request.
+		CancelBeforeControlWithdrawal: true,
 		WithBypassPermission: func(claim func()) {
 			a.stateMu.Lock()
 			defer a.stateMu.Unlock()

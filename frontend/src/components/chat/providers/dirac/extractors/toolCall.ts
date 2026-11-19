@@ -10,16 +10,22 @@ import { diracExecuteSpec } from './execute'
  * Read Dirac's tool facts into the shared model.
  * Native rows give the tool name in rawInput.tool or name.
  * Execute reads the native exit fields beside the output.
- * The use_subagents card becomes an agent row.
+ * The subagents card becomes an agent row.
  * File edits keep their path and both sides of each substitution.
  */
 export const diracToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   const name = pickString(facts.args, DIRAC_RAW_INPUT_TOOL_FIELD) || pickString(facts.tool, 'name')
   if (name === DIRAC_TOOL.ExecuteCommand)
     return diracExecuteSpec(facts, base)
-  if (name === DIRAC_TOOL.UseSubagents) {
-    const description = pickString(facts.args, 'task_title') || pickString(facts.tool, 'title') || DIRAC_TOOL.UseSubagents
-    const prompt = pickString(facts.args, 'prompt')
+  if (name === DIRAC_TOOL.Subagents) {
+    const assignments = Array.isArray(facts.args.assignments)
+      ? facts.args.assignments
+      : []
+    const assignment = assignments.length === 1 && isObject(assignments[0])
+      ? assignments[0]
+      : undefined
+    const description = pickString(assignment, 'task_header') || pickString(facts.tool, 'title') || DIRAC_TOOL.Subagents
+    const prompt = pickString(assignment, 'task_description')
     const nativeInput = facts.tool[ACP_SUPPLEMENT_REQUEST.RawInput]
     const rawInput = isObject(nativeInput)
       ? { ...nativeInput, description, prompt }

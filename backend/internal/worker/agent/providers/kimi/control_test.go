@@ -123,11 +123,13 @@ func answerFor(t *testing.T, rig *kimiTestRig, requestID, behavior string, field
 func TestKimiPublishesControlRequests(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
-	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
-	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"I will run ls."}}`)
+	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	native.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"assistant_message","item_id":"answer","status":"running","created_at":"2026-11-18T00:00:00Z","text":"I will run ls."}}`)
 	rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 	rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 	rig.feed(t, questionEvent("question_1"))
+	awaitKimiTestOutput(t, rig.agent.sink)
 
 	controls := rig.sink.PublishedControls()
 	require.Len(t, controls, 2, "a repeated request publishes once")
@@ -139,8 +141,11 @@ func TestKimiPublishesControlRequests(t *testing.T) {
 
 	messages := rig.sink.Messages()
 	require.NotEmpty(t, messages)
-	_, text := assembledRow(t, messages[0])
-	assert.Equal(t, "I will run ls.", text, "the text before the request is flushed above its banner")
+	view, err := decodeKimiConversationRecord(messages[0].Content)
+	require.NoError(t, err)
+	require.NotNil(t, view.item)
+	require.NotNil(t, view.item.Text)
+	assert.Equal(t, "I will run ls.", *view.item.Text, "the text before the request is flushed above its banner")
 }
 
 func TestKimiPlanReviewKeepsLeapMuxsCopyOfThePlan(t *testing.T) {
@@ -432,7 +437,7 @@ func TestKimiApprovalUsesItsNativeAgentTag(t *testing.T) {
 	assert.Equal(t, "The session's plan", rig.sink.LastPlanUpdate().Title)
 }
 
-// A complete native interaction list retires only resolved controls in its session and agent.
+// A confirmed native replay retires only old controls absent from the current session replay.
 func TestKimiReconcileNativeControls(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
@@ -446,7 +451,16 @@ func TestKimiReconcileNativeControls(t *testing.T) {
 
 	a.controls["approval_child"] = publishedKimiControl(kimiControlApproval, "session_1", false)
 	a.controls["approval_child"].agentID = "agent-0"
-	a.reconcileTranscriptControls("session_1", kimiMainAgentID, []byte(`[{"interactionId":"question_kept","interactionKind":"question","state":"pending"}]`))
+	a.dispatchMu.Lock()
+	a.captureControlReplay("session_1")
+	replay := a.controlReplay
+	a.finishDispatch()
+	question := questionEvent("question_kept")
+	a.HandleOutput(kimiEventFrame(t, "session_1", question))
+	child := approvalEvent("approval_child", map[string]any{"kind": "command", "command": "pwd"})
+	child["agent_id"] = "agent-0"
+	a.HandleOutput(kimiEventFrame(t, "session_1", child))
+	a.finishControlReplay(replay, true)
 
 	assert.Equal(t, []string{"approval_gone"}, sink.CanceledControls(),
 		"only the request that the server resolved and nobody answered leaves the banner")
@@ -458,7 +472,7 @@ func TestKimiReconcileNativeControls(t *testing.T) {
 	}
 	a.Mu.Unlock()
 	assert.ElementsMatch(t, []string{"approval_old", "approval_child", "question_kept"}, remaining,
-		"a snapshot cannot retire controls owned by another session or agent")
+		"a replay cannot retire another session or either still-pending request")
 }
 
 func TestKimiRefusesAnAnswerItCannotPost(t *testing.T) {

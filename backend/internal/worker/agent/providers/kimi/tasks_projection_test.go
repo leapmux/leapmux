@@ -23,30 +23,32 @@ func TestKimiExactTaskAliasRetainsSucceededOutcomeAcrossRenameRefusal(t *testing
 	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
 	rig := &kimiTestRig{agent: a, fake: fake, sink: sink.ControlSink}
 	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
-	native.transcriptOps(t, 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"}}}`,
-		`{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"running"}}`,
-		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"running","input":{"description":"Old assignment","prompt":"Review it.","run_in_background":true},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
-	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old-task","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","description":"Old assignment"}`))
-	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old-task","kind":"subagent","status":"ended","outcome":"completed","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","result_summary":"A completed review."}`))
-	native.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"independent","state":"running","origin":{"kind":"user"}}}`)
-	rig.fake.mu.Lock()
-	rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
-		return map[string]any{"task_id": command.TaskID, "kind": "subagent", "status": "ended", "outcome": "completed", "detached": true, "child_agent_id": "agent-0", "parent_tool_call_id": "spawn", "result_summary": "A completed review."}
-	}
-	rig.fake.mu.Unlock()
-	waitFor(t, rig.agent.taskReportWork.Idle, "the completed report finishes before alias fault injection")
+	main := a.run("main")
+	waitFor(t, func() bool { return main.conversationRecovery.Load() == nil }, "the native main page precedes live output")
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	(kimiFinalityTool{background: true}).publish(t, native)
+	child := a.run("agent-0")
+	waitFor(t, func() bool { return child.conversationRecovery.Load() == nil }, "the child receives its own native page")
+	a.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old-task","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","description":"Old assignment"}`))
+	a.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"old-task","kind":"subagent","status":"ended","outcome":"completed","detached":true,"child_agent_id":"agent-0","parent_tool_call_id":"spawn","result_summary":"A completed review."}`))
+	a.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", `{"type":"turn.started","turn":{"turn_id":"independent","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`))
+	waitFor(t, a.taskReportWork.Idle, "the completed report finishes before alias fault injection")
+	awaitKimiTestOutput(t, a.sink)
 	sink.renameErr = errors.New("registry alias write refused")
-	native.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"Agent","state":"done","input":{"description":"Old assignment","prompt":"Review it.","run_in_background":true},"output":"task_id: old-task\nstatus: running\nagent_id: agent-0\nactual_subagent_type: explore\nautomatic_notification: true\n\ndescription: Old assignment","agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
-	waitFor(t, rig.agent.taskRecoveryWork.Idle, "the exact native result and task state establish the alias")
-	identity := kimiTranscriptToolIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "spawn", toolCallID: "spawn"}
+	(kimiFinalityTool{outcome: "completed", output: "Background work continues.", background: true, taskID: "old-task"}).publish(t, native)
+	waitFor(t, a.taskRecoveryWork.Idle, "the exact native reference and task state establish the alias")
+	identity := kimiFinalityIdentity()
 	rig.agent.dispatchMu.Lock()
 	invocation := rig.agent.run("main").childInvocations[identity]
 	task := rig.agent.tasks[kimiTaskAddress{ownerAgentID: "main", taskID: "old-task"}]
-	bound := task.boundInvocation
+	var bound *kimiChildInvocation
+	if task != nil {
+		bound = task.boundInvocation
+	}
 	rig.agent.finishDispatch()
+	require.NotNil(t, task)
 	require.NotNil(t, invocation)
-	require.Same(t, invocation, bound, "only the verified task-ID result joins this full invocation")
+	require.Same(t, invocation, bound, "only the verified native task reference joins this invocation")
 	aliasKey := kimiInvocationOutcomeKey(invocation, "agent-0")
 	_, exists := rig.sink.BackgroundTask(aliasKey)
 	assert.True(t, exists, "a refused rename cannot discard the original invocation row")

@@ -5,6 +5,7 @@ import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
 import { currentNativeAgent, selectedAgentTabId } from './nativeScenario'
 import { newProviderWorkingDir } from './providerWorkingDir'
+import { retryUntilPass } from './retryUntilPass'
 import { agentTabs, expectAgentTabCount, openWorkspace } from './ui'
 import { openProviderAgent } from './workspace'
 
@@ -78,18 +79,20 @@ export async function exerciseProviderAgentButtons(context: ManagedNativeScenari
   const { page, provider } = context
   const original = await currentNativeAgent(context)
   const tabsBefore = await agentTabs(page).count()
+  const selectedNewAgent = (previousIds: readonly string[], message: string) => retryUntilPass(async () => {
+    const selected = await currentNativeAgent(context)
+    expect(selected.agentProvider, 'the selected Worker agent uses the requested provider').toBe(provider)
+    expect(previousIds, message).not.toContain(selected.id)
+    return selected
+  })
   // A UI open records recent provider use and makes its button appear in the tab bar.
   await page.getByTestId('tab-more-menu').click()
   await page.locator(`menu[popover]:visible [data-testid="menu-new-agent-${provider}"]`).click()
   await expectAgentTabCount(page, tabsBefore + 1)
-  const fromMenu = await currentNativeAgent(context)
-  expect(fromMenu.agentProvider, 'the selected Worker agent uses the requested provider').toBe(provider)
-  expect(fromMenu.id, 'the menu selects a new Worker agent').not.toBe(original.id)
+  const fromMenu = await selectedNewAgent([original.id], 'the menu selects a new Worker agent')
   const button = page.getByTestId(`new-agent-button-${provider}`).filter({ visible: true }).first()
   await expect(button).toBeVisible()
   await button.click()
   await expectAgentTabCount(page, tabsBefore + 2)
-  const fromButton = await currentNativeAgent(context)
-  expect(fromButton.agentProvider, 'the selected Worker agent uses the requested provider').toBe(provider)
-  expect([original.id, fromMenu.id], 'the button selects another new Worker agent').not.toContain(fromButton.id)
+  await selectedNewAgent([original.id, fromMenu.id], 'the button selects another new Worker agent')
 }

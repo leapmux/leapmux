@@ -153,9 +153,10 @@ func TestKimiQueuedSwarmTaskLeavesFinalizationToItsRegistryOwner(t *testing.T) {
 
 func TestKimiQueuedSwarmTaskAdoptsATranscriptFirstCanonicalRow(t *testing.T) {
 	t.Parallel()
-	rig := newKimiOutputRig(t)
+	rig := newKimiConversationRig(t)
 	rig.agent.HandleOutput([]byte(kimiQueuedSwarmTask))
-	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"spawn","name":"AgentSwarm","state":"running","input":{},"agentRefs":[{"agentId":"agent-0","role":"member"}]}}`)
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"spawn","name":"AgentSwarm","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{},"agent_refs":[{"agent_id":"agent-0","role":"member","swarm_index":0}]}}`)
 	canonical, exists := rig.sink.BackgroundTask("session_1/agent-0")
 	require.True(t, exists)
 	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"queued-1","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
@@ -173,14 +174,15 @@ func TestKimiQueuedTaskWaitsForItsActualOwnerSink(t *testing.T) {
 	for _, ended := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ended=%t", ended), func(t *testing.T) {
 			t.Parallel()
-			rig := newKimiOutputRig(t)
+			rig := newKimiConversationRig(t)
 			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-owner","task_id":"queued-1","kind":"subagent","status":"running","detached":false,"swarm_index":1,"description":"Nested reviewer"}`))
 			if ended {
 				rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-owner","task_id":"queued-1","kind":"subagent","status":"ended","outcome":"failed","detached":false}`))
 			}
 			_, exists := rig.sink.BackgroundTask("session_1/task/agent-owner/queued-1")
 			assert.False(t, exists, "an unknown native owner must not be replaced with the root owner")
-			rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"owner","toolCallId":"owner","name":"Agent","state":"running","input":{},"agentRefs":[{"agentId":"agent-owner","role":"child"}]}}`)
+			rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+			rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"owner","name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{},"agent_refs":[{"agent_id":"agent-owner","role":"child"}]}}`)
 			owner, linked := rig.agent.children.get("agent-owner")
 			require.True(t, linked)
 			row, exists := rig.sink.BackgroundTask("session_1/task/agent-owner/queued-1")

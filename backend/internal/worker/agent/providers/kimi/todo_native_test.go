@@ -16,6 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func seedKimiTodoPublicChild(t *testing.T, rig *kimiOutputRig) {
+	t.Helper()
+	rig.startPublicTurn(t, kimiMainAgentID, "root-turn", 0)
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"root-turn","item":{"type":"tool_call","item_id":"spawn","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"description":"Reviewer","prompt":"Review the workspace."},"agent_refs":[{"agent_id":"agent-0","role":"child"}]}}`)
+}
+
 func TestKimiNativeTodoSnapshotUpdatesStateWithoutTranscript(t *testing.T) {
 	t.Parallel()
 	rig := newKimiServiceTestRig(t)
@@ -66,14 +72,12 @@ func TestKimiNativeTodoBeforeLinkSurvivesCompletedChildReplay(t *testing.T) {
 	}
 	rig.agent.HandleOutput([]byte(`{"type":"todo","session_id":"session_1","agent_id":"agent-0","items":[{"title":"Current child list","status":"done"}]}`))
 	native := &kimiOutputRig{agent: rig.agent}
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child","state":"completed","origin":{"kind":"other"}}}`)
-	seedKimiChildInvocation(t, native)
+	seedKimiTodoPublicChild(t, native)
 	child, linked := rig.agent.children.get("agent-0")
 	require.True(t, linked)
+	native.conversationAgentFrame(t, "agent-0", `{"type":"turns","turns":[{"turn_id":"child","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[]}],"has_more":false}`)
 	assert.False(t, held.Done(), "the earlier write keeps this snapshot queued")
-	completed := queue.Append(agent.OutputWrite{Owner: rig.agent.registryOutputOwner(), Label: "observe completed Kimi state writes", Run: func() error { return nil }})[0]
+	completed := queue.Append(agent.OutputWrite{Owner: rig.agent.publicationOutputOwner(), Label: "observe completed Kimi state writes", Run: func() error { return nil }})[0]
 	release()
 	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
 		require.NoError(t, err)
@@ -105,7 +109,8 @@ func TestKimiUnlinkedTodoRetainsOriginalPublisher(t *testing.T) {
 				rig.sink.UpdateSessionID("replacement")
 				rig.sink.UpdateSessionID("session_1")
 			}
-			seedKimiChildInvocation(t, &kimiOutputRig{agent: rig.agent})
+			seedKimiTodoPublicChild(t, &kimiOutputRig{agent: rig.agent})
+			awaitKimiTestOutput(t, rig.sink)
 			child, linked := rig.agent.children.get("agent-0")
 			require.True(t, linked)
 			items, err := rig.output.LoadTodos(t.Context(), child.childAgentID)
@@ -123,15 +128,13 @@ func TestKimiNativeTodoSurvivesPendingChildCleanup(t *testing.T) {
 	t.Parallel()
 	rig := newKimiServiceTestRig(t)
 	native := &kimiOutputRig{agent: rig.agent}
-	seedKimiChildInvocation(t, native)
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child","state":"running","origin":{"kind":"other"}}}`)
+	seedKimiTodoPublicChild(t, native)
+	native.startPublicTurn(t, "agent-0", "child", 0)
 	child, linked := rig.agent.children.get("agent-0")
 	require.True(t, linked)
 	_, err := rig.database.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER hold_child_close BEFORE UPDATE ON agent_background_tasks WHEN NEW.row_key = 'session_1/agent-0' AND NEW.status <> %d BEGIN SELECT RAISE(ABORT, 'child close held'); END`, bgtask.StatusRunning))
 	require.NoError(t, err)
-	native.transcriptAgentOps(t, "agent-0", 2,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"child","state":"completed","origin":{"kind":"other"}}}`)
+	native.endPublicTurn(t, "agent-0", "child", 0, "completed")
 	childServices := rig.sink.ChildSink(child.childAgentID)
 	childServices.OpenSpan("held-output", "")
 	childServices.SetSpanType("held-output", "existing-tool")
@@ -155,16 +158,15 @@ func TestKimiNativeTodoSnapshotSurvivesOlderToolReplay(t *testing.T) {
 	rig := newKimiServiceTestRig(t)
 	rig.agent.HandleOutput([]byte(`{"type":"todo","session_id":"session_1","agent_id":"main","event_created_at":"2026-11-16T00:00:00Z","items":[{"title":"Current list","status":"done"}]}`))
 	native := &kimiOutputRig{agent: rig.agent}
-	native.transcriptOps(t, 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"}}}`,
-		`{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"running"}}`,
-		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"old-todos","toolCallId":"old-todos","name":"TodoList","state":"done","input":{"todos":[{"title":"Older list","status":"pending"}]},"output":"Todo list updated."}}`)
+	native.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"old-todos","step_index":1,"name":"TodoList","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"todos":[{"title":"Older list","status":"pending"}]},"output":"Todo list updated."}}`)
+	awaitKimiTestOutput(t, rig.sink)
 	items, err := rig.output.LoadTodos(t.Context(), "test-agent")
 	require.NoError(t, err)
 	assert.Equal(t, []todoevents.Item{{Content: "Current list", Status: todoevents.StatusCompleted}}, items)
 	rig.agent.HandleOutput([]byte(`{"type":"todo","session_id":"session_1","agent_id":"main","items":[]}`))
-	native.transcriptOps(t, 2,
-		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"another-old-list","toolCallId":"another-old-list","name":"TodoList","state":"done","input":{"todos":[{"title":"Another older list","status":"pending"}]},"output":"Todo list updated."}}`)
+	native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"another-old-list","step_index":2,"name":"TodoList","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:01Z","started_at":"2026-11-18T00:00:01Z","input":{"todos":[{"title":"Another older list","status":"pending"}]},"output":"Todo list updated."}}`)
+	awaitKimiTestOutput(t, rig.sink)
 	items, err = rig.output.LoadTodos(t.Context(), "test-agent")
 	require.NoError(t, err)
 	assert.Empty(t, items, "an authoritative empty snapshot must also survive historical tool results")
@@ -194,13 +196,10 @@ func TestKimiNativeTodoPreservesIdleAncestorAuthority(t *testing.T) {
 	t.Parallel()
 	rig := newKimiServiceTestRig(t)
 	native := &kimiOutputRig{agent: rig.agent}
-	seedKimiChildInvocation(t, native)
-	native.transcriptAgentOps(t, "agent-0", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"parent","state":"running","origin":{"kind":"other"}}}`,
-		`{"op":"step.upsert","turnId":"parent","step":{"kind":"step","stepId":"parent.1","ordinal":1,"state":"running"}}`,
-		`{"op":"frame.upsert","turnId":"parent","stepId":"parent.1","frame":{"kind":"tool","frameId":"nested","toolCallId":"nested","name":"Agent","state":"running","input":{"prompt":"Review nested work.","description":"Nested child"},"agentRefs":[{"agentId":"agent-1","role":"child"}]}}`)
-	native.transcriptAgentOps(t, "agent-1", 1,
-		`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"nested","state":"running","origin":{"kind":"other"}}}`)
+	seedKimiTodoPublicChild(t, native)
+	native.startPublicTurn(t, "agent-0", "parent", 0)
+	native.conversationAgentFrame(t, "agent-0", `{"type":"item.started","turn_id":"parent","item":{"type":"tool_call","item_id":"nested","step_index":1,"name":"Agent","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"prompt":"Review nested work.","description":"Nested child"},"agent_refs":[{"agent_id":"agent-1","role":"child"}]}}`)
+	native.startPublicTurn(t, "agent-1", "nested", 0)
 	parent, linked := rig.agent.children.get("agent-0")
 	require.True(t, linked)
 	child, linked := rig.agent.children.get("agent-1")
@@ -208,8 +207,8 @@ func TestKimiNativeTodoPreservesIdleAncestorAuthority(t *testing.T) {
 	_, err := rig.database.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER hold_parent_close BEFORE UPDATE ON agent_background_tasks WHEN NEW.row_key = 'session_1/agent-0' AND NEW.status <> %d BEGIN SELECT RAISE(ABORT, 'parent close held'); END`, bgtask.StatusRunning))
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = rig.database.ExecContext(t.Context(), "DROP TRIGGER IF EXISTS hold_parent_close") })
-	native.transcriptAgentOps(t, "agent-0", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"parent","state":"completed","origin":{"kind":"other"}}}`)
-	native.transcriptAgentOps(t, "agent-1", 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"nested","state":"completed","origin":{"kind":"other"}}}`)
+	native.endPublicTurn(t, "agent-0", "parent", 0, "completed")
+	native.endPublicTurn(t, "agent-1", "nested", 0, "completed")
 	parentServices := rig.sink.ChildSink(parent.childAgentID)
 	parentServices.OpenSpan("held-parent", "")
 	parentServices.SetSpanType("held-parent", "existing-parent-tool")

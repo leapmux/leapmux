@@ -122,9 +122,13 @@ type TranscriptPublication interface {
 
 // MessageEnrichment describes a conditional update to separate rendering data.
 type MessageEnrichment struct {
-	Publication         TranscriptPublication
-	WriteReceipt        *MessageEnrichmentReceipt
-	AgentSessionID      string
+	// Completion updates the rendering outcome when nonempty. It repeats no completion effects.
+	Completion     MessageCompletion
+	Publication    TranscriptPublication
+	WriteReceipt   *MessageEnrichmentReceipt
+	AgentSessionID string
+	// Seq selects an exact stored row. Zero selects the latest row of SpanID.
+	// A row without a span requires a positive sequence.
 	Seq                 int64
 	SpanID              string
 	OriginalContent     []byte
@@ -157,6 +161,9 @@ type TranscriptServices interface {
 	// HistoricalTranscriptScopeFor preserves the captured destination and native session,
 	// including an empty session, with independent spans and permanently historical authority.
 	HistoricalTranscriptScopeFor(CapturedTranscript) (TranscriptScope, error)
+	// ReadMessageByIdempotencyKey returns one immutable provider record.
+	// The native session is exact, including an empty session. An empty key returns nil.
+	ReadMessageByIdempotencyKey(sessionID, idempotencyKey string) (*StoredMessage, error)
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
 	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is
@@ -514,8 +521,10 @@ type AutoRetryWriter interface {
 // ChildAgentSpec supplies a native child identity and its initial stored options.
 // A child without a known spawn span must supply its exact provider key.
 type ChildAgentSpec struct {
-	RegistryRole     bgtask.Role
-	SpawnSpanID      string
+	RegistryRole bgtask.Role
+	// SpawnSpanID records the parent tool origin. Several native children may share it.
+	SpawnSpanID string
+	// ProviderChildKey identifies one exact native child independently of its origin.
 	ProviderChildKey string
 	Title            string
 	Options          optionmap.Map
@@ -540,6 +549,7 @@ type ChildServices interface {
 	// It creates an absent child and stores its initial options before publication.
 	// Replays and Worker restarts resolve the same stored child.
 	// A nonempty ProviderChildKey supplies the registry key also.
+	// A span-only lookup refuses an origin that several children share.
 	//
 	// The sink cleans the model's Title with the common validate.CleanName rule.
 	// The provider must supply its original title without a separate cap or character filter.

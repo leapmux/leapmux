@@ -11,7 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-func TestKimiDiscoveredTaskValidatesNativeAssociation(t *testing.T) {
+func TestKimiNativeTaskReferenceValidatesAssociation(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name                         string
@@ -23,13 +23,13 @@ func TestKimiDiscoveredTaskValidatesNativeAssociation(t *testing.T) {
 	}{
 		{name: "background agent", background: true, child: "agent-0", kind: "subagent", parent: "tool", detached: true, associated: true},
 		{name: "agent without optional parent", background: true, child: "agent-0", kind: "subagent", detached: true, associated: true},
-		{name: "contradictory foreground agent", background: true, child: "agent-0", kind: "subagent", parent: "tool", detached: false},
+		{name: "foreground subagent", background: true, child: "agent-0", kind: "subagent", parent: "tool", detached: false, associated: true},
 		{name: "different agent", background: true, child: "other-agent", kind: "subagent", parent: "tool", detached: true},
 		{name: "different agent task kind", background: true, child: "agent-0", kind: "shell", parent: "tool", detached: true},
 		{name: "different agent parent", background: true, child: "agent-0", kind: "subagent", parent: "other-tool", detached: true},
 		{name: "background shell", shell: true, background: true, kind: "shell", parent: "tool", command: "printf ok > NUL", detached: true, associated: true},
 		{name: "windows native command", shell: true, background: true, kind: "shell", parent: "tool", command: "printf ok > /dev/null", detached: true, associated: true},
-		{name: "different windows command", shell: true, background: true, kind: "shell", parent: "tool", command: "printf other > /dev/null", detached: true},
+		{name: "native command differs from model input", shell: true, background: true, kind: "shell", parent: "tool", command: "printf other > /dev/null", detached: true, associated: true},
 		{name: "shell moved to background", shell: true, background: false, kind: "shell", parent: "tool", command: "printf ok > NUL", detached: true, associated: true},
 		{name: "foreground shell", shell: true, background: true, kind: "shell", parent: "tool", command: "printf ok > NUL", detached: false},
 		{name: "different shell parent", shell: true, background: true, kind: "shell", parent: "other-tool", command: "printf ok > NUL", detached: true},
@@ -52,28 +52,31 @@ func TestKimiDiscoveredTaskValidatesNativeAssociation(t *testing.T) {
 			name := "Agent"
 			input := map[string]any{"description": "Reviewer", "prompt": "Review it.", "run_in_background": tc.background}
 			output := "task_id: native-task\nstatus: running\nagent_id: agent-0\nactual_subagent_type: explore\nautomatic_notification: true\n\ndescription: Reviewer"
-			frame := map[string]any{"kind": "tool", "frameId": "tool", "toolCallId": "tool", "name": name, "state": "done", "input": input, "output": output,
-				"agentRefs": []any{map[string]any{"agentId": "agent-0", "role": "child"}}}
+			frame := map[string]any{"type": "tool_call", "item_id": "tool", "name": name, "status": "ended", "outcome": "completed", "created_at": "2026-11-18T00:00:00Z", "started_at": "2026-11-18T00:00:00Z", "input": input, "output": output,
+				"agent_refs": []any{map[string]any{"agent_id": "agent-0", "role": "child", "task_id": "native-task"}}}
 			if tc.shell {
 				frame["name"] = "Bash"
 				frame["input"] = map[string]any{"command": "printf ok > NUL", "run_in_background": tc.background}
 				frame["output"] = "task_id: native-task\npid: 123\ndescription: command\nstatus: running\nautomatic_notification: true\n"
-				delete(frame, "agentRefs")
+				frame["task_id"] = "native-task"
+				delete(frame, "agent_refs")
 			}
-			op := map[string]any{"op": "frame.upsert", "turnId": "t0", "stepId": "t0.1", "frame": frame}
-			raw, err := json.Marshal(op)
+			native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+			raw, err := json.Marshal(map[string]any{"type": "item.ended", "turn_id": "t0", "item": frame})
 			require.NoError(t, err)
-			native.transcriptOps(t, 1, string(raw))
+			native.conversationFrame(t, string(raw))
 			waitFor(t, rig.agent.taskRecoveryWork.Idle, "the native task association check finishes")
 			rig.agent.dispatchMu.Lock()
 			rig.agent.Mu.Lock()
 			task := rig.agent.tasks[kimiTaskAddress{ownerAgentID: "main", taskID: "native-task"}]
 			rig.agent.Mu.Unlock()
 			associated := false
-			identity := kimiTranscriptToolIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", stepID: "t0.1", frameID: "tool", toolCallID: "tool"}
+			identity := kimiInvocationIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", toolCallID: "tool"}
 			invocation := rig.agent.run("main").childInvocations[identity]
-			if invocation != nil && invocation.taskTarget != nil {
-				associated = invocation.taskTarget.complete
+			if invocation != nil {
+				if target := invocation.taskTargets[kimiTaskAddress{ownerAgentID: "main", taskID: "native-task"}]; target != nil {
+					associated = target.complete
+				}
 			}
 			rig.agent.finishDispatch()
 			assert.Equal(t, tc.associated, associated, "native metadata controls association with this complete invocation")

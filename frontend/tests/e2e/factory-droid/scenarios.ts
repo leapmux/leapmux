@@ -10,6 +10,7 @@ import { heldChildIdentity, heldChildOptions, nativeChildScriptContext, openRunn
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { DROID_CHILD_SYSTEM } from './childIdentity'
 import { droidChildNoticeRule } from './childNotice'
+import { droidConversationTurns } from './conversationTurns'
 import { droidToolRowId } from './toolIdentity'
 import { readDroidToolResult } from './toolResult'
 
@@ -22,6 +23,7 @@ export const DROID_AGENT: ProviderAgent = { provider: AgentProvider.DROID, prefi
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   return managedNativeContext(fixtures, DROID_AGENT, {
+    readConversationTurns: droidConversationTurns,
     readToolResult: readDroidToolResult,
     resolveToolRowId: query => droidToolRowId(fixtures, query),
   })

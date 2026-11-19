@@ -56,10 +56,12 @@ export function computedNativeToolOutput(options: { prefix?: string, lineCount?:
 export async function copyNativeToolOutputPreview(page: Page, result: Locator, expectedText: string): Promise<void> {
   if (!expectedText)
     throw new Error('The native tool output Copy proof requires nonempty native preview text.')
-  const view = result.locator('..')
+  const copy = result.locator('..').getByRole('button', { name: 'Copy', exact: true })
   const actual = await captureClipboardText(page, async () => {
-    await view.hover()
-    await view.getByRole('button', { name: 'Copy', exact: true }).click()
+    // Hover the toolbar control so the scroll that reveals it happens before
+    // the click. The expanded output body can span many viewports.
+    await copy.hover()
+    await copy.click()
   })
   expect({ exact: actual === expectedText, utf16CodeUnits: actual.length }).toEqual({ exact: true, utf16CodeUnits: expectedText.length })
 }

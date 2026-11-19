@@ -21,11 +21,12 @@ import (
 // The spawn, then one tool call the subagent made. The subagent-marking fields are
 // exactly what the app-server sends: the update identifies the tool call that started it.
 const (
-	zcodeSpawnScheduled = `{"kind":"scheduled","toolCallId":"spawn-1","toolName":"Agent",
+	zcodeSubagentSessionID = "sess_subagent_agent-1"
+	zcodeSpawnScheduled    = `{"kind":"scheduled","toolCallId":"spawn-1","toolName":"Agent",
 	  "input":{"prompt":"count the files","description":"file census"}}`
 	zcodeSubagentScheduled = `{"kind":"scheduled","toolCallId":"sub-1","toolName":"Bash",
 	  "source":"subagent","agentId":"agent-1","agentType":"Explore",
-	  "childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1",
+	  "childSessionId":"` + zcodeSubagentSessionID + `","parentToolCallId":"spawn-1",
 	  "input":{"command":"ls -la"}}`
 	zcodeSubagentResult = `{"kind":"result","toolCallId":"sub-1","source":"subagent",
 	  "agentId":"agent-1","parentToolCallId":"spawn-1","result":{"success":true,"content":"one file"}}`
@@ -634,23 +635,34 @@ func TestZCodeSubagent_ASpawnWithNoToolCallsPersistsItsPromptAndReport(t *testin
 func TestZCodeSubagent_TheBackgroundTaskAndToolPathsShareOneTranscript(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.ControlSink{}
-	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	for _, order := range []string{"background event first", "child tool first"} {
+		t.Run(order, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
-	// The background-task event arrives first, keyed on the SAME spawn tool call.
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent",
-		  "childSessionId":"sess_sub","status":"running"}`))
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
+			updates := [2]struct{ eventType, payload string }{
+				{contracts.ZCodeEventSessionUpdated, `{"taskId":"task-1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent",
+				  "childSessionId":"` + zcodeSubagentSessionID + `","status":"running"}`},
+				{contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled},
+			}
+			if order == "child tool first" {
+				updates[0], updates[1] = updates[1], updates[0]
+			}
+			a.HandleOutput(zcodeEventLine(t, 2, updates[0].eventType, updates[0].payload))
+			a.HandleOutput(zcodeEventLine(t, 3, updates[1].eventType, updates[1].payload))
 
-	assert.Len(t, sink.ChildAgentIDs(), 1, "one subagent gets one transcript")
-	rows := sink.BackgroundTasks()
-	require.Len(t, rows, 1, "and one registry row")
-	assert.Equal(t, "file census", rows[0].Title,
-		"the SPAWN's label wins over the background event's bare tool name")
-	assert.Equal(t, sink.ChildAgentIDs()[0], rows[0].ChildAgentID)
+			children := sink.ChildAgentIDs()
+			require.Len(t, children, 1)
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, zcodeSubagentSessionID, rows[0].RowKey)
+			assert.Equal(t, "file census", rows[0].Title, "the spawn supplies the child title")
+			assert.Equal(t, children[0], rows[0].ChildAgentID)
+		})
+	}
 }
 
 // A background task without a tool-call ID records its registry row but does not

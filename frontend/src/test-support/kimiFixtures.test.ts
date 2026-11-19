@@ -1,49 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { kimiApprovalRequest, kimiQuestionRequest, kimiTranscriptToolFrame } from './kimiFixtures'
+import { kimiApprovalRequest, kimiConversationToolRecord, kimiQuestionRequest } from './kimiFixtures'
 
 describe('kimiFixtures', () => {
   it('keeps native tool identity and complete input in both lifecycle states', () => {
-    const opening = kimiTranscriptToolFrame({
-      toolCallId: 'call_1',
+    const call = {
+      item_id: 'call_1',
       name: 'Bash',
       input: { command: 'printf 42' },
-    })
-    const result = kimiTranscriptToolFrame({
-      toolCallId: 'call_1',
-      name: 'Bash',
-      input: { command: 'printf 42' },
-      state: 'done',
+    }
+    const opening = kimiConversationToolRecord('request', call)
+    const result = kimiConversationToolRecord('result', {
+      ...call,
+      status: 'ended',
+      outcome: 'completed',
       output: '42',
     })
-    for (const [row, state] of [
-      [opening, 'running'],
-      [result, 'done'],
+    for (const [row, role, status] of [
+      [opening, 'request', 'running'],
+      [result, 'result', 'ended'],
     ] as const) {
       expect(row).toMatchObject({
-        type: 'transcript.ops',
+        type: 'leapmux.kimi.item',
         session_id: 'session_1',
-        payload: {
-          type: 'transcript.ops',
-          agent_id: 'main',
-          ops: [
-            {
-              op: 'frame.upsert',
-              turnId: 't0',
-              stepId: 't0.1',
-              frame: {
-                kind: 'tool',
-                frameId: 't0.1.call_1',
-                toolCallId: 'call_1',
-                name: 'Bash',
-                input: { command: 'printf 42' },
-                state,
-              },
-            },
-          ],
-        },
+        agent_id: 'main',
+        turn_id: 't0',
+        role,
+        item: { ...call, type: 'tool_call', status },
       })
     }
-    expect(result.payload.ops[0]?.frame).toHaveProperty('output', '42')
+    expect(result.item).toHaveProperty('output', '42')
   })
 
   it('keeps native interaction identity separate from the nested control request', () => {
