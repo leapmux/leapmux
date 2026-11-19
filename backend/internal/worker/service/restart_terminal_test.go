@@ -16,6 +16,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -287,7 +288,7 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	// Drive a small bit of output so the ScreenBuffer's counter advances
 	// past its seeded baseline.
 	enter := testutil.TestShellEnter()
-	require.NoError(t, svc.Terminals.SendInput(id, []byte("echo respawn"+enter)))
+	require.NoError(t, svc.Terminals.SendInput(id, terminput.Input{Data: []byte("echo respawn" + enter)}))
 
 	// Query the cumulative offset directly: it should be >= the persisted
 	// screen length, proving the seed worked. A regression here would

@@ -3,6 +3,7 @@ package zcode
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -307,6 +308,14 @@ func TestZCodeCatalogRefresh_CoalescesAccountAndWorkspaceTriggers(t *testing.T) 
 		waiters[i] = make(chan error, 1)
 		go func(ch chan error) { ch <- a.awaitZCodeCatalogRefresh() }(waiters[i])
 	}
+	// Both waiters join the pass in flight before the test answers it. A waiter
+	// that arrived after the following pass would start a third pass, which
+	// nobody answers.
+	require.Eventually(t, func() bool {
+		a.catalogRefresh.mu.Lock()
+		defer a.catalogRefresh.mu.Unlock()
+		return len(a.catalogRefresh.waiters) == len(waiters)
+	}, 30*time.Second, time.Millisecond, "both waiters join the pass in flight")
 	a.scheduleZCodeCatalogRefresh()
 	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, registry), json.RawMessage(`{"refreshed":true}`)))
 	zcodeAnswerCatalogResume(t, a, stdin, 1, `[]`)

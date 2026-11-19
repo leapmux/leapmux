@@ -2100,3 +2100,109 @@ func TestSubscriptionReplayIdentityKeepsAFreshOpeningRetryAfterAnOlderTimerRetir
 	assert.Equal(t, 1, attempts)
 	assert.False(t, inFlight)
 }
+
+// terminalNotifyFrames lists one frame of each notification-class terminal
+// event: a bell, a notification, a title change and a progress report.
+func terminalNotifyFrames(terminalID string) []*leapmuxv1.WatchEventsResponse {
+	events := []*leapmuxv1.TerminalEvent{
+		{Event: &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}}},
+		{Event: &leapmuxv1.TerminalEvent_Notification{Notification: &leapmuxv1.TerminalNotification{Title: "Build", Body: "done"}}},
+		{Event: &leapmuxv1.TerminalEvent_TitleChanged{TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: "make test"}}},
+		{Event: &leapmuxv1.TerminalEvent_Progress{Progress: &leapmuxv1.TerminalProgress{State: leapmuxv1.TerminalProgress_STATE_NORMAL, Percent: 40}}},
+	}
+	out := make([]*leapmuxv1.WatchEventsResponse, len(events))
+	for i, te := range events {
+		te.TerminalId = terminalID
+		out[i] = &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: te}}
+	}
+	return out
+}
+
+// A subscription drops the notification-class frames of a terminal unless
+// the consumer asks for them, so `agent messages --follow` and a screen
+// reader keep seeing only what moves the screen.
+func TestSubscription_DropsTerminalNotificationsByDefault(t *testing.T) {
+	tr := &fakeTransport{}
+	var got []*leapmuxv1.TerminalEvent
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil,
+		func(te *leapmuxv1.TerminalEvent) { got = append(got, te) }, nil)
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1"}}}))
+
+	for _, frame := range terminalNotifyFrames("t-1") {
+		tr.pushFrame(frame)
+	}
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
+		TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: 2}},
+	}}})
+
+	require.Len(t, got, 1, "only the exit passes")
+	assert.Equal(t, int32(2), got[0].GetClosed().GetExitCode())
+}
+
+// WithTerminalNotifications passes every notification-class frame to
+// onTerminal, in order, and none of them moves the terminal cursor.
+func TestSubscription_WithTerminalNotificationsDeliversThem(t *testing.T) {
+	tr := &fakeTransport{}
+	terminals := NewTerminalCursor()
+	var got []*leapmuxv1.TerminalEvent
+	sub := NewSubscription(tr, NewAgentCursor(), terminals, nil,
+		func(te *leapmuxv1.TerminalEvent) { got = append(got, te) }, nil, WithTerminalNotifications())
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}}))
+
+	frames := terminalNotifyFrames("t-1")
+	for _, frame := range frames {
+		tr.pushFrame(frame)
+	}
+
+	require.Len(t, got, len(frames))
+	for i, frame := range frames {
+		assert.True(t, proto.Equal(frame.GetTerminalEvent(), got[i]), "frame %d arrives as it was sent", i)
+	}
+	assert.Equal(t, int64(0), terminals.Get("t-1"), "a notification carries no screen bytes, so the cursor stays")
+}
+
+// endingHandle is a Handle that reports a reason for its end.
+type endingHandle struct {
+	fakeHandle
+	err error
+}
+
+func (h *endingHandle) EndErr() error { return h.err }
+
+// endingTransport opens endingHandles whose stream ends with err.
+type endingTransport struct {
+	err    error
+	handle *endingHandle
+}
+
+func (t *endingTransport) OpenWatchEvents(context.Context, *leapmuxv1.WatchEventsRequest, func(*leapmuxv1.WatchEventsResponse)) (Handle, error) {
+	done := make(chan struct{})
+	close(done)
+	t.handle = &endingHandle{fakeHandle: fakeHandle{cancel: func() {}, done: done}, err: t.err}
+	return t.handle, nil
+}
+
+// EndErr reports the reason that the handle of the current stream gives,
+// nil for a handle that gives none, and nil after Cancel retired the stream.
+func TestSubscription_EndErrReportsTheReasonOfTheHandle(t *testing.T) {
+	refused := errors.New("the worker refused the watch")
+	tr := &endingTransport{err: refused}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	assert.NoError(t, sub.EndErr(), "no stream has run yet")
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	<-sub.Done()
+	assert.ErrorIs(t, sub.EndErr(), refused)
+
+	sub.Cancel()
+	assert.NoError(t, sub.EndErr(), "Cancel retires the stream and its reason")
+
+	plain := &fakeTransport{}
+	sub = NewSubscription(plain, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+	assert.NoError(t, sub.EndErr(), "a handle that reports no reason gives none")
+}

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
@@ -250,7 +251,7 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 					go func() {
 						defer close(inputDone)
 						// Forced termination may fail this admitted write.
-						_ = m.SendInput("blocked", []byte("held input"))
+						_ = m.SendInput("blocked", terminput.Input{Data: []byte("held input")})
 					}()
 					select {
 					case <-ioEntered:
@@ -322,7 +323,7 @@ func startHangUpTerminal(t *testing.T, m *Manager, opts Options, handlerRan chan
 	})
 	require.NoError(t, err, "StartTerminal(%s)", opts.ID)
 	if command != "" {
-		require.NoError(t, m.SendInput(opts.ID, []byte(command+testutil.TestShellEnter())), "SendInput(%s)", opts.ID)
+		require.NoError(t, m.SendInput(opts.ID, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}), "SendInput(%s)", opts.ID)
 	}
 	return output
 }
@@ -647,7 +648,7 @@ func TestManager_HangUpAllJoinsAReplacedExitHandler(t *testing.T) {
 		require.NotNil(t, oldTerm)
 		// The restart refuses a running terminal, and the old shell's exit is
 		// what runs its exit goroutine into the parked handler.
-		require.NoError(t, m.SendInput("replaced", []byte("exit"+testutil.TestShellEnter())))
+		require.NoError(t, m.SendInput("replaced", terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}))
 		<-entered
 		<-oldTerm.readDoneCh
 		<-oldTerm.childSideClosedCh

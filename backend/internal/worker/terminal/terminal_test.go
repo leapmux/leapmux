@@ -16,6 +16,7 @@ import (
 
 	pty "github.com/aymanbagabas/go-pty"
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -532,7 +533,7 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 	}, "expected terminal to exit")
 
 	// Input should fail on exited terminal.
-	assert.Error(t, m.SendInput("tm-exit", []byte("test")), "expected error sending input to exited terminal")
+	assert.Error(t, m.SendInput("tm-exit", terminput.Input{Data: []byte("test")}), "expected error sending input to exited terminal")
 
 	// Resize should also fail.
 	assert.Error(t, m.Resize("tm-exit", 80, 24), "expected error resizing exited terminal")
@@ -831,7 +832,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	// finishes its init scripts before the exit command arrives.
 	command, err := testutil.TestShellOutputCommand(marker)
 	require.NoError(t, err)
-	require.NoError(t, m.SendInput(id, []byte(command+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		screen, _, _ := m.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
@@ -853,8 +854,8 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	// command separator (`;` against cmd.exe's `&`) gets in the way.
 	lastCommand, err := testutil.TestShellOutputCommand(lastMarker)
 	require.NoError(t, err)
-	require.NoError(t, m.SendInput(id, []byte(lastCommand+testutil.TestShellEnter())))
-	require.NoError(t, m.SendInput(id, []byte("exit"+exitArg+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte(lastCommand + testutil.TestShellEnter())}))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte("exit" + exitArg + testutil.TestShellEnter())}))
 
 	var got exitReport
 	select {
@@ -913,7 +914,7 @@ func TestManager_StopUnknown(t *testing.T) {
 
 func TestManager_SendInput_UnknownTerminal(t *testing.T) {
 	m := NewManager()
-	err := m.SendInput("nonexistent", []byte("hello"))
+	err := m.SendInput("nonexistent", terminput.Input{Data: []byte("hello")})
 	assert.Error(t, err, "expected error for unknown terminal")
 	assert.ErrorIs(t, err, ErrTerminalNotFound, "error should wrap ErrTerminalNotFound")
 }
@@ -967,7 +968,7 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 	require.True(t, m.AppendOutput("tm-snap", []byte(conPTYStyleModeBytes)))
 
 	// Send a command to produce output.
-	require.NoError(t, m.SendInput("tm-snap", []byte("echo snapshot_test"+testutil.TestShellEnter())), "SendInput")
+	require.NoError(t, m.SendInput("tm-snap", terminput.Input{Data: []byte("echo snapshot_test" + testutil.TestShellEnter())}), "SendInput")
 
 	// Wait for the output to arrive.
 	testutil.AssertEventually(t, func() bool {
@@ -1034,7 +1035,7 @@ func TestManager_SnapshotAfterExit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	require.NoError(t, m.SendInput("tm-exit", []byte("echo before_exit"+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput("tm-exit", terminput.Input{Data: []byte("echo before_exit" + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1347,7 +1348,7 @@ func TestSnapshotTerminal(t *testing.T) {
 	}, nil)
 	require.NoError(t, err, "StartTerminal")
 
-	require.NoError(t, m.SendInput(termID, []byte("echo snapshot_single"+testutil.TestShellEnter())), "SendInput")
+	require.NoError(t, m.SendInput(termID, terminput.Input{Data: []byte("echo snapshot_single" + testutil.TestShellEnter())}), "SendInput")
 	testutil.AssertEventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1585,7 +1586,7 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 
 	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64, []Signal) {}, nil), "StartTerminal")
 
-	require.NoError(t, m.SendInput(id, []byte("echo first"+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte("echo first" + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		s, _ := m.SnapshotTerminal(id)
 		return strings.Contains(string(s.Screen), "first")

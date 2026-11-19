@@ -111,9 +111,29 @@ message RestartTerminalRequest {
 
 message RestartTerminalResponse {}
 
+// SendInputRequest writes input to a terminal's PTY in one write: `data`
+// first, then each key of `keys` in order. Nothing from another request can
+// arrive between them. The Worker encodes the paste and the keys for the
+// modes that the program in the terminal enabled, as the browser's xterm.js
+// encodes a paste and a key press.
 message SendInputRequest {
   string terminal_id = 1;
+  // The bytes to write. Without `paste`, they reach the PTY as they are.
   bytes data = 2;
+  // Send `data` as a paste, as the browser sends one: each CRLF or LF
+  // becomes CR, and every bracketed-paste end marker (ESC [201~) is removed,
+  // so the text cannot end its own paste early. When the program enabled
+  // bracketed paste (DEC private mode 2004), the markers ESC [200~ and
+  // ESC [201~ surround the text. A `data` with nothing left after the end
+  // markers go sends no paste.
+  bool paste = 3;
+  // Key names to press after `data`, in order, such as "enter", "up" or
+  // "ctrl-c". The Go package `terminput` states the vocabulary; a name is
+  // case-insensitive. An unknown name fails the whole request with
+  // INVALID_ARGUMENT before the Worker writes anything. A cursor key
+  // follows the application cursor key mode (DECCKM, DEC private mode 1)
+  // when the program enabled it.
+  repeated string keys = 4;
 }
 
 message SendInputResponse {}

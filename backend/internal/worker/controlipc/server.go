@@ -19,6 +19,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -183,10 +184,14 @@ func shortPrefix(s string, n int) string {
 	return s[:n]
 }
 
+// runDirName is the directory of the data directory that holds what lives only
+// while the Worker runs: the control sockets and the CLI directory.
+const runDirName = "run"
+
 // SocketDir returns the preferred private directory for control sockets.
 // PrepareSocketDirectory selects a short private namespace when this path cannot fit.
 func SocketDir(dataDir string) string {
-	return filepath.Join(dataDir, "run", "control")
+	return filepath.Join(dataDir, runDirName, "control")
 }
 
 // SocketURL derives a socket URL from the directory and spawn identity.
@@ -303,9 +308,9 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 }
 
 // EnvVars assembles the LEAPMUX_CONTROL_* env vars to inject into the
-// spawned process. The caller appends them to cmd.Env. Keeping this
-// here means the env-var schema lives next to the server and changes
-// to either side stay in sync.
+// spawned process. The spawn path applies them through controlenv.Apply.
+// Keeping this here means the env-var schema lives next to the server and
+// changes to either side stay in sync.
 //
 // Only the small set of values the CLI can't cheaply derive from the
 // tab id is injected. Every entity-ID variable carries an explicit
@@ -320,12 +325,16 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 //   - WORKING_DIR / AGENT_PROVIDER — set at spawn, immutable for the
 //     lifetime of the agent; saved here so the CLI doesn't have to
 //     round-trip the worker on every invocation.
+//   - CLI — cliExecutable, the absolute path of the Worker's link to the
+//     CLI that serves it (see CLIDirectory). controlenv.Apply puts its
+//     directory first on PATH. Absent when cliExecutable is "", because the
+//     Worker has no such link.
 //
 // Workspace id and tile id are deliberately NOT injected — they're
 // derivable from TAB_ID via a single hub LocateTab call, and deriving
 // avoids both the staleness window (tab moves) and any way for a
 // misbehaving client to inject a lying value.
-func EnvVars(socketURL, token string, info TokenInfo) []string {
+func EnvVars(socketURL, token string, info TokenInfo, cliExecutable string) []string {
 	envs := []string{
 		"LEAPMUX_CONTROL_SOCK=" + socketURL,
 		"LEAPMUX_CONTROL_TOKEN=" + token,
@@ -348,6 +357,9 @@ func EnvVars(socketURL, token string, info TokenInfo) []string {
 	}
 	if info.AgentProvider != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_AGENT_PROVIDER="+info.AgentProvider)
+	}
+	if cliExecutable != "" {
+		envs = append(envs, controlenv.CLIVariable+"="+cliExecutable)
 	}
 	return envs
 }

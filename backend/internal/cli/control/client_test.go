@@ -733,7 +733,7 @@ func TestNewClient_RemoteHubGetsAWebSocketClient(t *testing.T) {
 // TestWorkerIPCStreamLaneCarriesNoTimeout pins the lane a control-IPC SERVER
 // STREAM must run on.
 //
-// `events watch` over local IPC and `agent messages --follow` both open
+// `layout watch` over local IPC and `agent messages --follow` both open
 // ControlIPCService.StreamInner, which rides the HTTP client rather than a
 // WebSocket. An http.Client timeout covers the BODY read and a stream's body
 // ends only when the stream does, so the timed unary client severed both

@@ -35,10 +35,12 @@ type Options struct {
 	LoginShell                 bool                    // If true, use interactive+login shell flags
 	HomeDir                    string                  // User's home directory (reads Claude Code settings; expands `~` when the Pi rule CHECKS a resume handle -- Pi expands it again itself)
 	AgentProvider              leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
-	// ExtraEnv is appended verbatim to the spawned process's
-	// environment after the provider-specific env-var setup. The
-	// service.Service populates this with LEAPMUX_CONTROL_* so the
-	// running agent can drive the worker via the leapmux control CLI.
+	// ExtraEnv holds the LEAPMUX_CONTROL_* variables of the spawn. The
+	// service.Service populates this so the running agent can drive the
+	// worker via the leapmux control CLI. FinalizeAgentEnv applies them
+	// through controlenv.Apply, after the provider-specific env-var setup:
+	// they land last, and the directory of LEAPMUX_CONTROL_CLI goes first on
+	// PATH.
 	ExtraEnv []string
 	// AgentDirs is where an agent creates its private directory, with the
 	// spec that its Registration states. The Manager sets it to the

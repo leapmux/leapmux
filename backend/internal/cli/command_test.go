@@ -143,3 +143,39 @@ func TestDescribe_ListsEveryCommandWithItsDeclaration(t *testing.T) {
 	require.GreaterOrEqual(t, len(paths), 4)
 	assert.Equal(t, []string{"workspace", "workspace list", "workspace get", "workspace rename"}, paths[:4])
 }
+
+// pflag's GetStringArray reads the values back from their CSV form, which
+// states one empty value as "[]", so a lone `--x ""` came back as no value.
+func TestInvocation_StringArrayKeepsEveryValueAsGiven(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want []string
+	}{
+		"a lone empty value":     {args: []string{"--x", ""}, want: []string{""}},
+		"an empty value and one": {args: []string{"--x", "", "--x", "a"}, want: []string{"", "a"}},
+		"a comma stays inside":   {args: []string{"--x", "a,b"}, want: []string{"a,b"}},
+		"a quote stays inside":   {args: []string{"--x", `"a"`}, want: []string{`"a"`}},
+		"no value":               {args: nil, want: []string{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "set"}
+			cmd.Flags().StringArray("x", nil, "")
+			require.NoError(t, cmd.Flags().Parse(tc.args))
+			inv := &Invocation{Command: cmd}
+			assert.Equal(t, tc.want, inv.StringArray("x"))
+		})
+	}
+}
+
+// A command that reads a list flag that it does not declare, or a flag that
+// holds one value, has a bug that no command line can trigger, so the read
+// panics rather than return nothing.
+func TestInvocation_StringArrayPanicsOnAFlagThatIsNoList(t *testing.T) {
+	cmd := &cobra.Command{Use: "set"}
+	cmd.Flags().String("one", "", "")
+	require.NoError(t, cmd.Flags().Parse(nil))
+	inv := &Invocation{Command: cmd}
+
+	assert.PanicsWithValue(t, `cli: set declares no flag "missing"`, func() { inv.StringArray("missing") })
+	assert.PanicsWithValue(t, `cli: flag "one" of set is not a list`, func() { inv.StringArray("one") })
+}

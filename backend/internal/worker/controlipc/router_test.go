@@ -985,7 +985,7 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 		TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
 		WorkingDir:    "/work/dir",
 		AgentProvider: "claude-code",
-	})
+	}, "/data/run/cli-1/leapmux")
 	want := map[string]string{
 		"LEAPMUX_CONTROL_SOCK":           "unix:/tmp/sock",
 		"LEAPMUX_CONTROL_TOKEN":          "raw-token",
@@ -995,6 +995,7 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 		"LEAPMUX_CONTROL_TAB_TYPE":       "agent",
 		"LEAPMUX_CONTROL_WORKING_DIR":    "/work/dir",
 		"LEAPMUX_CONTROL_AGENT_PROVIDER": "claude-code",
+		"LEAPMUX_CONTROL_CLI":            "/data/run/cli-1/leapmux",
 	}
 	got := map[string]string{}
 	for _, e := range envs {
@@ -1036,7 +1037,7 @@ func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 		WorkerID: "worker-A",
 		TabID:    "term-1",
 		TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-	})
+	}, "")
 	got := map[string]string{}
 	for _, e := range envs {
 		k, v, ok := strings.Cut(e, "=")
@@ -1051,6 +1052,8 @@ func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 		_, present := got[k]
 		assert.False(t, present, "legacy %s must NOT be injected", k)
 	}
+	_, present := got["LEAPMUX_CONTROL_CLI"]
+	assert.False(t, present, "a Worker with no CLI link advertises none, not an empty value")
 }
 
 // --- Test fakes ---
@@ -1459,7 +1462,9 @@ func TestRouter_StreamInner_CrossWorkerForwardsEachFrameUnchanged(t *testing.T) 
 // fakeHubStreamer plays the hub: it records the call and hands each payload to
 // the router.
 type fakeHubStreamer struct {
-	payloads     [][]byte
+	payloads [][]byte
+	// err ends the stream after the payloads.
+	err          error
 	gotUserID    userid.UserID
 	gotProcedure string
 	gotPayload   []byte
@@ -1472,7 +1477,7 @@ func (f *fakeHubStreamer) StreamHub(_ context.Context, userID userid.UserID, pro
 			return err
 		}
 	}
-	return nil
+	return f.err
 }
 
 // A hub stream carries only payloads. The router wraps each one in a stream
@@ -1516,6 +1521,33 @@ func TestRouter_StreamInner_HubNamespaceWrapsEachPayload(t *testing.T) {
 
 		require.ErrorIs(t, err, sendErr)
 		assert.Equal(t, 1, calls, "no payload follows a failed delivery")
+	})
+
+	// The hub stream relays a failure as the unary hub path does: a hub code
+	// stays, and a plain error becomes internal with its own message, never
+	// an unknown code with the message lost.
+	t.Run("a plain hub failure keeps its message", func(t *testing.T) {
+		failure := errors.New("dial the hub: connection refused")
+		hub := &fakeHubStreamer{err: failure}
+		r := &controlipc.Router{UserID: userid.MustNew("user-1"), HubStreams: hub}
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{}, "hub."+hubrpc.WatchUserStream, nil, "", "",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		require.ErrorIs(t, err, failure)
+		assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, "dial the hub: connection refused", connectErr.Message())
+	})
+
+	t.Run("a hub code stays", func(t *testing.T) {
+		hub := &fakeHubStreamer{err: connect.NewError(connect.CodePermissionDenied, "no workspace access")}
+		r := &controlipc.Router{UserID: userid.MustNew("user-1"), HubStreams: hub}
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{}, "hub."+hubrpc.WatchUserStream, nil, "", "",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, "no workspace access", connectErr.Message(), "the relay does not repeat the code in the message")
 	})
 
 	t.Run("a router with no hub streamer refuses", func(t *testing.T) {

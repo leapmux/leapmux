@@ -94,9 +94,10 @@ func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []st
 // (stop=true, _) to terminate the
 // loop after the current event (e.g. once the initial frame lands)
 // or (_, err) to propagate an error. The stream is closed when
-// streamWatchUserLocal returns. Its one caller is runEventsLocal, which
-// `events watch` runs on a local-IPC client and which stays open until ctx
-// cancellation; the bootstrap path uses the unary GetMaterialized instead.
+// streamWatchUserLocal returns. Its callers stay open until ctx
+// cancellation: runLayoutWatchLocal, which `layout watch` runs on a local-IPC
+// client, and hubUserEvents, the hub source of `events`. The bootstrap path
+// uses the unary GetMaterialized instead.
 func streamWatchUserLocal(
 	ctx context.Context,
 	c *control.Client,

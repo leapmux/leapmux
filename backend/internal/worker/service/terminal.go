@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -266,16 +267,25 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
 		})
 
-	// SendInput sends input data to a terminal.
+	// SendInput writes the data and the keys of a request to a terminal in one
+	// write, encoded for the terminal's modes. It parses every key name before
+	// it writes anything, so an unknown name refuses the whole request.
 	registerTerminalGuardedByID(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
+
+			keys, err := terminput.ParseKeys(r.GetKeys())
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
 			if svc.WakeLock != nil {
 				svc.WakeLock.RecordActivity()
 			}
 
-			if err := svc.Terminals.SendInput(terminalID, r.GetData()); err != nil {
+			in := terminput.Input{Data: r.GetData(), Paste: r.GetPaste(), Keys: keys}
+			if err := svc.Terminals.SendInput(terminalID, in); err != nil {
 				slog.Error("failed to send input", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, fmt.Sprintf("send input: %v", err))
 				return

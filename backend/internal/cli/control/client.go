@@ -61,7 +61,7 @@ type Client struct {
 	WSClient        *http.Client // HTTP/1.1 client for the /ws/channel and /ws/userevents upgrades
 	// StreamHTTPClient carries a Connect SERVER STREAM, so it holds no overall
 	// timeout. It is set for a worker-IPC client only, because that is the one
-	// transport whose streams do not ride a WebSocket: `events watch` over
+	// transport whose streams do not ride a WebSocket: `layout watch` over
 	// local IPC and `agent messages --follow` both open
 	// ControlIPCService.StreamInner, which runs on this HTTP client rather
 	// than on WSClient. An http.Client timeout covers the BODY read, and a
@@ -379,7 +379,7 @@ func (c *Client) ControlIPCService() (leapmuxv1connect.ControlIPCServiceClient, 
 // ControlIPCStreamService is ControlIPCService for a SERVER STREAM.
 //
 // StreamInner's body ends only when the stream does, and an http.Client
-// timeout covers the body read — so the timed client severed `events watch`
+// timeout covers the body read — so the timed client severed `layout watch`
 // over local IPC and `agent messages --follow` after exactly 60 seconds, with
 // a transport error rather than an end of stream. This client holds no
 // overall timeout; the caller's context is what ends the subscription.
@@ -592,7 +592,7 @@ func (c *Client) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
 // friends -- the IPC server (or hub) then responds 401 and the CLI surfaces
 // it as "unauthenticated: HTTP status 401 Unauthorized". The streaming path
 // matters here because the hub's user-event stream (hubrpc.WatchUserStream,
-// which `events watch` reads over local IPC) and any future server-streaming
+// which `layout watch` reads over local IPC) and any future server-streaming
 // RPC flow through it.
 func (c *Client) AuthInterceptor() connect.ClientInterceptor {
 	return (&authInterceptor{client: c}).intercept

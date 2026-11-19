@@ -503,6 +503,26 @@ func TestAgentAnswerOverIPC_SendsNoAnswerWhereTheQuestionAllowsIt(t *testing.T) 
 	requireDecision(t, decisionOf(&leapmuxv1.QuestionDecision{Answers: []*leapmuxv1.QuestionAnswer{{}}}), answers[0].GetDecision())
 }
 
+// An empty --option or --field, such as an unset variable in a script, is a
+// usage error. It never vanishes, which would send the agent's default
+// selection or the form's defaults in its place.
+func TestAgentAnswerOverIPC_RefusesAnEmptyOptionOrField(t *testing.T) {
+	id := fullTestID("ag-2")
+	defaulted := extrasQuestion()
+	defaulted.InitialSelections = &leapmuxv1.QuestionSelections{Values: []string{"logs"}}
+	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {
+		pendingRequest("claim-1", questionPrompt(defaulted)),
+		pendingRequest("form-1", elicitationPrompt(`{"properties":{"private":{"type":"boolean","default":false}}}`)),
+	}}}
+	startControlWorker(t, w, id)
+
+	f := runControl(t, "agent", "answer", id, "claim-1", "--option", "").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, `--option ""`)
+	f = runControl(t, "agent", "answer", id, "form-1", "--field", "").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, `--field ""`)
+	assert.Empty(t, w.recordedAnswers(), "an empty value sends no answer")
+}
+
 func TestAgentAnswerOverIPC_ReadsTheTextFromStdin(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))}}}

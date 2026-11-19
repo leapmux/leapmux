@@ -17,7 +17,9 @@ import (
 	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -151,6 +153,20 @@ func (sb *ScreenBuffer) WriteAndDeliver(data []byte, deliver OutputHandler) {
 
 	endOffset, signals := sb.Write(data)
 	deliver(data, endOffset, signals)
+}
+
+// InputModes returns the modes that the program in the terminal enabled and
+// that change the bytes of an input: the application cursor key mode and
+// bracketed paste. The tracker reads them from the output, so they miss a mode
+// change that the PTY has not delivered yet. The modes of the browser's
+// xterm.js have the same delay.
+func (sb *ScreenBuffer) InputModes() terminput.Modes {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return terminput.Modes{
+		ApplicationCursorKeys: sb.tracker.appCursorKeys,
+		BracketedPaste:        sb.tracker.bracketedPaste,
+	}
 }
 
 // TotalBytes returns the cumulative byte count ever written to this buffer.
@@ -389,10 +405,11 @@ type Options struct {
 	ShellStartDir string
 	Cols          uint16
 	Rows          uint16
-	// ExtraEnv is appended verbatim to the spawned shell's environment
-	// after TERM is set. The service.Service populates this with
-	// LEAPMUX_CONTROL_* so scripts inside the shell can drive LeapMux
-	// via `leapmux control`.
+	// ExtraEnv holds the LEAPMUX_CONTROL_* variables of the spawn. The
+	// service.Service mints them so scripts inside the shell can drive LeapMux
+	// via `leapmux control`. spawnEnv applies them through controlenv.Apply:
+	// they land last, after TERM is set, and the directory of
+	// LEAPMUX_CONTROL_CLI goes first on PATH.
 	ExtraEnv []string
 }
 
@@ -414,6 +431,11 @@ type Options struct {
 // A named function rather than inline construction because it is the only part
 // of the spawn a test can assert on: `exec.Cmd` resolves duplicates last-wins,
 // so a layered pin is invisible to the child process and visible only here.
+//
+// The shell is a login shell, so its profile runs after it receives this
+// environment, and the profile can move the PATH entry of the Worker's CLI or
+// drop it (see controlenv.Apply). LEAPMUX_CONTROL_CLI still gives the exact
+// executable.
 func spawnEnv(environ, extraEnv []string) []string {
 	// The provider-helper variable points at one agent's helper spec (see
 	// agent.HelperFunc). A terminal that inherited it would run a plain
@@ -422,13 +444,12 @@ func spawnEnv(environ, extraEnv []string) []string {
 		"TERM=xterm-256color",
 		gitutil.GitOptionalLocksOff,
 	))
-	if len(extraEnv) == 0 {
-		return env
-	}
-	// Strip any pre-existing LEAPMUX_CONTROL_* (defensive — leapmux worker
-	// doesn't normally set them, but a recursive launch would inherit) before
-	// injecting the canonical values.
-	return append(envutil.StripByPrefix(env, "LEAPMUX_CONTROL_"), extraEnv...)
+	// Apply strips the LEAPMUX_CONTROL_* context that a Worker started from a
+	// LeapMux tab inherits, also when extraEnv is empty because the spawn has
+	// no remote control: a shell that kept it would act as the tab of the
+	// parent Worker. It then appends extraEnv and puts the directory of the
+	// Worker's CLI first on PATH.
+	return controlenv.Apply(env, extraEnv)
 }
 
 // Start creates a new PTY terminal session. The supplied context

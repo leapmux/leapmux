@@ -9,11 +9,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// TestOpKindName_ClassifiesEveryCrdtOpBody pins that `events watch` renders
+// TestOpKindName_ClassifiesEveryCrdtOpBody pins that `layout watch` renders
 // a snake_case label for every CrdtOp body kind. A new op body that the hub
 // broadcasts (e.g. the hub-only CreateWorkspace / TombstoneWorkspace
 // lifecycle ops) must get a real label here, not "unknown" — operators
-// filter `events watch` JSON by `type`, so an "unknown" label silently
+// filter `layout watch` JSON by `type`, so an "unknown" label silently
 // breaks scripts watching the lifecycle path.
 func TestOpKindName_ClassifiesEveryCrdtOpBody(t *testing.T) {
 	cases := []struct {
@@ -30,7 +30,7 @@ func TestOpKindName_ClassifiesEveryCrdtOpBody(t *testing.T) {
 		{"ReviveTab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_ReviveTab{ReviveTab: &leapmuxv1.ReviveTabOp{}}}, "revive_tab"},
 		// The two hub-only lifecycle ops that carry workspace create/delete on
 		// the serialized submit pipeline — broadcast to subscribers, so
-		// `events watch` must label them, not "unknown".
+		// `layout watch` must label them, not "unknown".
 		{"CreateWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{}}}, "create_workspace"},
 		{"TombstoneWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{}}}, "tombstone_workspace"},
 	}
@@ -100,7 +100,7 @@ func TestEventToJSON_ClassifiesEveryWatchUserEventKind(t *testing.T) {
 }
 
 // TestWorkspaceMapKeys_SortsTheIds pins the order of the `workspaces` array
-// in the first line that `events watch` prints.
+// in the first line that `layout watch` prints.
 //
 // Go randomizes map iteration, so an unsorted projection makes two runs
 // against ONE unchanged account print two different lines. A script that
@@ -148,7 +148,7 @@ func TestWorkspaceMapKeys_SortsTheIds(t *testing.T) {
 	})
 }
 
-// TestOpTargetSummary_PrintsTheCLITabTypeToken pins how `events watch` identifies
+// TestOpTargetSummary_PrintsTheCLITabTypeToken pins how `layout watch` identifies
 // the tab that an op targets. Every tab op prints the CLI's own token
 // ("agent", "terminal"), the same one the removal and materialize lines
 // print, so one tab reads the same in every line of the stream. The shared

@@ -26,6 +26,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -970,7 +971,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	}))
 
 	// Send a command so the terminal has screen content.
-	require.NoError(t, svc.Terminals.SendInput("term-1", []byte("echo shutdown_test"+testutil.TestShellEnter())))
+	require.NoError(t, svc.Terminals.SendInput("term-1", terminput.Input{Data: []byte("echo shutdown_test" + testutil.TestShellEnter())}))
 
 	// Wait until the echo output appears in the screen buffer; otherwise
 	// Shutdown can race ahead of the shell processing the input.
@@ -2012,7 +2013,7 @@ func TestRestartTerminalRefusesUntilPriorExitHandlerFinishes(t *testing.T) {
 			svc.TerminalStartup.WaitForInFlight()
 			svc.Shutdown()
 		}()
-		require.NoError(t, svc.Terminals.SendInput(id, []byte("exit"+testutil.TestShellEnter())))
+		require.NoError(t, svc.Terminals.SendInput(id, terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}))
 		<-entered
 		require.True(t, svc.Terminals.WaitForReadDrained(id))
 		probe := &noIdentityRemoteIPC{failFrom: 1}

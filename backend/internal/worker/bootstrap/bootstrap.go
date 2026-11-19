@@ -60,6 +60,19 @@ type Params struct {
 	HomeDir  string
 	DataDir  string
 
+	// ControlCLI is the absolute path of the program that serves
+	// `leapmux control` for this worker. Wire links it into a directory of this
+	// worker process (see controlipc.CLIDirectory). Each process that the
+	// worker spawns with remote control then receives the link in
+	// LEAPMUX_CONTROL_CLI and its directory first on PATH, so the CLI in a tab
+	// matches its worker. A login shell's profile can still move or drop the
+	// PATH entry; see controlenv.Apply.
+	//
+	// "" links nothing, and spawns get neither. An entry point passes its own
+	// executable only when that executable serves the CLI: the `leapmux`
+	// binary does, and the desktop sidecar and a test binary do not.
+	ControlCLI string
+
 	// AuthToken is the worker's own credential, used to mint the per-user
 	// delegation bearers that cross-worker calls and spawned-agent hub calls
 	// present.
@@ -370,6 +383,13 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 	}
 	if err := factory.PrepareSocketDirectory(p.DataDir); err != nil {
 		slog.Warn("control socket directory unavailable", "data_directory", p.DataDir, "error", err)
+	}
+	// A failure here degrades only the CLI: the spawns keep their remote control
+	// and advertise no LEAPMUX_CONTROL_CLI.
+	if p.ControlCLI != "" {
+		if err := factory.PrepareCLIDirectory(p.DataDir, p.ControlCLI); err != nil {
+			slog.Warn("control CLI unavailable to spawned processes", "executable", p.ControlCLI, "data_directory", p.DataDir, "error", err)
+		}
 	}
 	return factory
 }

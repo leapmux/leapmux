@@ -254,3 +254,11 @@ func TestPrinterNoticeGoesToStderr(t *testing.T) {
 	assert.Empty(t, out.String())
 	assert.Equal(t, "open https://example.invalid\n", errOut.String())
 }
+
+func TestShortID(t *testing.T) {
+	assert.Equal(t, "", ShortID(""))
+	assert.Equal(t, "abc", ShortID("abc"))
+	assert.Equal(t, "12345678", ShortID("12345678"))
+	assert.Equal(t, "12345678", ShortID("123456789"))
+	assert.Equal(t, "日本語のタブです", ShortID("日本語のタブですよね"), "the cut counts characters, not bytes")
+}

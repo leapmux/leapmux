@@ -33,6 +33,7 @@ import {
   checkScopes,
   checkSessionInfo,
   checkTabNames,
+  checkTerminal,
   checkTheme,
   checkTrustedProxies,
   checkUserSettings,
@@ -58,6 +59,7 @@ import {
   emitGoProviderProtocol,
   emitGoRetry,
   emitGoSessionInfo,
+  emitGoTerminal,
   emitGoTrustedProxies,
   emitGoValidate,
   emitGoWire,
@@ -78,6 +80,7 @@ import {
   emitTsProviders,
   emitTsRetry,
   emitTsSessionInfo,
+  emitTsTerminal,
   emitTsTrustedProxies,
   emitTsValidate,
   emitTsWire,
@@ -129,6 +132,7 @@ const RETRY = readContract('retry')
 const CHAT_HISTORY = readContract('chat-history')
 const PAGINATION = readContract('pagination')
 const FILE_READ = readContract('file-read')
+const TERMINAL = readContract('terminal')
 const TRUSTED_PROXIES = readContract('trusted-proxies')
 const USER_SETTINGS = readContract('user-settings')
 const DESKTOP_FOR_SETTINGS = readContract('desktop')
@@ -388,6 +392,33 @@ describe('checkPagination', () => {
   })
 })
 
+describe('checkTerminal', () => {
+  it('accepts the shipped contract', () => {
+    expect(() => checkTerminal(TERMINAL)).not.toThrow()
+  })
+
+  it('accepts a scrollback of zero lines, which keeps no line above the screen', () => {
+    expect(() => checkTerminal({ ...TERMINAL, scrollbackLines: 0 })).not.toThrow()
+  })
+
+  it('rejects a negative, fractional, unsafe or non-numeric scrollback', () => {
+    const invalid = [
+      -1,
+      1.5,
+      2 ** 53,
+      '1000',
+      null,
+      undefined,
+    ]
+    for (const scrollbackLines of invalid) {
+      expectContractError(
+        () => checkTerminal({ ...TERMINAL, scrollbackLines }),
+        'scrollbackLines must be a non-negative safe integer',
+      )
+    }
+  })
+})
+
 describe('checkFileRead', () => {
   it('accepts the shipped contract', () => {
     expect(() => checkFileRead(FILE_READ, WIRE)).not.toThrow()
@@ -600,6 +631,11 @@ describe('emitters', () => {
     const ts = emitTsPagination(PAGINATION)
     expect(ts).toContain('DEFAULT_PAGE_LIMIT = 50 as const')
     expect(ts).toContain('MAX_PAGE_LIMIT = 500 as const')
+  })
+
+  it('emits the terminal scrollback for Go and TypeScript', () => {
+    expect(emitGoTerminal({ ...TERMINAL, scrollbackLines: 1234 })).toContain('const TerminalScrollbackLines = 1234\n')
+    expect(emitTsTerminal({ ...TERMINAL, scrollbackLines: 1234 })).toContain('export const TERMINAL_SCROLLBACK_LINES = 1234 as const\n')
   })
 
   it('emits the file read limit for Go and TypeScript', () => {
@@ -2033,6 +2069,7 @@ describe('generate', () => {
       'backend/generated/contracts/session-info.go',
       'backend/generated/contracts/tab-names.go',
       'backend/generated/contracts/tab-types.go',
+      'backend/generated/contracts/terminal.go',
       'backend/generated/contracts/theme.go',
       'backend/generated/contracts/trusted-proxies.go',
       'backend/generated/contracts/user-settings.go',
@@ -2095,6 +2132,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/session-info.ts',
       'frontend/src/generated/contracts/tab-names.ts',
       'frontend/src/generated/contracts/tab-types.ts',
+      'frontend/src/generated/contracts/terminal.ts',
       'frontend/src/generated/contracts/theme-default.ts',
       'frontend/src/generated/contracts/trusted-proxies.ts',
       'frontend/src/generated/contracts/user-settings.ts',

@@ -1,0 +1,4 @@
+{
+  "_readme": "The scrollback of a rendered terminal: how many lines above the screen a terminal keeps. The browser's xterm.js keeps this many, and `leapmux control terminal read --scrollback` replays the Worker's retained bytes through a Go port of xterm.js that keeps the same number, so the CLI prints the lines that the browser can scroll back to. A value on one side alone would let the two disagree about what a terminal shows.",
+  "scrollbackLines": 1000
+}

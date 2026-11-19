@@ -574,6 +574,15 @@ export function checkPagination(v) {
 }
 
 // ---------------------------------------------------------------------------
+// terminal: the scrollback of a rendered terminal
+// ---------------------------------------------------------------------------
+
+export function checkTerminal(v) {
+  mustBe(Number.isSafeInteger(v.scrollbackLines) && v.scrollbackLines >= 0, 'terminal.json', 'scrollbackLines must be a non-negative safe integer')
+  return {}
+}
+
+// ---------------------------------------------------------------------------
 // file-read: the default size of one file read
 // ---------------------------------------------------------------------------
 
@@ -7802,6 +7811,23 @@ export const MAX_PAGE_LIMIT = ${v.maxPageLimit} as const
 `
 }
 
+export function emitGoTerminal(v) {
+  return `${GO_HEADER('terminal.json')}package contracts
+
+// TerminalScrollbackLines is how many lines above the screen a rendered
+// terminal keeps: the browser's xterm.js, and the emulator that
+// \`leapmux control terminal read\` replays the Worker's bytes through.
+const TerminalScrollbackLines = ${v.scrollbackLines}
+`
+}
+
+export function emitTsTerminal(v) {
+  return `${TS_HEADER('terminal.json')}
+/** How many lines above the screen a terminal keeps, in the browser and in the CLI's rendered read. */
+export const TERMINAL_SCROLLBACK_LINES = ${v.scrollbackLines} as const
+`
+}
+
 export function emitGoFileRead(v) {
   return `${GO_HEADER('file-read.json')}package contracts
 
@@ -8127,6 +8153,15 @@ const DOMAINS = [
       checkPagination(v)
       out['backend/generated/contracts/pagination.go'] = emitGoPagination(v)
       out['frontend/src/generated/contracts/pagination.ts'] = emitTsPagination(v)
+    },
+  },
+  {
+    name: 'terminal',
+    emit(out, read) {
+      const v = read('terminal')
+      checkTerminal(v)
+      out['backend/generated/contracts/terminal.go'] = emitGoTerminal(v)
+      out['frontend/src/generated/contracts/terminal.ts'] = emitTsTerminal(v)
     },
   },
   {

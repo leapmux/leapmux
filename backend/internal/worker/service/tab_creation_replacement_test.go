@@ -14,6 +14,7 @@ import (
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
@@ -245,7 +246,7 @@ func TestCreationReplacement_TerminalRPCWaitsForTheOriginalCheckpoint(t *testing
 				if err := svc.startTerminalProcess(ctx, opts, output, exit); err != nil {
 					return err
 				}
-				if err := svc.Terminals.SendInput(id, []byte("exit"+testutil.TestShellEnter())); err != nil {
+				if err := svc.Terminals.SendInput(id, terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}); err != nil {
 					return err
 				}
 				return svc.Terminals.WaitForExitContext(ctx, id)

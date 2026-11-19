@@ -312,6 +312,9 @@ func (f *lifecycleFlags) loadConfiguration(fs *pflag.FlagSet) (*lifecycleConfigu
 			}, nil
 		}
 	case lifecycle.RoleSolo, lifecycle.RoleDev:
+		// Only a starting instance reads it: its Worker links this binary for
+		// the processes that it spawns.
+		f.soloConfig.ControlCLI = controlCLIExecutable()
 		prepared, prepareErr := solo.PrepareParsed(f.soloConfig, f.solo, fs)
 		if prepareErr != nil {
 			return nil, prepareErr

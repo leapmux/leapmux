@@ -70,8 +70,13 @@ type Factory struct {
 	// spawned process sees a rename. nil is allowed (tests) and reports "".
 	OwnerUsername func(userid.UserID) string
 
-	mu             sync.Mutex
-	directory      *SocketDirectory
+	mu        sync.Mutex
+	directory *SocketDirectory
+	// cliDirectory holds the link to the CLI that serves this Worker, which
+	// every spawn advertises as LEAPMUX_CONTROL_CLI. It stays nil until
+	// PrepareCLIDirectory succeeds, and while it is nil, spawns advertise no
+	// CLI.
+	cliDirectory   *CLIDirectory
 	preparationErr error
 	started        bool
 	prepared       bool
@@ -194,7 +199,7 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 		f.servers = make(map[*Server]func())
 	}
 	f.servers[srv] = cleanup
-	return EnvVars(socketURL, token, tokenInfo), cleanup, nil
+	return EnvVars(socketURL, token, tokenInfo, f.cliDirectory.Executable()), cleanup, nil
 }
 
 // AgentSpawning satisfies service.ControlIPCFactory.
@@ -373,8 +378,36 @@ func (f *Factory) PrepareSocketDirectory(dataDir string) error {
 	return nil
 }
 
+// PrepareCLIDirectory links executable, the program that serves
+// `leapmux control` for this Worker, into a directory of this Worker process
+// in the run directory of dataDir (see CLIDirectory). Each later spawn then
+// advertises the link as LEAPMUX_CONTROL_CLI, and the spawn path puts its
+// directory first on PATH (see controlenv.Apply). Close removes the directory.
+//
+// A failure is not fatal: the spawns keep their remote control and advertise
+// no CLI. Call it once, before the first spawn. It holds the factory mutex
+// while it works, so a second call cannot remove the directory of the first as
+// one that an ended process left.
+func (f *Factory) PrepareCLIDirectory(dataDir, executable string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.started || f.cliDirectory != nil {
+		return errors.New("control CLI directory must be prepared once before spawning")
+	}
+	directory, err := PrepareCLIDirectory(dataDir, executable)
+	if err != nil {
+		return err
+	}
+	f.cliDirectory = directory
+	return nil
+}
+
 // Close stops admission and closes every retained listener before releasing the
-// directory lock. Delegation cleanup completes outside the factory mutex.
+// directory lock. Delegation cleanup completes outside the factory mutex. The
+// CLI directory goes last. bootstrap.Wiring.Shutdown closes the factory after
+// the service stopped its agents and terminals, so normally no process runs
+// the link any more. On Windows, a process that still runs a copied link keeps
+// the directory, and the next start removes it.
 func (f *Factory) Close() error {
 	if f == nil {
 		return nil
@@ -389,12 +422,14 @@ func (f *Factory) Close() error {
 			cleanups = append(cleanups, cleanup)
 		}
 		failures = append(failures, f.directory.Close())
+		cliDirectory := f.cliDirectory
 		f.mu.Unlock()
 		var pending sync.WaitGroup
 		for _, cleanup := range cleanups {
 			pending.Go(cleanup)
 		}
 		pending.Wait()
+		failures = append(failures, cliDirectory.Close())
 		f.closeErr = errors.Join(failures...)
 	})
 	return f.closeErr

@@ -5,6 +5,10 @@ tabs: it starts agents and terminals, sends them work, reads their output, and
 closes them. Every command prints its own help with `--help`, and
 `leapmux commands --json` lists every command with its arguments and flags.
 
+`leapmux` on your `PATH` is the CLI of the Worker that started you, so it
+matches the Worker's version. A shell profile can move another `leapmux`
+ahead of it; `"$LEAPMUX_CONTROL_CLI"` always runs the Worker's own.
+
 ## Rules that keep you safe
 
 - A command that changes or removes an object needs that object as its first
@@ -64,6 +68,12 @@ leapmux control agent get "$A"            # state: idle, working or waiting_for_
 leapmux control agent messages "$A"
 ```
 
+Watch what happens in your workspace, one event per line:
+
+```sh
+leapmux control events --workspace self --kind agent --json
+```
+
 Start an agent in its own git worktree:
 
 ```sh
@@ -74,8 +84,8 @@ Run a command in a new terminal and read its screen:
 
 ```sh
 T=$(leapmux control terminal open -q)
-leapmux control terminal send "$T" $'make test\n'
-leapmux control terminal read "$T"
+leapmux control terminal run "$T" 'make test'
+leapmux control terminal read "$T" --lines 40
 ```
 
 See what runs where:

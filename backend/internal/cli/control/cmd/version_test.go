@@ -12,9 +12,11 @@ import (
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 )
 
-// clearRemoteEnv blanks every LEAPMUX_CONTROL_* env var a worker spawn emits,
-// plus LEAPMUX_HUB. A test that runs inside a LeapMux tab would otherwise
-// resolve "self" and the default worker from the tab that runs the test.
+// clearRemoteEnv blanks LEAPMUX_HUB and the LEAPMUX_CONTROL_* variables that
+// give a command its context. A test that runs inside a LeapMux tab would
+// otherwise resolve "self" and the default worker from the tab that runs the
+// test. It leaves the socket and its token alone: each test sets or blanks
+// them itself.
 func clearRemoteEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{

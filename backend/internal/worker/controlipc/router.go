@@ -227,9 +227,15 @@ func (r *Router) streamInner(ctx context.Context, info TokenInfo, method string,
 			return connect.Errorf(connect.CodeUnimplemented, "hub streamer not configured")
 		}
 		bare := stripNamespace(method)
-		return r.HubStreams.StreamHub(streamCtx, r.UserID, bare, payload, func(p []byte) error {
+		err := r.HubStreams.StreamHub(streamCtx, r.UserID, bare, payload, func(p []byte) error {
 			return onMsg(&leapmuxv1.InnerStreamMessage{Payload: p})
 		})
+		if err != nil {
+			// As the unary hub path does: a hub code stays, and a plain
+			// error becomes internal with its own message.
+			return relayError(err)
+		}
+		return nil
 	default:
 		return connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}

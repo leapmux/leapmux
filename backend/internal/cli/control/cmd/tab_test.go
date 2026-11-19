@@ -133,7 +133,7 @@ func TestTerminalSend_KeepsWhitespace(t *testing.T) {
 
 	data := runControl(t, "terminal", "send", id, "\n").Data(t)
 
-	assert.EqualValues(t, 1, data["bytes_sent"])
+	assert.EqualValues(t, 1, data["text_bytes"])
 	require.Len(t, disp.inputs, 1)
 	assert.Equal(t, []byte("\n"), disp.inputs[0].GetData())
 	assert.Equal(t, id, disp.inputs[0].GetTerminalId())

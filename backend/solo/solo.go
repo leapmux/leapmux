@@ -245,6 +245,10 @@ type Config struct {
 	// the local IPC socket (unix:<path> on Unix, npipe:<name> on Windows).
 	// This is used by the desktop app to avoid opening a TCP port.
 	NoTCP bool
+	// ControlCLI is the absolute path of the program that serves
+	// `leapmux control` for the Worker; see worker.RunConfig.ControlCLI. ""
+	// gives the Worker's spawns no CLI.
+	ControlCLI string
 }
 
 // Instance represents a running solo Hub+Worker pair.
@@ -994,6 +998,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 			workerLease:      workerLease,
 			hubCfg:           hubCfg,
 			listenURL:        listenURL,
+			controlCLI:       cfg.ControlCLI,
 			runWorker:        d.runWorker,
 			onExit:           func(cause error) { inst.workerExited(workerCtx, cause) },
 			onStarting:       inst.markWorkerStarting,
@@ -1155,9 +1160,11 @@ type workerBringUp struct {
 	// TRANSFERS it into worker.Run when the worker goroutine launches;
 	// until then the Instance retains it, and the combined shutdown
 	// closes it. Paths derive from lease.Path().
-	workerLease  *lifecycle.DirectoryLease
-	hubCfg       *hubconfig.Config
-	listenURL    string
+	workerLease *lifecycle.DirectoryLease
+	hubCfg      *hubconfig.Config
+	listenURL   string
+	// controlCLI is Config.ControlCLI, which worker.Run receives unchanged.
+	controlCLI   string
 	runWorker    func(ctx context.Context, cfg worker.RunConfig) error
 	onExit       func(error)
 	onStarting   func(lifecycle.RegistrationStatus)
@@ -1248,6 +1255,7 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			AgentStartupConcurrency: parseInt(p.hubCfg.Extras["agent_startup_concurrency"], 0),
 			EncryptionMode:          workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:           parseBool(p.hubCfg.Extras["use_login_shell"], true),
+			ControlCLI:              p.controlCLI,
 			RegisteredBy:            state.RegisteredBy,
 		})
 		if wErr == nil && ctx.Err() == nil {

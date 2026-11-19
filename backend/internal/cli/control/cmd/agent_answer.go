@@ -881,14 +881,8 @@ func runAgentAnswer(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	options, err := inv.Command.Flags().GetStringArray("option")
-	if err != nil {
-		return nil, cli.Wrap(cli.CodeUsage, err, "read --option")
-	}
-	fields, err := inv.Command.Flags().GetStringArray("field")
-	if err != nil {
-		return nil, cli.Wrap(cli.CodeUsage, err, "read --field")
-	}
+	options := inv.StringArray("option")
+	fields := inv.StringArray("field")
 	// answerDecision refuses a command line that gives no answer, except for
 	// questions that allow an empty one, which only the prompt can tell.
 	spec := answerSpec{texts: texts, options: options, fields: fields, message: stringFlag(inv, "message"), settings: planSettingsOf(inv)}

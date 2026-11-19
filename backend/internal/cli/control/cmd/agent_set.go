@@ -27,10 +27,7 @@ type agentSetResult struct {
 // runAgentSet updates --model / --effort / --permission-mode /
 // --option key=value (repeatable).
 func runAgentSet(inv *cli.Invocation) (any, error) {
-	options, err := inv.Command.Flags().GetStringArray("option")
-	if err != nil {
-		return nil, err
-	}
+	options := inv.StringArray("option")
 	opts, err := buildAgentSetOptions(stringFlag(inv, "model"), stringFlag(inv, "effort"), stringFlag(inv, "permission-mode"), options)
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")

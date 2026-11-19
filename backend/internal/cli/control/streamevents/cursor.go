@@ -1,5 +1,6 @@
 // Package streamevents supplies cursors and subscriptions for worker WatchEvents streams.
-// The agent messages and events commands share its resume logic.
+// `agent messages --follow` resumes through its cursors. `agent wait`, `agent send --wait`
+// and `events` watch in notify mode through its subscriptions, which need no cursor.
 // Each request lists the exact agents and terminals that the caller wants.
 // Update replaces that interest on the existing stream.
 // An unchanged FULL agent keeps its replay identity and fixed replay cursor.
@@ -225,8 +226,8 @@ func IsResumeCursor(seq int64) bool {
 // (IsResumeCursor false) maps to a fresh LATEST subscription (tail from the most
 // recent page), while a real resume cursor maps to AFTER_CURSOR resume from that seq.
 // The wire entry is explicit either way -- no 0/sign overload. Shared by the cursor's
-// Snapshot builder (the `events` fan-out) and the `agent messages --follow` reconnect
-// loop so the mapping lives in one place.
+// Snapshot builder and the `agent messages --follow` reconnect loop so the mapping
+// lives in one place.
 func AgentWatchEntry(id string, seq int64) *leapmuxv1.WatchAgentEntry {
 	if !IsResumeCursor(seq) {
 		return &leapmuxv1.WatchAgentEntry{

@@ -391,15 +391,20 @@ Any pre-existing `LEAPMUX_CONTROL_*` values are stripped before the Worker re-in
 The reverse also works: from any authenticated `leapmux control` session (or from another agent), you can write to and inspect a terminal:
 
 ```bash
-# Type a command into a terminal's PTY (note the trailing newline to run it)
-leapmux control terminal send <tab> $'ls -la\n'
+# Run a command: paste the command line and press Enter in one request
+leapmux control terminal run <tab> 'ls -la'
+
+# Press keys, such as Ctrl-C to stop the running command
+leapmux control terminal send <tab> --key ctrl-c
 
 # Pipe binary or escape sequences in through standard input
-printf '\x03' | leapmux control terminal send <tab> -
+printf '\x1b[A' | leapmux control terminal send <tab> -
 
-# Inspect a terminal's metadata, or print what it retains with ANSI intact
+# Inspect a terminal's metadata, print the last lines that it shows,
+# or print the bytes that it retains with their escape sequences
 leapmux control terminal get <tab>
-leapmux control terminal read <tab>
+leapmux control terminal read <tab> --lines 20
+leapmux control terminal read <tab> --raw | less -R
 
 # List a worker's available shells (and its default)
 leapmux control terminal shells --worker <worker>

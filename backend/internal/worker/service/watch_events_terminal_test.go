@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -50,7 +51,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-resub")
 
-	require.NoError(t, svc.Terminals.SendInput("t-resub", []byte("echo resubscribe_test"+testutil.TestShellEnter())))
+	require.NoError(t, svc.Terminals.SendInput("t-resub", terminput.Input{Data: []byte("echo resubscribe_test" + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-resub", 0)
 		return off > 0

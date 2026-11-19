@@ -863,9 +863,29 @@ leapmux control terminal open --worktree try-fix --dir ~/src/app
 
 ### `leapmux control terminal send`
 
-Type text into a terminal. The bytes reach the shell as they are: add "\n" to
-press Enter. The text is the second argument, "-" to read it from stdin, or
---file. A text that starts with "-" needs "--" before it.
+Type text into a terminal, then press keys. The text reaches the shell as it
+is, with no Enter added: add --key enter, or use "terminal run". The text is
+the second argument, "-" to read it from stdin, or --file. A text that starts
+with "-" needs "--" before it.
+
+--key presses a key after the text. Repeat it to press several keys in order.
+The Worker encodes each key for the modes that the program in the terminal
+enabled, as the browser does, so "up" moves the cursor in a shell and in a
+full-screen program alike. A modifier on a cursor, editing or function key
+takes xterm's encoding, such as ESC [1;5D for ctrl-left. Key names: enter,
+tab, escape or esc, backspace, space, up, down, right, left, home, end,
+insert, delete, pageup, pagedown, f1 to f12, or one printable ASCII character,
+after any of ctrl-, alt- and shift-, such as ctrl-c, alt-b, shift-tab or
+ctrl-left; the names are case-insensitive, and a character keeps its case.
+
+--paste sends the text as the browser sends a paste: each line ending becomes
+a carriage return, and when the program enabled bracketed paste, the text
+arrives between the paste markers, so the program inserts it instead of
+running each line. A paste end marker inside the text is removed, so the text
+cannot end its own paste.
+
+The text and the keys travel in one request, so no other input can arrive
+between them.
 
 This command changes state.
 
@@ -881,18 +901,80 @@ leapmux control terminal send <terminal> [text] [flags]
 | Flag | Description |
 |---|---|
 | `--file string` | read the bytes from this file ("-" reads stdin) |
+| `--key string` | press this key after the text, such as enter, ctrl-c or up; repeat it to press several keys in order (repeatable) |
+| `--paste` | send the text as a paste, between bracketed-paste markers when the program enabled them |
 
 ```sh
 leapmux control terminal send 4cbb3f34 $'make test\n'
+
+# Stop the program in the foreground.
+leapmux control terminal send 4cbb3f34 --key ctrl-c
+
+# Choose the second entry of a menu.
+leapmux control terminal send 4cbb3f34 --key down --key enter
+
+# Paste a file into the program, as the browser pastes it.
+leapmux control terminal send 4cbb3f34 --paste --file snippet.py
 
 # Type the bytes of a file, such as escape sequences.
 leapmux control terminal send 4cbb3f34 --file keys.bin
 ```
 
+### `leapmux control terminal run`
+
+Run a command in a terminal: send the command line and press Enter, in one
+request, so no other input can arrive between them. The command is the second
+argument, or "-" to read it from stdin. The line endings at its end are
+dropped, because the command presses Enter itself.
+
+The command line arrives as a paste, as "terminal send --paste" sends it. A
+line editor that enabled bracketed paste therefore inserts it as it is: an
+abbreviation, an automatic closing bracket or a vi key binding cannot change
+it. A program without bracketed paste reads it as typed text. To type the
+command key by key in any case, run
+"terminal send &lt;terminal&gt; &lt;command&gt; --key enter".
+
+The command does not wait for the program to finish. Read its output with
+"terminal read".
+
+This command changes state.
+
+```text
+leapmux control terminal run <terminal> <command> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `<command>` | The command line, or "-" to read it from standard input. |
+
+```sh
+leapmux control terminal run 4cbb3f34 'make test'
+
+# Run the command line that stdin holds.
+echo 'go test ./...' | leapmux control terminal run 4cbb3f34 -
+```
+
 ### `leapmux control terminal read`
 
-Print the bytes that a terminal retains, with their escape sequences, so that
-"less -R" shows them as the terminal does.
+Print what a terminal shows, as plain text. The CLI replays the bytes that
+the Worker retains through a terminal emulator at the terminal's size. The
+emulator is a Go port of xterm.js, which the browser uses, so the text is the
+text that the browser shows. Colors and other attributes do not print.
+
+Each row loses its trailing blanks, and the empty rows at the end of the
+screen do not print, so a short output does not end in empty lines.
+
+--scrollback also prints the lines above the screen: at most 1000, as in the
+browser, and only those that the bytes the Worker retains still hold. A
+full-screen program on the alternate screen has no scrollback, as in the
+browser, so --scrollback adds nothing there. --lines N keeps the last N lines
+of what the command prints otherwise.
+
+--json adds the cursor, whose row and column count from 0 at the top left of
+the screen, and alternate_screen, which is true while a full-screen program
+uses the alternate screen. --raw prints the retained bytes as they are, with
+their escape sequences, so that "less -R" shows them.
 
 ```text
 leapmux control terminal read [terminal] [flags]
@@ -902,8 +984,20 @@ leapmux control terminal read [terminal] [flags]
 |---|---|
 | `[terminal]` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
+| Flag | Description |
+|---|---|
+| `--lines int` | print only the last N lines |
+| `--scrollback` | also print the lines above the screen |
+| `--raw` | print the retained bytes as they are, with their escape sequences |
+
 ```sh
 leapmux control terminal read 4cbb3f34
+
+# Print the last 200 lines, the scrollback included.
+leapmux control terminal read 4cbb3f34 --scrollback --lines 200
+
+# Page through the retained bytes with their colors.
+leapmux control terminal read 4cbb3f34 --raw | less -R
 ```
 
 ### `leapmux control terminal resize`
@@ -1637,6 +1731,81 @@ leapmux control worker pins remove <worker> [flags]
 ```sh
 # Forget the key of a worker that was reinstalled.
 leapmux control worker pins remove 5f2c9a1d
+```
+
+### `leapmux control events`
+
+Print what happens in your workspaces as it happens: tabs that open, close
+and move, what each agent does and asks, what each terminal reports, and the
+health of the stream itself. Each line is the local time, the kind, the ids,
+and a summary; --json prints one {"data": …} envelope per line instead, with
+the full ids and a field for each fact. Ctrl-C ends the stream with exit
+status 0.
+
+The stream watches every workspace, or the one that --workspace selects. A
+tab that opens while the stream runs joins it, and a tab that closes leaves
+it. The stream ends when the workspace that --workspace selects is deleted.
+
+The first stream.ready line says that the stream watches every source. Read
+the state that you need after it, such as "leapmux control agent list": every
+change after that read reaches the stream. The stream has no cursor, because
+a Worker keeps no record of these events, so a new run starts from the
+present.
+
+When the hub or a Worker cannot deliver, the stream prints
+stream.unavailable and retries. When the source delivers again, it prints
+stream.gap with the kinds that it may have lost, then each change of an
+agent's activity and status, and of the tabs and workspaces, that happened
+during the gap, marked as reconciled. --kind does not hide these lines: a
+stream event that it does not select prints on stderr.
+
+Kinds:
+  - workspace.created: a workspace was created
+  - workspace.renamed: a workspace has a new title
+  - workspace.deleted: a workspace was deleted
+  - tab.opened: a tab opened, or it moved into the workspace that --workspace selects
+  - tab.closed: a tab closed
+  - tab.moved: a tab moved to another workspace
+  - agent.activity: an agent became idle, working or waiting for the user
+  - agent.status: the status of an agent's process changed to starting, active, inactive or startup_failed
+  - agent.turn_end: an agent ended a turn
+  - agent.request: an agent asks a question or a permission; agent approve, deny and answer take its request
+  - agent.request_ended: a request of an agent was answered or withdrawn
+  - agent.todos: an agent's to-do list changed
+  - agent.background_tasks: an agent's background tasks changed
+  - terminal.status: the status of a terminal's shell changed to starting, ready or startup_failed, or to exited without a terminal.exit
+  - terminal.title: a program set the title of a terminal
+  - terminal.bell: a terminal rang its bell
+  - terminal.notification: a program in a terminal asked for a desktop notification
+  - terminal.progress: a program in a terminal reported its progress
+  - terminal.exit: a terminal's shell exited, with its exit code
+  - stream.ready: the stream watches every source of its scope
+  - stream.unavailable: the hub, a Worker, or a Worker for one tab cannot deliver events; retrying says whether the stream tries again
+  - stream.gap: a source delivers again; events of the kinds in lost, between since and time, may be lost
+  - stream.heartbeat: the stream runs; only --heartbeat prints it
+
+```text
+leapmux control events [flags]
+```
+
+| Flag | Description |
+|---|---|
+| `--workspace string` | watch only this workspace: an id, a prefix, "title:&lt;title&gt;" or "self" (default: every workspace) |
+| `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, stream.ready, stream.unavailable, stream.gap, stream.heartbeat; repeatable) |
+| `--limit int` | end the stream after this many events; 0 runs without a limit |
+| `--heartbeat duration` | print a stream.heartbeat event at this interval, such as 30s; 0 prints none (default: 0s) |
+
+```sh
+leapmux control events
+
+# Print the turn ends and the requests of the agents in this workspace, as JSON.
+leapmux control events --workspace self --kind agent.turn_end --kind agent.request --json
+
+# Wait for the next request of any agent, and print it.
+leapmux control events --kind agent.request --limit 1 --json
+
+# Watch every terminal, with a heartbeat that shows the stream runs.
+leapmux control events --kind terminal --heartbeat 30s
 ```
 
 ## `leapmux control admin`

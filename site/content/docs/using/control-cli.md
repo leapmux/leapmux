@@ -273,11 +273,22 @@ When a Worker starts an agent or a terminal, it gives the process these environm
 | `LEAPMUX_CONTROL_TERMINAL_ID` | terminals only | The terminal you run **inside**. It equals `TAB_ID` in a terminal tab. In a [Quake panel](/docs/using/terminals/#quake-mode-terminal) it is the only id, because a panel has no tab. |
 | `LEAPMUX_CONTROL_WORKING_DIR` | when non-empty | The working directory at start: the default of `--dir` |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | agents only | The agent's provider: the default of `--provider` |
+| `LEAPMUX_CONTROL_CLI` | when the Worker has a CLI to link | The `leapmux` executable of the Worker that started the process. Its directory comes first on `PATH`. |
 
 The tab carries no workspace id and no tile id. A command finds both from the tab when it runs, so a script never acts on a tile that somebody moved the tab away from.
 
+The Worker also puts one directory first on the `PATH` of each agent and terminal that it starts. The directory holds only `leapmux` (`leapmux.exe` on Windows), which is the Worker's own CLI. A bare `leapmux` therefore runs a CLI of the same version as the Worker, even when you installed another version. `LEAPMUX_CONTROL_CLI` gives the full path of that executable. The desktop app links the CLI that it ships; an AppImage ships none, so it sets neither.
+
+{{< callout type="warning" >}}
+A login shell runs its profile after it starts, and the profile can move the entry or remove it. macOS moves its system directories, such as `/usr/local/bin`, before it. Debian's `/etc/profile` replaces `PATH` for bash and sh. A `leapmux` in such a directory then runs instead of the Worker's. To run the Worker's own CLI in every case, call it through the variable:
+
+```sh
+"$LEAPMUX_CONTROL_CLI" control tab list
+```
+{{< /callout >}}
+
 {{< callout type="info" >}}
-Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. The Worker removes inherited `LEAPMUX_CONTROL_*` values before it sets its own, so an agent started from inside another agent gets its own context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side.
+Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. The Worker removes inherited `LEAPMUX_CONTROL_*` values, and the `PATH` entry of a parent Worker, before it sets its own, so an agent started from inside another agent gets its own context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side.
 {{< /callout >}}
 
 Run `printenv | grep LEAPMUX_CONTROL_` inside a tab to see the context that the tab received.
@@ -357,8 +368,19 @@ An agent asks the user through a control request: a permission prompt, a plan to
 
 ### Terminals
 
-- `terminal send <terminal> [text]` types the bytes as they are. Add `\n` to press Enter: `leapmux control terminal send 9c02 $'make test\n'`. `--file` sends the bytes of a file, such as escape sequences.
-- `terminal read` prints the bytes that the terminal retains, with their escape sequences, so `less -R` shows them as the terminal does.
+- `terminal send <terminal> [text]` types the text as it is, with no Enter added. `--file` sends the bytes of a file, such as escape sequences.
+- `--key <name>` presses a key after the text. Repeat it to press several keys in order: `leapmux control terminal send 9c02 --key down --key enter`. The Worker encodes each key for the modes that the program in the terminal enabled, as the browser does, so `up` works in a shell and in a full-screen program alike.
+  - The names are `enter`, `tab`, `escape` (or `esc`), `backspace`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `insert`, `delete`, `pageup`, `pagedown`, `f1` to `f12`, and one printable character.
+  - Each name may follow any of `ctrl-`, `alt-` and `shift-`, such as `ctrl-c`, `alt-b`, `shift-tab` or `ctrl-left`. The names are case-insensitive.
+  - An unknown name, or a modifier that a terminal cannot send with the key, such as `ctrl-enter`, fails with `usage`, and nothing is sent.
+- `--paste` sends the text as the browser sends a paste. Each line ending becomes a carriage return. When the program enabled bracketed paste, the text arrives between the paste markers, so the program inserts it instead of running each line. A paste end marker inside the text is removed, so the text cannot end its own paste.
+- `terminal run <terminal> <command>` pastes the command line and presses Enter in one request, so no other input can arrive between them: `leapmux control terminal run 9c02 'make test'`. It does not wait for the command to finish.
+- `terminal read [terminal]` prints what the terminal shows, as plain text. It replays the bytes that the Worker retains through a Go port of xterm.js at the terminal's size, so the text matches the browser.
+  - Each row loses its trailing blanks, and the empty rows at the end of the screen do not print.
+  - `--scrollback` adds the lines above the screen: at most 1000, and only those that the retained bytes still hold. A full-screen program on the alternate screen has none.
+  - `--lines N` keeps the last N lines.
+  - `--json` adds `cursor`, whose row and column count from 0 at the top left of the screen, and `alternate_screen`.
+  - `--raw` prints the retained bytes with their escape sequences, for `less -R`.
 - `terminal quake open|close|toggle` show and hide a working directory's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every browser you have open. They store nothing: a browser that is not open never hears the request. A browser with no tab in that directory ignores it, because it has no workspace to open the panel in. Opening a panel that has no shell yet creates one. Hiding it never ends the shell. `--dir` and `--worker` default to the calling tab's, so inside a panel, `leapmux control terminal quake close` hides the panel you typed it into.
 
 ### Files and git
@@ -390,6 +412,44 @@ An agent asks the user through a control request: a permission prompt, a plan to
 | `unknown` | An event that this CLI does not know |
 
 To follow an agent's chat, use `agent messages --follow` instead.
+
+### Watching events
+
+`events` prints what happens in your workspaces as it happens, one event per line. It merges the Hub's layout changes with a watch of each Worker that hosts a tab, so one command sees every agent and every terminal.
+
+- **Each line is one event**: the local time, the kind, the ids, and a summary.
+
+  ```text
+  2026-11-19T19:00:01.123+09:00 agent.activity workspace=9f3kQ2aB tab=87a19d5f worker=1a2b3c4d idle (3 tool calls)
+  ```
+
+  `--json` prints one `{"data": …}` envelope per line instead, with the full ids and a field for each fact.
+
+| Kind | Meaning |
+| --- | --- |
+| `workspace.created`, `workspace.renamed`, `workspace.deleted` | A workspace was created, renamed or deleted. |
+| `tab.opened`, `tab.closed`, `tab.moved` | A tab opened, closed, or moved to another workspace. |
+| `agent.activity` | An agent became `idle`, `working` or `waiting_for_user`. |
+| `agent.status` | The status of an agent's process changed. |
+| `agent.turn_end` | An agent ended a turn. |
+| `agent.request`, `agent.request_ended` | An agent asks for a permission or an answer, and the request ended. `request` is the handle that `agent approve`, `agent deny` and `agent answer` take. |
+| `agent.todos`, `agent.background_tasks` | An agent's to-do list or background tasks changed. |
+| `terminal.status`, `terminal.exit` | A terminal's shell changed its status, or exited with its exit code. |
+| `terminal.title`, `terminal.bell`, `terminal.notification`, `terminal.progress` | A program in a terminal set the title, rang the bell, asked for a desktop notification, or reported its progress. |
+| `stream.ready`, `stream.unavailable`, `stream.gap`, `stream.heartbeat` | The health of the stream itself. |
+
+- **`--kind` selects what prints**: a kind such as `agent.request`, or a family such as `agent`. Repeat it, or separate the values with commas. An unknown value fails with `usage` and lists the known ones.
+- **`--workspace` narrows the scope** to one workspace. Without it, the stream watches every workspace. A tab that opens while the stream runs joins it, and a tab that closes leaves it. The stream ends with status `0` when the watched workspace is deleted.
+- **Read the state after `stream.ready`.** The stream has no cursor, because a Worker keeps no record of these events, so each run starts from the present. A state that you read after `stream.ready`, such as `agent list`, misses no later change.
+- **The stream survives drops.**
+  - When the Hub or a Worker cannot deliver, the stream prints `stream.unavailable` and retries. It watches an offline Worker again as soon as the Hub reports that a Worker came online.
+  - A Worker that refuses for good, such as for a missing permission, prints `retrying: false`, and the stream goes on without it.
+  - When a source delivers again, the stream prints `stream.gap` with the time that it stopped (`since`) and the kinds that it may have lost (`lost`). Then it prints each change of an agent's activity and status, and of the tabs and workspaces, that happened meanwhile, with `reconciled: true`.
+- **`--kind` never hides the health of the stream**: a `stream.*` event that `--kind` does not select prints on stderr.
+- **`--limit N`** ends the stream after N events, so `--limit 1` waits for the next one. **`--heartbeat 30s`** prints `stream.heartbeat` every 30 seconds, so a script can tell a quiet stream from a stuck one; `--limit` does not count it.
+- Ctrl-C ends the stream with status `0`.
+
+`layout watch` prints the raw changes of the layout instead, and `agent messages --follow` prints an agent's chat.
 
 ## End-to-end examples
 
@@ -432,6 +492,21 @@ leapmux control agent approve "$A" "$R"
 leapmux control agent deny "$A" "$R" --message "Run the unit tests only."
 ```
 
+### React to what agents do
+
+```bash
+# Ring the bell and show each prompt that an agent stops at.
+leapmux control events --kind agent.request --json |
+  while read -r line; do
+    printf '\a'
+    jq -r '.data | "\(.tab_id): \(.summary)"' <<<"$line"
+  done
+
+# Wait for the next prompt of any agent, then read it in full.
+ev=$(leapmux control events --kind agent.request --limit 1 --json)
+leapmux control agent requests "$(jq -r .data.tab_id <<<"$ev")"
+```
+
 ### A script that runs inside an agent
 
 No login and no ids: the tab supplies them.
@@ -445,7 +520,7 @@ leapmux control git status
 
 # Open a terminal beside this tab and run the build in it.
 T=$(leapmux control terminal open -q)
-leapmux control terminal send "$T" $'make build\n'
+leapmux control terminal run "$T" 'make build'
 ```
 
 ### Snapshot and restore a layout

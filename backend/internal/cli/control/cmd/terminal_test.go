@@ -3,12 +3,14 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -42,6 +44,70 @@ func (d *shellsDispatcher) called() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]string(nil), d.methods...)
+}
+
+// terminalWorker is a fake Worker that serves one terminal: ListTerminals
+// answers its record, and SendInput records each request. mu guards every
+// field.
+type terminalWorker struct {
+	mu     sync.Mutex
+	info   *leapmuxv1.TerminalInfo
+	inputs []*leapmuxv1.SendInputRequest
+	// refuseInput, when not empty, is the InvalidArgument message that
+	// SendInput answers instead.
+	refuseInput string
+}
+
+func (w *terminalWorker) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure:
+		var in leapmuxv1.ListTerminalsRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		resp := &leapmuxv1.ListTerminalsResponse{}
+		if w.info != nil && slices.Contains(in.GetTabIds(), w.info.GetTerminalId()) {
+			resp.Terminals = []*leapmuxv1.TerminalInfo{w.info}
+		}
+		writeProtoResponse(rw, resp)
+	case leapmuxv1connect.WorkerTerminalServiceSendInputProcedure:
+		var in leapmuxv1.SendInputRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		w.inputs = append(w.inputs, &in)
+		if w.refuseInput != "" {
+			_ = rw.SendError(int32(codes.InvalidArgument), w.refuseInput)
+			return
+		}
+		writeProtoResponse(rw, &leapmuxv1.SendInputResponse{})
+	default:
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+	}
+}
+
+// recordedInputs returns the SendInput requests that reached the Worker.
+func (w *terminalWorker) recordedInputs() []*leapmuxv1.SendInputRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.SendInputRequest(nil), w.inputs...)
+}
+
+// startTerminalWorker serves w as the Worker of the terminal terminalID.
+func startTerminalWorker(t *testing.T, w *terminalWorker, terminalID string) {
+	t.Helper()
+	startSpawnIPC(t, &recordingHub{
+		workers: workerRows("worker-A"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:      &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
+			TileId:   "root-1",
+			WorkerId: "worker-A", WorkspaceId: "ws-1",
+		},
+	}, w)
 }
 
 // TestRunTerminalShells_InsideWorkerSpawn is the end-to-end regression

@@ -51,10 +51,11 @@ type Subscription struct {
 	terminals *TerminalCursor
 
 	// onAgent / onTerminal are user callbacks invoked for every
-	// AgentEvent / TerminalEvent the Transport delivers. They run on
-	// the Transport's frame goroutine; long-running work should
-	// dispatch to a separate goroutine to avoid back-pressuring the
-	// stream.
+	// AgentEvent / TerminalEvent the Transport delivers, except a message
+	// that repeats a seen seq, and a notification-class terminal frame
+	// without WithTerminalNotifications. They run on the Transport's frame
+	// goroutine; long-running work should dispatch to a separate goroutine
+	// to avoid back-pressuring the stream.
 	onAgent    func(*leapmuxv1.AgentEvent)
 	onTerminal func(*leapmuxv1.TerminalEvent)
 
@@ -67,6 +68,10 @@ type Subscription struct {
 	// the Transport's frame goroutine and outside every lock. Nil ignores
 	// them. See WithUpdateAck.
 	onUpdateAck func(*leapmuxv1.WatchUpdateAck)
+
+	// terminalNotifications passes the notification-class frames of a
+	// terminal to onTerminal. See WithTerminalNotifications.
+	terminalNotifications bool
 
 	lifecycleMu sync.Mutex
 	// closed is set by Cancel under lifecycleMu and read by Update under the
@@ -161,6 +166,17 @@ func WithClock(clock quartz.Clock) SubscriptionOption {
 func WithUpdateAck(onUpdateAck func(*leapmuxv1.WatchUpdateAck)) SubscriptionOption {
 	return func(s *Subscription) {
 		s.onUpdateAck = onUpdateAck
+	}
+}
+
+// WithTerminalNotifications passes the notification-class frames of a
+// terminal to onTerminal: a bell, a desktop notification, a title change and
+// a progress report. Without it, the subscription drops them, because a
+// consumer of the screen bytes has no use for them. These frames carry no
+// screen bytes, so they never move the terminal cursor.
+func WithTerminalNotifications() SubscriptionOption {
+	return func(s *Subscription) {
+		s.terminalNotifications = true
 	}
 }
 
@@ -420,6 +436,22 @@ func (s *Subscription) Done() <-chan struct{} {
 		return closed
 	}
 	return s.handle.Done()
+}
+
+// EndErr returns why the stream of the current subscription ended: the
+// error that the Worker answered, or the failure of the transport. Read it
+// after Done closes and before the next Update or Cancel, which replace the
+// stream. It returns nil while the stream runs, after an end without an
+// error, after Cancel, and for a transport whose handle reports no reason.
+func (s *Subscription) EndErr() error {
+	s.mu.Lock()
+	handle := s.handle
+	s.mu.Unlock()
+	reporter, ok := handle.(endReporter)
+	if !ok {
+		return nil
+	}
+	return reporter.EndErr()
 }
 
 // dispatch updates cursors and sends typed events to the caller's handlers.
@@ -714,9 +746,11 @@ func (s *Subscription) dispatchTerminalEvent(te *leapmuxv1.TerminalEvent) {
 		*leapmuxv1.TerminalEvent_Notification,
 		*leapmuxv1.TerminalEvent_TitleChanged,
 		*leapmuxv1.TerminalEvent_Progress:
-		slog.Debug("streamevents: ignoring terminal notify frame",
-			"terminal_id", te.GetTerminalId())
-		return
+		if !s.terminalNotifications {
+			slog.Debug("streamevents: ignoring terminal notify frame",
+				"terminal_id", te.GetTerminalId())
+			return
+		}
 	}
 	if data := te.GetData(); data != nil {
 		if data.GetIsSnapshot() && s.onCursorReset != nil {

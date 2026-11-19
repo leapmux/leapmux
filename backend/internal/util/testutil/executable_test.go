@@ -32,16 +32,23 @@ func writesExecutable(call *ast.CallExpr, osName string) bool {
 }
 
 // A program that a test writes with a plain os.WriteFile fails to start at
-// random while a parallel test forks. See WriteExecutable.
+// random while a parallel test forks. See execfile.Write, which every writer
+// of a program goes through: WriteExecutable in a test, and the Worker's copy
+// of its own executable in production.
 //
-// The helper's own write is the one site. Requiring it also proves that the scan
-// finds such a call, so the test cannot pass by finding nothing.
+// execfile.Write takes the mode as a parameter, so the scan finds no site at
+// all. It must still prove that it read the tree, or it would pass by finding
+// nothing: it requires that the walk visited execfile.go.
 func TestEveryExecutableGoesThroughWriteExecutable(t *testing.T) {
 	t.Parallel()
 	var sites []string
+	visitedWriter := false
 	walkRepoGoFiles(t, RepoPath(t, "backend"),
 		func(string, string) bool { return true },
 		func(_ *token.FileSet, _, rel string, file *ast.File) {
+			if rel == "internal/util/execfile/execfile.go" {
+				visitedWriter = true
+			}
 			osName, ok := ImportedAs(file, "os")
 			if !ok {
 				return
@@ -53,8 +60,9 @@ func TestEveryExecutableGoesThroughWriteExecutable(t *testing.T) {
 				return true
 			})
 		})
-	assert.Equal(t, []string{"internal/util/testutil/executable.go"}, sites,
-		"write a program through testutil.WriteExecutable, which keeps forks out while the file is open")
+	require.True(t, visitedWriter, "the scan reads the tree")
+	assert.Empty(t, sites,
+		"write a program through testutil.WriteExecutable in a test, or execfile.Write elsewhere, which keep forks out while the file is open")
 }
 
 func TestWritesExecutableRecognizesAnExecutableMode(t *testing.T) {

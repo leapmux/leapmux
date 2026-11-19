@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -56,10 +58,10 @@ func decodeWatchFrame(logger *slog.Logger, transportName string, payload []byte)
 // envelope carrying that reason used to be received and discarded, so a
 // `--follow` consumer just went quiet -- or resubscribed into the same rejection
 // forever -- with nothing to diagnose from. The Transport contract signals
-// termination through a reason-less `done` channel, so the reason cannot be
-// returned to the caller without reshaping that interface; logging it is what
-// keeps it recoverable today, and mirrors both the malformed-frame log above and
-// crossworker.Client.StreamInner, which surfaces the identical envelope.
+// termination through a reason-less `done` channel, so each handle also records
+// the reason for Subscription.EndErr (see endReporter). The log keeps it for a
+// caller that does not read it, and mirrors both the malformed-frame log above
+// and crossworker.Client.StreamInner, which surfaces the identical envelope.
 func logEndingStreamError(logger *slog.Logger, transportName string, rpcErr *leapmuxv1.RpcError) {
 	logger.Error("streamevents: subscription ended with a server error",
 		"transport", transportName, "code", rpcErr.GetCode(), "error", rpcErr.GetMessage())
@@ -67,10 +69,50 @@ func logEndingStreamError(logger *slog.Logger, transportName string, rpcErr *lea
 
 // Handle is a live WatchEvents subscription on one transport stream.
 // Revisions ride Update; retirement is Cancel.
+//
+// A handle can also report why its stream ended, through EndErr (see
+// endReporter). Both transports of this package do; Subscription.EndErr
+// returns nil for a handle that does not.
 type Handle interface {
 	Update(*leapmuxv1.WatchEventsRequest) error
 	Cancel()
 	Done() <-chan struct{}
+}
+
+// endReporter is a Handle that reports why its stream ended. It is a separate
+// interface, so a Handle that a test writes needs no such method.
+type endReporter interface {
+	// EndErr returns the error that ended the stream, or nil while it runs
+	// and after an end that reported none.
+	EndErr() error
+}
+
+// endReason holds the first error that ended a stream. The goroutine that
+// sees the end records it before Done closes, so a caller that waited for
+// Done reads it.
+type endReason struct {
+	mu  sync.Mutex
+	err error
+}
+
+// record keeps err unless an earlier error ended the stream already. A nil
+// err records nothing.
+func (r *endReason) record(err error) {
+	if err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err == nil {
+		r.err = err
+	}
+}
+
+// EndErr implements endReporter.
+func (r *endReason) EndErr() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
 }
 
 // Transport abstracts "stream a WatchEvents subscription against
@@ -83,9 +125,9 @@ type Handle interface {
 //     socket.
 //
 // Both flows decode the same `WatchEventsResponse` payload off the
-// wire. The one caller of Transport, `agent messages --follow`, writes its
-// cursor and reconnect logic against this interface, so one implementation
-// serves both modes.
+// wire. Its callers -- `agent messages --follow`, `agent wait`, `agent send
+// --wait` and `events` -- write their reconnect logic against this
+// interface, so one implementation serves both modes.
 type Transport interface {
 	// OpenWatchEvents starts a WatchEvents subscription with the
 	// given request. onFrame is called once per delivered
@@ -132,6 +174,7 @@ func NewChannelTransport(ch channelLike, logger *slog.Logger) *ChannelTransport 
 }
 
 type channelHandle struct {
+	*endReason
 	ch     channelLike
 	reqID  uint64
 	ctx    context.Context
@@ -186,6 +229,7 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 	// its OWN goroutine and releases the channel lock before calling it, so a frame
 	// can race teardown.
 	var closed atomic.Bool
+	reason := &endReason{}
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
 	reqID, err := t.channel.SendRPCNoWait(ctx, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, payload, tunnel.RPCHandlers{
 		Response: respCh,
@@ -195,6 +239,7 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 			}
 			if rpcErr := msg.GetError(); rpcErr != nil {
 				logEndingStreamError(transportLogger(t.logger), "channel", rpcErr)
+				reason.record(channelwire.ErrorOf(rpcErr))
 				cancel()
 				return
 			}
@@ -219,9 +264,11 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 		select {
 		case <-ctx.Done():
 		case <-t.channel.Context().Done():
+			reason.record(fmt.Errorf("%w: %w", errChannelClosed, context.Cause(t.channel.Context())))
 		case resp := <-respCh:
 			if rpcErr := resp.GetError(); rpcErr != nil {
 				logEndingStreamError(transportLogger(t.logger), "channel", rpcErr)
+				reason.record(channelwire.ErrorOf(rpcErr))
 			}
 		}
 		closed.Store(true)
@@ -229,8 +276,12 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 		t.channel.UnregisterPending(reqID)
 		cancel()
 	}()
-	return &channelHandle{ch: t.channel, reqID: reqID, ctx: ctx, cancel: cancel, done: done}, nil
+	return &channelHandle{endReason: reason, ch: t.channel, reqID: reqID, ctx: ctx, cancel: cancel, done: done}, nil
 }
+
+// errChannelClosed is the end reason of a subscription whose E2EE channel
+// closed under it: the hub dropped the relay, or the Worker went away.
+var errChannelClosed = errors.New("the channel to the worker closed")
 
 // LocalIPCTransport runs a WatchEvents subscription via the per-agent
 // IPC server's StreamInner method. Used by worker-spawned CLI mode
@@ -253,6 +304,7 @@ func NewLocalIPCTransport(client leapmuxv1connect.ControlIPCServiceClient, targe
 }
 
 type localIPCHandle struct {
+	*endReason
 	client      leapmuxv1connect.ControlIPCServiceClient
 	clientReqID string
 	parentCtx   context.Context
@@ -333,6 +385,7 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		cancel()
 		return nil, err
 	}
+	reason := &endReason{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -345,11 +398,13 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 				}
 				transportLogger(t.logger).Error("streamevents: subscription ended with a transport error",
 					"transport", "local-ipc", "error", err)
+				reason.record(err)
 				return
 			}
 			env := msg
 			if rpcErr := env.GetError(); rpcErr != nil {
 				logEndingStreamError(transportLogger(t.logger), "local-ipc", rpcErr)
+				reason.record(channelwire.ErrorOf(rpcErr))
 				return
 			}
 			if len(env.GetPayload()) == 0 {
@@ -373,6 +428,7 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		cancel()
 	}()
 	return &localIPCHandle{
+		endReason:   reason,
 		client:      t.client,
 		clientReqID: clientReqID,
 		parentCtx:   parentCtx,

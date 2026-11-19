@@ -25,8 +25,19 @@ import (
 // matters, and a "key: value" view prints the whole id, as `docker ps` and
 // `docker inspect` do.
 
-// shortIDLength is the number of characters that a short id column prints.
+// shortIDLength is the number of characters that a short id prints.
 const shortIDLength = 8
+
+// ShortID returns the first shortIDLength characters of id, or id when it is
+// shorter: the form that a table prints an id in. A command that names an
+// object in a line of text uses it too, so one id reads the same in a table
+// and in that line. The cut counts characters, not bytes.
+func ShortID(id string) string {
+	if utf8.RuneCountInString(id) <= shortIDLength {
+		return id
+	}
+	return string([]rune(id)[:shortIDLength])
+}
 
 // maxCellRunes caps one table cell, so that a long title cannot push the
 // other columns off the screen. The "key: value" view prints the whole value.
@@ -518,8 +529,8 @@ func cellValue(row node, c column) string {
 			continue
 		}
 		value := sanitizeCell(inlineValue(f.value))
-		if c.short && utf8.RuneCountInString(value) > shortIDLength {
-			value = string([]rune(value)[:shortIDLength])
+		if c.short {
+			value = ShortID(value)
 		}
 		return truncateCell(value)
 	}

@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"io"
-	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -61,28 +59,48 @@ func newTerminalCommand() *cobra.Command {
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "send <terminal> [text]",
-			Short:   "Type text into a terminal, as it is, with no Enter added",
+			Short:   "Type text into a terminal and press keys, with no Enter added",
 			Mutates: true,
-			Long: `Type text into a terminal. The bytes reach the shell as they are: add "\n" to
-press Enter. The text is the second argument, "-" to read it from stdin, or
---file. A text that starts with "-" needs "--" before it.`,
+			Long:    terminalSendLong(),
 			Examples: []cli.Example{
 				{Command: `leapmux control terminal send 4cbb3f34 $'make test\n'`},
+				{Comment: "Stop the program in the foreground.", Command: "leapmux control terminal send 4cbb3f34 --key ctrl-c"},
+				{Comment: "Choose the second entry of a menu.", Command: "leapmux control terminal send 4cbb3f34 --key down --key enter"},
+				{Comment: "Paste a file into the program, as the browser pastes it.", Command: "leapmux control terminal send 4cbb3f34 --paste --file snippet.py"},
 				{Comment: "Type the bytes of a file, such as escape sequences.", Command: "leapmux control terminal send 4cbb3f34 --file keys.bin"},
 			},
-			Flags: func(fs *pflag.FlagSet) {
-				fs.String("file", "", `read the bytes from this file ("-" reads stdin)`)
-			},
+			Flags:    addTerminalSendFlags,
 			Complete: completeTargets,
 			Run:      runTerminalSend,
 		}),
 		cli.NewLeaf(cli.Leaf{
+			Use:     "run <terminal> <command>",
+			Short:   "Run a command in a terminal: paste the command line and press Enter",
+			Mutates: true,
+			Long:    terminalRunLong,
+			Args: map[string]string{
+				"command": `The command line, or "-" to read it from standard input.`,
+			},
+			Examples: []cli.Example{
+				{Command: "leapmux control terminal run 4cbb3f34 'make test'"},
+				{Comment: "Run the command line that stdin holds.", Command: "echo 'go test ./...' | leapmux control terminal run 4cbb3f34 -"},
+			},
+			Complete: completeTargets,
+			Run:      runTerminalRun,
+		}),
+		cli.NewLeaf(cli.Leaf{
 			Use:   "read [terminal]",
-			Short: "Print what a terminal shows (default: this terminal)",
-			Long: `Print the bytes that a terminal retains, with their escape sequences, so that
-"less -R" shows them as the terminal does.`,
+			Short: "Print what a terminal shows, as text (default: this terminal)",
+			Long:  terminalReadLong,
 			Examples: []cli.Example{
 				{Command: "leapmux control terminal read 4cbb3f34"},
+				{Comment: "Print the last 200 lines, the scrollback included.", Command: "leapmux control terminal read 4cbb3f34 --scrollback --lines 200"},
+				{Comment: "Page through the retained bytes with their colors.", Command: "leapmux control terminal read 4cbb3f34 --raw | less -R"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Int("lines", 0, "print only the last N lines")
+				fs.Bool("scrollback", false, "also print the lines above the screen")
+				fs.Bool("raw", false, "print the retained bytes as they are, with their escape sequences")
 			},
 			Complete: completeTargets,
 			Run:      runTerminalRead,
@@ -215,108 +233,6 @@ func runTerminalGet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	return terminalRowOf(info), nil
-}
-
-// rawScreen is a terminal's retained bytes. Its text form writes the bytes
-// as they are, so the escape sequences render in a terminal. JSON carries
-// them as a string.
-type rawScreen struct {
-	ID              string `json:"id"`
-	Cols            uint32 `json:"cols"`
-	Rows            uint32 `json:"rows"`
-	ScreenEndOffset int64  `json:"screen_end_offset"`
-	Screen          string `json:"screen"`
-}
-
-func (r rawScreen) RenderText(w io.Writer) error {
-	_, err := io.WriteString(w, r.Screen)
-	return err
-}
-
-func runTerminalRead(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	got, err := s.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return nil, err
-	}
-	info, err := s.terminalInfo(got)
-	if err != nil {
-		return nil, err
-	}
-	return rawScreen{ID: info.GetTerminalId(), Cols: info.GetCols(), Rows: info.GetRows(), ScreenEndOffset: info.GetScreenEndOffset(), Screen: string(info.GetScreen())}, nil
-}
-
-// terminalSendResult is the result of `terminal send`.
-type terminalSendResult struct {
-	ID        string `json:"id"`
-	BytesSent int    `json:"bytes_sent"`
-}
-
-// runTerminalSend writes bytes to a terminal's PTY. The text reaches the
-// shell as it is; an empty one is refused, so a script cannot silently send
-// nothing.
-func runTerminalSend(inv *cli.Invocation) (any, error) {
-	text, err := inputBytes(inv, "text")
-	if err != nil {
-		return nil, err
-	}
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	got, err := s.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
-		return nil, err
-	}
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{TerminalId: got.ID, Data: text}, nil); err != nil {
-		return nil, err
-	}
-	return terminalSendResult{ID: got.ID, BytesSent: len(text)}, nil
-}
-
-// inputBytes is inputText for bytes that reach a PTY as they are: it keeps
-// whitespace, and refuses only an empty input.
-func inputBytes(inv *cli.Invocation, argName string) ([]byte, error) {
-	hasArg := inv.HasArg(argName)
-	var data []byte
-	switch {
-	case inv.Changed("file") && hasArg:
-		return nil, cli.Usagef("give the text as an argument or with --file, not both")
-	case inv.Changed("file"):
-		path := stringFlag(inv, "file")
-		var err error
-		if path == "-" {
-			data, err = io.ReadAll(inv.Stdin)
-		} else {
-			data, err = os.ReadFile(path)
-		}
-		if err != nil {
-			return nil, cli.Wrap(cli.CodeUsage, err, "read --file")
-		}
-	case !hasArg:
-		return nil, cli.Usagef("missing <%s>", argName).
-			WithHint(`give it as an argument, as "-" to read stdin, or with --file`)
-	case inv.Arg(argName) == "-":
-		var err error
-		data, err = io.ReadAll(inv.Stdin)
-		if err != nil {
-			return nil, cli.Wrap(cli.CodeInternal, err, "read stdin")
-		}
-	default:
-		data = []byte(inv.Arg(argName))
-	}
-	if len(data) == 0 {
-		return nil, cli.Usagef("the text is empty")
-	}
-	return data, nil
 }
 
 // terminalSizeResult is the result of `terminal resize` and `terminal

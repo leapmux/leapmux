@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -305,8 +306,10 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 	}()
 }
 
-// SendInput routes input to a terminal.
-func (m *Manager) SendInput(terminalID string, data []byte) error {
+// SendInput encodes in for the modes that the program in the terminal enabled,
+// and writes the result to the PTY in one write. Input that another client
+// sends therefore cannot arrive between the text and the keys of in.
+func (m *Manager) SendInput(terminalID string, in terminput.Input) error {
 	m.mu.RLock()
 	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
@@ -318,7 +321,7 @@ func (m *Manager) SendInput(terminalID string, data []byte) error {
 		return fmt.Errorf("terminal exited: %s", terminalID)
 	}
 
-	return t.SendInput(data)
+	return t.SendInput(in.Encode(t.screenBuf.InputModes()))
 }
 
 // Resize changes a terminal's dimensions.

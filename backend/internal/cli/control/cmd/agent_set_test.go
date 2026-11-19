@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,6 +131,16 @@ func TestBuildAgentSetOptions_ModelAloneSendsNoOtherAxis(t *testing.T) {
 	opts, err := buildAgentSetOptions("sonnet", "", "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{optionids.Model: "sonnet"}, opts)
+}
+
+// An empty --option, such as an unset variable in a script, is a usage error
+// before the command sends anything. It never vanishes, which would apply the
+// other flags alone and report success.
+func TestAgentSet_RefusesAnEmptyOption(t *testing.T) {
+	clearRemoteEnv(t)
+	f := runControl(t, "agent", "set", fullTestID("ag-1"), "--model", "sonnet", "--option", "", "--hub", "https://stub.invalid").
+		requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, `expected key=value, got ""`)
 }
 
 // TestBuildAgentSetOptions_RejectsDuplicateKey is the [G5] guard: a key set both by a dedicated

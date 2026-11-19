@@ -189,6 +189,26 @@ func (inv *Invocation) Changed(name string) bool {
 	return f != nil && f.Changed
 }
 
+// StringArray returns each value of the repeated flag name, exactly as the
+// command line gave it, or an empty list when it gave none. The flag must be
+// a StringArray flag.
+//
+// pflag's GetStringArray is impossible here: it reads the values back from
+// their CSV form, which states one empty value as "[]", so `--x ""` would
+// come back as no value at all, and a script whose variable is unset would
+// run as if it had omitted the flag instead of failing.
+func (inv *Invocation) StringArray(name string) []string {
+	flag := inv.Command.Flags().Lookup(name)
+	if flag == nil {
+		panic(fmt.Sprintf("cli: %s declares no flag %q", inv.Command.CommandPath(), name))
+	}
+	values, ok := flag.Value.(pflag.SliceValue)
+	if !ok {
+		panic(fmt.Sprintf("cli: flag %q of %s is not a list", name, inv.Command.CommandPath()))
+	}
+	return append([]string{}, values.GetSlice()...)
+}
+
 // NewLeaf builds the cobra command for l.
 func NewLeaf(l Leaf) *cobra.Command {
 	specs := ParseArgSpecs(l.Use)

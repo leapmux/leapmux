@@ -206,60 +206,6 @@ func TestInstallSymlink_BundledMissing(t *testing.T) {
 	assert.Equal(t, desktoppb.CliInstallSymlinkResponse_RESULT_IO_ERROR, resp.Result)
 }
 
-func TestResolveBundledCli_ProductionLayout(t *testing.T) {
-	t.Parallel()
-	// Simulate Contents/MacOS/ — sidecar and leapmux as direct siblings.
-	dir := t.TempDir()
-	exe := writeExec(t, dir, "leapmux-desktop-service-aarch64-apple-darwin", []byte("svc"), 0o755)
-	cli := writeExec(t, dir, "leapmux", []byte("cli"), 0o755)
-
-	assert.Equal(t, cli, resolveBundledCli(exe))
-}
-
-func TestResolveBundledCli_DevLayoutClimbsFourLevels(t *testing.T) {
-	t.Parallel()
-	// Simulate <repo>/desktop/go/bin/leapmux-desktop-service-...; the CLI is
-	// at <repo>/leapmux. The sidecar dir has no sibling leapmux, so the
-	// dev fallback should kick in and find the repo-root binary.
-	root := t.TempDir()
-	binDir := filepath.Join(root, "desktop", "go", "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0o755))
-	exe := writeExec(t, binDir, "leapmux-desktop-service-aarch64-apple-darwin", []byte("svc"), 0o755)
-	cli := writeExec(t, root, "leapmux", []byte("cli"), 0o755)
-
-	assert.Equal(t, cli, resolveBundledCli(exe))
-}
-
-func TestResolveBundledCli_DevLayoutBundledTakesPriority(t *testing.T) {
-	t.Parallel()
-	// If both the sibling and a 4-up candidate happen to exist (paranoid
-	// test for someone with a stray ~/leapmux file installing the app at
-	// ~/Apps/X.app), the sibling wins — that's the canonical production
-	// path and the dev fallback must not steal it.
-	root := t.TempDir()
-	binDir := filepath.Join(root, "Contents", "MacOS", "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0o755))
-	exe := writeExec(t, binDir, "leapmux-desktop-service-aarch64-apple-darwin", []byte("svc"), 0o755)
-	sibling := writeExec(t, binDir, "leapmux", []byte("canonical"), 0o755)
-	_ = writeExec(t, root, "leapmux", []byte("decoy"), 0o755)
-
-	assert.Equal(t, sibling, resolveBundledCli(exe))
-}
-
-func TestResolveBundledCli_NoneFound(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	exe := writeExec(t, dir, "leapmux-desktop-service-aarch64-apple-darwin", []byte("svc"), 0o755)
-	assert.Empty(t, resolveBundledCli(exe))
-}
-
-func TestResolveBundledCli_ShallowExeDoesNotCrash(t *testing.T) {
-	t.Parallel()
-	// Synthesize an exe path whose parent chain bottoms out before 4 hops
-	// — parentN must return "" without filepath.Dir spinning at the root.
-	assert.Empty(t, resolveBundledCli("/leapmux-desktop-service"))
-}
-
 func TestInspectTargetKind(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -40,12 +40,12 @@ func runLayoutWatch(inv *cli.Invocation) (any, error) {
 		workspaceIDs = []string{ws.ID}
 	}
 	if s.c.IsWorkerIPC() {
-		return nil, runEventsLocal(s.ctx, s.c, workspaceIDs, inv.Printer)
+		return nil, runLayoutWatchLocal(s.ctx, s.c, workspaceIDs, inv.Printer)
 	}
-	return nil, runEventsHub(s.ctx, s.c, workspaceIDs, inv.Printer)
+	return nil, runLayoutWatchHub(s.ctx, s.c, workspaceIDs, inv.Printer)
 }
 
-func runEventsHub(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
+func runLayoutWatchHub(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
 	stream, err := c.OpenUserEvents(ctx, workspaceIDs)
 	if err != nil {
 		return err
@@ -65,7 +65,7 @@ func runEventsHub(ctx context.Context, c *control.Client, workspaceIDs []string,
 	}
 }
 
-func runEventsLocal(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
+func runLayoutWatchLocal(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
 	err := streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 		return false, p.Event(eventToJSON(evt))
 	})
