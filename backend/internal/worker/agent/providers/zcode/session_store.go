@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 const (
@@ -31,22 +31,18 @@ type zcodeStoragePathQuery interface {
 	DatabasePath(context.Context, agent.StoredSessionQuery) (string, error)
 }
 
-type zcodeStorageCommand struct {
-	command   *exec.Cmd
-	delimiter string
-}
-
 type zcodeNativeStorageQuery struct {
-	command func(context.Context, agent.StoredSessionQuery) (zcodeStorageCommand, error)
+	command func(context.Context, agent.StoredSessionQuery) (*launch.PreparedLaunch, error)
+	clock   quartz.Clock
 }
 
 // newZCodeStorageQuery reads native config through the official preparation command.
 // A reuse acknowledgement prevents the command from opening or changing the database.
 func newZCodeStorageQuery(resolved *launch.Spec) zcodeNativeStorageQuery {
-	return zcodeNativeStorageQuery{command: func(ctx context.Context, q agent.StoredSessionQuery) (zcodeStorageCommand, error) {
+	return zcodeNativeStorageQuery{command: func(ctx context.Context, q agent.StoredSessionQuery) (*launch.PreparedLaunch, error) {
 		environment := q.Environ()
 		if environment == nil {
-			return zcodeStorageCommand{}, errors.New("the ZCode storage query requires an ordered environment")
+			return nil, errors.New("the ZCode storage query requires an ordered environment")
 		}
 		shell := q.Shell
 		if shell == "" {
@@ -57,23 +53,20 @@ func newZCodeStorageQuery(resolved *launch.Spec) zcodeNativeStorageQuery {
 			locator := Registration().Locator
 			if q.RuntimeLocator != nil {
 				if !q.RuntimeLocator.Valid() {
-					return zcodeStorageCommand{}, errors.New("the ZCode storage query has an invalid runtime locator")
+					return nil, errors.New("the ZCode storage query has an invalid runtime locator")
 				}
 				locator = *q.RuntimeLocator
 			}
 			var err error
 			spec, err = locator.Resolve(ctx, shell, q.LoginShell, "ZCode")
 			if err != nil {
-				return zcodeStorageCommand{}, err
+				return nil, err
 			}
 		} else {
 			spec = *resolved
 		}
-
-		// A running process supplies its finalized environment, including launch
-		// requirements and ExtraEnv overrides. Reapplying locator defaults would
-		// replace those confirmed values. Discovery without a snapshot still needs
-		// the locator requirements and the query's explicit home.
+		// A running process supplies its finalized environment. Discovery
+		// without a snapshot still needs the locator defaults and the query home.
 		if q.EnvEntries == nil {
 			if q.HomeDir != "" {
 				environment = append(environment, "HOME="+q.HomeDir, "USERPROFILE="+q.HomeDir)
@@ -81,11 +74,10 @@ func newZCodeStorageQuery(resolved *launch.Spec) zcodeNativeStorageQuery {
 		} else {
 			spec.Env = nil
 		}
-		cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
+		return launch.Wrap(ctx, launch.WrapSpec{
 			Shell: shell, LoginShell: q.LoginShell, Launch: spec,
 			BaseArgs: []string{"app-server", "--stdio", "--prepare-storage"}, WorkingDir: q.WorkingDir, Environment: environment,
 		})
-		return zcodeStorageCommand{command: cmd, delimiter: delimiter}, nil
 	}}
 }
 
@@ -99,50 +91,91 @@ func (q zcodeNativeStorageQuery) DatabasePath(ctx context.Context, query agent.S
 	if err != nil {
 		return "", err
 	}
-	if run.command == nil {
-		return "", errors.New("the ZCode storage query has no command")
-	}
-	cmd := run.command
-	stdin, err := cmd.StdinPipe()
+	pipes, err := providerkit.SetupLaunchPipes(run, cancel)
 	if err != nil {
 		return "", err
 	}
-	defer func() { resultErr = errors.Join(resultErr, closeZCodeStoragePipe(stdin)) }()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
+	clock := q.clock
+	if clock == nil {
+		clock = quartz.NewReal()
 	}
-	defer func() { resultErr = errors.Join(resultErr, closeZCodeStoragePipe(stdout)) }()
-	var stderr providerkit.LimitedBuffer
-	stderr.Limit = 64 << 10
-	cmd.Stderr = &stderr
-	owner := procutil.PrepareProcess(cmd)
-	if err := owner.Start(); err != nil {
-		return "", errors.Join(err, owner.Close())
+	if err := pipes.Start(clock); err != nil {
+		return "", errors.Join(err, pipes.Close())
 	}
-	waited := false
+	diagnostics := run.NewDiagnostics(64 << 10)
+	stderrDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(diagnostics, pipes.Stderr())
+		diagnostics.Finish()
+		stderrDone <- err
+	}()
+	closed := false
 	defer func() {
-		if !waited {
-			cancel()
+		if !closed {
+			resultErr = errors.Join(resultErr, pipes.Close())
 		}
-		cleanupErr := owner.Close()
-		if !waited {
-			cleanupErr = errors.Join(cleanupErr, owner.Wait())
-		}
-		resultErr = errors.Join(resultErr, cleanupErr)
 		if resultErr != nil {
 			path = ""
 		}
 	}()
-	limited := &io.LimitedReader{R: stdout, N: zcodeStorageQueryOutput + 1}
-	scanner := agent.NewStdoutScanner(limited)
-	preamble := run.delimiter != ""
-	prepared := false
-	for scanner.Scan() {
+
+	response, readErr := readZCodeStorageResponse(ctx, pipes, run.Delimiter)
+	var cleanupErr error
+	if readErr != nil && !pipes.NativeExitObserved() {
+		// A live process can be blocked writing to stdout after a local
+		// parse or size failure. Stop it before waiting for its status.
+		cancel()
+		cleanupErr = pipes.Close()
+		closed = true
+	}
+	nativeErr := pipes.Wait()
+	stderrErr := <-stderrDone
+	launchErr := diagnostics.ExitError(nativeErr, response.ready)
+	if launchErr != nil {
+		launchErr = fmt.Errorf("the ZCode storage query failed: %w: %s", launchErr, strings.TrimSpace(diagnostics.String()))
+	}
+	if errors.Is(launchErr, launch.ErrNoCandidate) {
+		return "", errors.Join(launchErr, cleanupErr)
+	}
+	if readErr == nil && (!response.ready || !response.acknowledged) {
+		readErr = errors.New("the ZCode storage query ended without a complete acknowledgement")
+	}
+	if providerkit.DrainLimitReached(stderrErr) || closed && errors.Is(stderrErr, os.ErrClosed) {
+		stderrErr = nil
+	} else if stderrErr != nil {
+		stderrErr = fmt.Errorf("read the ZCode storage diagnostic: %w", stderrErr)
+	}
+	return response.path, errors.Join(readErr, launchErr, stderrErr, cleanupErr)
+}
+
+type zcodeStorageResponse struct {
+	path         string
+	ready        bool
+	acknowledged bool
+}
+
+func readZCodeStorageResponse(ctx context.Context, pipes *providerkit.ProcessPipes, delimiter string) (zcodeStorageResponse, error) {
+	limited := &io.LimitedReader{R: pipes.Stdout(), N: zcodeStorageQueryOutput + 1}
+	scanner := agent.NewLaunchStdoutScanner(limited, delimiter)
+	response := zcodeStorageResponse{ready: delimiter == ""}
+	for {
+		hasLine := scanner.Scan()
+		if err := scanner.Err(); err != nil {
+			// The process owner closes stdout after the native exit if a
+			// descendant still holds the pipe. Keep that exit and discard any
+			// partial record that the scanner returns with the close error.
+			return response, fmt.Errorf("read the ZCode storage query: %w", err)
+		}
+		if limited.N == 0 {
+			return response, errors.New("the ZCode storage query exceeds the output limit")
+		}
+		if !hasLine {
+			return response, nil
+		}
 		line := scanner.Bytes()
-		if preamble {
-			if string(line) == run.delimiter {
-				preamble = false
+		if !response.ready {
+			if string(line) == delimiter {
+				response.ready = true
 			}
 			continue
 		}
@@ -151,61 +184,38 @@ func (q zcodeNativeStorageQuery) DatabasePath(ctx context.Context, query agent.S
 			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(line, &record) != nil {
-			return "", errors.New("the ZCode storage query returned invalid JSON")
+			return response, errors.New("the ZCode storage query returned invalid JSON")
 		}
 		switch record.Method {
 		case zcodeStoragePathMethod:
 			var fields map[string]json.RawMessage
 			var nativePath string
-			if path != "" || prepared || json.Unmarshal(record.Params, &fields) != nil || len(fields) != 1 ||
+			if response.path != "" || response.acknowledged || json.Unmarshal(record.Params, &fields) != nil || len(fields) != 1 ||
 				json.Unmarshal(fields["path"], &nativePath) != nil || !validZCodeStoragePath(nativePath) {
-				return "", errors.New("the ZCode storage query returned an invalid or repeated path")
+				return response, errors.New("the ZCode storage query returned an invalid or repeated path")
 			}
-			path = nativePath
-			if err := owner.Capture(ctx); err != nil {
-				return "", err
+			response.path = nativePath
+			if err := pipes.Capture(ctx); err != nil {
+				return response, err
 			}
-			if err := json.NewEncoder(stdin).Encode(struct {
+			if err := json.NewEncoder(pipes.Stdin()).Encode(struct {
 				Method string `json:"method"`
 				Reuse  bool   `json:"reuse"`
 			}{Method: zcodeStorageReadyMethod, Reuse: true}); err != nil {
-				return "", err
+				return response, err
 			}
 		case zcodeStoragePreparedMethod:
 			var fields map[string]json.RawMessage
-			if path == "" || prepared || json.Unmarshal(record.Params, &fields) != nil || fields == nil || len(fields) != 0 {
-				return "", errors.New("the ZCode storage acknowledgement has no unique preceding path")
+			if response.path == "" || response.acknowledged || json.Unmarshal(record.Params, &fields) != nil || fields == nil || len(fields) != 0 {
+				return response, errors.New("the ZCode storage acknowledgement has no unique preceding path")
 			}
-			prepared = true
+			response.acknowledged = true
 		default:
-			return "", errors.New("the ZCode storage query returned an unexpected record")
+			return response, errors.New("the ZCode storage query returned an unexpected record")
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("read the ZCode storage query: %w", err)
-	}
-	if limited.N == 0 {
-		return "", errors.New("the ZCode storage query exceeds the output limit")
-	}
-	if preamble || path == "" || !prepared {
-		return "", errors.New("the ZCode storage query ended without a complete acknowledgement")
-	}
-	err = owner.Wait()
-	waited = true
-	if err != nil {
-		return "", fmt.Errorf("the ZCode storage query failed: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return path, nil
 }
 
 func validZCodeStoragePath(path string) bool {
 	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path && !strings.ContainsRune(path, '\x00')
-}
-
-func closeZCodeStoragePipe(pipe io.Closer) error {
-	err := pipe.Close()
-	if errors.Is(err, os.ErrClosed) {
-		return nil
-	}
-	return err
 }

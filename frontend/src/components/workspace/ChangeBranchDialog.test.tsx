@@ -46,6 +46,9 @@ vi.mock('~/api/workerRpc', () => ({
   },
   workerAgent: {
     openAgent: vi.fn(),
+    listAvailableProviders: vi.fn(async () => ({
+      providers: [AgentProvider.CLAUDE_CODE],
+    })),
   },
 }))
 
@@ -91,7 +94,6 @@ function renderDialog(overrides?: Partial<Parameters<typeof ChangeBranchDialog>[
     gitToplevel: '/repo',
     branchName: 'main',
     isWorktree: false,
-    availableProviders: [AgentProvider.CLAUDE_CODE],
     onClose: vi.fn(),
     onBranchChanged: vi.fn(),
     createAgent: vi.fn(async (input: Parameters<Parameters<typeof ChangeBranchDialog>[0]['createAgent']>[0]) => {
@@ -433,7 +435,9 @@ describe('ChangeBranchDialog', () => {
       target: { value: 'wt-feature' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect(apply).toBeEnabled())
+    fireEvent.click(apply)
     await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledTimes(1))
     expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[0]).toBe('w1')
     expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1]).toMatchObject({
@@ -803,7 +807,9 @@ describe('ChangeBranchDialog title', () => {
       target: { value: '  Auth   fix  ' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    const apply = screen.getByRole('button', { name: 'Apply' })
+    await waitFor(() => expect(apply).toBeEnabled())
+    fireEvent.click(apply)
     await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledTimes(1))
     expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1]).toMatchObject({ title: 'Auth fix' })
   })

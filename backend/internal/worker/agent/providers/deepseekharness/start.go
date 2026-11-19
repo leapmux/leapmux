@@ -44,15 +44,20 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, errors.Join(err, directory.Close())
 	}
 	pinnedEnv := []string{"TMPDIR=" + imageReceipts.Temporary, "TMP=" + imageReceipts.Temporary, "TEMP=" + imageReceipts.Temporary}
-	cmd, delimiter, meta := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: []string{"--profile", "web", "--patch", imageReceipts.Overlay, "--patch", autoReviewOverlay, "--host", "127.0.0.1", "--port", "0", "--no-open"}, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: []string{"--profile", "web", "--patch", imageReceipts.Overlay, "--patch", autoReviewOverlay, "--host", "127.0.0.1", "--port", "0", "--no-open"}, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, directory.Close())
+	}
+	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinnedEnv...)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, errors.Join(err, directory.Close())
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	a := newAgent(agent.NewModelProgressResetSink(sink), opts.WorkingDir)
-	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "dsh", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: meta}, pipes, ctx, cancel)
+	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "dsh", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)
 	a.directory = directory
 	a.imageReceipts = imageReceipts
 	a.sink = agent.NewModelProgressResetSink(newToolTranscript(ctx, sink, a))
@@ -62,7 +67,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.DrainStderr(stderr)
 	listen := providerkit.NewListenWaiter(nativeListenPattern)
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		listen.Observe(line)
 		if !nativeListenPattern.Match(line) {
 			slog.Debug("DeepSeek Harness stdout", "agent_id", a.AgentID(), "line", string(line))

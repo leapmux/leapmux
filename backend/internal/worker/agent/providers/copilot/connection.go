@@ -8,6 +8,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -46,6 +47,10 @@ const copilotAutoUpdateEnv = "COPILOT_AUTO_UPDATE=false"
 //
 // verifyNativeProtocol completes the startup. Keep the three calls in that order.
 func startCopilotConnection(parent context.Context, opts agent.Options) (*copilotConnection, error) {
+	return startCopilotConnectionWithClock(parent, opts, nil)
+}
+
+func startCopilotConnectionWithClock(parent context.Context, opts agent.Options, clock quartz.Clock) (*copilotConnection, error) {
 	ctx, cancel := context.WithCancel(parent)
 	registration := Registration()
 	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
@@ -53,19 +58,25 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		cancel()
 		return nil, err
 	}
-	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: launchSpec, WorkingDir: opts.WorkingDir,
 		BaseArgs: []string{"--server", "--stdio", "--sync-session=off"},
 		SetEnv:   []string{copilotAutoUpdateEnv},
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	connection := &copilotConnection{JSONRPCProcess: providerkit.JSONRPCProcess{
-		Process:      providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "copilot", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix}, pipes, ctx, cancel),
+		Process:      providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "copilot", ShutdownGrace: registration.ShutdownGrace, Clock: clock}, pipes, ctx, cancel),
 		FrameMessage: frameCopilotJSON,
 	}}
 	if err := connection.StartCmd(); err != nil {
@@ -75,7 +86,7 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 		return nil, err
 	}
 	connection.DrainStderr(stderr)
-	connection.pendingScanner = newCopilotScanner(stdout, delimiter, agent.ConfiguredMaxMessageSize())
+	connection.pendingScanner = newCopilotScanner(stdout, prepared.Delimiter, agent.ConfiguredMaxMessageSize())
 	return connection, nil
 }
 

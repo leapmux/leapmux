@@ -105,6 +105,22 @@ tasks:
       - mkdir -p .tmp
       - cd backend && go build -o ../.tmp/leapmux-dependency-imports{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux-dependency-imports
 
+  build-test-tar-reader:
+    internal: true
+    desc: Build the independent tar reader before starting the archive tests
+    env:
+      GOENV: 'off'
+      GOWORK: 'off'
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: '0'
+    cmds:
+      - mkdir -p .tmp
+      - >-
+        GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)"
+        go build -o .tmp/leapmux-test-tar-reader{{if eq OS "windows"}}.exe{{end}}
+        ./scripts/test-support/tar-reader.go
+
   prepare-renovate:
     desc: Prepare trusted dependency rules and import-file filters
     cmds:
@@ -1174,6 +1190,7 @@ tasks:
     cmds:
       - task: install-renovate
       - task: build-dependency-imports
+      - task: build-test-tar-reader
       - node scripts/run-bun-tests.mjs scripts --timeout 30000 {{.CLI_ARGS | default "./scripts/ ./desktop/rust/scripts/"}}
 
   test-frontend:
@@ -1284,6 +1301,7 @@ tasks:
   test-ci-results:
     desc: Test report capture and compressed archives on the native filesystem and process APIs
     cmds:
+      - task: build-test-tar-reader
       - node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs ./scripts/test-results-tar.test.mjs ./scripts/test-support/tar-reader.test.mjs
 
   test-native-linux:

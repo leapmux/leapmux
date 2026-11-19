@@ -28,7 +28,7 @@ func (a *Agent) Stop() {
 	a.clearPiQuestionStateLocked()
 	a.Mu.Unlock()
 	var abortDone <-chan struct{}
-	if !stopped && turnActive {
+	if !stopped && turnActive && a.IntentionalStopRequested() {
 		abortDone = a.requestPiShutdownAbort()
 	}
 	a.Process.Stop()
@@ -36,8 +36,9 @@ func (a *Agent) Stop() {
 		<-abortDone
 	}
 	a.interruptOutput.waitForDrain()
-	a.flushPiGeneration(agent.MessageCompletionInterrupted)
-	a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
+	completion := a.ProcessExitCompletion()
+	a.flushPiGeneration(completion)
+	a.persistIncompletePiTools(completion)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	a.sink.ReportProgress(agent.ResetProgress())
 }

@@ -30,7 +30,7 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve, win32 } from 'node:path'
 import process from 'node:process'
 import { parseArgs } from 'node:util'
 import { rootActivePath } from './cache-policy.mjs'
@@ -326,37 +326,28 @@ function runOrFail(run, command, args, options = {}) {
 }
 
 /** Extract one downloaded archive into an empty directory. */
-export function extractArchive(archive, destination, { os, run = spawnSync } = {}) {
+export function extractArchive(archive, destination, {
+  os,
+  run = spawnSync,
+  systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT,
+} = {}) {
   mkdirSync(destination, { recursive: true })
   const kind = archiveKindOf(archive)
   if (kind === 'tar.gz') {
     runOrFail(run, 'tar', ['-xzf', archive, '-C', destination])
     return
   }
-  if (kind === 'zip') {
-    if (os === 'Windows') {
-      // Windows itself has no unzip command; only Git for Windows adds one.
-      // PowerShell's Expand-Archive is built in. The paths travel in the
-      // environment, so a quote in a path cannot end the command's string.
-      runOrFail(run, 'powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        'Expand-Archive -LiteralPath $env:LEAPMUX_EXTRACT_ARCHIVE -DestinationPath $env:LEAPMUX_EXTRACT_DESTINATION -Force',
-      ], {
-        env: {
-          ...process.env,
-          LEAPMUX_EXTRACT_ARCHIVE: archive,
-          LEAPMUX_EXTRACT_DESTINATION: destination,
-        },
-      })
-    }
-    else {
-      runOrFail(run, 'unzip', ['-q', '-o', archive, '-d', destination])
-    }
+  if (kind !== 'zip')
+    throw new Error(`No extraction rule for ${basename(archive)}.`)
+  if (os === 'Windows') {
+    // Windows ships bsdtar with ZIP support. Git Bash can put GNU tar
+    // first on PATH, so invoke the system executable by its full path.
+    if (!systemRoot || !win32.isAbsolute(systemRoot))
+      throw new Error('Windows ZIP extraction requires an absolute SystemRoot.')
+    runOrFail(run, win32.join(systemRoot, 'System32', 'tar.exe'), ['-xf', archive, '-C', destination])
     return
   }
-  throw new Error(`No extraction rule for ${basename(archive)}.`)
+  runOrFail(run, 'unzip', ['-q', '-o', archive, '-d', destination])
 }
 
 /** The single file whose basename is `binName` anywhere under an extracted tree. */

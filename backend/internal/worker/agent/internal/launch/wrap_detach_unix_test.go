@@ -19,7 +19,7 @@ import (
 func TestBuildShellWrappedCommandStartsANewSession(t *testing.T) {
 	for _, loginShell := range []bool{true, false} {
 		t.Run("loginShell="+strconv.FormatBool(loginShell), func(t *testing.T) {
-			cmd, _, _ := Wrap(context.Background(), WrapSpec{
+			cmd, _, _ := wrapTestCommand(t, context.Background(), WrapSpec{
 				Shell:      "/bin/bash",
 				LoginShell: loginShell,
 				Launch:     Spec{Program: "claude"},
@@ -32,7 +32,7 @@ func TestBuildShellWrappedCommandStartsANewSession(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommandTcshLoginUsesIc(t *testing.T) {
-	cmd, _, _ := Wrap(context.Background(), WrapSpec{
+	cmd, _, _ := wrapTestCommand(t, context.Background(), WrapSpec{
 		Shell:      "/bin/tcsh",
 		LoginShell: true,
 		Launch:     Spec{Program: "claude"},
@@ -47,9 +47,13 @@ func TestProbeBinaryRunsTheShellInItsOwnSession(t *testing.T) {
 		t.Run("loginShell="+strconv.FormatBool(loginShell), func(t *testing.T) {
 			stub, sidFile := writeSessionRecordingStub(t)
 			t.Setenv("LEAPMUX_SID_FILE", sidFile)
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+			const present = "leapmux-session-probe"
+			testutil.WriteExecutable(t, filepath.Join(dir, present), "#!/bin/sh\nexit 0\n")
 
-			require.Equal(t, ProbeYes, probeBinary(context.Background(), stub, loginShell, "claude"),
-				"the stub shell runs to completion and prints the present marker")
+			require.Equal(t, ProbeYes, CheckBinary(context.Background(), stub, loginShell, present),
+				"the stub shell runs to completion and runs the actual probe")
 
 			raw, err := os.ReadFile(sidFile)
 			require.NoError(t, err, "stub must record its session id")
@@ -65,8 +69,8 @@ func TestProbeBinaryRunsTheShellInItsOwnSession(t *testing.T) {
 }
 
 // writeSessionRecordingStub writes an executable stub that records its
-// own session id to $LEAPMUX_SID_FILE and exits 0, ignoring argv.
-// probeBinary passes -i -l -c …; this stub is the process exec starts,
+// own session id to $LEAPMUX_SID_FILE and then runs the probe in that session.
+// CheckBinary passes -i -l -c …; this stub is the process exec starts,
 // so a missing Setsid still fails the session assertion.
 //
 // syscall.Getsid is not in the Linux syscall package, and GOOS=linux
@@ -79,13 +83,13 @@ func writeSessionRecordingStub(t *testing.T) (bin, sidFile string) {
 	bin = filepath.Join(dir, "shell")
 	script := `#!/bin/sh
 if [ -r /proc/self/stat ]; then
-	sid=$(sed 's/.*) //' /proc/self/stat | awk '{print $4}')
+	sid=$(/usr/bin/sed 's/.*) //' /proc/self/stat | /usr/bin/awk '{print $4}')
 else
-	sid=$(ps -p $$ -o sess=)
+	sid=$(/bin/ps -p $$ -o sess=)
 fi
 printf '%s\n' "$sid" > "$LEAPMUX_SID_FILE"
-printf '%s\n' '` + probeReachedPresent + `'
-exit 0
+for command do :; done
+exec /bin/sh -c "$command"
 `
 	testutil.WriteExecutable(t, bin, script)
 	return bin, sidFile

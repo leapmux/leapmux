@@ -1427,7 +1427,12 @@ func (b *Base) Stop() {
 	b.sessionUpdates.mu.Lock()
 	turn := b.detachAllRootOutput()
 	b.sessionUpdates.mu.Unlock()
-	b.finishACPTurnFor(turn, agentapi.MessageCompletionInterrupted, RootTranscriptStopped)
+	completion := b.ProcessExitCompletion()
+	reason := RootTranscriptStopped
+	if completion == agentapi.MessageCompletionError {
+		reason = RootTranscriptProcessExited
+	}
+	b.finishACPTurnFor(turn, completion, reason)
 	waitRootTargets(turn)
 	b.finishAllChildConversations()
 	b.clearActivePrompt()
@@ -1864,7 +1869,7 @@ func (b *Base) startACPHandshake(
 	b.sink = agentapi.NewModelProgressResetSink(b.sink)
 	b.beginSessionUpdates()
 
-	scanner := agentapi.NewStdoutScanner(stdout)
+	scanner := b.NewOutputScanner(stdout)
 	go b.ReadOutputLoop(scanner, b.handleOutput)
 
 	cleanup := b.stopAndWait
@@ -2007,7 +2012,12 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	if spec.RCMarkerEnvKey != "" {
 		wrap.StripEnvKeys = []string{spec.RCMarkerEnvKey}
 	}
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, wrap)
+	prepared, err := launch.Wrap(ctx, wrap)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd := prepared.Cmd
 
 	// FilterEnv removes the provider rc marker from the inherited environment.
 	// Add it again only for a login shell, so the child detects a LeapMux launch without inheriting a stale parent value.
@@ -2028,7 +2038,7 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	}
 	cmd.Env = providerkit.FinalizeAgentEnv(env, opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
@@ -2038,7 +2048,7 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	b := spec.Base(a)
 	// providerkit.NewProcess returns a fresh value.
 	// The call on the assignment's right side exempts it from copylocks, so assigning the embedded Process copies no held lock.
-	b.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: spec.ProviderName, ShutdownGrace: spec.Registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)
+	b.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: spec.ProviderName, ShutdownGrace: spec.Registration.ShutdownGrace}, pipes, ctx, cancel)
 	b.sink = sink
 	b.bind(b)
 	b.wireTurnActive()
@@ -2058,6 +2068,11 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	// A provider without static groups, such as Reasonix, has no fallback and keeps nil here.
 	b.secondaryFallback = SecondaryFallbackFrom(spec.Registration.OptionGroups, b.hooks.ModeChannel)
 
+	initParams, err := acpStandardInitParams(&b.hooks)
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, pipes.Close())
+	}
 	if err := b.StartCmd(); err != nil {
 		return nil, err
 	}
@@ -2071,10 +2086,6 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 		}
 	}()
 
-	initParams, err := acpStandardInitParams(&b.hooks)
-	if err != nil {
-		return nil, err
-	}
 	sessionCfg := spec.SessionConfig
 	if sessionCfg.NewMethod == "" {
 		sessionCfg = acpDefaultSessionConfig

@@ -41,15 +41,20 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		"TMPDIR=" + directory, "TMP=" + directory, "TEMP=" + directory,
 		"COMMANDCODE_SCRATCHPAD_BASE=" + directory, "COMMANDCODE_DISABLE_CRON=1", "COMMANDCODE_DISABLE_DURABLE_CRON=1", bridgeSecretEnv + "=" + secret,
 	}
-	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinnedEnv})
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, os.RemoveAll(directory))
+	}
+	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinnedEnv...)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(directory))
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	a := &Agent{
-		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Command Code", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix}, pipes, ctx, cancel)},
+		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Command Code", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)},
 		runtimeDir:     directory, bridgeSecret: secret, outputDone: make(chan struct{}),
 		workingDir: opts.WorkingDir, homeDir: opts.HomeDir, clock: quartz.NewReal(),
 		permissionMode: opts.PermissionMode(), tools: make(map[string]openTool), children: make(map[string]*childState),
@@ -62,7 +67,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.DrainStderr(stderr)
 	go func() {
 		defer close(a.outputDone)
-		a.ReadOutputLoop(agent.NewStdoutScanner(stdout), a.handleOutput)
+		a.ReadOutputLoop(a.NewOutputScanner(stdout), a.handleOutput)
 		a.finishStream()
 	}()
 	reply, err := a.request(methodInitialize, nil, opts.EffectiveStartupTimeout())

@@ -20,7 +20,7 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { createTitleState } from '~/hooks/createTitleState'
-import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { useWorkerAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { GitMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { formatErrorMessage } from '~/lib/errors'
@@ -30,8 +30,6 @@ interface NewAgentDialogProps {
   defaultWorkerId?: string
   defaultWorkingDir?: string
   defaultAgentProvider?: AgentProvider
-  availableProviders?: AgentProvider[]
-  onRefreshProviders?: () => void
   /**
    * When this returns a string, no tab can be placed right now (no
    * workspace, or its tree has not arrived): submit is disabled and the
@@ -67,9 +65,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   })
   const tree = createDirectoryTreeState()
 
-  const { agentProvider, setAgentProvider, recordProviderUse, noProviders } = useAgentProviderSelection(
-    () => props.availableProviders,
-  )
+  const { agentProvider, recordProviderUse, noProviders, picker } = useWorkerAgentProviderSelection(worker.workerId)
 
   const [startupChoice, setStartupChoice] = createSignal<{ provider: AgentProvider, values: Record<string, string> }>()
   const startupGroups = createMemo(() => {
@@ -189,16 +185,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       <DialogTopSection>
         <DialogTopRow>
           <WorkerSelector state={worker} />
-          <AgentProviderSelector
-            value={agentProvider}
-            onChange={setAgentProvider}
-            {...(props.availableProviders !== undefined
-              ? { availableProviders: props.availableProviders }
-              : {})}
-            {...(props.onRefreshProviders !== undefined
-              ? { onRefresh: props.onRefreshProviders }
-              : {})}
-          />
+          <AgentProviderSelector {...picker} />
         </DialogTopRow>
         <TitleInput state={title} />
         <AgentStartupOptions groups={startupGroups()} selected={startupValues()} onChange={setStartupValue} disabled={submitting.loading()} />

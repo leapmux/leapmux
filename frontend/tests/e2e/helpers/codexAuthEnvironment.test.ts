@@ -3,10 +3,12 @@ import type { AddressInfo } from 'node:net'
 import type { CodexAuthEnvironment } from './codexAuthEnvironment'
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import * as fs from 'node:fs'
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import * as http from 'node:http'
 import { createServer } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
@@ -83,6 +85,17 @@ function storedBearer(environment: CodexAuthEnvironment): string {
 /** A unique private home per case, so cases share no codex home. */
 function uniqueHomeDir(): string {
   return mkdtempSync(join(tmpdir(), `codex-auth-fixture-${randomUUID().slice(0, 8)}-`))
+}
+
+async function connectToListener(url: string): Promise<void> {
+  const { hostname, port } = new URL(url)
+  const socket = createConnection(Number(port), hostname)
+  try {
+    await once(socket, 'connect')
+  }
+  finally {
+    socket.destroy()
+  }
 }
 
 describe('withCodexAuthEnvironment', () => {
@@ -520,12 +533,11 @@ describe('withCodexAuthEnvironment', () => {
     }, async (environment) => {
       codexHome = environment.codexHome
       url = environment.url
+      await connectToListener(url)
     })
     expect(existsSync(codexHome)).toBe(false)
-    await expect(fetch(url)).rejects.toMatchObject({
-      name: 'TypeError',
-      cause: { code: 'ECONNREFUSED' },
-    })
+    // A pooled HTTP connection can reset even after the listener has closed.
+    await expect(connectToListener(url)).rejects.toMatchObject({ code: 'ECONNREFUSED' })
   })
 
   it('refuses missing and unrecognized credentials before forwarding content or catalog requests', async () => {

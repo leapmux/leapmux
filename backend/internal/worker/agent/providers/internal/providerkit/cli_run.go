@@ -5,16 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // CLIRun states one short command of a provider's CLI that the worker runs
@@ -61,7 +58,7 @@ const maxCLIStderr = 64 << 10
 
 // RunCLI runs one command and returns what it printed to stdout after the
 // shell wrapper's preamble.
-func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
+func RunCLI(ctx context.Context, run CLIRun) (output []byte, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, run.Timeout)
 	defer cancel()
 
@@ -84,7 +81,7 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 	if env == nil {
 		env = []string{}
 	}
-	cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        shell,
 		LoginShell:   run.LoginShell,
 		Launch:       spec,
@@ -94,27 +91,44 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 		WorkingDir:   workingDir,
 		Environment:  env,
 	})
-	owner := procutil.PrepareProcess(cmd)
-	var stdout, stderr LimitedBuffer
-	stdout.Limit, stderr.Limit = run.MaxOutput, maxCLIStderr
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	cmd.Stdin = nil
-	// A process that the CLI leaves behind, or that the login shell's profile
-	// started, inherits stdout and keeps the pipe open after the CLI exits. The
-	// The prepared owner sets WaitDelay, which ends this wait with ErrWaitDelay.
-	// Wait returns that error only for a successful CLI exit.
-	// The CLI's own output is complete, so the reader keeps it.
-	runErr := owner.Start()
-	if runErr == nil {
-		runErr = owner.Wait()
+	if err != nil {
+		return nil, err
 	}
-	cleanupErr := owner.Close()
-	if errors.Is(runErr, exec.ErrWaitDelay) {
-		runErr = nil
+	cmd, delimiter := prepared.Cmd, prepared.Delimiter
+	// A CLI query keeps the command's default null stdin.
+	pipes, err := setupProcessPipes(cmd, nil, nil, prepared, false)
+	if err != nil {
+		return nil, err
 	}
+	defer func() {
+		if err := prepared.Close(); err != nil {
+			output, resultErr = nil, errors.Join(resultErr, err)
+		}
+	}()
+	stdout := launch.LimitedBuffer{Limit: run.MaxOutput}
+	stderr := prepared.NewDiagnostics(maxCLIStderr)
+	// Observe the native exit without waiting for inherited writers to close.
+	// Keep the CLI's output drain limit, even when the command has exited.
+	startErr := pipes.startWithDrainLimit(realClock, cmd.WaitDelay, nil)
+	runErr := startErr
+	if startErr == nil {
+		copyErr := pipes.copyOutput(&stdout, stderr)
+		runErr = pipes.waitForRecordedExit()
+		// The exec context watcher can report cancellation after a successful exit.
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(runErr, ctxErr) && !pipes.owner.CanceledWhileRunning() &&
+			pipes.owner.ProcessState().Success() {
+			runErr = nil
+		}
+		if runErr == nil {
+			runErr = copyErr
+		}
+	}
+	cleanupErr := pipes.closeProcess()
+	stderr.Finish()
+	body, ready := AfterPreamble(stdout.Bytes(), delimiter)
+	runErr = stderr.ExitError(runErr, ready)
 	if err := errors.Join(runErr, cleanupErr); err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && (startErr != nil || pipes.owner.CanceledWhileRunning()) && !errors.Is(runErr, launch.ErrNoCandidate) {
 			return nil, fmt.Errorf("`%s` did not answer within %s", strings.Join(append([]string{run.Label}, run.Args...), " "), run.Timeout)
 		}
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
@@ -122,59 +136,27 @@ func RunCLI(ctx context.Context, run CLIRun) ([]byte, error) {
 	if stdout.Truncated {
 		return nil, fmt.Errorf("the output exceeds %d bytes", run.MaxOutput)
 	}
-	return AfterPreamble(stdout.Bytes(), delimiter), nil
+	if !ready {
+		return nil, fmt.Errorf("the shell exited before provider readiness: %s", strings.TrimSpace(stderr.String()))
+	}
+	return body, nil
 }
 
-// AfterPreamble returns the output after the shell wrapper's delimiter line. A
-// login shell's profile can print before it, and the program prints after it.
-// An output with no delimiter comes back whole.
-func AfterPreamble(output []byte, delimiter string) []byte {
+// AfterPreamble finds a complete delimiter line and returns the native output.
+func AfterPreamble(output []byte, delimiter string) ([]byte, bool) {
 	if delimiter == "" {
-		return output
+		return output, true
 	}
 	marker := []byte(delimiter)
-	index := bytes.Index(output, marker)
-	if index < 0 {
-		return output
+	for len(output) != 0 {
+		line, rest, complete := bytes.Cut(output, []byte{'\n'})
+		if !complete {
+			break
+		}
+		if bytes.Equal(bytes.TrimSuffix(line, []byte{'\r'}), marker) {
+			return rest, true
+		}
+		output = rest
 	}
-	rest := output[index+len(marker):]
-	if newline := bytes.IndexByte(rest, '\n'); newline >= 0 {
-		return rest[newline+1:]
-	}
-	return nil
+	return nil, false
 }
-
-// LimitedBuffer keeps at most Limit bytes and records whether it dropped any.
-// It keeps accepting writes past the limit, so a child never stalls on a full
-// pipe.
-//
-// It holds its buffer in a field rather than embedding it. An embedded
-// bytes.Buffer would promote ReadFrom, and io.Copy -- which exec uses to fill
-// cmd.Stdout -- prefers ReadFrom to Write, so the limit would never apply.
-type LimitedBuffer struct {
-	buf       bytes.Buffer
-	Limit     int
-	Truncated bool
-}
-
-func (b *LimitedBuffer) Write(data []byte) (int, error) {
-	room := b.Limit - b.buf.Len()
-	if room <= 0 {
-		b.Truncated = b.Truncated || len(data) > 0
-		return len(data), nil
-	}
-	if len(data) > room {
-		b.Truncated = true
-		_, _ = b.buf.Write(data[:room])
-		return len(data), nil
-	}
-	return b.buf.Write(data)
-}
-
-// Bytes returns what the buffer kept.
-func (b *LimitedBuffer) Bytes() []byte { return b.buf.Bytes() }
-
-// String returns what the buffer kept.
-func (b *LimitedBuffer) String() string { return b.buf.String() }
-
-var _ io.Writer = (*LimitedBuffer)(nil)

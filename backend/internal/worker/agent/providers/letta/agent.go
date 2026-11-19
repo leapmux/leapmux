@@ -376,7 +376,7 @@ func (a *Agent) ClearContext() (string, error) {
 // Stop ends the process.
 func (a *Agent) Stop() {
 	a.Process.Stop()
-	a.finishOutputAfterExit(agent.MessageCompletionInterrupted)
+	a.finishOutputAfterExit(a.ProcessExitCompletion())
 	a.withdrawPermissions()
 }
 

@@ -7,9 +7,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -35,8 +33,7 @@ type Registration struct {
 	Plugin Provider
 	// Start starts one agent of the provider.
 	Start StartFunc
-	// Locator finds the provider's program, for both the availability scan and the
-	// launch, so the two never disagree about which program runs.
+	// Locator supplies a shared candidate list or resolver for availability and launch.
 	Locator launch.Locator
 	// DefaultModels is the static model catalog served before a running agent
 	// reports its own. nil for a provider whose catalog is always discovered.
@@ -486,59 +483,27 @@ func (r *Registry) StaticOptionGroups(provider leapmuxv1.AgentProvider) []*leapm
 	return r.byProvider[provider].OptionGroups
 }
 
-// ListAvailable returns providers whose program is found in the user's shell
-// environment. Checks run concurrently to minimize latency when login shells are
-// used (each check reads shell profiles).
-//
-// The second return is false when the scan did not finish under ctx — at
-// least one probe was cut short, so the list is NOT evidence of absence.
-// The caller must treat that as a retryable failure, not as "none
-// installed": probes that DID complete are cached, so a retry only
-// re-runs what was cut short.
+// ListAvailable returns providers that resolve in the worker's current shell.
+// The second return is false when a probe could not establish availability.
 func (r *Registry) ListAvailable(ctx context.Context, shellPath string, useLoginShell bool) ([]leapmuxv1.AgentProvider, bool) {
-	providers := r.providers
-	found := make([]bool, len(providers))
-	// settled[i] reports whether every probe this check ran ESTABLISHED
-	// something. A check that never found its binary and whose last probe
-	// proved nothing is not evidence of absence.
-	settled := make([]bool, len(providers))
-	var wg sync.WaitGroup
-	for i, provider := range providers {
-		wg.Add(1)
-		go func(idx int, l launch.Locator) {
-			defer wg.Done()
-			res := l.Available(ctx, shellPath, useLoginShell)
-			found[idx] = res == launch.Found
-			settled[idx] = res != launch.Unknown
-		}(i, r.byProvider[provider].Locator)
+	locators := make([]launch.Locator, len(r.providers))
+	for i, provider := range r.providers {
+		locators[i] = r.byProvider[provider].Locator
 	}
-	wg.Wait()
-	// The scan is complete only when every probe it ran answered.
-	//
-	// An expired ctx is ONE way a probe proves nothing: exec.CommandContext
-	// killed its shell, and every cache write below would freeze a killed
-	// probe as "absent" for the worker's lifetime. But it is not the only
-	// way — probeBinary also reports "inconclusive" for a $SHELL that
-	// cannot start, a missing interpreter, EACCES, a fork failure under
-	// load, and a login profile that exits non-zero before the probe runs.
-	// Reading ctx alone made all of those answer with an AUTHORITATIVE
-	// empty list, so a user with a broken shell saw "no agent providers
-	// installed" with no retry, although every CLI was installed.
+	availability := launch.ScanAvailability(ctx, shellPath, useLoginShell, locators)
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	for i := range providers {
-		if !found[i] && !settled[i] {
-			return nil, false
-		}
-	}
-
 	var result []leapmuxv1.AgentProvider
-	for i, provider := range providers {
-		if found[i] {
-			result = append(result, provider)
+	for i, resolution := range availability {
+		switch resolution {
+		case launch.Found:
+			result = append(result, r.providers[i])
+		case launch.Unknown:
+			return nil, false
+		case launch.Missing:
+			continue
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result, true
 }

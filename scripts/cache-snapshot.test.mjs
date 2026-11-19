@@ -167,6 +167,41 @@ describe('cache snapshot core', () => {
   })
 
   describe('activateCacheSnapshot', () => {
+    it('restores Homebrew bottles without collecting other Homebrew state', async () => {
+      const dir = fixture()
+      const kind = 'homebrew-downloads'
+      const env = runnerEnv(dir, {
+        RUNNER_OS: 'macOS',
+        RUNNER_ARCH: 'ARM64',
+        HOMEBREW_CACHE: join(dir, 'first-homebrew-cache'),
+      })
+      const key = cacheKey(kind, { hash, week: '2027-W01' }, env)
+      writeTree(env.HOMEBREW_CACHE, {
+        'downloads/compressed-bottle.tar.gz': 'bottle data',
+        'api/formula.jws.json': 'current formulas',
+      })
+      const first = await prepareCacheSnapshot({ kind, key, workspace: dir, env })
+      expect(first.result).toBe('ready')
+      expect(readdirSync(first.archivePath)).toEqual(['downloads'])
+
+      const restoredEnv = {
+        ...env,
+        HOMEBREW_CACHE: join(dir, 'next-homebrew-cache'),
+      }
+      const activated = await activateCacheSnapshot({
+        kind,
+        key,
+        matchedKey: key,
+        writer: true,
+        workspace: dir,
+        env: restoredEnv,
+      })
+      expect(activated.cacheHit).toBe(true)
+      expect(activated.saveRequired).toBe(false)
+      expect(readFileSync(join(restoredEnv.HOMEBREW_CACHE, 'downloads', 'compressed-bottle.tar.gz'), 'utf8')).toBe('bottle data')
+      expect(existsSync(join(restoredEnv.HOMEBREW_CACHE, 'api'))).toBe(false)
+    })
+
     it.each([
       'go-modules',
       'site-go-modules',

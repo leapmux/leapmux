@@ -171,7 +171,7 @@ func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampP
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        a.launch.opts.Shell,
 		LoginShell:   a.launch.opts.LoginShell,
 		Launch:       a.launch.spec,
@@ -180,15 +180,21 @@ func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampP
 		BaseArgs:     launchArgs(threadID, config, settingsPath),
 		WorkingDir:   a.launch.opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd := prepared.Cmd
+
 	cmd.Env = a.launch.processEnv(cmd.Environ())
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	proc := &ampProcess{
-		Process: providerkit.NewProcess(a.launch.opts, providerkit.ProcessLaunch{ProviderName: "amp", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process: providerkit.NewProcess(a.launch.opts, providerkit.ProcessLaunch{ProviderName: "amp", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		resumed: threadID != "",
 		handled: make(chan struct{}),
 	}
@@ -202,7 +208,7 @@ func (a *Agent) startProcess(threadID string, config threadConfiguration) (*ampP
 
 	// The reader starts first: it is what closes the exit channel, which a
 	// refused adoption waits on when it stops the process.
-	go proc.ReadOutput(agent.NewStdoutScanner(stdout), func(*providerkit.ParsedLine) bool { return false },
+	go proc.ReadOutput(proc.NewOutputScanner(stdout), func(*providerkit.ParsedLine) bool { return false },
 		func(line *providerkit.ParsedLine) { a.handleLine(proc, line) })
 	if err := a.adopt(proc); err != nil {
 		return nil, err
@@ -270,11 +276,7 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 	// it prints its `result` on that path. The agent's Stop asks for that
 	// shutdown too. A crash skips it, so a background command can outlive Amp,
 	// and its row must not claim a stop.
-	if proc.sawResult.Load() || stopped {
-		a.closeAllShellRows(bgtask.StatusStopped)
-	} else {
-		a.closeAllShellRows(bgtask.StatusInterrupted)
-	}
+	a.closeAllShellRows(processShellExitStatus(proc))
 	if stopped || a.discarding() {
 		return
 	}
@@ -312,6 +314,13 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 		// this handler to return holds sendMu already.
 		go a.resumeAfterError(proc)
 	}
+}
+
+func processShellExitStatus(proc *ampProcess) bgtask.Status {
+	if proc.sawResult.Load() || proc.IntentionalStopRequested() {
+		return bgtask.StatusStopped
+	}
+	return bgtask.StatusInterrupted
 }
 
 // resumesThreadAfterExit reports whether the exit of p continues the thread in

@@ -3,21 +3,133 @@
 package procutil
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
+
+const windowsJobPeerAddressEnv = "LEAPMUX_TEST_WINDOWS_JOB_PEER_ADDRESS"
+const windowsJobPeerRoleEnv = "LEAPMUX_TEST_WINDOWS_JOB_PEER_ROLE"
+
+func TestHelperWindowsJobTree(t *testing.T) {
+	switch os.Getenv(windowsJobPeerRoleEnv) {
+	case "wrapper":
+		child := exec.Command(os.Args[0], "-test.run=^TestHelperWindowsJobTree$")
+		child.Env = append(os.Environ(), windowsJobPeerRoleEnv+"=child")
+		child.Stderr = os.Stderr
+		require.NoError(t, child.Start())
+		_, err := io.Copy(io.Discard, os.Stdin)
+		require.NoError(t, err)
+		os.Exit(0)
+	case "child":
+		conn, err := net.DialTimeout("tcp4", os.Getenv(windowsJobPeerAddressEnv), 30*time.Second)
+		require.NoError(t, err)
+		_, err = fmt.Fprintln(conn, os.Getpid())
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, conn)
+		_ = conn.Close()
+		os.Exit(0)
+	}
+}
+
+func prepareWindowsJobTree(t *testing.T) (*exec.Cmd, io.WriteCloser, *net.TCPListener) {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	require.NoError(t, listener.SetDeadline(time.Now().Add(30*time.Second)))
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperWindowsJobTree$")
+	cmd.Env = append(os.Environ(), windowsJobPeerRoleEnv+"=wrapper", windowsJobPeerAddressEnv+"="+listener.Addr().String())
+	cmd.Stderr = os.Stderr
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stdin.Close() })
+	return cmd, stdin, listener
+}
+
+func readWindowsJobChild(t *testing.T, listener *net.TCPListener) ProcessIdentity {
+	t.Helper()
+	conn, err := listener.AcceptTCP()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(line))
+	require.NoError(t, err)
+	identity, found := IdentifyProcess(pid)
+	require.True(t, found)
+	return identity
+}
+
+func TestWindowsProcessOwnerFindsJobChildAfterWrapperExit(t *testing.T) {
+	for _, operation := range []string{"observe", "cancel"} {
+		t.Run(operation, func(t *testing.T) {
+			cmd, stdin, listener := prepareWindowsJobTree(t)
+			exits := make(map[ProcessIdentity]error)
+			owner := PrepareProcessWithExitObserver(cmd, processExitObserverFunc(func(_ context.Context, identity ProcessIdentity, nativeErr error) error {
+				exits[identity] = nativeErr
+				return nil
+			}))
+			require.NoError(t, owner.Start())
+			t.Cleanup(func() { _ = owner.Close(); _ = owner.Wait() })
+			child := readWindowsJobChild(t, listener)
+			require.NotEqual(t, owner.PID(), child.PID)
+			require.NoError(t, stdin.Close())
+			require.NoError(t, owner.Wait())
+			require.True(t, child.Runs(), "the provider must outlive the wrapper")
+
+			if operation == "cancel" {
+				require.NoError(t, owner.Cancel())
+				require.Zero(t, owner.platform.job.handle.Load())
+			} else {
+				identities, err := owner.ObserveTree(t.Context())
+				require.NoError(t, err)
+				require.Contains(t, identities, child)
+			}
+			require.NoError(t, owner.Close())
+			proof, observed := exits[child]
+			require.True(t, observed, "cleanup must watch the exact child identity")
+			assert.NoError(t, proof)
+			assert.False(t, child.Runs())
+		})
+	}
+}
+
+func TestWindowsAdoptedProcessKeepsItsPreexistingChild(t *testing.T) {
+	cmd, _, listener := prepareWindowsJobTree(t)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	child := readWindowsJobChild(t, listener)
+	root, found := IdentifyProcess(cmd.Process.Pid)
+	require.True(t, found)
+	owner, err := OwnStartedProcess(root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = owner.Close() })
+
+	identities, err := owner.ObserveTree(t.Context())
+	require.NoError(t, err)
+	require.Contains(t, identities, child)
+	require.NoError(t, owner.Close())
+	assert.False(t, child.Runs())
+}
 
 // suspendCountCommand measures the initial thread before the owner assigns its job.
 type suspendCountCommand struct {

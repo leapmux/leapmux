@@ -117,7 +117,7 @@ func (a *Agent) Stop() {
 		a.rpc.endpoint.Close()
 	}
 	a.awaitEventStream()
-	a.finishOutput(agent.MessageCompletionInterrupted)
+	a.finishOutput(a.ProcessExitCompletion())
 }
 
 // Wait blocks until the process exits, and then finishes what the turn left

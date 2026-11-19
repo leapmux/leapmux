@@ -5,16 +5,20 @@ package codebuddy
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,4 +90,51 @@ func TestCodebuddySwarmLaunchArguments(t *testing.T) {
 		require.Len(t, runs, 1)
 		assert.Equal(t, tc.want, slices.Contains(runs[0].Args, "--swarm"))
 	}
+}
+
+func TestCodebuddyStartupExhaustionPeer(*testing.T) { agenttest.RunInheritedWriterPeer() }
+
+func TestCodebuddyStartupKeepsCandidateExhaustionAfterInitializationFails(t *testing.T) {
+	profile := agenttest.InstallStartupExhaustionProfile(t, "TestCodebuddyStartupExhaustionPeer", true)
+	dir := t.TempDir()
+	const timeout = 30 * time.Second
+	deadline := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	reply := clock.Trap().NewTimer(codebuddyControlTimerTag)
+	t.Cleanup(reply.Close)
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
+	t.Cleanup(drain.Close)
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
+	t.Cleanup(stop.Close)
+	outcome := make(chan error, 1)
+	go func() {
+		started, err := start(t.Context(), agent.Options{
+			AgentID: "startup-exhaustion", HomeDir: dir, WorkingDir: dir, Shell: profile.Shell,
+			StartupTimeout: timeout,
+		}, agent.NewProviderServices(&agenttest.Sink{}), clock)
+		if started != nil {
+			started.Stop()
+			_ = started.Wait()
+		}
+		outcome <- err
+	}()
+	writer := profile.FinishSelection(t)
+	request, err := os.ReadFile(profile.Initialize)
+	require.NoError(t, err)
+	assert.Contains(t, string(request), `"subtype":"initialize"`)
+	// The owner has recorded the exit before arming the drain timer. Keep
+	// it paused while the initialize timer expires and startup enters Stop.
+	drainCall := drain.MustWait(deadline)
+	require.Equal(t, timeout, testutil.WaitForTimer(t, deadline, reply))
+	clock.Advance(timeout).MustWait(deadline)
+	testutil.WaitForTimer(t, deadline, stop)
+	drainCall.MustRelease(deadline)
+	require.NoError(t, writer.CloseWrite())
+	startupErr := agenttest.AwaitStartupOutcome(t, deadline, outcome)
+	require.ErrorIs(t, startupErr, launch.ErrNoCandidate)
+	assert.ErrorContains(t, startupErr, "(codebuddy, cbc)")
+	assert.ErrorContains(t, startupErr, "provider absent diagnostic")
+	var status *exec.ExitError
+	require.ErrorAs(t, startupErr, &status)
+	assert.Equal(t, 127, status.ExitCode())
 }

@@ -10,11 +10,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -254,6 +260,45 @@ func TestMuseStoredSessionsPreservesQueryAndCleanupFailures(t *testing.T) {
 			assert.Nil(t, got)
 			records := museRoleRecords(t, path)
 			assert.Equal(t, "$closed", records[len(records)-1].Method)
+		})
+	}
+}
+
+func TestMuseStoredSessionsOnlyHidesConclusiveProviderAbsence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX executable fixture")
+	}
+	bin := t.TempDir()
+	dir := t.TempDir()
+	t.Setenv("PATH", bin)
+	testutil.WriteExecutable(t, filepath.Join(bin, "muse-failed-fixture"),
+		"#!/bin/sh\nprintf 'dependency is not installed on this machine\\n' >&2\nexit 127\n")
+	missing := launch.Binaries("muse-absent-fixture")
+	selected := launch.Binaries("muse-failed-fixture")
+	for _, test := range []struct {
+		name, shell, workingDir string
+		locator                 launch.Locator
+		empty                   bool
+	}{
+		{"completed selection without Muse", "/bin/sh", dir, missing, true},
+		{"completed custom lookup without Muse", "/bin/sh", dir, agenttest.AnsweringLocator(launch.Spec{}, launch.Missing), true},
+		{"failed custom lookup", "/bin/sh", dir, agenttest.AnsweringLocator(launch.Spec{}, launch.Unknown), false},
+		{"failed shell start", filepath.Join(dir, "missing-shell"), dir, selected, false},
+		{"missing checkout", "/bin/sh", filepath.Join(dir, "missing-checkout"), selected, false},
+		{"selected provider exits with 127", "/bin/sh", dir, selected, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := agent.StoredSessionQuery{
+				WorkingDir: test.workingDir, Shell: test.shell, RuntimeLocator: &test.locator, EnvEntries: os.Environ(),
+			}
+			sessions, err := storedSessions(t.Context(), query, nil)
+			if test.empty {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, launch.ErrNoCandidate)
+			}
+			assert.Empty(t, sessions)
 		})
 	}
 }

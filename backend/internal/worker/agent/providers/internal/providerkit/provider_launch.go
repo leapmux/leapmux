@@ -2,6 +2,7 @@ package providerkit
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -10,8 +11,15 @@ import (
 
 // ResolveLaunch resolves how to start a provider's program for one launch.
 //
-// The registration supplies the locator and display name for both launch and
-// availability checks. The two paths therefore select the same program.
+// Discovery and launch use the locator supplied by the provider registration.
 func ResolveLaunch(ctx context.Context, opts agent.Options, registration agent.Registration) (launch.Spec, error) {
-	return registration.Locator.Resolve(ctx, opts.Shell, opts.LoginShell, agentlabels.DisplayName(registration.Provider))
+	probeCtx, cancel := context.WithTimeout(ctx, opts.EffectiveStartupTimeout())
+	defer cancel()
+
+	provider := agentlabels.DisplayName(registration.Provider)
+	spec, err := registration.Locator.Resolve(probeCtx, opts.Shell, opts.LoginShell, provider)
+	if probeErr := probeCtx.Err(); probeErr != nil {
+		return launch.Spec{}, fmt.Errorf("resolve %s launch: %w", provider, probeErr)
+	}
+	return spec, err
 }

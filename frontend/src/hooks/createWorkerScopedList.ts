@@ -54,15 +54,7 @@ export interface WorkerScopedList {
 }
 
 /**
- * The retry-and-clear policy every per-worker list obeys, in one place.
- *
- * `useAvailableShells` and `useAvailableProviders` each held their own copy of
- * this skeleton -- the same success sentinel, the same `on(workerId)` effect
- * with the same two early returns, the same clear-then-`untrack(source)`
- * sequence, and the same `refresh`. Only the payload each stores differed. Two
- * copies of a rule this subtle is one copy too many: the sentinel in particular
- * has a comment in both explaining a past bug, and a fix to one would not have
- * reached the other.
+ * The retry-and-clear policy for lists that keep one worker's answer at a time.
  *
  * Four properties this owns, and no caller restates:
  *

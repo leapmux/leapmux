@@ -62,7 +62,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		args = append(args, "--cwd", opts.WorkingDir)
 	}
 
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launchConfig.spec,
@@ -70,8 +70,15 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		SetEnv:     []string{droidDisableAutoUpdateEnv},
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		cleanupSettings()
+		return nil, err
+	}
+	cmd := prepared.Cmd
+
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		cancel()
 		cleanupSettings()
@@ -80,7 +87,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:         providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "droid", ShutdownGrace: launchConfig.shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:         providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "droid", ShutdownGrace: launchConfig.shutdownGrace}, pipes, ctx, cancel),
 		sink:            agent.NewModelProgressResetSink(sink),
 		workingDir:      opts.WorkingDir,
 		homeDir:         opts.HomeDir,
@@ -101,7 +108,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		_ = a.Wait()
 	}
 
-	go a.ReadLines(agent.NewStdoutScanner(stdout), a.handleFrame)
+	go a.ReadLines(a.NewOutputScanner(stdout), a.handleFrame)
 
 	if err := a.handshake(opts); err != nil {
 		cleanup()

@@ -400,7 +400,7 @@ func (a *Agent) Stop() {
 	a.Process.Stop()
 	a.stopChildConnections()
 	a.stopChildTails()
-	a.finishOutput(agent.MessageCompletionInterrupted)
+	a.finishOutput(a.ProcessExitCompletion())
 	a.cleanupRuntimeSettings()
 }
 

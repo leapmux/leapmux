@@ -63,17 +63,17 @@ func TestCommandArgs(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, []string{"-i", "-l", "-c", "command -v claude"},
-		CommandArgs("/bin/bash", true, "-c", "command -v claude"))
+		CommandArgs("/bin/bash", true, "command -v claude"))
 	assert.Equal(t, []string{"-c", "command -v claude"},
-		CommandArgs("/bin/bash", false, "-c", "command -v claude"))
+		CommandArgs("/bin/bash", false, "command -v claude"))
 	assert.Equal(t, []string{"-ic", "which claude >& /dev/null"},
-		CommandArgs("/bin/tcsh", true, "-c", "which claude >& /dev/null"))
+		CommandArgs("/bin/tcsh", true, "which claude >& /dev/null"))
 	assert.Equal(t, []string{"-c", "which claude >& /dev/null"},
-		CommandArgs("/bin/tcsh", false, "-c", "which claude >& /dev/null"))
+		CommandArgs("/bin/tcsh", false, "which claude >& /dev/null"))
 	assert.Equal(t, []string{"-ic", "inner"},
-		CommandArgs("/bin/csh", true, "-c", "inner"))
+		CommandArgs("/bin/csh", true, "inner"))
 	assert.Equal(t, []string{"-Login", "-Command", "inner"},
-		CommandArgs("/usr/bin/pwsh", true, "-Command", "inner"))
+		CommandArgs("/usr/bin/pwsh", true, "inner"))
 }
 
 func TestIsPwsh(t *testing.T) {

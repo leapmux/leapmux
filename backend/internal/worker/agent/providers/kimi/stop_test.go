@@ -38,6 +38,21 @@ func exitOnShutdown(rig *kimiTestRig) {
 	rig.fake.onShutdown = rig.agent.SimulateExitForTest
 }
 
+func TestKimiClosesTheEventStreamBeforeNativeShutdown(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	closedAtShutdown := make(chan bool, 1)
+	rig.fake.reply("POST "+kimiRouteShutdown, fakeKapReply{BeforeReply: func() {
+		rig.agent.stream.mu.Lock()
+		closedAtShutdown <- rig.agent.stream.closed
+		rig.agent.stream.mu.Unlock()
+		rig.agent.SimulateExitForTest()
+	}})
+	rig.agent.Stop()
+	require.Len(t, closedAtShutdown, 1)
+	assert.True(t, <-closedAtShutdown, "the stream must not start another connection during shutdown")
+}
+
 func TestKimiStop(t *testing.T) {
 	t.Parallel()
 

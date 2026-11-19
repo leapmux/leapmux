@@ -15,7 +15,6 @@ import type { createControlStore } from '~/stores/control.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 
 import { workerAgent } from '~/api/workerRpc'
 import { forgetAgentAttachments } from '~/components/chat/attachments'
@@ -23,10 +22,11 @@ import { forgetAgentScheduleDrafts } from '~/components/chat/composer/scheduleDr
 import { ControlResponseDeliveryError } from '~/components/chat/controls/controlResponseError'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { optionGroupLabel } from '~/components/chat/settingsGroups'
-import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
+import { showWarnToast } from '~/components/common/Toast'
 import { closeTabOnWorker } from '~/components/shell/closeTabOnWorker'
 import { AgentOptionSettlementState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { createAvailableProvidersStore, useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { goalActionToProto } from '~/stores/chatGoal'
 import { setOptionValue } from '~/stores/tab.helpers'
@@ -59,85 +59,20 @@ export interface UseAgentOperationsProps {
 }
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
-  const [availableProviders, setAvailableProviders] = createSignal<AgentProvider[] | undefined>(undefined)
-  /** The newest provider scan, so a superseded one can be aborted. */
-  let inflightProviderScan: AbortController | undefined
-
-  /**
-   * Load the worker's provider list, and stop caring about the answer when
-   * the tab moves off that worker.
-   *
-   * The RETRY is not here. An incomplete provider scan answers Unavailable,
-   * which the worker declares as "ask again", and `callWorker` retries
-   * every such reply with a capped backoff — so this hook sees only the
-   * settled outcome. The cancellation guard IS here, because it is about
-   * this hook's own state: a reply for the previous worker must not
-   * overwrite the list for the one the user moved to.
-   *
-   * The guard sits on the WRITE, not on the call. Handing a cancel closure
-   * back to the caller only worked for the one caller that registered it;
-   * the refresh button in the agent dialogs reaches this same function
-   * through five hops that each discard the return value, so a manual
-   * refresh for the previous worker could still settle late — after 1.4s
-   * of `Unavailable` backoff — and overwrite the current worker's list.
-   * Both the abort signal and the issuing worker id are re-checked here,
-   * so no caller can hold the guard wrong.
-   */
-  const loadAvailableProviders = (): void => {
-    // One list, so one scan: a newer request supersedes the older one, and
-    // aborting it stops a pending backoff from keeping a dead request
-    // alive. This runs BEFORE the no-worker guard, so a tab that moves off
-    // every worker drops the previous worker's scan rather than leaving it
-    // to retry for an answer nobody can use.
-    inflightProviderScan?.abort()
-    inflightProviderScan = undefined
-    const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId)
-      return
-    const abort = new AbortController()
-    inflightProviderScan = abort
-    const issuedFor = ctx.workerId
-    const superseded = () =>
-      abort.signal.aborted || props.getCurrentTabContext().workerId !== issuedFor
-    workerAgent.listAvailableProviders(issuedFor, {}, { signal: abort.signal })
-      .then((resp) => {
-        if (superseded())
-          return
-        setAvailableProviders([...resp.providers])
-      })
-      .catch((err) => {
-        if (superseded())
-          return
-        // Keep the previous list — a transient refresh failure shouldn't
-        // erase a correct list the user was relying on, and conflating
-        // failure with "backend said none" would masquerade as an empty
-        // provider list once the backend stops forcing a CLAUDE_CODE
-        // fallback.
-        //
-        // The scan runs from an effect, not from a gesture, so a dropped
-        // connection needs no toast of its own here: useWatchEventsStreams
-        // announces the outage once, and this effect re-runs on the next
-        // worker change.
-        showWarnToastUnlessDisconnected('Failed to load available agent providers', err)
-      })
-  }
-
-  // The signal this scan writes lives on the hook, so the abort does too:
-  // a reply that arrives after the hook is disposed must write nothing.
-  onCleanup(() => inflightProviderScan?.abort())
-
-  createEffect(on(
+  const providerStore = createAvailableProvidersStore()
+  useAvailableProviders(
     () => props.getCurrentTabContext().workerId,
-    () => loadAvailableProviders(),
-  ))
+    () => true,
+    providerStore,
+  )
 
   /** Look up the workerId for a given agent from the projection join. */
   const getAgentWorkerId = (agentId: string): string => {
     return props.view.getAgentTab(agentId)?.workerId ?? ''
   }
 
-  const resolvePreferredProvider = (): AgentProvider | null => {
-    const available = availableProviders() ?? []
+  const resolvePreferredProvider = (workerId: string): AgentProvider | null => {
+    const available = providerStore.providers(workerId) ?? []
     if (available.length === 0)
       return null
 
@@ -199,7 +134,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.newAgentDialog.open(target ?? {})
       return
     }
-    const provider = providerOverride ?? resolvePreferredProvider()
+    const provider = providerOverride ?? resolvePreferredProvider(workerId)
     if (provider === null) {
       props.newAgentDialog.open(target ?? {})
       return
@@ -597,8 +532,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   return {
-    availableProviders,
-    loadAvailableProviders,
+    providerStore,
     openAgentInWorkspace,
     handleOpenAgent,
     handleControlResponse,

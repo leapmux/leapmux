@@ -1,5 +1,9 @@
 import { style } from '@vanilla-extract/css'
 
+const providerButtonSize = '24px'
+const providersPerRow = 10
+const providerGap = 'var(--space-1)'
+
 /**
  * One provider glyph, as a 24px square button.
  *
@@ -14,9 +18,9 @@ export const providerButton = style({
   'display': 'inline-flex',
   'alignItems': 'center',
   'justifyContent': 'center',
-  'width': '24px',
-  'height': '24px',
-  'minWidth': '24px',
+  'width': providerButtonSize,
+  'height': providerButtonSize,
+  'minWidth': providerButtonSize,
   'padding': 0,
   'borderRadius': 'var(--radius-small)',
   'color': 'var(--muted-foreground)',
@@ -34,7 +38,10 @@ export const providerIconsRow = style({
   display: 'flex',
   flexWrap: 'wrap',
   alignItems: 'center',
-  gap: 'var(--space-1)',
+  gap: providerGap,
+  // Size the content box for ten icons, with padding outside the limit.
+  boxSizing: 'content-box',
+  maxWidth: `calc(${providersPerRow} * ${providerButtonSize} + ${providersPerRow - 1} * ${providerGap})`,
   padding: 'var(--space-1) var(--space-3)',
 })
 

@@ -2,6 +2,7 @@ package kimi
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -40,6 +41,16 @@ func TestKimiChildInterruptDoesNotGuessACoordinatorOrChangeNativeOutcomes(t *tes
 			native.startPublicTurn(t, "agent-0", "retry", 0)
 			require.ErrorIs(t, interruptKimiChild(rig.agent, "session_1/agent-0", agent.StopContext{}), agent.ErrChildOperationUnsupported)
 			rig.agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-a","kind":"subagent","status":"ended","outcome":%q,"detached":false,"child_agent_id":"agent-0","parent_tool_call_id":"spawn"}`, test.outcome)))
+			awaitKimiTestOutput(t, rig.agent.sink)
+			if test.outcome == "completed" {
+				waitFor(t, func() bool {
+					rig.fake.mu.Lock()
+					defer rig.fake.mu.Unlock()
+					return slices.ContainsFunc(rig.fake.taskCommands, func(command fakeKimiTaskCommand) bool {
+						return command.Type == kimiFrameTaskWatch && command.TaskID == "task-a"
+					})
+				}, "the completed task starts a native report lookup")
+			}
 			first, exists := rig.sink.BackgroundTask(kimiTaskRowKey("session_1", "main", "task-a"))
 			require.True(t, exists)
 			assert.Equal(t, test.status, first.Status, "unsupported interruption cannot relabel a native outcome")
@@ -48,8 +59,11 @@ func TestKimiChildInterruptDoesNotGuessACoordinatorOrChangeNativeOutcomes(t *tes
 			assert.Equal(t, bgtask.StatusRunning, second.Status)
 			assert.True(t, rig.agent.ActiveChildTurnState("session_1/agent-0").Active)
 			rig.fake.mu.Lock()
-			assert.Empty(t, rig.fake.taskCommands, "no coordinator can serve as the current child turn address")
+			assert.False(t, slices.ContainsFunc(rig.fake.taskCommands, func(command fakeKimiTaskCommand) bool {
+				return command.Type == kimiFrameTaskStop
+			}), "an unsupported interrupt must not stop a coordinator task")
 			rig.fake.mu.Unlock()
+			assert.Empty(t, rig.fake.requestsTo(kimiSessionPath(rig.sessionID(), kimiActionAbort)))
 		})
 	}
 }

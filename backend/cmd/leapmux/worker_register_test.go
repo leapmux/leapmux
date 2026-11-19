@@ -337,13 +337,19 @@ func TestWorkerRegisterTimeoutValidation(t *testing.T) {
 	}
 	t.Run("tiny positive timeout keeps pending recovery material", func(t *testing.T) {
 		env := startRegisterEnv(t)
+		// A fast local reply can win before Windows delivers a short timer.
+		// If a request reaches the Hub, withhold its response.
+		env.dropRegisterResponse.Store(true)
 		dataDir := t.TempDir()
-		err := runWorkerRegister([]string{"--hub", env.url, "--registration-key", env.key, "--data-dir", dataDir, "--timeout=1ns"})
+		ctx := testutil.DeadlineContext(t)
+		err := runWorkerRegisterWithFiles(ctx, []string{"--hub", env.url, "--registration-key", env.key, "--data-dir", dataDir, "--timeout=1ns"}, configuredWorkerRegistrationFiles)
+		require.NoError(t, ctx.Err(), "the registration timeout must expire before the test guard")
 		require.ErrorIs(t, err, context.DeadlineExceeded)
-		pending, err := workerConfigOf(t, dataDir).LoadPendingRegistration()
+		cfg := workerConfigOf(t, dataDir)
+		pending, err := cfg.LoadPendingRegistration()
 		require.NoError(t, err)
 		require.NotNil(t, pending)
-		assert.Zero(t, env.registerCalls.Load())
+		assert.NoFileExists(t, cfg.StatePath())
 	})
 	t.Run("a large representable timeout accepts a successful registration", func(t *testing.T) {
 		env := startRegisterEnv(t)

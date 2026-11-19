@@ -1,12 +1,10 @@
 import { Buffer } from 'node:buffer'
-import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { encodeTar, writeTestResultsArchive } from './test-results-tar.mjs'
 import { scratchDirectories, writeFiles } from './test-support.mjs'
-import { extractTarForTests } from './test-support/tar-reader.mjs'
+import { extractTarForTests, readTarHeaderForTests } from './test-support/tar-reader.mjs'
 
 const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
@@ -20,16 +18,6 @@ async function bytes(iterator) {
 
 describe('encodeTar', () => {
   it('writes UTF-8 paths and file sizes that an independent Go reader decodes', async () => {
-    const root = scratch.create('pax-header-reader')
-    writeFiles(root, {
-      'reader.go': `package main
-import ("archive/tar"; "encoding/json"; "os"; "strconv")
-func main() {
- h, err := tar.NewReader(os.Stdin).Next(); if err != nil { panic(err) }
- if err := json.NewEncoder(os.Stdout).Encode([]string{h.Name, strconv.FormatInt(h.Size,10), strconv.FormatInt(h.ModTime.UnixNano(),10)}); err != nil { panic(err) }
-}
-`,
-    })
     for (const size of [0n, 8589934592n, 9007199254740993n]) {
       const path = `${'long-path/'.repeat(20)}日本語.log`
       const chunks = []
@@ -49,21 +37,7 @@ func main() {
         if (chunk.length === 512 && chunk[156] === 48 && length > 512)
           break
       }
-      const result = spawnSync('go', [
-        'run',
-        join(root, 'reader.go'),
-      ], {
-        input: Buffer.concat(chunks),
-        env: {
-          ...process.env,
-          GOWORK: 'off',
-          GOTOOLCHAIN: 'local',
-          GOFLAGS: '-mod=readonly',
-        },
-        encoding: 'utf8',
-      })
-      expect(result.status, result.stderr).toBe(0)
-      expect(JSON.parse(result.stdout)).toEqual([
+      expect(readTarHeaderForTests(Buffer.concat(chunks))).toEqual([
         path,
         String(size),
         '-500000000',

@@ -4,9 +4,11 @@ package ohmypi
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -14,14 +16,58 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStopAfterProcessExitKeepsTheToolFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	script := "printf '%s\\n' '{\"type\":\"agent_start\"}' " + shellquote.POSIX.Quote(frameBashStart) + "; exit 37"
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{Shell: "/bin/sh",
+		Launch: launch.Spec{Program: "/bin/sh", PrefixArgs: []string{"-c", script}},
+	})
+	require.NoError(t, err)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pipes.Close() })
+	sink := &agenttest.ControlSink{}
+	a := &Agent{
+		Process: providerkit.NewProcess(agent.Options{}, providerkit.ProcessLaunch{
+			ProviderName: "omp", PreambleDelimiter: prepared.Delimiter,
+		}, pipes, ctx, cancel),
+		sink:      agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
+		sessionID: "01a0cf77-9ae4-72d8-9a42-665c431d3beb",
+	}
+	require.NoError(t, a.StartCmd())
+	a.DrainStderr(pipes.Stderr())
+	go a.ReadOutput(a.NewOutputScanner(pipes.Stdout()), a.interceptFrame, a.handleFrame)
+	select {
+	case <-a.ProcessDone():
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the process did not exit")
+	}
+	var native *exec.ExitError
+	require.ErrorAs(t, a.Process.Wait(), &native)
+	require.Equal(t, 37, native.ExitCode())
+	a.Stop()
+	for _, message := range sink.Messages() {
+		if message.Closing && message.SpanID == "call_1" {
+			assert.Equal(t, agent.MessageCompletionError, message.Completion)
+			return
+		}
+	}
+	t.Fatal("the stopped agent did not close the unfinished tool")
+}
 
 // The start tests run a fake `omp` on PATH. It re-runs this test binary as
 // TestHelperProcessOmp, which speaks omp's RPC mode on stdin and stdout.
@@ -364,4 +410,44 @@ func TestStartReportsTheResumedGoalAsASnapshot(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.Goals()) == 2 })
 	assert.False(t, sink.Goals()[1].Snapshot)
 	assert.Equal(t, agent.GoalStatusDone, sink.Goals()[1].Status)
+}
+
+func TestOmpStartupExhaustionPeer(*testing.T) { agenttest.RunInheritedWriterPeer() }
+
+func TestOmpStartupKeepsCandidateExhaustionAfterReadinessFails(t *testing.T) {
+	profile := agenttest.InstallStartupExhaustionProfile(t, "TestOmpStartupExhaustionPeer", false)
+	opts := ompStartOptions(t)
+	opts.Shell = profile.Shell
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	deadline := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	ready := clock.Trap().NewTimer(ompReadyTimerTag)
+	t.Cleanup(ready.Close)
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
+	t.Cleanup(drain.Close)
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
+	t.Cleanup(stop.Close)
+	outcome := make(chan error, 1)
+	go func() {
+		started, err := start(ctx, opts, agent.NewProviderServices(&agenttest.Sink{}), clock)
+		if started != nil {
+			started.Stop()
+			_ = started.Wait()
+		}
+		outcome <- err
+	}()
+	writer := profile.FinishSelection(t)
+	testutil.WaitForTimer(t, deadline, ready)
+	testutil.WaitForTimer(t, deadline, drain)
+	cancel()
+	testutil.WaitForTimer(t, deadline, stop)
+	require.NoError(t, writer.CloseWrite())
+	err := agenttest.AwaitStartupOutcome(t, deadline, outcome)
+	require.ErrorIs(t, err, launch.ErrNoCandidate)
+	assert.ErrorContains(t, err, "(omp)")
+	assert.ErrorContains(t, err, "provider absent diagnostic")
+	var status *exec.ExitError
+	require.ErrorAs(t, err, &status)
+	assert.Equal(t, 127, status.ExitCode())
 }

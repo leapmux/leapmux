@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,4 +84,14 @@ func TestProcessExitErrorReadsWhileStartupDiagnosticsChange(t *testing.T) {
 		process.recordProcessExit(diagnostic)
 	}
 	assert.True(t, <-read)
+}
+
+func TestFinalizeStartupCauseKeepsTheProtocolErrorUnlessSelectionFailedWithoutANativeStatus(t *testing.T) {
+	t.Parallel()
+	process := &Process{}
+	timeout := errors.New("test request timed out")
+	process.recordProcessExit(errors.New("cleanup terminated shell"))
+	assert.ErrorIs(t, process.FinalizeStartupCause(timeout), timeout)
+	process.recordProcessExit(fmt.Errorf("the shell did not find first or second: %w", launch.ErrNoCandidate))
+	assert.ErrorIs(t, process.FinalizeStartupCause(errors.New("broken pipe")), launch.ErrNoCandidate)
 }
