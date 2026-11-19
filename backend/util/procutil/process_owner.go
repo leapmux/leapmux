@@ -39,6 +39,8 @@ type ProcessOwner struct {
 	waitDone      chan struct{}
 	waitResult    error
 	exitObserver  ProcessExitObserver
+	// Cancellation can produce a positive native exit code on some platforms.
+	canceledWhileRunning bool
 }
 
 // PrepareProcess owns cancellation before Start can create a child.
@@ -287,9 +289,20 @@ func (o *ProcessOwner) Cancel() error {
 	ctx, cancel := context.WithTimeout(context.Background(), processCaptureTimeout)
 	err := o.captureLocked(ctx)
 	cancel()
+	o.canceledWhileRunning = o.canceledWhileRunning || o.root.Runs()
 	err = errors.Join(err, o.killChildrenLocked(), o.platform.cancel(o.root))
 	o.result = errors.Join(o.result, err)
 	return err
+}
+
+// CanceledWhileRunning reports whether cancellation could have caused the root's exit.
+func (o *ProcessOwner) CanceledWhileRunning() bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.canceledWhileRunning
 }
 
 // Terminate waits for verified processes to exit after it stops the owned tree.

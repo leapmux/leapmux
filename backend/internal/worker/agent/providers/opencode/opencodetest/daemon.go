@@ -6,15 +6,20 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,22 +138,32 @@ func AskedEvent(properties string) string {
 // replacement for it.
 func AssertRcMarkerNeverReachesTheDaemon(t *testing.T, binary, marker, flag string, baseArgs []string) {
 	t.Helper()
-	prepared, err := launch.Wrap(context.Background(), launch.WrapSpec{
-		Shell:        "/bin/sh",
-		Launch:       launch.Spec{Program: binary},
+	shell := testutil.TestShell()
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"${%s+x}\" ]; then exit 13; fi\nprintf '%%s\\n' \"$%s\"\n", marker, flag)
+	if runtime.GOOS == "windows" {
+		var err error
+		shell, err = exec.LookPath("powershell.exe")
+		require.NoError(t, err)
+		binary += ".cmd"
+		script = fmt.Sprintf("@echo off\r\nif defined %s exit /b 13\r\necho %%%s%%\r\n", marker, flag)
+	}
+	program := filepath.Join(t.TempDir(), binary)
+	testutil.WriteExecutable(t, program, script)
+	prepared, err := launch.Wrap(testutil.DeadlineContext(t), launch.WrapSpec{
+		Shell:        shell,
+		Launch:       launch.Spec{Program: program},
 		StripEnvKeys: []string{marker},
 		BaseArgs:     baseArgs,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
 	cmd := prepared.Cmd
-	require.Len(t, cmd.Args, 3) // sh -c <inner>
-	inner := cmd.Args[2]
-
-	assert.Contains(t, inner, "unset "+marker+" && ",
-		"the marker must be removed before the daemon starts")
-	// The flag beside it is NOT stripped: the daemon has to read it.
-	assert.NotContains(t, inner, "unset "+flag)
+	cmd.Env = append(cmd.Environ(), marker+"=present", flag+"=enabled")
+	output, err := cmd.Output()
+	require.NoError(t, err, "the marker must be removed before the daemon starts")
+	payload, ready := providerkit.AfterPreamble(output, prepared.Delimiter)
+	require.True(t, ready)
+	assert.Equal(t, "enabled\n", strings.ReplaceAll(string(payload), "\r\n", "\n"))
 }
 
 // AssertAnswersAQuestionThroughTheBridge pins that agent answers a question

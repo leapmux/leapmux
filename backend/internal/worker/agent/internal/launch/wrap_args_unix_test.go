@@ -154,13 +154,17 @@ func TestPowerShellPreservesNativeExitStatus(t *testing.T) {
 			appendPowerShellProfile(t, home,
 				"Set-Alias -Name leapmux-cycle-first -Value leapmux-cycle-second\n"+
 					"Set-Alias -Name leapmux-cycle-second -Value LEAPMUX-CYCLE-FIRST\n"+
-					"Set-Alias -Name leapmux-unresolved-alias -Value "+shellquote.PowerShell.Quote(filepath.Join(home, "missing-target"))+"\n")
+					"Set-Alias -Name leapmux-unresolved-alias -Value "+shellquote.PowerShell.Quote(filepath.Join(home, "missing-target"))+"\n"+
+					"& /bin/sh -c 'exit 41'\n"+
+					"$PSNativeCommandUseErrorActionPreference = $true\n"+
+					"function leapmux-pure-success { [Console]::Out.WriteLine('pure function succeeded') }\n")
 			for _, tc := range []struct {
 				name     string
 				program  string
 				wantCode int
 			}{
-				{"native failure", executable, 23},
+				{"native failure with promotion enabled in the profile", executable, 23},
+				{"pure function after a stale native status", "leapmux-pure-success", 0},
 				{"missing command", filepath.Join(home, "missing-command"), 127},
 				{"cyclic aliases", "leapmux-cycle-first", 127},
 				{"unresolved alias", "leapmux-unresolved-alias", 127},
@@ -175,6 +179,11 @@ func TestPowerShellPreservesNativeExitStatus(t *testing.T) {
 					cmd.Env = append(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home,
 						wrappedArgumentsHelperEnv+"=1", "LEAPMUX_WRAPPED_ARGUMENTS_FAILURE=1")
 					output, err := cmd.CombinedOutput()
+					if tc.wantCode == 0 {
+						require.NoError(t, err, "output: %s", output)
+						assert.Contains(t, string(output), "pure function succeeded\n")
+						return
+					}
 					var exitErr *exec.ExitError
 					require.ErrorAs(t, err, &exitErr, "output: %s", output)
 					assert.Equal(t, tc.wantCode, exitErr.ExitCode(), "output: %s", output)

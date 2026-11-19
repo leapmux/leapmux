@@ -158,7 +158,7 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 		}
 		script = buildNuSelection(shellSpec, prepared, scripts)
 	case shell == "nu":
-		script = "print ''; " + buildNuCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+		script = buildNuCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
 	case shell == "fish":
 		script = buildFishCommand(shellSpec, prepared)
 	case shell == "xonsh":
@@ -166,11 +166,11 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	case isCsh(shell) && len(prepared.candidates) != 0:
 		script = buildCshSelection(shellSpec, prepared)
 	case isCsh(shell):
-		script = lookupSetup(shell) + "echo ''\n" + buildCshCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+		script = buildCshCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
 	case len(prepared.candidates) != 0:
 		script = buildPosixSelection(shell, shellSpec, prepared)
 	default:
-		script = posixBuiltin(shell, "printf") + " '\\n'\n" + buildPosixCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+		script = buildPosixCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
 	}
 
 	cmd.Args[len(cmd.Args)-1] = script
@@ -201,86 +201,33 @@ func (p *PreparedLaunch) writeNuInvocations() (map[string]string, error) {
 // replaced. When spec.EnvGated is set, a conditional is emitted to check its
 // env vars at runtime.
 func buildPosixCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
-	quotedBase := make([]string, len(spec.BaseArgs))
-	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = shellquote.POSIX.Quote(arg)
-	}
-
-	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.pins)
+	shell := terminal.ShellBaseName(spec.Shell)
 	program := shellquote.POSIX.Quote(spec.Launch.Program)
-
-	// Simple path: no env gate. When the gate is set but its Args are empty (Claude's
-	// default-model launch), the conditional path below still runs: both branches exec
-	// the binary with no extra args, differing only in the metadata line.
+	baseArgs := strings.Join(quotedArguments(spec.BaseArgs, shellquote.POSIX.Quote), " ")
+	var script strings.Builder
+	script.WriteString(posixProtocolSetup(shell))
+	script.WriteString(posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.pins))
 	gate := spec.EnvGated
 	if gate == nil {
-		return fmt.Sprintf("%secho '%s' && exec %s %s",
-			clearEnvPrefix, delimiter, program, baseArgsStr)
+		script.WriteString(protocolLine(shell, delimiter, true))
+		fmt.Fprintf(&script, "exec %s %s", program, baseArgs)
+		return script.String()
 	}
-
-	// Conditional path: check env vars at runtime.
-	quotedGated := make([]string, len(gate.Args))
-	for i, arg := range gate.Args {
-		quotedGated[i] = shellquote.POSIX.Quote(arg)
-	}
-	gatedArgsStr := strings.Join(quotedGated, " ")
-
-	return fmt.Sprintf(
-		"%s"+
-			"if %s; then "+
-			"echo '%s%s=false' && "+
-			"echo '%s' && exec %s %s; "+
-			"else "+
-			"echo '%s%s=true' && "+
-			"echo '%s' && exec %s %s %s; "+
-			"fi",
-		clearEnvPrefix, posixEnvCondition(gate.EnvVars),
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr, gatedArgsStr,
-	)
+	gatedArgs := strings.Join(quotedArguments(gate.Args, shellquote.POSIX.Quote), " ")
+	fmt.Fprintf(&script, "if %s; then\n%sexec %s %s\nelse\n%sexec %s %s %s\nfi",
+		posixEnvCondition(gate.EnvVars),
+		protocolLine(shell, metaPrefix+gate.MetaKey+"=false", true)+protocolLine(shell, delimiter, false), program, baseArgs,
+		protocolLine(shell, metaPrefix+gate.MetaKey+"=true", true)+protocolLine(shell, delimiter, false), program, baseArgs, gatedArgs)
+	return script.String()
 }
 
 // buildNuCommand builds the inner command string for Nushell.
 func buildNuCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
-	quotedBase := make([]string, len(spec.BaseArgs))
-	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = nuQuote(arg)
-	}
-
-	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins)
 	// `^"<program>"` is Nushell's documented form for running an external
-	// command whose path holds a space.
-	program := nuQuote(spec.Launch.Program)
-
-	// Simple path: no env gate. See buildPosixCommand.
-	gate := spec.EnvGated
-	if gate == nil {
-		return fmt.Sprintf("%secho '%s'; ^%s %s",
-			clearEnvPrefix, delimiter, program, baseArgsStr)
-	}
-
-	// Conditional path.
-	quotedGated := make([]string, len(gate.Args))
-	for i, arg := range gate.Args {
-		quotedGated[i] = nuQuote(arg)
-	}
-	gatedArgsStr := strings.Join(quotedGated, " ")
-
-	return fmt.Sprintf(
-		"%s"+
-			"if (%s) { "+
-			"echo '%s%s=false'; "+
-			"echo '%s'; ^%s %s "+
-			"} else { "+
-			"echo '%s%s=true'; "+
-			"echo '%s'; ^%s %s %s "+
-			"}",
-		clearEnvPrefix, nuEnvCondition(gate.EnvVars),
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
-		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr, gatedArgsStr,
-	)
+	// command whose path contains a space.
+	return nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n" +
+		nuLaunchArguments(spec.WrapSpec, delimiter, metaPrefix) +
+		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
 }
 
 // legacyNativeArgument quotes one token for the Windows native command-line
@@ -340,7 +287,7 @@ func buildCshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string 
 	// Simple path: no env gate. See buildPosixCommand.
 	gate := spec.EnvGated
 	if gate == nil {
-		return fmt.Sprintf("%secho '%s' && exec %s %s",
+		return fmt.Sprintf("%s'/bin/echo' ''\n'/bin/echo' '%s' && exec %s %s",
 			clearEnvPrefix, delimiter, program, baseArgsStr)
 	}
 
@@ -354,11 +301,11 @@ func buildCshCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string 
 	return fmt.Sprintf(
 		"%s%s"+
 			"if ( $"+cshEnvGateVar+" ) then\n"+
-			"echo '%s%s=false' && "+
-			"echo '%s' && exec %s %s\n"+
+			"'/bin/echo' ''\n'/bin/echo' '%s%s=false' && "+
+			"'/bin/echo' '%s' && exec %s %s\n"+
 			"else\n"+
-			"echo '%s%s=true' && "+
-			"echo '%s' && exec %s %s %s\n"+
+			"'/bin/echo' ''\n'/bin/echo' '%s%s=true' && "+
+			"'/bin/echo' '%s' && exec %s %s %s\n"+
 			"endif",
 		clearEnvPrefix, cshEnvSeed(gate.EnvVars),
 		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
@@ -382,7 +329,8 @@ func checkSetEnv(entries []string) {
 func posixSetEnv(pins []environmentPin) string {
 	var b strings.Builder
 	for _, pin := range pins {
-		b.WriteString("export " + pin.target + "=\"$" + pin.source + "\" && unset " + pin.source + " && ")
+		b.WriteString("export " + pin.target + `="$` + pin.source + `" || exit $?` + "\n")
+		b.WriteString("unset " + pin.source + " || exit $?\n")
 	}
 	return b.String()
 }
@@ -417,7 +365,7 @@ func posixClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
-	return "unset " + strings.Join(keys, " ") + " && "
+	return "unset " + strings.Join(keys, " ") + " || exit $?\n"
 }
 
 // cshClearEnv removes environment variables the csh way. `unset` there touches shell
@@ -492,11 +440,11 @@ func cshEnvSeed(vars []string) string {
 
 // nuEnvCondition builds a Nushell conditional expression that checks
 // whether any of vars is set and non-empty.
-// e.g. `($env | get -i VAR1 | default "") != "" or ...`
+// e.g. `($env | get -o VAR1 | default "") != "" or ...`
 func nuEnvCondition(vars []string) string {
 	parts := make([]string, len(vars))
 	for i, v := range vars {
-		parts[i] = fmt.Sprintf("($env | get -i %s | default '') != ''", v)
+		parts[i] = fmt.Sprintf("($env | get -o %s | default '') != ''", v)
 	}
 	return strings.Join(parts, " or ")
 }

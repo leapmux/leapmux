@@ -24,3 +24,13 @@ func AnsweringLocator(spec launch.Spec, res launch.Resolution) launch.Locator {
 		return spec, res
 	})
 }
+
+// RetryableLocator reports an unknown result until the test's probe succeeds.
+func RetryableLocator(program string, probe func(context.Context) bool) launch.Locator {
+	return launch.Custom(func(ctx context.Context, _ string, _ bool) (launch.Spec, launch.Resolution) {
+		if !probe(ctx) {
+			return launch.Spec{}, launch.Unknown
+		}
+		return launch.Spec{Program: program}, launch.Found
+	})
+}

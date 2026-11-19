@@ -243,8 +243,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 // Start hands back a usable agent: it sends initialize, captures the model
 // catalog and the other settings the response carries, applies the permission mode and
 // any persisted flag settings, then refreshes the stored settings from the CLI. It
-// returns a formatted startup error on a hard failure (initialize / set_permission_mode);
-// the caller tears the process down. Every field write here runs on the Start
+// returns the phase and cause on a hard failure. Start stops the process before
+// adding diagnostics. Every field write here runs on the Start
 // goroutine before the agent is registered with the manager -- the same lock-free
 // pre-registration window buildStartupFlagSettings documents -- so a bare field write
 // needs no a.Mu. The permission-mode writes still go through their own locked helpers

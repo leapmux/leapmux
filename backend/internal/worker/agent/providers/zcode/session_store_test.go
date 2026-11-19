@@ -134,6 +134,22 @@ func TestZCodeStoragePeer(t *testing.T) {
 	if scenario == "duplicate-path" {
 		write(zcodeStoragePathMethod, map[string]any{"path": path})
 	}
+	if scenario == "exit-before-prepared" || scenario == "exit-during-prepared" {
+		if os.Getenv(inheritedStorageWriterEnv) != "" {
+			writer := exec.Command(os.Args[0], "-test.run=^TestZCodeInheritedStorageWriter$")
+			writer.Stdout = os.Stdout
+			if err := writer.Start(); err != nil {
+				os.Exit(29)
+			}
+		}
+		if scenario == "exit-during-prepared" {
+			if _, err := io.WriteString(os.Stdout, `{"method":"startup/storagePrepared","params":`); err != nil {
+				os.Exit(20)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "selected storage command failed before acknowledgement")
+		os.Exit(37)
+	}
 	if scenario != "missing-prepared" {
 		write(zcodeStoragePreparedMethod, map[string]any{})
 	}
@@ -429,6 +445,7 @@ func TestZCodeStorageQueryRejectsAbsentInputsAndStartupFailure(t *testing.T) {
 }
 
 const inheritedStorageWriterEnv = "LEAPMUX_ZCODE_TEST_INHERITED_WRITER"
+const activeStorageWriterEnv = "LEAPMUX_ZCODE_TEST_ACTIVE_WRITER"
 
 func TestZCodeInheritedStorageWriter(t *testing.T) {
 	address := os.Getenv(inheritedStorageWriterEnv)
@@ -442,9 +459,111 @@ func TestZCodeInheritedStorageWriter(t *testing.T) {
 	if _, err := fmt.Fprintln(conn, os.Getpid()); err != nil {
 		os.Exit(3)
 	}
+	switch os.Getenv(activeStorageWriterEnv) {
+	case "1":
+		if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil {
+			os.Exit(4)
+		}
+		line := strings.Repeat("p", 127)
+		for {
+			if _, err := fmt.Fprintln(os.Stdout, line); err != nil {
+				os.Exit(5)
+			}
+		}
+	case "oversized-line":
+		if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil {
+			os.Exit(4)
+		}
+		if _, err := io.WriteString(os.Stdout, strings.Repeat("x", zcodeStorageQueryOutput+1)); err != nil {
+			os.Exit(5)
+		}
+	}
 	_, _ = io.Copy(io.Discard, conn)
 	_ = conn.Close()
 	os.Exit(0)
+}
+
+func TestZCodeStorageReportsSelectedExitWithoutAcknowledgement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses the POSIX shell to launch the selected storage command")
+	}
+	for _, test := range []struct {
+		name, scenario, message string
+		hold, exceed            bool
+	}{
+		{name: "normal drain", scenario: "exit-before-prepared", message: "ended without a complete acknowledgement"},
+		{name: "forced drain", scenario: "exit-before-prepared", hold: true, message: "read the ZCode storage query"},
+		{name: "forced drain with a partial acknowledgement", scenario: "exit-during-prepared", hold: true, message: "read the ZCode storage query"},
+		{name: "oversized output after native exit", scenario: "exit-before-prepared", hold: true, exceed: true, message: "exceeds the output limit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			directory := t.TempDir()
+			env := append(os.Environ(), zcodeStoragePeerEnv+"=1",
+				"LEAPMUX_ZCODE_STORAGE_PEER_SCENARIO="+test.scenario,
+				"LEAPMUX_ZCODE_STORAGE_PEER_PATH="+filepath.Join(directory, "native.db"),
+				inheritedStorageWriterEnv+"=", activeStorageWriterEnv+"=")
+			var listener *net.TCPListener
+			if test.hold {
+				var err error
+				listener, err = net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = listener.Close() })
+				require.NoError(t, listener.SetDeadline(time.Now().Add(10*time.Second)))
+				env = append(env, inheritedStorageWriterEnv+"="+listener.Addr().String())
+			}
+			executable, err := os.Executable()
+			require.NoError(t, err)
+			spec := launch.Spec{Program: executable, PrefixArgs: []string{"-test.run=^TestZCodeStoragePeer$", "--"}}
+			storage := newZCodeStorageQuery(&spec)
+			var releaseWriter func(net.Conn)
+			if test.exceed {
+				clock := testutil.NewQuartzMock(t)
+				storage.clock = clock
+				drain := clock.Trap().NewTimer("wrapped-process-drain")
+				t.Cleanup(drain.Close)
+				env = append(env, activeStorageWriterEnv+"=oversized-line")
+				releaseWriter = func(conn net.Conn) {
+					testutil.WaitForTimer(t, ctx, drain)
+					_, err := fmt.Fprintln(conn, "write")
+					require.NoError(t, err)
+				}
+			}
+			query := agent.StoredSessionQuery{Shell: "/bin/sh", WorkingDir: directory, EnvEntries: env}
+			type outcome struct {
+				path string
+				err  error
+			}
+			result := make(chan outcome, 1)
+			go func() {
+				path, err := storage.DatabasePath(ctx, query)
+				result <- outcome{path, err}
+			}()
+			var writer procutil.ProcessIdentity
+			if test.hold {
+				var conn net.Conn
+				writer, conn = awaitInheritedStorageWriter(t, listener)
+				if releaseWriter != nil {
+					releaseWriter(conn)
+				}
+			}
+			select {
+			case got := <-result:
+				assert.Empty(t, got.path)
+				require.ErrorContains(t, got.err, test.message)
+				assert.ErrorContains(t, got.err, "selected storage command failed before acknowledgement")
+				var exit *exec.ExitError
+				require.ErrorAs(t, got.err, &exit)
+				assert.Equal(t, 37, exit.ExitCode())
+			case <-ctx.Done():
+				t.Fatal("the storage query did not return after the selected command exited")
+			}
+			if test.hold && !test.exceed {
+				assert.True(t, writer.Runs(), "the inherited stdout writer is still open")
+			}
+		})
+	}
 }
 
 func TestZCodeStorageReportsExhaustionWhileAProfileWriterHoldsStdout(t *testing.T) {
@@ -478,6 +597,72 @@ func TestZCodeStorageReportsExhaustionWhileAProfileWriterHoldsStdout(t *testing.
 		path, err := newZCodeStorageQuery(nil).DatabasePath(ctx, query)
 		result <- outcome{path, err}
 	}()
+	identity, _ := awaitInheritedStorageWriter(t, listener)
+	select {
+	case got := <-result:
+		require.Empty(t, got.path)
+		require.ErrorIs(t, got.err, launch.ErrNoCandidate)
+		assert.ErrorContains(t, got.err, "zcode-absent-storage-first, zcode-absent-storage-second")
+		var exit *exec.ExitError
+		require.ErrorAs(t, got.err, &exit)
+		assert.Equal(t, 127, exit.ExitCode())
+	case <-ctx.Done():
+		t.Fatal("storage startup did not finish while the inherited writer was open")
+	}
+	assert.True(t, identity.Runs(), "the writer stays open until the test releases it")
+}
+
+func TestZCodeStorageQueryStopsAnActiveProfileAtTheOutputLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses an isolated Bash profile")
+	}
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	require.NoError(t, listener.SetDeadline(time.Now().Add(15*time.Second)))
+
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile")
+	require.NoError(t, os.WriteFile(profile, []byte(shellquote.POSIX.Quote(executable)+" -test.run=^TestZCodeInheritedStorageWriter$\n"), 0o600))
+	spec := launch.Spec{Program: executable, PrefixArgs: []string{"-test.run=^TestZCodeStoragePeer$", "--"}}
+	request := agent.StoredSessionQuery{
+		Shell: shell, WorkingDir: dir,
+		EnvEntries: append(os.Environ(), "BASH_ENV="+profile, inheritedStorageWriterEnv+"="+listener.Addr().String(), activeStorageWriterEnv+"=1"),
+	}
+	type outcome struct {
+		path string
+		err  error
+	}
+	result := make(chan outcome, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		path, err := newZCodeStorageQuery(&spec).DatabasePath(ctx, request)
+		result <- outcome{path, err}
+	}()
+	identity, conn := awaitInheritedStorageWriter(t, listener)
+	_, err = fmt.Fprintln(conn, "write")
+	require.NoError(t, err)
+	guard, stop := context.WithTimeout(t.Context(), 10*time.Second)
+	defer stop()
+	select {
+	case got := <-result:
+		assert.Empty(t, got.path)
+		require.ErrorContains(t, got.err, "the ZCode storage query exceeds the output limit")
+		assert.False(t, identity.Runs(), "the rejected query must stop its active profile writer")
+	case <-guard.Done():
+		cancel()
+		<-result
+		t.Fatal("the query waited for the active profile to exit after crossing the output limit")
+	}
+}
+
+func awaitInheritedStorageWriter(t *testing.T, listener *net.TCPListener) (procutil.ProcessIdentity, net.Conn) {
+	t.Helper()
 	conn, err := listener.Accept()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
@@ -492,16 +677,5 @@ func TestZCodeStorageReportsExhaustionWhileAProfileWriterHoldsStdout(t *testing.
 		_ = conn.Close()
 		_, _ = identity.Kill()
 	})
-	select {
-	case got := <-result:
-		require.Empty(t, got.path)
-		require.ErrorIs(t, got.err, launch.ErrNoCandidate)
-		assert.ErrorContains(t, got.err, "zcode-absent-storage-first, zcode-absent-storage-second")
-		var exit *exec.ExitError
-		require.ErrorAs(t, got.err, &exit)
-		assert.Equal(t, 127, exit.ExitCode())
-	case <-ctx.Done():
-		t.Fatal("storage startup did not finish while the inherited writer was open")
-	}
-	assert.True(t, identity.Runs(), "the writer stays open until the test releases it")
+	return identity, conn
 }

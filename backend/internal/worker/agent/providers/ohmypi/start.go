@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -95,6 +96,10 @@ var _ agent.StartFunc = Start
 // omp exits when the handle matches no session or the recorded directory is absent.
 // providerkit.ResumeFailedError tells the user to send /clear in that case.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	return start(ctx, opts, sink, nil)
+}
+
+func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	outputStyle, err := launchOutputStyle(opts)
 	if err != nil {
@@ -163,7 +168,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	a := &Agent{
 		directory:     directory,
-		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "omp", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "omp", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, Clock: clock}, pipes, ctx, cancel),
 		sink:          agent.NewModelProgressResetSink(sink),
 		workingDir:    opts.WorkingDir,
 		ready:         make(chan readyFrame, 1),
@@ -199,7 +204,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.sessionMu.Unlock()
 	if err != nil {
 		cleanup()
-		return nil, err
+		return nil, a.FormatStartupError("", err)
 	}
 
 	a.Mu.Lock()
@@ -220,31 +225,31 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 func (a *Agent) handshake(timeout time.Duration) error {
 	ready, err := a.awaitReady(timeout)
 	if err != nil {
-		return a.FormatStartupError("ready", err)
+		return fmt.Errorf("ready: %w", err)
 	}
 
 	// The current protocol splits large payloads into chunks instead of truncating them.
 	if !ready.supports(rpcProtocolVersion) {
-		return a.FormatStartupError("protocol negotiation", fmt.Errorf("the Oh My Pi runtime does not offer RPC protocol %d", rpcProtocolVersion))
+		return fmt.Errorf("protocol negotiation: the Oh My Pi runtime does not offer RPC protocol %d", rpcProtocolVersion)
 	}
 	if _, err := a.sendCommand(CommandNegotiateProtocol, map[string]any{"protocolVersion": rpcProtocolVersion}, timeout); err != nil {
-		return a.FormatStartupError("protocol negotiation", err)
+		return fmt.Errorf("protocol negotiation: %w", err)
 	}
 
 	// Without the subscription omp sends no subagent frame at all: a subagent
 	// then has no registry row and no transcript, and its result reaches the
 	// parent as text alone.
 	if _, err := a.sendCommand(CommandSetSubagentSubscription, map[string]any{"level": subagentSubscriptionEvents}, timeout); err != nil {
-		return a.FormatStartupError(CommandSetSubagentSubscription, err)
+		return fmt.Errorf("%s: %w", CommandSetSubagentSubscription, err)
 	}
 
 	if _, err := a.sendCommand(CommandSetEventFilter, map[string]any{"events": nil, "messageUpdates": "delta"}, timeout); err != nil {
-		return a.FormatStartupError(CommandSetEventFilter, err)
+		return fmt.Errorf("%s: %w", CommandSetEventFilter, err)
 	}
 
 	state, err := a.sendCommand(CommandGetState, nil, timeout)
 	if err != nil {
-		return a.FormatStartupError(CommandGetState, err)
+		return fmt.Errorf("%s: %w", CommandGetState, err)
 	}
 	a.applyState(state)
 

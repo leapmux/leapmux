@@ -81,6 +81,3 @@ func (d *Diagnostics) ExitError(err error, ready bool) error {
 	}
 	return err
 }
-
-// HasShellCommands reports whether invocation can leave a callable shell process attached.
-func (p *PreparedLaunch) HasShellCommands() bool { return p != nil && len(p.candidates) != 0 }

@@ -17,12 +17,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const profilePeerIdentityEnv = "LEAPMUX_TEST_PROFILE_COMMAND_IDENTITY"
+const profilePeerEnvironmentEnv = "LEAPMUX_TEST_PROFILE_COMMAND_ENVIRONMENT"
+const profilePeerStripEnv = "LEAPMUX_TEST_PROFILE_COMMAND_STRIP"
+const profilePeerLiteralEnv = "LEAPMUX_TEST_PROFILE_COMMAND_LITERAL"
+
+type profilePeerEnvironment struct {
+	Stripped *string
+	Literal  *string
+}
+
+func profilePeerEnvironmentValue(name string) *string {
+	value, present := os.LookupEnv(name)
+	if !present {
+		return nil
+	}
+	return &value
+}
 
 const profilePeerEnv = "LEAPMUX_TEST_PROFILE_COMMAND_PEER"
 const profilePeerPayload = `{"message":"한글"}`
@@ -40,8 +58,18 @@ func TestProfileCommandPeer(t *testing.T) {
 		if arg != "--" {
 			continue
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(os.Args[index+1:]); err != nil {
+		encoder := json.NewEncoder(os.Stdout)
+		if err := encoder.Encode(os.Args[index+1:]); err != nil {
 			os.Exit(2)
+		}
+		if os.Getenv(profilePeerEnvironmentEnv) == "1" {
+			environment := profilePeerEnvironment{
+				Stripped: profilePeerEnvironmentValue(profilePeerStripEnv),
+				Literal:  profilePeerEnvironmentValue(profilePeerLiteralEnv),
+			}
+			if err := encoder.Encode(environment); err != nil {
+				os.Exit(2)
+			}
 		}
 		if _, err := fmt.Fprintf(os.Stdout, "Content-Length: %d\r\n\r\n%s", len(profilePeerPayload), profilePeerPayload); err != nil {
 			os.Exit(2)
@@ -95,8 +123,68 @@ func requireProfileShell(t *testing.T, row, name string) string {
 	return ""
 }
 
+// Load the fixture in the command's scope without an on-disk script or a policy change.
+func prependPowerShellProfile(cmd *exec.Cmd, source string) {
+	cmd.Args = slices.Insert(cmd.Args, 1, "-NoProfile")
+	last := len(cmd.Args) - 1
+	cmd.Args[last] = ". {\n" + source + "\n}\n" + cmd.Args[last]
+}
+
+func TestProfileCommandPowerShellRegistrySizedProbe(t *testing.T) {
+	interpreters := []string{"pwsh"}
+	if runtime.GOOS == "windows" {
+		interpreters = append(interpreters, "powershell")
+	}
+	for _, name := range interpreters {
+		t.Run(name, func(t *testing.T) {
+			shell := requireProfileShell(t, name, name)
+			const count = 36
+			const nonce = "__POWERSHELL_REGISTRY_PROBE__"
+			const alias = "leapmux-registry-profile-alias"
+			const function = "leapmux-registry-profile-function"
+			names := make([]string, count)
+			descriptors := []string{"cli", "agent-tool", "model-bridge", "language-server", "profile-wrap-application"}
+			for index := range names {
+				names[index] = fmt.Sprintf("leapmux-%s-%02d", descriptors[index%len(descriptors)], index)
+			}
+			executable := filepath.Base(shell)
+			names[0], names[13], names[count-1] = executable, alias, function
+			want := make(map[string]ProbeResult, count)
+			for _, candidate := range names {
+				want[candidate] = ProbeNo
+			}
+			want[executable], want[alias], want[function] = ProbeYes, ProbeYes, ProbeYes
+
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			script := renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false)
+			cmd, err := newShellCommand(ctx, shell, false, script, t.TempDir())
+			require.NoError(t, err)
+			quote := shellquote.PowerShell.Quote
+			prependPowerShellProfile(cmd, "$env:PATH = "+quote(filepath.Dir(shell))+"\n"+
+				"Set-Alias -Name "+alias+" -Value "+quote(shell)+"\n"+
+				"function "+function+" { throw 'probing must not run the function' }\n")
+			output, err := cmd.Output()
+			require.NoError(t, err, "%s", output)
+			require.True(t, strings.HasSuffix(strings.ReplaceAll(string(output), "\r\n", "\n"), nonce+":complete\n"),
+				"the batch did not emit an exact completion record: %q", output)
+			results, path := parseCommandProbe(string(output), nonce, names, false)
+			assert.Equal(t, want, results)
+			assert.Empty(t, path)
+		})
+	}
+}
+
 func assertProfileCommandExchange(t *testing.T, cmd *exec.Cmd, delimiter string, args []string) {
 	t.Helper()
+	assertProfileCommandExchangeWithEnvironment(t, cmd, delimiter, args, nil)
+}
+
+func assertProfileCommandExchangeWithEnvironment(t *testing.T, cmd *exec.Cmd, delimiter string, args []string, wantEnvironment *profilePeerEnvironment) {
+	t.Helper()
+	if wantEnvironment != nil {
+		cmd.Env = append(cmd.Environ(), profilePeerEnvironmentEnv+"=1")
+	}
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
@@ -127,6 +215,13 @@ func assertProfileCommandExchange(t *testing.T, cmd *exec.Cmd, delimiter string,
 	var got []string
 	require.NoError(t, json.Unmarshal(line, &got), "provider output: %q", line)
 	assert.Equal(t, args, got)
+	if wantEnvironment != nil {
+		line, err := reader.ReadBytes('\n')
+		require.NoError(t, err)
+		var gotEnvironment profilePeerEnvironment
+		require.NoError(t, json.Unmarshal(line, &gotEnvironment), "provider environment: %q", line)
+		assert.Equal(t, *wantEnvironment, gotEnvironment)
+	}
 	expected := fmt.Appendf(nil, "Content-Length: %d\r\n\r\n%s", len(profilePeerPayload), profilePeerPayload)
 	gotFrame := make([]byte, len(expected))
 	_, err = io.ReadFull(reader, gotFrame)

@@ -595,7 +595,9 @@ The selected Worker's shell must be able to find the provider's command. It can 
 **Fix**
 Install the CLI on the Worker or define a forwarding alias or function in a profile the Worker's shell loads. Click **"Refresh available providers"** to scan again. A wrapper must run the provider in the foreground, forward the arguments and standard streams, and preserve the provider's exit status. Leave the agent's standard input for the provider when the profile runs.
 
-Agent launches use Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Xonsh, and PowerShell. Nushell 0.114 or newer supports profile wrappers through deferred parsing. Earlier Nushell versions can launch executable commands. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
+The Worker requests login mode by default for provider discovery and launch when the configured shell supports it. To omit the login flags, set `use_login_shell: false` in the Worker or Solo configuration file, or pass `--use-login-shell=false` to `leapmux worker` or `leapmux solo` when starting or restarting the service. The shell may still read profiles in its default mode. Windows PowerShell 5.1 loads profiles without a login flag.
+
+Agent launches support Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Xonsh, Windows PowerShell 5.1 (`powershell.exe`), and PowerShell 7 (`pwsh`). Nushell 0.114 or newer supports profile wrappers through deferred parsing. Earlier Nushell versions can launch executable commands. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
 
 ### ZCode isn't in the picker
 

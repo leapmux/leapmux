@@ -116,29 +116,57 @@ func TestPreparedWindowsShellResolvesTheRefreshedPath(t *testing.T) {
 }
 
 func TestProgramPathDoesNotStopAtAShellOnlyWindowsShim(t *testing.T) {
-	shell, err := exec.LookPath("powershell")
-	require.NoError(t, err)
-	shims, programs := t.TempDir(), t.TempDir()
-	original := workerWindowsPath
-	t.Cleanup(func() { workerWindowsPath = original })
-	const candidate = "leapmux-probe-native-interpreter"
-	testutil.WriteExecutable(t, filepath.Join(shims, candidate+".cmd"), "@exit /b 0\r\n")
-	testutil.WriteExecutable(t, filepath.Join(shims, candidate+".ps1"), "exit 0\r\n")
-	executable := filepath.Join(programs, candidate+".exe")
-	peer := profileCommandExecutable(t)
-	contents, err := os.ReadFile(peer)
-	require.NoError(t, err)
-	testutil.WriteExecutable(t, executable, string(contents))
-	saved := []string{shims, programs}
-	workerWindowsPath = newWindowsPathRefresh(func() ([]string, error) { return saved, nil })
-	t.Setenv("PATH", strings.Join(saved, ";"))
-	t.Setenv("PATHEXT", ".CMD;.EXE;.COM")
-	path, result := ProgramPath(t.Context(), shell, false, candidate)
-	require.Equal(t, ProbeYes, result)
-	assert.Equal(t, executable, path)
-	require.NoError(t, os.Remove(executable))
-	path, result = ProgramPath(t.Context(), shell, false, candidate)
-	require.Equal(t, ProbeNo, result)
-	assert.Empty(t, path)
-	assert.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, false, candidate), "batch files are shell commands")
+	for _, name := range []string{"powershell", "git-bash", "nu", "xonsh"} {
+		t.Run(name, func(t *testing.T) {
+			var shell string
+			switch name {
+			case "powershell":
+				shell = requireProfileShell(t, name, name)
+			case "git-bash":
+				shell = requireWindowsGitBash(t)
+				t.Setenv("BASH_ENV", "")
+			default:
+				var err error
+				shell, err = exec.LookPath(name)
+				if err != nil {
+					t.Skipf("%s is unavailable: %v", name, err)
+				}
+			}
+
+			shims, programs := t.TempDir(), t.TempDir()
+			original := workerWindowsPath
+			t.Cleanup(func() { workerWindowsPath = original })
+			const candidate = "leapmux-probe-native-interpreter"
+			testutil.WriteExecutable(t, filepath.Join(shims, candidate+".cmd"), "@echo off\r\necho batch shim\r\n")
+			testutil.WriteExecutable(t, filepath.Join(shims, candidate+".ps1"), "exit 0\r\n")
+			if name != "powershell" {
+				testutil.WriteExecutable(t, filepath.Join(shims, candidate), "#!/bin/sh\nprintf 'shell shim\\n'\n")
+			}
+			executable := installWindowsProfilePeer(t, programs, candidate+".exe")
+			saved := []string{shims, programs}
+			workerWindowsPath = newWindowsPathRefresh(func() ([]string, error) { return saved, nil })
+			t.Setenv("PATH", strings.Join(append(saved, os.Getenv("PATH")), ";"))
+			t.Setenv("PATHEXT", ".CMD;.BAT;.EXE;.COM")
+
+			path, result := ProgramPath(t.Context(), shell, false, candidate)
+			require.Equal(t, ProbeYes, result)
+			assert.True(t, strings.EqualFold(executable, filepath.Clean(path)), "expected %q, got %q", executable, path)
+			require.NoError(t, os.Remove(executable))
+			path, result = ProgramPath(t.Context(), shell, false, candidate)
+			require.Equal(t, ProbeNo, result)
+			assert.Empty(t, path)
+
+			if name == "powershell" || name == "git-bash" {
+				command, message := candidate, "shell shim"
+				if name == "powershell" {
+					command, message = candidate+".cmd", "batch shim"
+				}
+				require.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, false, command))
+				cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{Shell: shell, Launch: ShellCommands(command)})
+				output, err := cmd.CombinedOutput()
+				require.NoError(t, err, "%s", output)
+				assert.Contains(t, string(output), message)
+			}
+		})
+	}
 }

@@ -231,6 +231,12 @@ var errAddressInUse = errors.New("the port of the Cline hub is in use")
 // tries a second port once when another process took the first one in the
 // moment between the choice and the bind.
 func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spec, dir string, clock quartz.Clock) (*daemonStart, error) {
+	return retryDaemonPort(ctx, opts.AgentID, func(port int) (*daemonStart, error) {
+		return startDaemonOnPort(ctx, opts, spec, dir, port, clock)
+	})
+}
+
+func retryDaemonPort(ctx context.Context, agentID string, start func(port int) (*daemonStart, error)) (*daemonStart, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -240,7 +246,7 @@ func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spe
 		if err != nil {
 			return nil, err
 		}
-		started, err := startDaemonOnPort(ctx, opts, spec, dir, port, clock)
+		started, err := start(port)
 		if err == nil {
 			return started, nil
 		}
@@ -248,7 +254,7 @@ func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spe
 		if !errors.Is(err, errAddressInUse) {
 			return nil, err
 		}
-		slog.Info("cline hub port was taken; retrying with another", "agent_id", opts.AgentID, "port", port)
+		slog.Info("cline hub port was taken; retrying with another", "agent_id", agentID, "port", port)
 	}
 	return nil, lastErr
 }
@@ -279,7 +285,7 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 		return nil, err
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
-	process := providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "cline", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, procCtx, cancel)
+	process := providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "cline", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, Clock: clock}, pipes, procCtx, cancel)
 	if err := ctx.Err(); err != nil {
 		cancel()
 		return nil, errors.Join(err, pipes.Close())
@@ -298,14 +304,22 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 	if err != nil {
 		process.Stop()
 		waitErr := process.Wait()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if errors.Is(waitErr, launch.ErrNoCandidate) {
+			return nil, process.FormatStartupError("hub start", waitErr)
 		}
-		stderrText := strings.TrimSpace(process.Stderr())
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			cause := process.FinalizeStartupCause(ctxErr)
+			if cause == ctxErr {
+				return nil, ctxErr
+			}
+			return nil, process.FormatStartupError("hub start", cause)
+		}
 		var exit *exec.ExitError
-		if !errors.Is(waitErr, launch.ErrNoCandidate) && errors.Is(err, errDaemonExited) &&
-			process.Ready() && errors.As(waitErr, &exit) && exit.ExitCode() > 0 && strings.Contains(stderrText, "EADDRINUSE") {
-			return nil, fmt.Errorf("%w: %s", errAddressInUse, stderrText)
+		if errors.Is(err, errDaemonExited) && errors.As(waitErr, &exit) {
+			if process.Ready() && exit.ExitCode() > 0 && strings.Contains(process.Stderr(), "EADDRINUSE") {
+				return nil, process.FormatStartupError("hub start", fmt.Errorf("%w (%w)", errAddressInUse, waitErr))
+			}
+			err = fmt.Errorf("%w (%w)", err, waitErr)
 		}
 		return nil, process.FormatStartupError("hub start", fmt.Errorf("%w; %s", err, protocolHint))
 	}

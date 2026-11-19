@@ -2,14 +2,16 @@ package copilot
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/require"
 )
@@ -80,23 +82,42 @@ func TestProfileCommandCopilotFramingAfterAnUnterminatedBanner(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX shell profile")
 	}
-	shell := filepath.Join(t.TempDir(), "profile-shell")
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "profile-shell")
 	testutil.WriteExecutable(t, shell, "#!/bin/sh\nprintf 'profile message'\nexec /bin/sh \"$@\"\n")
-	payload := []byte(`{"text":"한글"}`)
-	prepared, wrapErr := launch.Wrap(t.Context(), launch.WrapSpec{
-		Shell: shell, Launch: launch.Spec{Program: "/usr/bin/printf"}, BaseArgs: []string{"%s", string(frameCopilotJSON(payload))},
-	})
-	require.NoError(t, wrapErr)
-	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
-	cmd, delimiter := prepared.Cmd, prepared.Delimiter
+	payload := []byte("{\n\"method\":\"session.event\",\"params\":{\"text\":\"한글\"}\n}")
+	nativeFrame := fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(payload), payload)
+	testutil.WriteExecutable(t, filepath.Join(dir, copilotBinaryName),
+		"#!/bin/sh\nprintf '%s' "+shellquote.POSIX.Quote(nativeFrame)+"\n"+
+			"IFS= read -r ack && [ \"$ack\" = received ]\n")
+	t.Setenv("PATH", dir)
 
-	output, err := cmd.Output()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	connection, err := startCopilotConnection(ctx, agent.Options{Shell: shell, WorkingDir: dir})
 	require.NoError(t, err)
-	scanner := newCopilotScanner(bytes.NewReader(output), delimiter, 1024)
-	process := providerkit.NewProcessFrom(providerkit.ProcessConfig{PreambleDelimiter: delimiter})
-	process.SkipPreambleForTest(scanner)
-	require.True(t, scanner.Scan(), "%q", output)
-	require.Equal(t, payload, scanner.Bytes())
-	require.False(t, scanner.Scan())
-	require.NoError(t, scanner.Err())
+	defer connection.Stop()
+	frames := make(chan []byte, 2)
+	connection.startReading(func(line *providerkit.ParsedLine) { frames <- line.Raw })
+
+	deadline := testutil.DeadlineContext(t)
+	select {
+	case frame := <-frames:
+		require.Equal(t, payload, frame)
+	case <-connection.ProcessDone():
+		t.Fatalf("Copilot exited before receiving the acknowledgment: %v", connection.Wait())
+	case <-deadline.Done():
+		t.Fatal("the first native frame did not arrive while Copilot was waiting for stdin")
+	}
+	require.True(t, connection.Ready())
+	require.Equal(t, "profile message", connection.PreambleOutput())
+	require.NoError(t, connection.WriteStdin([]byte("received\n")))
+
+	select {
+	case <-connection.ProcessDone():
+		require.NoError(t, connection.Wait())
+		require.Empty(t, frames)
+	case <-deadline.Done():
+		t.Fatal("Copilot did not finish after receiving the acknowledgment")
+	}
 }

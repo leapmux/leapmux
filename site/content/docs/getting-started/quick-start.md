@@ -117,7 +117,7 @@ Click **"Create"**. LeapMux creates the workspace, spawns its first agent, and n
 If you already have a workspace open and want another agent in it, open the tab bar's add menu and choose **"New agent..."** (or double-click an empty area of the tab bar). This opens the **"New agent"** dialog:
 
 - **Worker** — the host machine (the local Worker in solo mode).
-- **Agent Provider** — choose your provider; the dropdown lists only providers whose CLI was detected, sorted alphabetically by name. If none are found, the button reads **"No agents available"** — install an agent CLI and use the provider section's refresh control (**"Refresh available providers"**).
+- **Agent Provider** — choose a provider from the selected Worker’s list, sorted alphabetically. The Worker checks for provider commands through its configured shell, including aliases and functions from its profile. If the button reads **"No agents available"**, make a provider command available to that Worker and click **"Refresh available providers"**.
 - **Directory** — the working directory (use the directory tree to pick it, or type a path in the box above the tree).
 - **Resume an existing session** *(optional)* — a menu of earlier sessions for the chosen directory and provider, including ones you started by running that CLI in a terminal. Pick one to continue it (see [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session)).
 - **Title** — the tab name. Defaults to a random `Agent <Name>`; click **"Generate random name"** to pick another, or type your own. It cannot be empty.

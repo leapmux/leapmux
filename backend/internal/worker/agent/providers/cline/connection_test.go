@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -763,57 +765,83 @@ func TestClineDoesNotRetryCandidateExhaustion(t *testing.T) {
 const failedBindWitnessEnv = "LEAPMUX_TEST_CLINE_FAILED_BIND"
 
 func TestClineBindFailureWitness(t *testing.T) {
-	address := os.Getenv(failedBindWitnessEnv)
-	if address == "" {
+	code, err := strconv.Atoi(os.Getenv(failedBindWitnessEnv))
+	if err != nil {
 		return
 	}
-	if _, err := fmt.Fprintln(os.Stderr, "Error: listen EADDRINUSE: address already in use 127.0.0.1"); err != nil {
+	listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, os.Getenv(envHubPort)))
+	if err == nil {
+		_ = listener.Close()
 		os.Exit(41)
 	}
-	conn, err := net.Dial("tcp", address)
-	if err != nil {
+	if !errors.Is(err, syscall.EADDRINUSE) {
 		os.Exit(42)
 	}
-	_, _ = io.Copy(io.Discard, conn)
-	_ = conn.Close()
-	os.Exit(37)
+	_, _ = fmt.Fprintln(os.Stderr, "EADDRINUSE", err)
+	os.Exit(code)
 }
 
 func TestClineDoesNotRetryABindFailureAfterCancellation(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX command fixture")
 	}
 	dir := t.TempDir()
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	require.NoError(t, listener.SetDeadline(time.Now().Add(15*time.Second)))
-	t.Setenv(failedBindWitnessEnv, listener.Addr().String())
 	count := filepath.Join(dir, "attempts")
 	daemon := filepath.Join(dir, "daemon")
+	executable, err := os.Executable()
+	require.NoError(t, err)
 	testutil.WriteExecutable(t, daemon, "#!/bin/sh\nprintf 'attempt\\n' >> "+shellquote.POSIX.Quote(count)+
-		"\nexec "+shellquote.POSIX.Quote(executable)+" -test.run=^TestClineBindFailureWitness$\n")
+		"\n"+failedBindWitnessEnv+"=37 exec "+shellquote.POSIX.Quote(executable)+" -test.run=^TestClineBindFailureWitness$\n")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	outcome := make(chan error, 1)
-	go func() {
-		_, err := startDaemonProcess(ctx, agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second},
-			launch.Spec{Program: daemon}, dir, quartz.NewReal())
-		outcome <- err
-	}()
-	conn, err := listener.Accept()
-	require.NoError(t, err, "the child emits its bind failure before connecting")
-	cancel()
-	require.NoError(t, conn.Close())
-	select {
-	case err := <-outcome:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the canceled start did not return")
-	}
+	opts := agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second}
+	attempts := 0
+	started, err := retryDaemonPort(ctx, opts.AgentID, func(port int) (*daemonStart, error) {
+		attempts++
+		require.Equal(t, 1, attempts, "the retry loop must check the canceled context before invoking another attempt")
+		listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, strconv.Itoa(port)))
+		require.NoError(t, err)
+		defer func() { _ = listener.Close() }()
+		started, err := startDaemonOnPort(ctx, opts, launch.Spec{Program: daemon}, dir, port, quartz.NewReal())
+		require.Nil(t, started)
+		require.ErrorIs(t, err, errAddressInUse, "the real invocation must finish and qualify for a retry before cancellation")
+		cancel()
+		return started, err
+	})
+	require.Nil(t, started)
+	require.ErrorIs(t, err, context.Canceled)
 	data, err := os.ReadFile(count)
 	require.NoError(t, err)
 	assert.Equal(t, "attempt\n", string(data))
+}
+
+func TestClineReportsTheNativeStatusOfTheLastBindFailure(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX command fixture")
+	}
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "daemon")
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	testutil.WriteExecutable(t, daemon, "#!/bin/sh\nexec "+shellquote.POSIX.Quote(executable)+" -test.run=^TestClineBindFailureWitness$\n")
+
+	attempts := 0
+	opts := agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second}
+	started, err := retryDaemonPort(t.Context(), opts.AgentID, func(port int) (*daemonStart, error) {
+		attempts++
+		listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, strconv.Itoa(port)))
+		require.NoError(t, err)
+		defer func() { _ = listener.Close() }()
+		opts.ExtraEnv = []string{failedBindWitnessEnv + "=" + strconv.Itoa(36+attempts)}
+		return startDaemonOnPort(t.Context(), opts, launch.Spec{Program: daemon}, dir, port, quartz.NewReal())
+	})
+	require.Nil(t, started)
+	require.ErrorIs(t, err, errAddressInUse)
+	assert.ErrorContains(t, err, "EADDRINUSE")
+	var native *exec.ExitError
+	require.ErrorAs(t, err, &native)
+	assert.Equal(t, 38, native.ExitCode())
+	assert.Equal(t, 2, attempts)
 }

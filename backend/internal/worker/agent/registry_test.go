@@ -552,6 +552,7 @@ func TestListAvailableProvidersFindsProfileCommandsWithoutRunningThem(t *testing
 	}
 	dir := t.TempDir()
 	checkout := filepath.Join(dir, "checkout")
+	neutral := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(checkout, "private-bin"), 0o700))
 	shell, err := exec.LookPath("bash")
 	require.NoError(t, err)
@@ -561,7 +562,14 @@ func TestListAvailableProvidersFindsProfileCommandsWithoutRunningThem(t *testing
 	const relative = "leapmux_registry_checkout"
 	require.NoError(t, os.WriteFile(profile, []byte("export PATH=./private-bin\n"+callable+"() { printf started > "+shellquote.POSIX.Quote(witness)+"; }\n"), 0o600))
 	t.Setenv("BASH_ENV", profile)
+	t.Setenv("TMPDIR", neutral)
 	testutil.WriteExecutable(t, filepath.Join(checkout, "private-bin", relative), "#!/bin/sh\nexit 0\n")
+	t.Chdir(checkout)
+	// The same shell can discover the relative executable in the checkout.
+	probe := exec.CommandContext(t.Context(), shell, "-c", "command -v "+relative)
+	output, err := probe.Output()
+	require.NoError(t, err)
+	assert.Equal(t, "./private-bin/"+relative+"\n", string(output))
 	first := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first.Locator = launch.Binaries(callable)
 	second := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)

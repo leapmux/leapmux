@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stopProcess } from '../helpers/process'
-import { isAlive } from '../helpers/processTree'
+import { listProcesses } from '../helpers/processTree'
 import { waitForFileSignal } from '../helpers/toolOutputControl'
 import { parseLettaMcpCatalog } from './mcpCatalog'
 import { readLettaMcpCliReceipt, writeLettaMcpCliCapture } from './mcpCliReceipt'
@@ -137,11 +137,14 @@ setImmediate(() => {
     await waitForFileSignal(ready)
     const pid = Number(readFileSync(ready, 'utf8'))
     expect(Number.isSafeInteger(pid) && pid > 0).toBe(true)
+    // A new process can reuse the PID once the capture reaps the native child.
+    const nativeIsRunning = () => listProcesses().some(row => row.pid === pid && row.command.includes(native))
+    expect(nativeIsRunning()).toBe(true)
     expect(operation.child.kill('SIGTERM')).toBe(true)
     const result = await operation.closed
     expect(result.signal).toBe('SIGTERM')
     expect(result.code).toBeNull()
-    expect(isAlive(pid)).toBe(false)
+    expect(nativeIsRunning()).toBe(false)
     const receipt = readLettaMcpCliReceipt(capture.receiptPath, result.nativeResult, operation.expected)
     expect(receipt.signal).toBe('SIGTERM')
     expect(receipt.exitCode).toBeNull()

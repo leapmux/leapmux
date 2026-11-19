@@ -50,6 +50,12 @@ type Process struct {
 	cancel        func()
 	processDone   chan struct{}
 	waitErr       error
+	// The native wait supplies nativeExitErr. Cleanup can add a different
+	// exit error to waitErr. Mu protects both fields until processDone closes.
+	nativeExitErr *exec.ExitError
+	// Mu protects framingCancelRequested, which records an early stdout failure
+	// that can cause the native process to exit.
+	framingCancelRequested bool
 	// stopSignal is the signal that Stop sends to the process group, after it
 	// captures the process tree. Zero sends none. See ProcessLaunch.StopSignal.
 	stopSignal syscall.Signal
@@ -65,7 +71,9 @@ type Process struct {
 	stderrDone  chan struct{}
 	// stderrDraining reports that DrainStderr started, so stderrDone closes
 	// when the drain ends.
-	stderrDraining atomic.Bool
+	stderrDraining      atomic.Bool
+	stderrUsesOwnedPipe atomic.Bool
+	stderrFrozen        atomic.Bool
 
 	Mu      sync.Mutex
 	stopped bool
@@ -376,7 +384,7 @@ func (p *Process) Stop() {
 		if err := p.owner.Terminate(); err != nil {
 			slog.Warn("stop owned agent processes", "agent_id", p.agentID, "error", err)
 		}
-		if p.cancel != nil {
+		if p.cancel != nil && !p.nativeExitObserved() {
 			p.cancel()
 		}
 	}
@@ -433,7 +441,7 @@ func (p *Process) ProcessExitCompletion() agent.MessageCompletion {
 	if p.processExited {
 		return p.exitCompletion
 	}
-	if p.intentionalStop.Load() || p.stopped {
+	if p.intentionalStop.Load() || (p.stopped && !p.nativeExitObservedLocked()) {
 		return agent.MessageCompletionInterrupted
 	}
 	return agent.MessageCompletionError
@@ -441,24 +449,48 @@ func (p *Process) ProcessExitCompletion() agent.MessageCompletion {
 
 func (p *Process) NoteIntentionalStop() {
 	p.Mu.Lock()
-	if !p.processExited {
+	if !p.nativeExitObservedLocked() {
 		p.intentionalStop.Store(true)
 	}
 	p.Mu.Unlock()
 }
 
-// recordProcessExit freezes the first classification. Diagnostic collection
-// can update the error without changing that classification.
+func (p *Process) nativeExitObserved() bool {
+	p.Mu.Lock()
+	defer p.Mu.Unlock()
+	return p.nativeExitObservedLocked()
+}
+
+// The owner may complete its wait just before the exit callback acquires Mu.
+func (p *Process) nativeExitObservedLocked() bool {
+	return p.processExited || p.owner.ProcessState() != nil
+}
+
+func (p *Process) recordNativeProcessExit(err error) {
+	var exitErr *exec.ExitError
+	errors.As(err, &exitErr)
+	p.Mu.Lock()
+	defer p.Mu.Unlock()
+	p.nativeExitErr = exitErr
+	p.recordProcessExitLocked(err)
+}
+
 func (p *Process) recordProcessExit(err error) {
 	p.Mu.Lock()
 	defer p.Mu.Unlock()
+	p.recordProcessExitLocked(err)
+}
+
+// recordProcessExitLocked freezes the first classification. Diagnostic
+// collection can update the error without changing that classification.
+func (p *Process) recordProcessExitLocked(err error) {
 	p.waitErr = err
 	if p.processExited {
 		return
 	}
 	p.processExited = true
 	p.exitCompletion = agent.MessageCompletionError
-	if p.intentionalStop.Load() || p.stopped {
+	if p.intentionalStop.Load() {
 		p.exitCompletion = agent.MessageCompletionInterrupted
 	}
 }
@@ -562,7 +594,9 @@ func (p *Process) SkipStderr() {
 // Stderr returns the captured stderr output. It waits for the stderr
 // goroutine to finish draining the pipe (up to stderrDrainWait).
 func (p *Process) Stderr() string {
-	p.waitForStderrDrain()
+	if !p.stderrFrozen.Load() {
+		p.waitForStderrDrain()
+	}
 	p.stderrMu.Lock()
 	defer p.stderrMu.Unlock()
 	if p.diagnostics != nil {
@@ -575,27 +609,35 @@ func (p *Process) Stderr() string {
 // unexpectedly. It includes the exit code when available.
 func (p *Process) ProcessExitError() error {
 	p.Mu.Lock()
-	waitErr := p.waitErr
+	waitErr, exitErr := p.waitErr, p.nativeExitErr
 	p.Mu.Unlock()
 	if errors.Is(waitErr, launch.ErrNoCandidate) {
 		return waitErr
 	}
-	var exitErr *exec.ExitError
-	if errors.As(waitErr, &exitErr) {
+	if exitErr != nil {
 		return &startupDiagnosticError{message: fmt.Sprintf("agent process exited with code %d", exitErr.ExitCode()), cause: waitErr}
 	}
-	return fmt.Errorf("agent process exited unexpectedly")
+	return &startupDiagnosticError{message: "agent process exited unexpectedly", cause: waitErr}
 }
 
-// FinalizeStartupCause preserves a confirmed selection failure if an early
-// exchange reported a transport error before the shell's exit was observed.
+// FinalizeStartupCause preserves confirmed selection exhaustion or a native
+// failure that occurred before shutdown could cause it.
 func (p *Process) FinalizeStartupCause(cause error) error {
 	p.Mu.Lock()
-	defer p.Mu.Unlock()
-	if errors.Is(p.waitErr, launch.ErrNoCandidate) {
-		return p.waitErr
+	waitErr, exitErr := p.waitErr, p.nativeExitErr
+	cleanupRequested := p.intentionalStop.Load() || p.framingCancelRequested
+	p.Mu.Unlock()
+	if errors.Is(waitErr, launch.ErrNoCandidate) {
+		return waitErr
 	}
-	return cause
+	if cleanupRequested || exitErr == nil || errors.Is(cause, exitErr) || p.owner.CanceledWhileRunning() {
+		return cause
+	}
+	message := fmt.Sprintf("agent process exited with code %d", exitErr.ExitCode())
+	if cause != nil {
+		message = fmt.Sprintf("%s (%s)", cause, message)
+	}
+	return &startupDiagnosticError{message: message, cause: errors.Join(cause, waitErr)}
 }
 
 // Ready reports that the shell reached provider invocation.
@@ -707,11 +749,13 @@ type ProcessLaunch struct {
 	// the close of its stdin. Stop sends it to the process group after it
 	// captures the process tree and before it closes stdin. Zero sends none.
 	StopSignal syscall.Signal
+	// Clock drives process waits. A nil clock uses the real clock.
+	Clock quartz.Clock
 }
 
 // NewProcess consumes the command and owner that SetupProcessPipes created together.
 func NewProcess(opts agent.Options, launch ProcessLaunch, pipes *ProcessPipes, ctx context.Context, cancel func()) Process {
-	return NewProcessFrom(ProcessConfig{AgentID: opts.AgentID, ProviderName: launch.ProviderName, Ctx: ctx, Cancel: cancel, APITimeout: opts.EffectiveAPITimeout(), PreambleDelimiter: launch.PreambleDelimiter, PreambleMetaPrefix: launch.PreambleMetaPrefix, pipes: pipes, shutdownGrace: launch.ShutdownGrace, stopSignal: launch.StopSignal})
+	return NewProcessFrom(ProcessConfig{AgentID: opts.AgentID, ProviderName: launch.ProviderName, Ctx: ctx, Cancel: cancel, APITimeout: opts.EffectiveAPITimeout(), PreambleDelimiter: launch.PreambleDelimiter, PreambleMetaPrefix: launch.PreambleMetaPrefix, pipes: pipes, shutdownGrace: launch.ShutdownGrace, stopSignal: launch.StopSignal, Clock: launch.Clock})
 }
 
 // ProcessConfig supplies the initial Process state.
@@ -811,7 +855,7 @@ func (p *Process) StartCmd() error {
 	if p.owner == nil {
 		startErr = errors.New("the process has no prepared owner")
 	} else {
-		startErr = p.pipes.Start(p.Clock())
+		startErr = p.pipes.start(p.Clock(), p.recordNativeProcessExit)
 	}
 	if startErr == nil {
 		return nil
@@ -832,7 +876,7 @@ func (p *Process) StartCmd() error {
 				p.DrainStderr(p.pipes.Stderr())
 			}
 		}
-		p.awaitStderrDrain()
+		p.finalizeStderr()
 	}
 	startErr = fmt.Errorf("start %s: %w", p.providerName, errors.Join(startErr, p.pipes.Close()))
 	if p.pipes != nil {
@@ -955,7 +999,7 @@ func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 			continue
 		}
 		if !firstLineTraced {
-			if p.pipes != nil && p.pipes.prepared.HasShellCommands() {
+			if p.pipes != nil && p.pipes.prepared != nil {
 				if err := p.owner.CaptureBeforeStop(); err != nil {
 					slog.Debug("capture launch descendants", "agent_id", p.agentID, "error", err)
 				}
@@ -978,25 +1022,24 @@ func (p *Process) ReadLines(scanner *bufio.Scanner, handle func(line []byte)) {
 // the process, and closes processDone, which is what Wait and every stop path
 // block on.
 func (p *Process) finishOutput(scanner *bufio.Scanner) {
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && !p.stdoutClosedAfterNativeExit(err) {
 		slog.Warn("agent stdout read error",
 			"agent_id", p.agentID,
 			"error", err,
 		)
-		// The worker cannot receive further replies after framing fails.
-		p.cancel()
+		p.cancelAfterFramingFailure()
 	}
 
 	var waitErr error
 	if p.owner != nil {
-		waitErr = p.owner.Wait()
+		waitErr = p.pipes.waitForRecordedExit()
 	} else {
 		// ProcessConfig permits a test to supply its own started command.
 		waitErr = p.cmd.Wait()
 	}
-	p.recordProcessExit(waitErr)
+	p.recordNativeProcessExit(waitErr)
 	p.closeStdin()
-	p.awaitStderrDrain()
+	p.finalizeStderr()
 	p.stderrMu.Lock()
 	if p.diagnostics != nil {
 		waitErr = p.diagnostics.ExitError(waitErr, p.Ready())
@@ -1018,6 +1061,24 @@ func (p *Process) finishOutput(scanner *bufio.Scanner) {
 	}
 }
 
+func (p *Process) cancelAfterFramingFailure() {
+	// A running provider cannot receive further replies once framing fails.
+	// When the process has already exited, finish publishing its status first.
+	p.Mu.Lock()
+	requestCancel := p.cancel != nil && !p.nativeExitObservedLocked()
+	if requestCancel {
+		p.framingCancelRequested = true
+	}
+	p.Mu.Unlock()
+	if requestCancel {
+		p.cancel()
+	}
+}
+
+func (p *Process) stdoutClosedAfterNativeExit(err error) bool {
+	return p.pipes != nil && errors.Is(err, fs.ErrClosed) && p.pipes.outputDrainExpired.Load()
+}
+
 // MessageWithToolUses captures the completed tool count as separate worker metadata.
 func (p *Process) MessageWithToolUses(original []byte) agent.MessageContent {
 	p.Mu.Lock()
@@ -1026,15 +1087,25 @@ func (p *Process) MessageWithToolUses(original []byte) agent.MessageContent {
 	return agent.WithToolUseCount(agent.MessageContent{Original: original}, count)
 }
 
-// awaitStderrDrain lets an active drain read the independently owned pipe
-// after the native wait records the exit. The wait has a time limit because
-// a descendant can keep the pipe open after the process ends.
-func (p *Process) awaitStderrDrain() {
-	if !p.stderrDraining.Load() {
-		return
-	}
-	if !p.waitForStderrDrain() {
+// finalizeStderr freezes the diagnostics after the drain ends or the worker
+// closes its reader. An inherited writer can outlive the process.
+func (p *Process) finalizeStderr() {
+	if p.stderrDraining.Load() && !p.waitForStderrDrain() {
 		slog.Debug("stderr drain outlived the process; a descendant may hold the pipe", "agent_id", p.agentID)
+		if p.pipes != nil {
+			_ = p.pipes.closeStderrReader()
+		}
+		if p.stderrUsesOwnedPipe.Load() {
+			// Closing the owned reader interrupts a pending read. The drain
+			// can still hold bytes from a read that finished before the close.
+			<-p.stderrDone
+		}
+	}
+	p.stderrMu.Lock()
+	defer p.stderrMu.Unlock()
+	p.stderrFrozen.Store(true)
+	if p.diagnostics != nil {
+		p.diagnostics.Finish()
 	}
 }
 
@@ -1066,6 +1137,7 @@ func (p *Process) DrainStderr(r io.Reader) {
 		p.diagnostics = p.pipes.prepared.NewDiagnostics(maxStderrSize)
 	}
 	p.stderrMu.Unlock()
+	p.stderrUsesOwnedPipe.Store(p.pipes != nil && r == p.pipes.Stderr())
 	p.stderrDraining.Store(true)
 	go func() {
 		defer func() {
@@ -1082,15 +1154,14 @@ func (p *Process) DrainStderr(r io.Reader) {
 			n, readErr := r.Read(buf)
 			if n > 0 {
 				p.stderrMu.Lock()
-				if p.diagnostics != nil {
-					_, _ = p.diagnostics.Write(buf[:n])
-				} else if total < maxStderrSize {
-					limit := int64(n)
-					if total+limit > maxStderrSize {
-						limit = maxStderrSize - total
+				if !p.stderrFrozen.Load() {
+					if p.diagnostics != nil {
+						_, _ = p.diagnostics.Write(buf[:n])
+					} else if total < maxStderrSize {
+						limit := min(int64(n), maxStderrSize-total)
+						p.stderrBuf.Write(buf[:limit])
+						total += limit
 					}
-					p.stderrBuf.Write(buf[:limit])
-					total += limit
 				}
 				p.stderrMu.Unlock()
 			}

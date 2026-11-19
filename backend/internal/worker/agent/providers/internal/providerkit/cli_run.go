@@ -7,14 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // CLIRun states one short command of a provider's CLI that the worker runs
@@ -97,36 +95,41 @@ func RunCLI(ctx context.Context, run CLIRun) (output []byte, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
+	cmd, delimiter := prepared.Cmd, prepared.Delimiter
+	// A CLI query keeps the command's default null stdin.
+	pipes, err := setupProcessPipes(cmd, nil, nil, prepared, false)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
 		if err := prepared.Close(); err != nil {
 			output, resultErr = nil, errors.Join(resultErr, err)
 		}
 	}()
-	cmd, delimiter := prepared.Cmd, prepared.Delimiter
-	owner := procutil.PrepareProcess(cmd)
 	stdout := LimitedBuffer{Limit: run.MaxOutput}
 	stderr := prepared.NewDiagnostics(maxCLIStderr)
-	cmd.Stdout = &stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = nil
-	// A process that the CLI leaves behind, or that the login shell's profile
-	// started, inherits stdout and keeps the pipe open after the CLI exits. The
-	// The prepared owner sets WaitDelay, which ends this wait with ErrWaitDelay.
-	// Wait returns that error only for a successful CLI exit.
-	// The CLI's own output is complete, so the reader keeps it.
-	runErr := owner.Start()
-	if runErr == nil {
-		runErr = owner.Wait()
+	// Observe the native exit without waiting for inherited writers to close.
+	// Keep the CLI's output drain limit, even when the command has exited.
+	startErr := pipes.startWithDrainLimit(realClock, cmd.WaitDelay, nil)
+	runErr := startErr
+	if startErr == nil {
+		copyErr := pipes.copyOutput(&stdout, stderr)
+		runErr = pipes.waitForRecordedExit()
+		// The exec context watcher can report cancellation after a successful exit.
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(runErr, ctxErr) && !pipes.owner.CanceledWhileRunning() &&
+			pipes.owner.ProcessState().Success() {
+			runErr = nil
+		}
+		if runErr == nil {
+			runErr = copyErr
+		}
 	}
-	cleanupErr := owner.Close()
+	cleanupErr := pipes.closeProcess()
 	stderr.Finish()
 	body, ready := AfterPreamble(stdout.Bytes(), delimiter)
 	runErr = stderr.ExitError(runErr, ready)
-	if errors.Is(runErr, exec.ErrWaitDelay) {
-		runErr = nil
-	}
 	if err := errors.Join(runErr, cleanupErr); err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && (startErr != nil || pipes.owner.CanceledWhileRunning()) && !errors.Is(runErr, launch.ErrNoCandidate) {
 			return nil, fmt.Errorf("`%s` did not answer within %s", strings.Join(append([]string{run.Label}, run.Args...), " "), run.Timeout)
 		}
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
@@ -164,8 +167,8 @@ func AfterPreamble(output []byte, delimiter string) ([]byte, bool) {
 // pipe.
 //
 // It holds its buffer in a field rather than embedding it. An embedded
-// bytes.Buffer would promote ReadFrom, and io.Copy -- which exec uses to fill
-// cmd.Stdout -- prefers ReadFrom to Write, so the limit would never apply.
+// bytes.Buffer would promote ReadFrom. io.Copy prefers ReadFrom to Write,
+// so the limit would never apply.
 type LimitedBuffer struct {
 	buf       bytes.Buffer
 	Limit     int

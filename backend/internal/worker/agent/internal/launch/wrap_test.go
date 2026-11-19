@@ -56,7 +56,11 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 	assert.Equal(t, "-i", cmd.Args[1])
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
-	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
+	for _, state := range []string{"false", "true"} {
+		assert.Contains(t, cmd.Args[4],
+			"__leapmux_print '\\n%s\\n' '"+metaPrefix+"test_gate_open="+state+"' || exit $?\n"+
+				"__leapmux_print '%s\\n' '"+delimiter+"'")
+	}
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "exec 'claude'")
 	assert.Contains(t, cmd.Args[4], "'--output-format'")
@@ -64,9 +68,6 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "'opus'")
 	// Verify conditional structure
 	assert.Contains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
-	assert.Contains(t, cmd.Args[4], "test_gate_open=false")
-	assert.Contains(t, cmd.Args[4], "test_gate_open=true")
-	assert.Contains(t, cmd.Args[4], metaPrefix+"test_gate_open=")
 }
 
 func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
@@ -119,7 +120,7 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[2], "echo' '"+delimiter+"'")
 	// `unsetenv`, not `unset`: csh's `unset` removes a SHELL variable, so the key would
 	// survive into the launched agent's environment.
 	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
@@ -167,7 +168,7 @@ func TestBuildShellWrappedCommand_Csh_NoProbeEmitsNoConditional(t *testing.T) {
 	)
 	assert.Empty(t, meta)
 	assert.True(t, strings.HasSuffix(cmd.Args[2],
-		"unsetenv CLAUDECODE; echo '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'"))
+		"unsetenv CLAUDECODE; '/bin/echo' ''\n'/bin/echo' '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'"))
 	assert.NotContains(t, cmd.Args[2], "then")
 }
 
@@ -181,7 +182,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	assert.Equal(t, "-i", cmd.Args[1])
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
-	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[4], "%print "+nuQuote(delimiter))
 	assert.Contains(t, cmd.Args[4], "hide-env -i CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], `^"claude"`)
 	assert.NotContains(t, cmd.Args[4], "exec")
@@ -392,10 +393,11 @@ func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel(t *testing.T) {
 	assert.NotContains(t, inner, "'--model'")
 	assert.NotContains(t, inner, "'--effort'")
 	// Both branches still exec the program with the base args.
-	parts := strings.SplitN(inner, "else", 2)
+	parts := strings.SplitN(inner, "\nelse\n", 2)
 	require.Len(t, parts, 2, "expected if/else probe structure")
-	assert.Contains(t, parts[0], "exec 'claude'")
-	assert.Contains(t, parts[1], "exec 'claude'")
+	for _, branch := range parts {
+		assert.Contains(t, branch, "exec 'claude' '--output-format' 'stream-json'")
+	}
 }
 
 // TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh checks the
@@ -449,7 +451,7 @@ func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers(t *testing.T) {
 	assert.Empty(t, metaPrefix)
 	assert.Contains(t, cmd.Args[4], "unset CODEX_CI")
 	assert.NotContains(t, cmd.Args[4], "CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[4], "__leapmux_print '\\n%s\\n' '"+delimiter+"'")
 	assert.Contains(t, cmd.Args[4], "exec 'codex'")
 }
 
@@ -564,7 +566,7 @@ func TestBuildShellWrappedCommand_PrefixArgsPrecedeTheBaseArgs(t *testing.T) {
 	})
 
 	assert.True(t, strings.HasSuffix(cmd.Args[2],
-		"echo '"+delimiter+"' && exec '/usr/local/bin/node' '/Applications/ZCode.app/zcode.cjs' 'app-server' '--stdio'"))
+		"__leapmux_print '\\n%s\\n' '"+delimiter+"' || exit $?\nexec '/usr/local/bin/node' '/Applications/ZCode.app/zcode.cjs' 'app-server' '--stdio'"))
 }
 
 // The launch env reaches the process. The caller's own FinalizeAgentEnv keeps
@@ -624,7 +626,7 @@ func TestBuildShellWrappedCommand_EnvGateWithoutVarsIsUnconditional(t *testing.T
 		nil, []string{"--base"}, &EnvGatedArgs{MetaKey: "unused", Args: []string{"--gated"}}, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
-	assert.True(t, strings.HasSuffix(cmd.Args[2], "echo '"+delimiter+"' && exec 'prog' '--base' '--gated'"))
+	assert.True(t, strings.HasSuffix(cmd.Args[2], "__leapmux_print '\\n%s\\n' '"+delimiter+"' || exit $?\nexec 'prog' '--base' '--gated'"))
 }
 
 // TestBuildShellWrappedCommand_EnvGateRejectsUnsafeNames pins that the wrapper

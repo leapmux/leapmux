@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/quartz"
 
@@ -17,21 +19,23 @@ import (
 
 // ProcessPipes constructs one command and its owner together. Callers cannot replace either field.
 type ProcessPipes struct {
-	prepared         *launch.PreparedLaunch
-	cmd              *exec.Cmd
-	owner            *procutil.ProcessOwner
-	stdin            io.WriteCloser
-	stdout           io.ReadCloser
-	stderr           io.ReadCloser
-	childPipes       []io.Closer
-	childCloseOnce   sync.Once
-	childCloseErr    error
-	stderrCloseOnce  sync.Once
-	stderrCloseErr   error
-	readersClosed    chan struct{}
-	closeReadersOnce sync.Once
-	stdoutCloseOnce  sync.Once
-	stdoutCloseErr   error
+	prepared           *launch.PreparedLaunch
+	cmd                *exec.Cmd
+	owner              *procutil.ProcessOwner
+	stdin              io.WriteCloser
+	stdout             io.ReadCloser
+	stderr             io.ReadCloser
+	childPipes         []io.Closer
+	childCloseOnce     sync.Once
+	childCloseErr      error
+	stderrCloseOnce    sync.Once
+	stderrCloseErr     error
+	nativeExitObserved chan struct{}
+	outputDrainExpired atomic.Bool
+	readersClosed      chan struct{}
+	closeReadersOnce   sync.Once
+	stdoutCloseOnce    sync.Once
+	stdoutCloseErr     error
 }
 
 func (p *ProcessPipes) Stdin() io.WriteCloser { return p.stdin }
@@ -45,7 +49,7 @@ func SetupProcessPipes(cmd *exec.Cmd, cancel func()) (*ProcessPipes, error) {
 
 // SetupProcessPipesWithExitObserver fixes the observer when it constructs the command and owner.
 func SetupProcessPipesWithExitObserver(cmd *exec.Cmd, cancel func(), observer procutil.ProcessExitObserver) (*ProcessPipes, error) {
-	return setupProcessPipes(cmd, cancel, observer, nil)
+	return setupProcessPipes(cmd, cancel, observer, nil, true)
 }
 
 // SetupLaunchPipes takes ownership of prepared even when pipe creation fails.
@@ -59,10 +63,10 @@ func SetupLaunchPipesWithExitObserver(prepared *launch.PreparedLaunch, cancel fu
 	if prepared != nil {
 		cmd = prepared.Cmd
 	}
-	return setupProcessPipes(cmd, cancel, observer, prepared)
+	return setupProcessPipes(cmd, cancel, observer, prepared, true)
 }
 
-func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessExitObserver, prepared *launch.PreparedLaunch) (*ProcessPipes, error) {
+func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessExitObserver, prepared *launch.PreparedLaunch, pipeStdin bool) (*ProcessPipes, error) {
 	if cmd == nil {
 		if cancel != nil {
 			cancel()
@@ -79,15 +83,20 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessEx
 		}
 		return nil, cause
 	}
-	var err error
-	if pipes.stdin, err = cmd.StdinPipe(); err != nil {
-		return fail(fmt.Errorf("stdin pipe: %w", err))
+	if pipeStdin {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return fail(fmt.Errorf("stdin pipe: %w", err))
+		}
+		pipes.stdin = stdin
+		pipes.childPipes = append(pipes.childPipes, cmd.Stdin.(io.Closer))
 	}
-	pipes.childPipes = append(pipes.childPipes, cmd.Stdin.(io.Closer))
 	if prepared == nil {
-		if pipes.stdout, err = cmd.StdoutPipe(); err != nil {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
 			return fail(fmt.Errorf("stdout pipe: %w", err))
 		}
+		pipes.stdout = stdout
 	} else {
 		if cmd.Stdout != nil {
 			return fail(errors.New("stdout pipe: stdout is already configured"))
@@ -97,6 +106,7 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessEx
 			return fail(fmt.Errorf("stdout pipe: %w", err))
 		}
 		pipes.stdout, cmd.Stdout = reader, writer
+		pipes.nativeExitObserved = make(chan struct{})
 		pipes.readersClosed = make(chan struct{})
 	}
 	pipes.childPipes = append(pipes.childPipes, cmd.Stdout.(io.Closer))
@@ -116,32 +126,79 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func(), observer procutil.ProcessEx
 
 // Start runs the prepared process and releases the parent's copies of the child pipes.
 func (p *ProcessPipes) Start(clock quartz.Clock) error {
+	return p.start(clock, nil)
+}
+
+func (p *ProcessPipes) start(clock quartz.Clock, recordExit func(error)) error {
+	return p.startWithDrainLimit(clock, stderrDrainWait, recordExit)
+}
+
+func (p *ProcessPipes) startWithDrainLimit(clock quartz.Clock, drainLimit time.Duration, recordExit func(error)) error {
 	startErr := p.owner.Start()
 	if err := errors.Join(startErr, p.closeChildPipes()); err != nil {
 		return err
 	}
 	if p.prepared != nil {
-		go p.closeReadersAfterNativeExit(clock)
+		go p.waitAndLimitDrain(clock, drainLimit, recordExit)
 	}
 	return nil
 }
 
-func (p *ProcessPipes) closeReadersAfterNativeExit(clock quartz.Clock) {
+func (p *ProcessPipes) waitAndLimitDrain(clock quartz.Clock, drainLimit time.Duration, recordExit func(error)) {
 	// Wait does not own these independent read ends. A profile or wrapper
 	// can leave a writer open after the native shell exits.
-	_ = p.owner.Wait()
-	timer := clock.NewTimer(stderrDrainWait, "wrapped-process-drain")
+	err := p.Wait()
+	if recordExit != nil {
+		recordExit(err)
+	}
+	close(p.nativeExitObserved)
+
+	timer := clock.NewTimer(drainLimit, "wrapped-process-drain")
 	defer timer.Stop("wrapped-process-drain")
 	select {
 	case <-p.readersClosed:
 	case <-timer.C:
+		p.outputDrainExpired.Store(true)
 		_ = p.closeStdoutReader()
 		_ = p.closeStderrReader()
 	}
 }
 
+// copyOutput drains both owned streams concurrently. A surviving inherited
+// writer can hold a stream open, so the native waiter limits the drain.
+func (p *ProcessPipes) copyOutput(stdout, stderr io.Writer) error {
+	results := make(chan error, 2)
+	copyStream := func(dst io.Writer, src io.Reader) {
+		_, err := io.Copy(dst, src)
+		if p.outputDrainExpired.Load() && errors.Is(err, os.ErrClosed) {
+			err = nil
+		}
+		results <- err
+	}
+	go copyStream(stdout, p.stdout)
+	go copyStream(stderr, p.stderr)
+	first, second := <-results, <-results
+	if first != nil {
+		return first
+	}
+	return second
+}
+
 // Wait returns the native status without consuming either reader.
 func (p *ProcessPipes) Wait() error { return p.owner.Wait() }
+
+// NativeExitObserved reports whether the owner has recorded the process exit.
+func (p *ProcessPipes) NativeExitObserved() bool { return p.owner.ProcessState() != nil }
+
+// waitForRecordedExit waits for the Process to record its native exit when a
+// wrapped command starts a native waiter independently of its readers.
+func (p *ProcessPipes) waitForRecordedExit() error {
+	err := p.Wait()
+	if p.nativeExitObserved != nil {
+		<-p.nativeExitObserved
+	}
+	return err
+}
 
 // Capture records descendants while the shell is still alive.
 func (p *ProcessPipes) Capture(ctx context.Context) error { return p.owner.Capture(ctx) }
@@ -188,9 +245,13 @@ func (p *ProcessPipes) Close() error {
 	if p == nil {
 		return nil
 	}
+	return errors.Join(p.closeProcess(), p.prepared.Close())
+}
+
+func (p *ProcessPipes) closeProcess() error {
 	if p.readersClosed != nil {
 		p.closeReadersOnce.Do(func() { close(p.readersClosed) })
 	}
 	return errors.Join(p.closeChildPipes(), closeOwnedPipe(p.stdin), p.closeStdoutReader(),
-		p.closeStderrReader(), p.owner.Close(), p.prepared.Close())
+		p.closeStderrReader(), p.owner.Close())
 }

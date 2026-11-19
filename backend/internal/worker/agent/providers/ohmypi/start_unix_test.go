@@ -4,9 +4,11 @@ package ohmypi
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -364,4 +367,48 @@ func TestStartReportsTheResumedGoalAsASnapshot(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.Goals()) == 2 })
 	assert.False(t, sink.Goals()[1].Snapshot)
 	assert.Equal(t, agent.GoalStatusDone, sink.Goals()[1].Status)
+}
+
+func TestOmpStartupExhaustionPeer(*testing.T) { agenttest.RunInheritedWriterPeer() }
+
+func TestOmpStartupKeepsCandidateExhaustionAfterReadinessFails(t *testing.T) {
+	profile := agenttest.InstallStartupExhaustionProfile(t, "TestOmpStartupExhaustionPeer", false)
+	opts := ompStartOptions(t)
+	opts.Shell = profile.Shell
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	deadline := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	ready := clock.Trap().NewTimer(ompReadyTimerTag)
+	t.Cleanup(ready.Close)
+	drain := clock.Trap().NewTimer("wrapped-process-drain")
+	t.Cleanup(drain.Close)
+	stop := clock.Trap().NewTimer("process-stop-grace")
+	t.Cleanup(stop.Close)
+	outcome := make(chan error, 1)
+	go func() {
+		started, err := start(ctx, opts, agent.NewProviderServices(&agenttest.Sink{}), clock)
+		if started != nil {
+			started.Stop()
+			_ = started.Wait()
+		}
+		outcome <- err
+	}()
+	writer := profile.FinishSelection(t)
+	testutil.WaitForTimer(t, deadline, ready)
+	testutil.WaitForTimer(t, deadline, drain)
+	cancel()
+	testutil.WaitForTimer(t, deadline, stop)
+	require.NoError(t, writer.CloseWrite())
+	select {
+	case err := <-outcome:
+		require.ErrorIs(t, err, launch.ErrNoCandidate)
+		assert.ErrorContains(t, err, "(omp)")
+		assert.ErrorContains(t, err, "provider absent diagnostic")
+		var status *exec.ExitError
+		require.ErrorAs(t, err, &status)
+		assert.Equal(t, 127, status.ExitCode())
+	case <-deadline.Done():
+		t.Fatal("startup did not return after the writer closed stdout")
+	}
 }

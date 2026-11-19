@@ -18,22 +18,20 @@ func quotedArguments(args []string, quote func(string) string) []string {
 
 func buildPosixSelection(shell string, spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	quote := shellquote.POSIX.Quote
-	print := posixBuiltin(shell, "printf")
 	var script strings.Builder
+	script.WriteString(posixProtocolSetup(shell))
 	script.WriteString(posixLookupSetup(shell))
-	if prefix := posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.pins); prefix != "" {
-		script.WriteString(prefix + ":\n")
-	}
+	script.WriteString(posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.pins))
 	fmt.Fprintf(&script, "for __lm_selected in %s; do __leapmux_lookup \"$__lm_selected\" command; [ \"$__lm_kind\" = missing ] || break; done\n",
 		strings.Join(quotedArguments(prepared.candidates, quote), " "))
-	fmt.Fprintf(&script, "if [ \"$__lm_kind\" = missing ]; then %s '\\n%%s\\n' %s >&2; exit 127; fi\n", print, quote(prepared.exhaustedMarker))
+	fmt.Fprintf(&script, "if [ \"$__lm_kind\" = missing ]; then __leapmux_print '\\n%%s\\n' %s >&2; exit 127; fi\n", quote(prepared.exhaustedMarker))
 	fmt.Fprintf(&script, "set -- %s\n", strings.Join(quotedArguments(spec.BaseArgs, quote), " "))
 	if gate := spec.EnvGated; gate != nil {
-		fmt.Fprintf(&script, "if %s; then %s '\\n%%s\\n' %s; else %s '\\n%%s\\n' %s; set -- \"$@\" %s; fi\n",
-			posixEnvCondition(gate.EnvVars), print, quote(prepared.MetaPrefix+gate.MetaKey+"=false"),
-			print, quote(prepared.MetaPrefix+gate.MetaKey+"=true"), strings.Join(quotedArguments(gate.Args, quote), " "))
+		fmt.Fprintf(&script, "if %s; then\n%selse\n%sset -- \"$@\" %s\nfi\n",
+			posixEnvCondition(gate.EnvVars), protocolLine(shell, prepared.MetaPrefix+gate.MetaKey+"=false", true),
+			protocolLine(shell, prepared.MetaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, quote), " "))
 	}
-	script.WriteString(probeLine(shell, prepared.Delimiter))
+	script.WriteString(protocolLine(shell, prepared.Delimiter, spec.EnvGated == nil))
 	if runtime.GOOS == "windows" {
 		script.WriteString("export MSYS2_ARG_CONV_EXCL='*'\n")
 		for _, entry := range spec.SetEnv {
@@ -43,14 +41,61 @@ func buildPosixSelection(shell string, spec shellLaunchSpec, prepared *PreparedL
 			}
 		}
 	}
-	fmt.Fprintf(&script, "case \"$__lm_kind\" in\nexternal) %s \"$__lm_path\" \"$@\";;\n", posixBuiltin(shell, "exec"))
-	script.WriteString("alias) ")
-	if shell == "bash" {
-		script.WriteString("builtin shopt -s expand_aliases; ")
+	script.WriteString("case \"$__lm_kind\" in\n")
+	switch shell {
+	case "bash":
+		script.WriteString(bashSelectionDispatch)
+	case "zsh":
+		script.WriteString(`external)
+	if (( $+functions[builtin] )); then
+		\exec "$__lm_path" "$@"
+	else
+		\builtin exec "$__lm_path" "$@"
+	fi;;
+alias)
+	if (( $+functions[builtin] )); then
+		\eval "$__lm_selected" '"$@"'
+	else
+		\builtin eval "$__lm_selected" '"$@"'
+	fi;;
+`)
+	default:
+		script.WriteString(`external) \exec "$__lm_path" "$@";;
+alias) \eval "$__lm_selected" '"$@"';;
+`)
 	}
-	script.WriteString(posixBuiltin(shell, "eval") + " \"$__lm_selected\" '\"$@\"';;\ncallable) \"$__lm_selected\" \"$@\";;\nesac\n")
+	script.WriteString("callable) \"$__lm_selected\" \"$@\";;\nesac\n")
 	return script.String()
 }
+
+// Bash's POSIX mode gives exec, eval, set and unset precedence over
+// functions and lets eval expand aliases. Restore the original mode before
+// invoking the selected alias, after eval has parsed the command line.
+const bashSelectionDispatch = `external)
+	case ":$SHELLOPTS:" in
+		*:posix:*) \exec "$__lm_path" "$@";;
+		*)
+			POSIXLY_CORRECT=y
+			if \unset -f builtin 2>/dev/null; then
+				\set +o posix
+				\builtin exec "$__lm_path" "$@"
+			elif \unset -f command 2>/dev/null; then
+				\set +o posix
+				\command \builtin exec "$__lm_path" "$@"
+			else
+				\export -n POSIXLY_CORRECT
+				\exec "$__lm_path" "$@"
+			fi;;
+	esac;;
+alias)
+	__lm_eval_prefix=''
+	case ":$SHELLOPTS:" in
+		*:posix:*) ;;
+		*) __lm_eval_prefix='\set +o posix;';;
+	esac
+	POSIXLY_CORRECT=${POSIXLY_CORRECT-y}
+	\eval "$__lm_eval_prefix" "$__lm_selected" '"$@"';;
+`
 
 func buildFishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	var script strings.Builder
@@ -69,10 +114,10 @@ func buildFishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 			conditions[index] = `test -n "$` + name + `"`
 		}
 		fmt.Fprintf(&script, "if %s\n%selse\n%sset -a __lm_args %s\nend\n",
-			strings.Join(conditions, "; or "), probeLine("fish", prepared.MetaPrefix+gate.MetaKey+"=false"),
-			probeLine("fish", prepared.MetaPrefix+gate.MetaKey+"=true"), strings.Join(quotedArguments(gate.Args, fishQuote), " "))
+			strings.Join(conditions, "; or "), protocolLine("fish", prepared.MetaPrefix+gate.MetaKey+"=false", true),
+			protocolLine("fish", prepared.MetaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, fishQuote), " "))
 	}
-	script.WriteString(probeLine("fish", prepared.Delimiter))
+	script.WriteString(protocolLine("fish", prepared.Delimiter, spec.EnvGated == nil))
 	script.WriteString("if test \"$__lm_kind\" = external; exec \"$__lm_path\" $__lm_args; else; $__lm_selected $__lm_args; end\nexit $status\n")
 	return script.String()
 }
@@ -105,11 +150,11 @@ func buildPwshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	writeArgs(spec.BaseArgs, false)
 	if gate := spec.EnvGated; gate != nil {
 		fmt.Fprintf(&script, "if (%s) { %s} else { %s",
-			pwshEnvCondition(gate.EnvVars), probeLine("pwsh", prepared.MetaPrefix+gate.MetaKey+"=false"), probeLine("pwsh", prepared.MetaPrefix+gate.MetaKey+"=true"))
+			pwshEnvCondition(gate.EnvVars), protocolLine("pwsh", prepared.MetaPrefix+gate.MetaKey+"=false", true), protocolLine("pwsh", prepared.MetaPrefix+gate.MetaKey+"=true", true))
 		writeArgs(gate.Args, true)
 		script.WriteString("}; ")
 	}
-	script.WriteString(probeLine("pwsh", prepared.Delimiter))
+	script.WriteString(protocolLine("pwsh", prepared.Delimiter, spec.EnvGated == nil))
 	script.WriteString(`$global:LASTEXITCODE = $null
 $PSNativeCommandUseErrorActionPreference = $false
 if ($__lm_selected.Native) { $PSNativeCommandArgumentPassing = 'Legacy' }
@@ -126,18 +171,10 @@ func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocation
 	var script strings.Builder
 	script.WriteString(nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n")
 	script.WriteString(nuLookupSetup)
-	fmt.Fprintf(&script, "let __lm_selected = ([%s] | each {|name| let target = (leapmux-lookup $name $__lm_deferred); if $target != null { {name: $name, target: $target} } } | get -o 0)\n",
+	fmt.Fprintf(&script, "let __lm_selected = ([%s] | each {|name| let target = (leapmux-lookup $name $__lm_deferred false); if $target != null { {name: $name, target: $target} } } | get -o 0)\n",
 		strings.Join(quotedArguments(prepared.candidates, nuQuote), ", "))
-	fmt.Fprintf(&script, "if $__lm_selected == null { print -e ''; print -e %s; exit 127 }\n", nuQuote(prepared.exhaustedMarker))
-	fmt.Fprintf(&script, "let __lm_base = [%s]\n", strings.Join(quotedArguments(spec.BaseArgs, nuQuote), ", "))
-	if gate := spec.EnvGated; gate != nil {
-		fmt.Fprintf(&script, "let __lm_args = if (%s) { %s$__lm_base } else { %s$__lm_base ++ [%s] }\n",
-			nuEnvCondition(gate.EnvVars), probeLine("nu", prepared.MetaPrefix+gate.MetaKey+"=false"),
-			probeLine("nu", prepared.MetaPrefix+gate.MetaKey+"=true"), strings.Join(quotedArguments(gate.Args, nuQuote), ", "))
-	} else {
-		script.WriteString("let __lm_args = $__lm_base\n")
-	}
-	script.WriteString(probeLine("nu", prepared.Delimiter))
+	fmt.Fprintf(&script, "if $__lm_selected == null { %%print -e ''; %%print -e %s; exit 127 }\n", nuQuote(prepared.exhaustedMarker))
+	script.WriteString(nuLaunchArguments(spec.WrapSpec, prepared.Delimiter, prepared.MetaPrefix))
 	script.WriteString("if $__lm_selected.target.type == 'external' { ^$__lm_selected.target.path ...$__lm_args } else {\nmatch $__lm_selected.name {\n")
 	for _, name := range prepared.candidates {
 		fmt.Fprintf(&script, "%s => { run --full-reparse %s $__lm_args }\n", nuQuote(name), nuQuote(invocations[name]))
@@ -146,9 +183,23 @@ func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocation
 	return script.String()
 }
 
+func nuLaunchArguments(spec WrapSpec, delimiter, metaPrefix string) string {
+	var script strings.Builder
+	fmt.Fprintf(&script, "let __lm_base = [%s]\n", strings.Join(quotedArguments(spec.BaseArgs, nuQuote), ", "))
+	if gate := spec.EnvGated; gate != nil {
+		fmt.Fprintf(&script, "let __lm_args = if (%s) { %s$__lm_base } else { %s$__lm_base ++ [%s] }\n",
+			nuEnvCondition(gate.EnvVars), protocolLine("nu", metaPrefix+gate.MetaKey+"=false", true),
+			protocolLine("nu", metaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, nuQuote), ", "))
+	} else {
+		script.WriteString("let __lm_args = $__lm_base\n")
+	}
+	script.WriteString(protocolLine("nu", delimiter, spec.EnvGated == nil))
+	return script.String()
+}
+
 func buildCshSelection(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	var script strings.Builder
-	script.WriteString(lookupSetup("csh"))
+	script.WriteString(cshLookupSetup(false))
 	script.WriteString(cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins) + "\n")
 	script.WriteString("set __lm_chosen = 0\nset __lm_status = 127\n")
 	args := strings.Join(quotedArguments(spec.BaseArgs, cshQuote), " ")
@@ -157,19 +208,19 @@ func buildCshSelection(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	}
 	for _, name := range prepared.candidates {
 		script.WriteString("if ( ! $__lm_chosen ) then\n")
-		script.WriteString(cshLookup(name, false))
+		script.WriteString(cshLookup(name))
 		script.WriteString("if ( \"$__lm_kind\" != missing ) then\nset __lm_chosen = 1\n")
 		// Save the command status before Tcsh leaves the conditional.
 		invoke := func(arguments string) {
-			script.WriteString(probeLine("csh", prepared.Delimiter))
+			script.WriteString(protocolLine("csh", prepared.Delimiter, spec.EnvGated == nil))
 			fmt.Fprintf(&script, "if ( \"$__lm_kind\" == external ) then\nexec \"$__lm_path\" %s\nset __lm_status = $status\nelse\n%s %s\nset __lm_status = $status\nendif\n", arguments, name, arguments)
 		}
 		if gate := spec.EnvGated; gate != nil {
 			fmt.Fprintf(&script, "if ( $%s ) then\n", cshEnvGateVar)
-			script.WriteString(probeLine("csh", prepared.MetaPrefix+gate.MetaKey+"=false"))
+			script.WriteString(protocolLine("csh", prepared.MetaPrefix+gate.MetaKey+"=false", true))
 			invoke(args)
 			script.WriteString("else\n")
-			script.WriteString(probeLine("csh", prepared.MetaPrefix+gate.MetaKey+"=true"))
+			script.WriteString(protocolLine("csh", prepared.MetaPrefix+gate.MetaKey+"=true", true))
 			invoke(args + " " + strings.Join(quotedArguments(gate.Args, cshQuote), " "))
 			script.WriteString("endif\n")
 		} else {
@@ -177,6 +228,6 @@ func buildCshSelection(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 		}
 		script.WriteString("endif\nendif\n")
 	}
-	fmt.Fprintf(&script, "if ( ! $__lm_chosen ) then\necho '' > /dev/stderr\necho %s > /dev/stderr\nendif\nexit $__lm_status\n", cshQuote(prepared.exhaustedMarker))
+	fmt.Fprintf(&script, "if ( ! $__lm_chosen ) then\n'/bin/echo' '' > /dev/stderr\n'/bin/echo' %s > /dev/stderr\nendif\nexit $__lm_status\n", cshQuote(prepared.exhaustedMarker))
 	return script.String()
 }

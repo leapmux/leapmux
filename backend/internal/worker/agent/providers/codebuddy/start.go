@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/coder/quartz"
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -75,6 +76,10 @@ func codebuddySessionArgs(resumeSessionID string) ([]string, string, error) {
 // the session. A resumed process first replays its history, which the Worker
 // consumes because it already owns the transcript.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	return start(ctx, opts, sink, nil)
+}
+
+func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	thinking := codebuddyThinkingValue(opts.Get(OptionThinking))
 	thinkingOverride, err := codebuddyThinkingOverride(thinking)
@@ -165,7 +170,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	a := &Agent{
-		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codebuddy", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:        providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codebuddy", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, Clock: clock}, pipes, ctx, cancel),
 		sink:           agent.NewModelProgressResetSink(sink),
 		opts:           opts,
 		swarmMode:      swarm,
@@ -182,12 +187,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	// A failed startup returns no agent, so nothing waits for the process.
-	// fail stops it before the deferred rollback removes its directory.
+	// A failed startup returns no agent. Stop waits for process completion
+	// before formatting the error and rolling back startup settings.
 	fail := func(phase string, err error) (agent.Agent, error) {
-		startupErr := a.FormatStartupError(phase, err)
 		a.Stop()
-		return nil, startupErr
+		return nil, a.FormatStartupError(phase, err)
 	}
 	a.DrainStderr(stderrPipe)
 	scanner := agent.NewStdoutScanner(stdout)

@@ -17,6 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -288,6 +290,118 @@ func TestZCodeModelRepair_AnExplicitlyEmptyCatalogMarksTheModelUnresolved(t *tes
 		"an explicitly empty catalog makes no setter call")
 }
 
+// zcodeBundleStartupFixture installs a private bundle with a real Node capability
+// probe and the startup test peer behind its app-server script.
+func zcodeBundleStartupFixture(t *testing.T) (agent.Options, string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX bundled runtime fixture")
+	}
+	bash, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	node, err := exec.LookPath("node")
+	require.NoError(t, err)
+	opts, calls := zcodeStartupFixture(t, "")
+	fixture, err := zcodeLocator.Resolve(t.Context(), opts.Shell, false, "ZCode startup peer")
+	require.NoError(t, err)
+	zcodeLocator = launch.Custom(resolveZCodeLaunch)
+	opts.Shell = bash
+	opts.ExtraEnv = append(opts.ExtraEnv, fixture.Env...)
+
+	t.Setenv("HOME", opts.HomeDir)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("BASH_ENV", "")
+	t.Setenv("NODE_OPTIONS", "")
+	t.Setenv("NODE_PATH", "")
+	t.Setenv(zcodeScriptEnvOverride, "")
+	t.Setenv(zcodeNodeEnvOverride, "")
+	var script, runtimePath string
+	if runtime.GOOS == "darwin" {
+		contents := filepath.Join(opts.HomeDir, "Applications", "ZCode.app", "Contents")
+		script = filepath.Join(contents, "Resources", "glm", "zcode.cjs")
+		runtimePath = filepath.Join(contents, "MacOS", "ZCode")
+	} else {
+		install := filepath.Join(opts.HomeDir, ".local", "share", "ZCode")
+		script = filepath.Join(install, "resources", "glm", "zcode.cjs")
+		runtimePath = filepath.Join(install, "zcode")
+	}
+	witness := filepath.Join(t.TempDir(), "bundle.log")
+	t.Setenv("LEAPMUX_ZCODE_BUNDLE_WITNESS", witness)
+	t.Setenv("LEAPMUX_ZCODE_BUNDLE_PEER", fixture.Program)
+	require.NoError(t, os.MkdirAll(filepath.Dir(script), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(runtimePath), 0o700))
+	require.NoError(t, os.WriteFile(script, []byte(`const {appendFileSync} = require('node:fs');
+const {spawnSync} = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] !== 'app-server' || args[1] !== '--stdio') process.exit(34);
+appendFileSync(process.env.LEAPMUX_ZCODE_BUNDLE_WITNESS,
+  args.includes('--prepare-storage') ? 'storage\n' : 'main\n');
+const peer = spawnSync(process.env.LEAPMUX_ZCODE_BUNDLE_PEER,
+  ['-test.run=^TestZCodeStartupProcess$', '--', ...args], {stdio: 'inherit'});
+process.exit(peer.status ?? 35);
+`), 0o600))
+	program := shellquote.POSIX.Quote(node)
+	testutil.WriteExecutable(t, runtimePath, `#!/bin/sh
+[ "$ELECTRON_RUN_AS_NODE" = 1 ] || exit 31
+if [ "$1" = -e ]; then
+    [ "$#" -eq 2 ] && [ "$2" = "require('node:sqlite')" ] || exit 32
+    `+program+` "$@" || exit $?
+    printf 'probe\n' >> "$LEAPMUX_ZCODE_BUNDLE_WITNESS"
+    exit $?
+fi
+[ "$1" = `+shellquote.POSIX.Quote(script)+` ] || exit 33
+exec `+program+` "$@"
+`)
+	return opts, calls, witness
+}
+
+func TestZCodeStartDiscoversAndRunsTheBundledRuntime(t *testing.T) {
+	opts, calls, witness := zcodeBundleStartupFixture(t)
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+
+	assert.Equal(t, "probe\nstorage\nmain", zcodeStartupCalls(t, witness))
+	assert.Contains(t, zcodeStartupCalls(t, calls), MethodSessionSubscribe)
+}
+
+func TestZCodeStartDoesNotTryTheBundleAfterTheSelectedProfileCommandFails(t *testing.T) {
+	opts, _, bundleWitness := zcodeBundleStartupFixture(t)
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	started.Stop()
+	require.NoError(t, started.Wait())
+	require.Equal(t, "probe\nstorage\nmain", zcodeStartupCalls(t, bundleWitness))
+	require.NoError(t, os.Remove(bundleWitness))
+
+	profile := filepath.Join(t.TempDir(), "profile")
+	wrapperWitness := filepath.Join(t.TempDir(), "wrapper.log")
+	t.Setenv("BASH_ENV", profile)
+	t.Setenv("LEAPMUX_ZCODE_WRAPPER_WITNESS", wrapperWitness)
+	require.NoError(t, os.WriteFile(profile, []byte(`zcode() {
+    if [ "${3-}" = --prepare-storage ]; then
+        "$LEAPMUX_ZCODE_BUNDLE_PEER" '-test.run=^TestZCodeStartupProcess$' -- "$@" || return $?
+        printf 'storage\n' >> "$LEAPMUX_ZCODE_WRAPPER_WITNESS"
+        return
+    fi
+    printf 'main\n' >> "$LEAPMUX_ZCODE_WRAPPER_WITNESS"
+    status=37
+    printf 'selected ZCode profile command failed with status %s\n' "$status" >&2
+    return "$status"
+}
+`), 0o600))
+
+	started, err = Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	if started != nil {
+		t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	}
+	require.Nil(t, started)
+	require.ErrorContains(t, err, "selected ZCode profile command failed with status 37")
+	assert.NotErrorIs(t, err, launch.ErrNoCandidate)
+	assert.Equal(t, "storage\nmain", zcodeStartupCalls(t, wrapperWitness))
+	assert.NoFileExists(t, bundleWitness, "the proven bundle must not be probed or invoked")
+}
+
 func TestZCodeNushellLaunchFilesFollowTheProcessOwnership(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses an isolated Unix Nushell configuration")
@@ -366,9 +480,13 @@ func TestZCodeNushellLaunchFilesFollowTheProcessOwnership(t *testing.T) {
 						assert.NoDirExists(t, path)
 					}
 				}
+			} else {
+				require.Len(t, observed, 1, "startup must stop before preparing the storage command")
 			}
 			if started != nil {
-				assert.FileExists(t, filepath.Join(mainPath, candidate+".nu"))
+				data, err := os.ReadFile(filepath.Join(mainPath, candidate+".nu"))
+				require.NoError(t, err)
+				assert.Contains(t, string(data), candidate)
 				started.Stop()
 				_ = started.Wait()
 			}

@@ -4,6 +4,7 @@ package providerkit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -241,4 +243,123 @@ func TestRunCLISelectsAProfileCommandWithoutStartingAScan(t *testing.T) {
 	data, err := os.ReadFile(calls)
 	require.NoError(t, err)
 	assert.Equal(t, "profile\n", string(data))
+}
+
+func TestRunCLIKeepsCandidateExhaustionWhenCanceledDuringDrain(t *testing.T) {
+	t.Parallel()
+	writerFixture := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
+	releaseFixture := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
+	bash, profile := wrappedBashProfile(t, writerFixture.ShellCommand+" &\n"+
+		releaseFixture.ShellCommand+" >/dev/null 2>/dev/null\nprintf 'isolated shell diagnostic' >&2")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	type result struct {
+		output []byte
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		output, err := RunCLI(ctx, CLIRun{
+			Locator: launch.Binaries("launch_test_definitely_missing", "launch_test_also_missing"), Label: "Tool", Shell: bash,
+			Env:     func(env []string) []string { return envutil.PinEnv(env, "BASH_ENV="+profile) },
+			Timeout: 30 * time.Second, MaxOutput: 1024,
+		})
+		done <- result{output: output, err: err}
+	}()
+	writer, writerIdentity, _ := writerFixture.Accept(t)
+	release, _, shell := releaseFixture.Accept(t)
+	require.NoError(t, release.CloseWrite())
+	require.Eventually(t, func() bool { return !shell.Runs() }, 10*time.Second, 10*time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the inherited writer closed before the caller canceled the drain")
+	default:
+	}
+	require.True(t, writerIdentity.Runs())
+	cancel()
+	select {
+	case result := <-done:
+		require.Empty(t, result.output)
+		require.ErrorIs(t, result.err, launch.ErrNoCandidate)
+		assert.ErrorContains(t, result.err, "launch_test_definitely_missing, launch_test_also_missing")
+		assert.ErrorContains(t, result.err, "isolated shell diagnostic")
+		assert.NotContains(t, result.err.Error(), "__LEAPMUX_EXHAUSTED_")
+		var exit *exec.ExitError
+		require.ErrorAs(t, result.err, &exit)
+		assert.Equal(t, 127, exit.ExitCode())
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the CLI did not finish its bounded drain")
+	}
+	assert.True(t, writerIdentity.Runs(), "an unverified inherited writer remains outside the worker's process ownership")
+	require.NoError(t, writer.CloseWrite())
+}
+
+func TestRunCLIReportsNativeFailureWhenCanceledDuringDrain(t *testing.T) {
+	t.Parallel()
+	writerFixture := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
+	releaseFixture := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
+	bash, profile := wrappedBashProfile(t, "launch_test_wrapper() {\n"+
+		writerFixture.ShellCommand+" &\n"+
+		releaseFixture.ShellCommand+" >/dev/null 2>/dev/null\n"+
+		"printf 'native diagnostic' >&2\nreturn 37\n}")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunCLI(ctx, CLIRun{
+			Locator: launch.Binaries("launch_test_wrapper"), Label: "Tool", Shell: bash,
+			Env:     func(env []string) []string { return envutil.PinEnv(env, "BASH_ENV="+profile) },
+			Timeout: 30 * time.Second, MaxOutput: 1024,
+		})
+		done <- err
+	}()
+	writer, writerIdentity, _ := writerFixture.Accept(t)
+	release, _, root := releaseFixture.Accept(t)
+	require.NoError(t, release.CloseWrite())
+	require.Eventually(t, func() bool { return !root.Runs() }, 10*time.Second, 10*time.Millisecond)
+	require.True(t, writerIdentity.Runs())
+	select {
+	case err := <-done:
+		t.Fatalf("the drain finished while the inherited writer was still running: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		assert.Equal(t, 37, exit.ExitCode())
+		assert.ErrorContains(t, err, "native diagnostic")
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the CLI did not finish its bounded drain")
+	}
+	assert.True(t, writerIdentity.Runs(), "the worker must leave an unverified writer alive")
+	require.NoError(t, writer.CloseWrite())
+}
+
+func TestRunCLIPreservesCancellationWhenTheLiveCommandExitsDuringIt(t *testing.T) {
+	t.Parallel()
+	fixture := agenttest.NewInheritedWriter(t, "TestWrappedProcessWriter")
+	tool := fakeProgram(t, "trap 'exit 37' TERM\n"+fixture.ShellCommand+" &\nwait")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunCLI(ctx, CLIRun{
+			Locator: tool, Label: "Tool", Shell: "/bin/sh", Timeout: 30 * time.Second, MaxOutput: 1024,
+		})
+		done <- err
+	}()
+	_, child, root := fixture.Accept(t)
+	require.True(t, root.Runs())
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorContains(t, err, "`Tool` did not answer")
+		var exit *exec.ExitError
+		assert.False(t, errors.As(err, &exit))
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the CLI did not finish after cancellation")
+	}
+	assert.False(t, child.Runs(), "the worker must stop the verified writer")
 }

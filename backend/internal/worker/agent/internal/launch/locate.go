@@ -193,6 +193,9 @@ func runShellProbe(ctx context.Context, shellPath string, loginShell bool, scrip
 // parseCommandProbe rejects an incomplete batch, including a duplicated or
 // out-of-order record. Profile output before the start record is unrestricted.
 func parseCommandProbe(output, nonce string, names []string, nativeOnly bool) (map[string]ProbeResult, string) {
+	if !strings.HasSuffix(output, "\n") {
+		return nil, ""
+	}
 	results := make(map[string]ProbeResult, len(names))
 	started, complete := false, false
 	index := 0

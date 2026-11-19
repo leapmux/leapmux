@@ -47,8 +47,12 @@ func TestProbeBinaryRunsTheShellInItsOwnSession(t *testing.T) {
 		t.Run("loginShell="+strconv.FormatBool(loginShell), func(t *testing.T) {
 			stub, sidFile := writeSessionRecordingStub(t)
 			t.Setenv("LEAPMUX_SID_FILE", sidFile)
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+			const present = "leapmux-session-probe"
+			testutil.WriteExecutable(t, filepath.Join(dir, present), "#!/bin/sh\nexit 0\n")
 
-			require.Equal(t, ProbeYes, CheckBinary(context.Background(), stub, loginShell, "sh"),
+			require.Equal(t, ProbeYes, CheckBinary(context.Background(), stub, loginShell, present),
 				"the stub shell runs to completion and runs the actual probe")
 
 			raw, err := os.ReadFile(sidFile)
@@ -79,9 +83,9 @@ func writeSessionRecordingStub(t *testing.T) (bin, sidFile string) {
 	bin = filepath.Join(dir, "shell")
 	script := `#!/bin/sh
 if [ -r /proc/self/stat ]; then
-	sid=$(sed 's/.*) //' /proc/self/stat | awk '{print $4}')
+	sid=$(/usr/bin/sed 's/.*) //' /proc/self/stat | /usr/bin/awk '{print $4}')
 else
-	sid=$(ps -p $$ -o sess=)
+	sid=$(/bin/ps -p $$ -o sess=)
 fi
 printf '%s\n' "$sid" > "$LEAPMUX_SID_FILE"
 for command do :; done

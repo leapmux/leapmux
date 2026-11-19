@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -737,18 +738,37 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-func TestListAvailableProvidersReportsAnIncompleteScanToTheOwner(t *testing.T) {
+func TestListAvailableProvidersLetsTheOwnerRetryAnIncompleteScan(t *testing.T) {
 	t.Parallel()
-	_, dispatcher, _ := setupTestService(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	writer := newTestWriter()
-	dispatchTestRequest(dispatcher, ctx, channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
-		Method: leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure,
-	}, writer)
-	require.Len(t, writer.errors, 1)
-	assert.Equal(t, int32(codes.Unavailable), writer.errors[0].code)
-	assert.Empty(t, writer.responses)
+	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	registration, ok := testRegistry.Registration(provider)
+	require.True(t, ok)
+	ready, probes := false, 0
+	registration.Locator = agenttest.RetryableLocator("codex", func(ctx context.Context) bool {
+		assert.NoError(t, ctx.Err())
+		probes++
+		return ready
+	})
+	_, dispatcher, _ := setupTestService(t, withRegistry(agenttest.MustNewRegistry(registration)))
+	caller := channel.LocalAgentCaller(userid.MustNew("user-1"))
+	request := &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure}
+	failed := newTestWriter()
+	dispatchTestRequest(dispatcher, t.Context(), caller, request, failed)
+	require.Len(t, failed.errors, 1)
+	assert.Equal(t, int32(codes.Unavailable), failed.errors[0].code)
+	assert.Equal(t, "provider scan did not finish; retry", failed.errors[0].message)
+	assert.Empty(t, failed.responses)
+	assert.Equal(t, 1, probes)
+
+	ready = true
+	retried := newTestWriter()
+	dispatchTestRequest(dispatcher, t.Context(), caller, request, retried)
+	require.Empty(t, retried.errors)
+	require.Len(t, retried.responses, 1)
+	var response leapmuxv1.ListAvailableProvidersResponse
+	require.NoError(t, proto.Unmarshal(retried.responses[0].GetPayload(), &response))
+	assert.Equal(t, []leapmuxv1.AgentProvider{provider}, response.GetProviders())
+	assert.Equal(t, 2, probes)
 }
 
 // TestListAvailableShells_OwnerAllowed pins the ALLOW side of the owner gate

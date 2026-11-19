@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"unicode"
@@ -12,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +55,10 @@ func TestRegistrationLocatesEachContractExecutableInOrder(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, prepared.Close()) })
 			output, err := prepared.Cmd.Output()
 			require.NoError(t, err)
-			assert.Contains(t, string(output), tc.want)
+			require.NotEmpty(t, prepared.Delimiter)
+			payload, ready := providerkit.AfterPreamble(output, prepared.Delimiter)
+			require.True(t, ready, "the shell must emit a complete readiness line")
+			assert.Equal(t, tc.want+"\n", strings.ReplaceAll(string(payload), "\r\n", "\n"))
 		})
 	}
 }

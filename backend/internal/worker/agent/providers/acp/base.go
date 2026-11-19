@@ -2064,6 +2064,11 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	// A provider without static groups, such as Reasonix, has no fallback and keeps nil here.
 	b.secondaryFallback = SecondaryFallbackFrom(spec.Registration.OptionGroups, b.hooks.ModeChannel)
 
+	initParams, err := acpStandardInitParams(&b.hooks)
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, pipes.Close())
+	}
 	if err := b.StartCmd(); err != nil {
 		return nil, err
 	}
@@ -2077,10 +2082,6 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 		}
 	}()
 
-	initParams, err := acpStandardInitParams(&b.hooks)
-	if err != nil {
-		return nil, err
-	}
 	sessionCfg := spec.SessionConfig
 	if sessionCfg.NewMethod == "" {
 		sessionCfg = acpDefaultSessionConfig

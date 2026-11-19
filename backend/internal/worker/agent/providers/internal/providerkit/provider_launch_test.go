@@ -2,13 +2,16 @@ package providerkit
 
 import (
 	"context"
-	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -38,25 +41,53 @@ func TestResolveProviderLaunch(t *testing.T) {
 	assert.True(t, called)
 
 	t.Run("registered binary", func(t *testing.T) {
-		registration.Locator = launch.Binaries("first-program", "second-program")
-		dir := t.TempDir()
 		shell := testutil.TestShell()
-		name, script := "second-program", "#!/bin/sh\nprintf 'second-program\\n'\n"
+		suffix := ""
 		if runtime.GOOS == "windows" {
-			name, script = name+".cmd", "@echo off\r\necho second-program\r\n"
+			var err error
+			shell, err = exec.LookPath("powershell")
+			require.NoError(t, err)
+			suffix = ".cmd"
 		}
-		testutil.WriteExecutable(t, filepath.Join(dir, name), script)
-		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-		spec, err := ResolveLaunch(t.Context(), agent.Options{Shell: shell}, registration)
-		require.NoError(t, err)
-		prepared, err := launch.Wrap(t.Context(), launch.WrapSpec{Shell: shell, Launch: spec})
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, prepared.Close()) })
-		output, err := prepared.Cmd.Output()
-		require.NoError(t, err)
-		assert.Contains(t, string(output), "second-program")
-		assert.Empty(t, spec.PrefixArgs)
-		assert.Empty(t, spec.Env)
+		first, second := "leapmux-test-first-program", "leapmux-test-second-program"
+		registration.Locator = launch.Binaries(first+suffix, second+suffix)
+
+		for _, selected := range []string{first, second} {
+			t.Run(selected, func(t *testing.T) {
+				dir := t.TempDir()
+				writeProgram := func(name string) {
+					script := "#!/bin/sh\nprintf '%s\\n' " + shellquote.POSIX.Quote(name) + "\n"
+					if runtime.GOOS == "windows" {
+						script = "@echo off\r\necho " + name + "\r\n"
+					}
+					testutil.WriteExecutable(t, filepath.Join(dir, name+suffix), script)
+				}
+				writeProgram(second)
+				if selected == first {
+					writeProgram(first)
+				}
+				t.Setenv("PATH", dir)
+				spec, err := ResolveLaunch(t.Context(), agent.Options{Shell: shell}, registration)
+				require.NoError(t, err)
+				assert.Empty(t, spec.PrefixArgs)
+				assert.Empty(t, spec.Env)
+				prepared, err := launch.Wrap(t.Context(), launch.WrapSpec{Shell: shell, Launch: spec})
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+				if runtime.GOOS == "windows" {
+					// Saved account PATH entries can change the Worker-supplied PATH.
+					cmd := prepared.Cmd
+					cmd.Args = slices.Insert(cmd.Args, 1, "-NoProfile")
+					last := len(cmd.Args) - 1
+					cmd.Args[last] = "$env:PATH = " + shellquote.PowerShell.Quote(dir) + "\n" + cmd.Args[last]
+				}
+				output, err := prepared.Cmd.Output()
+				require.NoError(t, err, "%s", output)
+				_, payload, ready := strings.Cut(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n"+prepared.Delimiter+"\n")
+				require.True(t, ready, "%q", output)
+				assert.Equal(t, selected+"\n", payload)
+			})
+		}
 	})
 
 	t.Run("empty locator", func(t *testing.T) {
