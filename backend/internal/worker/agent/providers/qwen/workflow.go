@@ -145,7 +145,7 @@ func (p *workflowPoller) start(clock quartz.Clock) {
 	if created {
 		ticker := clock.NewTicker(workflowPollInterval, "qwen", "workflow")
 		go func() {
-			defer ticker.Stop()
+			defer ticker.Stop("qwen", "workflow")
 			for {
 				tick := false
 				select {
