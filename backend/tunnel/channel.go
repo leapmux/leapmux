@@ -454,6 +454,11 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 
 	// TOFU key pinning — abort if the hub returns keys that don't match
 	// the recorded pin. First contact records the pin.
+	//
+	// The pin is recorded here, before any handshake proves the keys. When the
+	// hub announces keys that the worker does not hold, the handshake below
+	// fails and the pin stays, so every later open fails with a mismatch until
+	// the user removes the pin. https://github.com/leapmux/leapmux/issues/661
 	if pinStore != nil {
 		keys := paramsResp.GetKeys()
 		if err := pinStore.Verify(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa()); err != nil {

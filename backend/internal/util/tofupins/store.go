@@ -74,6 +74,11 @@ type onDiskFile struct {
 
 // Store is the in-memory mirror of the pin file, with a mutex so
 // concurrent Verify/Remove calls serialize.
+//
+// Open reads the file once, and each write stores the whole mirror. A
+// long-lived process therefore does not see a pin that another process
+// removes, and its next write puts that pin back into the file.
+// https://github.com/leapmux/leapmux/issues/661
 type Store struct {
 	opts Options
 	mu   sync.Mutex
@@ -162,6 +167,9 @@ func (s *Store) Verify(workerID string, public, mlkem, slhdsa []byte) error {
 		}
 		existing.LastUsedAt = wall
 		s.pins[workerID] = existing
+		// lastBumpAt moves on every call, also on one that skips the write
+		// below. A pin that is verified more often than the gap therefore
+		// never reaches the file. https://github.com/leapmux/leapmux/issues/661
 		s.lastBumpAt[workerID] = now
 		if s.opts.LastUsedPersistMinGap > 0 && now.Sub(prevBump) < s.opts.LastUsedPersistMinGap {
 			// Skip on-disk write — the bump is within the throttle
