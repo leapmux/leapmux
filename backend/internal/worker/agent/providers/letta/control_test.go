@@ -15,6 +15,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 func permissionFrame(requestID, tool, callID string) []byte {
@@ -40,7 +41,10 @@ func TestBypassApprovesPendingAndLaterToolsButKeepsPostedQuestions(t *testing.T)
 		payload := inputPayload(t, fake)
 		assert.Equal(t, contracts.LettaReplyKindApprovalResponse, payload["kind"])
 		answered = append(answered, payload["request_id"].(string))
-		assert.Equal(t, "allow", payload["decision"].(map[string]any)["behavior"])
+		// Letta Code refuses a decision whose message is not a string, so the
+		// automatic allow states an empty one.
+		assert.Equal(t, map[string]any{"behavior": "allow", "message": ""}, payload["decision"])
+		assert.NotContains(t, payload, "error")
 	}
 	assert.ElementsMatch(t, []string{"first", "second"}, answered)
 	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 2 }, 30*time.Second, time.Millisecond)
@@ -50,6 +54,25 @@ func TestBypassApprovesPendingAndLaterToolsButKeepsPostedQuestions(t *testing.T)
 	assert.Equal(t, 3, sink.PublishedControlCount(), "only the first permissions and the posted question have cards")
 	assert.Equal(t, contracts.LettaModeUnrestricted, result.ConfirmedOptions()[agent.OptionIDPermissionMode])
 	assert.True(t, applyNativeMode(t, fake, a, contracts.LettaModeStandard).AppliedLive)
+}
+
+// A permission that the worker could not publish reaches no reader, so the
+// worker answers Letta Code at once with the publication error in place of a
+// decision.
+func TestUnpublishedPermissionAnswersWithThePublicationError(t *testing.T) {
+	t.Parallel()
+	fake, a := openedAgent(t)
+	sink := &agenttest.ControlSink{PublicationError: errors.New("the store refused the request")}
+	a.sink = agent.NewProviderServices(sink)
+	a.settings.permissionMode = contracts.LettaModeStandard
+	a.setTurnActive(true)
+	a.HandleOutput(permissionFrame("unpublished", contracts.LettaToolBash, "shell-1"))
+	assert.Equal(t, map[string]any{
+		"kind":       contracts.LettaReplyKindApprovalResponse,
+		"request_id": "unpublished",
+		"error":      providerkit.ControlPublicationFailure,
+	}, inputPayload(t, fake))
+	assert.Zero(t, sink.PublishedControlCount())
 }
 
 func TestPermissionAnswerKeepsUnknownNumbersAndEmptyValues(t *testing.T) {

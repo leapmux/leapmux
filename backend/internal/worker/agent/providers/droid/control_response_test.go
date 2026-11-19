@@ -176,7 +176,7 @@ func TestResolvePlanApprovalSelectsNativeAutonomy(t *testing.T) {
 			}
 			id, raw := replyResult(t, resolution)
 			assert.Equal(t, "rpc-42", id)
-			var reply droidPermissionResult
+			var reply contracts.DroidPermissionResult
 			require.NoError(t, json.Unmarshal(raw, &reply))
 			assert.Equal(t, tc.want, reply.SelectedOption)
 		})
@@ -352,6 +352,7 @@ func TestResolveControlResponseRefusesAnswersThatDoNotMatchTheQuestions(t *testi
 		"answers by question":        {map[string]any{"behavior": "allow", "answers": map[string]string{"Which color?": "Blue"}}, agent.RefusalUnreadableAnswer},
 		"answers not a list":         {map[string]any{"behavior": "allow", "answers": "Blue"}, agent.RefusalUnreadableAnswer},
 		"absent answers field":       {map[string]any{"behavior": "allow"}, "the decision holds no answer list"},
+		"null answers field":         {map[string]any{"behavior": "allow", "answers": nil}, "the decision holds no answer list"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

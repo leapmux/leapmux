@@ -110,7 +110,7 @@ func TestDroidBypassPreservesProtectedConfirmations(t *testing.T) {
 					require.NoError(t, json.Unmarshal(published.Payload, &payload))
 					assert.JSONEq(t, tc.details, string(payload.Details))
 				}
-				answer, err := json.Marshal(droidResponseEnvelope("protected", droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}))
+				answer, err := json.Marshal(droidResponseEnvelope("protected", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}))
 				require.NoError(t, err)
 				require.NoError(t, a.SendRawInput(answer, agent.StopContext{}), "the protected request remains answerable by the user")
 			})
@@ -211,7 +211,7 @@ func TestDroidRejectsUnknownAndRepeatedControlAnswers(t *testing.T) {
 	a, _ := newDroidControlTestAgent(t)
 	writer := &bufferStdin{}
 	a.SetStdinForTest(writer)
-	raw, err := json.Marshal(droidResponseEnvelope("approval", droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
+	raw, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
 	require.NoError(t, err)
 	assert.Error(t, a.SendRawInput(raw, agent.StopContext{}))
 	request := permissionRequest(t, "approval", "Edit")
@@ -236,7 +236,7 @@ func TestDroidFailedAutomaticWriteKeepsAManualFallback(t *testing.T) {
 	assert.Equal(t, 1, sink.PublishedControlCount())
 	writer := &agenttest.Stdin{}
 	a.SetStdinForTest(writer)
-	answer, err := json.Marshal(droidResponseEnvelope("approval", droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
+	answer, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
 	require.NoError(t, err)
 	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 	assert.Contains(t, writer.String(), `"selectedOption":"proceed_once"`)

@@ -31,8 +31,7 @@
     "IndexedPrefix": "answer_"
   },
   "planControls": {
-    "Approve": "approve",
-    "Question": "Review this implementation plan."
+    "Approve": "approve"
   },
   "interactions": {
     "PlanApproval": "plan_approval",

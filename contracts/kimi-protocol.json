@@ -92,7 +92,7 @@
   },
   "structs": {
     "KimiApprovalReply": {
-      "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/interactions/{interaction_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision. The browser\nreads the stored reply back to word the saved answer.",
+      "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/interactions/{interaction_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision.",
       "table": "reply",
       "fields": [
         {
@@ -151,7 +151,7 @@
       ]
     },
     "KimiDecisionFields": {
-      "doc": "KimiDecisionFields are the fields the browser writes beside the neutral\n`behavior` of its answer: the approval scope, and a question's answers in the\nserver's own shape.",
+      "doc": "KimiDecisionFields are the fields that AnswerControlRequest writes beside the\nneutral `behavior` of its answer: the approval scope, and a question's answers\nin the server's own shape.",
       "table": "reply",
       "fields": [
         {
@@ -339,20 +339,6 @@
     }
   },
   "_unread": {
-    "reply": {
-      "Method": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the worker stamps the answer method itself when it builds the question body; the browser writes the answers alone and words the saved answer from them"
-      },
-      "PermissionMode": {
-        "sides": [
-          "ts"
-        ],
-        "why": "the worker writes the permission mode an approved plan switches to and applies it before it posts the decision; the browser reads the mode from the plan approval settings that the service stores beside the answer"
-      }
-    },
     "conversationFields": {
       "Index": {
         "sides": [

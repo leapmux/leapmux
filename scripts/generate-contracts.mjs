@@ -2749,6 +2749,16 @@ ${CODEX_PERMISSION_PRESET_KINDS.map(preset).join('\n')}
 // ---------------------------------------------------------------------------
 
 /**
+ * The `readersWhy` of every table that holds the words of a control request or of
+ * its answer.
+ *
+ * The browser draws a request from the neutral prompt and states a neutral decision,
+ * and it words a saved answer from that decision (`controlDecisionSummary.ts`). Each
+ * provider's own words therefore stay in the Worker.
+ */
+const CONTROL_VOCABULARY_READERS_WHY = 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.'
+
+/**
  * The provider-protocol domains. Each one is a set of NAME TABLES: a map from an
  * identifier both languages spell to the literal the agent's process sends.
  *
@@ -2917,7 +2927,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'DeepseekHarnessControlEvent',
         doc: 'native waterfall control event types',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'contentTypes',
@@ -3115,6 +3125,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PERMISSION_OUTCOME',
         tsType: 'ACPPermissionOutcome',
         doc: 'the `outcome` of a reply to session/request_permission',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'permissionKinds',
@@ -3281,6 +3293,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'DECISION',
         tsType: 'KimiDecision',
         doc: 'approval decisions',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'approvalScopes',
@@ -3288,6 +3302,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'APPROVAL_SCOPE',
         tsType: 'KimiApprovalScope',
         doc: 'how long one approval lasts',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'planLabels',
@@ -3295,6 +3311,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PLAN_LABEL',
         tsType: 'KimiPlanLabel',
         doc: 'the `selected_label` values that refuse a plan',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'answerKinds',
@@ -3302,6 +3320,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'ANSWER_KIND',
         tsType: 'KimiAnswerKind',
         doc: 'the kinds of one question answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'goalModes',
@@ -3309,6 +3329,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'GOAL_MODE',
         tsType: 'KimiGoalMode',
         doc: 'the `selected_label` values that approve a goal start in a permission mode',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'modes',
@@ -3323,6 +3345,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'REPLY',
         tsType: 'KimiReplyField',
         doc: 'fields of a stored approval or question answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'todoStatuses',
@@ -3412,6 +3436,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'ACTION',
         tsType: 'ZCodeAction',
         doc: 'native input response actions',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'replyFields',
@@ -3419,6 +3445,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'REPLY_FIELD',
         tsType: 'ZCodeReplyField',
         doc: 'native input response fields',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'answerFields',
@@ -3426,6 +3454,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'ANSWER_FIELD',
         tsType: 'ZCodeAnswerField',
         doc: 'native answer fields',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'planControls',
@@ -3433,6 +3463,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PLAN_CONTROL',
         tsType: 'ZCodePlanControl',
         doc: 'native plan approval values',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'interactions',
@@ -3819,7 +3851,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'MiMoPermissionReply',
         doc: 'answers of a permission reply',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'controlFields',
@@ -3829,7 +3861,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'fields for a stored control payload',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -3884,6 +3916,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PERMISSION_DECISION',
         tsType: 'OpenCodeNativePermissionDecision',
         doc: 'native permission reply decisions',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'answerFields',
@@ -3892,6 +3926,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OpenCodeNativeAnswerField',
         doc: 'fields shared by typed forms and stored control answers',
         goTagPin: 'backend/internal/worker/agent/providers/opencode/control_response_contract_test.go',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'tools',
@@ -3921,7 +3957,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OpenCodeNativeFormFieldType',
         doc: 'typed native form fields',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'outcomes',
@@ -3967,7 +4003,9 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'ANSWER_FIELD',
         tsType: 'OpenCodeAnswerField',
         goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go',
-        doc: 'fields of the answer envelope that the worker writes and reads back, and that the browser reads to show a saved answer',
+        doc: 'fields of the answer envelope that the worker writes and reads back',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'options',
@@ -4079,7 +4117,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'keys of the input of a LeapMux-owned async question request',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'itemTypes',
@@ -4327,6 +4365,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'APPROVAL_SCOPE',
         tsType: 'CopilotApprovalScope',
         doc: 'how long one approved permission lasts',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'autoModeSwitchResponses',
@@ -4334,6 +4374,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'AUTO_MODE_SWITCH_RESPONSE',
         tsType: 'CopilotAutoModeSwitchResponse',
         doc: 'answers to the automatic model switch ask',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'samplingDecisions',
@@ -4342,6 +4384,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CopilotSamplingDecision',
         owner: 'LeapMux chose these',
         doc: 'the saved decision on an MCP sampling request',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'leapmuxRowTypes',
@@ -4357,6 +4401,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'DECISION',
         tsType: 'CopilotDecision',
         doc: 'the words a permission answer carries to the runtime',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'permissionOutcomes',
@@ -4471,7 +4517,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'PiQuestionDialog',
         doc: 'question extension dialog values',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'planDialogs',
@@ -4480,7 +4526,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'PiPlanDialog',
         doc: 'plan approval dialog titles',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'planActions',
@@ -4488,6 +4534,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PLAN_ACTION',
         tsType: 'PiPlanAction',
         doc: 'plan approval response values',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'roles',
@@ -4551,7 +4599,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'PiDialogMethod',
         doc: 'extension_ui_request methods that BLOCK on a response',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'extensionMethods',
@@ -4598,7 +4646,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'McpElicitationMethod',
         doc: 'request methods',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'subtypes',
@@ -4607,7 +4655,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'McpElicitationSubtype',
         doc: 'control request subtypes',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'modes',
@@ -4630,7 +4678,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'McpElicitationApprovalKind',
         doc: 'approval request kinds',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'approvalScopes',
@@ -4639,7 +4687,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'McpElicitationApprovalScope',
         doc: 'approval duration values',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -4697,6 +4745,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'WorkspaceTrustControlType',
         owner: 'LeapMux chose',
         doc: 'the type of the question payload that the worker writes',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'fields',
@@ -4705,6 +4755,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'WorkspaceTrustField',
         owner: 'LeapMux chose',
         doc: 'the fields of the question payload and of the saved answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'decisions',
@@ -4713,6 +4765,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'WorkspaceTrustDecision',
         owner: 'LeapMux chose',
         doc: 'the decision words of the saved answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -4787,6 +4841,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PLAN_OUTCOME',
         tsType: 'GrokPlanOutcome',
         doc: 'the outcomes a plan-approval reply states',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'trustOutcomes',
@@ -4795,7 +4851,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'GrokTrustOutcome',
         doc: 'the outcomes a folder-trust reply states',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'questionOutcomes',
@@ -4803,13 +4859,17 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'QUESTION_OUTCOME',
         tsType: 'GrokQuestionOutcome',
         doc: 'the outcomes a question reply states',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'replyFields',
         goTable: 'ReplyField',
         tsTable: 'REPLY_FIELD',
         tsType: 'GrokReplyField',
-        doc: 'fields of the replies both sides build or read',
+        doc: 'fields of the replies that the worker builds or reads',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'configIds',
@@ -4824,6 +4884,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'ANSWER_LABEL',
         tsType: 'GrokAnswerLabel',
         doc: 'answer labels that Grok reads as words of their own',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -4847,9 +4909,9 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'Method',
         tsTable: 'METHOD',
         tsType: 'KiroMethod',
-        doc: 'agent-to-client extension requests both sides dispatch on',
+        doc: 'agent-to-client extension requests that the worker dispatches on',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'meta',
@@ -4900,7 +4962,9 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'PermissionOption',
         tsTable: 'PERMISSION_OPTION',
         tsType: 'KiroPermissionOption',
-        doc: 'option ids of a permission request both sides read',
+        doc: 'option ids of a permission request',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'scopedPermissionOptions',
@@ -4908,7 +4972,9 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'SCOPED_PERMISSION_OPTION',
         tsType: 'KiroScopedPermissionOption',
         owner: 'LeapMux chose these',
-        doc: 'permission option ids that the browser states for an always-allow or an always-deny at a wider consent scope',
+        doc: 'permission option ids that the worker offers for an always-allow or an always-deny at a wider consent scope',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'consentScopes',
@@ -4916,13 +4982,17 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'CONSENT_SCOPE',
         tsType: 'KiroConsentScope',
         doc: 'consent scopes of an always-allow or an always-deny reply beyond the default session scope',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'userInputActions',
         goTable: 'UserInputAction',
         tsTable: 'USER_INPUT_ACTION',
         tsType: 'KiroUserInputAction',
-        doc: 'question reply actions both sides spell',
+        doc: 'question reply actions',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'configIds',
@@ -5008,9 +5078,9 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'PermissionOption',
         tsTable: 'PERMISSION_OPTION',
         tsType: 'QwenPermissionOption',
-        doc: 'option ids of the permission requests both sides answer',
+        doc: 'option ids of the permission requests that the worker answers',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'configIds',
@@ -5032,7 +5102,9 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'ReplyField',
         tsTable: 'REPLY_FIELD',
         tsType: 'QwenReplyField',
-        doc: 'fields of the reply to a question that both sides read',
+        doc: 'fields of the reply to a question',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -5303,7 +5375,7 @@ export const PROVIDER_PROTOCOLS = [
         goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go',
         doc: 'fields of an `approval.*` event payload',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'userInputFields',
@@ -5312,6 +5384,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleUserInputField',
         goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go',
         doc: 'fields of a `user_input.*` event payload',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'questionFields',
@@ -5328,6 +5402,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleControlPayloadField',
         owner: 'LeapMux chose these',
         doc: 'keys a stored control request carries beside the shared `request` header',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'replyFrames',
@@ -5337,6 +5413,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleReplyFrame',
         owner: 'LeapMux chose these',
         doc: '`frame` values of a reply the worker posts to the runtime',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'replyFields',
@@ -5345,6 +5423,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleReplyField',
         goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go',
         doc: 'fields of a reply frame -- `frame` and `declined` are LeapMux\'s, and the rest are the runtime\'s own body fields',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'decisions',
@@ -5352,6 +5432,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'DECISION',
         tsType: 'CodewhaleDecision',
         doc: 'approval decisions',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'answerFields',
@@ -5360,6 +5442,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleAnswerField',
         goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go',
         doc: 'fields of one question answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'answerLabels',
@@ -5368,7 +5452,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleAnswerLabel',
         doc: '`label` of a free-text answer',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'answerTexts',
@@ -5377,6 +5461,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CodewhaleAnswerText',
         owner: 'LeapMux chose these',
         doc: 'free-text answers the worker sends for the reader',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'transcriptKinds',
@@ -5478,7 +5564,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OhMyPiDialogMethod',
         doc: 'extension_ui_request methods that BLOCK on a response',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'extensionMethods',
@@ -5515,6 +5601,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'DIALOG_RESPONSE',
         tsType: 'OhMyPiDialogResponseField',
         doc: 'fields of an extension_ui_response',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'approvalDialog',
@@ -5523,7 +5611,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OhMyPiApprovalDialogText',
         doc: 'the title prefix and the two options of a tool approval dialog',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'frameFields',
@@ -5546,7 +5634,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OhMyPiAskQuestionField',
         doc: 'fields of one question of an `ask` call',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'askOption',
@@ -5555,7 +5643,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OhMyPiAskOptionField',
         doc: 'fields of one option of one question',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'askTypes',
@@ -5565,6 +5653,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OhMyPiAskType',
         owner: 'LeapMux chose these',
         doc: 'values of the `type` field of the question-bridge request and of its answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'askEnvelope',
@@ -5574,7 +5664,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'fields of the question-bridge request and of its answer',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'askAnswer',
@@ -5583,6 +5673,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OhMyPiAskAnswerField',
         owner: 'LeapMux chose these',
         doc: 'fields of the answer to one question',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'supplement',
@@ -5698,7 +5790,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'values of the `type` field of the permission-request envelope',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'permissionRequestFields',
@@ -5708,7 +5800,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'fields of the permission-request envelope',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -5806,7 +5898,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'fields of the control response that answer a question',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'declineReasons',
@@ -5815,6 +5907,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'ClineDeclineReason',
         owner: 'LeapMux chose these',
         doc: 'reasons that the worker sends for a refusal that the user gave no words for',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'approvalReply',
@@ -5822,6 +5916,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'APPROVAL_REPLY',
         tsType: 'ClineApprovalReplyField',
         doc: 'fields of the answer to a tool approval, as Cline\'s approval.respond takes it -- LeapMux adds `permissionMode`, which the worker strips',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'capabilityReply',
@@ -5829,6 +5925,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'CAPABILITY_REPLY',
         tsType: 'ClineCapabilityReplyField',
         doc: 'fields of the answer to a capability request, as Cline\'s capability.respond takes it',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'promptReasons',
@@ -5904,6 +6002,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'CONTROL_ANSWER_FIELD',
         tsType: 'CodebuddyControlAnswerField',
         doc: 'fields of the can_use_tool answer, as the worker sends and stores it',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'resultSupplement',
@@ -6067,6 +6167,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'PERMISSION_OPTION',
         tsType: 'DroidPermissionOption',
         doc: '`selectedOption` values of a `droid.request_permission` answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'confirmationTypes',
@@ -6076,7 +6178,7 @@ export const PROVIDER_PROTOCOLS = [
         goTagPin: 'backend/internal/worker/agent/providers/droid/contract_tags_test.go',
         doc: '`confirmationType` words of a permission `toolUses[]` entry',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'askUserFields',
@@ -6085,6 +6187,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'DroidAskUserField',
         goTagPin: 'backend/internal/worker/agent/providers/droid/contract_tags_test.go',
         doc: 'fields of one `droid.ask_user` question and of one answer in its reply',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'requestTypes',
@@ -6094,7 +6198,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: '`type` words of the control requests that the worker publishes',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'modes',
@@ -6119,8 +6223,9 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'Reply',
         tsTable: 'REPLY',
         tsType: 'DroidReplyField',
-        goTagPin: 'backend/internal/worker/agent/providers/droid/contract_tags_test.go',
         doc: 'fields of the control response that answers a permission request or a question',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -6239,16 +6344,15 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'Reply',
         tsTable: 'REPLY',
         tsType: 'LettaReplyField',
-        goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go',
-        owner: 'LeapMux chose these',
-        doc: 'fields of the flat approval_response payload, which the browser reads to draw the saved answer',
+        doc: 'fields of the flat approval_response payload that the worker sends to answer a permission',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'question',
         goTable: 'Question',
         tsTable: 'QUESTION',
         tsType: 'LettaQuestionWord',
-        goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go',
         doc: 'words of the AskUserQuestion receipt that Letta Code returns, and of the response that the worker sends back in a task notification',
       },
       {
@@ -6436,7 +6540,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'control requests LeapMux publishes itself',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'controlPayload',
@@ -6446,7 +6550,7 @@ export const PROVIDER_PROTOCOLS = [
         owner: 'LeapMux chose these',
         doc: 'fields of the plan-review control payload',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'modes',
@@ -6481,7 +6585,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'AntigravityPermissionAction',
         doc: 'actions of a permission request',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'toolNames',
@@ -6603,7 +6707,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'MuseApprovalDecision',
         doc: 'native approval decisions',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'choiceScopes',
@@ -6612,7 +6716,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'MuseChoiceScope',
         doc: 'native approval choice scopes',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'questionSelectionModes',
@@ -6621,7 +6725,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'MuseQuestionSelectionMode',
         doc: 'native question selection modes',
         readers: ['go'],
-        readersWhy: 'The Worker reads the control request into the neutral prompt and builds the answer (Provider.ReadControlRequest, Provider.AnswerControlRequest), so the browser reads none of these words.',
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'inputOutcomes',
@@ -6738,8 +6842,8 @@ function goFieldType(type) {
 /**
  * The structs a domain generates, if any.
  *
- * A struct states its FIELD LIST once and takes every json tag from a table that the
- * browser already reads. A Go struct tag takes a LITERAL, so a hand-written one can
+ * A struct states its FIELD LIST once and takes every json tag from a table of the
+ * contract. A Go struct tag takes a LITERAL, so a hand-written one can
  * only be held to the contract by a reflection test that someone must remember to
  * extend -- and five Pi fields showed that nobody does. Generating the struct removes
  * the tag from the source entirely, so there is nothing left to drift.
@@ -6860,7 +6964,12 @@ function emitGoStructs(spec, p) {
     const from = tables.length === 1
       ? `the \`${tables[0]}\` table`
       : `the ${tables.map(t => `\`${t}\``).join(' and ')} tables`
-    return `${doc}\n//\n// Its json tags come from ${from}, so a rename in the contract\n// reaches this struct and the browser's reader in ONE change.\ntype ${name} struct {\n${body}\n}`
+    // A table that only the worker reads has no browser reader for a rename to reach.
+    const browserReads = tables.some(key => tableReaders(spec.tables.find(t => t.key === key)).includes('ts'))
+    const reaches = browserReads
+      ? 'reaches this struct and the browser\'s reader in ONE change'
+      : 'reaches this struct'
+    return `${doc}\n//\n// Its json tags come from ${from}, so a rename in the contract\n// ${reaches}.\ntype ${name} struct {\n${body}\n}`
   })
   return { blocks, needsJSON }
 }

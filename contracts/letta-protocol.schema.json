@@ -166,6 +166,9 @@
     "question": {
       "$ref": "#/$defs/table"
     },
+    "structs": {
+      "$ref": "#/$defs/structs"
+    },
     "stopReasons": {
       "$ref": "#/$defs/table"
     },

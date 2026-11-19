@@ -119,13 +119,17 @@ func (a *Agent) approvePendingPermissions() {
 		a.publishPermission(id, pending)
 	}
 	for id, pending := range claimed {
-		payload := approvalResponsePayload{Kind: contracts.LettaReplyKindApprovalResponse, RequestID: id}
+		var raw []byte
+		var err error
 		if pending.publicationFailed {
-			payload.Error = providerkit.ControlPublicationFailure
+			raw, err = json.Marshal(contracts.LettaApprovalResponse{
+				Kind:      contracts.LettaReplyKindApprovalResponse,
+				RequestID: id,
+				Error:     providerkit.ControlPublicationFailure,
+			})
 		} else {
-			payload.Decision = json.RawMessage(`{"behavior":"allow","message":""}`)
+			raw, err = lettaApprovalResponse(id, "allow", "")
 		}
-		raw, err := json.Marshal(payload)
 		if err == nil {
 			err = a.sendPermissionPayload(scope, raw)
 		}

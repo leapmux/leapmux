@@ -62,9 +62,9 @@ func (lettaProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 
 // lettaPermissionPrompt is the prompt of one permission request: the tool
 // name as its title, the tool input, LeapMux's allow and deny, and for a Bash
-// call the command it runs. The answer that the Worker sends (decisionBody)
-// states a behavior and a message alone, so the request's `suggestions` are
-// not offered.
+// call the command it runs. The answer that the Worker sends
+// (contracts.LettaApprovalDecision) states a behavior and a message alone, so
+// the request's `suggestions` are not offered.
 func lettaPermissionPrompt(payload lettaControlPayload) *leapmuxv1.PermissionPrompt {
 	title := payload.toolName
 	if title == "" {

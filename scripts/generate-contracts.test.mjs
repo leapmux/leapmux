@@ -2566,6 +2566,18 @@ describe('emitted structs', () => {
     expect(go).toContain('AggregatedOutput string `json:"aggregatedOutput"`')
   })
 
+  // A rename reaches the browser only through a table that the browser reads, so the
+  // comment of a struct whose table only the worker reads names no browser reader.
+  it('names the browser reader only for a table that the browser reads', () => {
+    const struct = (go, name) => go.slice(0, go.indexOf(`type ${name} struct {`)).split('\n\n').at(-1)
+    const browser = 'reaches this struct and the browser\'s reader in ONE change.'
+    const codex = struct(files['backend/generated/contracts/codex-protocol.go'], 'CodexToolSupplement')
+    expect(codex).toContain(browser)
+    const droid = struct(files['backend/generated/contracts/droid-protocol.go'], 'DroidAskUserResult')
+    expect(droid).toContain('// reaches this struct.')
+    expect(droid).not.toContain('browser')
+  })
+
   it('carries omitempty only where the contract asks for it', () => {
     const go = files['backend/generated/contracts/pi-protocol.go']
     expect(go).toMatch(/ToolCallID\s+string\s+`json:"toolCallId"`/)

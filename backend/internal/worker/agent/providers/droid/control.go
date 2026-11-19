@@ -49,34 +49,10 @@ type droidAskUserRequest struct {
 	} `json:"questions"`
 }
 
-// droidPermissionResult is the result of Droid's reply to
-// droid.request_permission. Droid's schema also accepts `comment` and
-// `editedSpecContent`, and the worker writes neither: see
-// droidResolveControlResponse for the comment.
-type droidPermissionResult struct {
-	SelectedOption string `json:"selectedOption"`
-}
-
-// droidAskUserResult is the result of Droid's reply to droid.ask_user. Droid's
-// schema requires `answers` to be a list, even for a cancel.
-type droidAskUserResult struct {
-	Cancelled bool                 `json:"cancelled"`
-	Answers   []droidAskUserAnswer `json:"answers"`
-}
-
-// droidAskUserAnswer is one answer of a droid.ask_user reply. Droid identifies
-// the question by Index, and reports the answer to the model as
-// "<index>. [question] <question>" and "[answer] <answer>".
-type droidAskUserAnswer struct {
-	Index    int    `json:"index"`
-	Question string `json:"question"`
-	Answer   string `json:"answer"`
-}
-
 // droidCancelledAskUser is the reply that cancels a droid.ask_user request: the
 // reply that Droid's own client sends for a cancel.
-func droidCancelledAskUser() droidAskUserResult {
-	return droidAskUserResult{Cancelled: true, Answers: []droidAskUserAnswer{}}
+func droidCancelledAskUser() contracts.DroidAskUserResult {
+	return contracts.DroidAskUserResult{Cancelled: true, Answers: []contracts.DroidAskUserAnswer{}}
 }
 
 // handleServerRequest answers one server->client request.
@@ -95,7 +71,7 @@ func (a *Agent) handleServerRequest(line []byte, env *droidEnvelope) {
 
 // onRequestPermission publishes a permission control request.
 func (a *Agent) onRequestPermission(env *droidEnvelope) {
-	cancel := droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}
+	cancel := contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}
 	var params droidPermissionRequest
 	if err := json.Unmarshal(env.Params, &params); err != nil {
 		slog.Debug("droid: bad permission params", "agent_id", a.AgentID(), "error", err)
@@ -103,7 +79,7 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 		return
 	}
 	if len(params.ToolUses) == 0 {
-		a.respond(env.ID, droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce})
+		a.respond(env.ID, contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce})
 		return
 	}
 	sessions := params.AssociatedSessionIDs
@@ -409,12 +385,11 @@ func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, e
 // refuses proceed_edit even when the request offered it. Droid's reply schema
 // requires `editedSpecContent` beside proceed_edit, and the worker sends no
 // edited spec.
-func droidPermissionReply(offered []string, allow bool, decision json.RawMessage, approvalOption string) (droidPermissionResult, error) {
-	var stated struct {
-		SelectedOption string `json:"selectedOption"`
-	}
+func droidPermissionReply(offered []string, allow bool, decision json.RawMessage, approvalOption string) (contracts.DroidPermissionResult, error) {
+	// The decision states the option in the shape of the reply itself.
+	var stated contracts.DroidPermissionResult
 	if err := json.Unmarshal(decision, &stated); err != nil {
-		return droidPermissionResult{}, errors.New(agent.RefusalUnreadableAnswer)
+		return contracts.DroidPermissionResult{}, errors.New(agent.RefusalUnreadableAnswer)
 	}
 	option := stated.SelectedOption
 	if allow && approvalOption != "" {
@@ -426,27 +401,27 @@ func droidPermissionReply(offered []string, allow bool, decision json.RawMessage
 	case option == "":
 		option = contracts.DroidPermissionOptionCancel
 	case (option == contracts.DroidPermissionOptionCancel) == allow:
-		return droidPermissionResult{}, fmt.Errorf("the option %s contradicts the decision", option)
+		return contracts.DroidPermissionResult{}, fmt.Errorf("the option %s contradicts the decision", option)
 	case option == contracts.DroidPermissionOptionProceedEdit:
-		return droidPermissionResult{}, errors.New("the option proceed_edit requires an edited spec, which LeapMux does not send")
+		return contracts.DroidPermissionResult{}, errors.New("the option proceed_edit requires an edited spec, which LeapMux does not send")
 	}
 	if option != contracts.DroidPermissionOptionCancel && !slices.Contains(offered, option) {
-		return droidPermissionResult{}, errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, option))
+		return contracts.DroidPermissionResult{}, errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, option))
 	}
-	return droidPermissionResult{SelectedOption: option}, nil
+	return contracts.DroidPermissionResult{SelectedOption: option}, nil
 }
 
 // droidAskUserReply builds the reply to a question request. A refusal is
 // Droid's own cancel, which carries no answer.
-func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision json.RawMessage) (droidAskUserResult, error) {
+func droidAskUserReply(questions []droidStoredQuestion, allow bool, decision json.RawMessage) (contracts.DroidAskUserResult, error) {
 	if !allow {
 		return droidCancelledAskUser(), nil
 	}
 	answers, err := droidAnswersInQuestionOrder(questions, decision)
 	if err != nil {
-		return droidAskUserResult{}, err
+		return contracts.DroidAskUserResult{}, err
 	}
-	return droidAskUserResult{Answers: answers}, nil
+	return contracts.DroidAskUserResult{Answers: answers}, nil
 }
 
 // droidDecidedAnswer is one answer of the neutral envelope. Pointers tell an
@@ -464,20 +439,24 @@ type droidDecidedAnswer struct {
 // The decision must answer every question exactly once, and nothing else.
 // Droid's AskUser tool fails when the count of answers differs from the count
 // of questions, and Droid's own client refuses an unknown or repeated index.
-func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.RawMessage) ([]droidAskUserAnswer, error) {
-	var stated struct {
-		// A pointer tells an absent list from an empty one: an absent list
-		// answers none.
-		Answers *[]droidDecidedAnswer `json:"answers"`
-	}
+func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.RawMessage) ([]contracts.DroidAskUserAnswer, error) {
+	var stated map[string]json.RawMessage
 	if err := json.Unmarshal(decision, &stated); err != nil {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
-	if stated.Answers == nil {
+	// A pointer tells an absent list from an empty one: an absent list answers
+	// none, and so does a null one.
+	var decided *[]droidDecidedAnswer
+	if raw, present := stated[contracts.DroidReplyAnswers]; present {
+		if err := json.Unmarshal(raw, &decided); err != nil {
+			return nil, errors.New(agent.RefusalUnreadableAnswer)
+		}
+	}
+	if decided == nil {
 		return nil, errors.New("the decision holds no answer list")
 	}
-	byIndex := make(map[int]string, len(*stated.Answers))
-	for _, answer := range *stated.Answers {
+	byIndex := make(map[int]string, len(*decided))
+	for _, answer := range *decided {
 		if answer.Index == nil || answer.Answer == nil {
 			return nil, errors.New("an answer states no index or no text")
 		}
@@ -486,7 +465,7 @@ func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.
 		}
 		byIndex[*answer.Index] = *answer.Answer
 	}
-	answers := make([]droidAskUserAnswer, 0, len(questions))
+	answers := make([]contracts.DroidAskUserAnswer, 0, len(questions))
 	asked := make(map[int]bool, len(questions))
 	for _, question := range questions {
 		if asked[question.Index] {
@@ -497,7 +476,7 @@ func droidAnswersInQuestionOrder(questions []droidStoredQuestion, decision json.
 		if !answered {
 			return nil, fmt.Errorf("the question with the index %d has no answer", question.Index)
 		}
-		answers = append(answers, droidAskUserAnswer{Index: question.Index, Question: question.Question, Answer: text})
+		answers = append(answers, contracts.DroidAskUserAnswer{Index: question.Index, Question: question.Question, Answer: text})
 	}
 	// Every question found its own answer, so a longer answer set holds an
 	// index that no question states.

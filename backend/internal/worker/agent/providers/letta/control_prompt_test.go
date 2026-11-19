@@ -268,11 +268,11 @@ func TestLettaAnswerControlRequest_ADismissalDeniesWithTheTypedReason(t *testing
 // an answer becomes Letta Code's answered response, and a dismissal its
 // dismissed response with the reason as the next message.
 func TestLettaAnswerControlRequest_AQuestionResolvesIntoLettasOwnResponse(t *testing.T) {
-	resolve := func(answer agent.ControlAnswer) (lettaQuestionResponse, agent.ControlResponseResolution) {
+	resolve := func(answer agent.ControlAnswer) (contracts.LettaQuestionResponse, agent.ControlResponseResolution) {
 		t.Helper()
 		resolution := agenttest.ResolveAnswer(lettaProvider{}, []byte(lettaPromptQuestionRequest), "letta-question-ask-1", answer)
 		require.False(t, resolution.Withhold, "%v", resolution.Refusal())
-		var response lettaQuestionResponse
+		var response contracts.LettaQuestionResponse
 		require.NoError(t, json.Unmarshal(resolution.Content, &response))
 		return response, resolution
 	}
@@ -280,13 +280,13 @@ func TestLettaAnswerControlRequest_AQuestionResolvesIntoLettasOwnResponse(t *tes
 	answer, err := agenttest.AnswerControl(lettaProvider{}, []byte(lettaPromptQuestionRequest), "letta-question-ask-1", agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"Red"}}, &leapmuxv1.QuestionAnswer{Selected: []string{"Small", "Large"}, CustomText: "XL"}))
 	require.NoError(t, err)
 	response, _ := resolve(answer)
-	assert.Equal(t, contracts.LettaQuestionStatusAnswered, response.Status)
-	assert.Equal(t, "ask-1", response.ToolCallID)
-	assert.Equal(t, map[string]string{"Which color do you prefer?": "Red", "Which sizes?": "Small, Large, XL"}, response.Answers)
+	assert.Equal(t, contracts.LettaQuestionStatusAnswered, response.FieldStatus)
+	assert.Equal(t, "ask-1", response.FieldToolCallID)
+	assert.Equal(t, map[string]string{"Which color do you prefer?": "Red", "Which sizes?": "Small, Large, XL"}, response.FieldAnswers)
 
 	dismissal, err := agenttest.AnswerControl(lettaProvider{}, []byte(lettaPromptQuestionRequest), "letta-question-ask-1", agenttest.CancelQuestions("Ask me later."))
 	require.NoError(t, err)
 	response, resolution := resolve(dismissal)
-	assert.Equal(t, contracts.LettaQuestionStatusDismissed, response.Status)
+	assert.Equal(t, contracts.LettaQuestionStatusDismissed, response.FieldStatus)
 	assert.Equal(t, agent.FeedbackFollowUp("Ask me later."), resolution.FollowUp)
 }
