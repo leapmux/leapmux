@@ -633,9 +633,10 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Sender: from, Text: r.GetText(),
-				Attachments:      queueAttachments(r.GetAttachments()),
-				ReclassifyOnEdit: r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-				ScheduledAt:      scheduledAt,
+				Attachments:           queueAttachments(r.GetAttachments()),
+				ReclassifyOnEdit:      r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+				ScheduledAt:           scheduledAt,
+				RequireFutureSchedule: r.GetRequireFutureSchedule(),
 			})
 			if sendQueueError(sender, err) {
 				return

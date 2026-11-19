@@ -277,6 +277,9 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		snapshot, err := commit()
 		return snapshot, false, err
 	}
+	if input.RequireFutureSchedule && input.ScheduledAt != nil && !input.ScheduledAt.After(now) {
+		return Snapshot{}, false, fmt.Errorf("%w: a new schedule must be in the future", ErrInvalidInput)
+	}
 
 	if err := insertQueuedItem(ctx, tx, input, key); err != nil {
 		return Snapshot{}, false, err

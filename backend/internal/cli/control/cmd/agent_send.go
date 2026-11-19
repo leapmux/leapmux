@@ -34,7 +34,7 @@ func (m userMessage) request(agentID, inputID string) *leapmuxv1.EnqueueAgentInp
 	return &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: agentID, InputId: inputID, Text: m.text,
 		Attachments: m.attachments, ScheduledAt: m.scheduledAt,
-		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, RequireFutureSchedule: m.scheduledAt != "",
 	}
 }
 
@@ -65,6 +65,10 @@ func readSendSpec(inv *cli.Invocation, now time.Time) (sendSpec, error) {
 			return sendSpec{}, cli.Usagef("--request-id needs --at as an RFC 3339 time").
 				WithHint("a duration from now gives another time on each run, so a retry would conflict with the first run")
 		}
+		if requestID == "" && !at.After(now) {
+			return sendSpec{}, cli.Usagef("--at %s is not after now (%s)", timefmt.Format(at), timefmt.Format(now)).
+				WithHint("omit --at to send the message at once")
+		}
 		scheduledAt = timefmt.Format(at)
 	}
 	paths := inv.StringArray("attach")
@@ -89,8 +93,8 @@ func readSendSpec(inv *cli.Invocation, now time.Time) (sendSpec, error) {
 
 // parseSendAt reads --at: an RFC 3339 time, which states its own offset, or
 // "+" and a positive duration from now, such as +10m. It reports whether the
-// value was relative. The time must lie after now: a message for a moment
-// that has passed would reach the agent at once, which --at never means.
+// value was relative. An absolute timestamp can be in the past when a
+// request ID lets the Worker check whether it already accepted that schedule.
 //
 // The CLI never assumes a time zone. A time without an offset is refused,
 // because the zone of the machine that runs the command and the zone of the
@@ -119,10 +123,6 @@ func parseSendAt(raw string, now time.Time) (time.Time, bool, error) {
 				WithHint("write a time such as 2026-11-20T09:00:00+09:00 or 2026-11-20T00:00:00Z, or a duration such as +10m")
 		}
 		at = parsed
-	}
-	if !at.After(now) {
-		return time.Time{}, false, cli.Usagef("--at %s is not after now (%s)", timefmt.Format(at), timefmt.Format(now)).
-			WithHint("omit --at to send the message at once")
 	}
 	return at, relative, nil
 }

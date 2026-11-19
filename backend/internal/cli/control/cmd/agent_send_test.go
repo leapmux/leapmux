@@ -33,6 +33,8 @@ func TestParseSendAt(t *testing.T) {
 		"+1ms":                          {now.Add(time.Millisecond), true},
 		"+87600h":                       {now.Add(87600 * time.Hour), true},
 		"2026-11-19T07:00:00.001+00:00": {now.Add(time.Millisecond), false},
+		"2026-11-19T07:00:00Z":          {now, false},
+		"2025-11-19T09:00:00Z":          {time.Date(2025, 11, 19, 9, 0, 0, 0, time.UTC), false},
 	} {
 		at, relative, err := parseSendAt(raw, now)
 		require.NoError(t, err, raw)
@@ -51,8 +53,6 @@ func TestParseSendAt(t *testing.T) {
 		"+ten minutes":              "is not a duration",
 		"+0s":                       "is not after now",
 		"+-5m":                      "is not after now",
-		"2026-11-19T07:00:00Z":      "is not after now",
-		"2025-11-19T09:00:00Z":      "is not after now",
 	} {
 		_, _, err := parseSendAt(raw, now)
 		e := cli.FromError(err)
@@ -155,7 +155,8 @@ func TestAgentSendOverIPC_SendsTheAttachmentsAndTheSchedule(t *testing.T) {
 			{Filename: "shot.png", Data: []byte{0x89, 'P', 'N', 'G'}},
 			{Filename: "console.log", Data: []byte("TypeError")},
 		},
-		ScheduledAt: "2099-01-02T03:04:05.678Z",
+		ScheduledAt:           "2099-01-02T03:04:05.678Z",
+		RequireFutureSchedule: true,
 	})
 }
 
@@ -245,6 +246,25 @@ func TestAgentSendOverIPC_ARetryWithTheRequestIDKeepsAnRFC3339Time(t *testing.T)
 	require.Len(t, got, 2)
 	assert.True(t, proto.Equal(got[0], got[1]), "the retry repeats the first request:\nfirst %v\nretry %v", got[0], got[1])
 	assert.Len(t, w.itemIDs(), 1, "the queue holds one message")
+}
+
+func TestAgentSendOverIPC_ReplaysAnInputAfterItsDueTime(t *testing.T) {
+	agentID := fullTestID("ag-2")
+	inputID := requestScopedID("deploy-1", requestScopeAgentSend, agentID)
+	worker := newQueueWorker()
+	worker.deliver(inputID)
+	startAgentWorker(t, agentID, worker)
+
+	result := sendTo(t, agentID, "Check the deploy", "--at", "2001-01-02T12:00:00+09:00", "--request-id", "deploy-1").Data(t)
+	assert.Equal(t, inputID, result["input_id"])
+	assert.Equal(t, "2001-01-02T03:00:00.000Z", result["scheduled_at"])
+	requests := worker.recorded()
+	require.Len(t, requests, 1)
+	request := requests[0].(*leapmuxv1.EnqueueAgentInputRequest)
+	assert.Equal(t, inputID, request.GetInputId())
+	assert.Equal(t, "2001-01-02T03:00:00.000Z", request.GetScheduledAt())
+	assert.True(t, request.GetRequireFutureSchedule())
+	assert.Empty(t, worker.itemIDs(), "the replay does not queue an already delivered input")
 }
 
 // The Worker refuses a file that the agent's provider cannot read, and the

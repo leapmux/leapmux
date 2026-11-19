@@ -640,6 +640,9 @@ message EnqueueAgentInputRequest {
   // Empty schedules immediate delivery. Otherwise a canonical UTC RFC3339
   // send-not-before timestamp; a value at or before now still means immediate.
   string scheduled_at = 6;
+  // Require a future scheduled_at when inserting a new input. An exact
+  // replay of a recorded request also succeeds once its schedule has passed.
+  bool require_future_schedule = 7;
 }
 
 message EnqueueAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }

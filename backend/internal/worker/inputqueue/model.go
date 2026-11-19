@@ -367,6 +367,9 @@ type NewItem struct {
 	Attachments      []Attachment
 	// ScheduledAt schedules the item; nil means immediate.
 	ScheduledAt *time.Time
+	// RequireFutureSchedule refuses a due schedule when inserting an item.
+	// A retry of an existing input keeps the original admission decision.
+	RequireFutureSchedule bool
 	// SourcePayload is the provider source an automatic retry carries into the
 	// accepted transcript's supplemental content. Empty for ordinary input.
 	SourcePayload []byte

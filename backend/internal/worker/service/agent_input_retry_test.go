@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -56,4 +57,26 @@ func TestEnqueueAgentInput_ARepeatedRequestIsOneInput(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, "Run the tests", snapshot.Items[0].TextPreview, "a conflicting repeat never replaces the input")
+}
+
+func TestEnqueueAgentInput_RequiresAFutureScheduleOnRequest(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher := setupInputQueueRPCService(t)
+	paused, err := svc.InputQueue.SetPaused(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	request := &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "new-expired", Text: "Run the tests",
+		Kind:                  leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ScheduledAt:           "2001-01-02T03:04:05.000Z",
+		RequireFutureSchedule: true,
+	}
+	writer := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, request, writer)
+	require.Len(t, writer.errors, 1)
+	assert.EqualValues(t, codes.InvalidArgument, writer.errors[0].code)
+	assert.Contains(t, writer.errors[0].message, "a new schedule must be in the future")
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	assert.Equal(t, paused.Revision, snapshot.Revision)
 }

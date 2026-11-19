@@ -585,7 +585,7 @@ states the file.
     2026-11-20T00:00:00Z. The CLI assumes no time zone, so a time without an
     offset fails.
   - "+" and a duration from now, such as +10m or +1h30m.
-The time must lie in the future. The result states it in UTC.
+A new schedule must lie in the future. The result states it in UTC.
 
 --request-id makes a retry safe. A second run with the same request id, the
 same agent and the same message queues nothing new, and with --wait it
@@ -595,9 +595,9 @@ the first run sent, and the queue keeps the edit. It holds also after
 someone removed the message from the queue: for 7 days after the removal, a
 retry queues nothing, and with --wait it fails with not_found and exits 6.
 A run with the same request id and a message other than the first run's
-fails with conflict, even when its message equals the edited one. A retry
-needs --at as an RFC 3339 time, because a duration from now differs on each
-run.
+fails with conflict, even when its message equals the edited one. A retry of
+a scheduled message repeats its RFC 3339 timestamp, even after that time has
+passed. A relative --at changes on each run and cannot use --request-id.
 
 With --wait, the command first refuses to send to an agent that waits for an
 answer to a permission prompt, and exits 5. Otherwise it sends the message,
