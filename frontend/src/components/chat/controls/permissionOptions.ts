@@ -104,28 +104,45 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
 }
 
 /**
+ * The identity of the scope that an option states: its reach and its scope label
+ * together, or undefined for an option that states neither.
+ *
+ * A scope label tells two rules of one reach apart. Codex keeps a command rule and a
+ * host rule in the same user configuration, and a refusal of the host rule must not
+ * answer the pill of the command rule.
+ */
+function statedScope(option: PermissionOption): string | undefined {
+  if (option.scope === undefined && !option.scopeLabel)
+    return undefined
+  return JSON.stringify([option.scope ?? null, option.scopeLabel || null])
+}
+
+/**
  * Collect reachable remembered refusal options in payload order.
  *
- * - A refusal without a stated scope can answer each remembered scope.
- * - A refusal with a matching scope answers that scope.
+ * - A refusal that states no scope can answer each remembered scope.
+ * - A refusal that states a scope answers only the pill that states the same scope
+ *   (`statedScope`).
  * - Keep the first refusal for each scope and the first refusal without a scope.
  *
  * Other refusal options remain available as additional buttons.
  */
 function reachableRejects(options: readonly PermissionOption[], allowScope: readonly PermissionOption[]): PermissionOption[] {
-  const pillScopes = new Set<PermissionScope>()
+  const pillScopes = new Set<string>()
   for (const option of allowScope) {
-    if (option.kind === KIND_ALLOW_ALWAYS && option.scope !== undefined)
-      pillScopes.add(option.scope)
+    const scope = statedScope(option)
+    if (option.kind === KIND_ALLOW_ALWAYS && scope !== undefined)
+      pillScopes.add(scope)
   }
-  const seen = new Set<PermissionScope | undefined>()
+  const seen = new Set<string | undefined>()
   const rejects: PermissionOption[] = []
   for (const option of options) {
-    if (option.kind !== KIND_REJECT_ALWAYS || seen.has(option.scope))
+    const scope = statedScope(option)
+    if (option.kind !== KIND_REJECT_ALWAYS || seen.has(scope))
       continue
-    if (option.scope !== undefined && !pillScopes.has(option.scope))
+    if (scope !== undefined && !pillScopes.has(scope))
       continue
-    seen.add(option.scope)
+    seen.add(scope)
     rejects.push(option)
   }
   return rejects
@@ -147,15 +164,16 @@ function rememberingScope(
 
 /**
  * Select the remembered refusal for one remembered scope.
- * Use an exact scope match first, then a refusal that states no scope.
- * Never select a refusal for a different scope.
+ * Use an exact match of the stated scope first, then a refusal that states no scope.
+ * Never select a refusal for a different scope or a different scope label.
  * If neither matches, the decision button keeps its once refusal.
  */
 function rememberRejectFor(rejects: readonly PermissionOption[], pill: PermissionOption): PermissionOption | undefined {
-  return (pill.scope !== undefined
-    ? rejects.find(option => option.scope === pill.scope)
+  const scope = statedScope(pill)
+  return (scope !== undefined
+    ? rejects.find(option => statedScope(option) === scope)
     : undefined)
-  ?? rejects.find(option => option.scope === undefined)
+  ?? rejects.find(option => statedScope(option) === undefined)
 }
 
 /**
@@ -186,28 +204,38 @@ export function resolvePermissionOption(
 }
 
 /**
- * A once decision uses the plain Allow or Deny label.
- * The scope group supplies its duration when present.
- * A remembered slot uses the native option's duration label because it can store a rule.
- * That label must remain visible even when the group selects Once.
- * A plain label on a remembered slot would conceal the lasting rule.
- * A refusal that also ends the agent's turn reads Cancel, because Deny would
- * hide that the agent does nothing more.
+ * Name a decision button.
+ *
+ * - A once decision uses the plain Allow or Deny label.
+ *   The scope group supplies its duration when present.
+ * - A remembered slot uses the native option's duration label because it can store a rule.
+ *   That label must remain visible even when the group selects Once.
+ *   A plain label on a remembered slot would conceal the lasting rule.
+ * - A remembered refusal that the selected pill reaches reads Deny, because the pill
+ *   states its duration.
+ * - A refusal that also ends the agent's turn reads Cancel, because Deny would hide
+ *   that the agent does nothing more.
+ *
+ * Deny names the option that it sends for the selected scope, so its label changes
+ * with the pill. Codex's cancel ends the turn, and its host block under the Host rule
+ * pill does not.
  */
-export function decisionLabel(layout: PermissionOptionLayout, polarity: 'allow' | 'reject'): string {
-  const slot = polarity === 'allow'
-    ? layout.positive
-    : layout.negative
-  if (polarity === 'reject' && slot?.endsTurn)
+export function decisionLabel(
+  layout: PermissionOptionLayout,
+  polarity: 'allow' | 'reject',
+  selectedAllowScopeId?: string,
+): string {
+  if (polarity === 'allow') {
+    return layout.positive?.kind === KIND_ALLOW_ALWAYS
+      ? permissionOptionLabel(layout.positive)
+      : 'Allow'
+  }
+  const sent = resolvePermissionOption(layout, 'reject', selectedAllowScopeId)
+  if (sent?.endsTurn)
     return 'Cancel'
-  const rememberKind = polarity === 'allow'
-    ? KIND_ALLOW_ALWAYS
-    : KIND_REJECT_ALWAYS
-  return slot?.kind === rememberKind
-    ? permissionOptionLabel(slot)
-    : polarity === 'allow'
-      ? 'Allow'
-      : 'Deny'
+  return sent === layout.negative && sent?.kind === KIND_REJECT_ALWAYS
+    ? permissionOptionLabel(sent)
+    : 'Deny'
 }
 
 /** The pill label of each scope that a plugin states. The widest scope reads Always. */
@@ -221,6 +249,8 @@ const SCOPE_LABELS: Record<PermissionScope, string> = {
 /**
  * Read the scope label from the option.
  *
+ * - A scope label that the provider states wins, because the runtime names its own
+ *   scope, such as Codex's "Command rule".
  * - allow_once reads Once.
  * - An explicit plugin scope uses its declared scope label.
  * - Otherwise, inspect only the native name before its first colon for a project or session keyword.
@@ -231,6 +261,8 @@ const SCOPE_LABELS: Record<PermissionScope, string> = {
  * An explicit plugin scope avoids that ambiguity.
  */
 export function allowScopeLabel(option: PermissionOption): string {
+  if (option.scopeLabel)
+    return option.scopeLabel
   if (option.kind === ACP_PERMISSION_KIND.AllowOnce)
     return 'Once'
   if (option.scope)

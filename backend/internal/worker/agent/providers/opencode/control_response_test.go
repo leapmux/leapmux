@@ -6,10 +6,13 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestNativeWorkerControlTranslation(t *testing.T) {
 	t.Parallel()
 	permission := json.RawMessage(`{"type":"permission.asked","data":{"id":"per_1","sessionID":"ses_1","action":"shell","resources":[],"save":["*"]}}`)
@@ -34,7 +37,6 @@ func TestNativeWorkerControlTranslation(t *testing.T) {
 		{"invalid elicitation content", "form", `{"response":{"request_id":"%s","response":{"action":"accept","content":0}}}`, "", form, true},
 		{"mixed permission envelopes", "permission", `{"id":"%[1]s","result":{"outcome":{"outcome":"selected","optionId":"always"}},"response":{"request_id":"%[1]s","response":{"action":"cancel"}}}`, "", permission, true},
 		{"mixed form envelopes", "form", `{"id":"%[1]s","result":{"answer":{"count":1}},"response":{"request_id":"%[1]s","response":{"action":"cancel"}}}`, `"cancel":true`, form, false},
-		{"foreign answer", "permission", `{"id":"other-%s","result":{"decision":"once"}}`, "", permission, true},
 		{"missing request", "permission", `{"id":"%s","result":{"decision":"once"}}`, "", nil, true},
 		{"unknown option", "permission", `{"id":"%s","result":{"outcome":{"outcome":"selected","optionId":"unknown"}}}`, "", permission, true},
 	} {
@@ -42,7 +44,7 @@ func TestNativeWorkerControlTranslation(t *testing.T) {
 			t.Parallel()
 			key := openCodeControlKey(tc.kind, "ses_1", map[string]string{"permission": "per_1", "form": "frm_1"}[tc.kind])
 			response := []byte(fmt.Sprintf(tc.response, key))
-			result := Registration().Plugin.ResolveControlResponse(agent.ControlResponseContext{RequestID: key, RequestPayload: tc.request, ResponseContent: response})
+			result := agenttest.ResolveAnswer(Registration().Plugin, tc.request, key, agent.ControlAnswer{Content: response})
 			assert.Equal(t, tc.refused, result.Withhold)
 			if tc.refused {
 				return
@@ -51,5 +53,28 @@ func TestNativeWorkerControlTranslation(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, string(result.Content), tc.expected)
 		})
+	}
+}
+
+// A row whose payload states another request than its key disagrees with that
+// key, so LeapMux cannot read the request that the answer is for.
+func TestNativeWorkerControlRefusesARequestThatDisagreesWithItsKey(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		kind    string
+		request json.RawMessage
+	}{
+		"a permission": {"permission", json.RawMessage(`{"type":"permission.asked","data":{"id":"per_1","sessionID":"ses_1","action":"shell","resources":[]}}`)},
+		"a form":       {"form", json.RawMessage(`{"type":"form.created","data":{"form":{"id":"frm_1","sessionID":"ses_1","fields":[{"key":"count","type":"integer"}]}}}`)},
+	} {
+		for _, key := range []string{
+			openCodeControlKey(tc.kind, "ses_1", "other"),
+			openCodeControlKey(tc.kind, "ses_other", map[string]string{"permission": "per_1", "form": "frm_1"}[tc.kind]),
+		} {
+			answer := agent.ControlAnswer{Content: agent.ControlResponseEnvelope(key, map[string]any{"behavior": "deny"})}
+			result := agenttest.ResolveAnswer(Registration().Plugin, tc.request, key, answer)
+			assert.True(t, result.Withhold, "%s under %s", name, key)
+			assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, "%s under %s", name, key)
+		}
 	}
 }

@@ -130,10 +130,10 @@ func TestATurnReplyThatFailsAfterTheStartEndsTheTurnAsAnError(t *testing.T) {
 func TestSteerInputJoinsTheRunningTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.ErrorIs(t, r.agent.SteerInput("Early.", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, r.agent.SteerInput(agent.SteerRequest{Content: "Early."}), agent.ErrNoActiveTurn)
 	r.startTurn(t, "Hello.")
 	require.True(t, r.agent.SupportsSteering())
-	require.NoError(t, r.agent.SteerInput("Also this.", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "Also this."}))
 	commands := r.hub.commandsNamed(commandSessionSendInput)
 	require.Len(t, commands, 2)
 	assert.Equal(t, deliverySteer, commands[1].str("delivery"))
@@ -144,7 +144,7 @@ func TestSteerInputRefusesATurnClineStartedByItself(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.agent.ensureTurn()
-	err := r.agent.SteerInput("Hello.", nil)
+	err := r.agent.SteerInput(agent.SteerRequest{Content: "Hello."})
 	var busy *agent.AgentBusyError
 	require.ErrorAs(t, err, &busy)
 	assert.False(t, busy.ActiveTurnSteerable)
@@ -158,7 +158,7 @@ func TestSteerInputReportsARefusal(t *testing.T) {
 	r.hub.handle(commandSessionSendInput, func(fakeCommand) fakeReply {
 		return fakeReply{Code: "session_not_running", Message: "no run"}
 	})
-	err := r.agent.SteerInput("Late.", nil)
+	err := r.agent.SteerInput(agent.SteerRequest{Content: "Late."})
 	var refused *HubCommandError
 	require.ErrorAs(t, err, &refused)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
@@ -376,7 +376,7 @@ func TestSteerInputReportsALostConnectionAsUncertain(t *testing.T) {
 		go r.hub.drop()
 		return fakeReply{Hold: true}
 	})
-	err := r.agent.SteerInput("Also this.", nil)
+	err := r.agent.SteerInput(agent.SteerRequest{Content: "Also this."})
 	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.True(t, r.turnActive(), "the steer changes nothing about the turn")
 }
@@ -385,12 +385,12 @@ func TestSteerInputRefusesWhatCannotJoinTheTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.startTurn(t, "Hello.")
-	err := r.agent.SteerInput("Read.", []*leapmuxv1.Attachment{{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}})
+	err := r.agent.SteerInput(agent.SteerRequest{Content: "Read.", Attachments: []*leapmuxv1.Attachment{{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.7")}}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PDF")
-	require.Error(t, r.agent.SteerInput(" ", nil), "a steer with nothing in it")
+	require.Error(t, r.agent.SteerInput(agent.SteerRequest{Content: " "}), "a steer with nothing in it")
 	assert.Len(t, r.hub.commandsNamed(commandSessionSendInput), 1, "no refused steer leaves")
 
 	r.agent.Stop()
-	require.ErrorIs(t, r.agent.SteerInput("Late.", nil), errAgentStopped)
+	require.ErrorIs(t, r.agent.SteerInput(agent.SteerRequest{Content: "Late."}), errAgentStopped)
 }

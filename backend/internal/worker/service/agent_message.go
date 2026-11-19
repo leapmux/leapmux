@@ -103,15 +103,21 @@ func agentMessageText(item inputqueue.DispatchItem) (string, error) {
 		// The schema ties the kind to a sender, so only a broken row gets here.
 		return "", errors.New("the agent message states no sender")
 	}
-	title := item.Sender.TabID
-	if strings.TrimSpace(item.Sender.Title) != "" {
-		title = item.Sender.Title
+	return senderMessageText(*item.Sender, item.Text), nil
+}
+
+// senderMessageText returns the text that the recipient of a message from
+// sender reads, when the sender wrote text (see agentMessageText).
+func senderMessageText(sender inputqueue.AgentSender, text string) string {
+	title := sender.TabID
+	if strings.TrimSpace(sender.Title) != "" {
+		title = sender.Title
 	}
-	header := agentMessageHeader(title, item.Sender.Provider)
-	if item.Text == "" {
-		return header, nil
+	header := agentMessageHeader(title, sender.Provider)
+	if text == "" {
+		return header
 	}
-	return header + "\n\n" + item.Text, nil
+	return header + "\n\n" + text
 }
 
 // agentMessageHeader formats the header of a message from the agent titled
@@ -119,4 +125,36 @@ func agentMessageText(item inputqueue.DispatchItem) (string, error) {
 // or a line break cannot end the header early and write a line of its own.
 func agentMessageHeader(title string, provider leapmuxv1.AgentProvider) string {
 	return fmt.Sprintf(agentMessageHeaderFormat, strconv.Quote(title), agentlabels.DisplayName(provider))
+}
+
+// agentMessageTitle returns the title that the header of delivered states,
+// when delivered is exactly the text that senderMessageText builds for sender
+// with that title and for text. It returns "" for any other text, and for a
+// header that identifies the sender by its tab id, which is what the header of
+// an untitled sender states.
+//
+// The transcript row of an agent message states the sender's tab and provider,
+// but not its title (see inputqueue.SteeredInput), and the Worker reads no
+// agent row for a header (see agentMessageText). When a provider hands back a
+// steer that it dropped, the text that it holds is then the one record of the
+// title that the header stated.
+func agentMessageTitle(delivered string, sender inputqueue.AgentSender, text string) string {
+	prefix, _, _ := strings.Cut(agentMessageHeaderFormat, "%s")
+	rest, ok := strings.CutPrefix(delivered, prefix)
+	if !ok {
+		return ""
+	}
+	quoted, err := strconv.QuotedPrefix(rest)
+	if err != nil {
+		return ""
+	}
+	title, err := strconv.Unquote(quoted)
+	if err != nil || title == sender.TabID {
+		return ""
+	}
+	sender.Title = title
+	if senderMessageText(sender, text) != delivered {
+		return ""
+	}
+	return title
 }

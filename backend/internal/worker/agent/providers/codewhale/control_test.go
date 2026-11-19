@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // approvalEvent is an `approval.required` as 0.9.13 sends it: no arguments, and
@@ -233,12 +234,10 @@ func TestApprovalAnswers(t *testing.T) {
 			rt.respondJSON(http.MethodPost, routeApprovals+"/ap1", http.StatusOK, map[string]any{"ok": true, "delivered": true})
 			a, sink := newTestAgent(t, rt)
 			a.HandleOutput(approvalEvent(2, "ap1", "call_1", contracts.CodewhaleToolBash))
-			stored := sink.LastPublishedControl().Payload
+			published := sink.LastPublishedControl()
 
-			res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestPayload:  stored,
-				ResponseContent: neutralResponse(t, "approval:ap1", tc.response),
-			})
+			res := agenttest.ResolveAnswer(codewhaleProvider{}, published.Payload, published.RequestID,
+				agent.ControlAnswer{Content: neutralResponse(t, "approval:ap1", tc.response)})
 			require.False(t, res.Withhold)
 			assert.Equal(t, agent.FeedbackFollowUp(tc.feedback), res.FollowUp, "a reason rides as the next message, never in the decision")
 			frame := decodeJSON(t, res.Content)
@@ -338,11 +337,10 @@ func TestQuestionAnswers(t *testing.T) {
 			rt.respondJSON(http.MethodPost, route, http.StatusOK, map[string]any{"ok": true})
 			a, sink := newTestAgent(t, rt)
 			a.HandleOutput(userInputEvent(5, "q1"))
+			published := sink.LastPublishedControl()
 
-			res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestPayload:  sink.LastPublishedControl().Payload,
-				ResponseContent: neutralResponse(t, "user_input:q1", tc.response),
-			})
+			res := agenttest.ResolveAnswer(codewhaleProvider{}, published.Payload, published.RequestID,
+				agent.ControlAnswer{Content: neutralResponse(t, "user_input:q1", tc.response)})
 			require.False(t, res.Withhold)
 			assert.Empty(t, res.FollowUp, "a question's answer reaches the runtime whole")
 			frame := decodeJSON(t, res.Content)
@@ -366,7 +364,7 @@ func TestQuestionAnswerWithAnUnaddressedAnswerIsWithheld(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
 	a.HandleOutput(userInputEvent(5, "q1"))
-	stored := sink.LastPublishedControl().Payload
+	published := sink.LastPublishedControl()
 	for name, response := range map[string]map[string]any{
 		"an answer with no id": {"behavior": "allow", "updatedInput": map[string]any{"answers": []map[string]any{{"label": "Red", "value": "Red"}}}},
 		"no answers at all":    {"behavior": "allow", "updatedInput": map[string]any{}},
@@ -375,35 +373,50 @@ func TestQuestionAnswerWithAnUnaddressedAnswerIsWithheld(t *testing.T) {
 		// runtime's own list, so no other shape names a question.
 		"a map by question text": {"behavior": "allow", "updatedInput": map[string]any{"answers": map[string]any{"Which color?": "Red"}}},
 	} {
-		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored, ResponseContent: neutralResponse(t, "user_input:q1", response)})
+		res := agenttest.ResolveAnswer(codewhaleProvider{}, published.Payload, published.RequestID,
+			agent.ControlAnswer{Content: neutralResponse(t, "user_input:q1", response)})
 		assert.True(t, res.Withhold, name)
 		assert.EqualError(t, res.Refusal(), agent.RefusalAnswersDoNotFit, name)
 	}
 }
 
-func TestControlResponseForAnotherRequestIsWithheld(t *testing.T) {
+// The Worker reads the stored request under the id that the answer
+// addresses, so an answer reaches the provider with the payload of another
+// request only when the row under that id holds it. That row disagrees with
+// its own key, so the provider withholds the answer as one to a request that
+// it cannot read. It also withholds an answer that states no decision.
+func TestControlResponseToARequestThatDisagreesWithItsKeyIsWithheld(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
 	a.HandleOutput(approvalEvent(2, "ap1", "call_1", contracts.CodewhaleToolBash))
 	stored := sink.LastPublishedControl().Payload
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(stored, &fields))
+	delete(fields, "request_id")
+	unkeyed, err := json.Marshal(fields)
+	require.NoError(t, err)
 	for name, tc := range map[string]struct {
-		content []byte
-		reason  string
+		requestID string
+		payload   []byte
+		content   []byte
+		reason    string
 	}{
-		"another request's id": {neutralResponse(t, "approval:other", map[string]any{"behavior": "allow"}), agent.RefusalOtherRequest},
-		"an unknown behavior":  {neutralResponse(t, "approval:ap1", map[string]any{"behavior": "maybe"}), agent.RefusalNoDecision},
-		"not an envelope":      {[]byte(`{"decision":"allow"}`), agent.RefusalNoDecision},
+		"a payload that states another id": {"approval:other", stored, neutralResponse(t, "approval:other", map[string]any{"behavior": "allow"}), agent.RefusalUnreadableRequest},
+		"a payload that states no id":      {"approval:ap1", unkeyed, neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"}), agent.RefusalUnreadableRequest},
+		"an unknown behavior":              {"approval:ap1", stored, neutralResponse(t, "approval:ap1", map[string]any{"behavior": "maybe"}), agent.RefusalNoDecision},
 	} {
-		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored, ResponseContent: tc.content})
+		res := agenttest.ResolveAnswer(codewhaleProvider{}, tc.payload, tc.requestID, agent.ControlAnswer{Content: tc.content})
 		assert.True(t, res.Withhold, name)
 		assert.Equal(t, tc.content, res.Content, name)
 		assert.EqualError(t, res.Refusal(), tc.reason, name)
 	}
+	// The same payload under its own key answers.
+	res := agenttest.ResolveAnswer(codewhaleProvider{}, stored, "approval:ap1",
+		agent.ControlAnswer{Content: neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"})})
+	require.False(t, res.Withhold, "%v", res.Refusal())
 	// A stored payload that holds no runtime event names no route.
-	res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  []byte(`{"request_id":"approval:ap1","request":{"tool_name":"bash"}}`),
-		ResponseContent: neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"}),
-	})
+	res = agenttest.ResolveAnswer(codewhaleProvider{}, []byte(`{"request_id":"approval:ap1","request":{"tool_name":"bash"}}`), "approval:ap1",
+		agent.ControlAnswer{Content: neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"})})
 	assert.True(t, res.Withhold)
 	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest)
 }
@@ -658,9 +671,10 @@ func TestATurnEndRetiresOnlyTheCardsOfItsTurn(t *testing.T) {
 // address, so the runtime keeps waiting and the reader can answer again.
 func TestAControlResponseToAStoredEventItCannotAddressIsWithheld(t *testing.T) {
 	t.Parallel()
-	allow := neutralResponse(t, "", map[string]any{"behavior": "allow", "updatedInput": map[string]any{"answers": []any{}}})
+	const requestID = "approval:ap1"
+	allow := neutralResponse(t, requestID, map[string]any{"behavior": "allow", "updatedInput": map[string]any{"answers": []any{}}})
 	stored := func(event []byte) []byte {
-		payload, err := buildControlPayload("", codewhaleControlHeader{ToolName: "bash"}, event)
+		payload, err := buildControlPayload(requestID, codewhaleControlHeader{ToolName: "bash"}, event)
 		require.NoError(t, err)
 		return payload
 	}
@@ -670,7 +684,7 @@ func TestAControlResponseToAStoredEventItCannotAddressIsWithheld(t *testing.T) {
 		"a question with no thread":  []byte(`{"seq":2,"event":"user_input.required","payload":{"id":"q1"}}`),
 		"an event that asks nothing": runtimeEvent(2, contracts.CodewhaleEventSandboxDenied, testTurnID, "", map[string]any{}),
 	} {
-		res := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestPayload: stored(event), ResponseContent: allow})
+		res := agenttest.ResolveAnswer(codewhaleProvider{}, stored(event), requestID, agent.ControlAnswer{Content: allow})
 		assert.True(t, res.Withhold, name)
 		assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest, name)
 	}

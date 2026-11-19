@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
 import { classifyMuseMessage, museSpanRole } from './classification'
-import { museControlResponseSummary } from './controlResponse'
 import { museCompactionBoundary, museNotificationEntry } from './extractors/notification'
 import { museOutputFilePaths } from './extractors/outputFilePaths'
 import { museResultDivider } from './extractors/resultDivider'
@@ -26,12 +25,11 @@ describe('musePlugin', () => {
     expect(providerFor(AgentProvider.MUSE_CODE)?.transcript.needsRequest).toBeUndefined()
   })
 
-  // The Worker reads each request and builds each answer, so the browser keeps only the
-  // display of a saved answer and the presets.
-  it('registers the saved-answer display, the presets and the startup configuration', () => {
+  // The Worker reads each request, builds each answer, and records the decision that
+  // words a saved answer, so the browser keeps only the presets.
+  it('registers the presets and the startup configuration', () => {
     const plugin = providerFor(AgentProvider.MUSE_CODE)
-    expect(Object.keys(plugin?.controls ?? {}).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
-    expect(plugin?.controls?.controlResponseDisplay).toBe(museControlResponseSummary)
+    expect(Object.keys(plugin?.controls ?? {})).toEqual(['permissionPresets'])
     expect(plugin?.controls?.permissionPresets).toBe(musePermissionPresets)
     expect(plugin?.configuration).toBe(museConfiguration)
   })

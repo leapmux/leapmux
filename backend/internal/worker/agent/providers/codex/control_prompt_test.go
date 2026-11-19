@@ -26,6 +26,12 @@ const (
 	kindRejectAlways = leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ALWAYS
 )
 
+// The scopes, under short names for the expected option lists.
+const (
+	scopeSession = leapmuxv1.PermissionScope_PERMISSION_SCOPE_SESSION
+	scopeUser    = leapmuxv1.PermissionScope_PERMISSION_SCOPE_USER
+)
+
 // codexJSON encodes value as a test payload.
 func codexJSON(t *testing.T, value any) []byte {
 	t.Helper()
@@ -91,12 +97,6 @@ func requireCodexOptions(t *testing.T, want []*leapmuxv1.PermissionOption, paylo
 	agenttest.RequireProto(t,
 		agenttest.PermissionPrompt(&leapmuxv1.PermissionPrompt{Options: want}),
 		agenttest.PermissionPrompt(&leapmuxv1.PermissionPrompt{Options: permission.GetOptions()}))
-}
-
-// codexElicitationDecision wraps elicitation as a decision. A test that states
-// an accept choice uses it, because agenttest.ElicitationDecision states none.
-func codexElicitationDecision(elicitation *leapmuxv1.ElicitationDecision) *leapmuxv1.ControlDecision {
-	return &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Elicitation{Elicitation: elicitation}}
 }
 
 // requireCodexAnswer answers payload and requires the answer to succeed.
@@ -553,7 +553,7 @@ func TestCodexReadControlRequest_OffersEachDecisionAsAnOption(t *testing.T) {
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
 		{OptionId: "decline", Kind: kindRejectOnce, Name: "Deny"},
-		{OptionId: "acceptWithExecpolicyAmendment:2", Kind: kindAllowAlways, Name: "Allow & Remember: rm"},
+		{OptionId: "acceptWithExecpolicyAmendment:2", Kind: kindAllowAlways, Name: "Allow & Remember: rm", Scope: scopeUser, ScopeLabel: "Command rule"},
 	}, codexDecisionsPayload(t, "accept", "decline", map[string]any{
 		"acceptWithExecpolicyAmendment": map[string]any{"execpolicy_amendment": []any{"rm"}},
 	}))
@@ -562,8 +562,8 @@ func TestCodexReadControlRequest_OffersEachDecisionAsAnOption(t *testing.T) {
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
 		{OptionId: "decline", Kind: kindRejectOnce, Name: "Deny"},
 		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
-		{OptionId: "acceptForSession", Kind: kindAllowAlways, Name: "Allow for Session", Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_SESSION},
-		{OptionId: "applyNetworkPolicyAmendment:4", Kind: kindAllowAlways, Name: "Allow Host & Remember: example.com"},
+		{OptionId: "acceptForSession", Kind: kindAllowAlways, Name: "Allow for Session", Scope: scopeSession},
+		{OptionId: "applyNetworkPolicyAmendment:4", Kind: kindAllowAlways, Name: "Allow Host & Remember: example.com", Scope: scopeUser, ScopeLabel: "Host rule"},
 	}, codexDecisionsPayload(t, "accept", "decline", "cancel", "acceptForSession", map[string]any{
 		"applyNetworkPolicyAmendment": map[string]any{"network_policy_amendment": map[string]any{"host": "example.com", "action": "allow"}},
 	}))
@@ -577,10 +577,43 @@ func TestCodexReadControlRequest_ABlockedHostIsARememberedRefusal(t *testing.T) 
 
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
-		{OptionId: "applyNetworkPolicyAmendment:1", Kind: kindRejectAlways, Name: "Block Host & Remember: example.com"},
+		{OptionId: "applyNetworkPolicyAmendment:1", Kind: kindRejectAlways, Name: "Block Host & Remember: example.com", Scope: scopeUser, ScopeLabel: "Host rule"},
 	}, codexDecisionsPayload(t, "accept", map[string]any{
 		"applyNetworkPolicyAmendment": map[string]any{"network_policy_amendment": map[string]any{"host": "example.com", "action": "deny"}},
 	}))
+}
+
+// TestCodexReadControlRequest_StatesTheScopeOfEachRememberedDecision covers
+// how far each remembered decision reaches. acceptForSession lasts for the
+// session. Codex writes each amendment into the user's own configuration, so
+// an amendment reaches every project of the user, and its scope label states
+// the kind of rule that it keeps. A blocked host states the scope and the
+// label of the host rule, so a client pairs it with the Host rule choice
+// alone, and never with the Session choice.
+func TestCodexReadControlRequest_StatesTheScopeOfEachRememberedDecision(t *testing.T) {
+	t.Parallel()
+
+	network := func(action string) map[string]any {
+		return map[string]any{"applyNetworkPolicyAmendment": map[string]any{"network_policy_amendment": map[string]any{"host": "example.com", "action": action}}}
+	}
+	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
+		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
+		{OptionId: "acceptForSession", Kind: kindAllowAlways, Name: "Allow for Session", Scope: scopeSession},
+		{OptionId: "acceptWithExecpolicyAmendment:2", Kind: kindAllowAlways, Name: "Allow & Remember: git push", Scope: scopeUser, ScopeLabel: "Command rule"},
+		{OptionId: "applyNetworkPolicyAmendment:3", Kind: kindAllowAlways, Name: "Allow Host & Remember: example.com", Scope: scopeUser, ScopeLabel: "Host rule"},
+		{OptionId: "applyNetworkPolicyAmendment:4", Kind: kindRejectAlways, Name: "Block Host & Remember: example.com", Scope: scopeUser, ScopeLabel: "Host rule"},
+		{OptionId: "cancel", Kind: kindRejectOnce, Name: "Cancel", EndsTurn: true},
+	}, codexDecisionsPayload(t,
+		"accept", "acceptForSession",
+		map[string]any{"acceptWithExecpolicyAmendment": map[string]any{"execpolicy_amendment": []any{"git", "push"}}},
+		network("allow"), network("deny"), "cancel",
+	))
+
+	// The decisions that remember nothing state no scope.
+	for _, option := range agenttest.ControlPromptOf(codexProvider{}, codexDecisionsPayload(t, "accept", "decline", "cancel")).GetPermission().GetOptions() {
+		assert.Equal(t, leapmuxv1.PermissionScope_PERMISSION_SCOPE_UNSPECIFIED, option.GetScope(), option.GetOptionId())
+		assert.Empty(t, option.GetScopeLabel(), option.GetOptionId())
+	}
 }
 
 // TestCodexReadControlRequest_TellsTwoRulesOfOneKindApart covers two host
@@ -597,11 +630,11 @@ func TestCodexReadControlRequest_TellsTwoRulesOfOneKindApart(t *testing.T) {
 	}
 	requireCodexOptions(t, []*leapmuxv1.PermissionOption{
 		{OptionId: "accept", Kind: kindAllowOnce, Name: "Allow"},
-		{OptionId: "applyNetworkPolicyAmendment:1", Kind: kindAllowAlways, Name: "Allow Host & Remember: a.example.com"},
-		{OptionId: "applyNetworkPolicyAmendment:2", Kind: kindAllowAlways, Name: "Allow Host & Remember: b.example.com"},
-		{OptionId: "acceptWithExecpolicyAmendment:3", Kind: kindAllowAlways, Name: "Allow & Remember: rm"},
-		{OptionId: "acceptWithExecpolicyAmendment:4", Kind: kindAllowAlways, Name: "Allow & Remember: mv -f"},
-		{OptionId: "acceptWithExecpolicyAmendment:5", Kind: kindAllowAlways, Name: "Allow & Remember"},
+		{OptionId: "applyNetworkPolicyAmendment:1", Kind: kindAllowAlways, Name: "Allow Host & Remember: a.example.com", Scope: scopeUser, ScopeLabel: "Host rule"},
+		{OptionId: "applyNetworkPolicyAmendment:2", Kind: kindAllowAlways, Name: "Allow Host & Remember: b.example.com", Scope: scopeUser, ScopeLabel: "Host rule"},
+		{OptionId: "acceptWithExecpolicyAmendment:3", Kind: kindAllowAlways, Name: "Allow & Remember: rm", Scope: scopeUser, ScopeLabel: "Command rule"},
+		{OptionId: "acceptWithExecpolicyAmendment:4", Kind: kindAllowAlways, Name: "Allow & Remember: mv -f", Scope: scopeUser, ScopeLabel: "Command rule"},
+		{OptionId: "acceptWithExecpolicyAmendment:5", Kind: kindAllowAlways, Name: "Allow & Remember", Scope: scopeUser, ScopeLabel: "Command rule"},
 		{OptionId: "decline", Kind: kindRejectOnce, Name: "Deny"},
 	}, codexDecisionsPayload(t, "accept", host("a.example.com"), host("b.example.com"), rule("rm"), rule("mv", "-f"), rule(), "decline"))
 }
@@ -1249,9 +1282,7 @@ func TestCodexAnswerControlRequest_AnswersAnMCPToolApproval(t *testing.T) {
 		"session": `{"action":"accept","content":{},"_meta":{"persist":"session"}}`,
 		"always":  `{"action":"accept","content":{},"_meta":{"persist":"always"}}`,
 	} {
-		answer := requireCodexAnswer(t, payload, "mcp-approval", codexElicitationDecision(&leapmuxv1.ElicitationDecision{
-			Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, ContentJson: `{}`, AcceptChoiceKey: choice,
-		}))
+		answer := requireCodexAnswer(t, payload, "mcp-approval", agenttest.ElicitationChoiceDecision(`{}`, choice))
 		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"mcp-approval","response":`+want+`}}`, string(answer.Content), "choice %q", choice)
 	}
 }
@@ -1293,9 +1324,7 @@ func TestCodexAnswerControlRequest_RefusesAnElicitationAnswerThatItCannotSend(t 
 		"a choice on a plain form":           {payload: form, key: "session"},
 		"once on a plain form":               {payload: form, key: "once"},
 	} {
-		_, err := agenttest.AnswerControl(codexProvider{}, test.payload, "001", codexElicitationDecision(&leapmuxv1.ElicitationDecision{
-			Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, AcceptChoiceKey: test.key,
-		}))
+		_, err := agenttest.AnswerControl(codexProvider{}, test.payload, "001", agenttest.ElicitationChoiceDecision("", test.key))
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, name)
 	}
 	_, err := agenttest.AnswerControl(codexProvider{}, form, "001", agenttest.PermissionDecision("accept", ""))
@@ -1341,9 +1370,7 @@ func TestCodexMCPToolApprovalRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	payload := codexToolApprovalPayload(t)
-	answer := requireCodexAnswer(t, payload, "jsonrpc:7", codexElicitationDecision(&leapmuxv1.ElicitationDecision{
-		Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, ContentJson: `{}`, AcceptChoiceKey: "session",
-	}))
+	answer := requireCodexAnswer(t, payload, "jsonrpc:7", agenttest.ElicitationChoiceDecision(`{}`, "session"))
 	res := agenttest.ResolveAnswer(codexProvider{}, payload, "jsonrpc:7", answer)
 	require.NoError(t, res.Refusal())
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"action":"accept","content":{},"_meta":{"persist":"session"}}}`, string(res.Content))

@@ -43,12 +43,6 @@ func qoderElicitationPayload(t *testing.T, fields map[string]any) []byte {
 	return payload
 }
 
-// qoderElicitationDecision wraps elicitation as a decision. A test that states
-// an accept choice uses it, because agenttest.ElicitationDecision states none.
-func qoderElicitationDecision(elicitation *leapmuxv1.ElicitationDecision) *leapmuxv1.ControlDecision {
-	return &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Elicitation{Elicitation: elicitation}}
-}
-
 func TestQoderReadControlRequest_AskUserQuestionReadsEachQuestionAndItsOptions(t *testing.T) {
 	got := agenttest.ControlPromptOf(qoderProvider{}, qoderToolPayload(t, "AskUserQuestion", map[string]any{"questions": []any{
 		map[string]any{"question": "Which one?", "header": "Pick", "multiSelect": true, "options": []any{
@@ -304,9 +298,7 @@ func TestQoderAnswerControlRequest_AnElicitationAnswersWithItsActionAndContent(t
 		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"approval:1","response":{"action":"`+token+`"}}}`, string(got.Content), token)
 	}
 
-	_, err = agenttest.AnswerControl(qoderProvider{}, payload, qoderTestRequestID, qoderElicitationDecision(&leapmuxv1.ElicitationDecision{
-		Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, AcceptChoiceKey: "always",
-	}))
+	_, err = agenttest.AnswerControl(qoderProvider{}, payload, qoderTestRequestID, agenttest.ElicitationChoiceDecision("", "always"))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Qoder's form offers no accept choices")
 	_, err = agenttest.AnswerControl(qoderProvider{}, payload, qoderTestRequestID, agenttest.PermissionDecision("once", ""))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "a form takes no permission decision")

@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -66,7 +65,8 @@ var _ agent.ContextCompactor = (*Agent)(nil)
 //
 // A steer that reaches an idle session is not lost: Grok runs it as a turn of
 // its own, which the queue notification then reports as an agent turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}

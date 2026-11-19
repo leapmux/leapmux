@@ -63,13 +63,11 @@ func selectedReply(t *testing.T, optionID string, meta map[string]any) []byte {
 	return data
 }
 
+// resolveKiro resolves response to payload, stored as kiroStoredRequestID, as
+// the Worker does.
 func resolveKiro(t *testing.T, payload json.RawMessage, response []byte) agent.ControlResponseResolution {
 	t.Helper()
-	return kiroProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       kiroStoredRequestID,
-		RequestPayload:  payload,
-		ResponseContent: response,
-	})
+	return agenttest.ResolveAnswer(kiroProvider{}, payload, kiroStoredRequestID, agent.ControlAnswer{Content: response})
 }
 
 // Each native compaction end classifies as a notification boundary, and
@@ -331,12 +329,13 @@ func TestKiroElicitationRepliesWithMCPsAnswer(t *testing.T) {
 	}
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestKiroElicitationWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
 	payload := kiroRequestPayload(t, contracts.KiroMethodMcpElicitation, nil)
 	for name, response := range map[string]map[string]any{
 		"unknown action":  {"request_id": kiroStoredRequestID, "response": map[string]any{"action": "maybe"}},
-		"another request": {"request_id": "jsonrpc:6", "response": map[string]any{"action": "accept"}},
 		"a persist scope": {"request_id": kiroStoredRequestID, "response": map[string]any{"action": "accept", "_meta": map[string]any{"persist": "always"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -363,7 +362,7 @@ func TestKiroQuestionReplyPassesUnchanged(t *testing.T) {
 func TestKiroResolveWithoutAStoredRequestForwards(t *testing.T) {
 	t.Parallel()
 	response := selectedReply(t, "accept", nil)
-	result := kiroProvider{}.ResolveControlResponse(agent.ControlResponseContext{ResponseContent: response})
+	result := agenttest.ResolveAnswer(kiroProvider{}, nil, kiroStoredRequestID, agent.ControlAnswer{Content: response})
 	assert.False(t, result.Withhold)
 	assert.Equal(t, response, result.Content)
 }

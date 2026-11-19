@@ -250,13 +250,18 @@ func TestReadControlRequest_CodewhaleDropsARecordThatIsNoObject(t *testing.T) {
 
 func answerCodewhale(t *testing.T, payload any, decision *leapmuxv1.ControlDecision) (agent.ControlAnswer, error) {
 	t.Helper()
-	requestID := codewhaleTestRequestID
+	return agenttest.AnswerControl(codewhaleProvider{}, codewhaleJSON(t, payload), codewhaleStoredRequestID(payload), decision)
+}
+
+// codewhaleStoredRequestID is the id that the Worker stores payload under: its
+// request_id, or codewhaleTestRequestID for a payload that states none.
+func codewhaleStoredRequestID(payload any) string {
 	if fields, ok := payload.(map[string]any); ok {
 		if id, ok := fields["request_id"].(string); ok {
-			requestID = id
+			return id
 		}
 	}
-	return agenttest.AnswerControl(codewhaleProvider{}, codewhaleJSON(t, payload), requestID, decision)
+	return codewhaleTestRequestID
 }
 
 // codewhaleSentAnswers reads `updatedInput.answers` of an answer.
@@ -396,11 +401,9 @@ func TestAnswerControlRequest_CodewhaleRefusesADecisionThatThePromptDoesNotTake(
 // ResolveControlResponse reads the answer into the runtime's reply frame, so
 // the answer is one that the Worker accepts.
 func TestAnswerControlRequest_CodewhaleAnswersResolveIntoTheRuntimesReply(t *testing.T) {
-	resolve := func(payload any, content []byte) (codewhaleReplyFrame, agent.ControlResponseResolution) {
+	resolve := func(payload any, answer agent.ControlAnswer) (codewhaleReplyFrame, agent.ControlResponseResolution) {
 		t.Helper()
-		resolution := codewhaleProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestPayload: codewhaleJSON(t, payload), ResponseContent: content,
-		})
+		resolution := agenttest.ResolveAnswer(codewhaleProvider{}, codewhaleJSON(t, payload), codewhaleStoredRequestID(payload), answer)
 		require.NoError(t, resolution.Refusal())
 		var frame codewhaleReplyFrame
 		require.NoError(t, json.Unmarshal(resolution.Content, &frame))
@@ -410,7 +413,7 @@ func TestAnswerControlRequest_CodewhaleAnswersResolveIntoTheRuntimesReply(t *tes
 	approval := codewhaleApprovalPayload(contracts.CodewhaleToolBash, map[string]any{"command": "ls"}, nil)
 	answer, err := answerCodewhale(t, approval, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Use a dry run."))
 	require.NoError(t, err)
-	frame, resolution := resolve(approval, answer.Content)
+	frame, resolution := resolve(approval, answer)
 	assert.Equal(t, codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameApproval, ApprovalID: "ap1", Decision: contracts.CodewhaleDecisionDeny}, frame)
 	assert.Equal(t, agent.FeedbackFollowUp("Use a dry run."), resolution.FollowUp)
 
@@ -420,7 +423,7 @@ func TestAnswerControlRequest_CodewhaleAnswersResolveIntoTheRuntimesReply(t *tes
 		&leapmuxv1.QuestionAnswer{Selected: []string{"M"}, CustomText: "XL"},
 	))
 	require.NoError(t, err)
-	frame, _ = resolve(question, answer.Content)
+	frame, _ = resolve(question, answer)
 	assert.Equal(t, []userInputAnswer{{ID: "color", Label: "Other", Value: "Green"}, {ID: "sizes", Label: "M", Value: "M"}, {ID: "sizes", Label: "Other", Value: "XL"}}, frame.Answers)
 	assert.Equal(t, "q1", frame.InputID)
 }

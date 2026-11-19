@@ -399,7 +399,9 @@ func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, e
 // the reason that the reader sees for a refusal.
 //
 // Allow becomes the selected plan option or proceed_once; deny becomes cancel.
-// An explicit selectedOption must agree with the selected plan option.
+// The plan option replaces selectedOption. No answer states both: a plan
+// answer states no selectedOption (agent.AnswerNeutralPlan), and a permission
+// answer carries no plan settings, which alone select a plan option.
 // The request must have offered any option other than
 // cancel. Factory's SDK refuses to send an option that the request did not
 // offer, and it cancels the request instead. A cancel needs no offer, because it
@@ -416,9 +418,6 @@ func droidPermissionReply(offered []string, allow bool, decision json.RawMessage
 	}
 	option := stated.SelectedOption
 	if allow && approvalOption != "" {
-		if option != "" && option != approvalOption {
-			return droidPermissionResult{}, errors.New("the selected native option contradicts the plan permission mode")
-		}
 		option = approvalOption
 	}
 	switch {

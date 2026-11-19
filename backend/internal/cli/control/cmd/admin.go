@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/spf13/cobra"
 )
 
@@ -49,9 +50,9 @@ import (
 // call with the user's stored credential for that hub, so an agent could
 // still act as an administrator.
 func requireAdminClient(inv *cli.Invocation) (*control.Client, error) {
-	if os.Getenv("LEAPMUX_CONTROL_SOCK") != "" {
+	if os.Getenv(controlenv.SocketVariable) != "" {
 		return nil, cli.Usagef("admin commands do not run inside a LeapMux tab").
-			WithHint("run the command in a shell outside LeapMux, or unset LEAPMUX_CONTROL_SOCK in this shell first")
+			WithHint("run the command in a shell outside LeapMux, or unset " + controlenv.SocketVariable + " in this shell first")
 	}
 	// An empty address is not a hub. hubURLFor reports a *NoHubError, whose
 	// hints state the flag and the variable that supply one; building a

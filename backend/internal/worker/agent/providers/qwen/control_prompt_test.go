@@ -335,7 +335,7 @@ func TestAnswerControlRequest_QwenPlanApprovalTakesTheNeutralEnvelope(t *testing
 			require.NoError(t, err)
 			assert.JSONEq(t, tc.content, string(got.Content))
 			assert.Empty(t, got.FollowUp, "the resolution sends the reason itself, so the answer states none")
-			resolved := resolveWith(t, planApprovalPayload, got.Content, got.PlanApproval)
+			resolved := agenttest.ResolveAnswer(qwenProvider{}, []byte(planApprovalPayload), qwenStoredRequestID, got)
 			require.False(t, resolved.Withhold)
 			id, option := selectedOptionOf(t, resolved.Content)
 			assert.Equal(t, "5", id)

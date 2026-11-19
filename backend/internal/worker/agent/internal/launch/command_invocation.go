@@ -107,12 +107,15 @@ alias)
 
 // Apply environment changes in the launch shell. A subshell would lose them
 // when it returned. Keep profile functions available to the selected command.
+//
+// The call with msys false runs after the profile and before the candidate
+// selection. It puts the directory of the Worker's CLI first on PATH again
+// (see posixReprependControlCLI), and then removes strip and sets pins, so a
+// PATH that a provider pins wins. The call with msys true runs on Windows
+// after the selection, and it only stops the MSYS2 argument conversion.
 func posixLaunchEnvironment(shell string, strip []string, pins []environmentPin, msys bool) string {
-	if len(strip) == 0 && len(pins) == 0 && !msys {
-		return ""
-	}
 	var script strings.Builder
-	prefix := "\\"
+	prefix := posixBuiltinPrefix(shell)
 	switch shell {
 	case "bash":
 		script.WriteString(`__lm_restore_mode=false
@@ -122,7 +125,6 @@ case ":$SHELLOPTS:" in
 esac
 `)
 	case "zsh":
-		prefix = "\\builtin \\"
 		script.WriteString(`__lm_restore_builtin=false
 if (( $+functions[builtin] )); then
 	__lm_builtin_definition=$functions[builtin]
@@ -136,6 +138,9 @@ if (( $+functions[builtin] )); then
 	__lm_restore_builtin=true
 fi
 `)
+	}
+	if !msys {
+		script.WriteString(posixReprependControlCLI(prefix))
 	}
 	if len(strip) != 0 {
 		fmt.Fprintf(&script, "%sunset %s || %sexit $?\n", prefix, strings.Join(strip, " "), prefix)
@@ -162,10 +167,25 @@ fi
 	return script.String()
 }
 
+// posixBuiltinPrefix is the prefix that posixLaunchEnvironment writes before
+// each builtin that it calls. A backslash stops alias expansion. Bash runs the
+// block in POSIX mode, where a special builtin wins over a function. zsh lets
+// a function replace any builtin, so the block calls each one through
+// `builtin`, which it first frees from a profile function.
+func posixBuiltinPrefix(shell string) string {
+	if shell == "zsh" {
+		return "\\builtin \\"
+	}
+	return "\\"
+}
+
 func buildPwshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	quote := shellquote.PowerShell.Quote
 	var script strings.Builder
 	script.WriteString(pwshLookupSetup)
+	// The step runs after the profile and before StripEnvKeys and the pins, so
+	// a PATH that a provider pins wins (see pwshReprependControlCLI).
+	script.WriteString(pwshReprependControlCLI)
 	script.WriteString("$ErrorActionPreference = 'Stop'; ")
 	script.WriteString(pwshClearEnv(spec.StripEnvKeys) + pwshSetEnv(spec.pins))
 	if len(prepared.candidates) == 0 {
@@ -235,7 +255,7 @@ exit 1
 
 func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocations map[string]nuInvocationFiles) string {
 	var script strings.Builder
-	script.WriteString(nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n")
+	script.WriteString(nuLaunchEnvironment(spec))
 	script.WriteString(nuLookupSetup)
 	fmt.Fprintf(&script, "let __lm_selected = ([%s] | %%each {|name| let target = (leapmux-lookup $name false); if $target != null { {name: $name, target: $target} } } | %%take 1 | %%get -o 0)\n",
 		strings.Join(quotedArguments(prepared.candidates, nuQuote), ", "))
@@ -293,7 +313,9 @@ func (p *PreparedLaunch) nuReadiness(first bool, external string) string {
 func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	ordered := len(prepared.candidates) != 0
 	var script strings.Builder
-	script.WriteString(cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
+	// The step runs after the profile and before StripEnvKeys and the pins, so
+	// a PATH that a provider pins wins (see cshReprependControlCLI).
+	script.WriteString(cshReprependControlCLI + cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
 	if ordered {
 		script.WriteString("\nset __lm_chosen = 0\nset __lm_status = 127\n")
 	}

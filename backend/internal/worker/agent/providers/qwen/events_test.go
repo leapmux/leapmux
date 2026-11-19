@@ -365,7 +365,7 @@ func TestQwenDrainWithNoSessionIsTheCurrentSessions(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput("kept", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "kept"}))
 
 	items, ok := drainWithParams(t, a, requests, 1, map[string]any{})["items"].([]any)
 	require.True(t, ok)
@@ -380,8 +380,8 @@ func TestQwenDrainDropsAMessageThatCarriesNothing(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput("", nil))
-	require.NoError(t, a.SteerInput("real", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: ""}))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "real"}))
 
 	items, ok := drain(t, a, requests, 1, qwenTestSession)["items"].([]any)
 	require.True(t, ok)

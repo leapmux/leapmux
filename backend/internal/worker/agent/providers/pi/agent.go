@@ -206,8 +206,8 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(request.Content, request.Attachments, true)
 }
 
 func (a *Agent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {

@@ -358,7 +358,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 // SteerInput adds a message to the running turn.
 // Cline stops the running model request as soon as it accepts the steer.
 // The cut answer keeps an interrupted completion. The next model request receives the steer.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()

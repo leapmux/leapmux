@@ -63,12 +63,16 @@ type Agent struct {
 // pendingSteer keeps the original input until native history proves its delivery or removal.
 // Mu protects its native identity and disposition.
 type pendingSteer struct {
-	requestID   string
-	itemID      string
-	content     string
-	attachments []*leapmuxv1.Attachment
-	delivered   bool
-	removed     bool
+	// requestID is the native prompt request, which native history states.
+	requestID string
+	// itemID is the native inbox item, known once native history states it.
+	itemID string
+	// request is the Worker's steer, which removePendingSteer hands back
+	// unchanged. Its attachments are copies, so a later change of the caller's
+	// slice does not reach the hand-back.
+	request   agent.SteerRequest
+	delivered bool
+	removed   bool
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -84,18 +88,18 @@ func newAgent(sink agent.ProviderServices, workingDir string) *Agent {
 }
 
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput("", content, attachments, "queue")
+	return a.sendInput("", content, attachments, nil)
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
 	if sessionID == "" {
 		return agent.ErrInputSessionChanged
 	}
-	return a.sendInput(sessionID, content, attachments, "queue")
+	return a.sendInput(sessionID, content, attachments, nil)
 }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput("", content, attachments, "steer")
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput("", request.Content, request.Attachments, &request)
 }
 
 // SteerSurvivesTurnEnd prevents the queue from resending an input that the native inbox retains.
@@ -107,7 +111,14 @@ func (a *Agent) SupportsSteering() bool {
 	return !a.StoppedLocked() && a.streamFailure == nil && a.sessionID != ""
 }
 
-func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Attachment, delivery string) error {
+// sendInput sends one prompt to the native Session. steer is the Worker's
+// request when the prompt steers the running turn, and nil when the prompt
+// starts a turn. content and attachments are the request's own for a steer.
+func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Attachment, steer *agent.SteerRequest) error {
+	delivery := "queue"
+	if steer != nil {
+		delivery = "steer"
+	}
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
 	if delivery == "steer" {
@@ -159,14 +170,14 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 		Accepted bool `json:"accepted"`
 	}
 	requestID := uuid.NewString()
-	var steer *pendingSteer
-	if delivery == "steer" {
-		steer = &pendingSteer{requestID: requestID, content: content}
-		for _, attachment := range attachments {
-			steer.attachments = append(steer.attachments, proto.CloneOf(attachment))
+	var pending *pendingSteer
+	if steer != nil {
+		pending = &pendingSteer{requestID: requestID, request: agent.SteerRequest{InputID: steer.InputID, Content: steer.Content}}
+		for _, attachment := range steer.Attachments {
+			pending.request.Attachments = append(pending.request.Attachments, proto.CloneOf(attachment))
 		}
 		a.Mu.Lock()
-		a.pendingSteers = append(a.pendingSteers, steer)
+		a.pendingSteers = append(a.pendingSteers, pending)
 		a.Mu.Unlock()
 	}
 	err = a.rpc.request(a.Context(), "session/prompt", map[string]any{"requestId": requestID, "sessionId": sessionID, "mode": delivery, "content": parts}, &receipt)
@@ -176,10 +187,10 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	if err == nil {
 		return nil
 	}
-	if steer != nil {
+	if pending != nil {
 		a.Mu.Lock()
-		delivered := steer.delivered
-		a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == steer })
+		delivered := pending.delivered
+		a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == pending })
 		a.Mu.Unlock()
 		if delivered {
 			return nil
@@ -259,7 +270,7 @@ func (a *Agent) removePendingSteer(sessionID string, steer *pendingSteer) error 
 		steer.removed = true
 		a.Mu.Unlock()
 	}
-	if err := a.sink.RequeueDroppedInput("dsh-steer:"+steer.requestID, steer.content, steer.attachments); err != nil {
+	if err := a.sink.RequeueDroppedInput(steer.request); err != nil {
 		return err
 	}
 	a.forgetPendingSteer(steer)

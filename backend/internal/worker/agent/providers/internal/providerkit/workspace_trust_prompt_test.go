@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // workspaceTrustQuestionPayload builds the payload that WorkspaceTrust publishes.
@@ -99,9 +100,7 @@ func answerWorkspaceTrust(t *testing.T, optionID, feedback string) (agent.Contro
 		Request:   agent.NewControlRequestInput(payload),
 		RequestID: "workspace-trust:session-1",
 		Prompt:    prompt,
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Permission{Permission: &leapmuxv1.PermissionDecision{
-			OptionId: optionID, Feedback: feedback,
-		}}},
+		Decision:  agenttest.PermissionDecision(optionID, feedback),
 	})
 }
 
@@ -139,9 +138,7 @@ func TestAnswerWorkspaceTrust_ResolvesToTheSavedDecision(t *testing.T) {
 	} {
 		got, err := answerWorkspaceTrust(t, option, "")
 		require.NoError(t, err)
-		resolved, ok := ResolveWorkspaceTrustResponse(agent.ControlResponseContext{
-			RequestID: "workspace-trust:session-1", RequestPayload: payload, ResponseContent: got.Content,
-		})
+		resolved, ok := ResolveWorkspaceTrustResponse(agenttest.ControlResponseContextOf(payload, "workspace-trust:session-1", got))
 		require.True(t, ok)
 		assert.False(t, resolved.Withhold, option)
 		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"workspace-trust:session-1","response":{"decision":"`+decision+`"}}}`, string(resolved.Content), option)
@@ -158,7 +155,7 @@ func TestAnswerWorkspaceTrust_RefusesADecisionThatDoesNotAnswerTheQuestion(t *te
 	prompt, _ := ReadWorkspaceTrustPrompt(payload, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	_, err = AnswerWorkspaceTrust(agent.ControlAnswerInput{
 		Request: agent.NewControlRequestInput(payload), RequestID: "r", Prompt: prompt,
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Plan{Plan: &leapmuxv1.PlanDecision{Approve: true}}},
+		Decision: agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true}),
 	})
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the question takes a permission decision")
 }

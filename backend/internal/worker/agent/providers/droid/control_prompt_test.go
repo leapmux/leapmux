@@ -119,13 +119,51 @@ func TestReadControlRequest_DroidStatesTheOfferedOptionsWithTheirKinds(t *testin
 	})).GetPermission()
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{Options: []*leapmuxv1.PermissionOption{
 		{OptionId: "proceed_once", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE},
-		{OptionId: "proceed_always_file", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS},
-		{OptionId: "proceed_auto_run_high", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER, Name: "proceed_auto_run_high"},
+		{OptionId: "proceed_always_file", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Allow always for this file"},
+		{OptionId: "proceed_auto_run_high", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER, Name: "Allow and set the autonomy level to High"},
 		{OptionId: "cancel", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE},
 	}}}}, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{Options: permission.GetOptions()}}})
 
 	for _, value := range []string{"proceed_always", "proceed_always_tools", "proceed_always_server"} {
 		assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, droidOptionKind(value), value)
+	}
+}
+
+// Droid states each option as a wire value and no label, so the prompt names
+// every option in words: a button and a saved answer read the words, and
+// never a token such as proceed_auto_run_low. The once pair carries no name,
+// because a client words it as its Allow and Deny buttons. A value that this
+// build does not know keeps the value, which is the only word Droid states
+// for it.
+func TestReadControlRequest_DroidNamesEachOptionInWords(t *testing.T) {
+	t.Parallel()
+	for value, want := range map[string]string{
+		contracts.DroidPermissionOptionProceedOnce:                "",
+		contracts.DroidPermissionOptionCancel:                     "",
+		contracts.DroidPermissionOptionProceedAlways:              "Allow always",
+		contracts.DroidPermissionOptionProceedAlwaysFile:          "Allow always for this file",
+		contracts.DroidPermissionOptionProceedAlwaysTools:         "Allow always for these MCP tools",
+		contracts.DroidPermissionOptionProceedAlwaysServer:        "Allow always for this MCP server",
+		contracts.DroidPermissionOptionProceedAutoRun:             "Allow and raise the autonomy level",
+		contracts.DroidPermissionOptionProceedAutoRunLow:          "Allow and set the autonomy level to Low",
+		contracts.DroidPermissionOptionProceedAutoRunMedium:       "Allow and set the autonomy level to Medium",
+		contracts.DroidPermissionOptionProceedAutoRunHigh:         "Allow and set the autonomy level to High",
+		contracts.DroidPermissionOptionProceedNewSession:          "Allow in a new session",
+		contracts.DroidPermissionOptionProceedNewSessionLow:       "Allow in a new session at autonomy level Low",
+		contracts.DroidPermissionOptionProceedNewSessionMedium:    "Allow in a new session at autonomy level Medium",
+		contracts.DroidPermissionOptionProceedNewSessionHigh:      "Allow in a new session at autonomy level High",
+		contracts.DroidPermissionOptionProceedEdit:                "Allow with an edited spec",
+		contracts.DroidPermissionOptionProceedReportFalsePositive: "Allow and report a false positive",
+		"proceed_later_tier":                                      "proceed_later_tier",
+	} {
+		options := agenttest.ControlPromptOf(droidProvider{}, droidJSON(t, map[string]any{
+			"type":    "permission_request",
+			"toolUse": map[string]any{"name": "Edit"},
+			"options": []any{value, contracts.DroidPermissionOptionCancel},
+		})).GetPermission().GetOptions()
+		require.NotEmpty(t, options, value)
+		assert.Equal(t, value, options[0].GetOptionId())
+		assert.Equal(t, want, options[0].GetName(), value)
 	}
 }
 
@@ -307,7 +345,7 @@ func TestAnswerControlRequest_DroidCancelledQuestionDeniesWithItsReason(t *testi
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"deny","message":"User stopped"}}}`, string(got.Content))
 	assert.Empty(t, got.FollowUp, "droidResolveControlResponse queues the reason itself")
-	resolution := resolve(payload, got.Content)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
 	require.NoError(t, resolution.Refusal())
 	assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(droidResult(t, resolution.Content)))
 	assert.Equal(t, agent.FeedbackFollowUp("User stopped"), resolution.FollowUp)
@@ -329,7 +367,7 @@ func TestAnswerControlRequest_DroidSelectsTheOfferedOption(t *testing.T) {
 		got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(option, ""))
 		require.NoError(t, err, option)
 		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"`+behavior+`","selectedOption":"`+option+`"}}}`, string(got.Content), option)
-		resolution := resolve(payload, got.Content)
+		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
 		require.NoError(t, resolution.Refusal(), option)
 		assert.JSONEq(t, `{"selectedOption":"`+option+`"}`, string(droidResult(t, resolution.Content)), option)
 		assert.Empty(t, got.FollowUp, option)
@@ -344,7 +382,7 @@ func TestAnswerControlRequest_DroidRefusalWithFeedbackDeniesWithIt(t *testing.T)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"deny","message":"Use the other file."}}}`, string(got.Content))
 	assert.Empty(t, got.FollowUp)
-	resolution := resolve(payload, got.Content)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
 	require.NoError(t, resolution.Refusal())
 	assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(droidResult(t, resolution.Content)))
 	assert.Equal(t, agent.FeedbackFollowUp("Use the other file."), resolution.FollowUp)
@@ -355,7 +393,7 @@ func TestAnswerControlRequest_DroidLeapMuxRefusalDeniesARequestWithNoCancel(t *t
 	for _, feedback := range []string{"", "No."} {
 		got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, feedback))
 		require.NoError(t, err)
-		resolution := resolve(payload, got.Content)
+		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
 		require.NoError(t, resolution.Refusal())
 		assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(droidResult(t, resolution.Content)), "a cancel needs no offer")
 	}
@@ -431,7 +469,7 @@ func TestAnswerControlRequest_DroidQuestionAnswerResolvesIntoDroidsReply(t *test
 		&leapmuxv1.QuestionAnswer{Selected: []string{"Small"}, CustomText: "XL"},
 	))
 	require.NoError(t, err)
-	resolution := resolve(payload, got.Content)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
 	require.NoError(t, resolution.Refusal())
 	assert.JSONEq(t, `{"cancelled":false,"answers":[{"index":1,"question":"Which color?","answer":"Red"},{"index":2,"question":"Which sizes?","answer":"Small, XL"}]}`,
 		string(droidResult(t, resolution.Content)))

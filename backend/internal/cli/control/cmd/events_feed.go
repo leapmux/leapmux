@@ -14,6 +14,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/readseq"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 )
 
@@ -153,11 +154,11 @@ var errWatchEnded = cli.Newf(cli.CodeUnavailable, "the worker ended the watch")
 // once when wakeUp runs.
 //
 // Two goroutines run it, as startActivityFeed does: connect owns the
-// subscription, and sequence orders what the feed sends. After each
-// acknowledgement, sequence reads the rows of the agents that the session
-// did not read yet, and holds the events that arrive during the read until
-// it sent the rows: an event that the Worker published after the read began
-// is newer than the read, so it must follow it.
+// subscription, and the sequencer orders what the feed sends. After each
+// acknowledgement, the sequencer reads the rows of the agents that the
+// session did not read yet, and holds the events that arrive during the read
+// until it sent the rows: an event that the Worker published after the read
+// began is newer than the read, so it must follow it.
 type workerFeed struct {
 	workerID string
 	source   workerFeedSource
@@ -170,28 +171,27 @@ type workerFeed struct {
 	// Worker may be reachable again. Both hold one token at most.
 	revised chan struct{}
 	wake    chan struct{}
-	// inputs carries the stream's events and acknowledgements in stream
-	// order, and the start and the end of each session.
-	inputs chan feedInput
-	// levels carries the result of each read of the agents.
-	levels chan feedLevelRead
+	// sequencer orders what the feed sends. connect hands it the stream's
+	// events and acknowledgements in stream order, and the start and the end
+	// of each session.
+	sequencer *feedSequencer
 }
 
 func newWorkerFeed(workerID string, source workerFeedSource, out chan<- feedOutput) *workerFeed {
-	return &workerFeed{
+	f := &workerFeed{
 		workerID: workerID,
 		source:   source,
 		out:      out,
 		revised:  make(chan struct{}, 1),
 		wake:     make(chan struct{}, 1),
-		inputs:   make(chan feedInput, 16),
-		levels:   make(chan feedLevelRead, 1),
 	}
+	f.sequencer = newFeedSequencer(f)
+	return f
 }
 
 // start runs the feed until ctx ends. wg counts its goroutines.
 func (f *workerFeed) start(ctx context.Context, wg *sync.WaitGroup) {
-	wg.Go(func() { f.sequence(ctx) })
+	wg.Go(func() { f.sequencer.run(ctx) })
 	wg.Go(func() { f.connect(ctx) })
 }
 
@@ -244,24 +244,18 @@ type feedInput struct {
 	err      error
 }
 
-// feedLevelRead is the result of one read of the agents.
+// feedLevelRead is the result of one read of the agents. first marks the
+// read that makes the session live.
 type feedLevelRead struct {
-	// epoch identifies the read. A session that started or ended since the
-	// read began makes it stale.
-	epoch  int
 	first  bool
 	levels map[string]*leapmuxv1.AgentInfo
 	err    error
 }
 
-// input hands one item to sequence. It returns false when ctx ended first.
+// input hands one item to the sequencer. It returns false when ctx ended
+// first.
 func (f *workerFeed) input(ctx context.Context, in feedInput) bool {
-	select {
-	case f.inputs <- in:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return f.sequencer.seq.Push(ctx, in)
 }
 
 // connect keeps one subscription open until ctx ends or the Worker refuses
@@ -363,31 +357,38 @@ func (f *workerFeed) runSession(ctx context.Context, session int) (bool, error) 
 	}
 }
 
-// feedSequencer is the state of workerFeed.sequence. Only its goroutine
-// reads and writes it.
+// feedSequencer is the state of the loop that orders what a workerFeed
+// sends. Only the goroutine of run reads and writes it. connect only pushes
+// input into seq, which any goroutine may do.
 type feedSequencer struct {
 	f *workerFeed
+	// seq holds the events behind each read of the agents.
+	seq *readseq.Sequencer[feedInput, feedOutput, feedLevelRead]
 	// session is the number of the current subscription.
 	session int
 	// firstOwed reports that the session owes its first levels.
 	firstOwed bool
-	// epoch identifies the reads that the current session may still use.
-	epoch int
-	// reading reports a read in flight, and readAgain an acknowledgement
-	// that arrived during it.
-	reading, readAgain bool
-	// held holds the events that arrived during the read in flight.
-	held []feedOutput
 	// read holds the agents that a read of this session covered.
 	read map[string]bool
 	// ackTimer ends the wait for the first acknowledgement of the session.
 	ackTimer *quartz.Timer
 }
 
-// sequence orders what the feed sends, until ctx ends or the Worker refused
-// the watch.
-func (f *workerFeed) sequence(ctx context.Context) {
+func newFeedSequencer(f *workerFeed) *feedSequencer {
 	q := &feedSequencer{f: f, read: map[string]bool{}}
+	q.seq = readseq.New(readseq.Hooks[feedInput, feedOutput, feedLevelRead]{
+		Handle:   q.input,
+		NextRead: q.nextRead,
+		Apply:    q.applyLevels,
+		Send:     q.send,
+	})
+	return q
+}
+
+// run orders what the feed sends, until ctx ends or the Worker refused the
+// watch.
+func (q *feedSequencer) run(ctx context.Context) {
+	defer q.seq.Wait()
 	defer q.stopAckTimer()
 	for {
 		var ackDeadline <-chan time.Time
@@ -397,12 +398,12 @@ func (f *workerFeed) sequence(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case in := <-f.inputs:
+		case in := <-q.seq.Inputs():
 			if !q.input(ctx, in) {
 				return
 			}
-		case read := <-f.levels:
-			if !q.levelsRead(ctx, read) {
+		case read := <-q.seq.Results():
+			if !q.seq.Complete(ctx, read) {
 				return
 			}
 		case <-ackDeadline:
@@ -422,19 +423,20 @@ func (q *feedSequencer) input(ctx context.Context, in feedInput) bool {
 	}
 	switch in.kind {
 	case inputSessionStarted:
-		if !q.flushHeld(ctx) {
+		// The new session reads every agent again, so a read of the last
+		// session is stale. The events that it held are real, so Abandon
+		// sends them first.
+		if !q.seq.Abandon(ctx) {
 			return false
 		}
 		q.session, q.firstOwed = in.session, true
-		q.epoch++
-		q.reading, q.readAgain = false, false
 		clear(q.read)
 		q.startAckTimer()
 		return true
 	case inputAgent:
-		return q.forward(ctx, feedOutput{kind: feedAgentEvent, agent: in.agent})
+		return q.seq.Forward(ctx, feedOutput{kind: feedAgentEvent, agent: in.agent})
 	case inputTerminal:
-		return q.forward(ctx, feedOutput{kind: feedTerminalEvent, terminal: in.terminal})
+		return q.seq.Forward(ctx, feedOutput{kind: feedTerminalEvent, terminal: in.terminal})
 	case inputAck:
 		for _, rejection := range in.ack.GetRejectedAgents() {
 			if !q.send(ctx, feedOutput{kind: feedRejected, rejection: rejection}) {
@@ -446,40 +448,26 @@ func (q *feedSequencer) input(ctx context.Context, in feedInput) bool {
 				return false
 			}
 		}
-		if q.reading {
-			q.readAgain = true
-			return true
-		}
-		return q.startRead(ctx)
+		return q.seq.RequestRead(ctx)
 	case inputDown:
 		// The session ended, so a read in flight can no longer make it live,
 		// and nothing that it holds waits for a read any more.
 		q.stopAckTimer()
-		q.epoch++
-		q.firstOwed, q.reading, q.readAgain = false, false, false
-		return q.flushHeld(ctx) && q.send(ctx, feedOutput{kind: feedDown, err: in.err})
+		q.firstOwed = false
+		return q.seq.Abandon(ctx) && q.send(ctx, feedOutput{kind: feedDown, err: in.err})
 	case inputRefused:
 		q.stopAckTimer()
-		q.flushHeld(ctx)
+		q.seq.Abandon(ctx)
 		q.send(ctx, feedOutput{kind: feedRefused, err: in.err})
 		return false
 	}
 	return true
 }
 
-// forward sends an event now, or holds it behind the read in flight.
-func (q *feedSequencer) forward(ctx context.Context, out feedOutput) bool {
-	if q.reading {
-		q.held = append(q.held, out)
-		return true
-	}
-	return q.send(ctx, out)
-}
-
-// startRead reads the agents of the interest that this session did not read
-// yet. A first acknowledgement of a session with no such agent makes the
-// session live at once.
-func (q *feedSequencer) startRead(ctx context.Context) bool {
+// nextRead returns the read of the agents of the interest that this session
+// did not read yet. A first acknowledgement of a session with no such agent
+// makes the session live at once, with no read.
+func (q *feedSequencer) nextRead(ctx context.Context) (readseq.Read[feedLevelRead], bool) {
 	interest := q.f.currentInterest()
 	for id := range q.read {
 		if !slices.Contains(interest.agents, id) {
@@ -497,73 +485,27 @@ func (q *feedSequencer) startRead(ctx context.Context) bool {
 	first := q.firstOwed
 	if len(agents) == 0 {
 		if !first {
-			return true
+			return nil, true
 		}
 		q.firstOwed = false
 		q.stopAckTimer()
-		return q.send(ctx, feedOutput{kind: feedLevels, session: q.session, first: true})
+		return nil, q.send(ctx, feedOutput{kind: feedLevels, session: q.session, first: true})
 	}
-	q.reading = true
-	epoch := q.epoch
-	go func() {
-		levels, err := q.f.source.readAgents(ctx, agents)
-		select {
-		case q.f.levels <- feedLevelRead{epoch: epoch, first: first, levels: levels, err: err}:
-		case <-ctx.Done():
-		}
-	}()
-	return true
+	readAgents := q.f.source.readAgents
+	return func(ctx context.Context) feedLevelRead {
+		levels, err := readAgents(ctx, agents)
+		return feedLevelRead{first: first, levels: levels, err: err}
+	}, true
 }
 
-// levelsRead sends the result of a read, then the events that it held.
-func (q *feedSequencer) levelsRead(ctx context.Context, read feedLevelRead) bool {
-	if read.epoch != q.epoch {
-		return true
-	}
-	// Input that is already queued arrived before the feed acts on this
-	// result, so it goes first: an acknowledgement among it asks for the read
-	// that follows this one, and the end of the session makes this one stale.
-	for drained := false; !drained; {
-		select {
-		case in := <-q.f.inputs:
-			if !q.input(ctx, in) {
-				return false
-			}
-		default:
-			drained = true
-		}
-	}
-	if read.epoch != q.epoch {
-		return true
-	}
+// applyLevels sends the rows that a read of this session returned. The first
+// rows of a session make it live.
+func (q *feedSequencer) applyLevels(ctx context.Context, read feedLevelRead) bool {
 	if read.first {
 		q.firstOwed = false
 		q.stopAckTimer()
 	}
-	if !q.send(ctx, feedOutput{kind: feedLevels, session: q.session, first: read.first, levels: read.levels, levelsErr: read.err}) {
-		return false
-	}
-	q.reading = false
-	if !q.flushHeld(ctx) {
-		return false
-	}
-	if q.readAgain {
-		q.readAgain = false
-		return q.startRead(ctx)
-	}
-	return true
-}
-
-// flushHeld sends every held event, in order.
-func (q *feedSequencer) flushHeld(ctx context.Context) bool {
-	held := q.held
-	q.held = nil
-	for _, out := range held {
-		if !q.send(ctx, out) {
-			return false
-		}
-	}
-	return true
+	return q.send(ctx, feedOutput{kind: feedLevels, session: q.session, first: read.first, levels: read.levels, levelsErr: read.err})
 }
 
 func (q *feedSequencer) startAckTimer() {

@@ -254,24 +254,27 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		return res
 	}
 	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
+	if stored.RequestID != ctx.RequestID {
+		// The agent writes the request's key into its payload, so a payload that
+		// states another id, or none, disagrees with its own key and LeapMux
+		// cannot trust it.
+		slog.Warn("zcode stored control request disagrees with its key",
+			"request_id", ctx.RequestID, "stored", stored.RequestID)
+		res.Refuse(agent.RefusalUnreadableRequest)
+		return res
+	}
 	if stored.Method == contracts.ZCodeMethodRequestUserInput && stored.Request.ToolName == zcodeControlMCPElicitation {
 		// An MCP server's form: AnswerControlRequest answers it as an MCP form
 		// (agent.AnswerElicitation), not with allow or deny.
 		return zcodeResolveMCPElicitation(stored, ctx.ResponseContent, res)
 	}
 
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !ok || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		// Not a recognizable allow/deny. Withholding the forward is the safe answer:
 		// the app-server keeps waiting (and the user can answer again) rather than
 		// receiving a frame that means nothing.
 		res.Refuse(agent.RefusalNoDecision)
-		return res
-	}
-	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
-		slog.Warn("zcode control response addressed another request",
-			"answered", requestID, "stored", stored.RequestID)
-		res.Refuse(agent.RefusalOtherRequest)
 		return res
 	}
 	if len(stored.WireID) == 0 {

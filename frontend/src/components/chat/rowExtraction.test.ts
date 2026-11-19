@@ -1,11 +1,14 @@
 import type { AutoReviewEntry } from './model/notification'
 import type { ChatRow } from './model/row'
 import type { ToolCall } from './model/toolCall'
+import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ProviderTranscriptCapability } from './providers/capabilities'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { ControlDecisionSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { pluginFor, resolveMessageForRendering } from './providers/registry'
@@ -285,7 +288,7 @@ describe('extractChatRow notification thread', () => {
 })
 
 describe('extractChatRow control response', () => {
-  const response = {
+  const response: PersistedControlResponse = {
     requestId: 'r1',
     claimToken: 'c1',
     request: undefined,
@@ -294,14 +297,28 @@ describe('extractChatRow control response', () => {
         response: { behavior: 'allow' },
       },
     },
+    prompt: {
+      kind: 'permission',
+      permission: {
+        options: [
+          { optionId: 'ok', kind: 'allow_once', name: 'Allow' },
+        ],
+      },
+    },
+    decision: create(ControlDecisionSchema, {
+      kind: {
+        case: 'permission',
+        value: { optionId: 'ok' },
+      },
+    }),
   }
 
   // LeapMux writes this row itself, so it needs no plugin -- and it must reach the model
   // rather than skipping it, or the transcript needs a second render path for it.
   //
-  // The row carries the DISPLAY, not the native payloads: layer 1 runs the provider's
-  // own derivation once, so the transcript row and the scroll-rail dot cannot state
-  // two different answers for one row.
+  // The row carries the DISPLAY, not the native payloads: layer 1 resolves it once from
+  // the prompt and the decision that the Worker recorded, so the transcript row and the
+  // scroll-rail dot cannot state two different answers for one row.
   it('carries the derived display, with no plugin involved', () => {
     expect(rowOf(extractChatRow(undefined, parsed({}), { kind: 'control_response', response })))
       .toEqual({
@@ -310,10 +327,10 @@ describe('extractChatRow control response', () => {
       })
   })
 
-  // Degradation is the chokepoint's job, and the extraction must not bypass it: a
-  // response no derivation recognizes still draws the neutral label rather than
-  // falling to the card that says LeapMux has no display for the row.
-  it('degrades to the neutral label for a response no derivation reads', () => {
+  // Degradation is the chokepoint's job, and the extraction must not bypass it: a row
+  // that records no decision still draws the neutral label rather than falling to the
+  // card that says LeapMux has no display for the row.
+  it('degrades to the neutral label for a row that records no decision', () => {
     const unreadable = {
       requestId: 'r2',
       claimToken: 'c2',

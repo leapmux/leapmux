@@ -8,7 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // browserAnswer is the neutral envelope that AnswerControlRequest builds.
@@ -62,18 +64,19 @@ func TestCodebuddyTranslateAllowOmitsAnEmptyUpdate(t *testing.T) {
 func TestCodebuddyResolveControlResponseClassifiesPlanExit(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		tool string
-		want agent.PlanModeControlKind
+		tool     string
+		decision *leapmuxv1.ControlDecision
+		want     agent.PlanModeControlKind
 	}{
-		{tool: "ExitPlanMode", want: agent.PlanModeControlExit},
-		{tool: "Bash", want: agent.PlanModeControlNone},
+		{tool: "ExitPlanMode", decision: agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true}), want: agent.PlanModeControlExit},
+		{tool: "Bash", decision: agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""), want: agent.PlanModeControlNone},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			t.Parallel()
-			resolution := (codebuddyProvider{}).ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: "approval:plan-1", ToolName: tc.tool,
-				ResponseContent: browserAnswer(t, "approval:plan-1", contracts.ControlAnswerBehaviorAllow, "", nil),
-			})
+			payload := codebuddyToolPayload(t, tc.tool, map[string]any{})
+			answer, err := agenttest.AnswerControl(codebuddyProvider{}, payload, codebuddyTestRequestID, tc.decision)
+			require.NoError(t, err)
+			resolution := agenttest.ResolveAnswer(codebuddyProvider{}, payload, codebuddyTestRequestID, answer)
 			assert.False(t, resolution.Withhold)
 			assert.Equal(t, tc.want, resolution.PlanModeControl)
 			assert.Equal(t, true, nativeAnswer(t, resolution.Content)["allowed"])

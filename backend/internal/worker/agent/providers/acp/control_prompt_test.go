@@ -223,7 +223,7 @@ func TestAnswerBaseControlRequest_AnswersAnElicitationAndRefusesAnotherKind(t *t
 	_, err = AnswerBaseControlRequest(agent.ControlAnswerInput{
 		Request: input, RequestID: "r",
 		Prompt:   &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Dialog{Dialog: &leapmuxv1.DialogPrompt{}}},
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Dialog{Dialog: &leapmuxv1.DialogDecision{}}},
+		Decision: agenttest.DialogDecision(leapmuxv1.DialogAction_DIALOG_ACTION_UNSPECIFIED, ""),
 	}, nil)
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 }

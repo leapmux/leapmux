@@ -377,15 +377,15 @@ func TestParseControlAnswer(t *testing.T) {
 		err     string
 	}{
 		{name: "an allow approves a permission once", kind: controlPermission, content: allowEnvelope("r1"),
-			want: mimoAnswer{requestID: "r1", permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyOnce}}},
+			want: mimoAnswer{permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyOnce}}},
 		{name: "a deny rejects a permission with the reason", kind: controlPermission, content: denyEnvelope("r1", "Too risky"),
-			want: mimoAnswer{requestID: "r1", permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject, Message: "Too risky"}}},
+			want: mimoAnswer{permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject, Message: "Too risky"}}},
 		{name: "a chosen option answers a permission", kind: controlPermission,
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`),
-			want:    mimoAnswer{requestID: "r1", permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyAlways}}},
+			want:    mimoAnswer{permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyAlways}}},
 		{name: "a cancelled choice rejects a permission", kind: controlPermission,
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"outcome":{"outcome":"cancelled"}}}`),
-			want:    mimoAnswer{requestID: "r1", permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject}}},
+			want:    mimoAnswer{permission: mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject}}},
 		{name: "an unknown option is refused", kind: controlPermission,
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"outcome":{"outcome":"selected","optionId":"forever"}}}`),
 			err:     agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, "forever")},
@@ -393,34 +393,34 @@ func TestParseControlAnswer(t *testing.T) {
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{}}`), err: "states no option"},
 		{name: "answers answer a question", kind: controlQuestion,
 			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"answers":[["SQLite"],["a","b"]]}}`),
-			want:    mimoAnswer{requestID: "r1", answers: [][]string{{"SQLite"}, {"a", "b"}}}},
+			want:    mimoAnswer{answers: [][]string{{"SQLite"}, {"a", "b"}}}},
 		{name: "a rejection rejects a question", kind: controlQuestion,
-			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"rejected":true}}`), want: mimoAnswer{requestID: "r1", reject: true}},
-		{name: "a deny rejects a question", kind: controlQuestion, content: denyEnvelope("r1", ""), want: mimoAnswer{requestID: "r1", reject: true}},
+			content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"rejected":true}}`), want: mimoAnswer{reject: true}},
+		{name: "a deny rejects a question", kind: controlQuestion, content: denyEnvelope("r1", ""), want: mimoAnswer{reject: true}},
 		{name: "an allow does not answer a question", kind: controlQuestion, content: allowEnvelope("r1"), err: "does not answer a question"},
 		{name: "an empty result is refused", kind: controlQuestion, content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{}}`),
 			err: "neither answers nor a rejection"},
 		{name: "an allow approves a plan", kind: controlPlan, content: allowEnvelope("r1"),
-			want: mimoAnswer{requestID: "r1", answers: [][]string{{planAnswerYes}}}},
+			want: mimoAnswer{answers: [][]string{{planAnswerYes}}}},
 		{name: "a deny with feedback keeps planning with it", kind: controlPlan, content: denyEnvelope("r1", "Add tests first"),
-			want: mimoAnswer{requestID: "r1", answers: [][]string{{"Add tests first"}}}},
+			want: mimoAnswer{answers: [][]string{{"Add tests first"}}}},
 		{name: "a deny without feedback says no", kind: controlPlan, content: denyEnvelope("r1", ""),
-			want: mimoAnswer{requestID: "r1", answers: [][]string{{planAnswerNo}}}},
+			want: mimoAnswer{answers: [][]string{{planAnswerNo}}}},
 		{name: "a rejection declines a plan", kind: controlPlan, content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"rejected":true}}`),
-			want: mimoAnswer{requestID: "r1", answers: [][]string{{planAnswerNo}}}},
+			want: mimoAnswer{answers: [][]string{{planAnswerNo}}}},
 		{name: "answers do not answer a plan", kind: controlPlan, content: []byte(`{"jsonrpc":"2.0","id":"r1","result":{"answers":[["Yes"]]}}`),
 			err: "takes an allow or a deny"},
 		{name: "an unknown behavior is refused", kind: controlPermission,
 			content: []byte(`{"response":{"request_id":"r1","response":{"behavior":"maybe"}}}`), err: agent.RefusalNoDecision},
 		{name: "an accepted elicitation answers MiMo's Accept", kind: controlQuestion,
 			content: elicitationEnvelope("r1", contracts.MCPElicitationActionAccept),
-			want:    mimoAnswer{requestID: "r1", answers: [][]string{{elicitationAnswerAccept}}, elicitation: true}},
+			want:    mimoAnswer{answers: [][]string{{elicitationAnswerAccept}}, elicitation: true}},
 		{name: "a declined elicitation answers MiMo's Decline", kind: controlQuestion,
 			content: elicitationEnvelope("r1", contracts.MCPElicitationActionDecline),
-			want:    mimoAnswer{requestID: "r1", answers: [][]string{{elicitationAnswerDecline}}, elicitation: true}},
+			want:    mimoAnswer{answers: [][]string{{elicitationAnswerDecline}}, elicitation: true}},
 		{name: "a cancelled elicitation answers MiMo's Cancel", kind: controlQuestion,
 			content: elicitationEnvelope("r1", contracts.MCPElicitationActionCancel),
-			want:    mimoAnswer{requestID: "r1", answers: [][]string{{elicitationAnswerCancel}}, elicitation: true}},
+			want:    mimoAnswer{answers: [][]string{{elicitationAnswerCancel}}, elicitation: true}},
 		{name: "an unknown elicitation action is refused", kind: controlQuestion, content: elicitationEnvelope("r1", "maybe"),
 			err: "unknown elicitation action"},
 		{name: "an elicitation that states no request is refused", kind: controlQuestion, content: elicitationEnvelope("", contracts.MCPElicitationActionAccept),
@@ -660,10 +660,10 @@ func TestRestatePendingControlsKeepsQuestionsWhenTheirListFails(t *testing.T) {
 
 func TestAnswerFitsRequest(t *testing.T) {
 	t.Parallel()
-	accept := mimoAnswer{requestID: "r1", answers: [][]string{{elicitationAnswerAccept}}, elicitation: true}
+	accept := mimoAnswer{answers: [][]string{{elicitationAnswerAccept}}, elicitation: true}
 
 	assert.NoError(t, answerFitsRequest(accept, []byte(storedElicitationPayload)))
-	assert.NoError(t, answerFitsRequest(mimoAnswer{requestID: "r1", answers: [][]string{{"SQLite"}}}, []byte(`nope`)),
+	assert.NoError(t, answerFitsRequest(mimoAnswer{answers: [][]string{{"SQLite"}}}, []byte(`nope`)),
 		"an answer that is no elicitation needs no check")
 
 	twoQuestions := `{"type":"question.asked","properties":{"questions":[` +

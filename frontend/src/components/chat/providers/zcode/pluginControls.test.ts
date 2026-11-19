@@ -1,45 +1,27 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { ZCODE_INTERACTION, ZCODE_METHOD } from '~/generated/contracts/zcode-protocol'
+import { ControlDecisionSchema, ElicitationAction } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { extractChatRow, extractedRow } from '../../rowExtraction'
 import { resolveMessageForRendering } from '../registry'
 import { zcodeControls } from './pluginControls'
 import './plugin'
 
-// The Worker asks ZCode's hook-trust question itself, in LeapMux's neutral shape.
 describe('zcodeControls', () => {
-  const question = {
-    type: WORKSPACE_TRUST_CONTROL_TYPE.Question,
-    path: '/work/project',
-    configuration: ['hooks'],
-  }
-
-  it.each([
-    [WORKSPACE_TRUST_DECISION.Trust, 'Trusted this folder'],
-    [WORKSPACE_TRUST_DECISION.Reject, 'Did not trust this folder'],
-  ])('reads the saved answer %s', (decision, text) => {
-    expect(zcodeControls.controlResponseDisplay?.({
-      requestId: 'workspace-trust:session-1',
-      claimToken: '',
-      request: question,
-      response: {
-        type: 'control_response',
-        response: {
-          request_id: 'workspace-trust:session-1',
-          response: { decision },
-        },
-      },
-    })).toEqual({ kind: 'label', text })
+  // The Worker reads each request, builds each answer, and records the decision that
+  // words a saved answer, so the browser keeps only the presets.
+  it('registers only the presets', () => {
+    expect(Object.keys(zcodeControls)).toEqual(['permissionPresets'])
   })
 })
 
 /*
  * ZCode forwards an MCP server's form as a user-input request. The Worker records the
  * form as the prompt of the answer, so the row reads a refused or a dismissed form in
- * the words of the form's own buttons, and not as the plan or the question that the
- * same RPC carries.
+ * the words of the form, and not as the plan or the question that the same RPC
+ * carries.
  */
 describe('zcode saved form answer', () => {
   const schema = {
@@ -49,8 +31,8 @@ describe('zcode saved form answer', () => {
     },
   }
 
-  /** The row of one saved form answer, as the Worker stores ZCode's own reply. */
-  function savedForm(result: Record<string, unknown>): PersistedControlResponse {
+  /** The row of one saved form answer: ZCode's own reply, and the Worker's prompt and decision. */
+  function savedForm(result: Record<string, unknown>, action: ElicitationAction, contentJson = ''): PersistedControlResponse {
     return {
       requestId: 'mcp-elicit-1',
       claimToken: 'claim-1',
@@ -72,6 +54,12 @@ describe('zcode saved form answer', () => {
           schema,
         },
       },
+      decision: create(ControlDecisionSchema, {
+        kind: {
+          case: 'elicitation',
+          value: { action, contentJson },
+        },
+      }),
     }
   }
 
@@ -86,12 +74,24 @@ describe('zcode saved form answer', () => {
   }
 
   it.each([
-    ['decline', 'Rejected'],
-    ['cancel', 'Cancelled'],
-  ])('reads a form answered with %s as %s', (action, text) => {
-    expect(displayOf(savedForm({ action }))).toEqual({
+    ['decline', ElicitationAction.DECLINE, 'Rejected'],
+    ['cancel', ElicitationAction.CANCEL, 'Cancelled'],
+  ])('reads a form answered with %s', (wire, action, text) => {
+    expect(displayOf(savedForm({ action: wire }, action))).toEqual({
       kind: 'control-response',
       display: { kind: 'label', text },
+    })
+  })
+
+  // ZCode's reply keys the form positionally (`answer_0`), and the decision keys it by
+  // the fields of the form's schema, so the row reads the field's title.
+  it('reads an accepted form under the titles of its fields', () => {
+    expect(displayOf(savedForm({
+      action: 'accept',
+      content: { answer_0: '3' },
+    }, ElicitationAction.ACCEPT, '{"count":3}'))).toEqual({
+      kind: 'control-response',
+      display: { kind: 'label', text: 'Approved\nCount: 3' },
     })
   })
 })

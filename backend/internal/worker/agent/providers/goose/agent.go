@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -45,7 +44,8 @@ var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	method, active, sessionID, runID := a.SteerTarget()
 	if method == "" {
 		return agent.ErrSteeringUnsupported

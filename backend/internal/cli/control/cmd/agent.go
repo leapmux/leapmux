@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 func newAgentCommand() *cobra.Command {
@@ -70,7 +71,7 @@ request id and other arguments fails with conflict.`,
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				fs.String("provider", "", `agent provider; when neither this flag nor the variable gives one, the only provider that the worker offers; "leapmux control agent providers" lists them`)
-				cli.SetEnvDefault(fs, "provider", "LEAPMUX_CONTROL_AGENT_PROVIDER")
+				cli.SetEnvDefault(fs, "provider", controlenv.AgentProviderVariable)
 				fs.String("model", "", "model")
 				fs.String("effort", "", "reasoning effort")
 				fs.String("permission-mode", "", "permission mode")
@@ -122,9 +123,15 @@ The time must lie in the future. The result states it in UTC.
 
 --request-id makes a retry safe. A second run with the same request id, the
 same agent and the same message queues nothing new, and with --wait it
-prints the reply to the message of the first run. A run with the same
-request id and another message fails with conflict. A retry needs --at as an
-RFC 3339 time, because a duration from now differs on each run.
+prints the reply to the message of the first run. This holds also after
+someone edited the message in the queue: the retry repeats the message that
+the first run sent, and the queue keeps the edit. It holds also after
+someone removed the message from the queue: for 7 days after the removal, a
+retry queues nothing, and with --wait it fails with not_found and exits 6.
+A run with the same request id and a message other than the first run's
+fails with conflict, even when its message equals the edited one. A retry
+needs --at as an RFC 3339 time, because a duration from now differs on each
+run.
 
 With --wait, the command first refuses to send to an agent that waits for an
 answer to a permission prompt, and exits 5. Otherwise it sends the message,

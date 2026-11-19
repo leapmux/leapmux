@@ -3,10 +3,10 @@ import { CODEBUDDY_MODE } from '~/generated/contracts/codebuddy-protocol'
 import { codebuddyControls } from './pluginControls'
 
 describe('codebuddyControls', () => {
-  // The Worker reads each request and builds each answer, so the browser keeps only the
-  // display of a saved answer and the presets.
-  it('registers only the saved-answer display and the presets', () => {
-    expect(Object.keys(codebuddyControls).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
+  // The Worker reads each request, builds each answer, and records the decision that
+  // words a saved answer, so the browser keeps only the presets.
+  it('registers only the presets', () => {
+    expect(Object.keys(codebuddyControls)).toEqual(['permissionPresets'])
   })
 })
 

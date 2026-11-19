@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
-import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
 import { providerQuotableText } from '~/test-support/toolCallFixture'
@@ -241,30 +240,5 @@ describe('copilot needsRequest', () => {
 
   it('answers false for a row outside a tool span', () => {
     expect(copilotNeedsRequest(input(frame(COPILOT_EVENT.AssistantMessage, { content: 'hi' })))).toBe(false)
-  })
-})
-
-// The Worker asks Copilot's folder-trust question itself, in LeapMux's neutral shape.
-describe('copilotControls workspace trust', () => {
-  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
-  const question = {
-    type: WORKSPACE_TRUST_CONTROL_TYPE.Question,
-    path: '/work/project',
-    configuration: ['MCP servers'],
-  }
-
-  it('reads the saved answer', () => {
-    expect(plugin.controls?.controlResponseDisplay?.({
-      requestId: 'workspace-trust:session-1',
-      claimToken: '',
-      request: question,
-      response: {
-        type: 'control_response',
-        response: {
-          request_id: 'workspace-trust:session-1',
-          response: { decision: WORKSPACE_TRUST_DECISION.Reject },
-        },
-      },
-    })).toEqual({ kind: 'label', text: 'Did not trust this folder' })
   })
 })

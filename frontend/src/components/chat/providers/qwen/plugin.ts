@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 
 import { qwenAgentTurnEnd } from './classification'
-import { qwenControlResponseSummary } from './controlResponse'
 import { qwenOutputFilePaths } from './extractors/outputFilePaths'
 import { qwenToolCallAdapter } from './extractors/toolCall'
 import { qwenNativeNotifications } from './notification'
@@ -25,7 +24,6 @@ registerACPProvider({
   planValue: QWEN_MODE.Plan,
   // Qwen uses its session modes as approval modes on the permission-mode axis.
   permissionPresets: qwenPermissionPresets,
-  controlResponseDisplay: qwenControlResponseSummary,
   agentTurnEnd: qwenAgentTurnEnd,
   nativeNotifications: qwenNativeNotifications,
 })

@@ -2,7 +2,15 @@ import { ZCODE_INTERACTION, ZCODE_METHOD, ZCODE_TOOL } from '~/generated/contrac
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { zcodeExtractTool } from './toolCommon'
 
-/** Read a plan whose only persisted source is its native approval request. */
+/**
+ * Read a plan whose only persisted source is its native approval request: the
+ * tool input's plan, then the context's, by the rule that the Worker stores the
+ * plan with (`planText` in the Go provider). It answers null for any other row,
+ * and for an approval whose plan is blank, for which the Worker writes no row.
+ *
+ * The request's prompt is no source of the plan: ZCode states the permission
+ * reason there ("Tool ExitPlanMode requires user interaction").
+ */
 export function zcodeControlPlanText(parsed: unknown): string | null {
   if (!isObject(parsed) || parsed.method !== ZCODE_METHOD.RequestUserInput)
     return null
@@ -17,7 +25,7 @@ export function zcodeControlPlanText(parsed: unknown): string | null {
     if (plan.trim())
       return plan
   }
-  return pickString(params, 'prompt')
+  return null
 }
 
 /**

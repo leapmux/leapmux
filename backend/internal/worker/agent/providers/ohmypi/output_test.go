@@ -561,7 +561,7 @@ func TestAnAgentEndThatAQueuedSteerContinuesPersistsTheRunsText(t *testing.T) {
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"First run's text"}}`)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "also check the tests"}))
 	r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 
 	messages := r.sink.Messages()
@@ -672,7 +672,7 @@ func TestAnAgentEndThatAQueuedSteerContinuesKeepsTheTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`, frameBashStart, frameBashEnd)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "also check the tests"}))
 	r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 
 	active, _ := r.sink.LastTurnActive()
@@ -750,7 +750,7 @@ func TestASteerThatNeverEntersARunContinuesNothing(t *testing.T) {
 				return nil
 			})
 			r.emit(`{"type":"agent_start"}`)
-			require.NoError(t, r.agent.SteerInput("/session info", nil))
+			require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "/session info"}))
 			if tc.after != nil {
 				r.emit(tc.after(t, r.commandsOfType(CommandPrompt)[0].ID)...)
 			}
@@ -775,8 +775,8 @@ func TestASteerThatOmpTookStillContinuesTheTurnBesideALocalOne(t *testing.T) {
 		return nil
 	})
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
-	require.NoError(t, r.agent.SteerInput("/session info", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "also check the tests"}))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "/session info"}))
 
 	r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 	active, _ := r.sink.LastTurnActive()
@@ -797,7 +797,7 @@ func TestAnAgentEndThatOmpContinuesAfterTheSteerWasTakenEndsTheTurn(t *testing.T
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("also check the tests", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "also check the tests"}))
 	r.emit(`{"type":"message_end","message":{"role":"user","steering":true,"content":[{"type":"text","text":"also check the tests"}]}}`,
 		`{"type":"agent_end","isTerminal":false,"messages":[]}`)
 

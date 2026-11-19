@@ -106,7 +106,7 @@ func (codewhaleProvider) ResolveControlResponse(ctx agent.ControlResponseContext
 		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
-	frame, feedback, refusal := resolveControlReply(ctx.RequestPayload, ctx.ResponseContent)
+	frame, feedback, refusal := resolveControlReply(ctx.RequestID, ctx.RequestPayload, ctx.ResponseContent)
 	if refusal != "" {
 		res.Refuse(refusal)
 		return res

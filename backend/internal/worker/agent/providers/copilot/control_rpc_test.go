@@ -285,10 +285,8 @@ func TestAutoModeSwitchAnswerCallsTheMethod(t *testing.T) {
 	a, sink := startCopilotForControls(t, "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS="+requestsPath)
 	a.HandleOutput(fmt.Appendf(nil, `{"method":"session.event","params":{"sessionId":%q,"event":{"type":"auto_mode_switch.requested","data":{"requestId":"switch-1"}}}}`, a.currentNativeSessionID()))
 	request := sink.LastPublishedControl()
-	resolution, claimed := copilotResolveControlAnswer(agent.ControlResponseContext{
-		RequestID: request.RequestID, RequestPayload: request.Payload,
-		ResponseContent: copilotAnswer(request.RequestID, map[string]any{"behavior": "deny"}),
-	})
+	resolution, claimed := copilotResolveControlAnswer(agenttest.ControlResponseContextOf(request.Payload, request.RequestID,
+		agent.ControlAnswer{Content: copilotAnswer(request.RequestID, map[string]any{"behavior": "deny"})}))
 	require.True(t, claimed)
 	require.False(t, resolution.Withhold)
 	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
@@ -332,10 +330,8 @@ func testSamplingDecision(t *testing.T, decision, action string) {
 	a.HandleOutput(fmt.Appendf(nil, `{"method":"session.event","params":{"sessionId":%q,"event":{"type":"sampling.requested","data":%s,"ephemeral":true}}}`, a.currentNativeSessionID(), data))
 	require.Equal(t, 2, sink.PublishedControlCount())
 	request := sink.LastPublishedControl()
-	resolution, claimed := copilotResolveControlAnswer(agent.ControlResponseContext{
-		RequestID: request.RequestID, RequestPayload: request.Payload,
-		ResponseContent: copilotAnswer(request.RequestID, map[string]any{"behavior": decision}),
-	})
+	resolution, claimed := copilotResolveControlAnswer(agenttest.ControlResponseContextOf(request.Payload, request.RequestID,
+		agent.ControlAnswer{Content: copilotAnswer(request.RequestID, map[string]any{"behavior": decision})}))
 	require.True(t, claimed)
 	require.False(t, resolution.Withhold)
 	uncertain := decision == "allow" && action != "success" && action != "failure" && action != "cancelled"

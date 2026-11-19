@@ -49,6 +49,23 @@ func zcodeAccountTestAgent(t *testing.T, configJSON string, store zcodeCredentia
 	return a, api
 }
 
+// The account scope hashes its parts as JSON.stringify writes them. An
+// individual plan and a sign-in with no ZCode token state null.
+func TestZCodeAccountScope_HashesItsPartsAsJavaScriptJSON(t *testing.T) {
+	t.Parallel()
+	var rule zcodeBuiltinProviderRule
+	rule.Config.Access.AccountType = "zai"
+	rule.Config.Access.Mode = "<plan>&"
+	binding := zcodeAccountBinding{rule: rule}
+	team := &zcodeTeamProject{organizationID: "org", projectID: zcodeJSONProbe, productID: "\u2028"}
+	assert.Equal(t,
+		zcodeSHA256Hex(`["zai","<plan>&",["org",`+zcodeJSONProbeJSON+`,"`+"\u2028"+`"],`+zcodeJSONProbeJSON+`,"jwt`+"\u2029"+`"]`),
+		zcodeAccountScope(binding, team, zcodeAccountSession{accessToken: zcodeJSONProbe, zcodeJWT: "jwt\u2029"}))
+	assert.Equal(t,
+		zcodeSHA256Hex(`["zai","<plan>&",null,`+zcodeJSONProbeJSON+`,null]`),
+		zcodeAccountScope(binding, nil, zcodeAccountSession{accessToken: zcodeJSONProbe}))
+}
+
 func TestZCodeAccountRequestAuth_MintsACodingPlanTokenFromTheSignIn(t *testing.T) {
 	t.Parallel()
 

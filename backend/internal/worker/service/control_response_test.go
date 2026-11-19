@@ -2424,10 +2424,10 @@ func (a *recordingQuestionAgent) SendInputForSession(_ string, content string, _
 	return nil
 }
 
-func (a *recordingQuestionAgent) SteerInput(content string, _ []*leapmuxv1.Attachment) error {
+func (a *recordingQuestionAgent) SteerInput(request agent.SteerRequest) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.steered = append(a.steered, content)
+	a.steered = append(a.steered, request.Content)
 	return nil
 }
 
@@ -2528,8 +2528,8 @@ func TestQuestionAnswerDispatchesWhenNoTurnIsActive(t *testing.T) {
 	assert.Empty(t, steered, "no turn runs, so there is nothing to steer into")
 }
 
-func (a *recordingQuestionAgent) SteerInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SteerInput(content, attachments)
+func (a *recordingQuestionAgent) SteerInputForSession(_ string, request agent.SteerRequest) error {
+	return a.SteerInput(request)
 }
 
 func TestProcessControlAnswerRejectsInvalidQueuedAnswerBeforeClaim(t *testing.T) {
@@ -2617,13 +2617,13 @@ type heldQuestionSteerer struct {
 	release chan struct{}
 }
 
-func (a *heldQuestionSteerer) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *heldQuestionSteerer) SteerInput(request agent.SteerRequest) error {
 	a.first.Do(func() { close(a.entered); <-a.release })
-	return a.recordingQuestionAgent.SteerInput(content, attachments)
+	return a.recordingQuestionAgent.SteerInput(request)
 }
 
-func (a *heldQuestionSteerer) SteerInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SteerInput(content, attachments)
+func (a *heldQuestionSteerer) SteerInputForSession(_ string, request agent.SteerRequest) error {
+	return a.SteerInput(request)
 }
 
 func TestConcurrentQuestionAnswersReachTheActiveTurnInOrder(t *testing.T) {

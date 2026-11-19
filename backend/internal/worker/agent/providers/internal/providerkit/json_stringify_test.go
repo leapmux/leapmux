@@ -20,6 +20,8 @@ func TestJSONStringify(t *testing.T) {
 			want:  "\"a\u2028b\u2029c\"",
 		},
 		"an escaped backslash before u2028 stays escaped": {value: `\u2028`, want: `"\\u2028"`},
+		"a backslash before a separator stays one escape": {value: "\\\u2028", want: "\"\\\\\u2028\""},
+		"a separator in a map key stays as it is":         {value: map[string]string{"\u2028": "\u2029"}, want: "{\"\u2028\":\"\u2029\"}"},
 		"other escapes stay escaped":                      {value: "tab\t\"quote\"\nline", want: `"tab\t\"quote\"\nline"`},
 		"a list keeps its order":                          {value: []any{"tool", "item", 3}, want: `["tool","item",3]`},
 		"a map sorts its keys":                            {value: map[string]string{"b": "2", "a": "1"}, want: `{"a":"1","b":"2"}`},

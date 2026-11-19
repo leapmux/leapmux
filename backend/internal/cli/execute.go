@@ -193,6 +193,58 @@ func ExpandCommandPath(root *cobra.Command, args []string) ([]string, error) {
 	return out, nil
 }
 
+// TopLevelCommand returns the child of root that args act on. It resolves a
+// name as ExpandCommandPath does, so a unique prefix counts. It looks through
+// the help command and through a shell completion request: "help control tab"
+// and a completion of "control tab" act on control, as "control tab" does.
+//
+// It returns nil when args reach no child of root:
+//
+//   - args hold no command name, or a completion completes the name itself.
+//   - The first name is unknown or ambiguous.
+//   - A flag before the first name is one that root does not know.
+//   - "--" comes before the first name.
+//
+// It reads nothing after the first name, so an argument or a flag that only
+// another version of a command knows cannot change the answer.
+func TopLevelCommand(root *cobra.Command, args []string) *cobra.Command {
+	start, end := 0, len(args)
+	if len(args) > 0 && slices.Contains(shellCompletionRequests, args[0]) {
+		start, end = 1, len(args)-1
+	}
+	root.InitDefaultHelpCmd()
+	// flagsOf is the command whose flags the next flag token belongs to: root,
+	// or the help command after "help".
+	flagsOf := root
+	for i := start; i < end; i++ {
+		a := args[i]
+		if a == "--" {
+			return nil
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			consumesNext, known := scanFlag(flagsOf, a)
+			if !known {
+				return nil
+			}
+			if consumesNext {
+				i++
+			}
+			continue
+		}
+		next, err := matchSubcommand(root, a)
+		if err != nil {
+			return nil
+		}
+		if flagsOf == root && next.Name() == "help" {
+			// "help <command>" acts on <command>, a path from root.
+			flagsOf = next
+			continue
+		}
+		return next
+	}
+	return nil
+}
+
 // scanFlag reports whether the flag token a consumes the next argument as
 // its value, and whether cmd knows every flag of the token.
 func scanFlag(cmd *cobra.Command, a string) (consumesNext, known bool) {

@@ -1,11 +1,8 @@
 package inputqueue
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,13 +19,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
-	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
-
-const inputIdempotencyKeyPrefix = "input:"
 
 type Store struct {
 	db         *sql.DB
@@ -118,7 +112,7 @@ func (s *Store) KindAfterEdit(ctx context.Context, agentID, inputID, newText str
 	var kind leapmuxv1.AgentInputKind
 	var reclassify bool
 	err := s.db.QueryRowContext(ctx,
-		`SELECT kind, reclassify_on_edit FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`,
+		`SELECT kind, reclassify_on_edit FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
 		agentID, inputID).Scan(&kind, &reclassify)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
@@ -221,8 +215,17 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 
 // enqueue queues input, applies the extra database mutation, and commits both
 // with the snapshot. It reports whether this call added the item. A repeat of an
-// item that the queue holds, or that it already delivered, adds nothing: it
-// answers the current snapshot and false.
+// item that the queue holds, that it already delivered, or that someone removed
+// from it, adds nothing: it answers the current snapshot and false. A removed
+// item stays out of the queue, so the snapshot of such a repeat does not hold
+// it. Until PurgeRemoved deletes the row of a removed item, a retry of the
+// request that queued it cannot queue it again.
+//
+// A repeat is the request that queued the item, so it compares its key with
+// the key that the Worker stored for the item (storedRequestKey), not with the
+// content that the item holds now. A repeat after someone edited the item
+// therefore still matches, and a request that sends the edited content under
+// the same input id conflicts.
 func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
 	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
 		return Snapshot{}, false, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
@@ -241,6 +244,9 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 	if err := validateSchedule(input.Kind, input.SourcePayload, input.Attachments); err != nil {
 		return Snapshot{}, false, err
 	}
+	// The hash reads every attachment byte, so it runs before the transaction
+	// takes the write lock.
+	key := inputIdempotencyKey(input)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -260,37 +266,19 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		return Snapshot{}, false, err
 	}
 
-	existing, existingAttachments, found, err := getItem(ctx, tx, input.AgentID, input.ID, true)
+	storedKey, found, err := storedRequestKey(ctx, tx, input.AgentID, input.ID)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
 	if found {
-		if existing.Kind != input.Kind || !sameSender(existing.Sender, input.Sender) ||
-			existing.Text != input.Text || existing.TargetMode != input.TargetMode ||
-			existing.PrepareContext != input.PrepareContext || existing.ReclassifyOnEdit != input.ReclassifyOnEdit ||
-			!schedulesEqual(existing.ScheduledAt, input.ScheduledAt) ||
-			!bytes.Equal(existing.SourcePayload, input.SourcePayload) ||
-			!attachmentsEqual(existingAttachments, input.Attachments) {
+		if storedKey != key {
 			return Snapshot{}, false, ErrConflict
 		}
 		snapshot, err := commit()
 		return snapshot, false, err
-	}
-	var acceptedAgentID, acceptedIdempotencyKey string
-	err = tx.QueryRowContext(ctx, `SELECT agent_id, idempotency_key FROM messages WHERE id = ?`, input.ID).Scan(&acceptedAgentID, &acceptedIdempotencyKey)
-	if err == nil {
-		if acceptedAgentID != input.AgentID || acceptedIdempotencyKey == "" ||
-			acceptedIdempotencyKey != inputIdempotencyKey(input) {
-			return Snapshot{}, false, ErrConflict
-		}
-		snapshot, err := commit()
-		return snapshot, false, err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return Snapshot{}, false, err
 	}
 
-	if err := insertQueuedItem(ctx, tx, input); err != nil {
+	if err := insertQueuedItem(ctx, tx, input, key); err != nil {
 		return Snapshot{}, false, err
 	}
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
@@ -348,7 +336,7 @@ func (s *Store) BeginEdit(ctx context.Context, agentID, inputID, clientID string
 		return Snapshot{}, "", nil, ErrEditOwned
 	}
 	var otherEditedID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND edit_owner <> '' AND id <> ? LIMIT 1`, agentID, inputID).Scan(&otherEditedID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND edit_owner <> '' AND id <> ? LIMIT 1`, agentID, inputID).Scan(&otherEditedID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{}, "", nil, err
 	}
@@ -356,11 +344,11 @@ func (s *Store) BeginEdit(ctx context.Context, agentID, inputID, clientID string
 		return Snapshot{}, "", nil, ErrEditOwned
 	}
 	if takeover {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND id <> ? AND edit_owner <> ''`, nowText(), agentID, inputID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND removed_at IS NULL AND id <> ? AND edit_owner <> ''`, nowText(), agentID, inputID); err != nil {
 			return Snapshot{}, "", nil, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = ?, updated_at = ? WHERE agent_id = ? AND id = ?`, clientID, nowText(), agentID, inputID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, clientID, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, "", nil, normalizeConstraintError(err)
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
@@ -417,7 +405,7 @@ func (s *Store) Update(ctx context.Context, request UpdateRequest) (Snapshot, er
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
 		SET kind = ?, text = ?, scheduled_at = CASE WHEN ? THEN ? ELSE scheduled_at END, state = ?, reserved_seq = 0, error = '', edit_owner = '', version = version + 1, updated_at = ?
-		WHERE agent_id = ? AND id = ? AND version = ?`,
+		WHERE agent_id = ? AND id = ? AND version = ? AND removed_at IS NULL`,
 		kind, request.Text, request.Schedule.Replace, sqltime.NewSQLiteNullTime(request.Schedule.At), leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), request.AgentID, request.InputID, request.ExpectedVersion)
 	if err != nil {
 		return Snapshot{}, err
@@ -435,7 +423,7 @@ func (s *Store) Update(ctx context.Context, request UpdateRequest) (Snapshot, er
 }
 
 func (s *Store) CancelEdit(ctx context.Context, agentID, inputID, clientID string) (Snapshot, error) {
-	return s.changeOwnedEdit(ctx, agentID, inputID, clientID, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND id = ?`)
+	return s.changeOwnedEdit(ctx, agentID, inputID, clientID, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`)
 }
 
 func (s *Store) changeOwnedEdit(ctx context.Context, agentID, inputID, clientID, statement string) (Snapshot, error) {
@@ -463,12 +451,25 @@ func (s *Store) changeOwnedEdit(ctx context.Context, agentID, inputID, clientID,
 	return commitSnapshot(ctx, tx, agentID, s.now())
 }
 
+// Delete removes an input from the queue: the agent never reads it. The row
+// stays, with the instant of the removal in removed_at, and every read of the
+// queue skips it. Only the repeat check of enqueue finds it, so a retry of the
+// request that queued the input queues nothing, until PurgeRemoved deletes the
+// row after RemovedInputRetention.
+//
+// The row keeps the idempotency key of the request that queued the input,
+// which the repeat check compares: the same input id with other content still
+// conflicts. It gives up what only an input that the queue holds can own --
+// its edit and its reserved transcript sequence -- and its content: no read
+// uses the text, the source payload or the attachments of a removed input, and
+// the attachments alone can hold MaxQueueAttachmentBytes until the purge.
 func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	now := s.now()
 	item, _, found, err := getItem(ctx, tx, agentID, inputID, false)
 	if err != nil {
 		return Snapshot{}, err
@@ -479,7 +480,14 @@ func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, 
 	if lockedInputState(item.State) {
 		return Snapshot{}, ErrConflict
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agent_input_queue_items
+		SET removed_at = ?, edit_owner = '', reserved_seq = 0, text = '', source_payload = X'', updated_at = ?
+		WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
+		sqltime.SQLiteNullTimeOf(now), nowText(), agentID, inputID); err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_attachments WHERE item_id = ?`, inputID); err != nil {
 		return Snapshot{}, err
 	}
 	// Deleting a server-error retry ends its cycle by hand, so the backoff it
@@ -503,7 +511,7 @@ func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, 
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return commitSnapshot(ctx, tx, agentID, now)
 }
 
 // Move reorders one item inside its reorder group. The destination must share
@@ -759,7 +767,7 @@ func (s *Store) finishInputRecovery(ctx context.Context, agentID string, previou
 		return Snapshot{}, false, err
 	}
 	if oldProcessEnded && failureReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET error = '', updated_at = ? WHERE agent_id = ? AND state = ? AND error <> ''`,
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET error = '', updated_at = ? WHERE agent_id = ? AND removed_at IS NULL AND state = ? AND error <> ''`,
 			nowText(), agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED); err != nil {
 			return Snapshot{}, false, err
 		}
@@ -990,7 +998,7 @@ func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string, now time.
 func readDispatchGateFor(ctx context.Context, tx db.DBTX, agentID string, now time.Time, head OrderingMetadata, headFound bool) (dispatchGate, error) {
 	gate := dispatchGate{Now: now, ApprovalsComplete: true}
 	if err := tx.QueryRowContext(ctx, `SELECT pause_reason IS NOT NULL, restarting, active_turn, active_turn_steerable,
-		(SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state = ?),
+		(SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND state = ?),
 		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1), COALESCE(pause_reason, 0)
 		FROM agent_input_queue_state WHERE agent_id = ?`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, agentID, agentID).
 		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable, &gate.AwaitingEcho, &gate.Closed, &gate.PauseReason); err != nil {
@@ -1102,7 +1110,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
 		SET state = ?, reserved_seq = ?, error = '', updated_at = ?
-		WHERE agent_id = ? AND id = ? AND state = ?`,
+		WHERE agent_id = ? AND id = ? AND removed_at IS NULL AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, reservedSeq, nowText(), agentID, item.ID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED)
 	if err != nil {
@@ -1201,7 +1209,7 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, di
 	if _, err := absorbQueuedAutoRetry(ctx, tx, agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1246,7 +1254,7 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 	if _, err := absorbQueuedAutoRetry(ctx, tx, agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, errText, nowText(), agentID, inputID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1317,7 +1325,9 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, item.AgentID, item.ID); err != nil {
+	// The transcript row now records the input, so the queue row goes for
+	// good: a repeat of the request finds the transcript row instead.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, item.AgentID, item.ID); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
 	if err := compactOrder(ctx, tx, item.AgentID); err != nil {
@@ -1364,8 +1374,15 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 // supplemental is the encoded supplement that the dispatcher resolved for the row, or nil
 // for none; the row stores it compressed. An automatic retry's supplement is its own
 // provider source, which the queue encodes here, so the dispatched and the echo-accepted
-// rows of a retry carry the same supplement.
+// rows of a retry carry the same supplement. The row takes over the idempotency key that
+// the queue row stored at the enqueue, which an edit of the item did not change, so a
+// retry of the request that queued the item still matches the row.
 func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, attachments []Attachment, seq int64, spanLines string, supplemental []byte) (AcceptedTranscript, error) {
+	if item.idempotencyKey == "" {
+		// The schema requires the key on every queue row, so only an item that
+		// no queue row supplied lacks it.
+		return AcceptedTranscript{}, fmt.Errorf("the input %s holds no idempotency key", item.ID)
+	}
 	content, err := transcriptContent(item, attachments)
 	if err != nil {
 		return AcceptedTranscript{}, err
@@ -1405,12 +1422,7 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 		 supplemental_content, supplemental_content_compression)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, COALESCE(?, X''), ?)`,
 		item.ID, item.AgentID, seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		compressed, compression, inputIdempotencyKey(NewItem{
-			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Sender: item.Sender, Text: item.Text,
-			TargetMode: item.TargetMode, PrepareContext: item.PrepareContext,
-			ReclassifyOnEdit: item.ReclassifyOnEdit, ScheduledAt: item.ScheduledAt,
-			SourcePayload: item.SourcePayload, Attachments: attachments,
-		}), spanLines, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
+		compressed, compression, item.idempotencyKey, spanLines, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
 		return AcceptedTranscript{}, err
 	}
 	return AcceptedTranscript{
@@ -1443,6 +1455,28 @@ func withAgentMessageSender(supplemental []byte, sender *AgentSender) ([]byte, e
 	return parsed.WithMetadataMember(contracts.MessageMetadataFieldAgentMessageSender, encoded)
 }
 
+// agentMessageSenderOf reads the sender that withAgentMessageSender recorded
+// in the supplement of a transcript row, or nil when the row records none. The
+// row records the tab and the provider of the sender, never its title.
+func agentMessageSenderOf(supplemental []byte) (*AgentSender, error) {
+	parsed, err := agent.ParseStoredMessageSupplement(supplemental)
+	if err != nil {
+		return nil, fmt.Errorf("read the supplement of the input: %w", err)
+	}
+	encoded := parsed.MetadataMember(contracts.MessageMetadataFieldAgentMessageSender)
+	if encoded == nil {
+		return nil, nil
+	}
+	var sender leapmuxv1.AgentMessageSender
+	if err := protojson.Unmarshal(encoded, &sender); err != nil {
+		return nil, fmt.Errorf("decode the sender of the agent message: %w", err)
+	}
+	if !validateIdentity(sender.GetTabId()) || sender.GetProvider() == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return nil, errors.New("the sender of the agent message needs a tab ID and a provider")
+	}
+	return &AgentSender{TabID: sender.GetTabId(), Provider: sender.GetProvider()}, nil
+}
+
 // HoldForEcho retains an accepted steer without reserving or writing its transcript row.
 func (s *Store) HoldForEcho(ctx context.Context, prepared PreparedDispatch) (Snapshot, error) {
 	if prepared.ReservedSeq != 0 {
@@ -1454,7 +1488,7 @@ func (s *Store) HoldForEcho(ctx context.Context, prepared PreparedDispatch) (Sna
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, updated_at = ?
-		WHERE agent_id = ? AND id = ? AND state = ? AND reserved_seq = 0`,
+		WHERE agent_id = ? AND id = ? AND removed_at IS NULL AND state = ? AND reserved_seq = 0`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, nowText(), prepared.Item.AgentID, prepared.Item.ID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1475,7 +1509,7 @@ func (s *Store) HoldForEcho(ctx context.Context, prepared PreparedDispatch) (Sna
 
 // awaitingEchoIDs reads the oldest pending steers. A negative limit reads all of them.
 func awaitingEchoIDs(ctx context.Context, tx db.DBTX, agentID string, count int) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND state = ? ORDER BY order_index LIMIT ?`,
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND state = ? ORDER BY order_index LIMIT ?`,
 		agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, count)
 	if err != nil {
 		return nil, err
@@ -1547,7 +1581,7 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 		if err != nil {
 			return nil, false, Snapshot{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, id); err != nil {
 			return nil, false, Snapshot{}, err
 		}
 		accepted = append(accepted, row)
@@ -1585,7 +1619,7 @@ func requeueUnechoedSteers(ctx context.Context, tx db.DBTX, agentID string, coun
 		if peerID != "" {
 			absorbed[peerID] = true
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', reserved_seq = 0, updated_at = ? WHERE agent_id = ? AND id = ?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', reserved_seq = 0, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
 			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, id); err != nil {
 			return 0, err
 		}
@@ -1603,7 +1637,7 @@ func placeResolvedSteers(ctx context.Context, tx db.DBTX, agentID string, ids []
 	for _, id := range ids {
 		selected[id] = true
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	rows, err := tx.QueryContext(ctx, `SELECT id, state FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL ORDER BY order_index`, agentID)
 	if err != nil {
 		return err
 	}
@@ -1673,7 +1707,7 @@ func (s *Store) ResolveUnechoedSteers(ctx context.Context, agentID string, count
 		return Snapshot{}, 0, false, err
 	}
 	for _, id := range ids {
-		_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ?`,
+		_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
 			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN,
 			"the agent did not confirm whether the model read this message", nowText(), agentID, id)
 		if err != nil {
@@ -1721,7 +1755,7 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL AND state = ?`,
 		state, errText, nowText(), agentID, inputID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
 		return Snapshot{}, err
@@ -1956,7 +1990,7 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 	// The item returns to QUEUED, so it releases its reservation. A stale
 	// reservation makes the retried message sort before an agent message that
 	// the transcript took after the failure.
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
@@ -2059,15 +2093,16 @@ func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule 
 		return Snapshot{}, err
 	}
 	if existingID == "" {
-		if err := insertQueuedItem(ctx, tx, NewItem{
+		retry := NewItem{
 			ID: id.Generate(), AgentID: agentID, Kind: schedule.Kind, Text: retryText,
 			ScheduledAt: &dueAt, SourcePayload: schedule.SourcePayload,
-		}); err != nil {
+		}
+		if err := insertQueuedItem(ctx, tx, retry, inputIdempotencyKey(retry)); err != nil {
 			return Snapshot{}, err
 		}
 	} else if _, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
-		SET scheduled_at = ?, source_payload = ?, updated_at = ? WHERE agent_id = ? AND id = ?`,
+		SET scheduled_at = ?, source_payload = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
 		sqltime.SQLiteNullTimeOf(dueAt), ptrconv.OrEmpty(schedule.SourcePayload), nowText(), agentID, existingID); err != nil {
 		return Snapshot{}, err
 	}
@@ -2105,7 +2140,7 @@ func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...
 	}
 	var work bool
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS(SELECT 1 FROM agent_input_queue_items WHERE agent_id = ? AND state = ? AND kind IN (`+kindList+`))
+		SELECT EXISTS(SELECT 1 FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND state = ? AND kind IN (`+kindList+`))
 			OR (? AND EXISTS(SELECT 1 FROM agent_input_queue_state WHERE agent_id = ? AND auto_retry_server_error_delay_ms <> ?))`,
 		append(append([]any{agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}, kindArgs...),
 			resetBackoff, agentID, autoRetryInitialDelay.Milliseconds())...).Scan(&work); err != nil {
@@ -2119,7 +2154,7 @@ func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND state = ? AND kind IN (`+kindList+`)`,
+	result, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND state = ? AND kind IN (`+kindList+`)`,
 		append([]any{agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}, kindArgs...)...)
 	if err != nil {
 		return Snapshot{}, false, err
@@ -2180,7 +2215,7 @@ func resetServerErrorDelay(ctx context.Context, tx db.DBTX, agentID string) (boo
 // or "". idx_agent_input_queue_one_auto_retry_kind admits at most one.
 func queuedAutoRetryID(ctx context.Context, tx db.DBTX, agentID string, kind leapmuxv1.AgentInputKind) (string, error) {
 	var id string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND kind = ? AND state = ?`,
+	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND kind = ? AND state = ?`,
 		agentID, kind, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -2219,7 +2254,7 @@ func queuedAutoRetryID(ctx context.Context, tx db.DBTX, agentID string, kind lea
 func absorbQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID string) (string, error) {
 	var kind leapmuxv1.AgentInputKind
 	var scheduled sqltime.SQLiteNullTime
-	err := tx.QueryRowContext(ctx, `SELECT kind, scheduled_at FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID).Scan(&kind, &scheduled)
+	err := tx.QueryRowContext(ctx, `SELECT kind, scheduled_at FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, inputID).Scan(&kind, &scheduled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -2235,14 +2270,14 @@ func absorbQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID str
 	}
 	var peerAt sqltime.SQLiteNullTime
 	var source []byte
-	if err := tx.QueryRowContext(ctx, `SELECT scheduled_at, source_payload FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, peerID).Scan(&peerAt, &source); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT scheduled_at, source_payload FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, peerID).Scan(&peerAt, &source); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrConflict
 		}
 		return "", err
 	}
 	if peerAt.Valid && (!scheduled.Valid || peerAt.Time.After(scheduled.Time)) {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET scheduled_at = ?, source_payload = ?, updated_at = ? WHERE agent_id = ? AND id = ?`, peerAt, ptrconv.OrEmpty(source), nowText(), agentID, inputID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET scheduled_at = ?, source_payload = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, peerAt, ptrconv.OrEmpty(source), nowText(), agentID, inputID); err != nil {
 			return "", err
 		}
 	}
@@ -2268,7 +2303,7 @@ func dropQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID strin
 }
 
 func deleteQueuedAutoRetryPeer(ctx context.Context, tx db.DBTX, agentID, peerID string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, peerID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, peerID); err != nil {
 		return err
 	}
 	return compactOrder(ctx, tx, agentID)
@@ -2306,7 +2341,7 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 		// can still have an owner. A lock left behind refuses the head in
 		// prepare forever, and the queue then stops with no pause and no
 		// stated reason.
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND edit_owner <> ''`, nowText(), agentID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND removed_at IS NULL AND edit_owner <> ''`, nowText(), agentID); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
@@ -2317,7 +2352,7 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 			return nil, err
 		}
 		var unconfirmed int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state IN (?, ?)`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO).Scan(&unconfirmed); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND state IN (?, ?)`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO).Scan(&unconfirmed); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
@@ -2328,7 +2363,7 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 		}
 		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED
 		if unconfirmed > 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = 'Worker restarted before delivery was confirmed', updated_at = ? WHERE agent_id = ? AND state IN (?, ?)`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, nowText(), agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = 'Worker restarted before delivery was confirmed', updated_at = ? WHERE agent_id = ? AND removed_at IS NULL AND state IN (?, ?)`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, nowText(), agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
@@ -2398,18 +2433,9 @@ func replaceAttachments(ctx context.Context, tx *sql.Tx, itemID string, attachme
 	return nil
 }
 
-func attachmentsEqual(a, b []Attachment) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Filename != b[i].Filename || a[i].MimeType != b[i].MimeType || !bytes.Equal(a[i].Data, b[i].Data) {
-			return false
-		}
-	}
-	return true
-}
-
+// getItem reads one input that the queue holds. It does not find an input
+// that someone removed: only the repeat check of enqueue reads a removed
+// input, and it reads the key alone (see storedRequestKey).
 func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
 	var item StoredItem
 	var kind, state int32
@@ -2418,10 +2444,10 @@ func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttac
 	var sender storedSender
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, agent_id, kind, sender_tab_id, sender_provider, sender_title, text, target_mode, prepare_context, reclassify_on_edit, order_index,
-			scheduled_at, source_payload, state, error, edit_owner, version, reserved_seq, created_at, updated_at
-		FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID).Scan(
+			scheduled_at, source_payload, idempotency_key, state, error, edit_owner, version, reserved_seq, created_at, updated_at
+		FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, inputID).Scan(
 		&item.ID, &item.AgentID, &kind, &sender.tabID, &sender.provider, &sender.title, &item.Text, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order,
-		&scheduled, &item.SourcePayload, &state, &item.Error,
+		&scheduled, &item.SourcePayload, &item.idempotencyKey, &state, &item.Error,
 		&item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StoredItem{}, nil, false, nil
@@ -2446,13 +2472,19 @@ func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttac
 	return item, attachments, true, err
 }
 
+// orderingRowsQuery selects the ordering metadata of every input that the
+// queue holds for one agent, in raw order. Its removed_at term is what lets
+// SQLite read the rows in order through a partial index of the queue, so it
+// sorts nothing; TestQueueStatementsUseThePartialIndexes pins that plan.
+const orderingRowsQuery = `
+	SELECT id, agent_id, kind, order_index, scheduled_at, state, edit_owner, prepare_context
+	FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL ORDER BY order_index`
+
 // readOrderingRows reads every item's ordering metadata -- no text, no source
 // payload, no attachment data -- which is all the priority comparator and the
 // reorder-group rules read.
 func readOrderingRows(ctx context.Context, tx db.DBTX, agentID string) ([]OrderingMetadata, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, agent_id, kind, order_index, scheduled_at, state, edit_owner, prepare_context
-		FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	rows, err := tx.QueryContext(ctx, orderingRowsQuery, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -2541,7 +2573,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 		SELECT id, kind, sender_tab_id, sender_provider, sender_title,
 			CASE WHEN length(text) > ? THEN substr(text, 1, ?) || '…' ELSE text END,
 			target_mode, prepare_context, reclassify_on_edit, order_index, scheduled_at, state, error, edit_owner, version, reserved_seq, created_at, updated_at
-		FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`,
+		FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL ORDER BY order_index`,
 		snapshotTextPreviewCharacters, snapshotTextPreviewCharacters, agentID)
 	if err != nil {
 		return Snapshot{}, err
@@ -2632,7 +2664,7 @@ func loadQueueAttachmentMetadata(ctx context.Context, tx db.DBTX, agentID string
 		SELECT a.item_id, a.filename, a.mime_type, a.size
 		FROM agent_input_queue_attachments a
 		JOIN agent_input_queue_items i ON i.id = a.item_id
-		WHERE i.agent_id = ?
+		WHERE i.agent_id = ? AND i.removed_at IS NULL
 		ORDER BY a.item_id, a.position`, agentID)
 	if err != nil {
 		return nil, err
@@ -2667,7 +2699,7 @@ func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string, now time.Ti
 // placeControlReply keeps the current request's reply before future queued work.
 // Existing replies and a dispatch or failure at the front retain their order.
 func placeControlReply(ctx context.Context, tx *sql.Tx, agentID, inputID string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, kind, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, state FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL ORDER BY order_index`, agentID)
 	if err != nil {
 		return err
 	}
@@ -2744,7 +2776,7 @@ func placeDispatchedItem(ctx context.Context, tx db.DBTX, agentID, inputID strin
 }
 
 func compactOrder(ctx context.Context, tx db.DBTX, agentID string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL ORDER BY order_index`, agentID)
 	if err != nil {
 		return err
 	}
@@ -2764,18 +2796,21 @@ func compactOrder(ctx context.Context, tx db.DBTX, agentID string) error {
 }
 
 // orderScratchOffset lifts a row out of the active order_index key space
-// while rows exchange slots, which avoids a transient UNIQUE(agent_id,
-// order_index) conflict. Every real slot is far below it, because a queue
-// holds at most MaxItems rows.
+// while rows exchange slots, which avoids a transient conflict in
+// idx_agent_input_queue_order, the unique index of (agent_id, order_index)
+// over the inputs that the queue holds. Every real slot is far below it,
+// because a queue holds at most MaxItems rows. A removed row keeps the slot
+// that it had, outside that index, so no write moves it.
 const orderScratchOffset = 1000000
 
-// writeOrder renumbers every row of the agent to 1..n in the given order.
+// writeOrder renumbers every input that the queue holds for the agent to 1..n
+// in the given order.
 func writeOrder(ctx context.Context, tx db.DBTX, agentID string, itemIDs []string) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = order_index + ? WHERE agent_id = ?`, orderScratchOffset, agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = order_index + ? WHERE agent_id = ? AND removed_at IS NULL`, orderScratchOffset, agentID); err != nil {
 		return err
 	}
 	for i := range itemIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = ? WHERE agent_id = ? AND id = ?`, i+1, agentID, itemIDs[i]); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, i+1, agentID, itemIDs[i]); err != nil {
 			return err
 		}
 	}
@@ -2790,12 +2825,12 @@ func writeOrderSlots(ctx context.Context, tx db.DBTX, agentID string, itemIDs []
 		return fmt.Errorf("%w: reorder segment mismatch", ErrInvalidInput)
 	}
 	for i := range itemIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = ? WHERE agent_id = ? AND id = ?`, slots[i]+orderScratchOffset, agentID, itemIDs[i]); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, slots[i]+orderScratchOffset, agentID, itemIDs[i]); err != nil {
 			return err
 		}
 	}
 	for i := range itemIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = ? WHERE agent_id = ? AND id = ?`, slots[i], agentID, itemIDs[i]); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET order_index = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, slots[i], agentID, itemIDs[i]); err != nil {
 			return err
 		}
 	}
@@ -2809,7 +2844,7 @@ func validateQueueAttachmentCapacity(ctx context.Context, tx *sql.Tx, agentID, e
   SELECT COALESCE(SUM(a.size), 0)
   FROM agent_input_queue_attachments a
   JOIN agent_input_queue_items i ON i.id = a.item_id
-  WHERE i.agent_id = ? AND (? = '' OR i.id <> ?)`, agentID, excludedInputID, excludedInputID).Scan(&aggregate); err != nil {
+  WHERE i.agent_id = ? AND i.removed_at IS NULL AND (? = '' OR i.id <> ?)`, agentID, excludedInputID, excludedInputID).Scan(&aggregate); err != nil {
 		return err
 	}
 	if aggregate+attachmentBytes(attachments) > MaxQueueAttachmentBytes {
@@ -2821,9 +2856,11 @@ func validateQueueAttachmentCapacity(ctx context.Context, tx *sql.Tx, agentID, e
 // insertQueuedItem appends one QUEUED row at the end of the raw order. It
 // owns the queue's capacity rules and the order-index allocation, so every
 // creation path -- user input and automatic retries -- keeps both.
-func insertQueuedItem(ctx context.Context, tx *sql.Tx, input NewItem) error {
+// idempotencyKey is inputIdempotencyKey(input), which the caller computes
+// once for the request; the row keeps it for good.
+func insertQueuedItem(ctx context.Context, tx *sql.Tx, input NewItem, idempotencyKey string) error {
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ?`, input.AgentID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL`, input.AgentID).Scan(&count); err != nil {
 		return err
 	}
 	if count >= MaxItems {
@@ -2836,17 +2873,17 @@ func insertQueuedItem(ctx context.Context, tx *sql.Tx, input NewItem) error {
 	}
 
 	var orderIndex int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(order_index), 0) + 1 FROM agent_input_queue_items WHERE agent_id = ?`, input.AgentID).Scan(&orderIndex); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(order_index), 0) + 1 FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL`, input.AgentID).Scan(&orderIndex); err != nil {
 		return err
 	}
 	created := nowText()
 	sender := newStoredSender(input.Sender)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_input_queue_items
-		(id, agent_id, order_index, kind, sender_tab_id, sender_provider, sender_title, text, target_mode, prepare_context, reclassify_on_edit, scheduled_at, source_payload, state, version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		(id, agent_id, order_index, kind, sender_tab_id, sender_provider, sender_title, text, target_mode, prepare_context, reclassify_on_edit, scheduled_at, source_payload, idempotency_key, state, version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		input.ID, input.AgentID, orderIndex, input.Kind, sender.tabID, sender.provider, sender.title, input.Text, input.TargetMode, input.PrepareContext, input.ReclassifyOnEdit,
-		sqltime.NewSQLiteNullTime(input.ScheduledAt), ptrconv.OrEmpty(input.SourcePayload),
+		sqltime.NewSQLiteNullTime(input.ScheduledAt), ptrconv.OrEmpty(input.SourcePayload), idempotencyKey,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, created, created); err != nil {
 		return normalizeConstraintError(err)
 	}
@@ -2882,15 +2919,6 @@ func (s storedSender) value() *AgentSender {
 	return &AgentSender{TabID: s.tabID, Provider: s.provider.V, Title: s.title}
 }
 
-// schedulesEqual compares two optional instants by instant, not by pointer or
-// by location, so a UTC and a +09:00 representation of one deadline match.
-func schedulesEqual(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return a.Equal(*b)
-}
-
 // transcriptContent stores the original input text and independent optional fields.
 // The plan-execution marker remains present with or without attachments.
 func transcriptContent(item StoredItem, attachments []Attachment) ([]byte, error) {
@@ -2912,58 +2940,20 @@ func transcriptContent(item StoredItem, attachments []Attachment) ([]byte, error
 	return json.Marshal(content)
 }
 
-// inputIdempotencyKey includes the input identity and content. A changed retry
-// gets a different key and conflicts with the existing message identifier.
-// The schedule and the retry source payload are content too: the same input
-// id re-sent with a different schedule must not reuse the accepted row. So is
-// the sender: the same input id sent from another agent's tab is another input.
-func inputIdempotencyKey(input NewItem) string {
-	type idempotencyAttachment struct {
-		Filename string `json:"filename"`
-		MimeType string `json:"mime_type"`
-		Data     []byte `json:"data"`
+// transcriptText reads the input text from the content that
+// transcriptContent wrote. The content holds the text of every input, an
+// empty one included, so a content without it is a broken row.
+func transcriptText(content []byte) (string, error) {
+	var decoded struct {
+		Content *string `json:"content"`
 	}
-	type idempotencySender struct {
-		TabID    string                  `json:"tab_id"`
-		Provider leapmuxv1.AgentProvider `json:"provider"`
+	if err := json.Unmarshal(content, &decoded); err != nil {
+		return "", fmt.Errorf("decode the content of the input: %w", err)
 	}
-	type idempotencyPayload struct {
-		ID               string                   `json:"id"`
-		AgentID          string                   `json:"agent_id"`
-		Kind             leapmuxv1.AgentInputKind `json:"kind"`
-		Sender           *idempotencySender       `json:"sender,omitempty"`
-		Text             string                   `json:"text"`
-		TargetMode       string                   `json:"target_mode"`
-		PrepareContext   bool                     `json:"prepare_context"`
-		ReclassifyOnEdit bool                     `json:"reclassify_on_edit"`
-		ScheduledAt      *string                  `json:"scheduled_at,omitempty"`
-		SourcePayload    []byte                   `json:"source_payload,omitempty"`
-		Attachments      []idempotencyAttachment  `json:"attachments"`
+	if decoded.Content == nil {
+		return "", errors.New("the content of the input holds no text")
 	}
-	attachments := make([]idempotencyAttachment, len(input.Attachments))
-	for index := range input.Attachments {
-		attachments[index] = idempotencyAttachment(input.Attachments[index])
-	}
-	var scheduled *string
-	if input.ScheduledAt != nil {
-		text := timefmt.Format(*input.ScheduledAt)
-		scheduled = &text
-	}
-	var sender *idempotencySender
-	if input.Sender != nil {
-		sender = &idempotencySender{TabID: input.Sender.TabID, Provider: input.Sender.Provider}
-	}
-	data, err := json.Marshal(idempotencyPayload{
-		ID: input.ID, AgentID: input.AgentID, Kind: input.Kind, Sender: sender, Text: input.Text,
-		TargetMode: input.TargetMode, PrepareContext: input.PrepareContext,
-		ReclassifyOnEdit: input.ReclassifyOnEdit, ScheduledAt: scheduled,
-		SourcePayload: input.SourcePayload, Attachments: attachments,
-	})
-	if err != nil {
-		panic(fmt.Sprintf("marshal queued input idempotency key: %v", err))
-	}
-	sum := sha256.Sum256(data)
-	return inputIdempotencyKeyPrefix + hex.EncodeToString(sum[:])
+	return *decoded.Content, nil
 }
 
 func normalizeConstraintError(err error) error {

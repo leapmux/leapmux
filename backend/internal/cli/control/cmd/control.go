@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // guideFooter is the last line of each group's help. It points an agent that
@@ -207,7 +208,7 @@ func (s *session) resolveTab(kind resolve.Kind, input string, need resolve.Need)
 	got, err := resolve.Resolve(s.ctx, s.deps(), need, resolve.Inputs{
 		TabID:         t.ID,
 		ExplicitTabID: !t.Self,
-		WorkerID:      strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_WORKER_ID")),
+		WorkerID:      strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)),
 		FixedTabType:  kind.TabType(),
 	})
 	if err != nil {
@@ -240,7 +241,7 @@ const workerFlag = "worker"
 // it defaults to the worker of the tab that runs the command.
 func addWorkerFlag(fs *pflag.FlagSet) {
 	fs.String(workerFlag, "", `worker: an id, a unique id prefix, "name:<name>" or "self"`)
-	cli.SetEnvDefault(fs, workerFlag, "LEAPMUX_CONTROL_WORKER_ID")
+	cli.SetEnvDefault(fs, workerFlag, controlenv.WorkerIDVariable)
 }
 
 // workerScope resolves the --worker flag of a command that runs on one
@@ -254,7 +255,7 @@ func (s *session) workerScope() (string, error) {
 			return "", cli.Usagef("--worker is empty")
 		}
 	}
-	if input == "" && os.Getenv("LEAPMUX_CONTROL_WORKER_ID") == "" {
+	if input == "" && os.Getenv(controlenv.WorkerIDVariable) == "" {
 		return "", cli.Usagef("no worker selected").
 			WithHint("pass --worker <worker>, or run the command inside a LeapMux tab")
 	}

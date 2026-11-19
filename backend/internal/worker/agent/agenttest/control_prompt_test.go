@@ -12,11 +12,16 @@ import (
 )
 
 // resolutionRecorder records the context of each resolution. ResolveAnswer
-// calls only ResolveControlResponse, so the embedded Provider stays nil.
+// calls only ControlResponseRequestID and ResolveControlResponse, so the
+// embedded Provider stays nil.
 type resolutionRecorder struct {
 	agent.Provider
 	contexts   []agent.ControlResponseContext
 	resolution agent.ControlResponseResolution
+}
+
+func (r *resolutionRecorder) ControlResponseRequestID(content []byte) string {
+	return agent.ProviderDefaults{}.ControlResponseRequestID(content)
 }
 
 func (r *resolutionRecorder) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
@@ -32,7 +37,7 @@ func TestResolveAnswerStatesTheContextThatTheWorkerStates(t *testing.T) {
 	recorder := &resolutionRecorder{resolution: agent.ControlResponseResolution{Content: []byte(`{"native":true}`)}}
 	payload := []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode","input":{"plan":"1. Edit."}}}`)
 	settings := &leapmuxv1.PlanApprovalSettings{PermissionMode: "acceptEdits", ClearContext: true}
-	answer := agent.ControlAnswer{Content: []byte(`{"type":"control_response"}`), PlanApproval: settings, FollowUp: "a note"}
+	answer := agent.ControlAnswer{Content: agent.AllowResponse("req-1", json.RawMessage(`{}`)), PlanApproval: settings, FollowUp: "a note"}
 
 	got := ResolveAnswer(recorder, payload, "req-1", answer)
 
@@ -53,13 +58,51 @@ func TestResolveAnswerStatesNoToolNameOrSettingsThatTheRequestAndTheAnswerLack(t
 	recorder := &resolutionRecorder{}
 	payload := []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"tool_name":"Bash"}}`)
 
-	ResolveAnswer(recorder, payload, "jsonrpc:7", agent.ControlAnswer{Content: []byte(`{"jsonrpc":"2.0"}`)})
+	content := agent.JSONRPCResult("jsonrpc:7", map[string]any{})
+
+	ResolveAnswer(recorder, payload, "jsonrpc:7", agent.ControlAnswer{Content: content})
 
 	require.Len(t, recorder.contexts, 1)
 	ctx := recorder.contexts[0]
 	assert.Equal(t, "jsonrpc:7", ctx.RequestID)
 	assert.Equal(t, json.RawMessage(payload), ctx.RequestPayload)
-	assert.Equal(t, []byte(`{"jsonrpc":"2.0"}`), ctx.ResponseContent)
+	assert.Equal(t, content, ctx.ResponseContent)
 	assert.Empty(t, ctx.ToolName, "a tool name outside request.tool_name is not the request's")
 	assert.Nil(t, ctx.PlanApproval)
+}
+
+// The Worker resolves only an answer that addresses the stored request, so
+// ResolveAnswer refuses to state any other pairing, and the provider never
+// sees it.
+func TestResolveAnswerPanicsForAnAnswerToAnotherRequest(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`)
+	for name, content := range map[string][]byte{
+		"another request": agent.AllowResponse("req-2", json.RawMessage(`{}`)),
+		"no request":      []byte(`not json`),
+	} {
+		recorder := &resolutionRecorder{}
+		assert.Panics(t, func() { ResolveAnswer(recorder, payload, "req-1", agent.ControlAnswer{Content: content}) }, name)
+		assert.Empty(t, recorder.contexts, name)
+	}
+}
+
+// A request whose row is gone states no payload and so no tool name, and an
+// answer that the Worker rebuilds from its row states no plan settings.
+func TestControlResponseContextOfStatesNoPayloadForARequestThatIsGone(t *testing.T) {
+	t.Parallel()
+	content := agent.AllowResponse("req-1", json.RawMessage(`{}`))
+
+	ctx := ControlResponseContextOf(nil, "req-1", agent.ControlAnswer{Content: content})
+
+	assert.Equal(t, agent.ControlResponseContext{RequestID: "req-1", ResponseContent: content}, ctx)
+}
+
+func TestElicitationChoiceDecisionAcceptsWithTheChoice(t *testing.T) {
+	t.Parallel()
+	got := ElicitationChoiceDecision(`{"a":1}`, "session").GetElicitation()
+
+	assert.Equal(t, leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, got.GetAction())
+	assert.Equal(t, `{"a":1}`, got.GetContentJson())
+	assert.Equal(t, "session", got.GetAcceptChoiceKey())
 }

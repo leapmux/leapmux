@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,13 +36,12 @@ func copilotNativeResponse(t *testing.T, resolution agent.ControlResponseResolut
 	return envelope.Response.Response
 }
 
+// copilotResolve resolves the answer of response to the request of eventType
+// and data, stored as copilot-1, as the Worker does.
 func copilotResolve(t *testing.T, eventType string, data map[string]any, response map[string]any) agent.ControlResponseResolution {
 	t.Helper()
-	return copilotPlugin(t).ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "copilot-1",
-		RequestPayload:  copilotStoredFrame(t, eventType, data),
-		ResponseContent: copilotAnswer("copilot-1", response),
-	})
+	return agenttest.ResolveAnswer(copilotPlugin(t), copilotStoredFrame(t, eventType, data), "copilot-1",
+		agent.ControlAnswer{Content: copilotAnswer("copilot-1", response)})
 }
 
 // A single approval is the decision CP-007 verified. The runtime refuses the
@@ -217,20 +217,17 @@ func TestCopilotElicitationPreservesTheFormAnswer(t *testing.T) {
 
 // A decision this build cannot read withholds the forward. The runtime then keeps
 // waiting and the request stays answerable, which a frame it cannot parse would not.
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestCopilotWithholdsAnUnreadableDecision(t *testing.T) {
 	t.Parallel()
 	plugin := copilotPlugin(t)
 	for name, response := range map[string][]byte{
-		"no behavior":     copilotAnswer("copilot-1", map[string]any{"decision": "approve"}),
-		"unknown action":  copilotAnswer("copilot-1", map[string]any{"action": "maybe"}),
-		"another request": copilotAnswer("copilot-2", map[string]any{"behavior": "allow"}),
-		"not json":        []byte("not json"),
+		"no behavior":    copilotAnswer("copilot-1", map[string]any{"decision": "approve"}),
+		"unknown action": copilotAnswer("copilot-1", map[string]any{"action": "maybe"}),
 	} {
-		resolution := plugin.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID:       "copilot-1",
-			RequestPayload:  copilotStoredFrame(t, contracts.CopilotEventPermissionRequested, map[string]any{"requestId": "native-1", "permissionRequest": map[string]any{"kind": "read"}}),
-			ResponseContent: response,
-		})
+		resolution := agenttest.ResolveAnswer(plugin, copilotStoredFrame(t, contracts.CopilotEventPermissionRequested, map[string]any{"requestId": "native-1", "permissionRequest": map[string]any{"kind": "read"}}), "copilot-1",
+			agent.ControlAnswer{Content: response})
 		assert.True(t, resolution.Withhold, name)
 	}
 }
@@ -240,11 +237,7 @@ func TestCopilotWithholdsAnUnreadableDecision(t *testing.T) {
 func TestCopilotLeavesAnotherProvidersResponseAlone(t *testing.T) {
 	t.Parallel()
 	response := copilotAnswer("copilot-1", map[string]any{"behavior": "allow"})
-	resolution := copilotPlugin(t).ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "copilot-1",
-		RequestPayload:  json.RawMessage(`{"method":"session/request_permission","params":{}}`),
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(copilotPlugin(t), []byte(`{"method":"session/request_permission","params":{}}`), "copilot-1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	assert.Equal(t, agent.PlanModeControlNone, resolution.PlanModeControl)
 	assert.JSONEq(t, string(response), string(resolution.Content))

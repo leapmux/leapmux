@@ -56,6 +56,10 @@ func buildXonshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	var script strings.Builder
 	script.WriteString(xonshLookupSetup)
 	script.WriteString("$XONSH_INTERACTIVE = False\n")
+	// The step reads __lm_os from xonshLookupSetup. It runs before
+	// StripEnvKeys and the pins, so a PATH that a provider pins wins (see
+	// xonshReprependControlCLI).
+	script.WriteString(xonshReprependControlCLI)
 	for _, key := range spec.StripEnvKeys {
 		fmt.Fprintf(&script, "__xonsh__.env.pop(%s, None)\n", pythonString(key))
 	}

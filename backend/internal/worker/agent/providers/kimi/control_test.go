@@ -225,7 +225,9 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		profile := "POST " + kimiSessionPath(rig.sessionID(), "/profile")
 		before := len(rig.fake.requestsTo(profile))
 
-		content := answerFor(t, rig, "approval_1", "allow", nil, &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.KimiModeManual})
+		// A subagent's plan reads as a permission, whose answer carries no plan
+		// settings.
+		content := answerFor(t, rig, "approval_1", "allow", nil, nil)
 		require.NoError(t, rig.agent.SendRawInput(content, agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo(profile), before, "no profile write reaches the main session")
 		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""))

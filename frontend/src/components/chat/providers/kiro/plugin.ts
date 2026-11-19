@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { kiroAssistantTextSegments } from './assistantText'
 import { kiroAgentTurnEnd } from './classification'
-import { kiroControlResponseSummary } from './controlResponse'
 import { kiroOutputFilePaths } from './extractors/outputFilePaths'
 import { kiroToolCallAdapter } from './extractors/toolCall'
 import { kiroNativeNotifications } from './notification'
@@ -31,7 +30,6 @@ registerACPProvider({
     audio: false,
     binary: [...KIRO_BINARY_MIME],
   },
-  controlResponseDisplay: kiroControlResponseSummary,
   agentTurnEnd: kiroAgentTurnEnd,
   assistantTextSegments: kiroAssistantTextSegments,
   nativeNotifications: kiroNativeNotifications,

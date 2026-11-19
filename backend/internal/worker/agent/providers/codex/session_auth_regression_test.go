@@ -61,13 +61,13 @@ func TestCodexAuthenticationObservationPrecedesChildRouting(t *testing.T) {
 			if scenario == "ordinary failure" {
 				assert.False(t, recoveryRequired(a))
 				require.NoError(t, a.PrepareInputProcess())
-				require.NoError(t, a.SteerInput("ordinary input", nil))
+				require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "ordinary input"}))
 				require.Len(t, requests(), 1)
 				assert.Equal(t, "turn/steer", requests()[0].Method)
 				return
 			}
 			require.ErrorIs(t, a.PrepareInputProcess(), agent.ErrInputProcessRestartRequired)
-			require.ErrorIs(t, a.SteerInput("new input", nil), agent.ErrInputProcessRestartRequired)
+			require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "new input"}), agent.ErrInputProcessRestartRequired)
 			assert.Empty(t, requests())
 			assert.Equal(t, "main-turn", a.mainTurn.id, "the child failure does not end its parent turn")
 			if scenario == "event count limit" || scenario == "event byte limit" {

@@ -26,13 +26,13 @@ droidTest.describe('Factory Droid Spec mode', () => {
       choice: 'Smart',
       mode: 'auto-medium',
       autonomyLevel: 'medium',
-      answer: 'Approve and set the autonomy level to Medium',
+      answer: 'Approve (Auto (Medium))',
     },
     {
       choice: 'Bypass',
       mode: 'auto-high',
       autonomyLevel: 'high',
-      answer: 'Approve and set the autonomy level to High',
+      answer: 'Approve (Auto (High))',
     },
   ] as const) {
     droidTest(`shows the native plan review and applies ${approval.choice} after approval`, async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
@@ -65,7 +65,7 @@ droidTest.describe('Factory Droid Spec mode', () => {
       await waitForAgentIdle(page)
       await expectNoControlBanner(page)
       await expect(assistantBubbles(page).filter({ hasText: 'The plan was approved.' }).first()).toBeVisible()
-      // The saved row describes the exact native approval option.
+      // The saved row names the permission mode that the approval switched to.
       await expect(savedControlAnswer(page)).toHaveText(approval.answer)
       await expectSettingsOptionChosen(page, `permissionMode-${approval.mode}`)
       // Droid leaves Spec mode and applies the autonomy level through the same native reply.

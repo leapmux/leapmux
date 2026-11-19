@@ -24,8 +24,8 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 	return a.sendInput(&sessionID, content, attachments, false)
 }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {

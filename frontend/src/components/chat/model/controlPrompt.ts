@@ -8,7 +8,7 @@ import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 export type ControlPayloadFault = 'malformed' | 'not-an-object'
 
 /**
- * How far an always-allow reaches: this session, the workspace, the project, or
+ * How far a remembered answer reaches: this session, the workspace, the project, or
  * every project of the user.
  */
 export type PermissionScope = 'session' | 'workspace' | 'project' | 'user'
@@ -18,11 +18,18 @@ export interface PermissionOption {
   kind: string
   name?: string
   /**
-   * The reach of an always-allow, when the plugin knows it. A plugin that writes
-   * the option itself states it. Without it, the scope label reads the agent's
-   * option name, which can hold the text of the call.
+   * The reach of a remembered answer (an always-allow or an always-reject), when the
+   * provider knows it. Without it, the scope label reads the agent's option name,
+   * which can hold the text of the call.
    */
   scope?: PermissionScope
+  /**
+   * The label of the scope pill that selects this option, when the runtime names its
+   * own scopes, such as Codex's "Host rule". Two options of one scope and different
+   * labels keep different rules, so a remembered refusal pairs only with the pill of
+   * its own scope and label.
+   */
+  scopeLabel?: string
   /**
    * Choosing the option also ends the agent's turn, rather than refusing only
    * this call. The decision button names such a refusal Cancel.
@@ -137,11 +144,12 @@ export interface PermissionPrompt {
   /**
    * The answers the runtime offers, in the order it sent them.
    *
-   * EMPTY is a real answer and not a missing one: Claude, Codex, ZCode and Pi state
-   * no options at all, and the shared Allow/Deny pair answers for them. The Agent
-   * Client Protocol family and Goose send their own, and Copilot builds its own from
-   * the request kind -- its wire carries no list, but its model always states one.
-   * `layoutPermissionOptions` lays those out.
+   * Every answer is an option. A provider whose runtime states no options offers
+   * LeapMux's own Allow and Deny (`agent.AllowDenyOptions` in Go), as Cline and
+   * CodeWhale do. Other providers word their own options from the request, as
+   * Claude does for its session grant and Copilot does for its approval kinds, and
+   * the Agent Client Protocol family sends its own. `layoutPermissionOptions` lays
+   * them out.
    */
   options: PermissionOption[]
   /** Each option makes a distinct decision. No permission scope combines these options. */

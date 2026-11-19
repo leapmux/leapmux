@@ -186,17 +186,6 @@ func (s *AgentSender) Proto() *leapmuxv1.AgentMessageSender {
 	return &leapmuxv1.AgentMessageSender{TabId: s.TabID, Provider: s.Provider}
 }
 
-// sameSender reports whether two optional senders identify one tab. A
-// repeated request must come from the same tab as the input it repeats. The
-// title names the sender but does not identify it, so a tab that the user
-// renamed between a request and its retry is still the same sender.
-func sameSender(a, b *AgentSender) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return a.TabID == b.TabID && a.Provider == b.Provider
-}
-
 type AttachmentMetadata struct {
 	Filename string
 	MimeType string
@@ -251,6 +240,10 @@ type StoredItem struct {
 	ItemMetadata
 	Text          string
 	SourcePayload []byte
+	// idempotencyKey is the key of the request that queued the input
+	// (inputIdempotencyKey). No change of the input rewrites it, and the
+	// transcript row of the accepted input takes it over.
+	idempotencyKey string
 }
 
 type DispatchItem struct {

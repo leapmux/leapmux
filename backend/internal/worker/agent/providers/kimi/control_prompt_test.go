@@ -392,7 +392,7 @@ func TestKimiAnswerControlRequest_EachPermissionAnswerResolvesToTheServerBody(t 
 	} {
 		got, err := agenttest.AnswerControl(kimiProvider{}, []byte(tc.stored), kimiTestRequestID, agenttest.PermissionDecision(tc.option, tc.feedback))
 		require.NoError(t, err, tc.option)
-		res := resolve(t, "req-1", tc.stored, got.Content, nil)
+		res := agenttest.ResolveAnswer(kimiProvider{}, []byte(tc.stored), kimiTestRequestID, got)
 		require.False(t, res.Withhold, tc.option)
 		assert.Equal(t, tc.body, nativeResponse(t, res.Content), tc.option)
 	}
@@ -445,7 +445,7 @@ func TestKimiAnswerControlRequest_AnswersThePlanApprovalAndItsChoices(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"behavior": "allow", "updatedInput": map[string]any{}}, kimiSentResponse(t, got.Content))
 	assert.True(t, proto.Equal(&leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.KimiModeYolo}, got.PlanApproval))
-	res := resolve(t, "req-1", kimiStoredPlan, got.Content, got.PlanApproval)
+	res := agenttest.ResolveAnswer(kimiProvider{}, payload, kimiTestRequestID, got)
 	assert.Equal(t, map[string]any{"kind": "approval", "decision": "approved", "permission_mode": "yolo"}, nativeResponse(t, res.Content))
 
 	got, err = agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, ChoiceId: "Approach A"}))
@@ -457,7 +457,7 @@ func TestKimiAnswerControlRequest_AnswersThePlanApprovalAndItsChoices(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"behavior": "deny", "message": "Rejected by user.", "choice": "Reject and Exit"}, kimiSentResponse(t, got.Content))
 	assert.Nil(t, got.PlanApproval, "a refusal applies no settings")
-	res = resolve(t, "req-1", kimiStoredPlan, got.Content, nil)
+	res = agenttest.ResolveAnswer(kimiProvider{}, payload, kimiTestRequestID, got)
 	assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected", "selected_label": "Reject and Exit"}, nativeResponse(t, res.Content))
 
 	got, err = agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Feedback: "Split step 1."}))
@@ -489,7 +489,7 @@ func TestKimiAnswerControlRequest_AnswersEveryQuestionByItsID(t *testing.T) {
 	}}}}`, string(got.Content))
 	assert.Empty(t, got.FollowUp)
 
-	res := resolve(t, "req-1", string(payload), got.Content, nil)
+	res := agenttest.ResolveAnswer(kimiProvider{}, payload, kimiTestRequestID, got)
 	require.False(t, res.Withhold)
 	assert.Equal(t, "question", nativeResponse(t, res.Content)["kind"])
 }
@@ -516,7 +516,7 @@ func TestKimiAnswerControlRequest_StopsAQuestionAsARefusalThatCarriesTheReason(t
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"behavior": "deny", "message": "User stopped"}, kimiSentResponse(t, got.Content))
 	assert.Empty(t, got.FollowUp)
-	res := resolve(t, "req-1", kimiStoredQuestion, got.Content, nil)
+	res := agenttest.ResolveAnswer(kimiProvider{}, []byte(kimiStoredQuestion), kimiTestRequestID, got)
 	assert.Equal(t, map[string]any{"kind": "question", "dismissed": true}, nativeResponse(t, res.Content))
 	assert.Equal(t, agent.FeedbackFollowUp("User stopped"), res.FollowUp)
 

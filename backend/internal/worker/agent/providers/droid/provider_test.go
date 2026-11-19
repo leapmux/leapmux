@@ -107,11 +107,7 @@ func TestResolveControlResponseAnswersAPermissionRequest(t *testing.T) {
 			},
 		},
 	})
-	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-perm-1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(droidProvider{}, request, "droid-perm-1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
@@ -141,11 +137,7 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 			},
 		},
 	})
-	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-ask-1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := agenttest.ResolveAnswer(droidProvider{}, request, "droid-ask-1", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	var envelope struct {
 		Result json.RawMessage `json:"result"`

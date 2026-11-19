@@ -129,6 +129,60 @@ func TestExpandCommandPath(t *testing.T) {
 	})
 }
 
+func TestTopLevelCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"reads a full name", []string{"workspace", "list"}, "workspace"},
+		{"reads a unique prefix", []string{"works", "l"}, "workspace"},
+		{"reads a leaf", []string{"send", "a", "b"}, "send"},
+		{"reads only the first name", []string{"workspace", "nonexistent", "--unknown"}, "workspace"},
+		{"skips a flag of root and its value", []string{"--hub", "workspace", "worker", "list"}, "worker"},
+		{"skips a flag with its value attached", []string{"--hub=x", "worker"}, "worker"},
+		{"skips the help flag", []string{"-h", "worker"}, "worker"},
+		{"looks through the help command", []string{"help", "worker", "list"}, "worker"},
+		{"looks through a flag of the help command", []string{"help", "--help", "worker"}, "worker"},
+		{"answers the help command for help of help", []string{"help", "help", "worker"}, "help"},
+		{"looks through a completion request", []string{"__complete", "worker", ""}, "worker"},
+		{"looks through a completion request without descriptions", []string{"__completeNoDesc", "works", "l"}, "workspace"},
+		{"finds nothing in no arguments", nil, ""},
+		{"finds nothing in flags alone", []string{"--json"}, ""},
+		{"finds nothing in the help command alone", []string{"help"}, ""},
+		// cobra keeps the help command out of the prefix match, so Execute
+		// refuses "he" as an unknown command too.
+		{"finds nothing in a prefix of the help command", []string{"he", "worker"}, ""},
+		{"finds nothing in a completion of the name itself", []string{"__complete", "worker"}, ""},
+		{"finds nothing in a bare completion request", []string{"__complete"}, ""},
+		{"finds nothing in an ambiguous prefix", []string{"wor", "list"}, ""},
+		{"finds nothing in an unknown name", []string{"nonexistent", "worker"}, ""},
+		{"finds nothing after an unknown flag", []string{"--unknown", "worker"}, ""},
+		{"finds nothing after the end of the flags", []string{"--", "worker"}, ""},
+		{"finds nothing in a single dash", []string{"-", "worker"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testTree(&[]testInvocation{})
+			prepare(root)
+			got := TopLevelCommand(root, tc.args)
+			if tc.want == "" {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tc.want, got.Name())
+			assert.Same(t, root, got.Parent(), "the answer is a child of root")
+		})
+	}
+
+	t.Run("works on a tree that Execute has not prepared", func(t *testing.T) {
+		got := TopLevelCommand(testTree(&[]testInvocation{}), []string{"help", "worker"})
+		require.NotNil(t, got)
+		assert.Equal(t, "worker", got.Name())
+	})
+}
+
 func TestScanFlag(t *testing.T) {
 	root := testTree(&[]testInvocation{})
 	prepare(root)

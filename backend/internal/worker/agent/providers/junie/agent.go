@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -72,7 +71,8 @@ func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessag
 // Junie's own, which the provider tracks as an agent turn so its end still
 // closes the turn state. A refused request answers ErrNoActiveTurn, so the
 // queue keeps the input for the next turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if content == "" {
 		return nil
 	}

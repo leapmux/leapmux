@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { KIMI_DEFAULT_MODE, KIMI_EVENT, KIMI_MODE, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
-import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiApprovalRequest, kimiConversationItemRecord, kimiConversationToolRecord, kimiConversationTurnRecord, kimiFrame } from '~/test-support/kimiFixtures'
+import { kimiConversationItemRecord, kimiConversationToolRecord, kimiConversationTurnRecord, kimiFrame } from '~/test-support/kimiFixtures'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
@@ -54,23 +53,6 @@ describe('kimi plugin', () => {
       .toStrictEqual({ trigger: 'auto', pre: 9, post: 1 })
   })
 
-  it('words a saved answer through the Kimi summary', () => {
-    const summary = plugin.controls?.controlResponseDisplay?.({
-      requestId: 'r',
-      claimToken: 't',
-      request: kimiApprovalRequest(KIMI_TOOL.Bash, { kind: 'command', command: 'ls' }),
-      response: {
-        type: 'control_response',
-        response: {
-          subtype: 'success',
-          request_id: 'r',
-          response: { kind: 'approval', decision: 'approved', scope: 'session' },
-        },
-      },
-    })
-    expect(summary).toStrictEqual({ kind: 'label', text: 'Allow for this session' })
-  })
-
   // The worker's `ValidateAttachment` states the same rule: text and images, no PDF
   // and no binary file.
   it('advertises text and image attachments only', () => {
@@ -108,29 +90,5 @@ describe('kimi plugin', () => {
 
   it('lets a subagent tab send', () => {
     expect(plugin.configuration?.supportsSubagentSend).toBe(true)
-  })
-})
-
-// The Worker asks Kimi Code's workspace-trust question itself, in LeapMux's neutral shape.
-describe('kimiControls workspace trust', () => {
-  const question = {
-    type: WORKSPACE_TRUST_CONTROL_TYPE.Question,
-    path: '/work/project',
-    configuration: ['MCP servers', 'skills', 'instructions'],
-  }
-
-  it('reads the saved answer', () => {
-    expect(plugin.controls?.controlResponseDisplay?.({
-      requestId: 'workspace-trust:session-1',
-      claimToken: '',
-      request: question,
-      response: {
-        type: 'control_response',
-        response: {
-          request_id: 'workspace-trust:session-1',
-          response: { decision: WORKSPACE_TRUST_DECISION.Trust },
-        },
-      },
-    })).toEqual({ kind: 'label', text: 'Trusted this folder' })
   })
 })

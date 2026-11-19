@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -119,17 +117,6 @@ func (svc *Service) refuseUnreadableAttachments(agentID string, attachments []*l
 		return fmt.Errorf("%w: %w", inputqueue.ErrInvalidInput, err)
 	}
 	return nil
-}
-
-// droppedInputID is the queue item id of the input that a provider dropped. It
-// derives from the drop, so a repeat of one drop gives the same item and the
-// queue adds nothing. The id also becomes the transcript message id, which is
-// unique across the Worker, so the agent id is part of the hash. The length
-// prefix keeps each pair of ids apart: no separator is safe, because a drop id
-// is the provider's own text.
-func droppedInputID(agentID, dropID string) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s%s", len(agentID), agentID, dropID))
-	return "dropped-" + hex.EncodeToString(sum[:16])
 }
 
 func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attachment {
@@ -394,23 +381,25 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	if err != nil {
 		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
-	text := resolvedInput.text
 	attachments, err := a.svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	// The request states the item, so a provider that drops the steer can hand
+	// it back (see Service.requeueDroppedInput).
+	request := agent.SteerRequest{InputID: item.ID, Content: resolvedInput.text, Attachments: attachments}
 	if dbAgent.ParentAgentID.Valid {
 		row, rowErr := a.svc.queueChildRouteRow(item.AgentID)
 		if rowErr != nil {
 			return inputqueue.DispatchResult{}, rowErr
 		}
-		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
+		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, request.Content, request.Attachments)
 	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		// A validated answer steers into an existing turn, so it must keep
 		// reaching the process whose question asked it, even while new prompts
 		// wait for recovery approval. An
 		// idle question ends its steer and returns through Dispatch readiness.
-		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, attachments)
+		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, request)
 	} else {
 		// A new prompt steered at the root is subject to the same readiness as
 		// a dispatched one: a process that requires recovery holds the prompt
@@ -418,7 +407,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		if err := a.svc.ensureAgentReadyForInput(item.AgentID); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
+		err = a.svc.Agents.SteerInput(item.AgentID, request)
 	}
 	return inputqueue.DispatchResult{
 		StartsTurn:          true,

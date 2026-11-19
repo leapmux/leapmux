@@ -7,7 +7,13 @@ closes them. Every command prints its own help with `--help`, and
 
 `leapmux` on your `PATH` is the CLI of the Worker that started you, so it
 matches the Worker's version. A shell profile can move another `leapmux`
-ahead of it; `"$LEAPMUX_CONTROL_CLI"` always runs the Worker's own.
+ahead of it. That `leapmux` hands each `leapmux control` command to the
+Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the
+Worker. An older `leapmux` cannot do that and can fail with an error such as
+`unexpected argument`. `"$LEAPMUX_CONTROL_CLI"` always runs the Worker's own
+CLI, so run a command through it then. `leapmux commands` lists the commands
+of the `leapmux` that runs it, so run `"$LEAPMUX_CONTROL_CLI" commands --json`
+to list the Worker's.
 
 ## Rules that keep you safe
 

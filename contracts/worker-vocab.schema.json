@@ -55,6 +55,7 @@
         "ControlRequestID",
         "ControlRequestClaimToken",
         "ControlPrompt",
+        "ControlDecision",
         "PlanApprovalSettings",
         "ToolOutcome",
         "TodoSnapshot",
@@ -79,6 +80,10 @@
           "pattern": "^[a-z][a-z0-9_]*$"
         },
         "ControlPrompt": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "ControlDecision": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]*$"
         },

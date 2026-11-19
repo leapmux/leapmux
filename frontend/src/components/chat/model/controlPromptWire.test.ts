@@ -77,6 +77,54 @@ describe('controlPromptFromWire', () => {
     })
   })
 
+  it('reads the scope label of an option, and an empty one as absent', () => {
+    const read = controlPromptFromWire(prompt({
+      case: 'permission',
+      value: {
+        options: [
+          {
+            optionId: 'host',
+            kind: PermissionOptionKind.ALLOW_ALWAYS,
+            scope: PermissionScope.USER,
+            scopeLabel: 'Host rule',
+          },
+          {
+            optionId: 'block',
+            kind: PermissionOptionKind.REJECT_ALWAYS,
+            scope: PermissionScope.USER,
+            scopeLabel: 'Host rule',
+          },
+          {
+            optionId: 'session',
+            kind: PermissionOptionKind.ALLOW_ALWAYS,
+            scope: PermissionScope.SESSION,
+            scopeLabel: '',
+          },
+        ],
+      },
+    }))
+    expect(read).toEqual({
+      kind: 'permission',
+      permission: {
+        options: [
+          {
+            optionId: 'host',
+            kind: 'allow_always',
+            scope: 'user',
+            scopeLabel: 'Host rule',
+          },
+          {
+            optionId: 'block',
+            kind: 'reject_always',
+            scope: 'user',
+            scopeLabel: 'Host rule',
+          },
+          { optionId: 'session', kind: 'allow_always', scope: 'session' },
+        ],
+      },
+    })
+  })
+
   it('keeps an input that is not JSON as its text', () => {
     const read = controlPromptFromWire(prompt({
       case: 'permission',

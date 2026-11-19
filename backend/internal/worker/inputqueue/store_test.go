@@ -447,6 +447,8 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 		"agent_input_queue_items",
 		"agent_input_queue_attachments",
 		"idx_agent_input_queue_one_edit",
+		"idx_agent_input_queue_order",
+		"idx_agent_input_queue_removed",
 	} {
 		var count int
 		require.NoError(t, database.QueryRowContext(ctx,
@@ -494,6 +496,15 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'agent_input_queue_items'`).Scan(&itemsTableSQL))
 	assert.NotContains(t, itemsTableSQL, "UNIQUE(agent_id, id)")
+	// A removed input keeps its order_index, so the order is unique among the
+	// inputs that the queue holds, through a partial index, and not across
+	// the whole table.
+	assert.NotContains(t, itemsTableSQL, "UNIQUE(agent_id, order_index)")
+	var orderIndexSQL string
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_order'`).Scan(&orderIndexSQL))
+	assert.Contains(t, orderIndexSQL, "UNIQUE INDEX")
+	assert.Contains(t, orderIndexSQL, "(agent_id, order_index) WHERE removed_at IS NULL")
 }
 
 func TestStoreEnqueueRoundTripAndIdempotency(t *testing.T) {
@@ -1570,8 +1581,8 @@ func TestStoreEnforcesQueueItemCap(t *testing.T) {
 	require.NoError(t, err)
 	for i := 1; i <= MaxItems; i++ {
 		_, err := database.ExecContext(ctx, `
-			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text)
-			VALUES (?, 'agent-1', ?, 1, 'queued')`, fmt.Sprintf("input-%d", i), i)
+			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, idempotency_key)
+			VALUES (?, 'agent-1', ?, 1, 'queued', ?)`, fmt.Sprintf("input-%d", i), i, fmt.Sprintf("key-%d", i))
 		require.NoError(t, err)
 	}
 	_, err = store.Enqueue(ctx, NewItem{ID: "overflow", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "overflow"})
@@ -1616,8 +1627,8 @@ func TestStoreEnforcesAggregateAttachmentCap(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		inputID := fmt.Sprintf("input-%d", i)
 		_, err := database.ExecContext(ctx, `
-			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text)
-			VALUES (?, 'agent-1', ?, 1, 'queued')`, inputID, i)
+			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, idempotency_key)
+			VALUES (?, 'agent-1', ?, 1, 'queued', ?)`, inputID, i, "key-"+inputID)
 		require.NoError(t, err)
 		_, err = database.ExecContext(ctx, `
 			INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -46,6 +48,12 @@ type controlResponsePlan struct {
 	// plan that reached it in neither state.
 	settingsJSON []byte
 	hasDecision  bool
+	// controlDecision is the neutral decision that the answer delivered
+	// (deliveredControlDecision), as the answer row stores it, or nil for an
+	// answer that the Worker recorded without one. decision and hasDecision
+	// above read the provider's own allow-or-deny envelope instead, which a
+	// provider's answer can lack.
+	controlDecision *leapmuxv1.ControlDecision
 }
 
 // encodePlanApprovalSettings fills settingsJSON from settings. Call it once,
@@ -75,13 +83,20 @@ func (svc *Service) loadControlResponseRequestMetadata(agentID, requestID string
 	if err != nil {
 		return meta, err
 	}
-	meta.Payload = request.Payload
-	meta.ClaimToken = request.ClaimToken
-	meta.AgentSessionID = request.AgentSessionID
-	meta.SourceSeq = request.SourceSeq
-	meta.NonBlocking = request.NonBlocking
-	meta.Exists = true
-	return completeControlRequestMetadata(meta), nil
+	return storedControlRequestMetadata(request), nil
+}
+
+// storedControlRequestMetadata is the metadata of one stored request row.
+func storedControlRequestMetadata(request db.ControlRequest) controlResponseRequestMetadata {
+	return completeControlRequestMetadata(controlResponseRequestMetadata{
+		RequestID:      request.RequestID,
+		Payload:        request.Payload,
+		ClaimToken:     request.ClaimToken,
+		AgentSessionID: request.AgentSessionID,
+		SourceSeq:      request.SourceSeq,
+		NonBlocking:    request.NonBlocking,
+		Exists:         true,
+	})
 }
 
 // completeControlRequestMetadata reads the tool of the stored request with
@@ -150,15 +165,37 @@ func (plan controlResponsePlan) isPlanPrompt() bool {
 }
 
 // workerAnswer is one answer that the Worker delivers for one request
-// instance: the content that the provider's AnswerControlRequest built, the
-// plan settings that the answer applies, and the input that the answer queues
-// after itself for a runtime whose answer cannot carry the user's feedback.
+// instance:
+//
+//   - The content that the provider's AnswerControlRequest built
+//   - The plan settings that the answer applies
+//   - The input that the answer queues after itself, for a runtime whose
+//     answer cannot carry the user's feedback
+//   - The neutral decision that the content delivers (deliveredControlDecision)
+//
 // No client sends answer content: AnswerControl builds it from a decision.
+// The answer row stores the decision, so the transcript row states it even
+// when a Worker restart interrupts the recording (controlResponsePlanFromAnswer).
 type workerAnswer struct {
 	claimToken   string
 	content      []byte
 	planApproval *leapmuxv1.PlanApprovalSettings
 	followUp     agent.ControlFollowUp
+	decision     *leapmuxv1.ControlDecision
+}
+
+// encodeControlDecision is the form in which the answer row stores decision:
+// the protobuf binary form, or nil for no decision, which the row stores as
+// empty bytes.
+func encodeControlDecision(decision *leapmuxv1.ControlDecision) ([]byte, error) {
+	if decision.GetKind() == nil {
+		return nil, nil
+	}
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(decision)
+	if err != nil {
+		return nil, fmt.Errorf("encode the control decision: %w", err)
+	}
+	return encoded, nil
 }
 
 // processControlAnswer retains the chosen answer before delivery and
@@ -249,6 +286,10 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if err := plan.encodePlanApprovalSettings(); err != nil {
 		return err
 	}
+	storedDecision, err := encodeControlDecision(chosen.decision)
+	if err != nil {
+		return err
+	}
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 		RequestPayload: plan.requestMeta.Payload, ResponseContent: content,
@@ -258,6 +299,7 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 		SourceSeq:            plan.requestMeta.SourceSeq,
 		AgentSessionID:       plan.requestMeta.AgentSessionID,
 		InputID:              controlResponseQueueID(agentID, plan),
+		Decision:             storedDecision,
 	})
 	if err != nil {
 		return fmt.Errorf("reserve the control response: %w", err)
@@ -382,11 +424,96 @@ func resolveTargetMode(permissionMode, defaultMode string) string {
 	return defaultMode
 }
 
+// controlFeedback is the feedback of decision: the reason of a refused
+// permission, plan or question, or "" for a decision of another kind.
+func controlFeedback(decision *leapmuxv1.ControlDecision) string {
+	switch kind := decision.GetKind().(type) {
+	case *leapmuxv1.ControlDecision_Permission:
+		return kind.Permission.GetFeedback()
+	case *leapmuxv1.ControlDecision_Plan:
+		return kind.Plan.GetFeedback()
+	case *leapmuxv1.ControlDecision_Question:
+		return kind.Question.GetFeedback()
+	default:
+		return ""
+	}
+}
+
+// withoutControlFeedback is a copy of decision whose feedback is empty. It
+// leaves decision itself alone.
+func withoutControlFeedback(decision *leapmuxv1.ControlDecision) *leapmuxv1.ControlDecision {
+	bare := proto.CloneOf(decision)
+	switch kind := bare.GetKind().(type) {
+	case *leapmuxv1.ControlDecision_Permission:
+		kind.Permission.Feedback = ""
+	case *leapmuxv1.ControlDecision_Plan:
+		kind.Plan.Feedback = ""
+	case *leapmuxv1.ControlDecision_Question:
+		kind.Question.Feedback = ""
+	case *leapmuxv1.ControlDecision_Elicitation, *leapmuxv1.ControlDecision_Dialog:
+		// Neither carries feedback.
+	}
+	return bare
+}
+
+// deliveredControlDecision is the decision that answer delivers to the
+// runtime: the decision of input, without feedback that reaches the runtime
+// neither in the answer nor as a message after it. The answer row stores it,
+// so the transcript row never states a reason that the runtime did not
+// receive. A runtime that takes no reason with some answer, such as
+// OpenCode's dismissed question, gets none from its provider.
+//
+// The test needs no knowledge of the provider. The provider builds the answer
+// a second time without the feedback, and the feedback reached the runtime
+// unless the runtime receives the same thing either way: the same resolved
+// bytes, the same follow-up and the same plan settings. A second answer that
+// fails keeps the feedback, which errs toward stating it.
+func deliveredControlDecision(plugin agent.Provider, meta controlResponseRequestMetadata, input agent.ControlAnswerInput, answer agent.ControlAnswer) *leapmuxv1.ControlDecision {
+	decision := input.Decision
+	if controlFeedback(decision) == "" {
+		return decision
+	}
+	bare := withoutControlFeedback(decision)
+	input.Decision = bare
+	without, err := plugin.AnswerControlRequest(input)
+	if err != nil || !sameControlDelivery(plugin, meta, answer, without) {
+		return decision
+	}
+	return bare
+}
+
+// sameControlDelivery reports whether the runtime receives the same thing for
+// the answers a and b to the request of meta.
+func sameControlDelivery(plugin agent.Provider, meta controlResponseRequestMetadata, a, b agent.ControlAnswer) bool {
+	if a.FollowUp != b.FollowUp || !proto.Equal(a.PlanApproval, b.PlanApproval) {
+		return false
+	}
+	resolvedA := resolveControlResponsePlan(plugin, meta, a.Content, a.PlanApproval).resolution
+	resolvedB := resolveControlResponsePlan(plugin, meta, b.Content, b.PlanApproval).resolution
+	return resolvedA.Withhold == resolvedB.Withhold && resolvedA.FollowUp == resolvedB.FollowUp &&
+		bytes.Equal(resolvedA.Content, resolvedB.Content)
+}
+
+// transcriptControlDecision is the decision that the answer's transcript row
+// states: the delivered decision, without the feedback that a follow-up input
+// delivers. A runtime whose answer cannot carry the feedback receives it as
+// the user's next message (agent.FeedbackFollowUp), and the transcript draws
+// that message as a row of its own, so the answer's row would show the same
+// text a second time. The answer row keeps the whole decision.
+func (plan controlResponsePlan) transcriptControlDecision() *leapmuxv1.ControlDecision {
+	decision := plan.controlDecision
+	if decision == nil || plan.resolution.FollowUp.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
+		return decision
+	}
+	return withoutControlFeedback(decision)
+}
+
 // controlResponseMessageContent preserves the sent bytes and the complete matching request separately.
 // Worker request identity belongs to metadata, outside both provider payloads, and
-// so does the prompt that the request showed: the row's display reads which
-// control the answer belongs to from it, so the browser reads no provider's
-// request format. A nil prompt states none.
+// so do the prompt that the request showed and the decision that answered it:
+// the row's display reads the answer's words from the two, so the browser
+// reads no provider's request or answer format. A nil prompt states none, and
+// an answer that the Worker recorded without a decision states none.
 func controlResponseMessageContent(plan controlResponsePlan, prompt *leapmuxv1.ControlPrompt) (agent.MessageContent, error) {
 	fields := map[string]any{
 		contracts.MessageMetadataFieldControlRequestID:         plan.requestMeta.RequestID,
@@ -398,6 +525,13 @@ func controlResponseMessageContent(plan controlResponsePlan, prompt *leapmuxv1.C
 			return agent.MessageContent{}, fmt.Errorf("encode the control prompt: %w", err)
 		}
 		fields[contracts.MessageMetadataFieldControlPrompt] = json.RawMessage(encoded)
+	}
+	if decision := plan.transcriptControlDecision(); decision != nil {
+		encoded, err := protojson.Marshal(decision)
+		if err != nil {
+			return agent.MessageContent{}, fmt.Errorf("encode the control decision: %w", err)
+		}
+		fields[contracts.MessageMetadataFieldControlDecision] = json.RawMessage(encoded)
 	}
 	if plan.settings != nil && len(plan.settingsJSON) == 0 {
 		// The plan carries settings that nothing encoded, so this row would drop

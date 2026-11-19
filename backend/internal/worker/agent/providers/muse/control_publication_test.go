@@ -42,7 +42,7 @@ func TestMuseAnswerWaitsForThePublicationThatMadeItsCardVisible(t *testing.T) {
 		go func() { a.HandleOutput(request); close(published) }()
 		synctest.Wait()
 		key := testApprovalKey("session", "approval", 0)
-		answer := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: key, RequestPayload: request, ResponseContent: approvalAnswer(key)})
+		answer := agenttest.ResolveAnswer(museProvider{}, request, key, agent.ControlAnswer{Content: approvalAnswer(key)})
 		require.False(t, answer.Withhold)
 		result := make(chan error, 1)
 		go func() { result <- a.SendRawInput(answer.Content, agent.StopContext{}) }()

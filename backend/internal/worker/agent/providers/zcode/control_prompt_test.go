@@ -43,7 +43,7 @@ func zcodeQuestionControl(t *testing.T, input, params any) []byte {
 // the payload that the agent stored, so a test reads the shape that the
 // Worker publishes. The request ID of params becomes "req-1", the
 // zcodeTestRequestID that each answer states, because the resolution refuses
-// an answer to another request.
+// a stored request whose id differs from the key that the answer addresses.
 func storeZCodeControlRequest(t *testing.T, method, params, requestID string) []byte {
 	t.Helper()
 	sink := &agenttest.ControlSink{}
@@ -455,19 +455,71 @@ func TestZCodeAnswerControlRequest_AnswersAnMCPFormWithItsActionAndContent(t *te
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"action": "cancel"}, zcodeSentResponse(t, got.Content))
 
-	_, err = agenttest.AnswerControl(zcodeProvider{}, stored, zcodeTestRequestID, &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Elicitation{Elicitation: &leapmuxv1.ElicitationDecision{
-		Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, AcceptChoiceKey: "always",
-	}}})
+	_, err = agenttest.AnswerControl(zcodeProvider{}, stored, zcodeTestRequestID, agenttest.ElicitationChoiceDecision("", "always"))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "ZCode's form offers no accept choices")
 }
 
 // --- plan approval ---
 
-// The transcript holds the plan, so the approval states none.
-func TestZCodeReadControlRequest_ReadsThePlanApproval(t *testing.T) {
+// zcodePlanPromptOf is the prompt of a plan approval that carries text.
+func zcodePlanPromptOf(text string) *leapmuxv1.ControlPrompt {
+	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: text}}}
+}
+
+// The approval states the plan that the user approves, so the browser and
+// `leapmux control agent requests` show it.
+func TestZCodeReadControlRequest_ReadsThePlanThatTheApprovalCarries(t *testing.T) {
 	t.Parallel()
-	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}},
-		agenttest.ControlPromptOf(zcodeProvider{}, zcodeControlPayload(t, contracts.ZCodeMethodRequestUserInput, contracts.ZCodeToolNameExitPlanMode, map[string]any{"questions": []any{map[string]any{"question": "# Plan\n\nStep one"}}}, nil)))
+	stored := storeZCodeControlRequest(t, contracts.ZCodeMethodRequestUserInput, zcodePlanParams, "req-plan")
+	agenttest.RequireProto(t, zcodePlanPromptOf("1. read\n2. write"), agenttest.ControlPromptOf(zcodeProvider{}, stored))
+}
+
+// The plan comes from ZCode's own request, by the rule that stores the
+// canonical plan: the tool input's plan, then the context's. The prompt is no
+// source: ZCode states the permission reason there ("Tool ExitPlanMode
+// requires user interaction"). The Worker's header is never the source, so its
+// question is no plan.
+func TestZCodeReadControlRequest_ReadsThePlanFromZCodesOwnRequest(t *testing.T) {
+	t.Parallel()
+	header := map[string]any{"questions": []any{map[string]any{"question": "# Header question"}}}
+	for name, test := range map[string]struct {
+		params any
+		want   string
+	}{
+		"the tool input's plan wins": {
+			params: map[string]any{"input": map[string]any{"plan": "# Input plan"}, "context": map[string]any{"plan": "# Context plan"}, "prompt": "Tool ExitPlanMode requires user interaction"},
+			want:   "# Input plan",
+		},
+		"the context's plan follows": {
+			params: map[string]any{"input": map[string]any{"allowedPrompts": []any{}}, "context": map[string]any{"plan": "# Context plan"}, "prompt": "Review this implementation plan."},
+			want:   "# Context plan",
+		},
+		"a blank tool input plan states none": {
+			params: map[string]any{"input": map[string]any{"plan": " \n\t"}, "context": map[string]any{"plan": "# Context plan"}},
+			want:   "# Context plan",
+		},
+		"the prompt is no plan": {
+			params: map[string]any{"input": map[string]any{"plan": 7}, "context": "not an object", "prompt": "Tool ExitPlanMode requires user interaction"},
+			want:   "",
+		},
+		"the plan keeps its own white space": {
+			params: map[string]any{"input": map[string]any{"plan": "\n# Plan\n\n- Step one.\n"}},
+			want:   "\n# Plan\n\n- Step one.\n",
+		},
+		"a plan beside other tool input": {
+			params: map[string]any{"input": map[string]any{"plan": "# Plan", "allowedPrompts": "not a list"}},
+			want:   "# Plan",
+		},
+		"a request that states no plan": {params: map[string]any{"requestId": "req-plan"}, want: ""},
+		"a request with no params":      {params: nil, want: ""},
+		"params that are no object":     {params: "not an object", want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := agenttest.ControlPromptOf(zcodeProvider{}, zcodeControlPayload(t, contracts.ZCodeMethodRequestUserInput, contracts.ZCodeToolNameExitPlanMode, header, test.params))
+			agenttest.RequireProto(t, zcodePlanPromptOf(test.want), got)
+		})
+	}
 }
 
 func TestZCodeAnswerControlRequest_AnswersThePlanApprovalThroughTheSharedPlanRow(t *testing.T) {

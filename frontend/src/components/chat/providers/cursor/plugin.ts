@@ -1,6 +1,5 @@
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
-import { cursorControlResponseSummary } from './controlResponse'
 import { cursorToolCallAdapter } from './extractors/toolCall'
 import { cursorPermissionPresets } from './permissionPresets'
 
@@ -16,6 +15,5 @@ registerACPProvider({
   },
   defaultPermissionMode: 'agent',
   permissionPresets: cursorPermissionPresets,
-  controlResponseDisplay: cursorControlResponseSummary,
   planValue: 'plan',
 })

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -137,16 +138,52 @@ func TestBuildUserLineImageCount(t *testing.T) {
 
 func TestBuildUserLineSize(t *testing.T) {
 	t.Parallel()
-	// `[{"type":"text","text":""}]` is 27 bytes, so this text fills the line.
-	const overhead = 27
-	_, _, err := buildUserLine(strings.Repeat("x", maxLineContentBytes-overhead), nil, false)
+	// This text fills the line.
+	_, _, err := buildUserLine(strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead), nil, false)
 	require.NoError(t, err)
-	_, _, err = buildUserLine(strings.Repeat("x", maxLineContentBytes-overhead+1), nil, false)
+	_, _, err = buildUserLine(strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead+1), nil, false)
 	assert.ErrorContains(t, err, "too large for Amp")
 
 	// A multi-byte character counts as its UTF-8 bytes, as Amp counts it.
-	_, _, err = buildUserLine(strings.Repeat("é", (maxLineContentBytes-overhead)/2+1), nil, false)
+	_, _, err = buildUserLine(strings.Repeat("é", (maxLineContentBytes-emptyTextLineOverhead)/2+1), nil, false)
 	assert.ErrorContains(t, err, "too large for Amp")
+}
+
+// emptyTextLineOverhead is the size of `[{"type":"text","text":""}]`, the
+// content array of a line that holds one empty text block.
+const emptyTextLineOverhead = 27
+
+// Amp measures its content array as JSON.stringify writes it. The HTML
+// characters stay as they are, one byte each, so a text that holds them fills
+// the line to the byte.
+func TestBuildUserLineMeasuresHTMLCharactersAsJavaScriptDoes(t *testing.T) {
+	t.Parallel()
+	text := strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead-3) + "<&>"
+	_, _, err := buildUserLine(text, nil, false)
+	require.NoError(t, err)
+	_, _, err = buildUserLine(text+"x", nil, false)
+	assert.ErrorContains(t, err, fmt.Sprintf("it holds %d bytes as JSON", maxLineContentBytes+1))
+}
+
+// JSON.stringify writes U+2028 and U+2029 as themselves, three UTF-8 bytes
+// each, so a text that holds them fills the line to the byte.
+func TestBuildUserLineMeasuresLineSeparatorsAsJavaScriptDoes(t *testing.T) {
+	t.Parallel()
+	text := strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead-6) + "\u2028\u2029"
+	_, _, err := buildUserLine(text, nil, false)
+	require.NoError(t, err)
+	_, _, err = buildUserLine(text+"x", nil, false)
+	assert.ErrorContains(t, err, fmt.Sprintf("it holds %d bytes as JSON", maxLineContentBytes+1))
+}
+
+// An image counts as the block that Amp builds for it: the longest source path
+// and the base64 data.
+func TestValidateAttachmentMeasuresAnImageAsAmpDoes(t *testing.T) {
+	t.Parallel()
+	data := paddedPNG(t, 800_000)
+	const blockOverhead = len(`[{"type":"image","sourcePath":"stream-json://stdin/line-18446744073709551615/image-4","source":{"type":"base64","mediaType":"image/png","data":""}}]`)
+	err := validateAttachment(agent.ClassifyAttachments([]*leapmuxv1.Attachment{{Filename: "full.png", Data: data}})[0])
+	assert.ErrorContains(t, err, fmt.Sprintf("takes %d bytes once encoded", blockOverhead+base64.StdEncoding.EncodedLen(len(data))))
 }
 
 // Two images that each fit alone can still overflow one line together.
@@ -254,23 +291,6 @@ func TestImageWithAnUnreadableHeaderPassesToAmp(t *testing.T) {
 	blocks := lineBlocks(t, line)
 	require.Len(t, blocks, 1)
 	assert.Equal(t, "image/png", blocks[0]["source"].(map[string]any)["media_type"])
-}
-
-// jsonSize counts the UTF-8 bytes of the JSON, as Amp counts them. HTML
-// characters stay as they are, as JavaScript writes them, and U+2028 takes its
-// escape, which only overstates the size.
-func TestJSONSize(t *testing.T) {
-	t.Parallel()
-	for value, want := range map[string]int{
-		"":      2,
-		"<a&b>": 7,
-		"é":     4,
-		" ":     8,
-	} {
-		size, err := jsonSize(value)
-		require.NoError(t, err)
-		assert.Equalf(t, want, size, "%q", value)
-	}
 }
 
 func TestDetectImageType(t *testing.T) {

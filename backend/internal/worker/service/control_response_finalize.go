@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -40,7 +42,32 @@ func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlRe
 	// Recovery must retain the actual prepared bytes, even if the provider encoder changes.
 	plan.resolution.Content = answer.ResolvedContent
 	plan.resolution.FollowUp = agent.ControlFollowUp{Kind: answer.FollowUpKind, Text: answer.FollowUp}
+	plan.controlDecision = storedControlDecision(answer)
 	return plan, nil
+}
+
+// storedControlDecision decodes the decision that an answer row stores, or
+// returns nil for a row that stores none.
+//
+// A stored decision that does not decode also gives nil, with a warning,
+// rather than an error. The decision only words the answer's transcript
+// row, and the agent already received the answer. An error here would stop
+// the Worker from recording that answer at all, and every later retry would
+// stop at the same bytes.
+func storedControlDecision(answer db.ControlResponseAnswer) *leapmuxv1.ControlDecision {
+	if len(answer.Decision) == 0 {
+		return nil
+	}
+	decision := &leapmuxv1.ControlDecision{}
+	if err := proto.Unmarshal(answer.Decision, decision); err != nil {
+		slog.Warn("could not decode the stored control decision", "agent_id", answer.AgentID, "request_id", answer.RequestID, "error", err)
+		return nil
+	}
+	if decision.GetKind() == nil {
+		slog.Warn("the stored control decision states no kind", "agent_id", answer.AgentID, "request_id", answer.RequestID)
+		return nil
+	}
+	return decision
 }
 
 // finalizeControlResponse commits the transcript, cancellation, and completion in one transaction.

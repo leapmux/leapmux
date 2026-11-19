@@ -344,6 +344,13 @@ CREATE TABLE agent_input_queue_items (
     -- The provider source bytes an automatic retry carries into the accepted
     -- transcript's supplemental content. Empty for ordinary input.
     source_payload  BLOB NOT NULL DEFAULT X'',
+    -- The idempotency key of the request that queued the input, which the
+    -- Worker computes once, when it inserts the row (inputIdempotencyKey in
+    -- inputqueue). An edit keeps
+    -- it, so a retry of that request still matches the input after someone
+    -- edited it, and the transcript row of the accepted input takes it over.
+    -- It has no default, so an insert that forgets it fails.
+    idempotency_key TEXT NOT NULL CHECK (idempotency_key <> ''),
     -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     state           INTEGER NOT NULL DEFAULT 1 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 5),
     error           TEXT NOT NULL DEFAULT '',
@@ -352,7 +359,14 @@ CREATE TABLE agent_input_queue_items (
     reserved_seq    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_seq >= 0),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(agent_id, order_index),
+    -- The time at which someone removed the input from the queue, or NULL for
+    -- an input that the queue holds. A removed input keeps its row, so a retry
+    -- of the request that queued it (EnqueueAgentInput with the same input_id)
+    -- finds the row and queues nothing; every other read of the queue skips
+    -- it. The removal clears the text, the source payload and the attachments,
+    -- which nothing reads after it. The Worker purges a removed row once it is
+    -- older than the retry window (see inputqueue).
+    removed_at      DATETIME,
     -- An item has a sender exactly when it is an agent message, so no writer
     -- can store an agent message that names nobody, or a sender on an input
     -- that the user wrote. The literal 9 is AGENT_INPUT_KIND_AGENT_MESSAGE;
@@ -360,10 +374,25 @@ CREATE TABLE agent_input_queue_items (
     -- the ordinal.
     CHECK ((kind = 9) = (sender_tab_id <> '')),
     CHECK ((sender_tab_id = '') = (sender_provider IS NULL)),
-    CHECK (sender_tab_id <> '' OR sender_title = '')
+    CHECK (sender_tab_id <> '' OR sender_title = ''),
+    -- A removal ends the edit of the input, so a removed row has no editor.
+    CHECK (removed_at IS NULL OR edit_owner = '')
 );
+-- Every index of the queue except idx_agent_input_queue_removed covers only
+-- the inputs that the queue holds (removed_at IS NULL). A removed row then
+-- keeps its order_index, its kind and its state without a conflict with the
+-- inputs that take its place. Every statement of package inputqueue that
+-- reads or writes those inputs states the same term, so SQLite can use these
+-- partial indexes, which it matches syntactically.
+-- TestEveryQueueStatementStatesRemovedAt in inputqueue requires a removed_at
+-- term in each statement of the queue.
+--
+-- The order of the inputs that the queue holds.
+CREATE UNIQUE INDEX idx_agent_input_queue_order
+    ON agent_input_queue_items(agent_id, order_index) WHERE removed_at IS NULL;
+-- One edit per agent. A removal also clears the edit owner.
 CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
-    ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';
+    ON agent_input_queue_items(agent_id) WHERE edit_owner <> '' AND removed_at IS NULL;
 -- One pending automatic retry per kind and agent. The literals are ordinals:
 -- 1 is AGENT_INPUT_STATE_QUEUED, 5 is AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
 -- and 8 is AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. SQLite forbids a bound
@@ -373,9 +402,12 @@ CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
 -- (absorbQueuedAutoRetry and dropQueuedAutoRetry in inputqueue/store.go).
 CREATE UNIQUE INDEX idx_agent_input_queue_one_auto_retry_kind
     ON agent_input_queue_items(agent_id, kind)
-    WHERE state = 1 AND kind IN (5, 8);
+    WHERE state = 1 AND kind IN (5, 8) AND removed_at IS NULL;
 CREATE INDEX idx_agent_input_queue_pending
-    ON agent_input_queue_items(agent_id, order_index, state);
+    ON agent_input_queue_items(agent_id, order_index, state) WHERE removed_at IS NULL;
+-- The purge of removed rows (Store.PurgeRemoved in inputqueue/removal.go).
+CREATE INDEX idx_agent_input_queue_removed
+    ON agent_input_queue_items(removed_at) WHERE removed_at IS NOT NULL;
 
 CREATE TABLE agent_input_queue_attachments (
     item_id     TEXT NOT NULL REFERENCES agent_input_queue_items(id) ON DELETE CASCADE,
@@ -465,6 +497,11 @@ CREATE TABLE control_response_payloads (
     non_blocking INTEGER NOT NULL DEFAULT 0 CHECK (non_blocking IN (0, 1)),
     agent_session_id TEXT NOT NULL DEFAULT '',
     input_id TEXT NOT NULL DEFAULT '',
+    -- The neutral decision that the answer carried, a ControlDecision in its
+    -- protobuf binary form, or empty for an answer that the Worker recorded
+    -- without one. The answer's transcript row states it, so one display reads
+    -- the decision instead of the provider's answer bytes.
+    decision BLOB NOT NULL DEFAULT X'',
     FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE,
     CHECK ((follow_up_kind = 0) = (follow_up = ''))
 );
@@ -488,7 +525,7 @@ SELECT d.id AS delivery_id, d.agent_id, d.operation_id AS request_id,
     d.instance_id AS claim_token, d.state, p.request_payload, p.response_content,
     p.resolved_content, p.plan_approval_settings, p.execution_session_id,
     p.source_seq, p.follow_up, p.follow_up_kind, p.agent_session_id, a.agent_provider,
-    p.input_id, p.non_blocking
+    p.input_id, p.non_blocking, p.decision
 FROM control_deliveries d
 JOIN control_response_payloads p ON p.delivery_id = d.id
 JOIN agents a ON a.id = d.agent_id;

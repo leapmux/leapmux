@@ -321,11 +321,11 @@ type OutputHandler struct {
 	// inputProcessState refreshes root metadata after process health changes.
 	// It reads current health rather than retaining provider-supplied state.
 	inputProcessState func(agentID string)
-	// requeueDroppedInput queues input that a provider dropped as the reader's
-	// next message, and reports whether this call added it. Set via
+	// requeueDroppedInput queues a steer that a provider dropped as the
+	// reader's next input, and reports whether this call added it. Set via
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
 	// OutputHandler directly, where RequeueDroppedInput then refuses.
-	requeueDroppedInput func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)
+	requeueDroppedInput func(agentID string, dropped agent.SteerRequest) (bool, error)
 	steersEchoed        func(agentID string, count int, spanLines string) error
 	steersDropped       func(agentID string, count int) error
 	steersUncertain     func(agentID string, count int) error
@@ -492,9 +492,9 @@ func (h *OutputHandler) SetInputProcessStateFunc(fn func(agentID string)) {
 	h.inputProcessState = fn
 }
 
-// SetRequeueDroppedInputFunc wires the input queue that takes back the input a
+// SetRequeueDroppedInputFunc wires the input queue that takes back the steer a
 // provider dropped. Call it before any agent output is processed.
-func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)) {
+func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID string, dropped agent.SteerRequest) (bool, error)) {
 	h.requeueDroppedInput = fn
 }
 
@@ -1229,23 +1229,26 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	}
 }
 
-// RequeueDroppedInput queues the input as the reader's next message. It writes
-// the row that states why the message appears again only when this call added
-// the item, so a repeat of one drop writes nothing twice.
+// RequeueDroppedInput queues the dropped steer as the reader's next input (see
+// Service.requeueDroppedInput). It writes the row that states why the message
+// appears again only when this call added the item, so a repeat of one drop
+// writes nothing twice.
 //
 // The row and the queued message are written independently. The queue can
 // deliver the message before this writes the row, so the row's words read
 // correctly on either side of the message.
 //
-// A subagent has no input queue of its own, so a child sink refuses.
-func (s *agentOutputSink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+// A child sink refuses. The queue steers a subagent's input through
+// ChildSteerer.SteerChildInput, which states no queue item, so no steer of a
+// subagent can name the item to take back.
+func (s *agentOutputSink) RequeueDroppedInput(dropped agent.SteerRequest) error {
 	if s.root != nil {
-		return fmt.Errorf("requeue dropped input: subagent %s has no input queue", s.agentID)
+		return fmt.Errorf("requeue dropped input: a steer of subagent %s states no queue item", s.agentID)
 	}
 	if s.h.requeueDroppedInput == nil {
 		return errors.New("requeue dropped input: no input queue is wired")
 	}
-	added, err := s.h.requeueDroppedInput(s.agentID, dropID, content, attachments)
+	added, err := s.h.requeueDroppedInput(s.agentID, dropped)
 	if err != nil {
 		return err
 	}

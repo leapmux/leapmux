@@ -464,12 +464,9 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
 		return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored request does not decode: %v", err))
 	}
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return withhold(agent.RefusalNoDecision, "the answer states neither allow nor deny")
-	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		return withhold(agent.RefusalOtherRequest, fmt.Sprintf("the answer is for request %s, and the stored request is %s", requestID, ctx.RequestID))
 	}
 	allow := behavior == contracts.ControlAnswerBehaviorAllow
 
@@ -484,8 +481,8 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 			return withhold(agent.RefusalUnreadableRequest, "the stored approval states no id")
 		}
 		// The stored request disagrees with its own request key, so LeapMux
-		// cannot trust it. The answer is not for another request.
-		if ctx.RequestID != "" && approval.ApprovalID != ctx.RequestID {
+		// cannot trust it.
+		if approval.ApprovalID != ctx.RequestID {
 			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored approval states id %s, and its request key is %s", approval.ApprovalID, ctx.RequestID))
 		}
 		reply := contracts.ClineApprovalReply{ApprovalId: approval.ApprovalID, Approved: allow}
@@ -514,8 +511,8 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request is %s, not a question", capability.CapabilityName))
 		}
 		// The stored request disagrees with its own request key, so LeapMux
-		// cannot trust it. The answer is not for another request.
-		if ctx.RequestID != "" && capability.RequestID != ctx.RequestID {
+		// cannot trust it.
+		if capability.RequestID != ctx.RequestID {
 			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request states id %s, and its request key is %s", capability.RequestID, ctx.RequestID))
 		}
 		if !allow {

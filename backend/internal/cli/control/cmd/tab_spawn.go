@@ -161,6 +161,13 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	if args.InitialMessage != "" {
 		inputID := requestScopedID(args.RequestID, requestScopeAgentOpenMessage, args.WorkerID)
 		if err := w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{AgentId: creation.GetTabId(), InputId: inputID, Text: args.InitialMessage, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE}, nil); err != nil {
+			// With a request id, a conflict means that an earlier request with
+			// another first message took the id, so this request fails as a
+			// conflict of the creation does. Any other failure leaves the agent
+			// open, so the open succeeds and states the failure.
+			if args.RequestID != "" && cli.FromError(err).Code == cli.CodeConflict {
+				return nil, err
+			}
 			result.InitialMsgWarn = err.Error()
 		}
 	}

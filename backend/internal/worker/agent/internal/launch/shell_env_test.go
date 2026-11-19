@@ -109,14 +109,14 @@ func TestShellEnvPreservesMultilineValues(t *testing.T) {
 }
 
 func TestShellEnvUsesNativeUnicodeValuesThroughAvailableShells(t *testing.T) {
-	for _, name := range []string{"sh", "tcsh", "pwsh", "powershell", "nu"} {
+	for _, name := range []string{"sh", "tcsh", "pwsh", "powershell", "nu", "xonsh"} {
 		t.Run(name, func(t *testing.T) {
 			shell, err := exec.LookPath(name)
 			if err != nil {
 				t.Skipf("%s is not installed", name)
 			}
 			home := t.TempDir()
-			env := append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "XDG_CONFIG_HOME="+home, "ZDOTDIR="+home,
+			env := append(append(os.Environ(), homeEnv(home)...), "USERPROFILE="+home,
 				"LEAPMUX_NATIVE_VALUE=overridden", "LEAPMUX_NATIVE_VALUE=日本語=é\nsecond\r\n%$'", "LEAPMUX_NATIVE_EMPTY=")
 			snapshot, result := ShellEnv(t.Context(), ShellEnvOptions{Shell: shell, Env: env, WorkingDir: home,
 				Variables: []string{"LEAPMUX_NATIVE_VALUE", "LEAPMUX_NATIVE_EMPTY"}})

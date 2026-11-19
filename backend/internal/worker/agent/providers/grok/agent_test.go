@@ -115,7 +115,7 @@ func TestGrokSteerInputSendsAnInterjection(t *testing.T) {
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("also mention bananas", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "also mention bananas"}))
 	syncPeer(t, a)
 
 	sent := requestsFor(requests(), grokInterjectMethod)
@@ -137,7 +137,7 @@ func TestGrokSteerInputCarriesAnImageAsAContentBlock(t *testing.T) {
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("look at this", []*leapmuxv1.Attachment{pngAttachment()}))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "look at this", Attachments: []*leapmuxv1.Attachment{pngAttachment()}}))
 	syncPeer(t, a)
 
 	sent := requestsFor(requests(), grokInterjectMethod)
@@ -159,10 +159,10 @@ func TestGrokSteerInputInlinesATextAttachment(t *testing.T) {
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("see the log", []*leapmuxv1.Attachment{
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "see the log", Attachments: []*leapmuxv1.Attachment{
 		{Filename: "build.log", MimeType: "text/plain", Data: []byte("error: boom\n")},
 		pngAttachment(),
-	}))
+	}}))
 	syncPeer(t, a)
 
 	sent := requestsFor(requests(), grokInterjectMethod)
@@ -185,7 +185,7 @@ func TestGrokSteerInputWithOnlyATextAttachmentNeedsNoBlocks(t *testing.T) {
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("", []*leapmuxv1.Attachment{{Filename: "notes.md", MimeType: "text/markdown", Data: []byte("# Notes")}}))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "", Attachments: []*leapmuxv1.Attachment{{Filename: "notes.md", MimeType: "text/markdown", Data: []byte("# Notes")}}}))
 	syncPeer(t, a)
 
 	sent := requestsFor(requests(), grokInterjectMethod)
@@ -209,7 +209,7 @@ func TestGrokSteerInputRefusesAnAttachmentThatTheInterjectionCannotCarry(t *test
 			a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 			a.SetPromptActiveForTest(true)
 
-			err := a.SteerInput("read this", []*leapmuxv1.Attachment{pngAttachment(), attachment})
+			err := a.SteerInput(agent.SteerRequest{Content: "read this", Attachments: []*leapmuxv1.Attachment{pngAttachment(), attachment}})
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), attachment.Filename)
@@ -225,7 +225,7 @@ func TestGrokSteerInputRefusesAnIdleSession(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 
-	assert.ErrorIs(t, a.SteerInput("late", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "late"}), agent.ErrNoActiveTurn)
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), grokInterjectMethod), "nothing reaches Grok when no turn runs")
 }
@@ -240,7 +240,7 @@ func TestGrokSteerInputMapsAnEndedTurn(t *testing.T) {
 	})
 	a.SetPromptActiveForTest(true)
 
-	assert.ErrorIs(t, a.SteerInput("late", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "late"}), agent.ErrNoActiveTurn)
 }
 
 func TestGrokSteerInputReportsAnotherFailure(t *testing.T) {
@@ -253,7 +253,7 @@ func TestGrokSteerInputReportsAnotherFailure(t *testing.T) {
 	})
 	a.SetPromptActiveForTest(true)
 
-	err := a.SteerInput("late", nil)
+	err := a.SteerInput(agent.SteerRequest{Content: "late"})
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, agent.ErrNoActiveTurn), "an internal error is not an ended turn")
 }
@@ -287,7 +287,7 @@ func TestGrokSteerInputWithOnlyAnImageSendsNoTextBlock(t *testing.T) {
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("", []*leapmuxv1.Attachment{pngAttachment()}))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "", Attachments: []*leapmuxv1.Attachment{pngAttachment()}}))
 	syncPeer(t, a)
 
 	sent := requestsFor(requests(), grokInterjectMethod)
@@ -306,8 +306,8 @@ func TestGrokSteerInputStatesAFreshIDEachTime(t *testing.T) {
 	a, _, requests := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("again", nil))
-	require.NoError(t, a.SteerInput("again", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "again"}))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "again"}))
 	syncPeer(t, a)
 
 	sent := requestsFor(requests(), grokInterjectMethod)

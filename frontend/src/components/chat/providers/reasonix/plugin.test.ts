@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { acpTextContent, describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
-import { reasonixControlResponseSummary } from './controlResponse'
 
 import './plugin'
 
@@ -28,10 +27,6 @@ describe('reasonix provider', () => {
     expect(plugin?.configuration?.planMode).toBeDefined()
     expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
     expect(plugin?.controls?.permissionPresets?.bypass?.sets).toEqual({ tool_approval: 'yolo' })
-  })
-
-  it('registers its own display of a saved answer', () => {
-    expect(plugin.controls?.controlResponseDisplay).toBe(reasonixControlResponseSummary)
   })
 
   it('offers native image and resource attachments', () => {

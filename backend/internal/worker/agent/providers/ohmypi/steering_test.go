@@ -29,7 +29,7 @@ func TestSteerEchoAtTheUserMessage(t *testing.T) {
 			t.Parallel()
 			r := newRig(t)
 			r.emit(`{"type":"agent_start"}`)
-			require.NoError(t, r.agent.SteerInput("Guide the next answer.", nil))
+			require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "Guide the next answer."}))
 			assert.Empty(t, r.sink.SteerEchoReports())
 			// Trimmed echo shape from .tmp/verify-c29/ohmypi/run2-steer.
 			r.emit(fmt.Sprintf(`{"type":"message_end","message":{"role":"user","steering":%t,"content":[{"type":"text","text":"Guide the next answer."}]}}`, steering))
@@ -49,7 +49,7 @@ func TestSteerAnsweredLocallyReportsTheEchoAtOnce(t *testing.T) {
 		}
 		return nil
 	})
-	require.NoError(t, r.agent.SteerInput("/status", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "/status"}))
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, r.sink.SteerEchoReports())
 }
 
@@ -57,8 +57,8 @@ func TestSteerFailedAfterAckIsDroppedInOrder(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("first", nil))
-	require.NoError(t, r.agent.SteerInput("second", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "first"}))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	prompts := r.commandsOfType(CommandPrompt)
 	require.Len(t, prompts, 2)
 	r.emit(fmt.Sprintf(`{"type":"response","id":%q,"command":"prompt","success":false,"error":"The second prompt was refused"}`, prompts[1].ID))
@@ -77,7 +77,7 @@ func TestSteerLocalResultBeforeAckReportsOnlyOneEcho(t *testing.T) {
 		}
 		return nil
 	})
-	require.NoError(t, r.agent.SteerInput("/status", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "/status"}))
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, r.sink.SteerEchoReports())
 }
 
@@ -85,7 +85,7 @@ func TestSteerMalformedPromptResultDoesNotClaimAnEcho(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("guide", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}))
 	id := r.commandsOfType(CommandPrompt)[0].ID
 	r.emit(fmt.Sprintf(`{"type":"prompt_result","id":%q}`, id), fmt.Sprintf(`{"type":"prompt_result","id":%q,"agentInvoked":null}`, id))
 	assert.Empty(t, r.sink.SteerEchoReports())
@@ -101,7 +101,7 @@ func TestSteerEchoSurvivesThePreviousTurnEnd(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
-	require.NoError(t, r.agent.SteerInput("late steer", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "late steer"}))
 	r.emit(`{"type":"agent_end","isTerminal":true,"messages":[]}`)
 	assert.Empty(t, r.sink.SteerEchoReports())
 	r.emit(`{"type":"agent_start"}`, `{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"late steer"}]}}`)
@@ -118,7 +118,7 @@ func TestSteerRefusedCallReportsNoEchoOrDrop(t *testing.T) {
 		}
 		return nil
 	})
-	require.Error(t, r.agent.SteerInput("refused", nil))
+	require.Error(t, r.agent.SteerInput(agent.SteerRequest{Content: "refused"}))
 	assert.Empty(t, r.agent.steers.Pending())
 	assert.Empty(t, r.sink.SteerEchoReports())
 }
@@ -130,7 +130,7 @@ func TestSteerClearReportsDroppedInputsOnlyAfterNativeSuccess(t *testing.T) {
 			t.Parallel()
 			r := newRig(t)
 			r.emit(`{"type":"agent_start"}`)
-			require.NoError(t, r.agent.SteerInput("pending", nil))
+			require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "pending"}))
 			r.respond(func(command recordedCommand) *rigReply {
 				switch command.Type {
 				case CommandNewSession:

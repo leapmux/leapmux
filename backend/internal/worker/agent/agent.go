@@ -264,16 +264,25 @@ type TurnServices interface {
 	// authoritative -- so each provider's tests pin the clear on every path that
 	// ends a turn.
 	SetTurnState(state TurnState, seq uint64)
-	// RequeueDroppedInput hands back input that the provider accepted into the
-	// running turn and that the agent dropped before the model read it. The
-	// Worker queues it as the reader's next message, under the queue's own rules,
-	// and states in the transcript why the message appears again. dropID
-	// identifies the drop within the agent, so a second call for the same drop
-	// queues nothing and writes nothing.
+	// RequeueDroppedInput hands back a steer that the provider accepted into the
+	// running turn and that the agent dropped before the model read it. dropped
+	// is the request that the provider received in SteerInput or
+	// SteerInputForSession, unchanged: the Worker finds the queue item by
+	// dropped.InputID and queues it again as the reader's next input, under the
+	// queue's own rules. A message from another agent comes back as that agent's
+	// message, with its sender and the text that the sender wrote, never as the
+	// user's. The Worker also states in the transcript why the input appears
+	// again.
+	//
+	// The input id identifies the drop, so a second call for the same input
+	// queues nothing and writes nothing. A provider that hands back a steer
+	// declares SteerSurvivor. Without it, the queue returns a steer to the queue
+	// itself when the turn ends during the steer, and a hand-back that came
+	// before that return already queued a copy, so the input comes twice.
 	//
 	// An error means that the queue did not take the input, and the provider
 	// must then tell the reader that the model never read it.
-	RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error
+	RequeueDroppedInput(dropped SteerRequest) error
 }
 
 // SpanServices owns transcript span state.
@@ -1029,10 +1038,36 @@ type InputProcessPreparer interface {
 	InputProcessRecoveryRequired() bool
 }
 
+// SteerRequest is one input that the Worker's queue steers into a running turn.
+type SteerRequest struct {
+	// InputID identifies the queue item that the steer delivers. A provider
+	// that drops the steer before the model reads it hands the whole request
+	// back through RequeueDroppedInput, and the Worker reads the item by this
+	// id. The Manager refuses a request without one, so every steer that a
+	// provider receives states its item.
+	InputID string
+	// Content is the text that the model reads. The Worker builds it from the
+	// item: a message from another agent holds the header that identifies the
+	// sender, and a control reply holds the words that state what it answers.
+	Content string
+	// Attachments are the files of the item, after the provider's attachment
+	// policy normalized them.
+	Attachments []*leapmuxv1.Attachment
+}
+
+// validate refuses a request that states no queue item. A provider that
+// dropped such a steer could not hand it back.
+func (r SteerRequest) validate() error {
+	if r.InputID == "" {
+		return errors.New("the steer request states no queue item")
+	}
+	return nil
+}
+
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
-	SteerInput(content string, attachments []*leapmuxv1.Attachment) error
+	SteerInput(request SteerRequest) error
 	// SupportsSteering reports whether this provider can steer the running
 	// process right now. The Manager publishes the answer to the client, which
 	// shows or hides the Steer control, so a provider that cannot steer must
@@ -1064,7 +1099,7 @@ type SteerPolicy struct{ RowAtEcho, SurvivesTurnEnd bool }
 // A provider without this capability cannot steer an answer to a recorded question.
 type SessionInputSteerer interface {
 	InputSteerer
-	SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error
+	SteerInputForSession(sessionID string, request SteerRequest) error
 }
 
 var (

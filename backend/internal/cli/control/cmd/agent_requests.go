@@ -109,9 +109,14 @@ type permissionOptionView struct {
 	// or "other".
 	Kind string `json:"kind"`
 	Name string `json:"name,omitempty"`
-	// Scope is how far an "allow_always" reaches: "session", "workspace",
-	// "project" or "user", when the provider states it.
+	// Scope is how far a remembered answer ("allow_always" or
+	// "reject_always") reaches: "session", "workspace", "project" or "user",
+	// when the provider states it.
 	Scope string `json:"scope,omitempty"`
+	// ScopeLabel is the provider's own word for the scope, such as Codex's
+	// "Command rule" or "Host rule". It tells apart two remembered answers of
+	// one scope that keep different rules.
+	ScopeLabel string `json:"scope_label,omitempty"`
 	// EndsTurn reports a refusal that also ends the agent's turn, rather than
 	// refusing only this call.
 	EndsTurn bool `json:"ends_turn,omitempty"`
@@ -331,12 +336,13 @@ func permissionViewOf(p *leapmuxv1.PermissionPrompt) *permissionView {
 	}
 	for i, option := range p.GetOptions() {
 		view.Options = append(view.Options, permissionOptionView{
-			N:        i + 1,
-			ID:       option.GetOptionId(),
-			Kind:     permissionOptionKindToken(option.GetKind()),
-			Name:     option.GetName(),
-			Scope:    enumToken(option.GetScope()),
-			EndsTurn: option.GetEndsTurn(),
+			N:          i + 1,
+			ID:         option.GetOptionId(),
+			Kind:       permissionOptionKindToken(option.GetKind()),
+			Name:       option.GetName(),
+			Scope:      enumToken(option.GetScope()),
+			ScopeLabel: option.GetScopeLabel(),
+			EndsTurn:   option.GetEndsTurn(),
 		})
 	}
 	return view
@@ -518,8 +524,8 @@ func (p *permissionView) writeText(w *bytes.Buffer) {
 	rows := make([][]string, 0, len(p.Options))
 	for _, option := range p.Options {
 		kind := option.Kind
-		if option.Scope != "" {
-			kind += " (" + option.Scope + ")"
+		if scope := option.scopeText(); scope != "" {
+			kind += " (" + scope + ")"
 		}
 		if option.EndsTurn {
 			kind += " (ends the turn)"
@@ -527,6 +533,20 @@ func (p *permissionView) writeText(w *bytes.Buffer) {
 		rows = append(rows, []string{fmt.Sprint(option.N), kind, option.Name})
 	}
 	writeRows(w, "    ", rows)
+}
+
+// scopeText states the scope of an option for the text form: the scope, then
+// the provider's label for it after a colon, either one alone, or "" when the
+// option states neither.
+func (o permissionOptionView) scopeText() string {
+	switch {
+	case o.Scope != "" && o.ScopeLabel != "":
+		return o.Scope + ": " + o.ScopeLabel
+	case o.Scope != "":
+		return o.Scope
+	default:
+		return o.ScopeLabel
+	}
 }
 
 func (p *planView) writeText(w *bytes.Buffer) {

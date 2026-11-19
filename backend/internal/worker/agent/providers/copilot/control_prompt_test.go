@@ -523,9 +523,7 @@ func TestCopilotAnswerControlRequest_AnElicitationAnswersWithItsActionAndContent
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"action":"decline"}}}`, string(got.Content))
 
-	_, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Elicitation{Elicitation: &leapmuxv1.ElicitationDecision{
-		Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, AcceptChoiceKey: "always",
-	}}})
+	_, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.ElicitationChoiceDecision("", "always"))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Copilot's form offers no accept choices")
 }
 

@@ -111,7 +111,9 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       {...(!props.independentOptions && layout().negative
         ? {
             negativeAction: {
-              label: decisionLabel(layout(), 'reject'),
+              // The label follows the selected pill, because the pill decides
+              // which refusal Deny sends.
+              label: decisionLabel(layout(), 'reject', selectedScope()),
               testId: 'control-deny-btn',
               onSelect: () => handleDecision('reject'),
             },

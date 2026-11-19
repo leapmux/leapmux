@@ -205,8 +205,8 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 
 // sendInput sends one prompt to the main agent.

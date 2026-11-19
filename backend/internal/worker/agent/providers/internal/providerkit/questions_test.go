@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 func TestQuestionsFromWire_ReadsEveryField(t *testing.T) {
@@ -63,9 +64,7 @@ func TestAskUserQuestionAnswers_KeepsTheToolInputBesideTheAnswers(t *testing.T) 
 		Prompt: &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
 			Questions: []*leapmuxv1.ControlQuestion{{Question: "Color?", Options: []*leapmuxv1.QuestionOption{{Label: "Red"}}}},
 		}}},
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Question{Question: &leapmuxv1.QuestionDecision{
-			Answers: []*leapmuxv1.QuestionAnswer{{Selected: []string{"Red"}}},
-		}}},
+		Decision: agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"Red"}}),
 	}
 	got, err := AskUserQuestionAnswers(input, json.RawMessage(`{"questions":[1],"answers":{"stale":"x"}}`))
 	require.NoError(t, err)
@@ -93,15 +92,18 @@ func TestAskUserQuestionAnswers_ListsTheTypedTextOfAMultipleChoiceAfterItsOption
 				{},
 			},
 		}}},
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Question{Question: &leapmuxv1.QuestionDecision{
-			Answers: []*leapmuxv1.QuestionAnswer{{Selected: []string{"Cache", "Logs"}, CustomText: " Metrics "}, {CustomText: "svc"}, {}, {CustomText: "x"}},
-		}}},
+		Decision: agenttest.QuestionDecision(
+			&leapmuxv1.QuestionAnswer{Selected: []string{"Cache", "Logs"}, CustomText: " Metrics "},
+			&leapmuxv1.QuestionAnswer{CustomText: "svc"},
+			&leapmuxv1.QuestionAnswer{},
+			&leapmuxv1.QuestionAnswer{CustomText: "x"},
+		),
 	}
 	got, err := AskUserQuestionAnswers(input, json.RawMessage(`{}`))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow","updatedInput":{"answers":{"Extras?":"Cache, Logs, Metrics","Name":"svc","Skip?":"","q3":"x"}}}}}`, string(got.Content))
 
-	input.Decision = &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Question{Question: &leapmuxv1.QuestionDecision{Cancelled: true, Feedback: "Not now."}}}
+	input.Decision = agenttest.CancelQuestions("Not now.")
 	got, err = AskUserQuestionAnswers(input, json.RawMessage(`{}`))
 	require.NoError(t, err)
 	assert.Contains(t, string(got.Content), `"behavior":"deny"`)

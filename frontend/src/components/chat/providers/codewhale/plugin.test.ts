@@ -5,7 +5,6 @@ import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import { providerFor } from '../registry'
 import { classifyCodewhaleMessage } from './classification'
-import { codewhaleControlResponseSummary } from './controlResponse'
 import { codewhaleCompactionStart, codewhaleNotificationEntry } from './extractors/notification'
 import { codewhaleOutputFilePaths } from './extractors/outputFilePaths'
 import { codewhaleResultDivider } from './extractors/resultDivider'
@@ -47,7 +46,6 @@ describe('codewhale plugin', () => {
     expect(plugin.controls).toBe(codewhaleControls)
     expect(plugin.configuration).toBe(codewhaleConfiguration)
     expect(plugin.controls).toStrictEqual({
-      controlResponseDisplay: codewhaleControlResponseSummary,
       permissionPresets: codewhalePermissionPresets,
     })
   })

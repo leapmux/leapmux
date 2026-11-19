@@ -75,11 +75,7 @@ func TestOpenCodeQuestions_PublishedPayloadDoesNotWithholdTheAnswer(t *testing.T
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 
 	answer := []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`)
-	resolved := acp.Provider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       published[0].RequestID,
-		RequestPayload:  published[0].Payload,
-		ResponseContent: answer,
-	})
+	resolved := agenttest.ResolveAnswer(acp.Provider{}, published[0].Payload, published[0].RequestID, agent.ControlAnswer{Content: answer})
 	assert.False(t, resolved.Withhold, "the answer reaches the daemon")
 	assert.Equal(t, answer, resolved.Content)
 }

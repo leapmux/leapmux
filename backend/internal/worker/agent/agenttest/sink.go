@@ -558,29 +558,28 @@ func (s *Sink) SetTurnState(state agent.TurnState, seq uint64) {
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
 }
 
-// RequeuedInput is one input that a provider handed back through
+// RequeuedInput is one steer that a provider handed back through
 // RequeueDroppedInput.
 type RequeuedInput struct {
-	DropID      string
-	Content     string
-	Attachments []*leapmuxv1.Attachment
+	// Request is the steer request that the provider handed back.
+	Request agent.SteerRequest
 	// TurnActive is the last turn state that the provider published before the
 	// call, and false when it published none.
 	TurnActive bool
 }
 
-// RequeueDroppedInput records the input that the provider handed back. It also
-// records the call in TurnLifecycle as `requeue:<dropID>`, so a test can assert
-// that the input reached the queue before the turn ended.
-func (s *Sink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+// RequeueDroppedInput records the steer that the provider handed back. It also
+// records the call in TurnLifecycle as `requeue:<input id>`, so a test can
+// assert that the input reached the queue before the turn ended.
+func (s *Sink) RequeueDroppedInput(dropped agent.SteerRequest) error {
 	if s.RequeueErr != nil {
 		return s.RequeueErr
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	active := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
-	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{DropID: dropID, Content: content, Attachments: attachments, TurnActive: active})
-	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropID)
+	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{Request: dropped, TurnActive: active})
+	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropped.InputID)
 	return nil
 }
 
@@ -2058,14 +2057,14 @@ func (nop) ReadMessageByIdempotencyKey(string, string) (*agent.StoredMessage, er
 func (nop) RetractMessagesByIdempotencyKey(agent.MessageContent, []string) error {
 	return nil
 }
-func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error)     { return false, nil }
-func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)      { return false, nil }
-func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
-func (nop) SetTurnState(agent.TurnState, uint64)                              {}
-func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error { return nil }
-func (nop) CaptureBackgroundTaskExit(bool) func() error                       { return nil }
-func (nop) CaptureBackgroundTaskStartFailure() func() error                   { return nil }
-func (nop) OutputQueue() *agent.OutputQueue                                   { return nil }
+func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error) { return false, nil }
+func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)  { return false, nil }
+func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error     { return nil }
+func (nop) SetTurnState(agent.TurnState, uint64)                          {}
+func (nop) RequeueDroppedInput(agent.SteerRequest) error                  { return nil }
+func (nop) CaptureBackgroundTaskExit(bool) func() error                   { return nil }
+func (nop) CaptureBackgroundTaskStartFailure() func() error               { return nil }
+func (nop) OutputQueue() *agent.OutputQueue                               { return nil }
 func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
 	return func() error { return nil }
 }

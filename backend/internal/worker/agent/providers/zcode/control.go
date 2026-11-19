@@ -154,7 +154,6 @@ type zcodeUserInputRequest struct {
 	SessionID  string             `json:"sessionId"`
 	ToolCallID string             `json:"toolCallId"`
 	ToolName   string             `json:"toolName"`
-	Prompt     string             `json:"prompt"`
 	Input      json.RawMessage    `json:"input"`
 	Schema     struct {
 		Interaction string               `json:"interaction"`
@@ -199,7 +198,15 @@ func (r zcodeUserInputRequest) isMCPElicitation() bool {
 	return r.Schema.Interaction == contracts.ZCodeInteractionMcpElicitation
 }
 
-// planText reads the native tool input first, then context, then the prompt fallback.
+// planText reads the plan of a plan approval: the native tool input's plan
+// first, then the context's. It is the one rule for the canonical plan, the
+// tool input that the transcript row shows, and the plan that
+// ReadControlRequest shows. It returns "" when both are blank, because a blank
+// plan states nothing to approve.
+//
+// The request's prompt is no source of the plan. ZCode states the permission
+// reason there ("Tool ExitPlanMode requires user interaction"), so a fallback
+// to it would show that sentence as the plan and run it as the canonical plan.
 func (r zcodeUserInputRequest) planText() string {
 	for _, data := range []json.RawMessage{r.Input, r.Context} {
 		var content struct {
@@ -209,12 +216,12 @@ func (r zcodeUserInputRequest) planText() string {
 			return content.Plan
 		}
 	}
-	return r.Prompt
+	return ""
 }
 
-// toolInput adds a missing plan field from the native context or prompt.
+// toolInput adds a missing plan field from the native context.
 func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
-	if !r.isPlanApproval() || strings.TrimSpace(r.planText()) == "" {
+	if !r.isPlanApproval() || r.planText() == "" {
 		return r.Input, nil
 	}
 	var fields map[string]json.RawMessage
@@ -291,7 +298,9 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	// The transcript confirms no row that carries this plan, so this call writes one.
 	// A read that FAILED confirms nothing either, and it is treated as "the row is
 	// there": a second plan row over one already in the transcript draws it twice.
-	if req.isPlanApproval() && !carriesInput && sourceErr == nil {
+	// A request that states no plan gets no row, because the row exists to carry
+	// the plan.
+	if req.isPlanApproval() && req.planText() != "" && !carriesInput && sourceErr == nil {
 		if len(original) == 0 {
 			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
 			return
@@ -313,14 +322,13 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	if !a.zcodeControlRequestCurrent(req.RequestID, record) {
 		return
 	}
-	planText := req.planText()
 	toolName := zcodeControlAskUserQuestion
 	if req.isMCPElicitation() {
 		toolName = zcodeControlMCPElicitation
 	}
 	if req.isPlanApproval() {
 		toolName = zcodeControlPlanApproval
-		if strings.TrimSpace(planText) != "" {
+		if planText := req.planText(); planText != "" {
 			// A context-clear approval reads this canonical copy after it replaces the native session.
 			writer, err := a.sink.PlanWriterFor(record.captured)
 			if err == nil {
@@ -339,12 +347,12 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	// The questions are re-encoded in the shared Claude question shape --
 	// {question, header, multiSelect, options:[{value,label}]} -- so the answer
 	// that providerkit.AskUserQuestionAnswers builds is keyed by question text,
-	// which is exactly what the app-server's `content.answers` map expects. `plan` carries the plan text of a plan
-	// approval, which the synthesized question cannot hold (see planText).
+	// which is exactly what the app-server's `content.answers` map expects. The
+	// header holds nothing else. Every other reader reads ZCode's own request
+	// (`params`): ReadControlRequest reads the plan of a plan approval and the
+	// form of an MCP server there.
 	input, err := json.Marshal(map[string]any{
 		"questions": zcodeSharedQuestions(req),
-		"prompt":    req.Prompt,
-		"plan":      planText,
 	})
 	if err != nil {
 		slog.Error("zcode marshal user input questions", "agent_id", a.AgentID(), "error", err)
@@ -376,21 +384,10 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 // zcodeSharedQuestions projects ZCode's questions into the shared Claude
 // question shape.
 //
-// A plan approval carries no questions of its own, so one is synthesized. No
-// reply keys an answer by it: zcodeUserInputResult answers a plan approval with
-// `content.answer` alone.
+// A plan approval needs no question: ReadControlRequest reads it as a plan,
+// and zcodeUserInputResult answers it with `content.answer` alone.
 func zcodeSharedQuestions(req zcodeUserInputRequest) []map[string]any {
 	questions := req.questions()
-	if len(questions) == 0 && req.isPlanApproval() {
-		return []map[string]any{{
-			"question":    contracts.ZCodePlanControlQuestion,
-			"header":      "Plan",
-			"multiSelect": false,
-			"options": []map[string]any{
-				{"value": contracts.ZCodePlanControlApprove, "label": contracts.ZCodePlanControlApprove},
-			},
-		}}
-	}
 	out := make([]map[string]any, 0, len(questions))
 	for _, q := range questions {
 		options := make([]map[string]any, 0, len(q.Options))
@@ -1262,10 +1259,6 @@ func zcodeResolveMCPElicitation(stored zcodeControlRequestPayload, responseConte
 	var response providerkit.MCPElicitationControlResponse
 	if json.Unmarshal(responseContent, &response) != nil {
 		res.Refuse(agent.RefusalUnreadableAnswer)
-		return res
-	}
-	if response.Response.RequestID != stored.RequestID {
-		res.Refuse(agent.RefusalOtherRequest)
 		return res
 	}
 	if len(stored.WireID) == 0 {

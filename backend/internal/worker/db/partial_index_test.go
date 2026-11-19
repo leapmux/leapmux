@@ -244,6 +244,15 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		"idx_terminals_open_working_dir":            "no query filters on working_dir through this index",
 		"idx_terminals_quake_working_dir":           "a uniqueness constraint, enforced on write rather than read",
 		"idx_agent_todos_task_id":                   "a uniqueness constraint, enforced on write rather than read",
+		// The queue's statements are hand-written in inputqueue, outside the
+		// sqlc files that the cases above run, so their guards live there, in
+		// inputqueue/removal_test.go: TestEveryQueueStatementStatesRemovedAt
+		// requires the removed_at term in every statement of the queue, and
+		// TestQueueStatementsUseThePartialIndexes pins the plans of the
+		// ordering read and of the purge.
+		"idx_agent_input_queue_order":   "read only by inputqueue's hand-written statements; inputqueue pins the plan of its ordering read",
+		"idx_agent_input_queue_pending": "read only by inputqueue's hand-written statements, each of which states its removed_at term",
+		"idx_agent_input_queue_removed": "read only by inputqueue's purge; inputqueue pins its plan",
 	}
 	for _, index := range partialIndexes(t, connection) {
 		if _, ok := covered[index]; ok {

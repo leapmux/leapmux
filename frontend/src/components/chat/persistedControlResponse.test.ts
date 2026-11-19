@@ -1,29 +1,66 @@
 import type { PersistedControlResponse } from './persistedControlResponse'
-import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
+import { create, toJson } from '@bufbuild/protobuf'
+import { afterEach, describe, expect, it } from 'vitest'
+import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
+import { ControlDecisionSchema, ControlPromptSchema, PermissionOptionKind } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { makeControlResponseMessage } from '~/test-support/messageFactory'
+import { controlPromptFromWire } from './model/controlPromptWire'
 import {
-  controlBehaviorDisplay,
   controlResponsePreviewText,
-  fallbackControlResponseSummary,
-  feedback,
-  feedbackOrLabel,
-  firstNonEmpty,
-  joinAnswerLines,
-  label,
-  labeledAnswerLine,
-  labelOrNull,
   parsePersistedControlResponse,
   resolveControlResponseSummary,
 } from './persistedControlResponse'
 
-function crWith(response: Record<string, unknown> | undefined): PersistedControlResponse {
+/** A permission prompt of one allow and one refusal, as the Worker records it. */
+const ONCE_OR_NO_PROMPT = create(ControlPromptSchema, {
+  kind: {
+    case: 'permission',
+    value: {
+      title: 'Run',
+      options: [
+        { optionId: 'once', kind: PermissionOptionKind.ALLOW_ONCE, name: 'Run once' },
+        { optionId: 'no', kind: PermissionOptionKind.REJECT_ONCE, name: 'Do not run' },
+      ],
+    },
+  },
+})
+
+function permissionDecision(optionId: string, feedback = '') {
+  return create(ControlDecisionSchema, {
+    kind: {
+      case: 'permission',
+      value: { optionId, feedback },
+    },
+  })
+}
+
+/** A saved row whose Worker metadata holds `metadata` beside the request identity. */
+function withMetadata(metadata: Record<string, unknown>): ParsedMessageContent {
+  const response = { jsonrpc: '2.0', id: 1, result: {} }
   return {
-    requestId: '',
-    claimToken: '',
+    rawText: JSON.stringify(response),
+    topLevel: response,
+    parentObject: response,
+    wrapper: null,
+    messageMetadata: {
+      [MESSAGE_METADATA_FIELD.ControlRequestID]: 'request-1',
+      [MESSAGE_METADATA_FIELD.ControlRequestClaimToken]: 'claim-1',
+      ...metadata,
+    },
+  }
+}
+
+function saved(fields: Partial<PersistedControlResponse>): PersistedControlResponse {
+  return {
+    requestId: 'request-1',
+    claimToken: 'claim-1',
     request: undefined,
-    response,
+    response: undefined,
+    ...fields,
   }
 }
 
@@ -86,157 +123,155 @@ describe('parsePersistedControlResponse', () => {
     expect(parsePersistedControlResponse(null)).toBeNull()
     expect(parsePersistedControlResponse(undefined)).toBeNull()
   })
-})
 
-describe('controlBehaviorDisplay', () => {
-  it('maps allow to the words the Allow button carried', () => {
-    expect(controlBehaviorDisplay({
-      response: {
-        response: { behavior: 'allow' },
+  it('reads the prompt and the decision that the Worker recorded', () => {
+    const decision = permissionDecision('once', 'Use the other file.')
+    const parsed = parsePersistedControlResponse(withMetadata({
+      [MESSAGE_METADATA_FIELD.ControlPrompt]: toJson(ControlPromptSchema, ONCE_OR_NO_PROMPT),
+      [MESSAGE_METADATA_FIELD.ControlDecision]: toJson(ControlDecisionSchema, decision),
+    }))
+    expect(parsed?.prompt).toEqual(controlPromptFromWire(ONCE_OR_NO_PROMPT))
+    expect(parsed?.decision).toEqual(decision)
+  })
+
+  // The metadata is stored data that a newer Worker may extend, so a field that this
+  // build does not know is no reason to drop the decision.
+  it('ignores a field of the decision that this build does not know', () => {
+    const parsed = parsePersistedControlResponse(withMetadata({
+      [MESSAGE_METADATA_FIELD.ControlDecision]: {
+        permission: { optionId: 'once', laterField: true },
       },
-    })).toEqual({ kind: 'label', text: 'Allow' })
+    }))
+    expect(parsed?.decision).toEqual(permissionDecision('once'))
   })
 
-  it('maps deny with a typed reason to feedback', () => {
-    expect(controlBehaviorDisplay({
-      response: {
-        response: { behavior: 'deny', message: 'nope' },
-      },
-    })).toEqual({ kind: 'feedback', message: 'nope' })
-  })
-
-  it('maps a bare deny to the words the Deny button carried', () => {
-    expect(controlBehaviorDisplay({
-      response: {
-        response: { behavior: 'deny', message: 'Rejected by user.' },
-      },
-    })).toEqual({ kind: 'label', text: 'Deny' })
-  })
-
-  it('returns null for a non-behavior response', () => {
-    expect(controlBehaviorDisplay({
-      result: { decision: 'accept' },
-    })).toBeNull()
-  })
-})
-
-describe('fallbackControlResponseSummary', () => {
-  it('uses the behavior envelope when present', () => {
-    expect(fallbackControlResponseSummary({
-      claimToken: 'claim-1',
-      requestId: '',
-      request: undefined,
-      response: {
-        response: {
-          response: { behavior: 'allow' },
+  it.each<[string, unknown]>([
+    ['absent', undefined],
+    ['not an object', 'once'],
+    [
+      'an array',
+      [
+        {
+          permission: { optionId: 'once' },
         },
+      ],
+    ],
+    ['of no kind', {}],
+    [
+      'of a value that does not decode',
+      {
+        permission: { optionId: 7 },
+      },
+    ],
+  ])('states no decision for a decision that is %s', (_, value) => {
+    const parsed = parsePersistedControlResponse(withMetadata(value === undefined
+      ? {}
+      : { [MESSAGE_METADATA_FIELD.ControlDecision]: value }))
+    expect(parsed).not.toBeNull()
+    expect(parsed).not.toHaveProperty('decision')
+  })
+})
+
+// A newer Worker can record an action that this build does not know. The decoder reads
+// it as the unstated action, which words nothing, so the row falls back to the generic
+// word rather than to a wrong one.
+describe('an action that this build does not know', () => {
+  it('reads as the generic word', () => {
+    const parsed = parsePersistedControlResponse(withMetadata({
+      [MESSAGE_METADATA_FIELD.ControlPrompt]: {
+        dialog: { title: 'Proceed?', variant: 'DIALOG_VARIANT_CONFIRM' },
+      },
+      [MESSAGE_METADATA_FIELD.ControlDecision]: {
+        dialog: { action: 'DIALOG_ACTION_LATER' },
       },
     }))
-      .toEqual({ kind: 'label', text: 'Allow' })
-  })
-
-  it('falls back to the generic label as the terminal', () => {
-    expect(fallbackControlResponseSummary({
-      claimToken: 'claim-1',
-      requestId: '',
-      request: undefined,
-      response: { anything: 1 },
-    }))
-      .toEqual({ kind: 'label', text: 'Responded' })
-    expect(fallbackControlResponseSummary({
-      requestId: '',
-      claimToken: '',
-      request: undefined,
-      response: undefined,
-    }))
-      .toEqual({ kind: 'label', text: 'Responded' })
-  })
-})
-
-describe('label', () => {
-  it('wraps plain text as a label display (including empty)', () => {
-    expect(label('Allow')).toEqual({ kind: 'label', text: 'Allow' })
-    expect(label('')).toEqual({ kind: 'label', text: '' })
-  })
-})
-
-describe('labelOrNull', () => {
-  it('lifts a non-empty string to a label, and maps null OR empty to null', () => {
-    expect(labelOrNull('Allow')).toEqual({ kind: 'label', text: 'Allow' })
-    expect(labelOrNull(null)).toBeNull()
-    // An empty string degrades to null (not a blank label), so the caller falls back to the
-    // neutral behavior/generic label instead of rendering an empty control-response row.
-    expect(labelOrNull('')).toBeNull()
-  })
-})
-
-describe('feedback', () => {
-  it('wraps a typed reason as a feedback display', () => {
-    expect(feedback('use ripgrep instead')).toEqual({ kind: 'feedback', message: 'use ripgrep instead' })
-  })
-})
-
-describe('feedbackOrLabel', () => {
-  it('renders a non-empty reason as feedback and a blank reason as the fallback label', () => {
-    expect(feedbackOrLabel('too risky', 'Deny')).toEqual({ kind: 'feedback', message: 'too risky' })
-    expect(feedbackOrLabel('', 'Deny')).toEqual({ kind: 'label', text: 'Deny' })
-    expect(feedbackOrLabel('', 'Cancel')).toEqual({ kind: 'label', text: 'Cancel' })
+    expect(parsed?.decision?.kind.case).toBe('dialog')
+    expect(resolveControlResponseSummary(parsed!, AgentProvider.PI)).toEqual({ kind: 'label', text: 'Responded' })
   })
 })
 
 describe('resolveControlResponseSummary', () => {
-  it('returns the plugin derivation when it yields one', () => {
-    expect(resolveControlResponseSummary(crWith({ anything: 1 }), () => ({ kind: 'label', text: 'X' })))
-      .toEqual({ kind: 'label', text: 'X' })
+  afterEach(() => clearSettingsLabelCache())
+
+  // The label belongs to the agent's provider: two providers can spell one mode value
+  // and word it apart, so a label of another provider must not name it.
+  it('names the mode of a plan approval by the label that the provider\'s settings state', () => {
+    updateSettingsLabelCache(AgentProvider.DROID, [
+      create(AvailableOptionGroupSchema, {
+        id: 'permissionMode',
+        options: [
+          { id: 'auto-medium', name: 'Auto (Medium)' },
+        ],
+      }),
+    ])
+    const approval = saved({
+      prompt: { kind: 'plan' },
+      decision: create(ControlDecisionSchema, {
+        kind: {
+          case: 'plan',
+          value: { approve: true, permissionMode: 'auto-medium' },
+        },
+      }),
+    })
+    expect(resolveControlResponseSummary(approval, AgentProvider.DROID)).toEqual({ kind: 'label', text: 'Approve (Auto (Medium))' })
+    expect(resolveControlResponseSummary(approval, AgentProvider.CLINE)).toEqual({ kind: 'label', text: 'Approve (auto-medium)' })
+    expect(resolveControlResponseSummary(approval, undefined)).toEqual({ kind: 'label', text: 'Approve (auto-medium)' })
   })
 
-  it('degrades to the neutral fallback when the derivation returns null', () => {
-    expect(resolveControlResponseSummary(crWith({
+  it('reads the words of the prompt and the decision', () => {
+    const prompt = controlPromptFromWire(ONCE_OR_NO_PROMPT)
+    expect(resolveControlResponseSummary(saved({
+      prompt,
+      decision: permissionDecision('once'),
+    }), AgentProvider.CODEX))
+      .toEqual({ kind: 'label', text: 'Run once' })
+    expect(resolveControlResponseSummary(saved({
+      prompt,
+      decision: permissionDecision('no', 'Use the other file.'),
+    }), AgentProvider.CODEX))
+      .toEqual({ kind: 'feedback', message: 'Use the other file.' })
+  })
+
+  // The answer bytes beside the metadata never word the row, so a row that states no
+  // decision reads the generic word even when its bytes are a readable answer.
+  it('reads the generic word for a row that states no decision or no prompt', () => {
+    const response = {
       response: {
+        request_id: 'request-1',
         response: { behavior: 'allow' },
       },
-    }), () => null))
-      .toEqual({ kind: 'label', text: 'Allow' })
-    expect(resolveControlResponseSummary(crWith({ anything: 1 }), () => null))
+    }
+    expect(resolveControlResponseSummary(saved({
+      prompt: controlPromptFromWire(ONCE_OR_NO_PROMPT),
+      response,
+    }), AgentProvider.CODEX))
+      .toEqual({ kind: 'label', text: 'Responded' })
+    expect(resolveControlResponseSummary(saved({
+      decision: permissionDecision('once'),
+      response,
+    }), AgentProvider.CODEX))
+      .toEqual({ kind: 'label', text: 'Responded' })
+    expect(resolveControlResponseSummary(saved({}), AgentProvider.CODEX))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
 
-  it('degrades when no derivation is provided', () => {
-    expect(resolveControlResponseSummary(crWith({ anything: 1 }), undefined))
+  it('reads the generic word for a decision that does not answer the prompt', () => {
+    const prompt = controlPromptFromWire(ONCE_OR_NO_PROMPT)
+    expect(resolveControlResponseSummary(saved({
+      prompt,
+      decision: permissionDecision('always'),
+    }), AgentProvider.CODEX))
       .toEqual({ kind: 'label', text: 'Responded' })
-  })
-
-  it('catches a derivation that THROWS and degrades to the fallback, never leaking', () => {
-    // A malformed payload that makes a plugin derivation throw must NOT propagate (which would dump
-    // raw wire bytes in the transcript) -- it degrades to the same neutral fallback as a null return.
-    const boom = (): never => {
-      throw new Error('bad payload')
-    }
-    expect(resolveControlResponseSummary(crWith({ anything: 1 }), boom))
+    expect(resolveControlResponseSummary(saved({
+      prompt,
+      decision: create(ControlDecisionSchema, {
+        kind: {
+          case: 'plan',
+          value: { approve: true },
+        },
+      }),
+    }), AgentProvider.CODEX))
       .toEqual({ kind: 'label', text: 'Responded' })
-    expect(resolveControlResponseSummary(crWith({
-      response: {
-        response: { behavior: 'allow' },
-      },
-    }), boom))
-      .toEqual({ kind: 'label', text: 'Allow' })
-  })
-
-  it('logs a warning when the derivation throws, so a real derivation bug is diagnosable', () => {
-    // The catch degrades SILENTLY without the log, so a throwing derivation renders the generic
-    // fallback forever with no trace. Pin that the throw is surfaced (a total derivation never
-    // throws, so a throw is a real bug -- not malformed data -- and must be visible).
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      const boom = (): never => {
-        throw new Error('bad payload')
-      }
-      resolveControlResponseSummary(crWith({ anything: 1 }), boom)
-      expect(warn).toHaveBeenCalledTimes(1)
-    }
-    finally {
-      warn.mockRestore()
-    }
   })
 })
 
@@ -244,33 +279,5 @@ describe('controlResponsePreviewText', () => {
   it('renders a label verbatim and feedback under the lead', () => {
     expect(controlResponsePreviewText({ kind: 'label', text: 'Allow' })).toBe('Allow')
     expect(controlResponsePreviewText({ kind: 'feedback', message: 'do X' })).toBe('Sent feedback:\ndo X')
-  })
-})
-
-describe('labeledAnswerLine', () => {
-  it('joins trimmed non-empty values under the label', () => {
-    expect(labeledAnswerLine('Task', ['  Build ', 'Test'])).toBe('Task: Build, Test')
-  })
-
-  it('drops empty values and returns null when none survive', () => {
-    expect(labeledAnswerLine('Env', ['Dev', '  ', ''])).toBe('Env: Dev')
-    expect(labeledAnswerLine('Env', ['  ', ''])).toBeNull()
-    expect(labeledAnswerLine('Env', 'not-an-array')).toBeNull()
-  })
-})
-
-describe('firstNonEmpty', () => {
-  it('returns the first non-empty trimmed value', () => {
-    expect(firstNonEmpty('', '  ', ' x ')).toBe('x')
-    expect(firstNonEmpty(undefined, 'header')).toBe('header')
-    expect(firstNonEmpty('', '   ')).toBe('')
-  })
-})
-
-describe('joinAnswerLines', () => {
-  it('newline-joins the lines, or null when there are none', () => {
-    expect(joinAnswerLines(['Task: Build', 'Env: Dev'])).toBe('Task: Build\nEnv: Dev')
-    expect(joinAnswerLines(['Task: Build'])).toBe('Task: Build')
-    expect(joinAnswerLines([])).toBeNull()
   })
 })

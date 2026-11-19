@@ -554,9 +554,9 @@ func (a *Agent) rejectQuestionLater(questionID string) {
 }
 
 // mimoAnswer is one answer that AnswerControlRequest built, read into what
-// MiMo takes.
+// MiMo takes. It holds no request id: the caller already holds the key that
+// the answer addresses (Provider.ControlResponseRequestID).
 type mimoAnswer struct {
-	requestID  string
 	permission mimoPermissionReplyBody
 	answers    [][]string
 	reject     bool
@@ -653,8 +653,7 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 	if kind != controlQuestion {
 		return mimoAnswer{}, true, errors.New("an elicitation action answers only a question")
 	}
-	requestID := strings.TrimSpace(envelope.Response.RequestID)
-	if requestID == "" {
+	if strings.TrimSpace(envelope.Response.RequestID) == "" {
 		return mimoAnswer{}, true, errors.New("the answer states no request")
 	}
 	var word string
@@ -668,7 +667,7 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 	default:
 		return mimoAnswer{}, true, fmt.Errorf("unknown elicitation action %q", action)
 	}
-	return mimoAnswer{requestID: requestID, answers: [][]string{{word}}, elicitation: true}, true, nil
+	return mimoAnswer{answers: [][]string{{word}}, elicitation: true}, true, nil
 }
 
 // parseControlAnswer reads one answer to a request of kind.
@@ -680,7 +679,7 @@ func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAn
 // answers, and a permission with the option the user picked.
 func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error) {
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(content); ok && requestID != "" && behavior != "" {
-		answer := mimoAnswer{requestID: requestID}
+		var answer mimoAnswer
 		switch {
 		case behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny:
 			return mimoAnswer{}, errors.New(agent.RefusalNoDecision)
@@ -710,7 +709,7 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		return mimoAnswer{}, errors.New(agent.RefusalUnreadableAnswer)
 	}
-	answer := mimoAnswer{requestID: requestID}
+	var answer mimoAnswer
 	switch kind {
 	case controlPermission:
 		outcome := envelope.Result.Outcome

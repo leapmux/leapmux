@@ -380,9 +380,7 @@ func TestZCodeResolvesTheTrustAnswer(t *testing.T) {
 				"subtype": "success", "request_id": requestID, "response": map[string]any{"behavior": behavior},
 			}})
 			require.NoError(t, err)
-			result := zcodeProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: requestID, RequestPayload: payload, ResponseContent: content,
-			})
+			result := agenttest.ResolveAnswer(zcodeProvider{}, payload, requestID, agent.ControlAnswer{Content: content})
 			require.Empty(t, result.Refusal())
 			var answer struct {
 				Response struct {

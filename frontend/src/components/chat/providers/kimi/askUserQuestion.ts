@@ -5,28 +5,16 @@
  * the frame unchanged, and its nested request holds the questions. Each question and
  * each option carries an id of the server's own (`q_0`, `opt_0_1`), and the saved
  * answer states those ids rather than the words on screen. The Worker reads the
- * control request itself and answers it in the server's own answer shape.
+ * control request itself, answers it in the server's own answer shape, and records
+ * the neutral decision that words the saved answer.
  *
- * This module reads two question lists:
- *
- *   - The questions of a stored request, so that the saved-answer display can turn the
- *     ids back into words.
- *   - The questions of an `AskUserQuestion` tool call, which its transcript row draws.
+ * This module reads the questions of an `AskUserQuestion` tool call, which its
+ * transcript row draws.
  */
 
 import type { QuestionPrompt } from '../../model/question'
-import { KIMI_INTERACTION_KIND } from '~/generated/contracts/kimi-protocol'
-import { isObject, pickString } from '~/lib/jsonPick'
+import { pickString } from '~/lib/jsonPick'
 import { questionsFromRecords } from '../questionRecords'
-import { kimiInteractionRequest } from './protocol'
-
-/** The raw question records of a stored question request, in the order it declares. */
-export function kimiQuestionRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
-  const request = kimiInteractionRequest(payload, KIMI_INTERACTION_KIND.Question)
-  return Array.isArray(request?.questions)
-    ? request.questions.filter(isObject)
-    : []
-}
 
 /**
  * The questions of an `AskUserQuestion` TOOL CALL, for the row that draws it.

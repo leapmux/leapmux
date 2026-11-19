@@ -208,7 +208,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput sends one user frame during the active turn, with its attachments.
 // Qoder keeps queued content unchanged and reads it when the queued prompt starts its own turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if a.IsStopped() {
 		return fmt.Errorf("the Qoder process is stopped")
 	}

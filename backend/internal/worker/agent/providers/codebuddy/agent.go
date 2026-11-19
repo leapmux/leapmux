@@ -246,7 +246,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 // The refusal depends on the input alone, so it comes before the turn check.
 //
 // See codebuddySteerOutcome for how the answer of CodeBuddy maps to the result.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if a.IsStopped() {
 		return fmt.Errorf("the CodeBuddy process is stopped")
 	}

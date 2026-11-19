@@ -427,7 +427,6 @@ func mimoNativeAnswer(t *testing.T, payload, requestID string, answer agent.Cont
 	require.True(t, ok)
 	native, err := readControlAnswer(kind, []byte(payload), answer.Content)
 	require.NoError(t, err)
-	assert.Equal(t, requestID, native.requestID)
 	return native
 }
 
@@ -585,7 +584,7 @@ func TestAnswerControlRequest_RefusesADecisionOfAnotherKind(t *testing.T) {
 	_, err := mimoProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
 		Request: input, RequestID: "r",
 		Prompt:   &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Dialog{Dialog: &leapmuxv1.DialogPrompt{}}},
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Dialog{Dialog: &leapmuxv1.DialogDecision{}}},
+		Decision: agenttest.DialogDecision(leapmuxv1.DialogAction_DIALOG_ACTION_UNSPECIFIED, ""),
 	})
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "MiMo states no dialog")
 }

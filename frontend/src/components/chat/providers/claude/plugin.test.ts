@@ -1,5 +1,4 @@
 import type { MessageCategory } from '../../messageClassifier'
-import type { ControlPrompt } from '../../model/controlPrompt'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
@@ -100,7 +99,6 @@ describe('claude extractQuotableText', () => {
 })
 
 describe('claude preview text (scroll-rail mark preview)', () => {
-  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
   // The rail reads the row through whichever shape it carries, the way
   // `chatMarkPreview` does.
   const preview = (parent: Record<string, unknown>, category: MessageCategory) =>
@@ -194,98 +192,6 @@ describe('claude preview text (scroll-rail mark preview)', () => {
         ],
       },
     }, { kind: 'assistant_text' })).toBe('hi')
-  })
-
-  it('derives the control-response display from the native response envelope (not previewText)', () => {
-    // Control-response rows resolve through controlResponseDisplay, not previewText -- Claude's
-    // derivation IS the neutral behavior envelope: allow -> Allow, deny+message -> feedback.
-    const allow = {
-      type: 'control_response',
-      response: {
-        request_id: 'r',
-        response: { behavior: 'allow' },
-      },
-    }
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: 'r',
-      request: undefined,
-      response: allow,
-    }))
-      .toEqual({ kind: 'label', text: 'Allow' })
-    const deny = {
-      type: 'control_response',
-      response: {
-        request_id: 'r',
-        response: { behavior: 'deny', message: 'use ripgrep' },
-      },
-    }
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: 'r',
-      request: undefined,
-      response: deny,
-    }))
-      .toEqual({ kind: 'feedback', message: 'use ripgrep' })
-  })
-
-  /*
-   * The envelope above says nothing about WHICH control it answers, and the two Claude
-   * offers carry different words: a plan is approved, a permission is allowed. The
-   * prompt that the Worker recorded with the answer decides, because the banner drew
-   * that prompt -- so a saved row reads the words its own button carried. The native
-   * tool name does not decide: a row that records no prompt reads the permission words,
-   * even for a plan approval.
-   */
-  it.each<[string, string, ControlPrompt | undefined, string, string]>([
-    [
-      'a plan approval',
-      'ExitPlanMode',
-      { kind: 'plan' },
-      'Approve',
-      'Reject',
-    ],
-    [
-      'a permission',
-      'Bash',
-      {
-        kind: 'permission',
-        permission: { title: 'Bash', options: [] },
-      },
-      'Allow',
-      'Deny',
-    ],
-    [
-      'a row that records no prompt',
-      'ExitPlanMode',
-      undefined,
-      'Allow',
-      'Deny',
-    ],
-  ])('reads the answer to %s with that control\'s own words', (_, toolName, prompt, allowWord, denyWord) => {
-    const request = {
-      request: { tool_name: toolName, input: {} },
-    }
-    const answer = (behavior: string) => ({
-      type: 'control_response',
-      response: {
-        request_id: 'r',
-        response: { behavior },
-      },
-    })
-    const saved = (behavior: string) => ({
-      claimToken: 'c',
-      requestId: 'r',
-      request,
-      response: answer(behavior),
-      ...(prompt
-        ? { prompt }
-        : {}),
-    })
-    expect(plugin?.controls?.controlResponseDisplay!(saved('allow')))
-      .toEqual({ kind: 'label', text: allowWord })
-    expect(plugin?.controls?.controlResponseDisplay!(saved('deny')))
-      .toEqual({ kind: 'label', text: denyWord })
   })
 })
 

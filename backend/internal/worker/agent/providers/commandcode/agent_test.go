@@ -95,7 +95,7 @@ func TestSteerInputConfirmsNativeDelivery(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"turnId":"turn_1","queued":1}`)}
 	})
 	a.turnID = "turn_1"
-	require.NoError(t, a.SteerInput("native steer", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "native steer"}))
 }
 
 func TestSteerDeclaresRowAtEchoWithoutSurvival(t *testing.T) {
@@ -125,8 +125,8 @@ func commandCodeSteerAgent(t *testing.T, reply func(string, json.RawMessage) age
 func TestSteersDeliveredReportsTheEchoCount(t *testing.T) {
 	a, sink := commandCodeSteerAgent(t, nil)
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "before the steers"})
-	require.NoError(t, a.SteerInput("first", nil))
-	require.NoError(t, a.SteerInput("second", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "first"}))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "second"}))
 	for _, count := range []int{0, -1} {
 		feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": count})
 	}
@@ -144,7 +144,7 @@ func TestSteersDeliveredReportsTheEchoCount(t *testing.T) {
 
 func TestInterruptedTurnLeavesTheSteerToTheQueue(t *testing.T) {
 	a, sink := commandCodeSteerAgent(t, nil)
-	require.NoError(t, a.SteerInput("undelivered", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "undelivered"}))
 	feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "interrupted", "leftover": []string{"undelivered"}})
 	assert.Empty(t, sink.RequeuedInputs(), "the queue retains its original input instead of a copied input")
 	assert.Empty(t, sink.SteerEchoReports())
@@ -152,7 +152,7 @@ func TestInterruptedTurnLeavesTheSteerToTheQueue(t *testing.T) {
 	a.startTurn("turn_2")
 	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
 	assert.Empty(t, sink.SteerEchoReports(), "the ended turn leaves no stale ledger entry")
-	require.NoError(t, a.SteerInput("new steer", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "new steer"}))
 	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 99})
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
 }
@@ -161,7 +161,7 @@ func TestSteerRejectionForgetsTheUnacceptedInput(t *testing.T) {
 	a, sink := commandCodeSteerAgent(t, func(string, json.RawMessage) agenttest.RPCReply {
 		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32001,"message":"the turn ended"}`)}
 	})
-	require.ErrorIs(t, a.SteerInput("refused", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "refused"}), agent.ErrNoActiveTurn)
 	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
 	assert.Empty(t, sink.SteerEchoReports())
 }
@@ -176,7 +176,7 @@ func TestSteerEarlyEchoSurvivesAFailedWriteAndALaterRequestError(t *testing.T) {
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "before the steer"})
 	sink.PersistErr = assert.AnError
 	defer func() { sink.PersistErr = nil }()
-	require.NoError(t, a.SteerInput("delivered", nil), "the native echo proves delivery")
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "delivered"}), "the native echo proves delivery")
 	assert.Empty(t, sink.SteerEchoReports(), "the report waits behind the failed text write")
 	failed := len(sink.Messages())
 	sink.PersistErr = nil
@@ -189,7 +189,7 @@ func TestSteerEarlyEchoSurvivesAFailedWriteAndALaterRequestError(t *testing.T) {
 
 func TestSteerInputRejectsAnIdleNativeSession(t *testing.T) {
 	a, _ := testAgent(t)
-	assert.ErrorIs(t, a.SteerInput("native steer", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "native steer"}), agent.ErrNoActiveTurn)
 }
 
 func TestInputSessionRejectsEmptyAndReplacedHandles(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -91,7 +90,8 @@ type kiroSteerReply struct {
 //
 // Kiro's steer carries text alone, so a steer with an attachment is refused as
 // unsupported, and the worker keeps it for the next turn, attachment and all.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if err := providerkit.TextOnlySteer("Kiro", attachments); err != nil {
 		return err
 	}

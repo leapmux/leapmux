@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // completionTimeout caps the hub calls that one completion makes. A shell
@@ -103,7 +104,7 @@ func completeTargets(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([
 			add(w.GetId(), names[w.GetId()])
 		}
 	}
-	if os.Getenv("LEAPMUX_CONTROL_TAB_ID") == "" && kind != resolve.KindWorker {
+	if os.Getenv(controlenv.TabIDVariable) == "" && kind != resolve.KindWorker {
 		// "self" works only inside a LeapMux tab.
 		candidates = candidates[1:]
 	}

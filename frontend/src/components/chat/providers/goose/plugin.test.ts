@@ -46,27 +46,6 @@ describe('goose provider', () => {
   it('states its own reasoning axis for the effort chip', () => {
     expect(plugin?.configuration?.effortGroupKey).toBe('thinking_effort')
   })
-
-  it('derives a control-response label via the default ACP permission path (no question hook)', () => {
-    // Goose has no question protocol, so it gets the shared acpControlResponseSummary default.
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: '7',
-      request: {
-        method: 'session/request_permission',
-        params: {
-          options: [
-            { optionId: 'proceed_once', name: 'Allow once' },
-          ],
-        },
-      },
-      response: {
-        result: {
-          outcome: { optionId: 'proceed_once' },
-        },
-      },
-    })).toEqual({ kind: 'label', text: 'Allow once' })
-  })
 })
 
 describe('native output without a filesystem pointer', () => {

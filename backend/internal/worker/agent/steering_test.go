@@ -21,8 +21,13 @@ type steeringStub struct {
 	supports bool
 }
 
-func (s *steeringStub) SteerInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (s *steeringStub) SupportsSteering() bool                           { return s.supports }
+func (s *steeringStub) SteerInput(agent.SteerRequest) error { return nil }
+func (s *steeringStub) SupportsSteering() bool              { return s.supports }
+
+// The assertion keeps the stub an InputSteerer when the interface changes. A
+// stub that stopped being one would make the capability test pass for the
+// wrong reason.
+var _ agent.InputSteerer = (*steeringStub)(nil)
 
 // Manager.SupportsSteering asks the provider and reports the answer. It never
 // assumes true for a provider that implements SteerInput, because the Manager
@@ -55,7 +60,7 @@ type busyProvider struct {
 }
 
 func (p *busyProvider) SendInput(string, []*leapmuxv1.Attachment) error { return p.refuse }
-func (p *busyProvider) SteerInput(string, []*leapmuxv1.Attachment) error {
+func (p *busyProvider) SteerInput(agent.SteerRequest) error {
 	return nil
 }
 func (p *busyProvider) SupportsSteering() bool { return p.supports }
@@ -114,4 +119,63 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 			}
 		})
 	}
+}
+
+// steerRecorder records each steer that reaches the provider, and the session
+// of each session-checked steer.
+type steerRecorder struct {
+	agenttest.IdleAgent
+	requests []agent.SteerRequest
+	sessions []string
+}
+
+func (r *steerRecorder) SteerInput(request agent.SteerRequest) error {
+	r.requests = append(r.requests, request)
+	return nil
+}
+
+func (r *steerRecorder) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
+	r.sessions = append(r.sessions, sessionID)
+	return r.SteerInput(request)
+}
+
+func (*steerRecorder) SupportsSteering() bool { return true }
+
+var _ agent.SessionInputSteerer = (*steerRecorder)(nil)
+
+// A provider that drops a steer hands back the request it received, so the
+// request must reach it whole: the queue item first of all.
+func TestManagerSteerInputHandsTheProviderTheWholeRequest(t *testing.T) {
+	t.Parallel()
+
+	provider := &steerRecorder{}
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("agent-1", provider)
+	request := agent.SteerRequest{
+		InputID: "input-1", Content: "Also check the tests.",
+		Attachments: []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("body")}},
+	}
+
+	require.NoError(t, m.SteerInput("agent-1", request))
+	assert.Equal(t, []agent.SteerRequest{request}, provider.requests)
+
+	require.NoError(t, agent.SteerInputToSession(provider, "session-1", request))
+	assert.Equal(t, []string{"session-1"}, provider.sessions)
+	assert.Equal(t, []agent.SteerRequest{request, request}, provider.requests)
+}
+
+// A steer without its queue item could not come back if the provider dropped
+// it, so both steer paths refuse it before a provider reads it.
+func TestSteerRefusesARequestWithoutAQueueItem(t *testing.T) {
+	t.Parallel()
+
+	provider := &steerRecorder{}
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("agent-1", provider)
+	request := agent.SteerRequest{Content: "Also check the tests."}
+
+	require.ErrorContains(t, m.SteerInput("agent-1", request), "states no queue item")
+	require.ErrorContains(t, agent.SteerInputToSession(provider, "session-1", request), "states no queue item")
+	assert.Empty(t, provider.requests)
+	assert.Empty(t, provider.sessions)
 }

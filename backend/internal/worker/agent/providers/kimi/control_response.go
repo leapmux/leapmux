@@ -39,15 +39,10 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		slog.Warn("kimi control response carried no decision", "request_id", ctx.RequestID)
 		result.Refuse(agent.RefusalNoDecision)
-		return result
-	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		slog.Warn("kimi control response addressed another request", "answered", requestID, "stored", ctx.RequestID)
-		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	allow := behavior == contracts.ControlAnswerBehaviorAllow

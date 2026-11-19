@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -87,7 +88,12 @@ func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseCon
 		return res
 	}
 	if request.CascadeID != response.CascadeID {
-		res.Refuse(fmt.Sprintf("%s: request cascade %q, response cascade %q", agent.RefusalOtherRequest, request.CascadeID, response.CascadeID))
+		// The answer's cascade is the cascade of the request's key
+		// (ControlResponseRequestID), so the stored request disagrees with its
+		// own key, and LeapMux cannot trust it.
+		slog.Warn("antigravity stored control request disagrees with its key",
+			"request_id", ctx.RequestID, "stored_cascade_id", request.CascadeID, "key_cascade_id", response.CascadeID)
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	return res

@@ -1,5 +1,4 @@
 import type { ControlQuestion, QuestionOption } from '../../model/question'
-import { KIRO_USER_INPUT_ACTION } from '~/generated/contracts/kiro-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 
 /**
@@ -9,7 +8,7 @@ import { isObject, pickString } from '~/lib/jsonPick'
  * option or types an answer of their own, and Kiro reads the answer as text. The
  * Worker reads the request into the prompt that the browser draws, and writes the
  * answer. Here the transcript row of the question call reads the question and its
- * options, and the display of the saved answer reads the text.
+ * options.
  */
 
 /** The words a recommended option carries beside its title, as Kiro's own dialog shows it. */
@@ -71,12 +70,4 @@ export function kiroUserInputQuestion(question: string, rawOptions: unknown): Co
     options: kiroOptions(rawOptions).map(questionOption),
     multiSelect: false,
   }
-}
-
-/** The answer one saved reply states, or null for a dismissal or an unreadable reply. */
-export function kiroUserInputSavedAnswer(result: Record<string, unknown>): string | null {
-  if (pickString(result, 'action') !== KIRO_USER_INPUT_ACTION.Answered)
-    return null
-  const answer = pickString(result, 'answer').trim()
-  return answer || null
 }

@@ -47,6 +47,20 @@ const (
 	codexLabelBlockHost       = "Block Host & Remember"
 )
 
+// The scope labels of the two kinds of rule that Codex remembers. A client
+// labels the scope choice that keeps the rule with them. A blocked host
+// states the host rule's label too, so a client pairs the block with the
+// host rule's choice alone.
+const (
+	codexScopeLabelCommandRule = "Command rule"
+	codexScopeLabelHostRule    = "Host rule"
+)
+
+// codexRuleScope is the scope of an amendment. Codex writes each one into the
+// user's own Codex configuration, so the rule reaches every project of the
+// user.
+const codexRuleScope = leapmuxv1.PermissionScope_PERMISSION_SCOPE_USER
+
 // codexPermissionGrantScopeSession is the scope of a permissions grant that
 // lasts for the session. codexPermissionGrantScopeTurn is its narrower sibling.
 const codexPermissionGrantScopeSession = "session"
@@ -411,9 +425,11 @@ func parseCodexDecision(raw json.RawMessage, index int) (choice codexDecisionCho
 		}
 		return codexDecisionChoice{
 			option: &leapmuxv1.PermissionOption{
-				OptionId: id(codexDecisionExecPolicyAmendment),
-				Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS,
-				Name:     codexLabelWithDetail(codexLabelAllowRemember, strings.Join(command, " ")),
+				OptionId:   id(codexDecisionExecPolicyAmendment),
+				Kind:       leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS,
+				Name:       codexLabelWithDetail(codexLabelAllowRemember, strings.Join(command, " ")),
+				Scope:      codexRuleScope,
+				ScopeLabel: codexScopeLabelCommandRule,
 			},
 			decision: raw,
 		}, true
@@ -424,9 +440,11 @@ func parseCodexDecision(raw json.RawMessage, index int) (choice codexDecisionCho
 			return codexDecisionChoice{}, false
 		}
 		option := &leapmuxv1.PermissionOption{
-			OptionId: id(codexDecisionNetworkPolicyAmendment),
-			Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS,
-			Name:     codexLabelWithDetail(codexLabelAllowHost, host),
+			OptionId:   id(codexDecisionNetworkPolicyAmendment),
+			Kind:       leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS,
+			Name:       codexLabelWithDetail(codexLabelAllowHost, host),
+			Scope:      codexRuleScope,
+			ScopeLabel: codexScopeLabelHostRule,
 		}
 		if action == codexNetworkPolicyDeny {
 			option.Kind = leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ALWAYS
@@ -495,8 +513,8 @@ func codexNetworkPolicyAmendment(body json.RawMessage) (host, action string, ok 
 }
 
 // codexLabelWithDetail appends the subject of a remembered rule to its label,
-// after a colon, so two rules of one kind read apart. A client reads a
-// lasting scope from the text before the colon only.
+// after a colon, so two rules of one kind read apart. The option states its
+// scope and its scope label, so a client reads no scope from this text.
 func codexLabelWithDetail(label, detail string) string {
 	if detail == "" {
 		return label

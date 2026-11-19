@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // The `git` group reads and changes the git state of a directory on a
@@ -144,7 +145,7 @@ absolute path on the worker; the worker finds its repository.`,
 // user running from inside a remote tab doesn't have to repeat the path on
 // every invocation.
 func workingDirEnv() string {
-	return os.Getenv("LEAPMUX_CONTROL_WORKING_DIR")
+	return os.Getenv(controlenv.WorkingDirVariable)
 }
 
 // missingDirError returns the error for an empty directory flag.
@@ -155,7 +156,7 @@ func workingDirEnv() string {
 // which is false there and sends them to look at the wrong thing.
 func missingDirError(flagName string) error {
 	if workingDirEnv() == "" {
-		return cli.Usagef("%s is required, because $LEAPMUX_CONTROL_WORKING_DIR is not set", flagName)
+		return cli.Usagef("%s is required, because $%s is not set", flagName, controlenv.WorkingDirVariable)
 	}
 	return cli.Usagef("%s is empty", flagName)
 }

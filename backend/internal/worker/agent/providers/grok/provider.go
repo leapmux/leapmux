@@ -120,22 +120,16 @@ func withheld(ctx agent.ControlResponseContext, reason string) agent.ControlResp
 	return result
 }
 
-// decisionFor reads the neutral allow and deny envelope, and checks that it
-// answers the stored request. refusal states why the answer stands unread, for
-// the reader.
+// decisionFor reads the neutral allow and deny envelope, and checks that the
+// stored request has the id that the reply needs. refusal states why the
+// answer stands unread, for the reader.
 func decisionFor(ctx agent.ControlResponseContext) (behavior, message, refusal string) {
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !ok {
 		return "", "", agent.RefusalNoDecision
 	}
-	_, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	switch {
-	case !found:
+	if _, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload); !found {
 		return "", "", agent.RefusalUnreadableRequest
-	case requestID == "":
-		return "", "", agent.RefusalNoDecision
-	case requestID != agent.StoredControlRequestID(ctx, storedID):
-		return "", "", agent.RefusalOtherRequest
 	}
 	return behavior, message, ""
 }
@@ -217,7 +211,10 @@ func resolveGrokElicitation(ctx agent.ControlResponseContext) agent.ControlRespo
 // only a grant for the workspace. So an answer this cannot read is withheld,
 // never sent as reject.
 func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	outcome, ok := grokFolderTrustOutcome(ctx)
+	if _, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload); !found {
+		return withheld(ctx, agent.RefusalUnreadableRequest)
+	}
+	outcome, ok := grokFolderTrustOutcome(ctx.ResponseContent)
 	if !ok {
 		return withheld(ctx, agent.RefusalUnreadableAnswer)
 	}
@@ -230,12 +227,11 @@ func resolveGrokFolderTrust(ctx agent.ControlResponseContext) agent.ControlRespo
 	return result
 }
 
-// grokFolderTrustOutcome reads the reader's choice: the option that the
-// permission reply selects, when the reply answers the stored request and the
-// option is one of Grok's two words.
-func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
+// grokFolderTrustOutcome reads the reader's choice from the permission reply
+// content: the option that it selects, when the option is one of Grok's two
+// words.
+func grokFolderTrustOutcome(content []byte) (string, bool) {
 	var reply struct {
-		ID     json.RawMessage `json:"id"`
 		Result struct {
 			Outcome struct {
 				Outcome  string `json:"outcome"`
@@ -243,12 +239,7 @@ func grokFolderTrustOutcome(ctx agent.ControlResponseContext) (string, bool) {
 			} `json:"outcome"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(ctx.ResponseContent, &reply) != nil || reply.Result.Outcome.Outcome != contracts.ACPPermissionOutcomeSelected {
-		return "", false
-	}
-	_, responseID, found := agent.ExtractJSONRPCID(ctx.ResponseContent)
-	_, storedID, stored := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	if !found || !stored || responseID != agent.StoredControlRequestID(ctx, storedID) {
+	if json.Unmarshal(content, &reply) != nil || reply.Result.Outcome.Outcome != contracts.ACPPermissionOutcomeSelected {
 		return "", false
 	}
 	switch reply.Result.Outcome.OptionID {

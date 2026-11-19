@@ -174,7 +174,8 @@ func (a *Agent) operationActiveLocked() bool {
 }
 
 // SteerInput uses the native parent-turn queue. Images require a later full turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()

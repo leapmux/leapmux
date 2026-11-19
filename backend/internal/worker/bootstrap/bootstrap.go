@@ -34,6 +34,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
@@ -513,7 +514,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// through a cleanup path (the per-exit handler keeps the state for a possible
 	// relaunch).
 	periodicCtx, cancelPeriodic := context.WithCancel(p.Ctx)
-	periodicLoops := append(startRetentionLoops(periodicCtx, p.DB, p.DataDir), svc.StartOrphanSweepLoop(periodicCtx))
+	periodicLoops := append(startRetentionLoops(periodicCtx, p.DB, p.DataDir, svc.InputQueue), svc.StartOrphanSweepLoop(periodicCtx))
 
 	// Hand Shutdown a way to stop every loop. Their teardowns are not registered
 	// with svc.Cleanup, a deregistered worker calls Shutdown BEFORE p.Ctx ends,
@@ -596,10 +597,11 @@ func nudgeOnNewOwner(svc *service.Service, nudge func()) func(*leapmuxv1.WorkerI
 
 // startRetentionLoops starts the two data-retention loops, and returns the
 // channels that close after each one stops.
-func startRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) []<-chan struct{} {
+func startRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string, inputs *inputqueue.Manager) []<-chan struct{} {
 	// Hard-delete agents and terminals closed for longer than the
-	// retention period.
-	cleanupStopped := service.StartCleanupLoop(ctx, db.New(sqlDB))
+	// retention period, and the inputs removed from a queue for longer than
+	// the queue's own retention.
+	cleanupStopped := service.StartCleanupLoop(ctx, db.New(sqlDB), inputs)
 
 	// Roll up old plan year directories (`<data_dir>/plans/<YYYY>/`) into
 	// per-year zip files.

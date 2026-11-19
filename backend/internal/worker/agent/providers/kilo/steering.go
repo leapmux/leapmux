@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -21,7 +20,8 @@ type kiloSteerState struct {
 // SteerInput preserves Kilo's second ACP prompt as a turn of its own. Kilo can
 // answer that prompt after the first response. Without this turn, the first
 // response clears the text buffer and no callback persists the later answer.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	a.steers.mu.Lock()
 	_, active, sessionID, _ := a.SteerTarget()
 	if !active {

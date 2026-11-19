@@ -177,8 +177,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running turn. omp checks for steering between
 // tool calls, and it moves a long `bash` call to the background to take it.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 
 // SteerRowAtEcho places a steer at the native user echo or a confirmed local command result.

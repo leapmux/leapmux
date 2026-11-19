@@ -123,6 +123,23 @@ export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
       return attempt.inputId
     }),
 
+    /**
+     * Forget each attempt whose input a queue snapshot holds. The snapshot
+     * proves that the Worker took the input, as an accepted answer does. The
+     * Worker keeps the row of an input that the user removes, so a later send
+     * of the same payload that reused the id would queue nothing: it is a new
+     * message, and it takes a fresh id.
+     */
+    forgetDelivered: (inputIds: Iterable<string>) => {
+      const delivered = new Set(inputIds)
+      if (delivered.size === 0)
+        return
+      for (const [key, attempt] of pendingByFingerprint) {
+        if (delivered.has(attempt.inputId))
+          pendingByFingerprint.delete(key)
+      }
+    },
+
     markAccepted: (inputId: string) => settle(inputId, 'accepted'),
     markRefused: (inputId: string) => settle(inputId, 'refused'),
     markUncertain: (inputId: string) => settle(inputId, 'uncertain'),

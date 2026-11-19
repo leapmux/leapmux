@@ -135,7 +135,7 @@ func TestPinnedEnvironmentRunsInEveryInstalledShell(t *testing.T) {
 			const value = "pin-value-'quoted'\n$HOME $(printf injected)"
 			cmd, _, _ := wrapTestCommand(t, ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + value}})
 			home := t.TempDir()
-			cmd.Env = envutil.PinEnv(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"), "XDG_STATE_HOME="+filepath.Join(home, ".state"), "ZDOTDIR="+home, "LEAPMUX_PIN_TEST_HELPER=1", "POWERSHELL_TELEMETRY_OPTOUT=1", "DOTNET_CLI_TELEMETRY_OPTOUT=1")
+			cmd.Env = envutil.PinEnv(cmd.Environ(), append(homeEnv(home), "LEAPMUX_PIN_TEST_HELPER=1")...)
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, err, "%s", output)
 			result := readPinResult(t, output)

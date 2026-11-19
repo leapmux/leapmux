@@ -21,7 +21,7 @@ func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 	)
 	ag.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
 	ag.SetPromptActiveForTest(true)
-	require.NoError(t, ag.SteerInput("guide the turn", nil))
+	require.NoError(t, ag.SteerInput(agent.SteerRequest{Content: "guide the turn"}))
 	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
 	assert.Equal(t, acp.MethodSessionPrompt, requests()[0].Method)
 	assert.Equal(t, "session-1", requests()[0].Params["sessionId"])

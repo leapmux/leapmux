@@ -266,7 +266,7 @@ func TestCodebuddySteerInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(codebuddySteered))
-			err := a.SteerInput(tc.content, tc.attachments)
+			err := a.SteerInput(agent.SteerRequest{Content: tc.content, Attachments: tc.attachments})
 			if tc.steerRefused {
 				require.ErrorIs(t, err, agent.ErrSteeringUnsupported,
 					"the queue keeps the input, files and all, for the next turn")

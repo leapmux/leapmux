@@ -124,12 +124,13 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 	if prompt.GetUnreadable() != leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED {
 		return nil, agent.InvalidControlDecision("LeapMux cannot read this request, so it takes no answer; stop the agent instead")
 	}
-	answer, err := plugin.AnswerControlRequest(agent.ControlAnswerInput{
+	input := agent.ControlAnswerInput{
 		Request:   controlRequestInput(svc.Queries, plugin, dbAgent.ID, request),
 		RequestID: row.RequestID,
 		Prompt:    prompt,
 		Decision:  r.GetDecision(),
-	})
+	}
+	answer, err := plugin.AnswerControlRequest(input)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +143,7 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 		content:      answer.Content,
 		planApproval: answer.PlanApproval,
 		followUp:     followUp,
+		decision:     deliveredControlDecision(plugin, storedControlRequestMetadata(row), input, answer),
 	})
 	if err != nil {
 		return nil, err

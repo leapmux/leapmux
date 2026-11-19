@@ -63,6 +63,8 @@ func TestResolveControlResponseConformance(t *testing.T) {
 	agenttest.AssertWithholdsTheResponseForAMalformedRequest(t, mimoProvider{})
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestResolveControlResponse(t *testing.T) {
 	t.Parallel()
 
@@ -99,8 +101,6 @@ func TestResolveControlResponse(t *testing.T) {
 			response: allowEnvelope("mimo-question:que_2"), planExit: true},
 		{name: "a deny with feedback rejects a plan", requestID: "mimo-question:que_2", payload: storedPlanPayload,
 			response: denyEnvelope("mimo-question:que_2", "Add tests"), planExit: true},
-		{name: "an answer to another request is withheld", requestID: "mimo-permission:per_1", payload: storedPermissionPayload,
-			response: allowEnvelope("mimo-permission:per_9"), withhold: true},
 		{name: "a request of an unknown type is withheld", requestID: "mimo-permission:per_1", payload: `{"type":"session.status"}`,
 			response: allowEnvelope("mimo-permission:per_1"), withhold: true},
 		{name: "a request that is gone is withheld", requestID: "mimo-permission:per_1", payload: "",
@@ -108,11 +108,7 @@ func TestResolveControlResponse(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			res := mimoProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID:       tc.requestID,
-				RequestPayload:  json.RawMessage(tc.payload),
-				ResponseContent: tc.response,
-			})
+			res := agenttest.ResolveAnswer(mimoProvider{}, []byte(tc.payload), tc.requestID, agent.ControlAnswer{Content: tc.response})
 			assert.Equal(t, tc.withhold, res.Withhold)
 			assert.Equal(t, tc.response, res.Content, "the answer keeps the shape the browser wrote")
 			if tc.planExit {

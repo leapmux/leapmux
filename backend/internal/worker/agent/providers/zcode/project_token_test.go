@@ -165,6 +165,73 @@ func TestZCodeProjectTokens_DiscoversTheDefaultProjectAndMints(t *testing.T) {
 	assert.Len(t, api.recorded(), 3, "a valid token and a known location send no request")
 }
 
+// The location key holds the team project as JSON.stringify writes it, so the
+// key matches the desktop's entry. The product is not part of it.
+func TestZCodeTeamProject_MarshalJSONWritesJavaScriptJSON(t *testing.T) {
+	t.Parallel()
+	got, err := zcodeTeamProject{organizationID: zcodeJSONProbe, projectID: "&\u2029", productID: "<not in the key>"}.MarshalJSON()
+	require.NoError(t, err)
+	assert.Equal(t, `{"organizationId":`+zcodeJSONProbeJSON+`,"projectId":"&`+"\u2029"+`"}`, string(got))
+}
+
+// The token cache keys a token by its scope, which spells its parts as
+// JSON.stringify spells them.
+func TestZCodeProjectTokens_KeysATokenByItsScopeInJavaScriptJSON(t *testing.T) {
+	t.Parallel()
+	tokens, _, _ := newZCodeTestProjectTokens(t)
+	req := zcodeTestTokenRequest()
+	req.accountID = zcodeJSONProbe
+	_, err := tokens.resolve(context.Background(), zcodeCredentials{}, req)
+	require.NoError(t, err)
+	tokens.mu.Lock()
+	defer tokens.mu.Unlock()
+	var scopes []string
+	for scope := range tokens.tokens {
+		scopes = append(scopes, scope)
+	}
+	assert.Equal(t, []string{
+		`["` + tokens.endpoints.zai + `","zai",` + zcodeJSONProbeJSON + `,"org-default","p-default","key-1",1,"` + zcodeSHA256Hex("login") + `"]`,
+	}, scopes)
+}
+
+// A discovery runs as a shared call under a key that spells the location key
+// and the login token's digest as JSON.stringify does. The location key is
+// percent-encoded, so the account ID reaches the key escaped.
+func TestZCodeProjectTokens_SharesADiscoveryUnderItsJavaScriptJSONKey(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	api := &zcodeFakeProjectAPI{
+		t:             t,
+		clock:         clock,
+		organizations: zcodeDefaultOrganizations,
+		keys:          map[string]string{"org-default/p-default": `[{"apiKey":"key-1","name":"zcode-api-key"}]`},
+	}
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/biz/customer/getCustomerInfo" {
+			<-release
+		}
+		api.handle(w, r)
+	})
+	// Cleanups run in reverse order. Registered after the server, the release
+	// runs before the server's Close, which waits for the held handler.
+	t.Cleanup(unblock)
+	tokens := newZCodeProjectTokenClient(client, zcodeAccountEndpoints{zai: server.URL, bigModel: server.URL}, clock, func() float64 { return 0 })
+	req := zcodeTestTokenRequest()
+	req.accountID = zcodeJSONProbe
+	done := make(chan error, 1)
+	go func() {
+		_, err := tokens.resolve(t.Context(), zcodeCredentials{}, req)
+		done <- err
+	}()
+	key := `["` + zcodeProjectLocationKey(server.URL, "zai", zcodeJSONProbe, nil) + `","` + zcodeSHA256Hex("login") + `"]`
+	require.Eventually(t, func() bool { return tokens.discoveries.waiting(key) == 1 }, 30*time.Second, time.Millisecond)
+	unblock()
+	require.NoError(t, <-done)
+}
+
 func TestZCodeProjectTokens_BigModelSendsTheRawLoginToken(t *testing.T) {
 	t.Parallel()
 
@@ -711,7 +778,6 @@ func TestZCodeProjectTokens_DiscoversSeparatelyAfterSignInChanges(t *testing.T) 
 	release := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(unblock)
 	var oldRequests, newRequests atomic.Int32
 	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/biz/customer/getCustomerInfo" {
@@ -734,6 +800,9 @@ func TestZCodeProjectTokens_DiscoversSeparatelyAfterSignInChanges(t *testing.T) 
 		}
 		_, _ = fmt.Fprintf(w, `{"code":0,"data":{"accessToken":"token","tokenType":"Bearer","expiresIn":3600,"expiresAt":%d}}`, clock.Now().Add(time.Hour).Unix())
 	})
+	// Cleanups run in reverse order. Registered after the server, the release
+	// runs before the server's Close, which waits for the held handlers.
+	t.Cleanup(unblock)
 	tokens := newZCodeProjectTokenClient(client, zcodeAccountEndpoints{zai: server.URL}, clock, func() float64 { return 0 })
 	oldDone, newDone := make(chan error, 1), make(chan error, 1)
 	request := func(login string, ch chan error) {

@@ -135,8 +135,8 @@ codexTest.describe('codex permission requests', () => {
     })
   })
 
-  // Codex proposes a command rule for an escalated command. The Always pill sends that amendment, and Codex writes
-  // it to the rule file of its home, so the same command runs in the next turn with no approval.
+  // Codex proposes a command rule for an escalated command. The Command rule pill sends that amendment, and Codex
+  // writes it to the rule file of its home, so the same command runs in the next turn with no approval.
   codexTest('a command rule covers the same escalated command in the next turn', async ({ native, authenticatedCodexWorkspace, leapmuxServer }) => {
     const { page } = native
     const codexHome = leapmuxServer.agentEnv?.CODEX_HOME
@@ -152,7 +152,7 @@ codexTest.describe('codex permission requests', () => {
     await expectSettingsOptionChosen(page, 'permissionMode-on-request')
     await exerciseRememberedAllow(native, {
       scopeGroup: 'Allow scope',
-      scope: 'Always',
+      scope: 'Command rule',
       firstCall: codexEscalatedCommandToolCall('rule-first', command),
       secondCall: codexEscalatedCommandToolCall('rule-second', command),
       beforeDecision: () => expect(existsSync(file)).toBe(false),

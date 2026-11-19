@@ -204,9 +204,7 @@ func TestFolderTrustResolvesTheNeutralDecision(t *testing.T) {
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := Registration().Plugin.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: request.RequestID, RequestPayload: request.Payload, ResponseContent: content,
-		})
+		resolution := agenttest.ResolveAnswer(Registration().Plugin, request.Payload, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		var stored struct {
 			Response struct {

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -95,7 +94,8 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // A steer carries text only: the inbox takes uploaded attachment references,
 // not the inline data that session/send carries. Text attachments inline into
 // the text, as a send inlines them, and anything else goes in the next turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	var blocks []string
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {

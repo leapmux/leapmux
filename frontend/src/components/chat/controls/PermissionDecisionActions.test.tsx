@@ -278,6 +278,80 @@ describe('PermissionDecisionActions', () => {
     expect(apply).not.toHaveBeenCalled()
   })
 
+  /**
+   * Codex's network approval, as the Worker reads it: a session grant, a host rule,
+   * the block of that host, and Codex's cancel. Both amendments state the user scope
+   * and the Host rule label.
+   */
+  function renderCodexHostActions() {
+    return renderDecisions(AgentProvider.CODEX, '16', [
+      { optionId: 'accept', kind: 'allow_once', name: 'Allow' },
+      {
+        optionId: 'acceptForSession',
+        kind: 'allow_always',
+        name: 'Allow for Session',
+        scope: 'session',
+      },
+      {
+        optionId: 'applyNetworkPolicyAmendment:2',
+        kind: 'allow_always',
+        name: 'Allow Host & Remember: example.com',
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        optionId: 'applyNetworkPolicyAmendment:3',
+        kind: 'reject_always',
+        name: 'Block Host & Remember: example.com',
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        optionId: 'cancel',
+        kind: 'reject_once',
+        name: 'Cancel',
+        endsTurn: true,
+      },
+    ])
+  }
+
+  it('draws Codex\'s Once / Session / Host rule pills in Codex\'s order', () => {
+    renderCodexHostActions()
+
+    const scope = allowChoicePillGroup()
+    expect(scope.getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Once', 'Session', 'Host rule'])
+    expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
+    // The Host rule pill reaches the block, so the block is no button of its own.
+    expect(screen.queryByTestId('control-decision-applyNetworkPolicyAmendment:3')).not.toBeInTheDocument()
+  })
+
+  it('sends Codex\'s cancel under the Session pill, never the permanent host block', async () => {
+    const { onDecide } = renderCodexHostActions()
+
+    fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Session' }))
+    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Cancel')
+    await fireEvent.click(screen.getByTestId('control-deny-btn'))
+    expect(decidedOptionId(onDecide, 0)).toBe('cancel')
+
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+    expect(decidedOptionId(onDecide, 1)).toBe('acceptForSession')
+  })
+
+  it('sends Codex\'s host block under the Host rule pill, named Deny', async () => {
+    const { onDecide } = renderCodexHostActions()
+
+    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Cancel')
+    fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Host rule' }))
+    // The block refuses the call and keeps the rule, and the turn goes on. So the
+    // button must not read Cancel.
+    expect(screen.getByTestId('control-deny-btn').textContent).toBe('Deny')
+    await fireEvent.click(screen.getByTestId('control-deny-btn'))
+    expect(decidedOptionId(onDecide, 0)).toBe('applyNetworkPolicyAmendment:3')
+
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+    expect(decidedOptionId(onDecide, 1)).toBe('applyNetworkPolicyAmendment:2')
+  })
+
   it('draws a Once / Session / Project pill group for Reasonix\'s two always scopes', async () => {
     const { onDecide } = renderDecisions(AgentProvider.REASONIX, '13', [
       { optionId: 'reasonix_write_once', kind: 'allow_once', name: 'Allow once' },

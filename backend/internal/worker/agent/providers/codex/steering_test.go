@@ -19,7 +19,7 @@ func TestCodexSteerCarriesAClientUserMessageID(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide"}))
 	policy, supports := interface{}(a).(agent.SteerEchoReporter)
 	require.True(t, supports)
 	assert.True(t, policy.SteerRowAtEcho())
@@ -36,7 +36,7 @@ func TestHandleCodexOutput_ASteerEchoReportsAfterTheAnswerItPrecedes(t *testing.
 	t.Parallel()
 	a, sink, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide"}))
 	clientID, ok := requests()[0].Params["clientUserMessageId"].(string)
 	require.True(t, ok)
 	feedCodexLines(a, `{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"answer","text":"first answer"}}}`)
@@ -53,7 +53,7 @@ func TestHandleCodexOutput_ATurnEndSettlesItsUnechoedSteerFirst(t *testing.T) {
 			t.Parallel()
 			a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 			a.threadID, a.mainTurn.id = "main-thread", "turn-1"
-			require.NoError(t, a.SteerInput("guide", nil))
+			require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide"}))
 			feedCodexLines(a, fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":%q}}}`, status))
 			expected := agent.SteerOutcomeDropped
 			if status == "completed" {
@@ -75,7 +75,7 @@ func TestHandleCodexOutput_ATurnStartInputIsNotAnEcho(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide"}))
 	feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"userMessage","id":"initial","clientId":null,"content":[]}}}`)
 	assert.Empty(t, sink.SteerEchoReports())
 }
@@ -90,9 +90,9 @@ func TestCodexSteerFailureForgetsItsTicket(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
-	require.ErrorIs(t, a.SteerInput("refused", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "refused"}), agent.ErrNoActiveTurn)
 	refuse = false
-	require.NoError(t, a.SteerInput("accepted", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "accepted"}))
 	clientID, ok := requests()[1].Params["clientUserMessageId"].(string)
 	require.True(t, ok)
 	feedCodexLines(a, fmt.Sprintf(`{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"userMessage","id":"native-steer","clientId":%q,"content":[]}}}`, clientID))
@@ -109,7 +109,7 @@ func TestCodexARejectedSteerReplyAfterTurnEndCannotReportAnEcho(t *testing.T) {
 	})
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 	finished := make(chan error, 1)
-	go func() { finished <- a.SteerInput("guide", nil) }()
+	go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 	<-entered
 	feedCodexLines(a, `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)
 	assert.Empty(t, sink.SteerEchoReports(), "a pending RPC does not prove native acceptance")
@@ -134,7 +134,7 @@ func TestCodexPendingSteerDefersTheTurnEndUntilItsReply(t *testing.T) {
 			})
 			a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 			finished := make(chan error, 1)
-			go func() { finished <- a.SteerInput("guide", nil) }()
+			go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 			<-entered
 			feedCodexLines(a, fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":%q}}}`, outcome))
 			assert.NotContains(t, sink.TurnLifecycle(), "turn_end")
@@ -168,7 +168,7 @@ func TestCodexPendingSteerKeepsLaterTurnOutputInOrder(t *testing.T) {
 	})
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 	finished := make(chan error, 1)
-	go func() { finished <- a.SteerInput("guide", nil) }()
+	go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 	<-entered
 	feedCodexLines(a,
 		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`,
@@ -196,7 +196,7 @@ func TestCodexNativeSteerEchoBeforeTheReplyReportsOnce(t *testing.T) {
 	})
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 	finished := make(chan error, 1)
-	go func() { finished <- a.SteerInput("guide", nil) }()
+	go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 	<-entered
 	clientID, _ := requests()[0].Params["clientUserMessageId"].(string)
 	feedCodexLines(a,
@@ -214,10 +214,11 @@ func TestCodexNativeSteerEchoBeforeTheReplyReportsOnce(t *testing.T) {
 func TestCodexSteerUsesExpectedActiveTurn(t *testing.T) {
 	t.Parallel()
 
+	steer := agent.SteerRequest{Content: "guide"}
 	agent, _, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	agent.threadID = "thread-1"
 	agent.mainTurn.id = "turn-1"
-	require.NoError(t, agent.SteerInput("guide", nil))
+	require.NoError(t, agent.SteerInput(steer))
 	require.Len(t, requests(), 1)
 	assert.Equal(t, "turn/steer", requests()[0].Method)
 	assert.Equal(t, "turn-1", requests()[0].Params["expectedTurnId"])
@@ -231,7 +232,7 @@ func TestCodexSteerMapsEndedTurnResponse(t *testing.T) {
 	})
 	a.threadID = "thread-1"
 	a.mainTurn.id = "turn-1"
-	assert.ErrorIs(t, a.SteerInput("guide", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
 }
 
 func TestCodexSteerProcessExitIsDeliveryUncertain(t *testing.T) {
@@ -247,7 +248,7 @@ func TestCodexSteerProcessExitIsDeliveryUncertain(t *testing.T) {
 	a.mainTurn.id = "turn-1"
 	a.SimulateExitForTest()
 
-	assert.ErrorIs(t, a.SteerInput("guide", nil), agent.ErrDeliveryUncertain)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrDeliveryUncertain)
 }
 
 func TestCodexSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
@@ -457,9 +458,9 @@ func TestCodexSteerFailureSettlementOwnsTheOutputLock(t *testing.T) {
 	a.sink = agent.NewProviderServices(sink)
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 	firstDone, secondDone := make(chan error, 1), make(chan error, 1)
-	go func() { firstDone <- a.SteerInput("first", nil) }()
+	go func() { firstDone <- a.SteerInput(agent.SteerRequest{Content: "first"}) }()
 	first := <-replies
-	go func() { secondDone <- a.SteerInput("second", nil) }()
+	go func() { secondDone <- a.SteerInput(agent.SteerRequest{Content: "second"}) }()
 	second := <-replies
 	second.respond(agenttest.RPCReply{Result: json.RawMessage(`{}`)})
 	require.NoError(t, <-secondDone)
@@ -477,7 +478,7 @@ func TestCodexProcessExitFinishesAHeldTurnWithoutInventingASteerEcho(t *testing.
 	a, sink, _ := newCodexAgentForAsyncRPCRequests(t, func(codexRecordedRequest, func(agenttest.RPCReply)) { close(entered) })
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 	finished := make(chan error, 1)
-	go func() { finished <- a.SteerInput("guide", nil) }()
+	go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 	<-entered
 	feedCodexLines(a, `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)
 	a.SimulateExitForTest()
@@ -494,7 +495,7 @@ func TestCodexHeldTurnEndWithdrawsItsTurnRetryOffer(t *testing.T) {
 	a, sink, _ := newCodexAgentForAsyncRPCRequests(t, func(_ codexRecordedRequest, respond func(agenttest.RPCReply)) { replies <- respond })
 	armRetryableTurn(t, a, sink)
 	finished := make(chan error, 1)
-	go func() { finished <- a.SteerInput("guide", nil) }()
+	go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 	respond := <-replies
 	feedCodexLines(a, `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)
 	offer, present := sink.LastSessionInfoValue("turn_retry_offer")
@@ -510,7 +511,7 @@ func TestCodexContextReplacementSettlesAHeldTurnBeforeChangingItsSession(t *test
 	a, sink, _ := newCodexAgentForAsyncRPCRequests(t, func(_ codexRecordedRequest, respond func(agenttest.RPCReply)) { reply <- respond })
 	a.threadID, a.mainTurn.id = "main-thread", "turn-1"
 	finished := make(chan error, 1)
-	go func() { finished <- a.SteerInput("guide", nil) }()
+	go func() { finished <- a.SteerInput(agent.SteerRequest{Content: "guide"}) }()
 	respond := <-reply
 	feedCodexLines(a, `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)
 	_, err := a.replaceMainThread(codexThreadResult{ID: "new-thread"})
@@ -535,7 +536,7 @@ func TestHandleCodexOutput_ARealWebSocketSteerPersistsTheCutAnswerAsInterrupted(
 		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"agentMessage","id":"partial","text":""}}}`,
 		`{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"partial","delta":"1 2 3 "}}`,
 	)
-	require.NoError(t, a.SteerInput("Stop now, say STEERED", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Stop now, say STEERED"}))
 	clientID := requests()[0].Params["clientUserMessageId"].(string)
 	feedCodexLines(a, fmt.Sprintf(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"userMessage","id":"steer","clientId":%q,"content":[{"type":"text","text":"Stop now, say STEERED"}]}}}`, clientID))
 	require.Len(t, rowsAtEcho, 1)
@@ -558,7 +559,7 @@ func TestCodexSessionSteeringValidatesTheNativeTarget(t *testing.T) {
 			a.threadID = "current"
 			a.mainTurn.id = "turn-1"
 
-			err := a.SteerInputForSession(expected, "Keep the selected color.", nil)
+			err := a.SteerInputForSession(expected, agent.SteerRequest{Content: "Keep the selected color."})
 
 			if expected != "current" {
 				require.ErrorIs(t, err, agent.ErrInputSessionChanged)

@@ -20,16 +20,21 @@ import (
 )
 
 // queueWorker is a fake Worker that keeps one agent's input queue as the
-// Worker's store does: an enqueue of an id that the queue or the transcript
-// already holds adds nothing, and each response carries the whole queue. It
-// records every request of WorkerAgentInputService. mu guards every field.
+// Worker's store does: an enqueue of an id that the queue holds, that the
+// transcript holds, or that someone removed from the queue adds nothing, and
+// each response carries the whole queue. It records every request of
+// WorkerAgentInputService. mu guards every field.
 type queueWorker struct {
 	mu    sync.Mutex
 	queue *leapmuxv1.AgentInputQueueSnapshot
 	// delivered holds the ids of the inputs that left the queue for the
 	// transcript.
 	delivered map[string]bool
-	requests  []proto.Message
+	// removed holds the ids of the inputs that a delete took out of the
+	// queue. The Worker keeps the row of each one, so a repeat of its
+	// request adds nothing.
+	removed  map[string]bool
+	requests []proto.Message
 	// refuseCode and refuseMessage, when the code is set, are what every
 	// mutation answers instead of applying.
 	refuseCode    codes.Code
@@ -37,7 +42,7 @@ type queueWorker struct {
 }
 
 func newQueueWorker(items ...*leapmuxv1.QueuedAgentInput) *queueWorker {
-	return &queueWorker{queue: &leapmuxv1.AgentInputQueueSnapshot{Items: items}, delivered: map[string]bool{}}
+	return &queueWorker{queue: &leapmuxv1.AgentInputQueueSnapshot{Items: items}, delivered: map[string]bool{}, removed: map[string]bool{}}
 }
 
 func (w *queueWorker) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
@@ -74,7 +79,11 @@ func (w *queueWorker) DispatchWith(_ context.Context, _ channel.Caller, req *lea
 		w.enqueue(in)
 		writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
 	case *leapmuxv1.DeleteQueuedAgentInputRequest:
+		held := len(w.queue.Items)
 		w.queue.Items = slices.DeleteFunc(w.queue.Items, func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == in.GetInputId() })
+		if len(w.queue.Items) < held {
+			w.removed[in.GetInputId()] = true
+		}
 		writeProtoResponse(rw, &leapmuxv1.DeleteQueuedAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
 	case *leapmuxv1.MoveQueuedAgentInputRequest:
 		w.move(in)
@@ -88,9 +97,10 @@ func (w *queueWorker) DispatchWith(_ context.Context, _ channel.Caller, req *lea
 	}
 }
 
-// enqueue adds the input, unless the queue or the transcript holds its id.
+// enqueue adds the input, unless the queue or the transcript holds its id, or
+// someone removed the input with that id.
 func (w *queueWorker) enqueue(in *leapmuxv1.EnqueueAgentInputRequest) {
-	if w.delivered[in.GetInputId()] || slices.ContainsFunc(w.queue.Items, func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == in.GetInputId() }) {
+	if w.delivered[in.GetInputId()] || w.removed[in.GetInputId()] || slices.ContainsFunc(w.queue.Items, func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == in.GetInputId() }) {
 		return
 	}
 	item := &leapmuxv1.QueuedAgentInput{

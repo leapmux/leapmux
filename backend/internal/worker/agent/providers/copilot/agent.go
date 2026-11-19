@@ -400,7 +400,8 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // one already recorded active, and a rejected steer must not read as the turn
 // ending. Contrast sendInputForSession, which owns the idle->active transition
 // and therefore owns the revision it can roll back.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
 	if a.IsStopped() {

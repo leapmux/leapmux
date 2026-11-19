@@ -3,6 +3,7 @@ import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/prot
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { TabView } from '~/stores/tabView'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { getOwner, onCleanup } from 'solid-js'
 import { workerAgentInput } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -62,6 +63,13 @@ export function createAgentInputQueueOperations(deps: {
   // Keep ambiguous enqueue attempts across editor unmounts. A user can switch
   // to a file and back while the unchanged draft still needs its original ID.
   const enqueueRetry = createAgentInputEnqueueRetry()
+  // A snapshot that shows an attempt's input settles it, whether the snapshot
+  // came in an RPC response or a broadcast: a later send of the same payload
+  // is a new message (see forgetDelivered).
+  const stopForgetting = deps.store.onApply((_, snapshot) =>
+    enqueueRetry.forgetDelivered(snapshot.items.map(item => item.id)))
+  if (getOwner())
+    onCleanup(stopForgetting)
   // One input ID represents one delivery attempt, including across editor
   // remounts. Share its in-flight request so outcomes cannot disagree.
   const inFlightByInputId = new Map<string, Promise<boolean>>()

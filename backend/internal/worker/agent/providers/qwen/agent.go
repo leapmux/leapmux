@@ -96,7 +96,8 @@ func (q *steerQueue) take(limit int) []steerItem {
 
 // SteerInput queues text for the running turn. Qwen reads it after the running
 // tool batch, or, when the turn ends first, as the next prompt.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	// Native drains run on the RPC reader, so they cannot query the model's
 	// audio modality. Leave audio in the worker queue for a validated prompt.
 	for _, attachment := range agent.ClassifyAttachments(attachments) {

@@ -34,7 +34,7 @@ mimoTest.describe('questions for MiMo Code', () => {
     // The question row reads the answer out of MiMo's own result, under the
     // question's header, and the saved answer states it too.
     await expect(messageContents(native.page).filter({ hasText: /Style\s*—\s*Beta/ }).first()).toBeVisible()
-    await expect(savedControlAnswer(native.page)).toHaveText('Style: Beta')
+    await expect(savedControlAnswer(native.page)).toHaveText('Choose a style: Beta')
   })
 
   // MiMo accepts one answer list for each question.
@@ -80,8 +80,8 @@ mimoTest.describe('questions for MiMo Code', () => {
 
     await expect(messageContents(page).filter({ hasText: /Toppings\s*—\s*Cheese, Basil/ }).first()).toBeVisible()
     await expect(messageContents(page).filter({ hasText: /Name\s*—\s*Garden Special/ }).first()).toBeVisible()
-    await expect(savedControlAnswer(page)).toContainText('Toppings: Cheese, Basil')
-    await expect(savedControlAnswer(page)).toContainText('Name: Garden Special')
+    await expect(savedControlAnswer(page)).toContainText('Choose the toppings: Cheese, Basil')
+    await expect(savedControlAnswer(page)).toContainText('Name the pizza: Garden Special')
   })
 
   // Stop dismisses the question. A dismissal stops MiMo's loop, as a rejected
@@ -94,7 +94,8 @@ mimoTest.describe('questions for MiMo Code', () => {
       prompt: 'Ask me which style to use.',
       reply: async () => { await controlButton(page, 'stop').click() },
     })
-    await expect(savedControlAnswer(page)).toHaveText('Dismissed')
+    // MiMo's dismissal carries no reason, so the saved answer states the question that it dismissed.
+    await expect(savedControlAnswer(page)).toHaveText('Dismissed: Choose a style')
   })
 })
 

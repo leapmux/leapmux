@@ -390,29 +390,24 @@ func TestClineAnswerControlRequest_RefusesWithTheReadersWords(t *testing.T) {
 // The answer is the neutral envelope that ResolveControlResponse reads today,
 // so it turns into Cline's own approval and capability replies.
 func TestClineAnswerControlRequest_ResolvesIntoClinesOwnReply(t *testing.T) {
-	resolve := func(payload []byte, requestID string, answer agent.ControlAnswer, plan *leapmuxv1.PlanApprovalSettings) agent.ControlResponseResolution {
-		t.Helper()
-		return resolveControlResponse(agent.ControlResponseContext{RequestID: requestID, RequestPayload: payload, ResponseContent: answer.Content, PlanApproval: plan})
-	}
-
 	approval := clinePromptApprovalOf(t, "editor", map[string]any{})
 	deny, err := agenttest.AnswerControl(clineProvider{}, approval, "approval_1", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Use the other file."))
 	require.NoError(t, err)
-	resolution := resolve(approval, "approval_1", deny, nil)
+	resolution := agenttest.ResolveAnswer(clineProvider{}, approval, "approval_1", deny)
 	require.False(t, resolution.Withhold)
 	assert.JSONEq(t, `{"approvalId":"approval_1","approved":false,"reason":"Use the other file."}`, string(resolution.Content))
 
 	plan := clinePromptApprovalOf(t, contracts.ClineToolSwitchToActMode, map[string]any{})
 	approve, err := agenttest.AnswerControl(clineProvider{}, plan, "approval_1", agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, PermissionMode: contracts.ClinePermissionModeAutoApprove}))
 	require.NoError(t, err)
-	resolution = resolve(plan, "approval_1", approve, approve.PlanApproval)
+	resolution = agenttest.ResolveAnswer(clineProvider{}, plan, "approval_1", approve)
 	require.False(t, resolution.Withhold)
 	assert.JSONEq(t, `{"approvalId":"approval_1","approved":true,"permissionMode":"auto_approve"}`, string(resolution.Content))
 
 	question := clinePromptQuestion(t, clineColorQuestion, contracts.ClineCapabilityAskQuestion)
 	answer, err := agenttest.AnswerControl(clineProvider{}, question, "capreq_1", agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"Blue"}}))
 	require.NoError(t, err)
-	resolution = resolve(question, "capreq_1", answer, nil)
+	resolution = agenttest.ResolveAnswer(clineProvider{}, question, "capreq_1", answer)
 	require.False(t, resolution.Withhold)
 	assert.JSONEq(t, `{"requestId":"capreq_1","ok":true,"payload":{"result":"Blue"}}`, string(resolution.Content))
 

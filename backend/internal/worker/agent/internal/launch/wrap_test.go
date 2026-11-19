@@ -178,7 +178,11 @@ func TestBuildShellWrappedCommand_Csh_NoProbeEmitsNoConditional(t *testing.T) {
 	script := renderedWrapScript(t, cmd)
 	assert.True(t, strings.HasSuffix(script,
 		"unsetenv CLAUDECODE; '/bin/echo' ''\n'/bin/echo' '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'\n"))
-	assert.NotContains(t, script, "then")
+	// The control CLI step holds a conditional of its own, which the gate
+	// does not need.
+	launch, found := strings.CutPrefix(script, cshReprependControlCLI)
+	require.True(t, found, "the command starts with the control CLI step: %q", script)
+	assert.NotContains(t, launch, "then")
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
@@ -612,7 +616,7 @@ func TestBuildShellWrappedCommand_NoLaunchEnvLeavesTheEnvironmentInherited(t *te
 // Every dialect prepends the same way, or a bundled provider would work on one shell
 // and start with no script on another.
 func TestBuildShellWrappedCommand_EveryDialectPrependsThePrefixArgs(t *testing.T) {
-	for _, shell := range []string{"/bin/bash", "/bin/zsh", "/usr/bin/nu", "/usr/bin/pwsh", "/bin/tcsh"} {
+	for _, shell := range []string{"/bin/bash", "/bin/zsh", "/usr/bin/fish", "/usr/bin/nu", "/usr/bin/pwsh", "/bin/tcsh", "/usr/bin/xonsh"} {
 		t.Run(shell, func(t *testing.T) {
 			cmd, _, _ := wrapTestCommand(t, context.Background(), WrapSpec{
 				Shell:      shell,

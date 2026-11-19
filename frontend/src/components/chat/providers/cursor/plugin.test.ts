@@ -49,22 +49,6 @@ describe('cursor provider', () => {
   it('renders the permissionMode group as the trigger mode segment', () => {
     expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
   })
-
-  // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this covers only
-  // Cursor's own controlResponseDisplay derivation.
-  it('derives Cursor-specific control-response labels', () => {
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: '7',
-      request: { method: 'cursor/create_plan' },
-      response: {
-        result: {
-          outcome: { outcome: 'accepted' },
-        },
-      },
-    })).toEqual({ kind: 'label', text: 'Accept' })
-  })
 })
 
 describe('native output without a filesystem pointer', () => {

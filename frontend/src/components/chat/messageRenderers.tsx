@@ -236,12 +236,11 @@ export function UserContentMessage(props: {
  * label renders line-broken plain text (a multi-question answer joins its lines with
  * `\n`).
  *
- * The native-payload -> label/feedback derivation happens in LAYER 1, where the
- * provider's `controlResponseDisplay` runs once for every reader of the row
+ * The label/feedback derivation happens in LAYER 1, which reads the prompt and the
+ * decision that the Worker recorded with the answer, once for every reader of the row
  * (~/components/chat/rowExtraction.ts). This renderer therefore takes the display and
- * cannot reach a provider payload at all -- it used to run the derivation itself, so
- * the transcript row and the scroll-rail dot each dispatched through the plugin for
- * one answer, and each carried its own copy of the fallback.
+ * cannot reach a provider payload at all, so the transcript row and the scroll-rail dot
+ * draw one display for one answer.
  */
 export function renderControlResponseRow(
   display: ControlResponseSummary,

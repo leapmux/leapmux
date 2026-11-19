@@ -173,7 +173,7 @@ describe('fastAgentArchiveSource', () => {
     expect(JSON.stringify(raw)).toBe(original)
   })
 
-  it('keeps genuine ACP permissions, refusals, and dividers on the captured ACP plugin', () => {
+  it('keeps genuine ACP refusals and dividers on the captured ACP plugin', () => {
     const parsed = input({ stopReason: 'end_turn' }, undefined, AgentProvider.FAST_AGENT)
     expect(providerFor(AgentProvider.FAST_AGENT)?.transcript.classify(parsed).kind).toBe('result_divider')
     const call = providerToolCall(AgentProvider.FAST_AGENT, {
@@ -191,31 +191,5 @@ describe('fastAgentArchiveSource', () => {
       ],
     })
     expect(call).toMatchObject({ id: 'real-live', status: 'declined' })
-    // The Worker reads the permission itself. The plugin keeps the ACP display of the
-    // saved answer, which reads the chosen option from the request's own list.
-    const display = providerFor(AgentProvider.FAST_AGENT)?.controls?.controlResponseDisplay?.({
-      requestId: 'permission',
-      claimToken: 'claim',
-      request: {
-        method: 'session/request_permission',
-        params: {
-          toolCall: {
-            toolCallId: 'permission-call',
-            title: 'Execute',
-            kind: 'execute',
-            rawInput: { command: 'printf permission' },
-          },
-          options: [
-            { optionId: 'allow_once', kind: 'allow_once', name: 'Allow this command' },
-          ],
-        },
-      },
-      response: {
-        result: {
-          outcome: { outcome: 'selected', optionId: 'allow_once' },
-        },
-      },
-    })
-    expect(display).toEqual({ kind: 'label', text: 'Allow this command' })
   })
 })

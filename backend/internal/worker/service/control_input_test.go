@@ -216,8 +216,8 @@ type ordinaryInputSteerer struct {
 	recorder *recordingQuestionAgent
 }
 
-func (p ordinaryInputSteerer) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return p.recorder.SteerInput(content, attachments)
+func (p ordinaryInputSteerer) SteerInput(request agent.SteerRequest) error {
+	return p.recorder.SteerInput(request)
 }
 
 func (ordinaryInputSteerer) SupportsSteering() bool { return true }

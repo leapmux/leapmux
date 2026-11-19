@@ -51,6 +51,13 @@ func main() {
 		}
 		os.Exit(0)
 	}
+	// Inside a LeapMux tab, the CLI of the tab's Worker runs a `leapmux
+	// control` command (see controlHandoff). The hand-off comes before the
+	// command tree parses the arguments: a command for another version can
+	// hold a name or a flag that this version refuses.
+	if code, handled := handOffControlCommand(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	logging.Setup()
 	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, defaultCLIRunners()))
 }

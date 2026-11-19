@@ -94,19 +94,19 @@ func (a *Agent) SendInputForSession(id, content string, attachments []*leapmuxv1
 	}
 	return run.SendInputForSession(id, content, attachments)
 }
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	run, err := a.rootRun()
 	if err != nil {
 		return err
 	}
-	return run.SteerInput(content, attachments)
+	return run.SteerInput(request.Content, request.Attachments)
 }
-func (a *Agent) SteerInputForSession(id, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInputForSession(id string, request agent.SteerRequest) error {
 	run, err := a.rootRun()
 	if err != nil {
 		return err
 	}
-	return run.sendInput(&id, content, attachments, true)
+	return run.sendInput(&id, request.Content, request.Attachments, true)
 }
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	run, err := a.rootRun()

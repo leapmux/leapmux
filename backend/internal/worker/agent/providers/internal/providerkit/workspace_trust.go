@@ -333,13 +333,9 @@ func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.Cont
 		return agent.ControlResponseResolution{}, false
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
-	requestID, behavior, _, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, _, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		result.Refuse(agent.RefusalNoDecision)
-		return result, true
-	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
 	decision := contracts.WorkspaceTrustDecisionReject

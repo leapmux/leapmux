@@ -714,15 +714,7 @@ func New(cfg Config) *Service {
 				"agent_id", agentID, "error", err)
 		}
 	})
-	svc.Output.SetRequeueDroppedInputFunc(func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error) {
-		_, added, err := svc.InputQueue.EnqueueReportingAdded(bgCtx(), inputqueue.NewItem{
-			ID: droppedInputID(agentID, dropID), AgentID: agentID,
-			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: content,
-			Attachments:      queueAttachments(attachments),
-			ReclassifyOnEdit: true,
-		})
-		return added, err
-	})
+	svc.Output.SetRequeueDroppedInputFunc(svc.requeueDroppedInput)
 	svc.Output.SetSteerEchoFuncs(func(agentID string, count int, spanLines string) error {
 		_, err := svc.InputQueue.AcceptEchoedSteers(bgCtx(), agentID, count, spanLines)
 		if errors.Is(err, inputqueue.ErrManagerStopped) {

@@ -213,8 +213,8 @@ func (a *Agent) SendInput(text string, attachments []*leapmuxv1.Attachment) erro
 func (a *Agent) SendInputForSession(id, text string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(&id, text, attachments, false)
 }
-func (a *Agent) SteerInput(text string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, text, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 func (a *Agent) SupportsSteering() bool { return true }
 

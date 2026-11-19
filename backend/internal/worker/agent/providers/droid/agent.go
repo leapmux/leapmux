@@ -218,8 +218,8 @@ func (*Agent) SteerRowAtEcho() bool { return true }
 func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // SteerInput adds a message to the running turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, droidInputSteer)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(nil, request.Content, request.Attachments, droidInputSteer)
 }
 
 type droidInputMode uint8

@@ -7,6 +7,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
 	"github.com/stretchr/testify/assert"
 )
@@ -89,7 +90,8 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 	t.Parallel()
 
 	registry := Registry()
-	response := []byte(`{"response":{"request_id":"7","response":{"behavior":"deny","message":"Needs tests."}}}`)
+	// The answer addresses jsonrpc:7, the Worker's key of the request.
+	response := []byte(`{"response":{"request_id":"jsonrpc:7","response":{"behavior":"deny","message":"Needs tests."}}}`)
 	request := []byte(`{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`)
 	for _, provider := range acpProvidersForTest() {
 		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR {
@@ -97,15 +99,11 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 		}
 		t.Run(provider.String(), func(t *testing.T) {
 			t.Parallel()
-			res := registry.Plugin(provider).ResolveControlResponse(agent.ControlResponseContext{
-				RequestPayload: request, ResponseContent: response,
-			})
+			res := agenttest.ResolveAnswer(registry.Plugin(provider), request, "jsonrpc:7", agent.ControlAnswer{Content: response})
 			assert.Equal(t, response, res.Content)
 		})
 	}
-	res := registry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR).ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload: request, ResponseContent: response,
-	})
+	res := agenttest.ResolveAnswer(registry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), request, "jsonrpc:7", agent.ControlAnswer{Content: response})
 	assert.NotEqual(t, response, res.Content, "Cursor answers create_plan with its own outcome")
 }
 

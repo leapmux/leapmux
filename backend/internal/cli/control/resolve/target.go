@@ -9,6 +9,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // Kind is what a target identifies.
@@ -202,13 +203,13 @@ func (l Listing) getenv(key string) string {
 // neighbouring tab.
 func (l Listing) SelfTabID(kind Kind) string {
 	if kind == KindTerminal {
-		if id := l.getenv("LEAPMUX_CONTROL_TERMINAL_ID"); id != "" {
+		if id := l.getenv(controlenv.TerminalIDVariable); id != "" {
 			return id
 		}
 	}
-	id := l.getenv("LEAPMUX_CONTROL_TAB_ID")
+	id := l.getenv(controlenv.TabIDVariable)
 	if want := kind.TabType(); want != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-		got, _ := ParseTabType(l.getenv("LEAPMUX_CONTROL_TAB_TYPE"))
+		got, _ := ParseTabType(l.getenv(controlenv.TabTypeVariable))
 		if got != want {
 			return ""
 		}
@@ -256,7 +257,7 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 func (l Listing) self(ctx context.Context, kind Kind) (Target, error) {
 	switch kind {
 	case KindWorker:
-		if id := l.getenv("LEAPMUX_CONTROL_WORKER_ID"); id != "" {
+		if id := l.getenv(controlenv.WorkerIDVariable); id != "" {
 			return Target{ID: id, Self: true}, nil
 		}
 		return Target{}, notInsideTab(kind)

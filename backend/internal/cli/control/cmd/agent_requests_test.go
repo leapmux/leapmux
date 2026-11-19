@@ -298,6 +298,46 @@ request c2 of agent ag-1: dialog (the agent does not wait for it; answered, pend
 		require.NoError(t, err)
 		assert.JSONEq(t, `[{"n":1,"id":"accept","kind":"allow_once","name":"Allow"},{"n":2,"id":"cancel","kind":"reject_once","name":"Cancel","ends_turn":true}]`, string(encoded))
 	})
+	// Codex keeps a command rule and a host rule in the user scope, so the scope
+	// alone cannot tell a script which option keeps which rule. The scope label
+	// does, beside the scope.
+	t.Run("the scope labels of remembered answers", func(t *testing.T) {
+		rules := &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{
+			Title: "Command Execution",
+			Options: []*leapmuxv1.PermissionOption{
+				{OptionId: "accept", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow"},
+				{OptionId: "acceptForSession", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Allow for Session", Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_SESSION},
+				{
+					OptionId: "host", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Allow Host & Remember: example.com",
+					Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_USER, ScopeLabel: "Host rule",
+				},
+				{
+					OptionId: "block", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ALWAYS, Name: "Block Host & Remember: example.com",
+					Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_USER, ScopeLabel: "Host rule",
+				},
+				{OptionId: "labeled", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Keep it", ScopeLabel: "Folder rule"},
+			},
+		}}}
+		assert.Equal(t, `request c1 of agent ag-1: permission
+  title: Command Execution
+  options:
+    1  allow_once                       Allow
+    2  allow_always (session)           Allow for Session
+    3  allow_always (user: Host rule)   Allow Host & Remember: example.com
+    4  reject_always (user: Host rule)  Block Host & Remember: example.com
+    5  allow_always (Folder rule)       Keep it
+`, renderRequests(t, pendingRequest("c1", rules)), "a label without a scope prints alone")
+		row := controlRequestRowOf("ag-1", pendingRequest("c1", rules))
+		encoded, err := json.Marshal(row.Permission.Options)
+		require.NoError(t, err)
+		assert.JSONEq(t, `[
+			{"n":1,"id":"accept","kind":"allow_once","name":"Allow"},
+			{"n":2,"id":"acceptForSession","kind":"allow_always","name":"Allow for Session","scope":"session"},
+			{"n":3,"id":"host","kind":"allow_always","name":"Allow Host & Remember: example.com","scope":"user","scope_label":"Host rule"},
+			{"n":4,"id":"block","kind":"reject_always","name":"Block Host & Remember: example.com","scope":"user","scope_label":"Host rule"},
+			{"n":5,"id":"labeled","kind":"allow_always","name":"Keep it","scope_label":"Folder rule"}
+		]`, string(encoded))
+	})
 	t.Run("question context and default", func(t *testing.T) {
 		extras := extrasQuestion()
 		extras.Context = "The build runs nightly.\nIt keeps a week of logs."

@@ -146,28 +146,36 @@ func TestAgentSendWaitOverIPC_ARetryWaitsForTheQueuedMessage(t *testing.T) {
 	assert.Empty(t, w.enqueued, "the retry queued no second message")
 }
 
-// A message that left the queue without a transcript row has no reply to
-// print. The command says so instead of waiting for a reply that cannot
-// come.
-func TestAgentSendWaitOverIPC_ARetryOfALostMessageFails(t *testing.T) {
+// A retry after someone removed the first run's message from the queue queues
+// nothing, so no reply can come. The command says so instead of waiting, and
+// it ends as the first run ends when the removal happens while it waits: with
+// not_found and exit status 6.
+func TestAgentSendWaitOverIPC_ARetryOfARemovedMessageFails(t *testing.T) {
 	id := fullTestID("ag-2")
+	inputID := requestScopedID("tests-1", requestScopeAgentSend, id)
 	w := &retryWorker{newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})}
 	w.queue = &leapmuxv1.AgentInputQueueSnapshot{}
-	startAgentWorker(t, id, &lostInputWorker{w})
+	w.rows = []*leapmuxv1.AgentChatMessage{replyRow(1, "An answer to an earlier message.")}
+	startAgentWorker(t, id, &removedInputWorker{w})
 
-	f := runControl(t, "agent", "send", id, "Run the tests", "--wait", "--request-id", "tests-1").requireFailure(t, cli.CodeNotFound)
-	assert.Contains(t, f.Message, "its transcript holds no row of it")
+	o := runControl(t, "agent", "send", id, "Run the tests", "--wait", "--request-id", "tests-1")
+	f := o.Failure(t)
+	assert.Equal(t, cli.CodeNotFound, f.Code)
+	assert.Contains(t, f.Message, "someone removed the message "+inputID)
+	assert.Contains(t, f.Message, "this retry queued nothing")
+	require.NotEmpty(t, f.Hints)
 	assert.Contains(t, f.Hints[0], "new --request-id")
+	assert.Equal(t, cli.ExitWaitEnded, o.Code, "the wait ended without a reply, so the command exits 6")
 }
 
-// lostInputWorker answers an enqueue as the Worker answers a repeat of an
-// input that left the queue: with the queue, which does not hold it. Its
-// transcript holds no row of the input either.
-type lostInputWorker struct {
+// removedInputWorker answers an enqueue as the Worker answers a repeat of an
+// input that someone removed from the queue: with the queue, which does not
+// hold it. The Worker writes no transcript row of a removed input either.
+type removedInputWorker struct {
 	*retryWorker
 }
 
-func (w *lostInputWorker) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+func (w *removedInputWorker) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
 	if req.GetMethod() == leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure {
 		writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: &leapmuxv1.AgentInputQueueSnapshot{}})
 		return

@@ -70,7 +70,10 @@ each other cause on stderr.
 			Long: `Remove an input from an agent's input queue. The agent never reads it.
 
 An input that the agent already reads stays: the command fails with
-conflict. A removal also ends an edit of the input that LeapMux has open.`,
+conflict. A removal also ends an edit of the input that LeapMux has open.
+
+A retry of the "agent send --request-id" run that queued the input queues
+nothing for 7 days after the removal.`,
 			Examples: []cli.Example{
 				{Command: "leapmux control agent queue remove 87a19d5f 3kQ9xZ1b"},
 				{Comment: "Remove every input that waits.", Command: `for i in $(leapmux control agent queue list 87a19d5f -q); do leapmux control agent queue remove 87a19d5f "$i"; done`},

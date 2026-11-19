@@ -309,8 +309,8 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 
 // EnvVars assembles the LEAPMUX_CONTROL_* env vars to inject into the
 // spawned process. The spawn path applies them through controlenv.Apply.
-// Keeping this here means the env-var schema lives next to the server and
-// changes to either side stay in sync.
+// controlenv declares each variable's name, which the CLI reads through the
+// same constants.
 //
 // Only the small set of values the CLI can't cheaply derive from the
 // tab id is injected. Every entity-ID variable carries an explicit
@@ -336,27 +336,27 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 // misbehaving client to inject a lying value.
 func EnvVars(socketURL, token string, info TokenInfo, cliExecutable string) []string {
 	envs := []string{
-		"LEAPMUX_CONTROL_SOCK=" + socketURL,
-		"LEAPMUX_CONTROL_TOKEN=" + token,
-		"LEAPMUX_CONTROL_USER_ID=" + info.UserID.String(),
-		"LEAPMUX_CONTROL_WORKER_ID=" + info.WorkerID,
+		controlenv.SocketVariable + "=" + socketURL,
+		controlenv.TokenVariable + "=" + token,
+		controlenv.UserIDVariable + "=" + info.UserID.String(),
+		controlenv.WorkerIDVariable + "=" + info.WorkerID,
 	}
 	if info.TabID != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_TAB_ID="+info.TabID)
+		envs = append(envs, controlenv.TabIDVariable+"="+info.TabID)
 	}
 	// A quake terminal has no advertised TabID. TerminalID still identifies
 	// the terminal that hosts the process. See TokenInfo.TerminalID.
 	if info.TerminalID != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_TERMINAL_ID="+info.TerminalID)
+		envs = append(envs, controlenv.TerminalIDVariable+"="+info.TerminalID)
 	}
 	if tt := tabTypeWireName(info.TabType); tt != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_TAB_TYPE="+tt)
+		envs = append(envs, controlenv.TabTypeVariable+"="+tt)
 	}
 	if info.WorkingDir != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_WORKING_DIR="+info.WorkingDir)
+		envs = append(envs, controlenv.WorkingDirVariable+"="+info.WorkingDir)
 	}
 	if info.AgentProvider != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_AGENT_PROVIDER="+info.AgentProvider)
+		envs = append(envs, controlenv.AgentProviderVariable+"="+info.AgentProvider)
 	}
 	if cliExecutable != "" {
 		envs = append(envs, controlenv.CLIVariable+"="+cliExecutable)

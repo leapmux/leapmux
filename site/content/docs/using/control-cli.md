@@ -273,17 +273,23 @@ When a Worker starts an agent or a terminal, it gives the process these environm
 | `LEAPMUX_CONTROL_TERMINAL_ID` | terminals only | The terminal you run **inside**. It equals `TAB_ID` in a terminal tab. In a [Quake panel](/docs/using/terminals/#quake-mode-terminal) it is the only id, because a panel has no tab. |
 | `LEAPMUX_CONTROL_WORKING_DIR` | when non-empty | The working directory at start: the default of `--dir` |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | agents only | The agent's provider: the default of `--provider` |
-| `LEAPMUX_CONTROL_CLI` | when the Worker has a CLI to link | The `leapmux` executable of the Worker that started the process. Its directory comes first on `PATH`. |
+| `LEAPMUX_CONTROL_CLI` | when the Worker has a CLI to link | The `leapmux` executable of the Worker that started the process. Its directory comes first on `PATH`, and `leapmux control` hands each command to it. |
 
 The tab carries no workspace id and no tile id. A command finds both from the tab when it runs, so a script never acts on a tile that somebody moved the tab away from.
 
 The Worker also puts one directory first on the `PATH` of each agent and terminal that it starts. The directory holds only `leapmux` (`leapmux.exe` on Windows), which is the Worker's own CLI. A bare `leapmux` therefore runs a CLI of the same version as the Worker, even when you installed another version. `LEAPMUX_CONTROL_CLI` gives the full path of that executable. The desktop app links the CLI that it ships; an AppImage ships none, so it sets neither.
 
+A login shell runs its profile after it starts, and the profile can move the entry or remove it. macOS moves its system directories, such as `/usr/local/bin`, before it, and Debian's `/etc/profile` replaces `PATH` for bash and sh. Two mechanisms keep `leapmux control` on the Worker's own CLI anyway:
+
+- **The shell of an agent puts the entry back.** The Worker starts each agent through your login shell. After your profile runs, the Worker puts the directory first on `PATH` again. This works in bash, zsh, sh, dash, ksh, fish, Nushell, tcsh, csh, PowerShell and xonsh. In tcsh and csh, `PATH` then holds the directory twice, and the first entry wins.
+- **`leapmux control` hands each command to the Worker's CLI.** Inside a tab, a `leapmux` that is not the Worker's own runs `$LEAPMUX_CONTROL_CLI` with the same arguments. It does so for each `leapmux control` command, for `leapmux help control`, and for the shell completion of `leapmux control`. Every other command, such as `leapmux worker run`, `leapmux version` or `leapmux commands`, stays with the `leapmux` that you ran. When `$LEAPMUX_CONTROL_CLI` does not exist or cannot run, `leapmux` prints a warning and runs the command itself.
+
 {{< callout type="warning" >}}
-A login shell runs its profile after it starts, and the profile can move the entry or remove it. macOS moves its system directories, such as `/usr/local/bin`, before it. Debian's `/etc/profile` replaces `PATH` for bash and sh. A `leapmux` in such a directory then runs instead of the Worker's. To run the Worker's own CLI in every case, call it through the variable:
+The hand-off needs a `leapmux` that has it. An older `leapmux` that your profile put first runs the command itself, and it can fail with an error such as `unexpected argument`. To run the Worker's own CLI in every case, call it through the variable:
 
 ```sh
 "$LEAPMUX_CONTROL_CLI" control tab list
+"$LEAPMUX_CONTROL_CLI" commands --json
 ```
 {{< /callout >}}
 
@@ -408,8 +414,9 @@ A script that loses the answer of `agent send` or `agent open`, for a timeout or
 - **`agent send ... --request-id <id>`**: a second run with the same request id, the same agent and the same message queues nothing new, and it prints the result of the first run. With `--wait`, it waits for the message of the first run, or prints its reply when the agent answered already.
 - **`agent open ... --request-id <id>`**: a second run with the same request id and the same arguments opens no second agent. It prints the agent that the first run opened, and it does not queue `--message` again.
 - **A request id belongs to one request.** A run with the same request id and other arguments fails with `conflict`, and nothing changes. Give each request its own id, such as a job name and a date: `--request-id nightly-review-2026-11-19`. A request id of `agent send` belongs to one agent, and one of `agent open` to one Worker.
+- **An edit in the queue does not break a retry.** Someone can edit the queued message in the browser before a retry runs. The Worker compares the retry with the first run, not with what the queue holds now. So the retry still queues nothing and prints the result of the first run, and the queue keeps the edit. With `--wait`, the retry waits for the edited message, or prints the reply to it. A run that sends the edited text under the same request id is another request, and `agent send` fails with `conflict`.
 - **A retry needs `--at` as an RFC 3339 time**, because a duration from now gives another time on each run. The CLI refuses `--at +10m` with `--request-id`.
-- **The Worker keeps no record of a removed input.** After someone removed the message from the queue, a retry queues it again.
+- **A removed message stays removed.** After someone removed the message from the queue, a retry with the same request id queues nothing for 7 days. Without `--wait` it prints the result of the first run. With `--wait` it fails with `not_found` and exits `6`, as a run does when someone removes its message while it waits. After 7 days the Worker no longer remembers the removed message, and a retry queues it again.
 
 ### Terminals
 

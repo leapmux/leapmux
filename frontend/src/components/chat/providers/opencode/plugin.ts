@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { openCodePermissionPresets } from '../openCodePermissionPresets'
 import { registerProvider } from '../registry'
 import { classifyOpenCodeMessage } from './classification'
-import { openCodeControlResponseSummary } from './controlResponse'
 import { openCodeCompactionStart, openCodeNotificationEntry } from './extractors/notification'
 import { openCodeOutputFilePaths } from './extractors/outputFilePaths'
 import { openCodeResultDivider } from './extractors/resultDivider'
@@ -23,7 +22,7 @@ const openCodePlugin: ProviderPlugin = {
     notificationEntry: openCodeNotificationEntry,
     compactionStart: openCodeCompactionStart,
   },
-  controls: { permissionPresets: openCodePermissionPresets, controlResponseDisplay: openCodeControlResponseSummary },
+  controls: { permissionPresets: openCodePermissionPresets },
   configuration: openCodeConfiguration,
 }
 

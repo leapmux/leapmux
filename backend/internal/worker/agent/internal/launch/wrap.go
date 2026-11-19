@@ -310,10 +310,18 @@ func writeNuInvocation(path, name string, count int) error {
 func buildNuCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	// `^"<program>"` is Nushell's documented form for running an external
 	// command whose path contains a space.
-	return nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n" +
+	return nuLaunchEnvironment(spec) +
 		nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix) +
 		prepared.nuReadiness(spec.EnvGated == nil, "") +
 		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
+}
+
+// nuLaunchEnvironment is the head of both Nushell builders. It runs after the
+// profile: it puts the directory of the Worker's CLI first on PATH again (see
+// nuReprependControlCLI), then removes StripEnvKeys and sets the pins, so a
+// PATH that a provider pins wins.
+func nuLaunchEnvironment(spec shellLaunchSpec) string {
+	return nuReprependControlCLI + nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n"
 }
 
 // legacyNativeArgument quotes one token for the Windows native command-line

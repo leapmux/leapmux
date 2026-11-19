@@ -125,41 +125,43 @@ func TestStoreRefusesASenderWithoutATabOrAProvider(t *testing.T) {
 	}
 }
 
-// A repeated request is the same input only from the same tab. The same input
-// id from another agent, or from the user, conflicts instead of returning the
-// first sender's message.
+// A repeated request is the same input only from the same tab, wherever the
+// input is now. The same input id from another agent, or from the user,
+// conflicts instead of returning the first sender's message.
 func TestStoreAgentMessageRepeatComparesTheSender(t *testing.T) {
 	t.Parallel()
-	_, store := newStoreFixture(t)
-	input := NewItem{ID: "repeat", AgentID: "agent-1", Kind: userMessageKind, Sender: claudeSender(), Text: "Run the tests", ReclassifyOnEdit: true}
-	first, added, err := store.enqueue(t.Context(), input, nil)
-	require.NoError(t, err)
-	require.True(t, added)
+	for _, place := range inputPlaces {
+		t.Run(string(place), func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			input := NewItem{ID: "repeat", AgentID: "agent-1", Kind: userMessageKind, Sender: claudeSender(), Text: "Run the tests", ReclassifyOnEdit: true}
+			_, added, err := store.enqueue(t.Context(), input, nil)
+			require.NoError(t, err)
+			require.True(t, added)
+			moveInputTo(t, store, input.ID, place)
 
-	again, added, err := store.enqueue(t.Context(), input, nil)
-	require.NoError(t, err)
-	assert.False(t, added, "the same request from the same tab adds nothing")
-	assert.Equal(t, first.Revision, again.Revision)
+			assertRepeatAddsNothing(t, store, input)
 
-	// The title names the sender but does not identify it: a tab that the user
-	// renamed between a request and its retry is still the same sender.
-	renamed := input
-	renamed.Sender = claudeSender()
-	renamed.Sender.Title = "Renamed tab"
-	again, added, err = store.enqueue(t.Context(), renamed, nil)
-	require.NoError(t, err, "a retry from a renamed tab is the same request")
-	assert.False(t, added)
-	assert.Equal(t, first.Revision, again.Revision)
+			// The title names the sender but does not identify it: a tab that
+			// the user renamed between a request and its retry is still the
+			// same sender.
+			renamed := input
+			renamed.Sender = claudeSender()
+			renamed.Sender.Title = "Renamed tab"
+			assertRepeatAddsNothing(t, store, renamed)
 
-	other := input
-	other.Sender = &AgentSender{TabID: "other-tab", Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}
-	_, err = store.Enqueue(t.Context(), other)
-	assert.ErrorIs(t, err, ErrConflict, "another tab's request with the same id conflicts")
+			other := input
+			other.Sender = &AgentSender{TabID: "other-tab", Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}
+			assertRepeatConflicts(t, store, other)
+			otherProvider := input
+			otherProvider.Sender = &AgentSender{TabID: "sender-tab", Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, Title: "Fix flaky spec"}
+			assertRepeatConflicts(t, store, otherProvider)
 
-	fromUser := input
-	fromUser.Sender = nil
-	_, err = store.Enqueue(t.Context(), fromUser)
-	assert.ErrorIs(t, err, ErrConflict, "the user's request with the same id conflicts")
+			fromUser := input
+			fromUser.Sender = nil
+			assertRepeatConflicts(t, store, fromUser)
+		})
+	}
 }
 
 func TestStoreRefusesToEditAnAgentMessage(t *testing.T) {

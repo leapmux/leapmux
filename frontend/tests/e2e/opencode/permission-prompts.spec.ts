@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseRememberedAllow } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseRememberedAllow, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { savedControlAnswer } from '../helpers/ui'
 import { opencodeTest } from '../opencode-fixtures'
@@ -30,7 +30,7 @@ opencodeTest('asks before a shell command touches a file outside the working dir
         expect(existsSync(file)).toBe(false)
       },
       // The saved row reads the name of OpenCode's own `once` option.
-      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allowed'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow'),
     })
   })
 })
@@ -72,7 +72,8 @@ opencodeTest('sends the reader\'s typed refusal reason in the native permission 
       afterRefusal: 'continues',
       beforeDecision: banner => expect(banner).toContainText(dirname(file)),
       expectNotRun: () => expect(readFileSync(file, 'utf8')).toBe(original),
-      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Denied'),
+      // The reason reached OpenCode in the native reply, so the saved answer states it as the feedback that it sent.
+      viewProof: reason => expectSavedRefusalFeedback(page, reason),
     })
   })
 })
@@ -102,7 +103,7 @@ opencodeTest('an always answer covers a later removal in the same outside direct
         expect(existsSync(second)).toBe(true)
       },
       secondProof: () => expect(existsSync(second)).toBe(false),
-      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Always allowed'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Always allow'),
     })
   })
 })

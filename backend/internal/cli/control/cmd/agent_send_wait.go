@@ -443,7 +443,11 @@ func awaitFirstLevel(ctx context.Context, events <-chan activityEvent, agentID s
 // A run that repeats a request (--request-id) can find that the Worker
 // already holds the message. When the message left the queue before this
 // run, its row is older than the last seq, so the wait reads the replies
-// after that row instead: the run prints the reply of the first run.
+// after that row instead: the run prints the reply of the first run. When
+// someone removed the message from the queue instead, the Worker queues
+// nothing for the repeat, and the transcript holds no row of the message. The
+// run then fails as the first run fails when someone removes the message
+// while it waits: with not_found, and exit status 6.
 func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, all bool, timeout time.Duration) (agentReplyResult, replyWaitOutcome, error) {
 	if err := refuseSelfWait(t); err != nil {
 		return agentReplyResult{}, 0, err
@@ -477,8 +481,12 @@ func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, a
 			return agentReplyResult{}, 0, err
 		}
 		if !found {
-			return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "the message %s left the input queue of agent %s, and its transcript holds no row of it", inputID, t.ID).
-				WithHint("send the message again with a new --request-id")
+			// The Worker writes the transcript row in the transaction that
+			// takes the message out of the queue, so a message that left the
+			// queue without a row is one that someone removed.
+			return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "someone removed the message %s from the input queue of agent %s before the agent received it, so this retry queued nothing", inputID, t.ID).
+				WithHint("send the message again with a new --request-id").
+				WithExitCode(cli.ExitWaitEnded)
 		}
 		baseline = seq - 1
 	}

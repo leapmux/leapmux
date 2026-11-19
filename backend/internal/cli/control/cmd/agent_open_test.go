@@ -96,3 +96,53 @@ func TestAgentOpenOverIPC_AConflictStatesTheCauseThatTheRequestIDGives(t *testin
 		assert.NotContains(t, hint, "--request-id", "without a request id the conflict has another cause")
 	}
 }
+
+// messageRefusingDispatcher refuses every EnqueueAgentInput with code, as the
+// Worker refuses an input id that an earlier request with another message
+// took (a conflict), and serves every other call as
+// creationPublicationDispatcher does.
+type messageRefusingDispatcher struct {
+	*creationPublicationDispatcher
+	code codes.Code
+}
+
+func (d messageRefusingDispatcher) DispatchWith(ctx context.Context, caller channel.Caller, r *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	if r.GetMethod() == leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure {
+		_ = w.SendError(int32(d.code), "the input conflicts with an earlier request")
+		return
+	}
+	d.creationPublicationDispatcher.DispatchWith(ctx, caller, r, w)
+}
+
+// A retry of `agent open --request-id` with another --message is another
+// request: the Worker refuses its first message as a conflict, and the open
+// fails with conflict and the cause that the request id gives, as a conflict
+// of the creation does. Any other failure of the first message leaves the
+// agent open, so the open succeeds and states the failure.
+func TestAgentOpenOverIPC_ARetryWithAnotherMessageConflicts(t *testing.T) {
+	open := func(t *testing.T, code codes.Code, extra ...string) cliOutcome {
+		t.Helper()
+		state := newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A"), materialized: state},
+			messageRefusingDispatcher{&creationPublicationDispatcher{}, code})
+		return runControl(t, append([]string{
+			"agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
+			"--worker", "worker-A", "--dir", "/src/app", "--message", "Review the other diff",
+		}, extra...)...)
+	}
+
+	t.Run("a conflict with a request id fails", func(t *testing.T) {
+		f := open(t, codes.FailedPrecondition, "--request-id", "review-1").requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "conflicts with an earlier request")
+		require.NotEmpty(t, f.Hints)
+		assert.Contains(t, f.Hints[len(f.Hints)-1], `--request-id "review-1"`)
+	})
+	t.Run("another failure with a request id is a warning", func(t *testing.T) {
+		data := open(t, codes.ResourceExhausted, "--request-id", "review-1").Data(t)
+		assert.Contains(t, data["initial_message_warning"], "conflicts with an earlier request")
+	})
+	t.Run("a refusal without a request id is a warning", func(t *testing.T) {
+		data := open(t, codes.FailedPrecondition).Data(t)
+		assert.Contains(t, data["initial_message_warning"], "conflicts with an earlier request")
+	})
+}

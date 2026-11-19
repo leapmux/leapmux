@@ -102,11 +102,10 @@ describe('registerACPProvider', () => {
     })).toThrow(/settingsConfig or defaultPermissionMode/)
   })
 
-  // The options a provider with its own shapes passes: the display of its saved
-  // answers, its permission presets, and its own turn end. Each must reach the plugin
-  // it registers, and the control capability holds nothing beside the two.
+  // The options a provider with its own shapes passes: its permission presets and its
+  // own turn end. Each must reach the plugin it registers, and the control capability
+  // holds the presets alone.
   it('carries the optional hooks into the plugin it registers', () => {
-    const controlResponseDisplay = vi.fn(() => ({ kind: 'label' as const, text: 'Vendor answer' }))
     const permissionPresets = {
       bypass: {
         sets: { approvalMode: 'always-approve' },
@@ -116,40 +115,21 @@ describe('registerACPProvider', () => {
       attachments: attachmentCapabilities,
       provider: AgentProvider.GROK_BUILD,
       defaultPermissionMode: 'default',
-      controlResponseDisplay,
       permissionPresets,
       agentTurnEnd: parent => parent.method === 'vendor/end'
         ? 'end_turn'
         : undefined,
     })
     const plugin = providerFor(AgentProvider.GROK_BUILD)!
-    expect(plugin.controls).toStrictEqual({ controlResponseDisplay, permissionPresets })
-    expect(controlResponseDisplay).not.toHaveBeenCalled()
+    expect(plugin.controls).toStrictEqual({ permissionPresets })
     expect(plugin.transcript.extractDivider({ method: 'vendor/end' })).toEqual({ label: 'Turn ended' })
   })
 
-  // A provider that passes no display takes the shared permission display, which reads
-  // the option that the reader chose from the request's own list.
-  it('keeps the shared defaults when a provider passes none', () => {
+  // A saved answer reads from the prompt and the decision that the Worker records, so
+  // a provider that passes no presets registers an empty control capability.
+  it('registers no control hook when a provider passes none', () => {
     registerACPProvider({ attachments: attachmentCapabilities, provider: AgentProvider.REASONIX, defaultPermissionMode: 'normal' })
     const plugin = providerFor(AgentProvider.REASONIX)!
-    expect(Object.keys(plugin.controls ?? {})).toEqual(['controlResponseDisplay'])
-    expect(plugin.controls?.controlResponseDisplay?.({
-      requestId: 'r',
-      claimToken: 'c',
-      request: {
-        method: 'session/request_permission',
-        params: {
-          options: [
-            { optionId: 'no', name: 'No', kind: 'reject_once' },
-          ],
-        },
-      },
-      response: {
-        result: {
-          outcome: { outcome: 'selected', optionId: 'no' },
-        },
-      },
-    })).toEqual({ kind: 'label', text: 'No' })
+    expect(plugin.controls).toStrictEqual({})
   })
 })

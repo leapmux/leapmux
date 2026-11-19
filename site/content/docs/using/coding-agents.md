@@ -146,6 +146,7 @@ An agent can send another agent a message with `leapmux control agent send`. The
 - The recipient reads the message after one line that states the sending agent and its provider, and that the message is not from its operator.
 - The transcript shows the sending agent's icon and the title of its tab above the message, and the queue row shows them in place of the kind.
 - **Edit** is disabled on such a row, because the text is the other agent's. **Delete**, the moves and **Steer** work as they do for your own messages.
+- A message that an agent drops after a steer, and that LeapMux queues again, still comes from the sending agent.
 
 LeapMux takes the sender from the credentials of the sending agent's tab, so an agent cannot claim to be another agent or pass its words off as yours. This holds for an agent on another Worker too.
 
@@ -202,6 +203,13 @@ The shortcut acts only on an **empty** composer, because `Cmd/Ctrl+Enter` sends
 whatever the composer holds. Text, an attachment, or a permission prompt waiting
 for approval all count as something to send, so in each of those cases the chord
 sends as usual.
+
+Some agents can drop a steered item before the model reads it, for example when
+you stop the turn while the item still waits in the agent's own inbox. LeapMux
+then queues the item again behind what the queue holds, and the transcript
+states that the message was queued again. A message from another agent comes
+back as that agent's message, with the same sender. Every other item comes back
+as your own message, with the text that the agent would have read.
 
 ## How tool calls and results render
 
@@ -279,6 +287,16 @@ A question uses radio buttons for a single answer or checkboxes for several; you
 When an agent finishes planning, the banner shows the plan. **Approve** starts the work. **Reject** keeps plan mode and sends your feedback. **Clear Context** starts the work in a fresh session when the provider offers that choice. Some providers end plan mode without asking (see the [feature matrix](#feature-matrix)).
 
 If several prompts queue up, you answer them one at a time. LeapMux de-duplicates requests and remembers answered ones, so a reconnect never re-asks something you already handled.
+
+After you answer, the transcript keeps a row that states your answer in the same words for every provider:
+
+- **A permission:** the option that you chose.
+- **A plan:** **Approve** or **Reject**, or the choice that you picked. An approval that changes the permission mode states the mode after it, such as **Approve (Act)**.
+- **Questions:** each question with your answers. A dismissal reads **Dismissed:** followed by the questions.
+- **A form:** **Approved** and each field under its title, or **Rejected** or **Cancelled**.
+- **A dialog:** **Approved**, **Rejected**, **Cancelled**, or the value that you sent.
+
+A reason that reached the agent with your answer shows under **Sent feedback:** instead. A reason that the agent receives as your next message shows as that message.
 
 The exact buttons and their names come from the provider's own protocol.
 

@@ -117,7 +117,7 @@ func TestCodexTurnRetrySendsTheRetainedInputAfterRevert(t *testing.T) {
 		case "thread/revert":
 			// Inside the gap: the input queue must not drain into it.
 			gapRefusals <- a.SendInput("more", nil)
-			gapRefusals <- a.SteerInput("more", nil)
+			gapRefusals <- a.SteerInput(agent.SteerRequest{Content: "more"})
 		}
 		return agenttest.RPCReply{}, false
 	}))
@@ -127,7 +127,7 @@ func TestCodexTurnRetrySendsTheRetainedInputAfterRevert(t *testing.T) {
 	// The turn carries a message and one steer, so the retry sends both again.
 	require.NoError(t, a.sendTurnStart("main-thread", []map[string]interface{}{{"type": "text", "text": "Hello."}},
 		turnSettings{model: "gpt-5.4", effort: "high", collaborationMode: contracts.CodexOptionDefaultCollaborationMode}))
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide"}))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)))
 	beforeRetry := len(sink.TurnKinds())
 
@@ -961,7 +961,7 @@ func TestCodexSteerOfATurnWithoutRetainedInputRetainsNothing(t *testing.T) {
 	// A goal continuation: Codex starts the turn, so LeapMux holds no input.
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
 
-	require.NoError(t, a.SteerInput("guide", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide"}))
 
 	a.Mu.Lock()
 	retained := a.mainTurn.input

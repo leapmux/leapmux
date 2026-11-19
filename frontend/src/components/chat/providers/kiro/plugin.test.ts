@@ -1,5 +1,7 @@
 import type { ControlPrompt } from '../../model/controlPrompt'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
+import { ControlDecisionSchema, ElicitationAction } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { extractChatRow, extractedRow } from '../../rowExtraction'
 import { describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
@@ -116,6 +118,12 @@ describe('kiro provider', () => {
         },
       },
       prompt,
+      decision: create(ControlDecisionSchema, {
+        kind: {
+          case: 'elicitation',
+          value: { action: ElicitationAction.ACCEPT, contentJson: '{"size":"Large"}' },
+        },
+      }),
     }
     expect(extractedRow(extractChatRow(AgentProvider.KIRO, input({}, null, AgentProvider.KIRO), { kind: 'control_response', response }))).toEqual({
       kind: 'control-response',

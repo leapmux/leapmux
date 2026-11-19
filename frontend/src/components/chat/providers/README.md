@@ -31,7 +31,6 @@ when it has no such job; it never renames it.
 | `toolNames.ts` | The tool NAME vocabulary (`<PROVIDER>_TOOL_NAMES`) and its aliases. |
 | `classification.ts` | Which shared message category one frame takes. |
 | `extractControl.ts` | One control request read into `ControlPrompt`. |
-| `controlResponse.ts` | How an answered control request reads back. |
 | `elicitation.ts` | One elicitation form read into `ElicitationRequest`. |
 | `askUserQuestion.ts` | The question-request half of the control path: recognize, read, answer. |
 | `resolveMessage.ts` | The `Provider.resolveMessage` hook: supplemental content merged into the payload for DISPLAY. |

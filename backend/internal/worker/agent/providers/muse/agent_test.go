@@ -128,7 +128,7 @@ func TestMuseRetriedInputDoesNotReuseAnotherInputIdentity(t *testing.T) {
 				a.sessionID = "session"
 			case "steer":
 				a.startTurn("session", "turn")
-				require.NoError(t, a.SteerInput("message", nil))
+				require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "message"}))
 				a.sessions["session"].turnID = ""
 			}
 			require.NoError(t, a.SendInput("message", nil))

@@ -7,7 +7,6 @@ import (
 
 	"github.com/coder/quartz"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -66,7 +65,8 @@ var _ agent.SteerPreparer = (*Agent)(nil)
 // `queued` or `sent`. A steer that reaches an idle session is refused, because
 // the whisper carries no turn to land in and Dirac buffers only the whispers
 // that arrive while a session has a pending prompt.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if content == "" {
 		return nil
 	}

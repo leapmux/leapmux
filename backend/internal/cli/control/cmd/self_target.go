@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // Self-target guards block destructive `leapmux control` commands from
@@ -29,7 +30,7 @@ import (
 // when the CLI was not invoked from inside a remote tab. Trimming
 // guards against trailing newlines from shell substitutions.
 func callingTabID() string {
-	return strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_TAB_ID"))
+	return strings.TrimSpace(os.Getenv(controlenv.TabIDVariable))
 }
 
 // locateCallingTab resolves the calling tab anchor to its current

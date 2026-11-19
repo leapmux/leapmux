@@ -186,7 +186,7 @@ func (a *Agent) HandleOutput(content []byte) {
 }
 
 // SteerInput is unsupported: Letta queues a mid-turn message as a new turn.
-func (a *Agent) SteerInput(string, []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(agent.SteerRequest) error {
 	return agent.ErrSteeringUnsupported
 }
 

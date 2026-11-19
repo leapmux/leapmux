@@ -86,7 +86,7 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO agents (id) VALUES ('enum-owner')",
 		"INSERT INTO tab_creations(user_id,worker_id,tab_id,tab_type,request_hash,request_payload,publication_payload,runtime_payload,state) VALUES ('user','worker','tab',1,zeroblob(32),X'',X'',X'',1)",
 		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
-		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
+		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state, idempotency_key) VALUES ('enum-input', 'enum-owner', 1, 1, 1, 'enum-key')",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-response', 'enum-owner', 1, 'enum-request', 'enum-claim', 1)",
 		"INSERT INTO control_response_payloads (delivery_id) VALUES ('enum-response')",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-unattached', 'enum-owner', 1, 'unattached', '', 1)",
@@ -219,6 +219,8 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 		"the index's state literal is the AGENT_INPUT_STATE_QUEUED ordinal")
 	assert.Contains(t, index, fmt.Sprintf("kind IN (%d, %d)", usageLimit, serverError),
 		"the index's kind literals are the two AUTO_RETRY ordinals")
+	assert.Contains(t, index, "removed_at IS NULL",
+		"a removed retry keeps its row for the repeat check, and must not count as the pending one")
 
 	connection, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -228,8 +230,8 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 	require.NoError(t, err)
 	insert := func(id string, order int64, kind int64, state int64) error {
 		_, err := connection.ExecContext(t.Context(),
-			`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, state) VALUES (?, 'retry-owner', ?, ?, 'Continue.', ?)`,
-			id, order, kind, state)
+			`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, state, idempotency_key) VALUES (?, 'retry-owner', ?, ?, 'Continue.', ?, ?)`,
+			id, order, kind, state, "key-"+id)
 		return err
 	}
 	require.NoError(t, insert("retry-usage", 1, usageLimit, queued))
@@ -241,6 +243,12 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 	_, err = connection.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET state = ? WHERE id = 'retry-failed'`, queued)
 	assert.ErrorContains(t, err, "UNIQUE constraint failed",
 		"a queued retry conflicts with a FAILED row of the same kind, so cancellation must delete the row")
+
+	_, err = connection.ExecContext(t.Context(),
+		`UPDATE agent_input_queue_items SET removed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 'retry-usage'`)
+	require.NoError(t, err)
+	require.NoError(t, insert("retry-usage-3", 4, usageLimit, queued),
+		"a removed queued retry leaves room for the next pending retry of its kind")
 }
 
 // The tie CHECK binds follow_up text to follow_up_kind: a queued kind without

@@ -447,10 +447,12 @@ func (museProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 		return result
 	}
 	if ctx.RequestID != key {
-		result.Refuse(agent.RefusalOtherRequest)
+		// The stored request disagrees with its own request key, so LeapMux
+		// cannot trust it.
+		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
-	method, params, err := nativeControlReply(request.Params, ctx.ResponseContent, key)
+	method, params, err := nativeControlReply(request.Params, ctx.ResponseContent)
 	if err != nil {
 		result.Refuse(err.Error())
 		return result
@@ -479,10 +481,10 @@ func validControlRequestMethod(method string, params controlParams) bool {
 	return params.UserInputID != "" && (method == contracts.MuseMethodUserInputRequest || method == contracts.MuseMethodUserInputRequested)
 }
 
-func nativeControlReply(request controlParams, raw []byte, key string) (string, map[string]any, error) {
+func nativeControlReply(request controlParams, raw []byte) (string, map[string]any, error) {
 	params := map[string]any{"sessionId": request.SessionID}
 	if request.ApprovalID != "" {
-		choice, feedback, err := approvalReplyChoice(request.Choices, raw, key)
+		choice, feedback, err := approvalReplyChoice(request.Choices, raw)
 		if err != nil {
 			return "", nil, err
 		}
@@ -498,7 +500,7 @@ func nativeControlReply(request controlParams, raw []byte, key string) (string, 
 	if !ok {
 		return "", nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
-	fields, err := nativeReplyFields(envelope, key)
+	fields, err := nativeReplyFields(envelope)
 	if err != nil {
 		return "", nil, err
 	}
@@ -575,7 +577,7 @@ func readApprovalChoices(raw json.RawMessage) ([]nativeApprovalChoice, bool) {
 	return choices, true
 }
 
-func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (string, string, error) {
+func approvalReplyChoice(available json.RawMessage, raw []byte) (string, string, error) {
 	choices, ok := readApprovalChoices(available)
 	if !ok {
 		return "", "", errors.New("the native Muse approval choices are invalid")
@@ -593,14 +595,10 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 			return "", "", errors.New(agent.RefusalUnreadableAnswer)
 		}
 		outer, ok := providerkit.RawObject(neutral)
-		id, idOK := providerkit.RawString(outer["request_id"])
 		answer, answerOK := providerkit.RawObject(outer["response"])
 		behavior, behaviorOK := providerkit.RawString(answer["behavior"])
-		if !ok || !idOK || !answerOK || !behaviorOK {
+		if !ok || !answerOK || !behaviorOK {
 			return "", "", errors.New(agent.RefusalUnreadableAnswer)
-		}
-		if strings.TrimSpace(id) != key {
-			return "", "", errors.New(agent.RefusalOtherRequest)
 		}
 		behavior = strings.TrimSpace(behavior)
 		if behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
@@ -637,7 +635,7 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 			}
 		}
 	} else {
-		answer, err := nativeReplyFields(envelope, key)
+		answer, err := nativeReplyFields(envelope)
 		if err != nil {
 			return "", "", err
 		}
@@ -665,16 +663,9 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 	return "", "", errors.New(agent.RefusalNoDecision)
 }
 
-func nativeReplyFields(envelope map[string]json.RawMessage, key string) (map[string]json.RawMessage, error) {
+func nativeReplyFields(envelope map[string]json.RawMessage) (map[string]json.RawMessage, error) {
 	if _, present := envelope["response"]; present {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)
-	}
-	id, ok := providerkit.RawString(envelope["id"])
-	if !ok {
-		return nil, errors.New(agent.RefusalUnreadableAnswer)
-	}
-	if id != key {
-		return nil, errors.New(agent.RefusalOtherRequest)
 	}
 	result, ok := providerkit.RawObject(envelope["result"])
 	if !ok {

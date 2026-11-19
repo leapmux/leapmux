@@ -83,7 +83,7 @@ func TestAntigravityFinalizationRefusesInputAndSteering(t *testing.T) {
 	}()
 	receiveTestValue(t, entered)
 	assert.ErrorIs(t, a.SendInput("next turn", nil), agent.ErrAgentBusy)
-	assert.ErrorIs(t, a.SteerInput("too late to steer", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "too late to steer"}), agent.ErrAgentBusy)
 	assert.Zero(t, delivered.Load())
 	unblock()
 	receiveTestValue(t, done)

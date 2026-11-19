@@ -155,15 +155,16 @@ func (svc *Service) sendResolvedInput(agentID string, input controlInput, attach
 }
 
 // steerResolvedInput retains the validated provider and the question's session.
-func (svc *Service) steerResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) error {
+// input supplies the session, and request is the steer that the provider reads.
+func (svc *Service) steerResolvedInput(agentID string, input controlInput, request agent.SteerRequest) error {
 	if input.source == nil {
-		return svc.Agents.SteerInput(agentID, input.text, attachments)
+		return svc.Agents.SteerInput(agentID, request)
 	}
 	provider, err := svc.controlInputProvider(agentID, input)
 	if err != nil {
 		return err
 	}
-	return agent.SteerInputToSession(provider, input.sessionID(), input.text, attachments)
+	return agent.SteerInputToSession(provider, input.sessionID(), request)
 }
 
 // controlInputProvider validates the source while it retains the current provider.

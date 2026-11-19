@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -237,9 +238,7 @@ func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := kimiProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: request.RequestID, RequestPayload: request.Payload, ResponseContent: content,
-		})
+		resolution := agenttest.ResolveAnswer(kimiProvider{}, request.Payload, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		assert.Contains(t, string(resolution.Content), `"decision":"`+want+`"`, behavior)
 	}

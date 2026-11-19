@@ -1125,26 +1125,29 @@ func TestSink_RequeueDroppedInputRecordsEachCallInOrder(t *testing.T) {
 
 	s := &Sink{}
 	attachments := []*leapmuxv1.Attachment{{Filename: "a.txt"}}
-	require.NoError(t, s.RequeueDroppedInput("before", "no turn yet", nil))
+	before := agent.SteerRequest{InputID: "before", Content: "no turn yet"}
+	first := agent.SteerRequest{InputID: "input-1", Content: "first", Attachments: attachments}
+	second := agent.SteerRequest{InputID: "input-2", Content: "second"}
+	require.NoError(t, s.RequeueDroppedInput(before))
 	s.SetTurnState(agent.TurnState{Active: true}, 1)
-	require.NoError(t, s.RequeueDroppedInput("drop-1", "first", attachments))
-	require.NoError(t, s.RequeueDroppedInput("drop-1", "first", attachments))
+	require.NoError(t, s.RequeueDroppedInput(first))
+	require.NoError(t, s.RequeueDroppedInput(first))
 	s.SetTurnState(agent.TurnState{Active: false}, 2)
-	require.NoError(t, s.RequeueDroppedInput("drop-2", "second", nil))
+	require.NoError(t, s.RequeueDroppedInput(second))
 
 	got := s.RequeuedInputs()
 	require.Len(t, got, 4, "a repeat is recorded, so a test sees a provider that repeats a call")
-	assert.Equal(t, RequeuedInput{DropID: "before", Content: "no turn yet"}, got[0],
+	assert.Equal(t, RequeuedInput{Request: before}, got[0],
 		"TurnActive is false when the provider published no turn state")
-	assert.Equal(t, RequeuedInput{DropID: "drop-1", Content: "first", Attachments: attachments, TurnActive: true}, got[1])
+	assert.Equal(t, RequeuedInput{Request: first, TurnActive: true}, got[1])
 	assert.Equal(t, got[1], got[2])
-	assert.Equal(t, RequeuedInput{DropID: "drop-2", Content: "second"}, got[3])
+	assert.Equal(t, RequeuedInput{Request: second}, got[3])
 	assert.Equal(t, []string{
-		"requeue:before", "turn_active:true", "requeue:drop-1", "requeue:drop-1", "turn_active:false", "requeue:drop-2",
+		"requeue:before", "turn_active:true", "requeue:input-1", "requeue:input-1", "turn_active:false", "requeue:input-2",
 	}, s.TurnLifecycle())
 
-	got[0].DropID = "changed"
-	assert.Equal(t, "before", s.RequeuedInputs()[0].DropID, "the caller gets a copy")
+	got[0].Request.InputID = "changed"
+	assert.Equal(t, "before", s.RequeuedInputs()[0].Request.InputID, "the caller gets a copy")
 }
 
 // RequeueErr stands for a queue that refused the input. The call fails and
@@ -1154,7 +1157,7 @@ func TestSink_RequeueDroppedInputReturnsRequeueErrAndRecordsNothing(t *testing.T
 
 	refused := errors.New("the queue is full")
 	s := &Sink{RequeueErr: refused}
-	require.ErrorIs(t, s.RequeueDroppedInput("drop-1", "first", nil), refused)
+	require.ErrorIs(t, s.RequeueDroppedInput(agent.SteerRequest{InputID: "input-1", Content: "first"}), refused)
 	assert.Empty(t, s.RequeuedInputs())
 	assert.Empty(t, s.TurnLifecycle())
 }

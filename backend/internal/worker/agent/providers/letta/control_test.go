@@ -233,11 +233,8 @@ func questionAnswer(t *testing.T, requestID, behavior string, answers map[string
 // receipt published.
 func resolveQuestion(t *testing.T, request agenttest.ControlRequestRecord, behavior string, answers map[string]string) agent.ControlResponseResolution {
 	t.Helper()
-	return lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       request.RequestID,
-		RequestPayload:  request.Payload,
-		ResponseContent: questionAnswer(t, request.RequestID, behavior, answers),
-	})
+	return agenttest.ResolveAnswer(lettaProvider{}, request.Payload, request.RequestID,
+		agent.ControlAnswer{Content: questionAnswer(t, request.RequestID, behavior, answers)})
 }
 
 // openedAgent returns an agent that is connected to a fake server, with the
@@ -688,9 +685,7 @@ func TestQuestionDismissalCarriesTheTypedReasonAsFeedback(t *testing.T) {
 			content, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": request.RequestID, "response": inner}})
 			require.NoError(t, err)
 
-			resolution := lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: request.RequestID, RequestPayload: request.Payload, ResponseContent: content,
-			})
+			resolution := agenttest.ResolveAnswer(lettaProvider{}, request.Payload, request.RequestID, agent.ControlAnswer{Content: content})
 
 			require.NoError(t, resolution.Refusal())
 			assert.Equal(t, agent.FeedbackFollowUp(tc.wantFeedback), resolution.FollowUp, "Letta Code reads a dismissal without a reason, so the reason follows as a message")
@@ -707,11 +702,8 @@ func TestQuestionRequestThatLacksAQuestionIsWithheld(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			resolution := lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID:       "letta-question-ask-1",
-				RequestPayload:  []byte(payload),
-				ResponseContent: questionAnswer(t, "letta-question-ask-1", "deny", nil),
-			})
+			resolution := agenttest.ResolveAnswer(lettaProvider{}, []byte(payload), "letta-question-ask-1",
+				agent.ControlAnswer{Content: questionAnswer(t, "letta-question-ask-1", "deny", nil)})
 
 			assert.True(t, resolution.Withhold)
 			assert.Equal(t, agent.RefusalUnreadableRequest, resolution.Refusal().Error())
@@ -730,9 +722,7 @@ func TestPermissionWithAnInputThatIsNoObjectStaysAnswerable(t *testing.T) {
 			content, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": "perm-1", "response": map[string]any{"behavior": "allow"}}})
 			require.NoError(t, err)
 
-			resolution := lettaProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID: "perm-1", RequestPayload: []byte(payload), ResponseContent: content,
-			})
+			resolution := agenttest.ResolveAnswer(lettaProvider{}, []byte(payload), "perm-1", agent.ControlAnswer{Content: content})
 
 			require.NoError(t, resolution.Refusal())
 			assert.JSONEq(t, `{"kind":"approval_response","request_id":"perm-1","decision":{"behavior":"allow","message":""}}`, string(resolution.Content))

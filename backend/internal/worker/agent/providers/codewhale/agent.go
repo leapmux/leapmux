@@ -292,7 +292,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput sends one native steer. Its HTTP success can mean queued, so it writes no user row.
 // Text attachments enter the native prompt. The shared queue retains the original attachments.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	a.steerMu.Lock()
 	defer a.steerMu.Unlock()
 	a.Mu.Lock()

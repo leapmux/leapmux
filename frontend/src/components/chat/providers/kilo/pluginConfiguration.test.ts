@@ -79,54 +79,6 @@ describe('kilo classify', () => {
     expect(plugin.configuration?.effortGroupKey).toBeUndefined()
   })
 
-  // The neutral {isSynthetic, controlResponse} row -> control_response classification is provider-
-  // agnostic and lives in classifyMessage (see messageClassifier.test.ts); this plugin test
-  // covers only OpenCode's own controlResponseDisplay derivation.
-  it('wires controlResponseDisplay: question answers, else the ACP permission path', () => {
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: 'q1',
-      request: {
-        type: 'question.asked',
-        properties: {
-          questions: [
-            { header: 'Task' },
-          ],
-        },
-      },
-      response: {
-        result: {
-          answers: [
-            ['Build'],
-          ],
-        },
-      },
-      prompt: {
-        kind: 'question',
-        questions: [
-          { header: 'Task', question: '', options: [] },
-        ],
-      },
-    })).toEqual({ kind: 'label', text: 'Task: Build' })
-    expect(plugin?.controls?.controlResponseDisplay!({
-      claimToken: 'claim-1',
-      requestId: '7',
-      request: {
-        method: 'session/request_permission',
-        params: {
-          options: [
-            { optionId: 'proceed_once', name: 'Allow once' },
-          ],
-        },
-      },
-      response: {
-        result: {
-          outcome: { optionId: 'proceed_once' },
-        },
-      },
-    })).toEqual({ kind: 'label', text: 'Allow once' })
-  })
-
   it('classifies tool_call as tool_use with kind', () => {
     const parent = {
       sessionUpdate: 'tool_call',

@@ -1,7 +1,6 @@
 package amp
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,7 +18,8 @@ import (
 // before it writes.
 const (
 	// maxLineContentBytes caps the content of one line, measured as Amp
-	// measures it: the UTF-8 bytes of its own content array as JSON. The
+	// measures it: the UTF-8 bytes of its own content array as JavaScript's
+	// JSON.stringify writes it, which providerkit.JSONText writes too. The
 	// base64 of an image counts, so one image of about 760 KB fills it.
 	maxLineContentBytes = 1 << 20
 	// maxImagesPerLine caps the images of one line.
@@ -125,11 +125,7 @@ func buildUserLine(content string, attachments []*leapmuxv1.Attachment, steer bo
 			return nil, nil, providerkit.ValidateTextAndImageAttachment("Amp", attachment)
 		}
 	}
-	size, err := jsonSize(estimate)
-	if err != nil {
-		return nil, nil, err
-	}
-	if size > maxLineContentBytes {
+	if size := len(providerkit.JSONText(estimate)); size > maxLineContentBytes {
 		return nil, nil, fmt.Errorf("the message is too large for Amp: it holds %d bytes as JSON, and Amp takes at most %d. Remove an image or shorten the text", size, maxLineContentBytes)
 	}
 	line, err := json.Marshal(userLine{
@@ -152,19 +148,6 @@ func countImages(attachments []*leapmuxv1.Attachment) int {
 		}
 	}
 	return count
-}
-
-// jsonSize measures a value as Amp measures a line, in UTF-8 bytes of its JSON.
-// Go writes every non-ASCII character but U+2028 and U+2029 as itself, as
-// JavaScript does, and escapes those two, which only overstates the size.
-func jsonSize(value any) (int, error) {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return 0, fmt.Errorf("measure the message for Amp: %w", err)
-	}
-	return len(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))), nil
 }
 
 // validateAttachment is the policy that ValidateAttachment states: text and
@@ -204,14 +187,11 @@ func checkImage(attachment agent.ClassifiedAttachment) (string, error) {
 	if width, height, ok := imageheader.Dimensions(mediaType, attachment.Data); ok && (width > maxImageDimension || height > maxImageDimension) {
 		return "", fmt.Errorf("the image %s is %dx%d pixels, and Amp takes at most %d on each side", name, width, height, maxImageDimension)
 	}
-	alone, err := jsonSize([]ampContentEstimate{{
+	alone := len(providerkit.JSONText([]ampContentEstimate{{
 		Type:       blockTypeImage,
 		SourcePath: longestImageSourcePath,
 		Source:     &ampSourceEstimate{Type: imageSourceBase64, MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(attachment.Data)},
-	}})
-	if err != nil {
-		return "", err
-	}
+	}}))
 	if alone > maxLineContentBytes {
 		return "", fmt.Errorf("the image %s takes %d bytes once encoded, and one Amp message holds at most %d. Attach a smaller image", name, alone, maxLineContentBytes)
 	}

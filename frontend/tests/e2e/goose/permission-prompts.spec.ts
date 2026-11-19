@@ -56,7 +56,7 @@ gooseTest('runs a removal after the reader allows it in smart mode', async ({ na
       expect(nativeToolResult(request, 'goose-smart-allow')).toContain('goose-allow-42')
     },
     // Goose names each option after its kind, so the saved row reads the word of the kind.
-    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow once'),
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow'),
   })
 })
 
@@ -70,7 +70,7 @@ gooseTest('sends the reader\'s typed refusal reason as the next message', async 
     route: 'next-message',
     beforeDecision: banner => expect(banner).toContainText('goose-reason-marker.txt'),
     expectNotRun: () => expect(existsSync(marker)).toBe(true),
-    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Reject'),
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Deny'),
   })
 })
 

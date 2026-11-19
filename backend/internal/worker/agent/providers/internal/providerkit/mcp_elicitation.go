@@ -30,16 +30,16 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 	result := agent.DefaultControlResponseResolution(ctx)
 	result.Withhold = true
 	var response MCPElicitationControlResponse
-	id, requestID, ok := agent.ExtractJSONRPCID(ctx.RequestPayload)
+	id, _, ok := agent.ExtractJSONRPCID(ctx.RequestPayload)
 	switch {
 	case !ok:
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result, true
 	case json.Unmarshal(ctx.ResponseContent, &response) != nil:
+		// The Worker resolves only JSON that addresses the request, so this
+		// fails only for a field of a type that the envelope does not take,
+		// such as a `_meta` value that is not a string.
 		result.Refuse(agent.RefusalUnreadableAnswer)
-		return result, true
-	case response.Response.RequestID != agent.StoredControlRequestID(ctx, requestID):
-		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
 	answer := response.Response.Response

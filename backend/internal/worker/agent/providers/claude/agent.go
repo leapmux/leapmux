@@ -305,7 +305,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 // image as unsupported, and the worker sends that input as the next turn, where
 // the CLI reads every block. The refusal depends on the input alone, so it
 // comes before the turn check.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText && attachment.Kind != contracts.AttachmentMediaKindImage {
 			return fmt.Errorf("%w: a steered turn of Claude Code keeps text and images only, so %q goes in the next turn",

@@ -135,10 +135,39 @@ func droidOptionKind(value string) leapmuxv1.PermissionOptionKind {
 	}
 }
 
+// droidOptionNames are the words of each option that Droid defines beyond
+// the once pair, as the Factory Droid SDK describes the option. Droid states
+// each option as a value and no label, so a button and a saved answer read
+// these words. The once pair has none: a client words `proceed_once` and
+// `cancel` as its own Allow and Deny buttons.
+var droidOptionNames = map[string]string{
+	// Droid saves a rule. For a file, the rule covers the parent directory.
+	contracts.DroidPermissionOptionProceedAlways:       "Allow always",
+	contracts.DroidPermissionOptionProceedAlwaysFile:   "Allow always for this file",
+	contracts.DroidPermissionOptionProceedAlwaysTools:  "Allow always for these MCP tools",
+	contracts.DroidPermissionOptionProceedAlwaysServer: "Allow always for this MCP server",
+	// The autonomy level and the new session apply beside the approval.
+	contracts.DroidPermissionOptionProceedAutoRun:          "Allow and raise the autonomy level",
+	contracts.DroidPermissionOptionProceedAutoRunLow:       "Allow and set the autonomy level to Low",
+	contracts.DroidPermissionOptionProceedAutoRunMedium:    "Allow and set the autonomy level to Medium",
+	contracts.DroidPermissionOptionProceedAutoRunHigh:      "Allow and set the autonomy level to High",
+	contracts.DroidPermissionOptionProceedNewSession:       "Allow in a new session",
+	contracts.DroidPermissionOptionProceedNewSessionLow:    "Allow in a new session at autonomy level Low",
+	contracts.DroidPermissionOptionProceedNewSessionMedium: "Allow in a new session at autonomy level Medium",
+	contracts.DroidPermissionOptionProceedNewSessionHigh:   "Allow in a new session at autonomy level High",
+	// Droid requires `editedSpecContent` beside this option and implements
+	// that spec.
+	contracts.DroidPermissionOptionProceedEdit: "Allow with an edited spec",
+	// Droid Shield: Droid proceeds once and reports its findings as a false
+	// positive.
+	contracts.DroidPermissionOptionProceedReportFalsePositive: "Allow and report a false positive",
+}
+
 // droidPermissionOptions states the options of a permission prompt:
 //
-//   - Droid's offered options, each with its kind. An option of another kind
-//     takes its value as its name, because Droid states no label.
+//   - Droid's offered options, each with its kind and its words
+//     (droidOptionNames). An option of another kind that this build does not
+//     know takes its value as its name, the only word that Droid states.
 //   - LeapMux's allow and deny, when Droid offers none.
 //   - LeapMux's deny after Droid's options, when they include no `cancel`.
 //     Droid still accepts a refusal there: droidPermissionReply turns a deny
@@ -146,8 +175,8 @@ func droidOptionKind(value string) leapmuxv1.PermissionOptionKind {
 func droidPermissionOptions(offered []string) []*leapmuxv1.PermissionOption {
 	options := make([]*leapmuxv1.PermissionOption, 0, len(offered)+1)
 	for _, value := range offered {
-		option := &leapmuxv1.PermissionOption{OptionId: value, Kind: droidOptionKind(value)}
-		if option.Kind == leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER {
+		option := &leapmuxv1.PermissionOption{OptionId: value, Kind: droidOptionKind(value), Name: droidOptionNames[value]}
+		if option.Name == "" && option.Kind == leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER {
 			option.Name = value
 		}
 		options = append(options, option)

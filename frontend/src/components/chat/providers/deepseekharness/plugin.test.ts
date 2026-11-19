@@ -45,9 +45,9 @@ describe('deepseek harness provider', () => {
         sets: { permissions: 'danger-full-access' },
       },
     })
-    // The Worker reads each request and builds each answer, so the browser keeps only the
-    // display of a saved answer and the presets.
-    expect(Object.keys(plugin?.controls ?? {}).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
+    // The Worker reads each request, builds each answer, and records the decision that
+    // words a saved answer, so the browser keeps only the presets.
+    expect(Object.keys(plugin?.controls ?? {})).toEqual(['permissionPresets'])
   })
 
   it.each([
@@ -224,63 +224,5 @@ describe('deepseek harness provider', () => {
       expect(deepseekHarnessToolKind(tool)).not.toBe('unspecified')
     expect(deepseekHarnessToolKind('constructor')).toBe('unspecified')
     expect(deepseekHarnessToolKind('toString')).toBe('unspecified')
-  })
-
-  it('shows the exact selected native answer in its saved control row', () => {
-    const request = {
-      type: 'waterfall',
-      event: 'user-questions/request',
-      eventId: 'native-event',
-      agentId: 'native-root',
-      request: {
-        questions: [
-          {
-            id: 'route',
-            question: 'Choose a route',
-            options: [
-              { label: 'First' },
-              { label: 'Second' },
-            ],
-          },
-        ],
-      },
-    }
-    const response = {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: 'native-event',
-        response: {
-          behavior: 'allow',
-          answers: [
-            {
-              id: 'route',
-              selected: ['Second'],
-            },
-          ],
-        },
-      },
-    }
-    const display = providerFor(provider)?.controls?.controlResponseDisplay?.({
-      requestId: 'native-event',
-      claimToken: 'native-claim',
-      request,
-      response,
-      prompt: {
-        kind: 'question',
-        questions: [
-          {
-            id: 'route',
-            question: 'Choose a route',
-            options: [
-              { label: 'First' },
-              { label: 'Second' },
-            ],
-          },
-        ],
-        preservesSelectionNotes: true,
-      },
-    })
-    expect(display).toEqual({ kind: 'label', text: 'Choose a route: Second' })
   })
 })

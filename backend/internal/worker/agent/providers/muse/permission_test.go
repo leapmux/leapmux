@@ -113,7 +113,7 @@ func TestRawControlAnswerKeepsTheExactLargeRequirementIndex(t *testing.T) {
 		return agenttest.RPCReply{Result: encoded}
 	}})
 	key := testApprovalKey("session", "approval", index)
-	answer := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: key, RequestPayload: request, ResponseContent: approvalAnswer(key)})
+	answer := agenttest.ResolveAnswer(museProvider{}, request, key, agent.ControlAnswer{Content: approvalAnswer(key)})
 	require.False(t, answer.Withhold)
 	require.NoError(t, a.SendRawInput(answer.Content, agent.StopContext{}))
 	assert.Equal(t, index, received)
@@ -236,7 +236,7 @@ func TestFailedAutomaticMuseAnswerKeepsOneManualFallback(t *testing.T) {
 	assert.Empty(t, sink.CanceledControls())
 	key := testApprovalKey("session", "approval", 0)
 	request := nativePermissionRequest(t, "approval", 0)
-	answer := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: key, RequestPayload: request, ResponseContent: approvalAnswer(key)})
+	answer := agenttest.ResolveAnswer(museProvider{}, request, key, agent.ControlAnswer{Content: approvalAnswer(key)})
 	require.False(t, answer.Withhold)
 	assert.Error(t, a.SendRawInput(answer.Content, agent.StopContext{}))
 	mu.Lock()

@@ -12,15 +12,11 @@ import (
 )
 
 // ResolveControlResponse translates a browser response for the native control registry.
-func (p opencodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
+func (opencodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.ControlResponseResolution{}
 	control, err := readOpenCodeStoredControl(ctx.RequestPayload, ctx.RequestID)
 	if err != nil {
 		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	}
-	if p.ControlResponseRequestID(ctx.ResponseContent) != ctx.RequestID {
-		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	answer := map[string]any{"request_id": ctx.RequestID}

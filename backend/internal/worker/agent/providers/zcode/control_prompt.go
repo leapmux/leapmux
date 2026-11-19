@@ -57,10 +57,19 @@ func (zcodeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 		return prompt
 	}
 	if toolName == contracts.ZCodeToolNameExitPlanMode {
-		// The transcript holds the plan, so the approval carries none.
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}
+		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: zcodeStoredPlanText(input.Payload)}}}
 	}
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: zcodePermissionPrompt(input.Payload, toolName)}}
+}
+
+// zcodeStoredPlanText reads the plan of a stored plan approval from ZCode's own
+// request (`params`), by the rule that stores the canonical plan
+// (zcodeUserInputRequest.planText). The user approves this plan, so the
+// browser and `leapmux control agent requests` show it. A field that is no
+// text states no plan.
+func zcodeStoredPlanText(payload []byte) string {
+	params := providerkit.RawFields(providerkit.RawFields(payload)["params"])
+	return zcodeUserInputRequest{Input: params["input"], Context: params["context"]}.planText()
 }
 
 // zcodeQuestionRecords reads the question records of a stored user-input

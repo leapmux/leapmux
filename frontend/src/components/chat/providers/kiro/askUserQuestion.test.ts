@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { kiroUserInputQuestion, kiroUserInputSavedAnswer } from './askUserQuestion'
+import { kiroUserInputQuestion } from './askUserQuestion'
 
 describe('kiroUserInputQuestion', () => {
   it('reads the question and its options, and leaves the sub-options out', () => {
@@ -58,19 +58,5 @@ describe('kiroUserInputQuestion', () => {
       { value: 'A', label: 'A' },
       { value: 'B', label: 'B' },
     ])
-  })
-})
-
-describe('kiroUserInputSavedAnswer', () => {
-  it('reads the answer of a saved reply', () => {
-    expect(kiroUserInputSavedAnswer({ action: 'answered', answer: ' Postgres [PostGIS] ' })).toBe('Postgres [PostGIS]')
-  })
-
-  it('answers null for a dismissal and for an empty answer', () => {
-    expect(kiroUserInputSavedAnswer({ action: 'dismissed' })).toBeNull()
-    expect(kiroUserInputSavedAnswer({ action: 'answered', answer: '' })).toBeNull()
-    expect(kiroUserInputSavedAnswer({ action: 'answered', answer: '   ' })).toBeNull()
-    expect(kiroUserInputSavedAnswer({ action: 'answered', answer: 7 })).toBeNull()
-    expect(kiroUserInputSavedAnswer({})).toBeNull()
   })
 })

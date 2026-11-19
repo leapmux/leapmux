@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { ANTIGRAVITY_MODE } from '~/generated/contracts/antigravity-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
-import { antigravityControlResponseSummary } from './controlResponse'
 import './plugin'
 
 const plugin = providerFor(AgentProvider.ANTIGRAVITY_CLI)!
@@ -12,10 +11,9 @@ describe('antigravity plugin metadata', () => {
     expect(plugin.transcript.classify).toBeDefined()
     expect(plugin.transcript.extractRow).toBeDefined()
     expect(plugin.transcript.extractDivider).toBeDefined()
-    // The Worker reads each request and builds each answer, so the browser keeps only the
-    // display of a saved answer and the presets.
-    expect(Object.keys(plugin.controls ?? {}).sort()).toEqual(['controlResponseDisplay', 'permissionPresets'])
-    expect(plugin.controls?.controlResponseDisplay).toBe(antigravityControlResponseSummary)
+    // The Worker reads each request, builds each answer, and records the decision that
+    // words a saved answer, so the browser keeps only the presets.
+    expect(Object.keys(plugin.controls ?? {})).toEqual(['permissionPresets'])
     expect(plugin.configuration?.attachments).toEqual({
       text: true,
       image: true,

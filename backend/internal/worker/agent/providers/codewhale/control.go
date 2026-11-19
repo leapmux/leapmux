@@ -593,13 +593,13 @@ func (a *Agent) controlPending(requestID string) bool {
 // --- resolution (pure) ---
 
 // resolveControlReply turns the reader's neutral answer into the reply frame
-// for the stored request. It reads nothing but its arguments.
+// for the request stored under requestID. It reads nothing but its arguments.
 //
 // feedback is a deny reason the runtime's approval route cannot carry. The
 // service queues it as the reader's next message instead. refusal is the reason
 // the reader sees when no reply can be built, empty when one can.
-func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, refusal string) {
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(response)
+func resolveControlReply(requestID string, requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, refusal string) {
+	_, behavior, message, decoded := agent.DecodeControlBehavior(response)
 	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return codewhaleReplyFrame{}, "", agent.RefusalNoDecision
 	}
@@ -610,9 +610,12 @@ func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyF
 	if err := json.Unmarshal(requestPayload, &stored); err != nil {
 		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 	}
-	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
-		slog.Warn("codewhale control response addressed another request", "answered", requestID, "stored", stored.RequestID)
-		return codewhaleReplyFrame{}, "", agent.RefusalOtherRequest
+	if stored.RequestID != requestID {
+		// buildControlPayload writes the request's key into its payload, so a
+		// payload that states another id, or none, disagrees with its own key
+		// and LeapMux cannot trust it.
+		slog.Warn("codewhale stored control request disagrees with its key", "request_id", requestID, "stored", stored.RequestID)
+		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 	}
 	env, found := storedControlEvent(requestPayload)
 	if !found {

@@ -230,8 +230,8 @@ var _ agent.SteerSurvivor = (*Agent)(nil)
 
 // SteerInput adds a message to the running turn. Amp queues it on its server
 // and inserts it at the turn's next interruption point, after the running tool.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 
 // sendInput writes one user line.

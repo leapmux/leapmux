@@ -1,8 +1,11 @@
 import type { ControlPrompt } from '../../model/controlPrompt'
+import type { ControlDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { MIMO_DEFAULT_MODE, MIMO_MODE, MIMO_OPTION, MIMO_PERMISSION_POLICY, MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { ControlDecisionSchema, ElicitationAction } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { buildControlResponseEnvelope } from '~/test-support/controlResponses'
@@ -106,7 +109,7 @@ describe('mimo plugin controls', () => {
   }
 
   /** The row of one saved answer, as the transcript extracts it. */
-  function savedRow(request: Record<string, unknown>, response: Record<string, unknown>, prompt: ControlPrompt) {
+  function savedRow(request: Record<string, unknown>, response: Record<string, unknown>, prompt: ControlPrompt, decision: ControlDecision) {
     return extractedRow(extractChatRow(AgentProvider.MIMO_CODE, input({}, null, AgentProvider.MIMO_CODE), {
       kind: 'control_response',
       response: {
@@ -115,14 +118,29 @@ describe('mimo plugin controls', () => {
         request,
         response,
         prompt,
+        decision,
       },
     }))
   }
 
+  function formDecision(action: ElicitationAction): ControlDecision {
+    return create(ControlDecisionSchema, {
+      kind: {
+        case: 'elicitation',
+        value: {
+          action,
+          contentJson: action === ElicitationAction.ACCEPT
+            ? '{}'
+            : '',
+        },
+      },
+    })
+  }
+
   // MiMo asks an MCP server's confirmation as a question that takes no free text. The
   // Worker records it as an elicitation and answers it with the neutral elicitation
-  // envelope, and the shared form display states the answer in the elicitation words
-  // before MiMo's own display reads it.
+  // envelope, so the row states the answer in the elicitation words, and not as the
+  // question that carried it.
   it('states the saved answer of an MCP confirmation in the elicitation words', () => {
     const prompt: ControlPrompt = {
       kind: 'elicitation',
@@ -133,15 +151,15 @@ describe('mimo plugin controls', () => {
         schema: { type: 'object', properties: {} },
       },
     }
-    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Accept, content: {} }), prompt)).toEqual({
+    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Accept, content: {} }), prompt, formDecision(ElicitationAction.ACCEPT))).toEqual({
       kind: 'control-response',
       display: { kind: 'label', text: 'Approved' },
     })
-    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Decline }), prompt)).toEqual({
+    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Decline }), prompt, formDecision(ElicitationAction.DECLINE))).toEqual({
       kind: 'control-response',
       display: { kind: 'label', text: 'Rejected' },
     })
-    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Cancel }), prompt)).toEqual({
+    expect(savedRow(elicitation, buildControlResponseEnvelope('r', { action: MCP_ELICITATION_ACTION.Cancel }), prompt, formDecision(ElicitationAction.CANCEL))).toEqual({
       kind: 'control-response',
       display: { kind: 'label', text: 'Cancelled' },
     })
@@ -164,15 +182,25 @@ describe('mimo plugin controls', () => {
         { question: 'Which?', header: 'Pick', options: [] },
       ],
     }
+    const decision = create(ControlDecisionSchema, {
+      kind: {
+        case: 'question',
+        value: {
+          answers: [
+            { customText: 'A' },
+          ],
+        },
+      },
+    })
     expect(savedRow(question, {
       result: {
         answers: [
           ['A'],
         ],
       },
-    }, prompt)).toEqual({
+    }, prompt, decision)).toEqual({
       kind: 'control-response',
-      display: { kind: 'label', text: 'Pick: A' },
+      display: { kind: 'label', text: 'Which?: A' },
     })
   })
 })

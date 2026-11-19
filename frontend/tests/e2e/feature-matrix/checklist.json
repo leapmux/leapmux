@@ -3660,8 +3660,8 @@
       },
       "codex": {
         "support": "supported",
-        "userNote": "Codex's **Allow scope** pills offer **Once**, **Session** and **Always**, which keeps a command rule or a host rule.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, or **Always**, which keeps a command rule or a host rule. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "userNote": "Codex's **Allow scope** pills offer **Once**, **Session**, **Command rule** and **Host rule**, as each request allows. Codex keeps a command rule or a host rule in its own configuration.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/codex/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3679,7 +3679,7 @@
       "github-copilot": {
         "support": "supported",
         "userNote": "If the Copilot CLI refuses LeapMux's default permission mode, LeapMux opens the session in Manual mode.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, or **Always**, which keeps a command rule or a host rule. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.\n\nThe Copilot fallback report states that a default-sourced refusal sends a Manual request, and that a mode the user chose fails startup with an error.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.\n\nThe Copilot fallback report states that a default-sourced refusal sends a Manual request, and that a mode the user chose fails startup with an error.",
         "spec": "frontend/tests/e2e/github-copilot/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3733,7 +3733,7 @@
       "zcode": {
         "support": "supported",
         "userNote": "The Always choice in a ZCode permission prompt saves a permission rule for the project.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, or **Always**, which keeps a command rule or a host rule. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/zcode/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3742,7 +3742,7 @@
       "codewhale": {
         "support": "supported",
         "userNote": "CodeWhale denies an approval request that nobody answers within 300 seconds.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, or **Always**, which keeps a command rule or a host rule. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/codewhale/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3805,7 +3805,7 @@
       "amp": {
         "support": "supported",
         "userNote": "In Ask mode, LeapMux asks before each tool that Amp runs on your machine. Amp runs some tools on its own server, and those tools never ask. Text that you type before Deny reaches Amp as the reason.",
-        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, or **Always**, which keeps a command rule or a host rule. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
+        "detailNote": "A prompt's buttons, scopes and timeouts come from the provider. Codex's **Allow scope** offers **Once**, **Session**, **Command rule** or **Host rule**, and a rule stays in Codex's configuration. **Deny** blocks a host only under the **Host rule** pill. ZCode's \"always\" option writes a permission rule for the project. Codewhale denies an approval that nobody answers within 300 seconds. Text that you type before Amp's **Deny** reaches the agent as the reason. When a Copilot CLI refuses LeapMux's safe default, LeapMux reopens the session in Manual.",
         "spec": "frontend/tests/e2e/amp/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",

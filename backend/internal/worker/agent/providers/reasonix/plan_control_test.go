@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 const reasonixPlanPayload = `{"jsonrpc":"2.0","id":3,"method":"session/request_permission","params":{"sessionId":"plan-session","toolCall":{"toolCallId":"gate-1","title":"exit_plan_mode","kind":"other","status":"pending","_meta":{"reasonix.io":{"approvalId":"1","fresh":false,"subject":"","tool":"exit_plan_mode"}}},"options":[{"optionId":"allow_once","name":"Allow","kind":"allow_once"},{"optionId":"reject_once","name":"Reject","kind":"reject_once"}]}}`
@@ -29,13 +29,11 @@ func reasonixDecision(t *testing.T, requestID, behavior, message string) []byte 
 	return data
 }
 
-func resolveReasonixPlan(payload string, response []byte, settings *leapmuxv1.PlanApprovalSettings) agent.ControlResponseResolution {
-	return reasonixProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "jsonrpc:3",
-		RequestPayload:  json.RawMessage(payload),
-		ResponseContent: response,
-		PlanApproval:    settings,
-	})
+// resolveReasonixPlan resolves response to payload, stored as jsonrpc:3, as
+// the Worker does. The answer carries no plan settings, as the Worker states
+// none when it rebuilds a delivered answer from its row.
+func resolveReasonixPlan(payload string, response []byte) agent.ControlResponseResolution {
+	return agenttest.ResolveAnswer(reasonixProvider{}, []byte(payload), "jsonrpc:3", agent.ControlAnswer{Content: response})
 }
 
 func reasonixSelectedOption(t *testing.T, content []byte) (id, option string) {
@@ -69,7 +67,7 @@ func TestReasonixPlanApprovalReplies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result := resolveReasonixPlan(reasonixPlanPayload, tc.response, nil)
+			result := resolveReasonixPlan(reasonixPlanPayload, tc.response)
 			require.False(t, result.Withhold)
 			id, option := reasonixSelectedOption(t, result.Content)
 			assert.Equal(t, "3", id)
@@ -87,13 +85,19 @@ func TestReasonixPlanApprovalReplies(t *testing.T) {
 func TestReasonixPlanApprovalPreservesStringNativeID(t *testing.T) {
 	t.Parallel()
 	payload := strings.Replace(reasonixPlanPayload, `"id":3`, `"id":"native-3"`, 1)
-	result := resolveReasonixPlan(payload, reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), nil)
+	// The Worker keys a request with the JSON-RPC id "native-3" as below, and
+	// the answer addresses that key.
+	const requestID = `jsonrpc:"native-3"`
+	result := agenttest.ResolveAnswer(reasonixProvider{}, []byte(payload), requestID,
+		agent.ControlAnswer{Content: reasonixDecision(t, requestID, contracts.ControlAnswerBehaviorAllow, "")})
 	require.False(t, result.Withhold)
 	id, option := reasonixSelectedOption(t, result.Content)
 	assert.Equal(t, `"native-3"`, id)
 	assert.Equal(t, "allow_once", option)
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestReasonixPlanApprovalWithholdsInvalidAnswers(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -101,10 +105,8 @@ func TestReasonixPlanApprovalWithholdsInvalidAnswers(t *testing.T) {
 		response []byte
 		reason   string
 	}{
-		"another request":   {payload: reasonixPlanPayload, response: reasonixDecision(t, "jsonrpc:4", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
-		"no request id":     {payload: reasonixPlanPayload, response: reasonixDecision(t, "", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalNoDecision},
 		"unknown behavior":  {payload: reasonixPlanPayload, response: reasonixDecision(t, "jsonrpc:3", "maybe", ""), reason: agent.RefusalNoDecision},
-		"not json":          {payload: reasonixPlanPayload, response: []byte(`{`), reason: agent.RefusalNoDecision},
+		"no behavior":       {payload: reasonixPlanPayload, response: reasonixDecision(t, "jsonrpc:3", "", ""), reason: agent.RefusalNoDecision},
 		"missing native id": {payload: strings.Replace(reasonixPlanPayload, `"id":3,`, "", 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
 		"missing allow":     {payload: strings.Replace(reasonixPlanPayload, `{"optionId":"allow_once","name":"Allow","kind":"allow_once"},`, "", 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalUnreadableRequest},
 		"missing reject":    {payload: strings.Replace(reasonixPlanPayload, `,{"optionId":"reject_once","name":"Reject","kind":"reject_once"}`, "", 1), response: reasonixDecision(t, "jsonrpc:3", contracts.ControlAnswerBehaviorDeny, ""), reason: agent.RefusalUnreadableRequest},
@@ -112,7 +114,7 @@ func TestReasonixPlanApprovalWithholdsInvalidAnswers(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			result := resolveReasonixPlan(tc.payload, tc.response, nil)
+			result := resolveReasonixPlan(tc.payload, tc.response)
 			assert.True(t, result.Withhold)
 			assert.EqualError(t, result.Refusal(), tc.reason)
 		})
@@ -125,7 +127,7 @@ func TestReasonixPlanApprovalForwardsNativeReplies(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"jsonrpc:3","result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`,
 		`{"jsonrpc":"2.0","id":"jsonrpc:3","error":{"code":-32603,"message":"gone"}}`,
 	} {
-		result := resolveReasonixPlan(reasonixPlanPayload, []byte(reply), nil)
+		result := resolveReasonixPlan(reasonixPlanPayload, []byte(reply))
 		require.False(t, result.Withhold)
 		assert.Equal(t, agent.PlanModeControlNone, result.PlanModeControl)
 		assert.Equal(t, agent.FeedbackFollowUp(""), result.FollowUp)

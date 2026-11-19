@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // `agent sessions` lists the provider sessions that `agent open --resume`
@@ -39,7 +40,7 @@ A session's title is empty when the provider stores none.`,
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("provider", "", `agent provider; when neither this flag nor the variable gives one, the only provider that the worker offers`)
-			cli.SetEnvDefault(fs, "provider", "LEAPMUX_CONTROL_AGENT_PROVIDER")
+			cli.SetEnvDefault(fs, "provider", controlenv.AgentProviderVariable)
 			addWorkerFlag(fs)
 			addWorkingDirFlag(fs, "the directory that the sessions ran in")
 		},
@@ -93,7 +94,7 @@ func runAgentSessions(inv *cli.Invocation) (any, error) {
 	}
 	provider := stringFlag(inv, "provider")
 	if !inv.Changed("provider") {
-		provider = os.Getenv("LEAPMUX_CONTROL_AGENT_PROVIDER")
+		provider = os.Getenv(controlenv.AgentProviderVariable)
 	}
 	var resolved leapmuxv1.AgentProvider
 	var resp leapmuxv1.ListAgentSessionsResponse

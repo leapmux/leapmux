@@ -15,14 +15,14 @@ import (
 func TestResolveControlResponse_CodexApprovalPreservesTheResponse(t *testing.T) {
 	t.Parallel()
 
-	// Native command approval preserves the response bytes.
-	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
-	res := codexProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`),
-		ResponseContent: content,
-	})
+	// A native command approval keeps its result. The answer addresses the
+	// Worker's key of the request, and Codex receives its own id back.
+	content := agent.JSONRPCResult("jsonrpc:7", map[string]any{"decision": "accept"})
+	res := agenttest.ResolveAnswer(codexProvider{}, []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`), "jsonrpc:7",
+		agent.ControlAnswer{Content: content})
 
-	assert.Equal(t, content, res.Content)
+	require.NoError(t, res.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`, string(res.Content))
 	assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl)
 }
 
@@ -32,11 +32,8 @@ func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
 	// The synthesized plan-mode prompt frame carries no top-level method; its request.tool_name is
 	// the pruned context, and the neutral allow/deny envelope is forwarded verbatim.
 	content := []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`)
-	res := codexProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestPayload:  []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
-		ResponseContent: content,
-		ToolName:        contracts.CodexControlToolPlanModePrompt,
-	})
+	res := agenttest.ResolveAnswer(codexProvider{}, []byte(`{"request":{"tool_name":"`+contracts.CodexControlToolPlanModePrompt+`"}}`), "plan-1",
+		agent.ControlAnswer{Content: content})
 
 	assert.Equal(t, content, res.Content)
 	assert.Equal(t, agent.PlanModeControlPrompt, res.PlanModeControl)
@@ -56,7 +53,8 @@ func TestCodexResolveControlResponse_PreservesTheResponseWithoutARequest(t *test
 // TestResolveControlResponse_CodexAsyncQuestion reads the neutral answer to one
 // LeapMux-owned async question. An allow with an answer queues the answer as a
 // question answer. A deny skips the question: Codex keeps no pending question
-// state, so a skip sends nothing.
+// state, so a skip sends nothing. Each answer addresses the stored question, as
+// every answer that the Worker resolves does.
 func TestResolveControlResponse_CodexAsyncQuestion(t *testing.T) {
 	t.Parallel()
 
@@ -71,16 +69,11 @@ func TestResolveControlResponse_CodexAsyncQuestion(t *testing.T) {
 		{name: "an allow with an answer", content: `{"response":{"request_id":"codex-async-question-call_abc-0","response":{"behavior":"allow","answer":"Red"}}}`, wantKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, wantText: "Red"},
 		{name: "an allow with a blank answer", content: `{"response":{"request_id":"codex-async-question-call_abc-0","response":{"behavior":"allow","answer":"  "}}}`, wantRefusal: agent.RefusalUnreadableAnswer},
 		{name: "a deny", content: `{"response":{"request_id":"codex-async-question-call_abc-0","response":{"behavior":"deny"}}}`},
-		{name: "an answer that is not JSON", content: `{`, wantRefusal: agent.RefusalUnreadableAnswer},
 		{name: "a behavior that is neither allow nor deny", content: `{"response":{"request_id":"codex-async-question-call_abc-0","response":{"behavior":"maybe","answer":"Red"}}}`, wantRefusal: agent.RefusalUnreadableAnswer},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			res := codexProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestPayload:  request,
-				ResponseContent: []byte(test.content),
-				ToolName:        contracts.CodexControlToolAsyncQuestion,
-			})
+			res := agenttest.ResolveAnswer(codexProvider{}, request, "codex-async-question-call_abc-0", agent.ControlAnswer{Content: []byte(test.content)})
 			if test.wantRefusal != "" {
 				assert.True(t, res.Withhold)
 				assert.ErrorContains(t, res.Refusal(), test.wantRefusal)

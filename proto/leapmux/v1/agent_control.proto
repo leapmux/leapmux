@@ -77,12 +77,17 @@ message PermissionOption {
   PermissionOptionKind kind = 2;
   // The runtime's label, or empty for the label of the kind.
   string name = 3;
-  // How far an always-allow reaches, when the provider knows it.
+  // How far a remembered answer (an always-allow or an always-reject)
+  // reaches, when the provider knows it.
   PermissionScope scope = 4;
   // Choosing the option also ends the agent's turn: the runtime stops the
   // work that asked, rather than refusing only this call. A client names
   // such a refusal Cancel, not Deny.
   bool ends_turn = 5;
+  // A short label for the scope choice that selects this option, such as
+  // "Host rule", when the runtime names its own scopes. Empty for the label
+  // of the option's scope.
+  string scope_label = 6;
 }
 
 enum PermissionOptionKind {

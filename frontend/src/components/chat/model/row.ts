@@ -130,10 +130,10 @@ export type ChatRow
      * A saved answer to a control request, already reduced to the words a reader
      * sees.
      *
-     * The native request and response objects stop here. Layer 1 runs the provider's
-     * own `controlResponseDisplay` and keeps only its answer, so the transcript row
-     * and the scroll-rail dot draw ONE derivation rather than each running the
-     * provider hook again -- and no reader of a row holds a provider's wire bytes.
+     * The native request and response objects stop here. Layer 1 words the answer
+     * once, from the prompt and the decision that the Worker recorded with it, so the
+     * transcript row and the scroll-rail dot draw ONE derivation -- and no reader of a
+     * row holds a provider's wire bytes.
      */
     | { kind: 'control-response', display: ControlResponseSummary }
     | { kind: 'hidden' }

@@ -1,7 +1,6 @@
 import { REASONIX_MODE } from '~/generated/contracts/reasonix-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
-import { reasonixControlResponseSummary } from './controlResponse'
 import { reasonixOutputFilePaths } from './extractors/outputFilePaths'
 import { reasonixToolCallAdapter } from './extractors/toolCall'
 import { reasonixNativeNotifications } from './notification'
@@ -12,7 +11,6 @@ registerACPProvider({
   provider: AgentProvider.REASONIX,
   defaultPermissionMode: REASONIX_MODE.Normal,
   planValue: REASONIX_MODE.Plan,
-  controlResponseDisplay: reasonixControlResponseSummary,
   permissionPresets: reasonixPermissionPresets,
   nativeNotifications: reasonixNativeNotifications,
   attachments: {

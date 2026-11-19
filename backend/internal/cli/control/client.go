@@ -20,6 +20,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/tunnel"
 )
@@ -231,8 +232,8 @@ func NewClientFromEnv(explicitHub string) (*Client, error) {
 	if explicitHub != "" {
 		return NewClient(explicitHub)
 	}
-	if sock := os.Getenv("LEAPMUX_CONTROL_SOCK"); sock != "" {
-		return NewLocalClient(sock, os.Getenv("LEAPMUX_CONTROL_TOKEN"))
+	if sock := os.Getenv(controlenv.SocketVariable); sock != "" {
+		return NewLocalClient(sock, os.Getenv(controlenv.TokenVariable))
 	}
 	hub, err := DefaultHub()
 	if err != nil {

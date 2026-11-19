@@ -19,17 +19,27 @@ func TestProviderPreservesRawControlResponses(t *testing.T) {
 	agenttest.AssertWithholdsTheResponseForAMalformedRequest(t, Registration().Plugin)
 }
 
+// A stored request that does not decode, that asks nothing, or whose eventId
+// is not the key that stores it gives LeapMux no request to answer.
 func TestProviderWithholdsAValidNativeAnswerForAnInvalidStoredRequest(t *testing.T) {
 	t.Parallel()
 	content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"allow","answers":[{"id":"native-question","selected":["Second"]}]}}}`)
-	for _, request := range []string{"not json", "null", `{"type":"waterfall","event":"user-questions/request","eventId":"native-event","agentId":"native-root","request":{"questions":null}}`} {
-		resolution := Registration().Plugin.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: "native-event", RequestPayload: []byte(request), ResponseContent: content,
-			ToolName: contracts.DeepseekHarnessToolAskUserQuestion,
-		})
+	question := func(eventID string) string {
+		return `{"type":"waterfall","event":"user-questions/request","eventId":"` + eventID + `","agentId":"native-root","request":{"questions":[{"id":"native-question","question":"Which?","options":[{"label":"First"},{"label":"Second"}]}]}}`
+	}
+	for _, request := range []string{
+		"not json",
+		"null",
+		`{"type":"waterfall","event":"user-questions/request","eventId":"native-event","agentId":"native-root","request":{"questions":null}}`,
+		question("another-event"),
+	} {
+		resolution := agenttest.ResolveAnswer(Registration().Plugin, []byte(request), "native-event", agent.ControlAnswer{Content: content})
 		assert.Equal(t, content, resolution.Content)
 		assert.True(t, resolution.Withhold, request)
+		assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest, request)
 	}
+	resolution := agenttest.ResolveAnswer(Registration().Plugin, []byte(question("native-event")), "native-event", agent.ControlAnswer{Content: content})
+	assert.False(t, resolution.Withhold, "the same request under its own key takes the answer")
 }
 
 func TestProviderPreservesNativeResumeTokens(t *testing.T) {

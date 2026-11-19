@@ -209,6 +209,23 @@ describe('agent input enqueue retry schedule', () => {
 // The composer asks whether a send re-sends an unanswered attempt, so that an
 // expired schedule does not force a changed payload and a second input ID.
 describe('agent input enqueue retry pending attempts', () => {
+  it('forgets exactly the attempts whose inputs a snapshot holds', async () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const shown = await retry.inputIdFor(message('shown'))
+    const hidden = await retry.inputIdFor(message('hidden'))
+    retry.markUncertain(shown)
+    retry.markUncertain(hidden)
+
+    retry.forgetDelivered([])
+    expect(await retry.inputIdForPendingAttempt(message('shown'))).toBe(shown)
+    retry.forgetDelivered([shown, 'unrelated'])
+
+    expect(await retry.inputIdForPendingAttempt(message('shown'))).toBeUndefined()
+    expect(await retry.inputIdForPendingAttempt(message('hidden'))).toBe(hidden)
+    expect(await retry.inputIdFor(message('shown'))).toBe('input-3')
+  })
+
   it('acquires only an uncertain attempt until the Worker accepts it', async () => {
     const retry = createAgentInputEnqueueRetry(() => 'input-1')
     const scheduled = {

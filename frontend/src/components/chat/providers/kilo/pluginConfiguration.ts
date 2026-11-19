@@ -5,7 +5,6 @@ import { OPENCODE_AUDIO_MIME } from '~/generated/contracts/opencode-protocol'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { openCodeNativeNotifications } from '../openCodeEvents'
 import { openCodePermissionPresets } from '../openCodePermissionPresets'
-import { kiloControlResponseSummary } from './controlResponse'
 import { kiloToolCallAdapterFor } from './extractors/toolCall'
 
 /**
@@ -54,8 +53,5 @@ export function registerKiloProtocolProvider(opts: KiloProtocolOptions): void {
       audio: [...OPENCODE_AUDIO_MIME],
       binary: false,
     },
-    // The Worker reads and answers every control request, so the plugin states only
-    // the display of a saved answer.
-    controlResponseDisplay: kiloControlResponseSummary,
   })
 }

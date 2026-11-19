@@ -230,17 +230,12 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 			return result, true
 		}
 	}
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	_, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		// Not a decision this build can read. Withholding leaves the runtime waiting
 		// and the request answerable, which a frame it cannot parse would not.
 		slog.Warn("Copilot control response carried no decision", "request_id", ctx.RequestID)
 		result.Refuse(agent.RefusalNoDecision)
-		return result, true
-	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		slog.Warn("Copilot control response addressed another request", "answered", requestID, "stored", ctx.RequestID)
-		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
 	decision := copilotControlDecision{allow: behavior == contracts.ControlAnswerBehaviorAllow, message: message}

@@ -91,17 +91,14 @@ func isPlanApproval(payload json.RawMessage) bool {
 //     reader typed follows as a message of its own.
 func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	id, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	id, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
 	switch {
-	case !ok || requestID == "":
+	case !ok:
 		result.Refuse(agent.RefusalNoDecision)
 		return result
 	case !found:
 		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	case requestID != agent.StoredControlRequestID(ctx, storedID):
-		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	var option string

@@ -90,6 +90,37 @@ describe('agent input queue store', () => {
 // Maturity raises the revision, and the store's revision ordering is what
 // makes the matured ordering win over a pre-deadline snapshot that arrives
 // late.
+describe('createAgentInputQueueStore onApply', () => {
+  it('tells a listener each snapshot that it stores, and nothing that it refuses', () => {
+    const store = createAgentInputQueueStore(agentId => agentId !== 'closed')
+    const heard: Array<[string, bigint]> = []
+    store.onApply((agentId, snapshot) => heard.push([agentId, snapshot.revision]))
+
+    store.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 5n }))
+    store.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 4n }))
+    store.apply('a1', undefined)
+    store.apply('closed', create(AgentInputQueueSnapshotSchema, { revision: 1n }))
+    store.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 5n }))
+
+    expect(heard).toEqual([
+      ['a1', 5n],
+      ['a1', 5n],
+    ])
+  })
+
+  it('stops calling a listener that it removed', () => {
+    const store = createAgentInputQueueStore()
+    const heard: bigint[] = []
+    const stop = store.onApply((_, snapshot) => heard.push(snapshot.revision))
+
+    store.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 1n }))
+    stop()
+    store.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 2n }))
+
+    expect(heard).toEqual([1n])
+  })
+})
+
 describe('agent input queue store maturity', () => {
   it('replaces the pre-deadline ordering with a higher-revision maturity snapshot', () => {
     const store = createAgentInputQueueStore()

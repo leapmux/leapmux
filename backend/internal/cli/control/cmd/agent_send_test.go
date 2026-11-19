@@ -298,6 +298,33 @@ func TestAgentSendOverIPC_ARetryWithTheRequestIDSendsOnce(t *testing.T) {
 	assert.Contains(t, f.Hints[0], `--request-id "release-1"`)
 }
 
+// A retry of `agent send --request-id` after someone removed the first run's
+// message from the queue queues nothing, because the Worker keeps the id of a
+// removed input. Without --wait the retry succeeds and prints the result of
+// the first run: the Worker took the request once, as the first run said, and
+// the removal that followed stands.
+func TestAgentSendOverIPC_ARetryAfterARemovalPrintsTheFirstResult(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newQueueWorker()
+	startAgentWorker(t, id, w)
+	wantID := requestScopedID("release-1", requestScopeAgentSend, id)
+
+	first := sendTo(t, id, "Run the release checklist", "--request-id", "release-1").Data(t)
+	require.Equal(t, wantID, first["input_id"])
+	runControl(t, "agent", "queue", "remove", id, wantID).Data(t)
+
+	again := sendTo(t, id, "Run the release checklist", "--request-id", "release-1")
+	assert.Equal(t, cli.ExitOK, again.Code)
+	assert.Equal(t, first, again.Data(t), "the retry prints the result of the first run")
+	var enqueued []string
+	for _, request := range w.recorded() {
+		if in, ok := request.(*leapmuxv1.EnqueueAgentInputRequest); ok {
+			enqueued = append(enqueued, in.GetInputId())
+		}
+	}
+	assert.Equal(t, []string{wantID, wantID}, enqueued, "each run sends the input id of the first run")
+}
+
 func TestAgentSend_RefusesAMessageThatTheCLICanJudge(t *testing.T) {
 	clearRemoteEnv(t)
 	dir := t.TempDir()

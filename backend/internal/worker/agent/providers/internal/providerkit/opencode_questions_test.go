@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // openCodeQuestionEvent is a stored `question.asked` event whose properties
@@ -242,7 +243,7 @@ func TestAnswerOpenCodeQuestions_RefusesADecisionThatDoesNotAnswerThePrompt(t *t
 	payload := threeQuestions(t)
 	_, err := AnswerOpenCodeQuestions(agent.ControlAnswerInput{
 		Request: agent.NewControlRequestInput(payload), RequestID: "que_1", Prompt: OpenCodeQuestionPrompt(payload),
-		Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Permission{Permission: &leapmuxv1.PermissionDecision{OptionId: "once"}}},
+		Decision: agenttest.PermissionDecision("once", ""),
 	})
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "a question takes a question decision")
 }

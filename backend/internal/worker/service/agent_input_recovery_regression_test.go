@@ -124,12 +124,12 @@ type inputRecoveryDeliveryAgent struct {
 
 func (a *inputRecoveryDeliveryAgent) SupportsSteering() bool { return true }
 
-func (a *inputRecoveryDeliveryAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SendInput(content, attachments)
+func (a *inputRecoveryDeliveryAgent) SteerInput(request agent.SteerRequest) error {
+	return a.SendInput(request.Content, request.Attachments)
 }
 
-func (a *inputRecoveryDeliveryAgent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SendInputForSession(sessionID, content, attachments)
+func (a *inputRecoveryDeliveryAgent) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
+	return a.SendInputForSession(sessionID, request.Content, request.Attachments)
 }
 
 func (a *inputRecoveryDeliveryAgent) CompactContext() error {
@@ -152,7 +152,7 @@ func TestInputRecoveryPreparesTheProviderSelectedForDelivery(t *testing.T) {
 			return agent.SendInputToSession(p, "delivery-thread", "input", nil)
 		}},
 		{name: "steer", deliver: func(svc *Service, id string) error {
-			return svc.Agents.SteerInput(id, "input", nil)
+			return svc.Agents.SteerInput(id, agent.SteerRequest{InputID: "input-1", Content: "input"})
 		}},
 		{name: "compact", deliver: func(svc *Service, id string) error {
 			return svc.Agents.CompactContext(id)
@@ -160,7 +160,7 @@ func TestInputRecoveryPreparesTheProviderSelectedForDelivery(t *testing.T) {
 		{name: "validated active answer", validated: true, deliver: func(svc *Service, id string) error {
 			p, release := svc.Agents.LockProvider(id)
 			release()
-			return agent.SteerInputToSession(p, "delivery-thread", "answer", nil)
+			return agent.SteerInputToSession(p, "delivery-thread", agent.SteerRequest{InputID: "answer-1", Content: "answer"})
 		}},
 	} {
 		t.Run(operation.name, func(t *testing.T) {

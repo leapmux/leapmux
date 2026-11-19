@@ -69,14 +69,12 @@ func decision(t *testing.T, requestID, behavior, message string) []byte {
 	return data
 }
 
+// resolveWith resolves response, with the plan settings of an approval, to
+// payload, stored as qwenStoredRequestID, as the Worker does. Only a plan
+// approval carries settings (agent.AnswerNeutralPlan).
 func resolveWith(t *testing.T, payload string, response []byte, settings *leapmuxv1.PlanApprovalSettings) agent.ControlResponseResolution {
 	t.Helper()
-	return qwenProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       qwenStoredRequestID,
-		RequestPayload:  json.RawMessage(payload),
-		ResponseContent: response,
-		PlanApproval:    settings,
-	})
+	return agenttest.ResolveAnswer(qwenProvider{}, []byte(payload), qwenStoredRequestID, agent.ControlAnswer{Content: response, PlanApproval: settings})
 }
 
 // selectedOptionOf reads the option a reply selects, and its native id.
@@ -138,17 +136,16 @@ func TestQwenPlanApprovalReplies(t *testing.T) {
 }
 
 // Each refusal states the cause that the browser shows to the reader, so a
-// reason that moves to another branch fails here.
+// reason that moves to another branch fails here. Each answer addresses the
+// stored request, as every answer that the Worker resolves does.
 func TestQwenPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		response []byte
 		reason   string
 	}{
-		"another request":  {response: decision(t, "jsonrpc:6", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
-		"no request id":    {response: decision(t, "", contracts.ControlAnswerBehaviorAllow, ""), reason: agent.RefusalNoDecision},
 		"unknown behavior": {response: decision(t, qwenStoredRequestID, "maybe", ""), reason: agent.RefusalNoDecision},
-		"not json":         {response: []byte(`{`), reason: agent.RefusalNoDecision},
+		"no behavior":      {response: decision(t, qwenStoredRequestID, "", ""), reason: agent.RefusalNoDecision},
 		// AnswerControlRequest answers a plan with the neutral allow or deny, so
 		// Qwen's own reply decides nothing about a plan, an error or a result.
 		"a JSON-RPC error": {response: []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","error":{"code":-32603,"message":"gone"}}`), reason: agent.RefusalNoDecision},

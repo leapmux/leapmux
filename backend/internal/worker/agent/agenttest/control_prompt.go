@@ -34,17 +34,44 @@ func AnswerControl(provider agent.Provider, payload []byte, requestID string, de
 }
 
 // ResolveAnswer resolves answer to payload, stored as requestID, as the
-// Worker does when it delivers the answer to the runtime. Like the Worker, it
-// states the tool name of the stored request and the plan settings of the
-// answer, because a provider's resolution reads both.
+// Worker does when it delivers the answer to the runtime, in the context that
+// ControlResponseContextOf states.
+//
+// It panics when the answer addresses another request than requestID
+// (Provider.ControlResponseRequestID). The Worker refuses such an answer
+// before it resolves it, so a test that pairs them states a context that no
+// Worker path builds.
 func ResolveAnswer(provider agent.Provider, payload []byte, requestID string, answer agent.ControlAnswer) agent.ControlResponseResolution {
-	return provider.ResolveControlResponse(agent.ControlResponseContext{
+	if addressed := provider.ControlResponseRequestID(answer.Content); addressed != requestID {
+		panic(fmt.Sprintf("agenttest: the answer addresses the request %q, not the stored request %q", addressed, requestID))
+	}
+	return provider.ResolveControlResponse(ControlResponseContextOf(payload, requestID, answer))
+}
+
+// ControlResponseContextOf is the context in which the Worker resolves answer
+// to payload, stored as requestID. A test of a function that reads the
+// context itself, rather than a provider, builds the context here. The
+// context states:
+//
+//   - requestID, the key of the stored request. The Worker reads it from the
+//     answer (Provider.ControlResponseRequestID).
+//   - payload, the stored request. It is nil when an agent restart deletes the
+//     request row while the Worker delivers the answer: the Worker resolves
+//     the answer, and only then refuses it.
+//   - The content of the answer.
+//   - The tool name of the stored request (agent.ControlToolName), because a
+//     provider's resolution reads it.
+//   - The plan settings of the answer. The Worker states none when it rebuilds
+//     a delivered answer from its stored row, and it reads the stored settings
+//     from that row instead.
+func ControlResponseContextOf(payload []byte, requestID string, answer agent.ControlAnswer) agent.ControlResponseContext {
+	return agent.ControlResponseContext{
 		RequestID:       requestID,
 		RequestPayload:  json.RawMessage(payload),
 		ResponseContent: answer.Content,
 		ToolName:        agent.ControlToolName(payload),
 		PlanApproval:    answer.PlanApproval,
-	})
+	}
 }
 
 // RequireProto requires want and got to be equal messages, and prints both
@@ -98,6 +125,16 @@ func CancelQuestions(feedback string) *leapmuxv1.ControlDecision {
 // form's content as JSON text for an accept.
 func ElicitationDecision(action leapmuxv1.ElicitationAction, content string) *leapmuxv1.ControlDecision {
 	return &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Elicitation{Elicitation: &leapmuxv1.ElicitationDecision{Action: action, ContentJson: content}}}
+}
+
+// ElicitationChoiceDecision accepts an MCP elicitation with choiceKey, one key
+// of the prompt's accept choices, and with the form's content as JSON text.
+// Only an accept carries an accept choice (agent.ElicitationDecisionOf), so
+// the action is always accept.
+func ElicitationChoiceDecision(content, choiceKey string) *leapmuxv1.ControlDecision {
+	return &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Elicitation{Elicitation: &leapmuxv1.ElicitationDecision{
+		Action: leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, ContentJson: content, AcceptChoiceKey: choiceKey,
+	}}}
 }
 
 // DialogDecision answers an extension dialog with action, and with the text

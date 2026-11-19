@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerRow, providerToolCall } from '~/test-support/toolCallFixture'
 import { providerFor } from '../registry'
 import { classifyOhMyPiMessage } from './classification'
-import { ohMyPiControlResponseSummary } from './controlResponse'
 import { ohMyPiCompactionBoundary, ohMyPiCompactionStart, ohMyPiNotificationEntry } from './extractors/notification'
 import { ohMyPiResultDivider } from './extractors/resultDivider'
 import { ohMyPiExtractRow } from './extractors/row'
@@ -34,7 +33,6 @@ describe('ohmypi plugin', () => {
     })
     expect(plugin.controls).toBe(ohMyPiControls)
     expect(plugin.controls).toEqual({
-      controlResponseDisplay: ohMyPiControlResponseSummary,
       permissionPresets: ohMyPiPermissionPresets,
     })
     expect(plugin.session?.contextUsageFromMessage).toBe(ohMyPiContextUsageFromMessage)

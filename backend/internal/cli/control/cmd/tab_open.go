@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // The creation commands -- `agent open`, `terminal open` and `file open` --
@@ -36,7 +37,7 @@ func addPlacementFlags(fs *pflag.FlagSet) {
 // addWorkingDirFlag registers --dir, the working directory of a new tab.
 func addWorkingDirFlag(fs *pflag.FlagSet, usage string) {
 	fs.String("dir", "", usage)
-	cli.SetEnvDefault(fs, "dir", "LEAPMUX_CONTROL_WORKING_DIR")
+	cli.SetEnvDefault(fs, "dir", controlenv.WorkingDirVariable)
 }
 
 // workingDir returns --dir, or $LEAPMUX_CONTROL_WORKING_DIR when the
@@ -89,10 +90,10 @@ func (s *session) placement() (placement, error) {
 		}
 		in.WorkerID, in.ExplicitWorkerID = k, true
 	} else {
-		in.WorkerID = strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_WORKER_ID"))
+		in.WorkerID = strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
 	}
 	if in.TileID == "" && in.WorkspaceID == "" {
-		in.TabID = strings.TrimSpace(os.Getenv("LEAPMUX_CONTROL_TAB_ID"))
+		in.TabID = strings.TrimSpace(os.Getenv(controlenv.TabIDVariable))
 	}
 	spec, err := s.positionSpec()
 	if err != nil {
@@ -205,7 +206,7 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	}
 	provider := stringFlag(inv, "provider")
 	if !inv.Changed("provider") {
-		provider = os.Getenv("LEAPMUX_CONTROL_AGENT_PROVIDER")
+		provider = os.Getenv(controlenv.AgentProviderVariable)
 	}
 	var result *openAgentResult
 	err = withWorkerChannel(s.ctx, s.c, p.WorkerID, func(w workerCall) error {

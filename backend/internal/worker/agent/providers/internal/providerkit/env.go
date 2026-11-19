@@ -177,8 +177,9 @@ func scrubSandboxData(env []string) []string {
 // values belong.
 //
 // An agent that its provider starts through a login shell gets the PATH entry
-// before the shell's profile runs, and the profile can move it or drop it. See
-// controlenv.Apply.
+// before the shell's profile runs, and the profile can move it or drop it. The
+// command that launch.Wrap builds puts it first again after the profile, from
+// the LEAPMUX_CONTROL_CLI that this function sets. See controlenv.Apply.
 //
 // It also declines git's OPTIONAL index lock for everything the agent runs --
 // see gitutil.GitOptionalLocksOff for why. The worker set that on its own git

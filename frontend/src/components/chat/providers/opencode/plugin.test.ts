@@ -3,7 +3,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { openCodePermissionPresets } from '../openCodePermissionPresets'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { openCodeControlResponseSummary } from './controlResponse'
 import './plugin'
 
 describe('openCodePlugin', () => {
@@ -18,7 +17,6 @@ describe('openCodePlugin', () => {
       type: 'session.execution.succeeded',
       data: { sessionID: 'ses_1' },
     }))).toEqual({ kind: 'result_divider' })
-    expect(plugin?.controls?.controlResponseDisplay).toBe(openCodeControlResponseSummary)
     expect(plugin?.controls?.permissionPresets).toBe(openCodePermissionPresets)
     expect(plugin?.configuration?.planMode?.groupKey).toBe('primaryAgent')
     expect(plugin?.configuration?.supportsSubagentSend).toBe(true)

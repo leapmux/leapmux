@@ -14,6 +14,11 @@ import (
 // control response. The service loads the stored control request once, extracts the
 // shared metadata, and passes both payloads here; providers must not perform I/O.
 type ControlResponseContext struct {
+	// RequestID is the key of the stored request, and it is never empty. The
+	// Worker resolves only an answer that addresses this key
+	// (Provider.ControlResponseRequestID), so a provider does not check the
+	// answer's own id against it. A provider can still check that the stored
+	// payload agrees with the key, and refuse it with RefusalUnreadableRequest.
 	RequestID       string
 	RequestPayload  json.RawMessage
 	ResponseContent []byte
@@ -98,8 +103,8 @@ const ControlResponseRefusedText = "the agent provider could not read this contr
 // Reasons that several providers give for a refusal. Like every reason, each one
 // completes the browser's sentence "The response was not sent: ...".
 const (
-	// RefusalUnreadableRequest: the stored control request does not decode, or it
-	// lacks a field that the reply needs.
+	// RefusalUnreadableRequest: the stored control request does not decode, it
+	// lacks a field that the reply needs, or it states an id other than its key.
 	RefusalUnreadableRequest = "LeapMux cannot read the stored request that this answer is for"
 	// RefusalUnreadableAnswer: the answer does not decode into the fields that the
 	// reply needs.
@@ -107,9 +112,6 @@ const (
 	// RefusalNoDecision: the answer is not the neutral decision envelope, or its
 	// behavior is neither allow nor deny.
 	RefusalNoDecision = "the answer states neither allow nor deny"
-	// RefusalOtherRequest: the answer identifies a request other than the stored
-	// one.
-	RefusalOtherRequest = "the answer is for a different request"
 	// RefusalUnencodableReply: the reply to the agent cannot be encoded.
 	RefusalUnencodableReply = "LeapMux cannot encode the reply to the agent"
 	// RefusalAnswersDoNotFit: the answers of a question request do not match the

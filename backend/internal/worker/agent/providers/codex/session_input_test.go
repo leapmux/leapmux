@@ -76,9 +76,9 @@ func TestCodexAuthenticationFailureBeforeSteerWritePreservesOnlyValidatedAnswers
 			done := make(chan error, 1)
 			go func() {
 				if validated {
-					done <- a.SteerInputForSession("main-thread", "the answer", nil)
+					done <- a.SteerInputForSession("main-thread", agent.SteerRequest{Content: "the answer"})
 				} else {
-					done <- a.SteerInput("new input", nil)
+					done <- a.SteerInput(agent.SteerRequest{Content: "new input"})
 				}
 			}()
 			require.Eventually(t, func() bool {
@@ -290,11 +290,11 @@ func TestCodexRecoveryRefusesNewPromptSteeringButDeliversValidatedAnswers(t *tes
 	)
 	require.True(t, recoveryRequired(a))
 
-	err := a.SteerInput("a new prompt", nil)
+	err := a.SteerInput(agent.SteerRequest{Content: "a new prompt"})
 	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
 	assert.Empty(t, requests(), "no turn/steer reached the stale process for a new prompt")
 
-	err = a.SteerInputForSession("main-thread", "the answer", nil)
+	err = a.SteerInputForSession("main-thread", agent.SteerRequest{Content: "the answer"})
 	require.NoError(t, err, "a validated answer still steers into the active turn")
 	require.Len(t, requests(), 1)
 	assert.Equal(t, "turn/steer", requests()[0].Method)

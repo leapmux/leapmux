@@ -22,8 +22,9 @@ func TestClaudeSteerWritesNextPriority(t *testing.T) {
 		_ = writer.Close()
 		_ = reader.Close()
 	})
+	steer := agent.SteerRequest{Content: "guide"}
 	agent := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Stdin: writer}), turnActive: true}
-	require.NoError(t, agent.SteerInput("guide", nil))
+	require.NoError(t, agent.SteerInput(steer))
 	line, err := bufio.NewReader(reader).ReadBytes('\n')
 	require.NoError(t, err)
 	var input struct {
@@ -46,7 +47,7 @@ func TestClaudeSteerMarksTheTurnAwaitingItsResult(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
-	require.NoError(t, a.SteerInput("steer", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "steer"}))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
 	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))

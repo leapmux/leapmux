@@ -177,7 +177,7 @@ func TestClaudeSteerInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, true)
-			err := a.SteerInput(tc.content, tc.attachments)
+			err := a.SteerInput(agent.SteerRequest{Content: tc.content, Attachments: tc.attachments})
 			if tc.steerRefused {
 				require.ErrorIs(t, err, agent.ErrSteeringUnsupported,
 					"the worker keeps the input, document and all, for the next turn")
@@ -212,7 +212,7 @@ func TestClaudeSteerInputRefusesWhatTheFoldDrops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, true)
-			require.ErrorIs(t, a.SteerInput(tc.content, tc.attachments), agent.ErrSteeringUnsupported)
+			require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: tc.content, Attachments: tc.attachments}), agent.ErrSteeringUnsupported)
 			assert.Empty(t, stdin.String(), "a refused steer writes nothing")
 		})
 	}
@@ -225,7 +225,7 @@ func TestClaudeSteerInputRefusesWhatTheFoldDrops(t *testing.T) {
 func TestClaudeSteerInputChecksTheFilesBeforeTheTurn(t *testing.T) {
 	t.Parallel()
 	a, stdin := newClaudeContentAgent(t, false)
-	assert.ErrorIs(t, a.SteerInput(claudeOrderPrompt, []*leapmuxv1.Attachment{claudeOrderPDF()}), agent.ErrSteeringUnsupported)
-	assert.ErrorIs(t, a.SteerInput(claudeOrderPrompt, []*leapmuxv1.Attachment{claudeOrderPNG()}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPDF()}}), agent.ErrSteeringUnsupported)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPNG()}}), agent.ErrNoActiveTurn)
 	assert.Empty(t, stdin.String())
 }

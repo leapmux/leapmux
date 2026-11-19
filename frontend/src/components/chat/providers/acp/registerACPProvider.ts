@@ -8,7 +8,6 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyACPMessage } from './classification'
-import { acpControlResponseSummary } from './controlResponse'
 import { acpDividerReader } from './extractors/resultDivider'
 import { createACPRowExtractor } from './extractors/row'
 import { resolveACPMessage } from './extractors/toolCall'
@@ -62,12 +61,6 @@ export interface ACPProviderOptions {
   planValue?: string
   /** Provider-native presets for standard permission actions. */
   permissionPresets?: ProviderPermissionPresets
-  /**
-   * Persisted control-response -> display derivation. Defaults to {@link acpControlResponseSummary}
-   * (the permission-selection path). A provider whose requests or answers have shapes of its own
-   * passes its own derivation, which delegates back to the ACP default for the permission case.
-   */
-  controlResponseDisplay?: ProviderControlCapability['controlResponseDisplay']
   /**
    * Provider-specific classification of a `tool_call_update` session update.
    * Returns a `tool_use` category when the provider recognizes its own wire
@@ -136,14 +129,12 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
   // Each hook below is composed from the options and imported readers only: the
   // registration rule refuses a hook that a local value supplies.
   //
-  // The Worker reads each control request and builds each answer, so the browser keeps
-  // only the display of a saved answer and the permission presets.
-  const controls: ProviderControlCapability = {
-    controlResponseDisplay: opts.controlResponseDisplay ?? acpControlResponseSummary,
-    ...(opts.permissionPresets !== undefined
-      ? { permissionPresets: opts.permissionPresets }
-      : {}),
-  }
+  // The Worker reads each control request, builds each answer, and records the
+  // decision that words a saved answer, so the browser keeps only the permission
+  // presets.
+  const controls: ProviderControlCapability = opts.permissionPresets !== undefined
+    ? { permissionPresets: opts.permissionPresets }
+    : {}
   const configuration: ProviderConfigurationCapability = {
     attachments: opts.attachments,
     ...(opts.planValue !== undefined

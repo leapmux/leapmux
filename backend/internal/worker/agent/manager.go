@@ -635,7 +635,12 @@ func (m *Manager) CompactContext(agentID string) error {
 // The provider decides whether its steer channel reaches its command parser --
 // Claude Code steers by writing the same user message, and Goose steers through
 // a separate ACP method that LeapMux did not verify.
-func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
+//
+// It refuses a request that states no queue item before any provider reads it.
+func (m *Manager) SteerInput(agentID string, request SteerRequest) error {
+	if err := request.validate(); err != nil {
+		return err
+	}
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
 		return err
@@ -647,9 +652,9 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	if err := prepareProviderProcessForInput(p); err != nil {
 		return err
 	}
-	err = steerer.SteerInput(content, attachments)
+	err = steerer.SteerInput(request)
 	if err == nil {
-		observeGoalCommand(p, GoalDeliverySteer, content)
+		observeGoalCommand(p, GoalDeliverySteer, request.Content)
 	}
 	return err
 }
@@ -681,14 +686,18 @@ func (m *Manager) PrepareSteer(agentID string) {
 }
 
 // SteerInputToSession uses the provider instance and session that the caller validated.
-func SteerInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+// It refuses a request that states no queue item, as Manager.SteerInput does.
+func SteerInputToSession(provider Agent, sessionID string, request SteerRequest) error {
+	if err := request.validate(); err != nil {
+		return err
+	}
 	steerer, ok := provider.(SessionInputSteerer)
 	if !ok {
 		return ErrSteeringUnsupported
 	}
-	err := steerer.SteerInputForSession(sessionID, content, attachments)
+	err := steerer.SteerInputForSession(sessionID, request)
 	if err == nil {
-		observeGoalCommand(provider, GoalDeliverySteer, content)
+		observeGoalCommand(provider, GoalDeliverySteer, request.Content)
 	}
 	return err
 }

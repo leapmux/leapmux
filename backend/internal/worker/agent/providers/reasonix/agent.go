@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
@@ -47,8 +46,8 @@ type Agent struct {
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	result, err := a.SteerAdvertisedResult(content, attachments)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	result, err := a.SteerAdvertisedResult(request.Content, request.Attachments)
 	if err != nil {
 		return err
 	}

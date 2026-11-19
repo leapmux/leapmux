@@ -450,7 +450,7 @@ func TestClaudeTurnActive_ASteerThatWaitedAtTheResultRunsInTheSameTurn(t *testin
 	// The steer_end probe has two results before the one idle frame.
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
-	require.NoError(t, a.SteerInput("steer", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "steer"}))
 	for range 2 {
 		a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
 		a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`))

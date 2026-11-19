@@ -1,8 +1,7 @@
 // The provider plugin's capabilities, grouped by the reader that asks for them.
 //
 // A plugin groups its hooks into four capabilities.
-// The transcript reader uses `transcript`. The control-response row and the
-// permission presets use `controls`.
+// The transcript reader uses `transcript`. The permission presets use `controls`.
 // The connection uses `session`. Agent settings use `configuration`.
 // Each reader uses the capability that owns its work.
 // A single interface of optional hooks let each reader access unrelated hooks.
@@ -19,7 +18,6 @@ import type { TurnEnd } from '../model/divider'
 import type { CompactionDetails, NotificationEntry } from '../model/notification'
 import type { ChatRow } from '../model/row'
 import type { ToolCall } from '../model/toolCall'
-import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
 import type { ResolvedMessageContent, RowExtractionInput } from '../rowExtractionTypes'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -200,31 +198,17 @@ export interface ProviderTranscriptCapability {
 }
 
 /**
- * The control facts that a provider states in the browser: how a recorded answer
- * reads, and the presets of its permission actions.
+ * The control facts that a provider states in the browser: the presets of its
+ * permission actions.
  *
- * Nothing here reads a control request or builds an answer. The Worker does both
- * (`Provider.ReadControlRequest` and `Provider.AnswerControlRequest` in Go): the
- * browser draws the neutral prompt that the Worker sends, and sends back a neutral
- * decision.
+ * Nothing here reads a control request, builds an answer, or words a saved answer.
+ * The Worker reads each request and builds each answer (`Provider.ReadControlRequest`
+ * and `Provider.AnswerControlRequest` in Go): the browser draws the neutral prompt
+ * that the Worker sends, and sends back a neutral decision. A saved answer reads
+ * from the prompt and the decision that the Worker records with it
+ * (~/components/chat/controlDecisionSummary.ts).
  */
 export interface ProviderControlCapability {
-  /**
-   * Derive the human-facing display for a persisted control-response row
-   * (`{isSynthetic, controlResponse:{provider, requestId, request, response}}` -- see
-   * persistedControlResponse.ts). Each provider knows its own native request/response wire shapes
-   * (Codex JSON-RPC decisions, ACP permission options, OpenCode question answers, Pi extension-UI
-   * responses, ...) and turns them into a label or a feedback block.
-   *
-   * The SINGLE label source for BOTH surfaces that show the row: the transcript renderer
-   * (renderControlResponseRow, dispatched from renderMessageContent's shared `control_response`
-   * branch) and the scroll rail's dot preview (messageMarkPreviewText), so the two cannot drift.
-   * Return null when the payload isn't recognizable -- the caller then degrades via
-   * `fallbackControlResponseSummary` (coarse Approved/Rejected from the neutral behavior
-   * envelope, else the generic "Responded" label).
-   */
-  controlResponseDisplay?: ControlResponseDeriver
-
   /** Provider-native presets for standard permission actions. */
   permissionPresets?: ProviderPermissionPresets
 }

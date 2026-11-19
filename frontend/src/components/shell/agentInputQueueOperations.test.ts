@@ -366,6 +366,37 @@ describe('createAgentInputQueueOperations composer send', () => {
     expect(sentInputId(1)).toBe(sentInputId(0))
   })
 
+  // A queue snapshot that holds the input proves that the Worker took it. The
+  // Worker keeps the row of an input that the user removes, so a resend that
+  // reused the old id would queue nothing while the browser reported success.
+  it('mints a fresh input ID once a queue snapshot showed the unanswered attempt', async () => {
+    const { ops, store } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
+
+    await expect(ops.sendMessage('deploy it')).rejects.toThrow('answer lost')
+    // A broadcast shows the queued input, and the user then removes it.
+    store.apply('agent-1', snapshotOf(1n, [
+      sentInputId(0),
+    ]))
+    store.apply('agent-1', snapshotOf(2n, []))
+    await ops.sendMessage('deploy it')
+
+    expect(sentInputId(1)).not.toBe(sentInputId(0))
+  })
+
+  it('keeps the input ID of an unanswered attempt that no snapshot showed', async () => {
+    const { ops, store } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
+
+    await expect(ops.sendMessage('deploy it')).rejects.toThrow('answer lost')
+    store.apply('agent-1', snapshotOf(1n, ['someone-else']))
+    await ops.sendMessage('deploy it')
+
+    expect(sentInputId(1)).toBe(sentInputId(0))
+  })
+
   it('mints a fresh input ID once the Worker accepted the payload', async () => {
     const { ops } = setup()
     enqueueAgentInput.mockResolvedValue({ snapshot: undefined })

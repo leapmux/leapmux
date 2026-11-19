@@ -12,6 +12,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/readseq"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 )
 
@@ -119,10 +120,14 @@ func startActivityFeed(ctx context.Context, source activityFeedSource, agentIDs 
 	f := &activityFeed{
 		source:   source,
 		agentIDs: append([]string(nil), agentIDs...),
-		inputs:   make(chan activityInput, 16),
-		levels:   make(chan activityLevelRead, 1),
 		out:      out,
 	}
+	f.seq = readseq.New(readseq.Hooks[activityInput, activityEvent, activityLevelRead]{
+		Handle:   f.handle,
+		NextRead: f.nextRead,
+		Apply:    f.applyLevel,
+		Send:     f.send,
+	})
 	go f.sequence(ctx)
 	go f.connect(ctx)
 }
@@ -131,15 +136,14 @@ func startActivityFeed(ctx context.Context, source activityFeedSource, agentIDs 
 type activityFeed struct {
 	source   activityFeedSource
 	agentIDs []string
-	// inputs carries the stream's events and acknowledgements in stream
-	// order, and the failures of the connection.
-	inputs chan activityInput
-	// levels carries the result of each level read.
-	levels chan activityLevelRead
-	out    chan<- activityEvent
+	// seq holds the changes behind each level read. connect pushes the
+	// stream's events and acknowledgements into it in stream order, and the
+	// failures of the connection.
+	seq *readseq.Sequencer[activityInput, activityEvent, activityLevelRead]
+	out chan<- activityEvent
 }
 
-// activityInput is one item of activityFeed.inputs: an event, or an
+// activityInput is one input of an activity feed: an event, or an
 // acknowledgement.
 type activityInput struct {
 	event activityEvent
@@ -152,95 +156,49 @@ type activityLevelRead struct {
 	err    error
 }
 
-// sequence orders what the feed sends. It owns the held changes, so no lock
-// guards them.
+// sequence orders what the feed sends, until ctx ends or the feed ends.
 func (f *activityFeed) sequence(ctx context.Context) {
-	var held []activityEvent
-	reading, readAgain := false, false
-	// forward sends an event now, or holds it behind the level read in
-	// flight. A failure is never held: it ends the feed, and no order
-	// matters after it.
-	forward := func(ev activityEvent) bool {
-		if reading && ev.kind != activityFailed {
-			held = append(held, ev)
-			return true
-		}
-		return f.send(ctx, ev)
-	}
-	// handle takes one input in stream order. It returns false when the feed
-	// ends.
-	handle := func(in activityInput) bool {
-		if in.ack == nil {
-			return forward(in.event) && in.event.kind != activityFailed
-		}
-		for _, rejection := range in.ack.GetRejectedAgents() {
-			ev, ok := activityRejection(rejection)
-			if !ok {
-				continue
-			}
-			if !forward(ev) || ev.kind == activityFailed {
-				return false
-			}
-		}
-		if reading {
-			readAgain = true
-			return true
-		}
-		reading = true
-		go f.readLevel(ctx)
-		return true
-	}
+	defer f.seq.Wait()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case in := <-f.inputs:
-			if !handle(in) {
+		case in := <-f.seq.Inputs():
+			if !f.handle(ctx, in) {
 				return
 			}
-		case read := <-f.levels:
-			// Input that is already queued arrived before the feed acts on
-			// this result, so the read that follows covers it: it goes first.
-			// A select over both channels picks at random, so without this an
-			// acknowledgement queued beside the result would start one read
-			// more than the acknowledgements need.
-			for drained := false; !drained; {
-				select {
-				case in := <-f.inputs:
-					if !handle(in) {
-						return
-					}
-				default:
-					drained = true
-				}
-			}
-			if read.err != nil {
-				f.send(ctx, activityEvent{kind: activityFailed, err: fmt.Errorf("read the state of the agents: %w", read.err)})
+		case read := <-f.seq.Results():
+			if !f.seq.Complete(ctx, read) {
 				return
 			}
-			for _, id := range f.agentIDs {
-				ev := activityEvent{kind: activityClosed, agentID: id}
-				if state, open := read.states[id]; open {
-					ev = activityEvent{kind: activityLevel, agentID: id, state: state}
-				}
-				if !f.send(ctx, ev) {
-					return
-				}
-			}
-			for _, ev := range held {
-				if !f.send(ctx, ev) {
-					return
-				}
-			}
-			held = nil
-			if readAgain {
-				readAgain = false
-				go f.readLevel(ctx)
-				continue
-			}
-			reading = false
 		}
 	}
+}
+
+// handle takes one input in stream order. An acknowledgement asks for a
+// level read. It returns false when the feed ends.
+func (f *activityFeed) handle(ctx context.Context, in activityInput) bool {
+	if in.ack == nil {
+		return f.forward(ctx, in.event)
+	}
+	for _, rejection := range in.ack.GetRejectedAgents() {
+		ev, ok := activityRejection(rejection)
+		if ok && !f.forward(ctx, ev) {
+			return false
+		}
+	}
+	return f.seq.RequestRead(ctx)
+}
+
+// forward sends an event now, or holds it behind the level read in flight.
+// A failure is never held: it ends the feed, and no order matters after it.
+// forward returns false when the feed ends.
+func (f *activityFeed) forward(ctx context.Context, ev activityEvent) bool {
+	if ev.kind == activityFailed {
+		f.send(ctx, ev)
+		return false
+	}
+	return f.seq.Forward(ctx, ev)
 }
 
 // activityRejection is the event that one rejected agent of an
@@ -263,14 +221,35 @@ func activityRejection(rejection *leapmuxv1.WatchRejection) (activityEvent, bool
 	}
 }
 
-// readLevel reads the published state of every agent and hands the result to
-// sequence.
-func (f *activityFeed) readLevel(ctx context.Context) {
+// nextRead returns the read of every agent's published state. Each
+// acknowledgement asks for it.
+func (f *activityFeed) nextRead(context.Context) (readseq.Read[activityLevelRead], bool) {
+	return f.readLevel, true
+}
+
+// readLevel reads the published state of every agent.
+func (f *activityFeed) readLevel(ctx context.Context) activityLevelRead {
 	states, err := f.source.readActivity(ctx, f.agentIDs)
-	select {
-	case f.levels <- activityLevelRead{states: states, err: err}:
-	case <-ctx.Done():
+	return activityLevelRead{states: states, err: err}
+}
+
+// applyLevel sends the level of each agent that a read returned. An agent
+// that the result leaves out is closed. A read that failed ends the feed.
+func (f *activityFeed) applyLevel(ctx context.Context, read activityLevelRead) bool {
+	if read.err != nil {
+		f.send(ctx, activityEvent{kind: activityFailed, err: fmt.Errorf("read the state of the agents: %w", read.err)})
+		return false
 	}
+	for _, id := range f.agentIDs {
+		ev := activityEvent{kind: activityClosed, agentID: id}
+		if state, open := read.states[id]; open {
+			ev = activityEvent{kind: activityLevel, agentID: id, state: state}
+		}
+		if !f.send(ctx, ev) {
+			return false
+		}
+	}
+	return true
 }
 
 // send delivers ev to the consumer. It returns false when ctx ended first.
@@ -280,14 +259,6 @@ func (f *activityFeed) send(ctx context.Context, ev activityEvent) bool {
 		return true
 	case <-ctx.Done():
 		return false
-	}
-}
-
-// input hands one item to sequence, in the order of the calls.
-func (f *activityFeed) input(ctx context.Context, in activityInput) {
-	select {
-	case f.inputs <- in:
-	case <-ctx.Done():
 	}
 }
 
@@ -314,7 +285,7 @@ func (f *activityFeed) connect(ctx context.Context) {
 			return
 		}
 		if err != nil && !subscribed {
-			f.input(ctx, activityInput{event: activityEvent{kind: activityFailed, err: err}})
+			f.seq.Push(ctx, activityInput{event: activityEvent{kind: activityFailed, err: err}})
 			return
 		}
 		timer := f.source.clock.NewTimer(backoff.afterSession(delivered.Load()), activityReconnectTimerTag)
@@ -349,11 +320,11 @@ func (f *activityFeed) subscribeOnce(ctx context.Context, delivered *atomic.Bool
 			return
 		}
 		delivered.Store(true)
-		f.input(ctx, activityInput{event: ev})
+		f.seq.Push(ctx, activityInput{event: ev})
 	}
 	onAck := func(ack *leapmuxv1.WatchUpdateAck) {
 		delivered.Store(true)
-		f.input(ctx, activityInput{ack: ack})
+		f.seq.Push(ctx, activityInput{ack: ack})
 	}
 	sub := streamevents.NewSubscription(transport, streamevents.NewAgentCursor(), streamevents.NewTerminalCursor(),
 		onAgent, nil, nil, streamevents.WithUpdateAck(onAck))

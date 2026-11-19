@@ -31,9 +31,9 @@ for (const decision of ['allow', 'deny'] as const) {
           expect(existsSync(file)).toBe(false)
         }
       },
-      // Claude's answer is the neutral envelope, so the shared reader states the word of the button.
+      // The saved answer states the option that the decision chose.
       viewProof: () => expect(savedControlAnswer(native.page)).toHaveText(decision === 'allow'
-        ? 'Allow'
+        ? 'Allow once'
         : 'Deny'),
     })
   })
@@ -71,6 +71,6 @@ claudeTest('a session allow covers the tool for the rest of the session', async 
     beforeDecision: () => expect(existsSync(firstFile)).toBe(false),
     firstProof: () => expect(readFileSync(firstFile, 'utf8')).toBe('one'),
     secondProof: () => expect(readFileSync(secondFile, 'utf8')).toBe('two'),
-    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow'),
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow for this session'),
   })
 })

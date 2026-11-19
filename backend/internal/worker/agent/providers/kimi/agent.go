@@ -243,7 +243,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 // message would wait in the server's queue behind it. SteerInput posts nothing
 // for such a turn and reports it busy, so the input queue holds the message
 // until the turn ends.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	a.Mu.Lock()
 	inputState := a.inputStateLocked(kimiMainAgentID)
 	sessionID, active, steerable, stopped, model := a.sessionID, inputState.Active, inputState.Steerable, a.StoppedLocked(), a.settings.model

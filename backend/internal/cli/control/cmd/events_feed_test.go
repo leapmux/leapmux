@@ -237,10 +237,7 @@ func TestWorkerFeed_ReportsTheTabsThatAnAcknowledgementRejects(t *testing.T) {
 // watch that ended, so the feed drops it.
 func TestWorkerFeed_DropsTheLateItemsOfAnEndedSession(t *testing.T) {
 	out := make(chan feedOutput, 8)
-	q := &feedSequencer{
-		f:    &workerFeed{workerID: "worker-A", source: workerFeedSource{clock: testutil.NewQuartzMock(t)}, out: out},
-		read: map[string]bool{},
-	}
+	q := newFeedSequencer(&workerFeed{workerID: "worker-A", source: workerFeedSource{clock: testutil.NewQuartzMock(t)}, out: out})
 	t.Cleanup(q.stopAckTimer)
 	ctx := testutil.DeadlineContext(t)
 	require.True(t, q.input(ctx, feedInput{kind: inputSessionStarted, session: 2}))

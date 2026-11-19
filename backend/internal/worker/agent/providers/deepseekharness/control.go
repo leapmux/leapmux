@@ -51,15 +51,14 @@ func storedControlRefusal(ctx agent.ControlResponseContext) string {
 		AgentID string          `json:"agentId"`
 		Request json.RawMessage `json:"request"`
 	}
-	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.ID == "" || payload.AgentID == "" || ctx.RequestID != "" && ctx.RequestID != payload.ID {
+	// The agent stores each request under its eventId. A payload whose eventId
+	// differs from the key that stores it disagrees with that key, so LeapMux
+	// cannot trust it.
+	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.ID == "" || payload.AgentID == "" || ctx.RequestID != payload.ID {
 		return agent.RefusalUnreadableRequest
 	}
-	requestID, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok {
+	if _, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent); !ok {
 		return agent.RefusalNoDecision
-	}
-	if requestID != payload.ID {
-		return agent.RefusalOtherRequest
 	}
 	switch payload.Event {
 	case contracts.DeepseekHarnessControlEventApproval:

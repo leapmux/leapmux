@@ -1,9 +1,10 @@
 {
-  "_readme": "Saved permission decisions CAPTURED from the installed runtimes, rather than written by hand (RL-001): five cases on September 14, 2026; Grok Build, Qwen Code and Oh My Pi on September 23, 2026; Codewhale, Kiro and Cline on September 24, 2026; and Kimi Code on October 30, 2026. Claude Code, Cursor, OpenCode, Kilo and Pi approved the same operations on their own on the first day, so they have no case. Each case states the two halves that the Worker stores for one answer: request, the provider section of supplemental_content, and response, the agent's own bytes. prompt is the control prompt that the Worker records in the row's metadata (control_prompt): agent.ReadControlPrompt of the request with no transcript row, as protojson, with a permission's input_json compact. label is what the transcript row reads, measured in a cold browser. TestSavedDecisionCorpusPrompts (backend/internal/worker/agent/providers) reads each request through its provider and requires the stated prompt, and frontend/src/components/chat/savedDecisionCorpus.test.ts replays each case through the provider's controlResponseDisplay with that prompt and requires the label. A runtime that changes its wire shape therefore fails a case instead of quietly degrading a reloaded row to the generic \"Responded\". The worker metadata is otherwise absent: it carries a per-request claim token, which is a credential, and the displayed words never derive from it.",
+  "_readme": "Saved permission decisions CAPTURED from the installed runtimes, rather than written by hand (RL-001): five cases on September 14, 2026; Grok Build, Qwen Code and Oh My Pi on September 23, 2026; Codewhale, Kiro and Cline on September 24, 2026; and Kimi Code on October 30, 2026. Claude Code, Cursor, OpenCode, Kilo and Pi approved the same operations on their own on the first day, so they have no case. Each case states the two halves that the Worker stores for one answer: request, the provider section of supplemental_content, and response, the agent's own bytes. requestId is the id under which the Worker stores the request, which the answer addresses. prompt is the control prompt that the Worker records in the row's metadata (control_prompt): agent.ReadControlPrompt of the request with no transcript row, as protojson, with a permission's input_json compact. decision is the neutral decision that the Worker records beside it (control_decision), as protojson: the answer that the reader chose, which the provider turned into response. label is what the transcript row reads. permissionModeLabels, where a case states it, holds the labels of the agent's permission modes that the browser holds when it reads the row: a plan approval names the mode that it switches to by its label. TestSavedDecisionCorpusPrompts (backend/internal/worker/agent/providers) reads each request through its provider and requires the stated prompt. TestSavedDecisionCorpusDecisions answers each request with its decision through its provider, resolves the answer as the Worker does before delivery, and requires the captured response. frontend/src/components/chat/savedDecisionCorpus.test.ts reads each prompt and decision through the shared saved-answer display and requires the label. The display reads no request and no response, so a runtime that changes its wire shape cannot change the words of a reloaded row. The worker metadata is otherwise absent: it carries a per-request claim token, which is a credential, and the displayed words never derive from it.",
   "cases": [
     {
       "name": "codex Allow",
       "provider": "AGENT_PROVIDER_CODEX",
+      "requestId": "jsonrpc:0",
       "note": "Codex answers with a bare decision word and states no option list.",
       "label": "Allow",
       "request": {
@@ -43,11 +44,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "accept"
+        }
       }
     },
     {
       "name": "github-copilot Allow once",
       "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "requestId": "copilot-HPfsGc_Bya70ZnVHt8Ac0GUO4VJoSaaMjmUCGqE6RlU",
       "note": "Copilot names its own approval kind, and `approve-once` is the single-use one.",
       "label": "Allow once",
       "request": {
@@ -133,11 +140,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "once"
+        }
       }
     },
     {
       "name": "github-copilot Allow for this project",
       "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "requestId": "copilot-ySEH4ZYy1nWBJijF3XCHFJ0jQM2Jm3AI4785BVe0lJg",
       "note": "The location scope carries a second `approval.kind` beside the decision.",
       "label": "Allow for this project",
       "request": {
@@ -221,13 +234,19 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "project"
+        }
       }
     },
     {
-      "name": "goose Allow once",
+      "name": "goose Allow",
       "provider": "AGENT_PROVIDER_GOOSE",
-      "note": "Goose names every option after its own id, so the words come from the option `kind` (ACP-004).",
-      "label": "Allow once",
+      "requestId": "jsonrpc:\"9f6040cd-a7e4-49bf-b497-f73c73b09d3f\"",
+      "note": "Goose names every option after its own id, which is no label, so the row reads the words of the button that sends the option (ACP-004).",
+      "label": "Allow",
       "request": {
         "jsonrpc": "2.0",
         "id": "9f6040cd-a7e4-49bf-b497-f73c73b09d3f",
@@ -305,11 +324,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_once"
+        }
       }
     },
     {
       "name": "reasonix Allow",
       "provider": "AGENT_PROVIDER_REASONIX",
+      "requestId": "jsonrpc:1",
       "note": "Reasonix writes its own option names, and its single-use one is a bare \"Allow\".",
       "label": "Allow",
       "request": {
@@ -393,11 +418,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_once"
+        }
       }
     },
     {
       "name": "reasonix Allow Bash=ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt for this session",
       "provider": "AGENT_PROVIDER_REASONIX",
+      "requestId": "jsonrpc:5",
       "label": "Allow Bash=ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt for this session",
       "request": {
         "jsonrpc": "2.0",
@@ -475,13 +506,19 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_always"
+        }
       }
     },
     {
-      "name": "zcode Allow",
+      "name": "zcode Allow once",
       "provider": "AGENT_PROVIDER_ZCODE",
-      "note": "ZCode answers with a decision word and a reason, and offers no approval scope.",
-      "label": "Allow",
+      "requestId": "perm_0aa4972e-11ff-468d-9795-014ea21b46e8",
+      "note": "ZCode answers with a decision word and a reason, and offers no approval scope. Its answer states no option, so the decision states the option that the reader chose.",
+      "label": "Allow once",
       "request": {
         "type": "control_request",
         "request_id": "perm_0aa4972e-11ff-468d-9795-014ea21b46e8",
@@ -582,11 +619,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_once"
+        }
       }
     },
     {
       "name": "codewhale Allow",
       "provider": "AGENT_PROVIDER_CODEWHALE",
+      "requestId": "approval:approval_14c379cb62564e9db7baae791c12a0fe",
       "note": "Codewhale answers an approval with a decision word alone. The response is the reply frame the worker posted, and the request is the stored payload beside the runtime's own `approval.required` event, from Codewhale 0.9.13.",
       "label": "Allow",
       "request": {
@@ -642,11 +685,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "leapmux:allow"
+        }
       }
     },
     {
       "name": "kimi Allow for this session",
       "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "requestId": "approval_cf9626b4-39a1-41a7-8997-e8a180544556",
       "note": "Captured from Kimi Code 2.4.0 on October 30, 2026. The Worker keeps the complete interaction frame and the native answer to the unified route. A cold browser displayed the session-scoped approval as the label below.",
       "label": "Allow for this session",
       "request": {
@@ -708,11 +757,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "approve_for_session"
+        }
       }
     },
     {
       "name": "grok Yes, proceed",
       "provider": "AGENT_PROVIDER_GROK_BUILD",
+      "requestId": "jsonrpc:0",
       "note": "Grok Build and Qwen Code, captured from their live ACP sessions on September 23, 2026 (the permission request from the wire, and the reply LeapMux sends for the option the reader chose). Both write their own option names.",
       "label": "Yes, proceed",
       "request": {
@@ -809,11 +864,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow-once"
+        }
       }
     },
     {
       "name": "kiro Allow",
       "provider": "AGENT_PROVIDER_KIRO",
+      "requestId": "jsonrpc:3",
       "note": "Kiro, captured from a v3 `kiro-cli-chat acp` session on September 24, 2026.",
       "label": "Allow",
       "request": {
@@ -928,11 +989,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "accept"
+        }
       }
     },
     {
       "name": "qwen Allow",
       "provider": "AGENT_PROVIDER_QWEN_CODE",
+      "requestId": "jsonrpc:0",
       "label": "Allow",
       "request": {
         "jsonrpc": "2.0",
@@ -1018,12 +1085,18 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "proceed_once"
+        }
       }
     },
     {
       "name": "oh my pi Approve",
       "provider": "AGENT_PROVIDER_OH_MY_PI",
-      "note": "Oh My Pi asks with a `select` dialog and takes its own option word as the answer. Captured from omp 18.2.11 on September 23, 2026, with `tools.approvalMode: always-ask`; the answers are the extension_ui_response lines that LeapMux sends.",
+      "requestId": "158b2ba5001bfb93",
+      "note": "Oh My Pi asks with a `select` dialog and takes its own option word as the answer. Captured from omp 18.2.11 on September 23, 2026, with `tools.approvalMode: always-ask`; the answers are the extension_ui_response lines that LeapMux sends. Each option's name is its own id, which is no label, so the row reads the words of the button that sends the option.",
       "label": "Allow",
       "request": {
         "type": "extension_ui_request",
@@ -1058,11 +1131,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "Approve"
+        }
       }
     },
     {
       "name": "oh my pi Deny",
       "provider": "AGENT_PROVIDER_OH_MY_PI",
+      "requestId": "158b2ba55c9bfb95",
       "label": "Deny",
       "request": {
         "type": "extension_ui_request",
@@ -1097,11 +1176,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "Deny"
+        }
       }
     },
     {
       "name": "cline Allow",
       "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "approval_1790258525021_0l541",
       "note": "Cline states each approval and each question as its hub's own event, which the worker stores verbatim: the requests below were captured from the Cline 3.0.64 hub on September 24, 2026. The stored answer is the reply the worker sends Cline, as Cline's `approval.respond` and `capability.respond` take it. The worker keeps the mode an approved plan switches to in the stored copy alone.",
       "label": "Allow",
       "request": {
@@ -1146,11 +1231,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "leapmux:allow"
+        }
       }
     },
     {
       "name": "cline Deny",
       "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "approval_1790258525021_0l541",
       "label": "Deny",
       "request": {
         "version": "v1",
@@ -1195,11 +1286,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "leapmux:deny"
+        }
       }
     },
     {
       "name": "cline plan Approve",
       "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "approval_1790258352751_4cqa2",
       "label": "Approve (Act)",
       "request": {
         "version": "v1",
@@ -1230,12 +1327,24 @@
       "prompt": {
         "plan": {},
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "plan": {
+          "approve": true,
+          "permissionMode": "act"
+        }
+      },
+      "permissionModeLabels": {
+        "plan": "Plan",
+        "act": "Act",
+        "auto-approve": "Auto-approve"
       }
     },
     {
       "name": "cline question answer",
       "provider": "AGENT_PROVIDER_CLINE",
-      "label": "Blue",
+      "requestId": "capreq_1790258346728_1gzza",
+      "label": "Which color do you prefer?: Blue",
       "request": {
         "version": "v1",
         "event": "capability.requested",
@@ -1296,6 +1405,17 @@
           ]
         },
         "editorPurpose": "CONTROL_EDITOR_PURPOSE_ANSWER"
+      },
+      "decision": {
+        "question": {
+          "answers": [
+            {
+              "selected": [
+                "Blue"
+              ]
+            }
+          ]
+        }
       }
     }
   ]

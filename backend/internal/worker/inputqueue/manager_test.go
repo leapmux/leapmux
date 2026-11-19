@@ -520,8 +520,8 @@ func TestManagerEnqueueReportingAddedReportsNothingForARefusal(t *testing.T) {
 
 	for i := 1; i <= MaxItems; i++ {
 		_, err := database.ExecContext(ctx, `
-			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text)
-			VALUES (?, 'agent-1', ?, 1, 'queued')`, fmt.Sprintf("input-%d", i), i)
+			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, idempotency_key)
+			VALUES (?, 'agent-1', ?, 1, 'queued', ?)`, fmt.Sprintf("input-%d", i), i, fmt.Sprintf("key-%d", i))
 		require.NoError(t, err)
 	}
 	_, added, err = manager.EnqueueReportingAdded(ctx, NewItem{

@@ -4,31 +4,36 @@ import type { PersistedControlResponse } from './persistedControlResponse'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fromJson } from '@bufbuild/protobuf'
-import { describe, expect, it } from 'vitest'
-import { ControlPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { create, fromJson } from '@bufbuild/protobuf'
+import { afterEach, describe, expect, it } from 'vitest'
+import { ControlDecisionSchema, ControlPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { controlPromptFromWire } from './model/controlPromptWire'
 import { resolveControlResponseSummary } from './persistedControlResponse'
-import { pluginFor } from './providers/registry'
-import './providers'
 
 /**
  * The browser's half of testdata/saved_decision_corpus.json.
  *
  * Each case is a saved permission decision captured from an installed runtime: the
- * request and the response that the Worker stores, and the prompt that it records
- * beside them. The Worker's half (`TestSavedDecisionCorpusPrompts`) proves that the
- * provider reads the request into that prompt. This half proves that the row reads the
- * words its own control carried, from those three and from nothing else.
+ * request and the response that the Worker stores, and the prompt and the decision
+ * that it records beside them. The Worker's half proves that the provider reads the
+ * request into that prompt (`TestSavedDecisionCorpusPrompts`), and that the decision
+ * rebuilds the response (`TestSavedDecisionCorpusDecisions`). This half proves that
+ * the row reads its words from the prompt, the decision, and the labels of the
+ * agent's permission modes alone.
  */
 interface SavedDecisionCase {
   name: string
   provider: string
+  requestId: string
   label: string
   request: Record<string, unknown>
   response: Record<string, unknown>
   prompt: JsonValue
+  decision: JsonValue
+  /** The labels of the agent's permission modes that the browser holds, by mode value. */
+  permissionModeLabels?: Record<string, string>
 }
 
 const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../testdata/saved_decision_corpus.json')
@@ -56,46 +61,50 @@ describe('saved decision corpus', () => {
     expect(fixture.cases.length).toBeGreaterThan(0)
   })
 
+  afterEach(() => clearSettingsLabelCache())
+
   it.each(fixture.cases)('reads $name back as its own words', (entry) => {
-    const display = resolveControlResponseSummary(
-      storedResponse(entry.request, entry.response, promptOf(entry)),
-      pluginFor(providerOf(entry.provider))?.controls?.controlResponseDisplay,
-    )
-    expect(display).toEqual({ kind: 'label', text: entry.label })
+    holdPermissionModeLabels(entry)
+    expect(resolveControlResponseSummary(storedResponse(entry), providerOf(entry.provider))).toEqual({ kind: 'label', text: entry.label })
   })
 
-  // The words for an option the agent named can come from the stored REQUEST, and a
-  // row can outlive it: an enrichment that failed validation is dropped while the
-  // original message is kept. What the reader must never see then is the wire token
-  // the answer carried -- `allow_once` where "Allow once" belongs. Each provider
-  // degrades to its own canonical words or to the neutral fallback, and none to a raw
-  // token.
-  it.each(fixture.cases)('shows no wire token for $name when the request is absent', (entry) => {
-    const display = resolveControlResponseSummary(
-      storedResponse(undefined, entry.response, promptOf(entry)),
-      pluginFor(providerOf(entry.provider))?.controls?.controlResponseDisplay,
-    )
-    expect(display.kind).toBe('label')
-    if (display.kind === 'label') {
-      expect(display.text).not.toBe('')
+  // The words come from the prompt and the decision, so neither half that the agent
+  // wrote can change them: a row whose request and response are gone reads the same.
+  it.each(fixture.cases)('reads $name without its native request and response', (entry) => {
+    holdPermissionModeLabels(entry)
+    const display = resolveControlResponseSummary({
+      ...storedResponse(entry),
+      request: undefined,
+      response: undefined,
+    }, providerOf(entry.provider))
+    expect(display).toEqual({ kind: 'label', text: entry.label })
+    if (display.kind === 'label')
       expect(display.text).not.toMatch(WIRE_TOKEN)
-    }
   })
 })
 
+/** Hold the labels of the case's permission modes, as the browser holds an open agent's settings. */
+function holdPermissionModeLabels(entry: SavedDecisionCase): void {
+  if (!entry.permissionModeLabels)
+    return
+  updateSettingsLabelCache(providerOf(entry.provider), [
+    create(AvailableOptionGroupSchema, {
+      id: 'permissionMode',
+      options: Object.entries(entry.permissionModeLabels).map(([id, name]) => ({ id, name })),
+    }),
+  ])
+}
+
 /** One stored row, as `parsePersistedControlResponse` would hand it to the renderer. */
-function storedResponse(
-  request: Record<string, unknown> | undefined,
-  response: Record<string, unknown>,
-  prompt: ControlPrompt,
-): PersistedControlResponse {
-  // The claim token never reaches a derivation. It is present because the type requires
+function storedResponse(entry: SavedDecisionCase): PersistedControlResponse {
+  // The claim token never reaches a display. It is present because the type requires
   // it, and its value is deliberately not one.
   return {
-    requestId: 'request',
+    requestId: entry.requestId,
     claimToken: 'not-a-token',
-    request,
-    response,
-    prompt,
+    request: entry.request,
+    response: entry.response,
+    prompt: promptOf(entry),
+    decision: fromJson(ControlDecisionSchema, entry.decision),
   }
 }

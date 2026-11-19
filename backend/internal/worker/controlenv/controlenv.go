@@ -13,12 +13,26 @@
 //     PATH with that variable.
 //   - The fresh variables come last.
 //   - The directory of a fresh LEAPMUX_CONTROL_CLI comes first on PATH. A bare
-//     `leapmux` then runs the CLI of the Worker that started the process,
-//     unless a login shell's profile moves the entry (see Apply).
+//     `leapmux` then runs the CLI of the Worker that started the process.
 //
 // A spawn without remote control receives no fresh variables, so it gets no
 // LEAPMUX_CONTROL_CLI and no PATH entry either. The PATH entry derives from
 // the variable, so the two cannot disagree.
+//
+// A login shell runs its profile after it receives this environment, and the
+// profile can move the PATH entry behind another `leapmux`, or drop it (see
+// Apply). Two mechanisms keep `leapmux control` on the Worker's own CLI then:
+//
+//   - The shell command that starts an agent puts the directory first on PATH
+//     again after the profile ran (see launch.Wrap). The agent, and each
+//     command that it runs without a login shell of its own, find the
+//     Worker's CLI first.
+//   - Inside a tab, the `leapmux` CLI hands a `leapmux control` command to
+//     LEAPMUX_CONTROL_CLI when that is not the running executable (see
+//     controlHandoff in cmd/leapmux). This covers the shell of a terminal, and
+//     a login shell that an agent starts for one command. The hand-off needs
+//     a `leapmux` that has it to be first on PATH: an older release runs the
+//     command itself.
 package controlenv
 
 import (
@@ -38,6 +52,29 @@ const (
 	// serves the Worker that started the process. The Worker owns the directory
 	// of that path, and the directory holds nothing else.
 	CLIVariable = VariablePrefix + "CLI"
+	// SocketVariable holds the address of the local socket of the tab, which
+	// the CLI speaks to inside the tab.
+	SocketVariable = VariablePrefix + "SOCK"
+	// TokenVariable holds the token that the CLI presents on SocketVariable.
+	TokenVariable = VariablePrefix + "TOKEN"
+	// UserIDVariable holds the user that the process acts for.
+	UserIDVariable = VariablePrefix + "USER_ID"
+	// WorkerIDVariable holds the Worker that started the process, which is the
+	// default Worker of the CLI.
+	WorkerIDVariable = VariablePrefix + "WORKER_ID"
+	// TabIDVariable holds the tab of the process. A Quake terminal has none.
+	TabIDVariable = VariablePrefix + "TAB_ID"
+	// TabTypeVariable holds the type of the tab, as its contract token
+	// ("agent" or "terminal").
+	TabTypeVariable = VariablePrefix + "TAB_TYPE"
+	// TerminalIDVariable holds the terminal that hosts the process. It is the
+	// only identifier of a Quake terminal, which has no tab.
+	TerminalIDVariable = VariablePrefix + "TERMINAL_ID"
+	// WorkingDirVariable holds the working directory of the tab at its start.
+	WorkingDirVariable = VariablePrefix + "WORKING_DIR"
+	// AgentProviderVariable holds the provider of an agent tab, as its
+	// contract token.
+	AgentProviderVariable = VariablePrefix + "AGENT_PROVIDER"
 )
 
 // Apply returns environ with the remote-control context of one spawn applied.
@@ -73,6 +110,7 @@ const (
 //     drops it.
 //   - A user's profile that prepends a directory puts that directory first.
 //
+// The package comment states how an agent and the CLI recover from that.
 // LEAPMUX_CONTROL_CLI gives the exact executable in every case.
 //
 // Apply never changes environ or control.

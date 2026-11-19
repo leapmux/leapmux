@@ -672,16 +672,16 @@ var _ agent.SessionInputSteerer = (*Agent)(nil)
 // for any active turn, so the capability needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.steerInput(nil, request.Content, request.Attachments, true)
 }
 
 // SteerInputForSession delivers the answer to a LeapMux-owned question. The
 // queue owns that answer's row and accepts it at the steer, so this delivery
 // joins no steer ledger: the native echo that later repeats the answer is not
 // news the queue waits for.
-func (a *Agent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerInput(&sessionID, content, attachments, false)
+func (a *Agent) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
+	return a.steerInput(&sessionID, request.Content, request.Attachments, false)
 }
 
 func (a *Agent) steerInput(expected *string, content string, attachments []*leapmuxv1.Attachment, trackEcho bool) error {

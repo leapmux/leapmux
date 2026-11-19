@@ -71,6 +71,7 @@ export async function exerciseCopilotPlanApproval(context: ManagedNativeScenario
 
     await page.reload()
     await expect(assistantBubbles(page).filter({ hasText: resumed })).toBeVisible()
-    await expect(savedControlAnswer(page)).toHaveText('Approve')
+    // The plan banner opens on Smart, which switches Copilot to Assisted, and the saved row names that mode.
+    await expect(savedControlAnswer(page)).toHaveText('Approve (Assisted)')
   }, async () => watch.cancel())
 }

@@ -1,7 +1,6 @@
 import type { MessageCompletion } from './assembledMessage'
 import type { MessageCategory } from './messageClassifier'
 import type { ChatRow } from './model/row'
-import type { ControlResponseDeriver } from './persistedControlResponse'
 import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { AgentProvider, MessageCompletion as ProtoMessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -10,7 +9,6 @@ import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
-import { elicitationResponseSummary } from './controls/elicitationResponse'
 import { leapmuxUserRow, withAgentMessageSender } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
 import { approvedReviewIdsOf, withApprovedReviews } from './model/notification'
@@ -107,11 +105,12 @@ export function extractChatRow(
     // The Worker stores control responses in its own metadata.
     // Resolve them before parsing the provider frame, which can be unreadable.
     // The shared row model keeps this answer available to every reader.
-    // Run the provider's display hook here once.
+    // The answer's words come from the prompt and the decision in that metadata,
+    // so no provider reads its own answer here.
     if (category.kind === 'control_response') {
       return row({
         kind: 'control-response',
-        display: resolveControlResponseSummary(category.response, controlResponseDisplayOf(plugin?.controls?.controlResponseDisplay)),
+        display: resolveControlResponseSummary(category.response, agentProvider),
       })
     }
 
@@ -247,12 +246,4 @@ export function extractChatRow(
       completion,
     }
   }
-}
-
-/**
- * The display of a persisted control response: the neutral summary of an MCP
- * elicitation answer, which the recorded prompt identifies, then the provider's own.
- */
-function controlResponseDisplayOf(providerDisplay: ControlResponseDeriver | undefined): ControlResponseDeriver {
-  return record => elicitationResponseSummary(record) ?? providerDisplay?.(record) ?? null
 }

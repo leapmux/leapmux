@@ -1,8 +1,10 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { RecordedControlAnswer } from '~/test-support/messageFactory'
 import { create } from '@bufbuild/protobuf'
 import { createComputed, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
+import { ControlDecisionSchema, ControlPromptSchema, PermissionOptionKind } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeControlResponseMessage } from '~/test-support/messageFactory'
@@ -11,6 +13,29 @@ import * as registry from './providers/registry'
 import { prepareChatRow } from './rowPreparation'
 // Register provider plugins so messageMarkPreviewText (called inside warm) can resolve one.
 import '~/components/chat/providers'
+
+/** The prompt and the decision that the Worker records for one answer to an allow-or-deny prompt. */
+function savedPermission(optionId: string, feedback = ''): RecordedControlAnswer {
+  return {
+    prompt: create(ControlPromptSchema, {
+      kind: {
+        case: 'permission',
+        value: {
+          options: [
+            { optionId: 'accept', kind: PermissionOptionKind.ALLOW_ONCE, name: 'Allow' },
+            { optionId: 'deny', kind: PermissionOptionKind.REJECT_ONCE, name: 'Deny' },
+          ],
+        },
+      },
+    }),
+    decision: create(ControlDecisionSchema, {
+      kind: {
+        case: 'permission',
+        value: { optionId, feedback },
+      },
+    }),
+  }
+}
 
 /** Make classification fail before row extraction starts. */
 function throwingPlugin(): NonNullable<ReturnType<typeof registry.pluginFor>> {
@@ -134,16 +159,18 @@ describe('message mark preview text', () => {
     expect(messageMarkPreviewText(message)).toContain('build ok')
   })
 
-  it('resolves a persisted Codex control response to its decision label', () => {
+  // The dot reads the words that the transcript row reads: those of the prompt and the
+  // decision that the Worker recorded, never those of the provider's own answer.
+  it('resolves a persisted control response to the words of its decision', () => {
     const row = makeControlResponseMessage(AgentProvider.CODEX, {
       jsonrpc: '2.0',
       id: 7,
       result: { decision: 'accept' },
-    }, { method: 'item/commandExecution/requestApproval' })
+    }, { method: 'item/commandExecution/requestApproval' }, savedPermission('accept'))
     expect(messageMarkPreviewText(row)).toBe('Allow')
   })
 
-  it('resolves a Claude rejection to its feedback preview', () => {
+  it('resolves the reason of a refusal to its feedback preview', () => {
     const row = makeControlResponseMessage(AgentProvider.CLAUDE_CODE, {
       type: 'control_response',
       response: {
@@ -152,11 +179,11 @@ describe('message mark preview text', () => {
       },
     }, {
       request: { tool_name: 'Bash' },
-    })
+    }, savedPermission('deny', 'use ripgrep instead'))
     expect(messageMarkPreviewText(row)).toBe('Sent feedback:\nuse ripgrep instead')
   })
 
-  it('uses the generic label when the native response has an unknown shape', () => {
+  it('uses the generic label for a row that records no decision', () => {
     expect(messageMarkPreviewText(makeControlResponseMessage(AgentProvider.CODEX, {}))).toBe('Responded')
   })
 
