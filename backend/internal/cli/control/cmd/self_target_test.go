@@ -3,9 +3,15 @@ package cmd
 import (
 	"testing"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
 // TestCallingTabID_ReadsEnvAndTrims verifies the spawn anchor read
@@ -20,50 +26,7 @@ func TestCallingTabID_ReadsEnvAndTrims(t *testing.T) {
 	assert.Equal(t, "tab-123", callingTabID(), "anchor must be trimmed")
 }
 
-// TestCallingTileFromState verifies the CRDT-state lookup path: an
-// unset anchor, a missing tab, a tombstoned tab, and a live tab all
-// behave as documented. The live case is the only one that returns a
-// non-empty tile id; the rest fail open so guards don't block real
-// operations on stale anchors.
-func TestCallingTileFromState(t *testing.T) {
-	state := newStateBuilder().
-		workspace("ws-1", "root-1").
-		node("root-1", "").
-		node("tile-A", "root-1").
-		tab("live-tab", "tile-A", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
-		tombstonedTab("dead-tab", "tile-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
-		st
-
-	t.Run("no anchor -> empty", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "")
-		assert.Equal(t, "", callingTileFromState(state))
-	})
-
-	t.Run("nil state -> empty", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "live-tab")
-		assert.Equal(t, "", callingTileFromState(nil))
-	})
-
-	t.Run("anchor not in state -> empty", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "ghost")
-		assert.Equal(t, "", callingTileFromState(state))
-	})
-
-	t.Run("tombstoned anchor -> empty", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "dead-tab")
-		assert.Equal(t, "", callingTileFromState(state))
-	})
-
-	t.Run("live anchor -> tile id", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "live-tab")
-		assert.Equal(t, "tile-A", callingTileFromState(state))
-	})
-}
-
-// TestRejectIfSelfWorkspace covers the pure-decision core of
-// guardWorkspaceDelete. The guard's RPC half is exercised indirectly
-// via locateCallingTab; this test pins the comparison logic without
-// needing a hub client.
+// TestRejectIfSelfWorkspace covers the workspace comparison without a Hub.
 func TestRejectIfSelfWorkspace(t *testing.T) {
 	t.Run("no anchor -> proceed", func(t *testing.T) {
 		assert.NoError(t, rejectIfSelfWorkspace("", "ws-1"))
@@ -80,6 +43,40 @@ func TestRejectIfSelfWorkspace(t *testing.T) {
 		assert.Contains(t, env.Error["message"], "ws-1")
 		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
 	})
+}
+
+func TestGuardWorkspaceDeleteDistinguishesMissingTabFromFailedLookup(t *testing.T) {
+	const workspaceID = "ws-1"
+	for _, tc := range []struct {
+		name     string
+		code     connect.Code
+		wantCode cli.Code
+	}{
+		{name: "confirmed absent", code: connect.CodeNotFound},
+		{name: "lookup unavailable", code: connect.CodeUnavailable, wantCode: cli.CodeUnavailable},
+		{name: "lookup forbidden", code: connect.CodePermissionDenied, wantCode: cli.CodePermissionDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &recordingHub{locateTabErr: connect.NewError(tc.code, "lookup result")}
+			startSpawnIPC(t, hub, &closeDispatcher{})
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", "agent-1")
+			c, err := control.NewClientFromEnv("")
+			require.NoError(t, err)
+			assert.NoError(t, guardWorkspaceDelete(t.Context(), c, workspaceID, true))
+			assert.Empty(t, hub.called(), "the explicit override skips the lookup")
+
+			err = guardWorkspaceDelete(t.Context(), c, workspaceID, false)
+			assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceLocateTabProcedure}, hub.called())
+			if tc.wantCode == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			reported := cli.FromError(err)
+			assert.Equal(t, tc.wantCode, reported.Code)
+			assert.Contains(t, reported.Message, "lookup result")
+		})
+	}
 }
 
 // TestGuardTabClose covers the four cases for `tab close`: no anchor,
@@ -111,78 +108,44 @@ func TestGuardTabClose(t *testing.T) {
 	})
 }
 
-// TestGuardTileClose mirrors TestGuardTabClose for `tile close`: only
-// rejects when the calling tab sits on the exact target tile.
-func TestGuardTileClose(t *testing.T) {
+func TestGuardLayoutClose(t *testing.T) {
 	state := newStateBuilder().
-		workspace("ws-1", "root-1").
-		node("root-1", "").
-		node("tile-A", "root-1").
-		node("tile-B", "root-1").
-		tab("tab-self", "tile-A", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
+		workspace("ws-1", "root").
+		splitNode("root", "", "m").
+		leafNode("left", "root", "a").
+		leafNode("right", "root", "b").
+		tab("tab-self", "left", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
+		tab("tab-other", "right", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		tombstonedTab("tab-closed", "left", leapmuxv1.TabType_TAB_TYPE_AGENT).
 		st
-
-	t.Run("no anchor -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "")
-		assert.NoError(t, guardTileClose(state, "tile-A", false))
-	})
-	t.Run("anchor on different tile -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		assert.NoError(t, guardTileClose(state, "tile-B", false))
-	})
-	t.Run("anchor on target tile without --allow-self -> refuse", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		env := failureOf(t, guardTileClose(state, "tile-A", false))
-		assert.Equal(t, "self_target_refused", env.Error["code"])
-		assert.Contains(t, env.Error["message"], "tile-A")
-		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
-	})
-	t.Run("anchor on target tile with --allow-self -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		assert.NoError(t, guardTileClose(state, "tile-A", true))
-	})
-}
-
-// TestGuardTileRemoveGrid covers the grid-subtree case: refuse when
-// the calling tab is on any tile in the doomed set (grid + every
-// descendant), proceed otherwise, --allow-self overrides.
-func TestGuardTileRemoveGrid(t *testing.T) {
-	// grid-1 has two child leaves; tab-self sits on the second child.
-	state := newStateBuilder().
-		workspace("ws-1", "root-1").
-		node("root-1", "").
-		node("grid-1", "root-1").
-		node("cell-A", "grid-1").
-		node("cell-B", "grid-1").
-		node("tile-outside", "root-1").
-		tab("tab-self", "cell-B", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
-		st
-
-	gridDoomed := []string{"cell-A", "cell-B", "grid-1"} // mirrors descendantsLeavesFirst output
-	otherDoomed := []string{"tile-outside"}              // grid sibling, unrelated to the anchor
-	emptyDoomed := []string{}
-
-	t.Run("no anchor -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "")
-		assert.NoError(t, guardTileRemoveGrid(state, gridDoomed, false))
-	})
-	t.Run("anchor outside the doomed subtree -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		assert.NoError(t, guardTileRemoveGrid(state, otherDoomed, false))
-	})
-	t.Run("anchor inside the doomed subtree -> refuse", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		env := failureOf(t, guardTileRemoveGrid(state, gridDoomed, false))
-		assert.Equal(t, "self_target_refused", env.Error["code"])
-		assert.Contains(t, env.Error["message"], "cell-B")
-		assert.Contains(t, env.Error["hints"], "--allow-self", "the refusal states the flag that overrides it")
-	})
-	t.Run("anchor inside doomed subtree with --allow-self -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		assert.NoError(t, guardTileRemoveGrid(state, gridDoomed, true))
-	})
-	t.Run("empty doomed set -> proceed", func(t *testing.T) {
-		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "tab-self")
-		assert.NoError(t, guardTileRemoveGrid(state, emptyDoomed, false))
-	})
+	tabsInRoot := crdt.LiveTabsInSubtree(state, "root")
+	for _, tc := range []struct {
+		name     string
+		caller   string
+		tabs     []crdt.TabRef
+		override bool
+		refused  bool
+	}{
+		{name: "outside a tab", tabs: tabsInRoot},
+		{name: "missing caller", caller: "ghost", tabs: tabsInRoot},
+		{name: "closed caller", caller: "tab-closed", tabs: tabsInRoot},
+		{name: "caller on another tile", caller: "tab-self", tabs: crdt.TabsOnTile(state, "right")},
+		{name: "empty close set", caller: "tab-self"},
+		{name: "caller included", caller: "tab-self", tabs: tabsInRoot, refused: true},
+		{name: "caller included with override", caller: "tab-self", tabs: tabsInRoot, override: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.caller)
+			err := guardLayoutClose("grid root", tc.tabs, tc.override)
+			if !tc.refused {
+				require.NoError(t, err)
+				return
+			}
+			reported := failureOf(t, err)
+			assert.Equal(t, "self_target_refused", reported.Error["code"])
+			assert.Contains(t, reported.Error["message"], "grid root")
+			assert.Contains(t, reported.Error["message"], tc.caller)
+			assert.Contains(t, reported.Error["hints"], "--allow-self")
+		})
+	}
 }

@@ -88,6 +88,9 @@ type recordingHub struct {
 	// tab.
 	unlocatableTab bool
 
+	// locateTabErr simulates a failed read without asserting that the tab is absent.
+	locateTabErr error
+
 	// onSubmitOps, when non-nil, answers SubmitOps. A test that needs the
 	// CRDT write to fail in a particular way, or to block, supplies it.
 	onSubmitOps func(ctx context.Context) ([]byte, error)
@@ -143,6 +146,8 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 		return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
 			Workspace: &leapmuxv1.Workspace{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"},
 		})
+	case procedure == leapmuxv1connect.WorkspaceServiceLocateTabProcedure && h.locateTabErr != nil:
+		return nil, h.locateTabErr
 	case procedure == leapmuxv1connect.WorkspaceServiceLocateTabProcedure && h.unlocatableTab:
 		return nil, connect.NewError(connect.CodeNotFound, "tab not found")
 	case procedure == leapmuxv1connect.WorkspaceServiceLocateTabProcedure && (h.locateTab != nil || h.materialized != nil):

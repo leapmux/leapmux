@@ -291,7 +291,7 @@ func busyTileHub() *recordingHub {
 			workspace("ws-1", "root-1").
 			splitNode("root-1", "", "m").
 			// leaf-2 holds the tabs; the caller's own agent-1 sits elsewhere, or
-			// guardTileClose would refuse the self-close first and mask this gate.
+			// the self-target guard would refuse the close first.
 			leafNode("leaf-1", "root-1", "h").
 			leafNode("leaf-2", "root-1", "s").
 			tabOnWorker("agent-1", "leaf-1", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).

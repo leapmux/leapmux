@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
@@ -205,4 +209,43 @@ func TestLiveTabsInSubtree(t *testing.T) {
 	}
 	sort.Strings(ids)
 	assert.Equal(t, []string{"live-1", "live-2"}, ids)
+}
+
+func TestRunTileCloseRecursiveProtectsTheCallingTabInADescendant(t *testing.T) {
+	for _, override := range []bool{false, true} {
+		name := "refuses the close"
+		if override {
+			name = "allows the explicit override"
+		}
+		t.Run(name, func(t *testing.T) {
+			hub := &recordingHub{
+				onSubmitOps: func(context.Context) ([]byte, error) {
+					return proto.Marshal(&leapmuxv1.SubmitOpsResponse{Results: []*leapmuxv1.BatchResult{{}}})
+				},
+				materialized: newStateBuilder().
+					workspace("ws-1", "root").
+					splitNode("root", "", "m").
+					splitNode("inner", "root", "a").
+					leafNode("own-leaf", "inner", "a").
+					leafNode("other-leaf", "inner", "b").
+					leafNode("survivor", "root", "b").
+					tab("agent-1", "own-leaf", leapmuxv1.TabType_TAB_TYPE_AGENT).
+					st,
+			}
+			startSpawnIPC(t, hub, &closeDispatcher{})
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", "agent-1")
+			args := []string{"tile", "close", "inner", "--recursive", "--with-tabs", "close"}
+			if override {
+				out := runControl(t, append(args, "--allow-self")...)
+				assert.Equal(t, float64(1), out.Data(t)["tabs_closed"])
+				assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+				return
+			}
+			out := runControl(t, args...)
+			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+			failure := out.requireFailure(t, cli.CodeSelfTargetRefused)
+			assert.Contains(t, failure.Message, "inner")
+			assert.Contains(t, failure.Hints, "pass --allow-self to do it anyway")
+		})
+	}
 }

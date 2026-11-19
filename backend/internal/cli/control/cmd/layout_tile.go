@@ -169,7 +169,7 @@ func runTileClose(inv *cli.Invocation) (any, error) {
 	// migrates the tab's tile_id before tombstoning its old tile, so
 	// the tab (and its PTY) survive.
 	if policy != withTabsMove {
-		if err := guardTileClose(cc.bs.State, tileID, allowSelf); err != nil {
+		if err := guardLayoutClose("tile "+tileID, tabsAffected, allowSelf); err != nil {
 			return nil, err
 		}
 		// Running work, for the same reason and in the same place. Skipped for
@@ -619,7 +619,6 @@ func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	gridRec := cc.bs.State.GetNodes()[gridID]
-	descendants := crdt.DescendantsLeavesFirst(cc.bs.State, gridID)
 	tabsInSubtree := crdt.LiveTabsInSubtree(cc.bs.State, gridID)
 
 	// Policy-decision phase: a grid carrying live tabs needs an
@@ -638,7 +637,7 @@ func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
 	// migrates every tab in the subtree onto the replacement leaf
 	// (or the root for a root grid), so the tab and its PTY survive.
 	if policy != withTabsMove {
-		if err := guardTileRemoveGrid(cc.bs.State, descendants, allowSelf); err != nil {
+		if err := guardLayoutClose("grid "+gridID, tabsInSubtree, allowSelf); err != nil {
 			return nil, err
 		}
 		if err := guardTabsBusy(cc, tabsInSubtree, allowBusy); err != nil {
