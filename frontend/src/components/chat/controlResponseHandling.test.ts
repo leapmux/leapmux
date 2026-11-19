@@ -12,7 +12,7 @@ import { CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { AgentActivityState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import * as browserStorage from '~/lib/browserStorage'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
-import { testControlRequest } from '~/test-support/controlRequests'
+import { CONTROL_PAYLOAD_FAULTS, testControlRequest, testFaultedControlRequest } from '~/test-support/controlRequests'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
 import { approvePlanDecision, permissionDecision, questionDecision } from './controls/controlDecision'
@@ -1793,37 +1793,42 @@ describe('a request whose payload LeapMux cannot read', () => {
     }
   })
 
-  // The turn is still blocked, and a payload nobody can read leaves the stop as
-  // the ONLY way out -- there is no question to answer. The Worker says the turn
-  // is blocked the same way it does for a readable prompt, so the button reads
-  // its level and the fault changes nothing here.
-  // A fault offers no editor even under an editor role that states one.
-  it('offers no editor for a fault whatever the editor role says', async () => {
-    const request = testControlRequest({
+  // A fault offers no editor even under an editor role that states one. Every fault,
+  // because an unrecognized request still decodes to an object that a provider plugin
+  // could read.
+  it.each(CONTROL_PAYLOAD_FAULTS)('offers no editor for the %s fault whatever the editor role says', async (fault) => {
+    const onControlAnswer = answerHandler()
+    const request = testFaultedControlRequest(fault, {
       agentId: 'test-agent',
       requestId: 'faulted',
       editorRole: 'feedback',
-      payloadFault: 'not-an-object',
     })
     const state = createControlAnswerState()
     const { handling, dispose } = createRoot(dispose => ({
       dispose,
       handling: useControlResponseHandling({
         agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
         controlRequests: [request],
-        onControlAnswer: answerHandler(),
+        onControlAnswer,
         onSendMessage: vi.fn(),
       }, state, () => undefined, vi.fn()),
     }))
     try {
       await vi.waitFor(() => expect(state.ready()).toBe(true))
       expect(handling.editorPurpose()).toBe('none')
+      expect(handling.handleControlSend('why did this fail')).toBe(false)
+      expect(onControlAnswer).not.toHaveBeenCalled()
     }
     finally {
       dispose()
     }
   })
 
+  // The turn is still blocked, and a payload nobody can read leaves the stop as
+  // the ONLY way out -- there is no question to answer. The Worker says the turn
+  // is blocked the same way it does for a readable prompt, so the button reads
+  // its level and the fault changes nothing here.
   it('still offers the stop', async () => {
     const request = testControlRequest({
       agentId: 'test-agent',
@@ -1966,17 +1971,15 @@ describe('handleControlSend completion', () => {
 // delivery state alone -- so a faulted request in the READY state passed it.
 // See ALTITUDE-FE-4.
 describe('submitResponse payload fault', () => {
-  const faulted = (): ControlRequest => testControlRequest({
-    requestId: 'faulted',
-    agentId: 'test-agent',
-    agentProvider: AgentProvider.CLAUDE_CODE,
-    editorRole: 'none',
-    payloadFault: 'malformed',
-    responseState: ControlResponseState.READY,
-  })
-
-  it('refuses an answer and still admits the recording', async () => {
-    const request = faulted()
+  // Every fault, because an unrecognized request still decodes to an object that a
+  // provider plugin could read.
+  it.each(CONTROL_PAYLOAD_FAULTS)('refuses an answer to the %s fault and still admits the recording', async (fault) => {
+    const request = testFaultedControlRequest(fault, {
+      requestId: 'faulted',
+      agentId: 'test-agent',
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      responseState: ControlResponseState.READY,
+    })
     const onControlResponse = answerHandler()
     const { result, dispose } = createRoot(dispose => ({
       dispose,

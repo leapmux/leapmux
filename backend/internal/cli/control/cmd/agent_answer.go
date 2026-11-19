@@ -129,21 +129,26 @@ func requireAnswerable(agentID string, r *leapmuxv1.AgentControlRequest) error {
 	return nil
 }
 
-// controlAnswerResultOf reads the Worker's response to an answer. A request
-// that the agent withdrew, or that another client answered first, is a
-// conflict. A failure that left the answer unsent can succeed on a retry;
-// one after the Worker saved the answer cannot, because the Worker never
-// sends a second answer.
+// controlAnswerResultOf reads the Worker's response to an answer.
+//
+//   - A canceled instance is a conflict, with or without the Worker's error
+//     text: the agent replaced or withdrew the request, or another client
+//     answered it, and the Worker holds no answer of this client. A replaced
+//     request waits under a new handle, so the hint lists the requests again.
+//   - A failure that left the answer unsent can succeed on a retry.
+//   - A failure after the Worker saved the answer cannot, because the Worker
+//     never sends a second answer.
 func controlAnswerResultOf(agentID, handle string, r *leapmuxv1.AnswerControlResponse) (controlAnswerResult, error) {
 	result := controlAnswerResult{ID: handle, AgentID: agentID, State: controlResponseStateToken(r.GetState())}
 	switch {
+	case r.GetState() == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED:
+		return result, cli.Newf(cli.CodeConflict, "request %s is no longer pending: the agent replaced or withdrew it, or another client answered it", handle).
+			WithHint("list its requests again with \"leapmux control agent requests %s\": a request that the agent replaced has a new handle", agentID)
 	case r.GetError() != "" && r.GetState() == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY:
 		return result, cli.Newf(cli.CodeUnavailable, "the answer to request %s was not sent: %s", handle, r.GetError())
 	case r.GetError() != "":
 		return result, cli.Newf(cli.CodeInternal, "the Worker holds the answer to request %s, but its delivery did not finish (%s): %s", handle, result.State, r.GetError()).
 			WithHint("check it with \"leapmux control agent requests %s\"", agentID)
-	case r.GetState() == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED:
-		return result, cli.Newf(cli.CodeConflict, "request %s is no longer pending: the agent withdrew it, or another client answered it", handle)
 	}
 	return result, nil
 }

@@ -45,12 +45,14 @@ func isMuseUserInputMethod(method string) bool {
 //     and scope is a permission, with Muse's choices as its options.
 //
 // Any other frame, and a request that one invalid or unknown element spoils,
-// reads as the generic prompt: LeapMux invents no choice and no question
-// that Muse did not state.
+// reads as unrecognized: LeapMux invents no choice and no question that Muse
+// did not state, and the resolution refuses LeapMux's own Deny to every such
+// request (nativeReplyFields, approvalReplyChoice), and its Allow to all but a
+// few.
 func (museProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	method, params, ok := museMethodParams(input.Payload)
 	if !ok {
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 	if isMuseUserInputMethod(method) {
 		if questions := museQuestionPrompts(params); len(questions) > 0 {
@@ -63,7 +65,7 @@ func (museProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 	if permission, ok := museApprovalPrompt(method, params); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
-	return agent.GenericPermissionPrompt()
+	return agent.UnrecognizedControlPrompt()
 }
 
 // museQuestionPrompts reads the questions of a user-input request, or nil
@@ -220,13 +222,12 @@ func museApprovalPrompt(method string, params map[string]json.RawMessage) (*leap
 //
 //   - A permission option answers with its choice id.
 //   - A refusal with feedback answers with the native choice that the user
-//     chose, or for LeapMux's own deny with the first once-scope denial that
-//     accepts feedback (museRefusalWithFeedback).
+//     chose, when it accepts feedback (museRefusalWithFeedback).
 //   - A question answers each question with its selected labels, its typed
 //     note beside a selection, or its typed text alone. A cancel states the
 //     reason.
-//   - The generic prompt takes the shared Allow and Deny, and its refusal
-//     with feedback answers as LeapMux's own deny does above.
+//
+// No other request has a prompt that takes an answer (ReadControlRequest).
 func (museProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	switch input.Prompt.GetKind().(type) {
 	case *leapmuxv1.ControlPrompt_Question:
@@ -238,42 +239,37 @@ func (museProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.
 	}
 }
 
-// musePermissionAnswer answers a permission prompt.
+// musePermissionAnswer answers the permission prompt of an approval with one
+// of Muse's own choices. Only such an approval reads as a permission
+// (ReadControlRequest), so the answer refuses a permission decision about
+// any other request.
 func musePermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	decision, option, err := agent.PermissionDecisionOf(input)
 	if err != nil {
 		return agent.ControlAnswer{}, err
 	}
 	method, params, _ := museMethodParams(input.Request.Payload)
+	if _, native := museApprovalPrompt(method, params); !native {
+		return agent.ControlAnswer{}, agent.InvalidControlDecision("Muse states no approval that this answers")
+	}
 	if feedback := decision.GetFeedback(); feedback != "" {
 		return museRefusalWithFeedback(params, option.GetOptionId(), feedback, input.RequestID)
 	}
-	if _, native := museApprovalPrompt(method, params); native {
-		return agent.ControlAnswer{Content: agent.JSONRPCResult(input.RequestID, map[string]any{"choiceId": option.GetOptionId()})}, nil
-	}
-	if agent.IsRefusalOption(option) {
-		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, "")}, nil
-	}
-	return agent.ControlAnswer{Content: agent.AllowResponse(input.RequestID, agent.ControlToolInput(input.Request.Payload))}, nil
+	return agent.ControlAnswer{Content: agent.JSONRPCResult(input.RequestID, map[string]any{"choiceId": option.GetOptionId()})}, nil
 }
 
-// museRefusalWithFeedback is the answer of a refusal with feedback:
+// museRefusalWithFeedback is the answer of a refusal with feedback: the
+// native choice that the user chose, when it accepts feedback. A refusal that
+// is remembered keeps its scope. The feedback goes as the user typed it.
 //
-//   - The native choice that the user chose, when it accepts feedback. A
-//     refusal that is remembered keeps its scope.
-//   - For LeapMux's own deny, the first choice that denies once, as `denied`
-//     or `abort`, and that accepts feedback, as the browser's composer did.
-//
-// The feedback goes as the user typed it. A refusal that Muse cannot take
-// fails: the choice list is invalid, the chosen choice takes no feedback,
-// or no choice takes it.
+// A refusal that Muse cannot take fails: the choice list is invalid, the
+// chosen choice takes no feedback, or Muse offers no such choice. A prompt
+// offers Muse's own choices alone (museApprovalPrompt), so LeapMux's own deny
+// is no choice here.
 func museRefusalWithFeedback(params map[string]json.RawMessage, optionID, feedback, requestID string) (agent.ControlAnswer, error) {
 	choices, ok := readApprovalChoices(params["availableChoices"])
 	if !ok {
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("the native Muse approval choices are invalid")
-	}
-	answer := func(choice nativeApprovalChoice) agent.ControlAnswer {
-		return agent.ControlAnswer{Content: agent.JSONRPCResult(requestID, map[string]any{"choiceId": choice.ID, "feedback": feedback})}
 	}
 	for _, choice := range choices {
 		if choice.ID != optionID {
@@ -282,15 +278,9 @@ func museRefusalWithFeedback(params map[string]json.RawMessage, optionID, feedba
 		if !choice.Feedback {
 			return agent.ControlAnswer{}, agent.InvalidControlDecision("the Muse choice %q takes no feedback", optionID)
 		}
-		return answer(choice), nil
+		return agent.ControlAnswer{Content: agent.JSONRPCResult(requestID, map[string]any{"choiceId": choice.ID, "feedback": feedback})}, nil
 	}
-	for _, choice := range choices {
-		denies := choice.Decision == contracts.MuseApprovalDecisionDenied || choice.Decision == contracts.MuseApprovalDecisionAbort
-		if choice.Scope == contracts.MuseChoiceScopeOnce && denies && choice.Feedback {
-			return answer(choice), nil
-		}
-	}
-	return agent.ControlAnswer{}, agent.InvalidControlDecision("Muse supplies no denial choice that accepts this feedback")
+	return agent.ControlAnswer{}, agent.InvalidControlDecision("Muse offers no choice %q", optionID)
 }
 
 // museQuestionAnswer answers a question with one Muse answer for each

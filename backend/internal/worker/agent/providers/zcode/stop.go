@@ -422,7 +422,8 @@ func (a *Agent) stopCanCancelLocked() bool {
 // A stop request requires its native integer ID and the current native session.
 // It takes the queued steers back first, as Interrupt does. The answer to the
 // hook-trust question goes to the question, because no ZCode request waits for it.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	if handled, err := a.workspaceTrust.Answer(a.sink, zcodeWorkspaceTrustHost{a}, data); handled {
 		return err
 	}

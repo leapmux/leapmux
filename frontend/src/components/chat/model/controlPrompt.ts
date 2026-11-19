@@ -1,11 +1,33 @@
 import type { ControlQuestion } from './question'
 import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
+import { assertNever } from '~/lib/assertNever'
 
 /**
- * Why the Worker could not read a control request's payload: the bytes are not JSON
- * (`malformed`), or they are JSON but not an object (`not-an-object`).
+ * Why the Worker could not read a control request's payload as a request of its provider:
+ *
+ * - `malformed`: the bytes are not JSON.
+ * - `not-an-object`: the bytes are JSON, but not an object.
+ * - `unrecognized`: the bytes are a JSON object, but the provider does not recognize it
+ *   as a request that its agent raises, so the provider can build no answer for it.
  */
-export type ControlPayloadFault = 'malformed' | 'not-an-object'
+export type ControlPayloadFault = 'malformed' | 'not-an-object' | 'unrecognized'
+
+/**
+ * Whether the payload of a request with this fault is a JSON object, so the browser can
+ * decode it. A request with no fault is one that the Worker read as an object.
+ */
+export function controlPayloadIsObject(fault: ControlPayloadFault | undefined): boolean {
+  switch (fault) {
+    case undefined:
+    case 'unrecognized':
+      return true
+    case 'malformed':
+    case 'not-an-object':
+      return false
+    default:
+      return assertNever(fault)
+  }
+}
 
 /**
  * How far a remembered answer reaches: this session, the workspace, the project, or

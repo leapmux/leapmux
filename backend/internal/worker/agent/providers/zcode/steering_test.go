@@ -543,7 +543,7 @@ func TestZCodeRawStopWithdrawsAQueuedSteerBeforeTheStop(t *testing.T) {
 		}
 		t.Errorf("the raw stop was never sent")
 	}()
-	require.NoError(t, a.SendRawInput([]byte(`{"id":4242,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"id":4242,"method":"session/stop","params":{"sessionId":"sess-1"}}`)}))
 	var methods []string
 	for _, req := range stdin.Requests(t) {
 		methods = append(methods, req.Method)

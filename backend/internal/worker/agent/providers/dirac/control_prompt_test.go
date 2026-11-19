@@ -45,8 +45,8 @@ func TestReadControlRequest_DiracReadsAPermissionThroughTheBase(t *testing.T) {
 	assert.Equal(t, "reject_once", permission.GetOptions()[1].GetOptionId())
 	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, permission.GetOptions()[1].GetKind())
 
-	assert.True(t, proto.Equal(agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"method":"dev.dirac/unknown","params":{}}`))),
-		"a request that nothing recognizes is the generic prompt")
+	assert.True(t, proto.Equal(agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"method":"dev.dirac/unknown","params":{}}`))),
+		"a request that nothing recognizes reads as unrecognized")
 }
 
 // The chosen option is selected as it is, and the Worker restores Dirac's own

@@ -175,7 +175,7 @@ func TestReadControlRequest_GeminiReadsOrdinaryToolsAndLookalikesThroughTheBase(
 	require.NoError(t, err)
 	assert.NotNil(t, read(encoded).GetPermission(), "only a permission request asks for a plan approval")
 
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), read([]byte(`{"method":"unknown"}`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), read([]byte(`{"method":"unknown"}`)))
 }
 
 // Approve sends the neutral allow with the plan settings, and the Worker

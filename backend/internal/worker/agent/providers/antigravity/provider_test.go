@@ -1,6 +1,7 @@
 package antigravity
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -47,22 +48,70 @@ func TestAntigravityPlanControlIsLeapMuxOwned(t *testing.T) {
 
 func TestAntigravityControlResponseMatchesTheCascade(t *testing.T) {
 	provider := antigravityProvider{}
-	request := []byte(`{"cascadeId":"cascade"}`)
+	request := []byte(`{"cascadeId":"cascade","trajectoryId":"trajectory","stepIndex":2}`)
 	response := []byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":2,"permission":{"allow":true}}}`)
 	resolution := agenttest.ResolveAnswer(provider, request, "antigravity:cascade:trajectory:2", agent.ControlAnswer{Content: response})
 	assert.False(t, resolution.Withhold)
 	assert.Equal(t, response, resolution.Content)
 	assert.Equal(t, "antigravity:cascade:trajectory:2", provider.ControlResponseRequestID(response))
-	assert.Empty(t, provider.ControlResponseRequestID([]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"","stepIndex":2}}`)))
+	// An answer that states no whole address addresses no request of a step.
+	for _, content := range []string{
+		`{"cascadeId":"cascade","interaction":{"trajectoryId":"","stepIndex":2}}`,
+		`{"cascadeId":"","interaction":{"trajectoryId":"trajectory","stepIndex":2}}`,
+		`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":-1}}`,
+	} {
+		assert.Empty(t, provider.ControlResponseRequestID([]byte(content)), content)
+	}
 }
 
-// A stored request whose cascade is not the cascade of its key disagrees with
-// that key, so LeapMux cannot read the request that the answer is for.
-func TestAntigravityRefusesARequestThatDisagreesWithItsKey(t *testing.T) {
+// The key of a stored interaction is the address of its step, so a payload of
+// another cascade, trajectory or step gives another key, and the Worker
+// refuses the row before the provider reads it
+// (agent.StoredControlRequestAgrees).
+func TestAntigravityControlRequestKeyIsTheAddressOfTheStep(t *testing.T) {
 	const requestID = "antigravity:cascade:trajectory:2"
-	response, err := antigravityPermissionAnswer(requestID, true, "")
-	require.NoError(t, err)
-	resolution := agenttest.ResolveAnswer(antigravityProvider{}, []byte(`{"cascadeId":"other"}`), requestID, agent.ControlAnswer{Content: response})
-	assert.True(t, resolution.Withhold)
-	assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest)
+	for payload, same := range map[string]bool{
+		`{"cascadeId":"cascade","trajectoryId":"trajectory","stepIndex":2}`: true,
+		`{"cascadeId":"other","trajectoryId":"trajectory","stepIndex":2}`:   false,
+		`{"cascadeId":"cascade","trajectoryId":"other","stepIndex":2}`:      false,
+		`{"cascadeId":"cascade","trajectoryId":"trajectory","stepIndex":3}`: false,
+	} {
+		key, ok := antigravityProvider{}.ControlRequestKey([]byte(payload), "cascade")
+		require.True(t, ok, payload)
+		assert.Equal(t, same, key == requestID, payload)
+	}
+	key, ok := antigravityProvider{}.ControlRequestKey(antigravityPlanReviewPayload(t, "# Plan"), "cascade")
+	assert.True(t, ok)
+	assert.Equal(t, antigravityPlanReviewKey, key, "the plan review states its own key")
+}
+
+// A stored request that states no whole address gives no key, so the Worker
+// refuses every answer to it. A plan review that states no key gives none
+// either.
+func TestAntigravityControlRequestKeyOfARequestThatStatesNoAddress(t *testing.T) {
+	for _, payload := range []string{
+		`{}`, `{"request":{"tool_name":"run_command"}}`, `{"cascadeId":""}`, `{"cascadeId":7}`,
+		`{"cascadeId":"cascade","trajectoryId":"trajectory"}`,
+		`{"cascadeId":"cascade","trajectoryId":"","stepIndex":2}`,
+		`{"cascadeId":"cascade","trajectoryId":"trajectory","stepIndex":-1}`,
+		`{"cascadeId":"cascade","trajectoryId":"trajectory","stepIndex":1.5}`,
+		`{"cascadeId":"cascade","trajectoryId":"trajectory","stepIndex":"2"}`,
+		`{"request":{"tool_name":"AntigravityPlanReview"}}`,
+	} {
+		key, ok := antigravityProvider{}.ControlRequestKey([]byte(payload), "cascade")
+		assert.False(t, ok, payload)
+		assert.Empty(t, key, payload)
+	}
+}
+
+// The language server reads only its own answer, so LeapMux refuses the
+// shared envelope with the shared reason for an answer that it cannot read.
+func TestAntigravityRefusesAnAnswerThatIsNotNative(t *testing.T) {
+	const requestID = "antigravity:cascade:trajectory:4"
+	payload := antigravityInteractionPayload(t, map[string]any{"permission": map[string]any{}})
+	for _, content := range [][]byte{agent.AllowResponse(requestID, json.RawMessage(`{}`)), agent.DenyResponse(requestID, "")} {
+		resolution := agenttest.ResolveAnswer(antigravityProvider{}, payload, requestID, agent.ControlAnswer{Content: content})
+		assert.True(t, resolution.Withhold, string(content))
+		assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableAnswer, string(content))
+	}
 }

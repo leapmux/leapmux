@@ -166,9 +166,9 @@ func TestReadControlRequest_CodewhaleReadsNoPermissionOutOfAQuestionOrAPayloadWi
 	for _, payload := range []any{map[string]any{}, approvalWithTextEvent} {
 		_, ok := codewhalePermissionPrompt(codewhaleJSON(t, payload))
 		assert.False(t, ok)
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), codewhalePrompt(t, payload))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), codewhalePrompt(t, payload))
 	}
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(codewhaleProvider{}, []byte("not json")))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(codewhaleProvider{}, []byte("not json")))
 }
 
 func TestReadControlRequest_CodewhaleRecognizesAQuestionByItsEventAndItsTool(t *testing.T) {
@@ -177,9 +177,12 @@ func TestReadControlRequest_CodewhaleRecognizesAQuestionByItsEventAndItsTool(t *
 	assert.Nil(t, codewhalePrompt(t, codewhaleApprovalPayload(contracts.CodewhaleToolBash, map[string]any{}, nil)).GetQuestion())
 	assert.Nil(t, codewhalePrompt(t, codewhaleApprovalPayload(contracts.CodewhaleToolRequestUserInput, map[string]any{}, nil)).GetQuestion(),
 		"an approval of the question tool is no question")
+	// The runtime asks a question only through the question tool, and the
+	// resolution refuses LeapMux's Allow to any other user input, so a user
+	// input of another tool reads as unrecognized.
 	otherTool := codewhaleQuestionPayload(codewhaleTestQuestions())
 	otherTool["request"] = map[string]any{"tool_name": contracts.CodewhaleToolBash}
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), codewhalePrompt(t, otherTool))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), codewhalePrompt(t, otherTool))
 }
 
 func TestReadControlRequest_CodewhaleReadsEachQuestionWithItsIdOptionsAndMultipleChoice(t *testing.T) {

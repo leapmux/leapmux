@@ -50,29 +50,43 @@ func TestMuseApprovalStageZeroKeepsItsExactNativeGuard(t *testing.T) {
 	assert.Zero(t, frame.Params.Requirement.Index)
 }
 
-// A row whose payload states another stage, session or question than its key
-// disagrees with that key, so LeapMux cannot read the request that the answer
-// is for.
-func TestMuseApprovalRejectsAKeyFromAnotherStageOrSession(t *testing.T) {
+// The key of a stored request is the identity of its approval stage or of its
+// user input in its session (controlID), so a payload of another stage,
+// session or question gives another key, and the Worker refuses the row before
+// Muse reads it (agent.StoredControlRequestAgrees).
+func TestMuseControlRequestKeyIsTheIdentityOfTheRequest(t *testing.T) {
 	t.Parallel()
-	for label, request := range map[string]json.RawMessage{"later stage": approvalRequest("session", 1), "replaced session": approvalRequest("replacement", 0)} {
-		t.Run(label, func(t *testing.T) {
-			id := testApprovalKey("session", "approval", 0)
-			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: approvalAnswer(id)})
-			require.True(t, result.Withhold)
-			require.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest)
-		})
+	key := testApprovalKey("session", "approval", 0)
+	for label, tc := range map[string]struct {
+		request json.RawMessage
+		same    bool
+	}{
+		"the stage itself":   {approvalRequest("session", 0), true},
+		"a later stage":      {approvalRequest("session", 1), false},
+		"a replaced session": {approvalRequest("replacement", 0), false},
+	} {
+		got, ok := museProvider{}.ControlRequestKey(tc.request, "")
+		require.True(t, ok, label)
+		assert.Equal(t, tc.same, got == key, label)
 	}
-	t.Run("another question", func(t *testing.T) {
-		_, request := questionRequest(t, []any{})
-		id, err := controlID(controlParams{SessionID: "session", UserInputID: "other"})
-		require.NoError(t, err)
-		answer, err := json.Marshal(map[string]any{"id": id, "result": map[string]any{"cancelled": true}})
-		require.NoError(t, err)
-		result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
-		require.True(t, result.Withhold)
-		require.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest)
-	})
+	id, request := questionRequest(t, []any{})
+	got, ok := museProvider{}.ControlRequestKey(request, "")
+	require.True(t, ok)
+	assert.Equal(t, id, got)
+	other, err := controlID(controlParams{SessionID: "session", UserInputID: "other"})
+	require.NoError(t, err)
+	assert.NotEqual(t, other, got, "another question gives another key")
+
+	for _, payload := range []string{
+		`{"method":"approval/requested","params":{"sessionId":"session","approvalId":"approval"}}`,
+		`{"method":"userInput/requested","params":{"userInputId":"question"}}`,
+		`{"method":"approval/requested","params":[]}`,
+		`{}`,
+	} {
+		key, ok := museProvider{}.ControlRequestKey([]byte(payload), "")
+		assert.False(t, ok, payload)
+		assert.Empty(t, key, payload)
+	}
 }
 
 func questionRequest(t *testing.T, questions any) (string, []byte) {
@@ -442,7 +456,10 @@ func TestMuseApprovalRejectsUnreadableAndMixedReplyEnvelopes(t *testing.T) {
 	}
 }
 
-func TestMuseApprovalRejectsAnInvalidNativeRequirementIdentity(t *testing.T) {
+// An approval whose requirement identity is invalid gives no key, so the
+// Worker refuses every answer to it before Muse reads it
+// (agent.StoredControlRequestAgrees).
+func TestMuseApprovalOfAnInvalidNativeRequirementIdentityGivesNoKey(t *testing.T) {
 	t.Parallel()
 	for _, requirement := range []any{
 		nil, map[string]any{}, map[string]any{"approvalId": "approval"},
@@ -454,14 +471,14 @@ func TestMuseApprovalRejectsAnInvalidNativeRequirementIdentity(t *testing.T) {
 	} {
 		t.Run(string(mustMuseChoiceJSON(t, requirement)), func(t *testing.T) {
 			t.Parallel()
-			id := testApprovalKey("session", "approval", 0)
 			request := mustMuseChoiceJSON(t, map[string]any{"method": contracts.MuseMethodApprovalRequested, "params": map[string]any{
 				"sessionId": "session", "approvalId": "approval", "currentRequirementId": requirement,
 				"availableChoices": []any{museApprovalChoice("allow", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce)},
 			}})
-			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, "allow", "")})
-			require.True(t, result.Withhold)
-			assert.Error(t, result.Refusal())
+			key, ok := museProvider{}.ControlRequestKey(request, "session")
+			assert.False(t, ok)
+			assert.Empty(t, key)
+			assert.False(t, agent.StoredControlRequestAgrees(museProvider{}, testApprovalKey("session", "approval", 0), request, "session"))
 		})
 	}
 }

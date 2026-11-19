@@ -70,8 +70,18 @@ func (svc *Service) deliverControlAnswer(currentAgent db.Agent, requestID string
 // reportControlResponseState reads the state of one request instance after
 // an operation on it, joins the operation's failure with a failure to read
 // the state, and publishes the state to every watcher.
+//
+// An answer to an instance that the provider or the Worker replaced
+// (agent.ErrControlInstanceReplaced) is a silent refusal once that instance
+// reads canceled, as processControlAnswer's refusal of a retired instance is.
+// The reader's card of the instance is gone then, and the new instance has a
+// card of its own, so no failure is left to show. While the instance still
+// waits, the refusal keeps its text, because its card stays.
 func (svc *Service) reportControlResponseState(currentAgent db.Agent, requestID, claimToken string, operationErr error) (leapmuxv1.ControlResponseState, string) {
 	state, stateErr := controlResponseState(svc.Queries, currentAgent.ID, requestID, claimToken)
+	if stateErr == nil && state == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED && errors.Is(operationErr, agent.ErrControlInstanceReplaced) {
+		operationErr = nil
+	}
 	var errText string
 	if err := errors.Join(operationErr, stateErr); err != nil {
 		errText = err.Error()

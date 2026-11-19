@@ -9,8 +9,9 @@
 // `generate()` uses the real contracts directory in its integration test.
 // validate-json.test.mjs tests its rule table against the real tree too.
 
+import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
 import {
@@ -111,6 +112,22 @@ function contractScratchDirectory(prefix) {
 
 /** Build one buf descriptor for the suite. The descriptor and ROOT stay unchanged. */
 const DESCRIPTOR = bufDescriptor(ROOT)
+
+/**
+ * The gofmt of the Go toolchain that builds the backend. `go env GOROOT` finds it
+ * when PATH holds a `go` shim alone, and it follows the toolchain that
+ * backend/go.mod selects.
+ */
+function gofmtCommand() {
+  const goroot = execFileSync('go', ['env', 'GOROOT'], {
+    cwd: join(ROOT, 'backend'),
+    encoding: 'utf8',
+  }).trim()
+  const program = process.platform === 'win32'
+    ? 'gofmt.exe'
+    : 'gofmt'
+  return join(goroot, 'bin', program)
+}
 
 const readContract = name => JSON.parse(readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8'))
 
@@ -1733,7 +1750,7 @@ describe('checkCodexPermissionPresets', () => {
     expect(go).toContain('func CodexPermissionPresets() map[string]map[string]string {')
     expect(go).not.toContain('func CodexSmartOptions()')
     expect(go).toContain('func CodexBypassOptions() map[string]string {')
-    expect(go).toContain('"permissionMode": CodexPermissionModeApproveForMe,')
+    expect(go).toContain('"permissionMode":     CodexPermissionModeApproveForMe,')
     expect(go).toContain('"permission_profile": CodexPermissionProfileDangerFullAccess,')
   })
 
@@ -1742,11 +1759,12 @@ describe('checkCodexPermissionPresets', () => {
     contract.presets.smart[1] = 'PermissionProfileDangerFullAccess'
     contract.presets.bypass[1] = 'PermissionProfileWorkspace'
     const go = emitGoCodexPermissionPresets(contract)
-    expect(go).toContain('CodexPermissionModeApproveForMe = "auto-review"')
-    expect(go).toContain('CodexPermissionModeNever = "never"')
-    expect(go).toContain('CodexPermissionProfileWorkspace = ":workspace"')
+    // gofmt pads each name and each key to the widest one of its block.
+    expect(go).toContain('CodexPermissionModeApproveForMe        = "auto-review"')
+    expect(go).toContain('CodexPermissionModeNever               = "never"')
+    expect(go).toContain('CodexPermissionProfileWorkspace        = ":workspace"')
     expect(go).toContain('CodexPermissionProfileDangerFullAccess = ":danger-full-access"')
-    expect(go).toContain('"smart": {\n\t\t\t"permissionMode": CodexPermissionModeApproveForMe,\n\t\t\t"permission_profile": CodexPermissionProfileDangerFullAccess,')
+    expect(go).toContain('"smart": {\n\t\t\t"permissionMode":     CodexPermissionModeApproveForMe,\n\t\t\t"permission_profile": CodexPermissionProfileDangerFullAccess,')
     const ts = emitTsCodexPermissionPresets(contract)
     expect(ts).toContain('  smart: {\n    sets: {\n      "permissionMode": "auto-review",\n      "permission_profile": ":danger-full-access",')
   })
@@ -2299,6 +2317,40 @@ describe('generate', () => {
     expect(() => generate(join(ROOT, 'contracts'), DESCRIPTOR)).not.toThrow()
   })
 
+  // golangci-lint skips a generated file, and the generator does not format its
+  // output. An emitter that indents with spaces, or that pads one column by hand,
+  // therefore ships a file that `gofmt -l` reports, and no other check fails. The
+  // check reads the real contracts, because their keys and values set the widths
+  // that gofmt aligns.
+  it('emits Go that gofmt leaves unchanged', () => {
+    const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
+    const goPaths = Object.keys(files).filter(path => path.endsWith('.go'))
+    expect(goPaths.length).toBeGreaterThan(0)
+    const directory = contractScratchDirectory('contracts-gofmt-')
+    try {
+      for (const path of goPaths) {
+        const target = join(directory, path)
+        mkdirSync(dirname(target), { recursive: true })
+        writeFileSync(target, files[path])
+      }
+      const gofmt = gofmtCommand()
+      const listed = spawnSync(gofmt, ['-l', directory], { encoding: 'utf8' })
+      expect(listed.error).toBeUndefined()
+      // gofmt exits with 2 when it cannot parse a file, and it identifies the file on stderr.
+      expect(listed.status, listed.stderr).toBe(0)
+      const unformatted = listed.stdout.split('\n')
+        .filter(line => line !== '')
+        .map(line => relative(directory, line).replaceAll('\\', '/'))
+      const diff = unformatted.length === 0
+        ? ''
+        : spawnSync(gofmt, ['-d', directory], { encoding: 'utf8' }).stdout
+      expect(unformatted, diff).toEqual([])
+    }
+    finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('rejects a repeated provider protocol registration before reading its tables', () => {
     const first = PROVIDER_PROTOCOLS[0]
     const second = PROVIDER_PROTOCOLS[1]
@@ -2379,6 +2431,27 @@ describe('checkProviderStructs', () => {
         ],
       },
     })), 'is not a key of the supplement table')
+  })
+
+  // The emitter aligns the fields of a struct by the widest one, so a struct
+  // must state at least one field.
+  it('rejects a struct that lists no field', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: {
+        table: 'supplement',
+        fields: [],
+      },
+    })), 'structs.Probe lists no field')
+  })
+
+  // A struct without a field list reaches the same check, so the generator
+  // reports the contract instead of failing on the absent list.
+  it('rejects a struct that states no field list', () => {
+    expectContractError(() => checkProviderStructs(spec, withStructs({
+      Probe: {
+        table: 'supplement',
+      },
+    })), 'structs.Probe lists no field')
   })
 
   it('rejects a table the domain does not declare', () => {

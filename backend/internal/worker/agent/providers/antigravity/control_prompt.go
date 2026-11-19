@@ -25,7 +25,7 @@ const antigravityPermissionScopeOnce = "PERMISSION_SCOPE_ONCE"
 
 // antigravityRequestIDPrefix starts the id of a request that the language
 // server raised: `antigravity:<cascade>:<trajectory>:<step>`
-// (handleInteraction).
+// (antigravityAddress.requestID).
 const antigravityRequestIDPrefix = "antigravity"
 
 // The titles of a permission that states no description of its own, by its
@@ -64,7 +64,9 @@ func antigravityPermissionOptions() []*leapmuxv1.PermissionOption {
 //     whole.
 //
 // Each permission offers the language server's allow and reject. Any other
-// payload reads as the generic prompt.
+// payload reads as unrecognized: the Worker publishes no interaction without
+// the interaction that its step requests, so LeapMux cannot know what such a
+// step asks, and an answer would guess.
 func (antigravityProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	raw, interaction, interacts := antigravityInteraction(input.Payload)
 	if ask, ok := providerkit.RawObject(interaction["askQuestion"]); ok {
@@ -77,7 +79,7 @@ func (antigravityProvider) ReadControlRequest(input agent.ControlRequestInput) *
 		}}}
 	}
 	if !interacts {
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 	if permission, ok := providerkit.RawObject(interaction["permission"]); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: antigravityPermissionPrompt(permission)}}
@@ -174,18 +176,37 @@ type antigravityAddress struct {
 }
 
 // antigravityAddressOf reads the address out of the id of a request that the
-// language server raised. An id of another shape fails, because no answer
-// could reach the step.
+// language server raised. It reads only an id that a valid address writes
+// (antigravityAddress.requestID). Any other id fails, because an answer
+// echoes the address, and ControlResponseRequestID reads from the answer an
+// id that would not find the request.
 func antigravityAddressOf(requestID string) (antigravityAddress, error) {
 	parts := strings.Split(requestID, ":")
-	if len(parts) != 4 || parts[0] != antigravityRequestIDPrefix {
-		return antigravityAddress{}, fmt.Errorf("the Antigravity request ID %q is malformed", requestID)
+	if len(parts) == 4 && parts[0] == antigravityRequestIDPrefix {
+		if step, err := strconv.Atoi(parts[3]); err == nil {
+			address := antigravityAddress{cascadeID: parts[1], trajectoryID: parts[2], stepIndex: step}
+			if address.valid() && address.requestID() == requestID {
+				return address, nil
+			}
+		}
 	}
-	step, err := strconv.Atoi(parts[3])
-	if err != nil || step < 0 {
-		return antigravityAddress{}, fmt.Errorf("the Antigravity request ID %q is malformed", requestID)
-	}
-	return antigravityAddress{cascadeID: parts[1], trajectoryID: parts[2], stepIndex: step}, nil
+	return antigravityAddress{}, fmt.Errorf("the Antigravity request ID %q is malformed", requestID)
+}
+
+// valid reports whether the address states each field that an answer needs:
+// a cascade, a trajectory, and a step index that is not negative. A colon in
+// the cascade or the trajectory is invalid too, because the request ID joins
+// the fields with colons, and antigravityAddressOf could not read such an ID
+// back: every answer to the request would fail.
+func (a antigravityAddress) valid() bool {
+	return a.cascadeID != "" && a.trajectoryID != "" && a.stepIndex >= 0 &&
+		!strings.Contains(a.cascadeID, ":") && !strings.Contains(a.trajectoryID, ":")
+}
+
+// requestID is the id of the request that the language server raised at the
+// address: `antigravity:<cascade>:<trajectory>:<step>`.
+func (a antigravityAddress) requestID() string {
+	return fmt.Sprintf("%s:%s:%s:%d", antigravityRequestIDPrefix, a.cascadeID, a.trajectoryID, a.stepIndex)
 }
 
 // answer is the language server's answer to the step: the interaction field
@@ -225,14 +246,13 @@ func antigravityPermissionAnswer(requestID string, allow bool, instruction strin
 //
 //   - A permission answers the language server natively: allow or refuse
 //     this step, and a refusal's feedback as the instruction that the agent
-//     reads.
+//     reads. The language server reads no other answer, and
+//     ResolveControlResponse refuses the shared envelope.
 //   - A question answers natively with each question's selected option ids
 //     and typed text. A cancel dismisses the questions; the language server
 //     reads no reason for it.
 //   - The plan review takes the shared plan answer, which the Worker reads
 //     itself.
-//   - The generic prompt takes the shared Allow and Deny, and a refusal with
-//     feedback answers natively.
 func (antigravityProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	switch input.Prompt.GetKind().(type) {
 	case *leapmuxv1.ControlPrompt_Question:
@@ -246,22 +266,14 @@ func (antigravityProvider) AnswerControlRequest(input agent.ControlAnswerInput) 
 	}
 }
 
-// antigravityPermissionDecisionAnswer answers a permission prompt.
+// antigravityPermissionDecisionAnswer answers a permission prompt with the
+// language server's own permission answer.
 func antigravityPermissionDecisionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	decision, option, err := agent.PermissionDecisionOf(input)
 	if err != nil {
 		return agent.ControlAnswer{}, err
 	}
-	refuses := agent.IsRefusalOption(option)
-	if _, _, interacts := antigravityInteraction(input.Request.Payload); !interacts {
-		switch {
-		case !refuses:
-			return agent.ControlAnswer{Content: agent.AllowResponse(input.RequestID, agent.ControlToolInput(input.Request.Payload))}, nil
-		case decision.GetFeedback() == "":
-			return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, "")}, nil
-		}
-	}
-	content, err := antigravityPermissionAnswer(input.RequestID, !refuses, decision.GetFeedback())
+	content, err := antigravityPermissionAnswer(input.RequestID, !agent.IsRefusalOption(option), decision.GetFeedback())
 	if err != nil {
 		return agent.ControlAnswer{}, err
 	}

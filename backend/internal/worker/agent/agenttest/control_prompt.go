@@ -38,10 +38,41 @@ func AnswerControl(provider agent.Provider, payload []byte, requestID string, de
 // ControlResponseContextOf states.
 //
 // It panics when the answer addresses another request than requestID
-// (Provider.ControlResponseRequestID). The Worker refuses such an answer
-// before it resolves it, so a test that pairs them states a context that no
-// Worker path builds.
+// (Provider.ControlResponseRequestID), and when payload is a JSON object
+// that gives another key than requestID, or none
+// (agent.StoredControlRequestAgrees). The Worker refuses such an answer, and
+// such a stored request, before it resolves the answer, so a test that pairs
+// them states a context that no Worker path builds. A payload that is no JSON
+// object, and an absent payload, stay for the suites that pin what a provider
+// does with them (AssertWithholdsTheResponseForAMalformedRequest and
+// AssertPreservesTheResponseWithoutARequest).
 func ResolveAnswer(provider agent.Provider, payload []byte, requestID string, answer agent.ControlAnswer) agent.ControlResponseResolution {
+	return ResolveAnswerInSession(provider, payload, "", requestID, answer)
+}
+
+// ResolveAnswerInSession is ResolveAnswer for a request that the Worker
+// stores with the provider session agentSessionID, for a provider whose key
+// reads that session (Provider.ControlRequestKey).
+func ResolveAnswerInSession(provider agent.Provider, payload []byte, agentSessionID, requestID string, answer agent.ControlAnswer) agent.ControlResponseResolution {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(payload, &object) == nil && object != nil &&
+		!agent.StoredControlRequestAgrees(provider, requestID, payload, agentSessionID) {
+		key, _ := provider.ControlRequestKey(payload, agentSessionID)
+		panic(fmt.Sprintf("agenttest: the stored payload gives the key %q, not its key %q: %s", key, requestID, payload))
+	}
+	return ResolveAnswerPastTheKeyCheck(provider, payload, requestID, answer)
+}
+
+// ResolveAnswerPastTheKeyCheck is ResolveAnswer for a stored payload that
+// gives another key than requestID, or none. No Worker path resolves that
+// context: the Worker refuses the stored request before a provider reads it
+// (agent.StoredControlRequestAgrees). A test resolves it to pin a provider's
+// own guard against such a payload, so a later caller that skips the
+// Worker's check still sends nothing that the provider cannot address.
+//
+// It panics when the answer addresses another request than requestID, as
+// ResolveAnswer does.
+func ResolveAnswerPastTheKeyCheck(provider agent.Provider, payload []byte, requestID string, answer agent.ControlAnswer) agent.ControlResponseResolution {
 	if addressed := provider.ControlResponseRequestID(answer.Content); addressed != requestID {
 		panic(fmt.Sprintf("agenttest: the answer addresses the request %q, not the stored request %q", addressed, requestID))
 	}
@@ -55,9 +86,10 @@ func ResolveAnswer(provider agent.Provider, payload []byte, requestID string, an
 //
 //   - requestID, the key of the stored request. The Worker reads it from the
 //     answer (Provider.ControlResponseRequestID).
-//   - payload, the stored request. It is nil when an agent restart deletes the
-//     request row while the Worker delivers the answer: the Worker resolves
-//     the answer, and only then refuses it.
+//   - payload, the stored request. A test states a nil payload only to pin a
+//     provider's own handling of a request whose row is gone
+//     (AssertPreservesTheResponseWithoutARequest): the Worker refuses an
+//     answer to such a request before a provider resolves it.
 //   - The content of the answer.
 //   - The tool name of the stored request (agent.ControlToolName), because a
 //     provider's resolution reads it.

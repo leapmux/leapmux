@@ -257,16 +257,16 @@ func failCodexChildAuthentication(a *Agent) {
 
 func TestCodexAuthenticationRecoveryPreservesOutstandingNativeControlReplies(t *testing.T) {
 	t.Parallel()
-	a, _, stdin := newCodexControlAgent(t)
+	a, sink, stdin := newCodexControlAgent(t)
 	handleCodexOutput(a, providerkit.ParseLine([]byte(codexCommandApprovalLine)))
 	require.True(t, a.OutstandingControlForTest("jsonrpc:7"))
 	a.markAuthenticationRecoveryRequired()
-	answer := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	answer := sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`))
+	require.NoError(t, a.SendRawInput(answer))
 	assert.JSONEq(t, `{"decision":"accept"}`, string(stdinResponse(t, stdin, "7")))
 	assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
 	assert.True(t, recoveryRequired(a), "a control answer does not clear process recovery state")
-	require.ErrorIs(t, a.SendRawInput(answer, agent.StopContext{}), providerkit.ErrControlRequestNotPending)
+	require.ErrorIs(t, a.SendRawInput(answer), agent.ErrControlRequestNotPending)
 }
 
 func TestCodexAuthenticationRetryAdmission(t *testing.T) {

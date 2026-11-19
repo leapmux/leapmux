@@ -37,7 +37,8 @@ func openCodeDefaultPermissionOptions() []*leapmuxv1.PermissionOption {
 //  3. A permission request of the Agent Client Protocol is a permission. A
 //     request that offers no option list gets the daemon's own allow once and
 //     reject, and a list with no reject option gains acp.CancelOptionID.
-//  4. Any other request is the generic permission.
+//  4. Any other request reads as unrecognized, as the base reader reads it
+//     (acp.ReadBaseControlRequest).
 func (FamilyProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	if providerkit.IsOpenCodeQuestionEvent(input.Payload) {
 		return providerkit.OpenCodeQuestionPrompt(input.Payload)
@@ -47,7 +48,7 @@ func (FamilyProvider) ReadControlRequest(input agent.ControlRequestInput) *leapm
 	}
 	permission := acp.ReadPermissionPrompt(input)
 	if permission == nil {
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 	if len(acp.PermissionOptions(input.Payload)) == 0 {
 		permission.Options = openCodeDefaultPermissionOptions()
@@ -65,8 +66,6 @@ func (FamilyProvider) ReadControlRequest(input agent.ControlRequestInput) *leapm
 //   - An option of a permission is selected as it is, and the reason of a
 //     refusal follows the answer as a message, because an option carries no
 //     text.
-//   - LeapMux's allow and deny of the generic prompt take the neutral
-//     envelope.
 //   - An elicitation takes the neutral elicitation envelope.
 func (FamilyProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	if _, ok := input.Prompt.GetKind().(*leapmuxv1.ControlPrompt_Question); ok {

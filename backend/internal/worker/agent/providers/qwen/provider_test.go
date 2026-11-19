@@ -165,13 +165,16 @@ func TestQwenPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 
 // A stored plan approval that states no id has no request that a reply could
 // answer, so the provider withholds the answer rather than send it with no id.
+// The stored request states no id, so it gives no key, and the Worker refuses
+// it before Qwen reads it (agent.StoredControlRequestAgrees). Qwen's own guard
+// still withholds the answer, because a reply needs the request's id.
 func TestQwenPlanApprovalWithNoStoredIDWithholdsTheAnswer(t *testing.T) {
 	t.Parallel()
 	payload := strings.Replace(planApprovalPayload, `"id":5,`, "", 1)
 	require.NotEqual(t, planApprovalPayload, payload)
 	require.True(t, isPlanApproval(json.RawMessage(payload)), "the request is still the plan approval")
 	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
-		result := resolveWith(t, payload, decision(t, qwenStoredRequestID, behavior, ""), nil)
+		result := agenttest.ResolveAnswerPastTheKeyCheck(qwenProvider{}, []byte(payload), qwenStoredRequestID, agent.ControlAnswer{Content: decision(t, qwenStoredRequestID, behavior, "")})
 		assert.True(t, result.Withhold, behavior)
 		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, behavior)
 	}
@@ -268,6 +271,7 @@ func TestQwenControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, "session/request_permission")
+	agenttest.AssertPublishedControlKeys(t, qwenProvider{}, sink)
 }
 
 func TestQwenRegistrationStatesTheSafeDefaults(t *testing.T) {

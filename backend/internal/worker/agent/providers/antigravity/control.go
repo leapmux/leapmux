@@ -20,13 +20,27 @@ import (
 
 const antigravityMaxPlanBytes = 1 << 20
 
+// antigravityControl is one request that the Worker publishes for a cascade:
+// one interaction that a waiting step requests, or the plan review that the
+// Worker raises itself (kind "plan").
 type antigravityControl struct {
-	requestID        string
-	instanceID       string
-	cascadeID        string
-	trajectoryID     string
-	stepIndex        int
-	kind             string
+	requestID    string
+	instanceID   string
+	cascadeID    string
+	trajectoryID string
+	stepIndex    int
+	kind         string
+	// payload is the request that the Worker stores and shows.
+	payload []byte
+	// interaction and completedInteractions identify the interaction of the
+	// step that the control answers: the requested interaction, and the
+	// number of interactions that the step completed before it. A step that
+	// requests another interaction needs another control (registerInteraction).
+	interaction           json.RawMessage
+	completedInteractions int
+	// permission is the requested permission that the automatic approval
+	// policy reads. It is nil for a question, and for a permission whose
+	// resource LeapMux cannot read, which only the user answers.
 	permission       *permissionInteraction
 	approvalClaimed  bool
 	published        bool
@@ -34,97 +48,114 @@ type antigravityControl struct {
 	publication      *agent.OutputTicket
 }
 
-func (a *Agent) registerInteraction(state *cascadeState, index int, step antigravityStep) {
+// newInteractionControl builds the control that answers the interaction that
+// a waiting step requests. It fails for an interaction that LeapMux cannot
+// answer, and for a step whose trajectory the cascade's stream has not
+// stated yet, because an answer must state that trajectory.
+func newInteractionControl(cascadeID, trajectoryID string, index int, step antigravityStep) (*antigravityControl, error) {
 	kind, err := interactionKind(step.RequestedInteraction)
 	if err != nil {
-		state.sink.PersistLeapMuxNotification(map[string]any{
-			contracts.NotificationFieldType: contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldText: "Antigravity CLI raised an interaction LeapMux cannot answer: " + err.Error(),
-		})
-		if cancelErr := a.rpc.cancel(a.Context(), state.id); cancelErr != nil {
-			slog.Warn("antigravity cancel an unknown interaction", "agent_id", a.AgentID(), "error", cancelErr)
+		return nil, err
+	}
+	address := antigravityAddress{cascadeID: cascadeID, trajectoryID: trajectoryID, stepIndex: index}
+	switch {
+	case trajectoryID == "":
+		return nil, errors.New("the language server did not state the trajectory (the step history) of the step, and an answer must state it")
+	case !address.valid():
+		return nil, fmt.Errorf("an answer cannot state the address %q of the step", address.requestID())
+	}
+	payload, err := json.Marshal(map[string]any{
+		"name": contracts.AntigravityFrameInteraction,
+		"request": map[string]any{
+			"tool_name":   step.Metadata.ToolCall.Name,
+			"tool_use_id": step.Metadata.ToolCall.ID,
+			"input":       step.RequestedInteraction,
+		},
+		"cascadeId":            cascadeID,
+		"trajectoryId":         trajectoryID,
+		"stepIndex":            index,
+		"requestedInteraction": step.RequestedInteraction,
+		"toolCall":             step.Metadata.ToolCall,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode the request: %w", err)
+	}
+	control := &antigravityControl{
+		requestID: address.requestID(), instanceID: id.Generate(), cascadeID: cascadeID, trajectoryID: trajectoryID,
+		stepIndex: index, kind: kind, payload: payload,
+		interaction: step.RequestedInteraction, completedInteractions: len(step.CompletedInteractions),
+	}
+	if kind == "permission" {
+		// The prompt reads a permission leniently (ReadControlRequest), so a
+		// permission that the policy cannot read is still published, for the
+		// user to answer.
+		var interaction struct {
+			Permission *permissionInteraction `json:"permission"`
 		}
-		return
+		if json.Unmarshal(step.RequestedInteraction, &interaction) == nil {
+			control.permission = interaction.Permission
+		}
 	}
-	var interaction requestedInteraction
-	if err := json.Unmarshal(step.RequestedInteraction, &interaction); err != nil {
-		slog.Warn("antigravity decode interaction", "agent_id", a.AgentID(), "error", err)
-		return
-	}
+	return control, nil
+}
+
+// answersSameInteraction reports whether the control answers the same
+// interaction of the same step as other. A nil control answers none.
+func (c *antigravityControl) answersSameInteraction(other *antigravityControl) bool {
+	return c != nil && c.trajectoryID == other.trajectoryID && c.stepIndex == other.stepIndex &&
+		c.completedInteractions == other.completedInteractions && agent.JSONCanonicalEqual(c.interaction, other.interaction)
+}
+
+// registerInteraction registers the interaction that a waiting step requests.
+// A repeated frame of a registered interaction retries what its control has
+// not done yet. Any other interaction replaces the step's control, because the
+// language server no longer waits for an answer to the earlier one.
+func (a *Agent) registerInteraction(state *cascadeState, index int, step antigravityStep) {
 	a.Mu.Lock()
-	if existing := state.controls[index]; existing != nil {
+	control, err := newInteractionControl(state.id, state.trajectoryID, index, step)
+	if err != nil {
+		a.Mu.Unlock()
+		a.refuseInteraction(state, index, err)
+		return
+	}
+	existing := state.controls[index]
+	if existing.answersSameInteraction(control) {
 		automatic := existing.kind == "permission" && a.autoAnswerLocked(a.mode, existing.permission)
 		retryPublication := existing.publication != nil || !automatic && !existing.approvalClaimed
 		retryApproval := automatic && !existing.approvalClaimed
 		a.Mu.Unlock()
 		if retryPublication {
-			a.publishInteraction(state, existing)
+			a.publishControl(state, existing)
 		}
 		if retryApproval {
 			a.queuePermissionApprovals()
 		}
 		return
 	}
-	control := &antigravityControl{
-		requestID:  fmt.Sprintf("antigravity:%s:%s:%d", state.id, state.trajectoryID, index),
-		instanceID: id.Generate(), cascadeID: state.id, trajectoryID: state.trajectoryID,
-		stepIndex: index, kind: kind,
-	}
-	if kind == "permission" {
-		control.permission = interaction.Permission
-	}
 	state.controls[index] = control
-	automatic := kind == "permission" && a.autoAnswerLocked(a.mode, control.permission)
+	automatic := control.kind == "permission" && a.autoAnswerLocked(a.mode, control.permission)
 	a.Mu.Unlock()
+	a.retireControl(state, existing)
 	if automatic {
 		a.queuePermissionApprovals()
 		return
 	}
-	a.publishInteraction(state, control)
+	a.publishControl(state, control)
 }
 
-func (a *Agent) publishInteraction(state *cascadeState, control *antigravityControl) {
-	a.Mu.Lock()
-	if control.published || !a.controlCurrentLocked(state, control) {
-		a.Mu.Unlock()
-		return
-	}
-	if pending := control.publication; pending != nil {
-		a.Mu.Unlock()
-		a.flushControlPublications(pending.Queue())
-		return
-	}
-	step := state.steps[control.stepIndex]
-	var raw json.RawMessage
-	if step != nil {
-		raw = step.raw
-	}
-	a.Mu.Unlock()
-	var decoded antigravityStep
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		slog.Error("antigravity decode the control step", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	payload, err := json.Marshal(map[string]any{
-		"name": contracts.AntigravityFrameInteraction,
-		"request": map[string]any{
-			"tool_name":   decoded.Metadata.ToolCall.Name,
-			"tool_use_id": decoded.Metadata.ToolCall.ID,
-			"input":       decoded.RequestedInteraction,
-		},
-		"cascadeId":            control.cascadeID,
-		"trajectoryId":         control.trajectoryID,
-		"stepIndex":            control.stepIndex,
-		"requestedInteraction": decoded.RequestedInteraction,
-		"toolCall":             decoded.Metadata.ToolCall,
+// refuseInteraction handles a waiting step that LeapMux cannot answer. It
+// withdraws the control of the step's earlier interaction, reports the fault
+// to the user, and cancels the cascade. Otherwise the language server would
+// wait for an answer that never comes, and the user would not see why.
+func (a *Agent) refuseInteraction(state *cascadeState, index int, cause error) {
+	a.withdrawInteraction(state, index)
+	state.sink.PersistLeapMuxNotification(map[string]any{
+		contracts.NotificationFieldType: contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldText: "Antigravity CLI raised an interaction LeapMux cannot answer: " + cause.Error(),
 	})
-	if err != nil {
-		slog.Error("antigravity encode control", "agent_id", a.AgentID(), "error", err)
-		return
+	if err := a.rpc.cancel(a.Context(), state.id); err != nil {
+		slog.Warn("antigravity cancel a cascade that waits for an interaction LeapMux cannot answer", "agent_id", a.AgentID(), "cascade_id", state.id, "error", err)
 	}
-	a.queueControlPublication(state, control, agent.ControlRequest{
-		RequestID: control.requestID, InstanceID: control.instanceID, Payload: payload, AgentSessionID: control.cascadeID,
-	})
 }
 
 func (a *Agent) controlCurrentLocked(state *cascadeState, control *antigravityControl) bool {
@@ -137,7 +168,28 @@ func (a *Agent) controlCurrentLocked(state *cascadeState, control *antigravityCo
 	return state.controls[control.stepIndex] == control && state.trajectoryID == control.trajectoryID
 }
 
-func (a *Agent) queueControlPublication(state *cascadeState, control *antigravityControl, request agent.ControlRequest) {
+// stepControlLocked returns the current control of the step at stepIndex of
+// the trajectory trajectoryID, or nil when LeapMux holds none for the step.
+// The caller holds a.Mu.
+//
+// The language server addresses an answer to a step, not to one interaction
+// of it, and a step can replace the interaction that it waits for
+// (registerInteraction). So every answer, manual or automatic, states the
+// control instance that it answers, and reaches the language server only
+// while that instance is the step's current control. The check cannot cover
+// an answer that is already on its way to the language server when the step
+// replaces its interaction, because the language server reads no instance.
+func (a *Agent) stepControlLocked(state *cascadeState, trajectoryID string, stepIndex int) *antigravityControl {
+	control := state.controls[stepIndex]
+	if control == nil || !a.controlCurrentLocked(state, control) || control.trajectoryID != trajectoryID {
+		return nil
+	}
+	return control
+}
+
+// publishControl publishes the control's request once, while the control is
+// current. A failed publication stays in the output queue, which retries it.
+func (a *Agent) publishControl(state *cascadeState, control *antigravityControl) {
 	queue := state.sink.OutputQueue()
 	a.Mu.Lock()
 	if control.published || !a.controlCurrentLocked(state, control) {
@@ -148,6 +200,9 @@ func (a *Agent) queueControlPublication(state *cascadeState, control *antigravit
 		a.Mu.Unlock()
 		a.flushControlPublications(queue)
 		return
+	}
+	request := agent.ControlRequest{
+		RequestID: control.requestID, InstanceID: control.instanceID, Payload: control.payload, AgentSessionID: control.cascadeID,
 	}
 	owner := agent.NewOutputOwner()
 	control.publicationOwner = owner
@@ -361,14 +416,25 @@ func (a *Agent) approvePendingPermissions() {
 		}
 		a.Mu.Unlock()
 		for _, request := range manual {
-			a.publishInteraction(request.state, request.control)
+			a.publishControl(request.state, request.control)
 		}
 		if next == nil {
 			break
 		}
+		// The publications above can take long, and the step can replace the
+		// approved interaction meanwhile. The approval answers the instance
+		// that the policy read, so it reaches nothing when another one replaced
+		// it: the new instance gets its own publication or approval.
+		a.Mu.Lock()
+		waiting := a.stepControlLocked(next, control.trajectoryID, control.stepIndex)
+		a.Mu.Unlock()
+		if waiting == nil || waiting.instanceID != control.instanceID {
+			slog.Info("antigravity drops an automatic approval of an interaction that the step no longer waits for", "agent_id", a.AgentID(), "request_id", control.requestID)
+			continue
+		}
 		err := a.rpc.handleInteraction(a.Context(), next.id, map[string]any{
 			"trajectoryId": control.trajectoryID, "stepIndex": control.stepIndex,
-			"permission": map[string]any{"allow": true, "scope": "PERMISSION_SCOPE_ONCE"},
+			"permission": map[string]any{"allow": true, "scope": antigravityPermissionScopeOnce},
 		})
 		if err == nil {
 			approved++
@@ -387,14 +453,24 @@ func (a *Agent) approvePendingPermissions() {
 			})
 		}
 		slog.Warn("antigravity automatic approval refused; publishing the request", "agent_id", a.AgentID(), "request_id", control.requestID, "error", err)
-		a.publishInteraction(next, control)
+		a.publishControl(next, control)
 	}
 	if approved > 0 {
 		a.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypePendingRequestsApproved})
 	}
 }
 
-func (a *Agent) executeControlReply(data []byte) error {
+// executeControlReply sends the answer data to the step that it addresses, as
+// the answer to the control instance instanceID. It refuses an answer that
+// reaches nothing, so the Worker releases the answer instead of recording it
+// as delivered:
+//
+//   - The step replaced the instance (stepControlLocked), or the answer
+//     states none: agent.ControlInstanceRefusal.
+//   - The step's control is gone, the cascade is gone or not current, or
+//     the language server took no answer from a step whose control LeapMux
+//     retired meanwhile: agent.ErrControlRequestNotPending.
+func (a *Agent) executeControlReply(data []byte, instanceID string) error {
 	var reply struct {
 		CascadeID   string         `json:"cascadeId"`
 		Interaction map[string]any `json:"interaction"`
@@ -417,12 +493,16 @@ func (a *Agent) executeControlReply(data []byte) error {
 	state, known := a.cascades[reply.CascadeID]
 	if !known {
 		a.Mu.Unlock()
-		return fmt.Errorf("the Antigravity control answer addresses an unknown cascade")
+		return fmt.Errorf("%w: Antigravity CLI runs no cascade %q", agent.ErrControlRequestNotPending, reply.CascadeID)
 	}
-	control := state.controls[address.StepIndex]
-	if control == nil || !a.controlCurrentLocked(state, control) || control.trajectoryID != address.TrajectoryID || a.streamCtx.Err() != nil {
+	control := a.stepControlLocked(state, address.TrajectoryID, address.StepIndex)
+	if control == nil || a.streamCtx.Err() != nil {
 		a.Mu.Unlock()
-		return nil
+		return fmt.Errorf("%w: the step of Antigravity CLI waits for no answer", agent.ErrControlRequestNotPending)
+	}
+	if err := agent.ControlInstanceRefusal(control.instanceID, instanceID); err != nil {
+		a.Mu.Unlock()
+		return err
 	}
 	generationCtx := a.streamCtx
 	a.Mu.Unlock()
@@ -437,7 +517,7 @@ func (a *Agent) executeControlReply(data []byte) error {
 		slog.Info("antigravity interaction answered", "agent_id", a.AgentID(), "cascade_id", reply.CascadeID, "trajectory_id", address.TrajectoryID, "step_index", address.StepIndex)
 	}
 	if isInputNotRegistered(err) && !pending {
-		return nil
+		return fmt.Errorf("%w: the step of Antigravity CLI took no answer: %w", agent.ErrControlRequestNotPending, err)
 	}
 	return err
 }
@@ -489,21 +569,26 @@ func (a *Agent) maybePublishPlan(state *cascadeState) {
 		return
 	}
 	state.sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(string(text)))
+	// The plan review addresses no step of the language server, so it has a
+	// key of its own, which its payload states as the control_request envelope
+	// states its key (antigravityProvider.ControlRequestKey).
+	requestID := "antigravity-plan:" + id.Generate()
+	payload, _ := json.Marshal(map[string]any{
+		"name":       contracts.AntigravityFrameInteraction,
+		"request_id": requestID,
+		"request":    map[string]any{"tool_name": contracts.AntigravityControlToolPlanReview, "input": map[string]any{contracts.AntigravityControlPayloadPlanContent: string(text)}},
+	})
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed || a.IsDiscardingOutput() {
 		a.Mu.Unlock()
 		return
 	}
 	superseded := state.planControl
-	control := &antigravityControl{requestID: "antigravity-plan:" + id.Generate(), instanceID: id.Generate(), cascadeID: state.id, kind: "plan"}
+	control := &antigravityControl{requestID: requestID, instanceID: id.Generate(), cascadeID: state.id, kind: "plan", payload: payload}
 	state.planControl = control
 	a.Mu.Unlock()
 	a.retireControl(state, superseded)
-	payload, _ := json.Marshal(map[string]any{
-		"name":    contracts.AntigravityFrameInteraction,
-		"request": map[string]any{"tool_name": contracts.AntigravityControlToolPlanReview, "input": map[string]any{contracts.AntigravityControlPayloadPlanContent: string(text)}},
-	})
-	a.queueControlPublication(state, control, agent.ControlRequest{RequestID: control.requestID, InstanceID: control.instanceID, Payload: payload, AgentSessionID: state.id})
+	a.publishControl(state, control)
 }
 
 func (a *Agent) readPlanFile(cascadeID, path string) ([]byte, error) {

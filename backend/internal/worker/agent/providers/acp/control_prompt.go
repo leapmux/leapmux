@@ -3,6 +3,7 @@ package acp
 import (
 	"encoding/json"
 	"maps"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -11,10 +12,10 @@ import (
 )
 
 // CancelOptionID is the option that LeapMux adds to a permission whose
-// runtime offers options but no reject option. The protocol still accepts a
-// refusal there, as the `cancelled` outcome, and the option is how a client
-// chooses it. That outcome cancels the prompt turn, so the option ends the
-// turn. The id carries a prefix that no runtime's option id uses.
+// runtime offers no reject option, or no option at all. The protocol still
+// accepts a refusal there, as the `cancelled` outcome, and the option is how a
+// client chooses it. That outcome cancels the prompt turn, so the option ends
+// the turn. The id carries a prefix that no runtime's option id uses.
 const CancelOptionID = "leapmux:cancel"
 
 // permissionParams reads the params of a session/request_permission. Each
@@ -63,9 +64,10 @@ func OptionKind(kind string) leapmuxv1.PermissionOptionKind {
 }
 
 // PermissionOptions reads the options that a permission request offers, in
-// its order. An element that is no object states no kind, so it is
-// dropped. An option of an unknown kind keeps its runtime label, or its kind
-// as the label when it states none.
+// its order. An element that is no object, or that states no `optionId` as
+// non-empty text, is no answer that the runtime accepts, so it is dropped. An
+// option of an unknown kind keeps its runtime label, or its kind as the label
+// when it states none.
 func PermissionOptions(payload []byte) []*leapmuxv1.PermissionOption {
 	var elements []json.RawMessage
 	if json.Unmarshal(permissionParams(payload)["options"], &elements) != nil {
@@ -77,7 +79,12 @@ func PermissionOptions(payload []byte) []*leapmuxv1.PermissionOption {
 		if json.Unmarshal(raw, &fields) != nil || fields == nil {
 			continue
 		}
-		id, _ := providerkit.RawString(fields["optionId"])
+		// The runtime accepts only the id of an option that it offered, so an
+		// option that states no id as text is no answer.
+		id, ok := providerkit.RawString(fields["optionId"])
+		if !ok || id == "" {
+			continue
+		}
 		kind, _ := providerkit.RawString(fields["kind"])
 		name, _ := providerkit.RawString(fields["name"])
 		option := &leapmuxv1.PermissionOption{OptionId: id, Kind: OptionKind(kind), Name: name}
@@ -122,8 +129,8 @@ func ResolveToolCall(toolCall map[string]json.RawMessage, request map[string]jso
 // merged from the call's own request row, where the arguments live. It
 // returns nil for a request that states neither a tool call nor an option.
 //
-// The options are the runtime's own. An empty list gets LeapMux's allow and
-// deny, and a list with no reject option gets CancelOptionID.
+// The options are the runtime's own, and a list with no reject option, an
+// empty list included, gains CancelOptionID (WithRefusal).
 func ReadPermissionPrompt(input agent.ControlRequestInput) *leapmuxv1.PermissionPrompt {
 	compact := PermissionToolCall(input.Payload)
 	options := PermissionOptions(input.Payload)
@@ -158,10 +165,20 @@ func ReadPermissionPrompt(input agent.ControlRequestInput) *leapmuxv1.Permission
 }
 
 // WithRefusal completes a runtime's option list so that a client can always
-// refuse: an empty list becomes LeapMux's allow and deny, and a list with no
-// reject option gains CancelOptionID.
+// refuse: a list with no reject option, an empty list included, gains
+// CancelOptionID.
+//
+// LeapMux adds no approval. The protocol's reply selects an option that the
+// runtime offered, or states the `cancelled` outcome, and nothing else. So the
+// only answer to a request that offers no option is CancelOptionID.
+// agent.WithRefusal cannot serve this protocol: for an empty list it offers
+// LeapMux's own allow and deny, which answer in the neutral envelope, and no
+// resolution of the base turns that envelope into the protocol's reply.
 func WithRefusal(options []*leapmuxv1.PermissionOption) []*leapmuxv1.PermissionOption {
-	return agent.WithRefusal(options, &leapmuxv1.PermissionOption{
+	if slices.ContainsFunc(options, agent.IsRefusalOption) {
+		return options
+	}
+	return append(options, &leapmuxv1.PermissionOption{
 		OptionId: CancelOptionID,
 		Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
 		Name:     "Cancel",
@@ -216,6 +233,12 @@ func (Provider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.C
 
 // ReadBaseControlRequest is the base reader, for a provider that overrides
 // ReadControlRequest and falls back to it.
+//
+// Any other request reads as unrecognized. A runtime of the protocol reads
+// only a JSON-RPC result for its request, and the answer to LeapMux's own
+// Allow and Deny is the neutral envelope, which no resolution of the base
+// rewrites into one: the runtime would receive bytes that it cannot read and
+// go on waiting.
 func ReadBaseControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	if elicitation, ok := ReadElicitation(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
@@ -223,7 +246,7 @@ func ReadBaseControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlP
 	if permission := ReadPermissionPrompt(input); permission != nil {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
-	return agent.GenericPermissionPrompt()
+	return agent.UnrecognizedControlPrompt()
 }
 
 // RejectReason adds the user's reason for a refusal to the result of a
@@ -250,11 +273,11 @@ func AnswerBaseControlRequest(input agent.ControlAnswerInput, rejectReason Rejec
 	}
 }
 
-// AnswerPermission answers a permission prompt:
+// AnswerPermission answers a permission prompt in the protocol's own reply:
 //
-//   - LeapMux's allow and deny, for a runtime that offered no options, take
-//     the neutral envelope, which the provider's Worker resolution rewrites.
-//   - A runtime option is selected as it is: the protocol reads nothing else.
+//   - An option of the prompt is selected as it is: the protocol reads
+//     nothing else. A provider that offers an option of its own rewrites the
+//     selection in its resolution, as Kiro does for a consent scope.
 //   - CancelOptionID answers with the `cancelled` outcome.
 //   - A refusal's feedback rides in the provider's own field through
 //     rejectReason, or else follows the answer as a message.
@@ -264,12 +287,6 @@ func AnswerPermission(input agent.ControlAnswerInput, rejectReason RejectReason)
 		return agent.ControlAnswer{}, err
 	}
 	feedback := decision.GetFeedback()
-	switch option.GetOptionId() {
-	case contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny:
-		// No runtime states an id with LeapMux's prefix, so these are the
-		// options of a runtime that offered none.
-		return agent.AnswerAllowDeny(input)
-	}
 	var result map[string]any
 	if option.GetOptionId() == CancelOptionID {
 		result = map[string]any{"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeCancelled}}

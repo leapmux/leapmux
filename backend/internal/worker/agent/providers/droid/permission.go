@@ -119,7 +119,8 @@ func (a *Agent) approvePendingPermissions() {
 }
 
 // SendRawInput keeps one native RPC answer in flight for each current request.
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw, stop := input.Data, input.Stop
 	if isDroidRawInterrupt(raw) {
 		return a.Interrupt(stop)
 	}

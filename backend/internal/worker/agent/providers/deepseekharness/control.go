@@ -41,20 +41,30 @@ type nativeQuestion struct {
 	} `json:"intent"`
 }
 
+// ControlRequestKey reads the key that the agent publishes a waterfall control
+// under: its eventId (publishNativeControl).
+func (deepseekHarnessProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var event struct {
+		ID string `json:"eventId"`
+	}
+	if json.Unmarshal(payload, &event) != nil || event.ID == "" {
+		return "", false
+	}
+	return event.ID, true
+}
+
 // storedControlRefusal validates the stored request and the answer envelope.
-// An empty result means that both are valid.
+// An empty result means that both are valid. The Worker resolves only a
+// stored request whose eventId is its key (ControlRequestKey), so the key
+// needs no check here.
 func storedControlRefusal(ctx agent.ControlResponseContext) string {
 	var payload struct {
 		Type    string          `json:"type"`
 		Event   string          `json:"event"`
-		ID      string          `json:"eventId"`
 		AgentID string          `json:"agentId"`
 		Request json.RawMessage `json:"request"`
 	}
-	// The agent stores each request under its eventId. A payload whose eventId
-	// differs from the key that stores it disagrees with that key, so LeapMux
-	// cannot trust it.
-	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.ID == "" || payload.AgentID == "" || ctx.RequestID != payload.ID {
+	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.AgentID == "" {
 		return agent.RefusalUnreadableRequest
 	}
 	if _, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent); !ok {

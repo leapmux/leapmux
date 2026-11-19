@@ -77,8 +77,9 @@ func copilotObject(fields map[string]json.RawMessage, key string) map[string]jso
 //   - auto_mode_switch.requested, sampling.requested and
 //     permission.requested are permissions with LeapMux's options.
 //
-// Copilot reads every other payload as a permission too: a bare one with the
-// single approval and the refusal.
+// Any other payload reads as unrecognized: the runtime raises no other
+// request, and SendRawInput reaches no request of the runtime with an answer
+// to one.
 func (copilotProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	eventType, data, _ := copilotControlEvent(input.Payload)
 	fields := copilotEventFields(data)
@@ -101,6 +102,9 @@ func (copilotProvider) ReadControlRequest(input agent.ControlRequestInput) *leap
 			text = copilotText(fields, "summary")
 		}
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: text}}}
+	}
+	if eventType == "" {
+		return agent.UnrecognizedControlPrompt()
 	}
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: copilotPermissionPrompt(eventType, fields)}}
 }
@@ -156,8 +160,8 @@ func copilotElicitationPrompt(fields map[string]json.RawMessage) *leapmuxv1.Elic
 }
 
 // copilotPermissionPrompt reads a request that a permission answers: the
-// automatic model switch, an MCP server's sampling request, a tool's
-// permission request, or a payload that is none of them.
+// automatic model switch, an MCP server's sampling request, or a tool's
+// permission request.
 func copilotPermissionPrompt(eventType string, fields map[string]json.RawMessage) *leapmuxv1.PermissionPrompt {
 	switch eventType {
 	case contracts.CopilotEventAutoModeSwitchRequested:

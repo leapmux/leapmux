@@ -101,6 +101,34 @@ func TestZCodeControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	}
 }
 
+// The Worker refuses each answer to a stored request whose payload gives
+// another key than its publication (agent.StoredControlRequestAgrees), so the
+// key that the provider reads must be the key of each request that the agent
+// publishes: a permission, a user input, and the workspace-trust question,
+// whose key its session gives.
+func TestZCodeControlRequestKeyIsTheKeyOfEachPublication(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
+	a.HandleOutput(zcodeRequestLine(t, 8, contracts.ZCodeMethodRequestUserInput, `{
+		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
+		"input":{"plan":"# Welcome plan"},
+		"schema":{"interaction":"plan_approval","toolName":"ExitPlanMode"}
+	}`))
+	a.HandleOutput(zcodeAdmissionLine(t, 1, 1))
+	require.Equal(t, 3, sink.PublishedControlCount())
+	assert.Equal(t, providerkit.WorkspaceTrustRequestID("sess-1"), sink.LastPublishedControl().RequestID)
+	agenttest.AssertPublishedControlKeys(t, zcodeProvider{}, sink)
+
+	trust := sink.LastPublishedControl()
+	_, ok := zcodeProvider{}.ControlRequestKey(trust.Payload, "")
+	assert.False(t, ok, "a trust question of no session gives no key")
+	key, ok := zcodeProvider{}.ControlRequestKey(trust.Payload, "sess-2")
+	assert.True(t, ok)
+	assert.NotEqual(t, trust.RequestID, key, "the session decides the key of a trust question")
+}
+
 // ZCode states the permission reason as the prompt of a plan approval, so the
 // plan of the tool input wins over it. The approval shows the plan that the
 // Worker stores as the canonical plan, which a context-clear approval runs.
@@ -1469,16 +1497,9 @@ func TestZCodeResolveControlResponse_WithholdsAnUnusableForward(t *testing.T) {
 	noWireID, err := json.Marshal(withWireID)
 	require.NoError(t, err)
 
-	var withoutRequestID map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(stored, &withoutRequestID))
-	delete(withoutRequestID, "request_id")
-	noRequestID, err := json.Marshal(withoutRequestID)
-	require.NoError(t, err)
-
 	// Each answer addresses requestID, the key the Worker read the payload
-	// under, because the Worker resolves no other answer. A payload that states
-	// another id reaches the provider only when the row under that key holds
-	// the payload of another request, and the row then disagrees with its key.
+	// under, and each payload gives that key, because the Worker resolves no
+	// other answer and no other stored request (agenttest.ResolveAnswer).
 	cases := map[string]struct {
 		payload   []byte
 		requestID string
@@ -1493,12 +1514,6 @@ func TestZCodeResolveControlResponse_WithholdsAnUnusableForward(t *testing.T) {
 		},
 		"the answer is not an allow or a deny": {
 			stored, "req-1", []byte(`{"type":"control_response","response":{"request_id":"req-1","response":{}}}`), agent.RefusalNoDecision,
-		},
-		"the stored request states another id than its key": {
-			stored, "req-OTHER", zcodeAnswer(t, "req-OTHER", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
-		},
-		"the stored request states no id": {
-			noRequestID, "req-1", zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
 		},
 		"the stored request has no wire id": {
 			noWireID, "req-1", zcodeAnswer(t, "req-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableRequest,
@@ -2049,22 +2064,19 @@ func TestResolveMCPForm_RefusesAnAnswerTheFormCannotTake(t *testing.T) {
 	storedWithoutWireID, err := json.Marshal(withoutWireID)
 	require.NoError(t, err)
 	accept := map[string]any{"action": contracts.MCPElicitationActionAccept, "content": map[string]any{"count": 1}}
-	// Each answer addresses requestID, as every answer that the Worker resolves
-	// does. A form under another key reaches the provider only when the row
-	// under that key holds the form of another request, and the row then
-	// disagrees with its key.
+	// Each answer addresses requestID, and each form gives that key, as every
+	// answer and every stored request that the Worker resolves does.
 	for name, tc := range map[string]struct {
 		stored    []byte
 		requestID string
 		answer    []byte
 		reason    string
 	}{
-		"a form stored under another key": {stored, "mcp-elicit-other", zcodeMCPFormAnswer(t, "mcp-elicit-other", accept), agent.RefusalUnreadableRequest},
-		"an allow decision":               {stored, "mcp-elicit-1", zcodeAnswer(t, "mcp-elicit-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableAnswer},
-		"an unknown action":               {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": "maybe"}), agent.RefusalUnreadableAnswer},
-		"content that is no form":         {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "content": []int{1}}), agent.RefusalUnreadableAnswer},
-		"a persisted choice":              {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "_meta": map[string]string{"persist": "always"}}), "the answer persists a choice the request did not offer"},
-		"no wire id":                      {storedWithoutWireID, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", accept), agent.RefusalUnreadableRequest},
+		"an allow decision":       {stored, "mcp-elicit-1", zcodeAnswer(t, "mcp-elicit-1", contracts.ControlAnswerBehaviorAllow, "", nil), agent.RefusalUnreadableAnswer},
+		"an unknown action":       {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": "maybe"}), agent.RefusalUnreadableAnswer},
+		"content that is no form": {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "content": []int{1}}), agent.RefusalUnreadableAnswer},
+		"a persisted choice":      {stored, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", map[string]any{"action": contracts.MCPElicitationActionAccept, "_meta": map[string]string{"persist": "always"}}), "the answer persists a choice the request did not offer"},
+		"no wire id":              {storedWithoutWireID, "mcp-elicit-1", zcodeMCPFormAnswer(t, "mcp-elicit-1", accept), agent.RefusalUnreadableRequest},
 	} {
 		res := agenttest.ResolveAnswer(zcodeProvider{}, tc.stored, tc.requestID, agent.ControlAnswer{Content: tc.answer})
 		assert.True(t, res.Withhold, name)

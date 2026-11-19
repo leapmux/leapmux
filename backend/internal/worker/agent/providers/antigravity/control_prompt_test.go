@@ -21,8 +21,8 @@ func antigravityJSON(t *testing.T, value any) []byte {
 	return encoded
 }
 
-// antigravityInteractionPayload is the control request that
-// publishInteraction stores for one interaction of a cascade's step.
+// antigravityInteractionPayload is the control request that the Worker
+// publishes for one interaction of a cascade's step (newInteractionControl).
 func antigravityInteractionPayload(t *testing.T, interaction any) []byte {
 	t.Helper()
 	return antigravityJSON(t, map[string]any{
@@ -37,9 +37,15 @@ func antigravityInteractionPayload(t *testing.T, interaction any) []byte {
 }
 
 // antigravityPlanReviewPayload is the plan review that the Worker raises.
+// antigravityPlanReviewKey is the key of the plan review that
+// antigravityPlanReviewPayload stores.
+const antigravityPlanReviewKey = "antigravity-plan:review-1"
+
 func antigravityPlanReviewPayload(t *testing.T, plan string) []byte {
 	t.Helper()
 	return antigravityJSON(t, map[string]any{
+		"name":       contracts.AntigravityFrameInteraction,
+		"request_id": antigravityPlanReviewKey,
 		"request": map[string]any{
 			"tool_name": contracts.AntigravityControlToolPlanReview,
 			"input":     map[string]any{contracts.AntigravityControlPayloadPlanContent: plan},
@@ -113,9 +119,15 @@ func TestReadControlRequest_AntigravityReadsAnotherInteractionAsAPermission(t *t
 	assert.Equal(t, []string{"allow", "reject"}, []string{got.GetPermission().GetOptions()[0].GetOptionId(), got.GetPermission().GetOptions()[1].GetOptionId()})
 }
 
-func TestReadControlRequest_AntigravityAnotherPayloadIsGeneric(t *testing.T) {
+// A payload that states no interaction is no request that the Worker
+// publishes, and an answer would guess what its step asks, so it reads as
+// unrecognized.
+func TestReadControlRequest_AntigravityAnotherPayloadIsUnrecognized(t *testing.T) {
 	for _, payload := range []string{`{}`, `not json`, `{"requestedInteraction":"permission"}`, `{"requestedInteraction":null}`, `{"request":{"tool_name":"run_command"}}`} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(antigravityProvider{}, []byte(payload)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(antigravityProvider{}, []byte(payload)), payload)
+	}
+	for name, payload := range antigravityPayloadsWithNoInteraction(t) {
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(antigravityProvider{}, payload), name)
 	}
 }
 
@@ -178,29 +190,88 @@ func TestAnswerControlRequest_AntigravityAnswersAPermissionNatively(t *testing.T
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "an approval carries no instruction")
 }
 
-// The composer's refusal of a payload that the reader does not recognize
-// still answers the language server natively, and the shared Allow and Deny
-// answer with the neutral envelope.
-func TestAnswerControlRequest_AntigravityGenericPromptTakesTheSharedAnswers(t *testing.T) {
-	got, err := agenttest.AnswerControl(antigravityProvider{}, []byte(`{}`), "antigravity:cascade:trajectory:4", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Use another approach"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":4,"permission":{"allow":false,"scope":"PERMISSION_SCOPE_ONCE","userDenyInstruction":"Use another approach"}}}`, string(got.Content))
-
-	got, err = agenttest.AnswerControl(antigravityProvider{}, []byte(`{"request":{"input":{"a":1}}}`), "antigravity:cascade:trajectory:4", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"antigravity:cascade:trajectory:4","response":{"behavior":"allow","updatedInput":{"a":1}}}}`, string(got.Content))
-
-	got, err = agenttest.AnswerControl(antigravityProvider{}, []byte(`{}`), "antigravity:cascade:trajectory:4", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"antigravity:cascade:trajectory:4","response":{"behavior":"deny","message":"Rejected by user."}}}`, string(got.Content))
+// antigravityPayloadsWithNoInteraction are stored requests of a cascade's
+// step that state no interaction object, so each reads as unrecognized. The
+// Worker publishes no such request, because
+// newInteractionControl refuses a step that requests no interaction LeapMux
+// can answer. The first has the shape that such a request would have:
+// `requestedInteraction` is null.
+func antigravityPayloadsWithNoInteraction(t *testing.T) map[string][]byte {
+	t.Helper()
+	return map[string][]byte{
+		"a null interaction":               antigravityInteractionPayload(t, nil),
+		"an interaction that is no object": antigravityInteractionPayload(t, "permission"),
+		"no interaction":                   antigravityJSON(t, map[string]any{"cascadeId": "cascade", "trajectoryId": "trajectory", "stepIndex": 4}),
+	}
 }
 
+// A stored request that states no interaction reads as unrecognized, so no
+// decision answers it: an answer would tell the language server that its
+// step asked for a permission, which nothing states.
+func TestAnswerControlRequest_AntigravityAnswersNoRequestWithNoInteraction(t *testing.T) {
+	const requestID = "antigravity:cascade:trajectory:4"
+	for name, payload := range antigravityPayloadsWithNoInteraction(t) {
+		for _, decision := range []*leapmuxv1.ControlDecision{
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Use another approach"),
+		} {
+			_, err := agenttest.AnswerControl(antigravityProvider{}, payload, requestID, decision)
+			assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, name)
+		}
+	}
+}
+
+// Each answer that a permission prompt offers resolves, whatever the stored
+// step states: the Worker never offers an answer that ResolveControlResponse
+// refuses.
+func TestAnswerControlRequest_AntigravityEveryOfferedPermissionAnswerResolves(t *testing.T) {
+	const requestID = "antigravity:cascade:trajectory:4"
+	payloads := map[string][]byte{
+		"a permission":         antigravityInteractionPayload(t, map[string]any{"permission": map[string]any{"resource": map[string]any{"action": "command", "target": "ls"}}}),
+		"another interaction":  antigravityInteractionPayload(t, map[string]any{"browserAction": map[string]any{"url": "https://example.com"}}),
+		"an empty interaction": antigravityInteractionPayload(t, map[string]any{}),
+	}
+	for name, payload := range payloads {
+		t.Run(name, func(t *testing.T) {
+			options := agenttest.ControlPromptOf(antigravityProvider{}, payload).GetPermission().GetOptions()
+			require.NotEmpty(t, options, "the stored step reads as a permission")
+			for _, option := range options {
+				feedbacks := []string{""}
+				if agent.IsRefusalOption(option) {
+					feedbacks = append(feedbacks, "Use another approach")
+				}
+				for _, feedback := range feedbacks {
+					got, err := agenttest.AnswerControl(antigravityProvider{}, payload, requestID, agenttest.PermissionDecision(option.GetOptionId(), feedback))
+					require.NoError(t, err, option.GetOptionId())
+					requireAntigravityAccepted(t, payload, requestID, got)
+				}
+			}
+		})
+	}
+}
+
+// An answer echoes the address of its request id, and the Worker finds the
+// request again by the id that ControlResponseRequestID reads back out of
+// the answer. So an id that states no cascade, no trajectory, or a step in
+// any form but its canonical one has no answer that reaches the request.
 func TestAnswerControlRequest_AntigravityRefusesAMalformedRequestID(t *testing.T) {
-	payload := antigravityInteractionPayload(t, map[string]any{"permission": map[string]any{}})
-	for _, requestID := range []string{"antigravity:cascade:trajectory", "other:cascade:trajectory:4", "antigravity:cascade:trajectory:four", "antigravity:cascade:trajectory:-1", "antigravity:a:b:c:4"} {
-		_, err := agenttest.AnswerControl(antigravityProvider{}, payload, requestID, agenttest.PermissionDecision("allow", ""))
-		assert.ErrorContains(t, err, "malformed", requestID)
-		assert.NotErrorIs(t, err, agent.ErrInvalidControlDecision, "the stored request is at fault, not the decision")
+	for name, tc := range map[string]struct {
+		payload  []byte
+		decision *leapmuxv1.ControlDecision
+	}{
+		"a permission":         {antigravityInteractionPayload(t, map[string]any{"permission": map[string]any{}}), agenttest.PermissionDecision("allow", "")},
+		"a refused permission": {antigravityInteractionPayload(t, map[string]any{"permission": map[string]any{}}), agenttest.PermissionDecision("reject", "")},
+		"a question":           {antigravityQuestionPayload(t, twoAntigravityQuestions()), agenttest.CancelQuestions("")},
+	} {
+		for _, requestID := range []string{
+			"antigravity:cascade:trajectory", "other:cascade:trajectory:4", "antigravity:cascade:trajectory:four",
+			"antigravity:cascade:trajectory:-1", "antigravity:a:b:c:4", "antigravity::trajectory:4", "antigravity:cascade::4",
+			"antigravity:cascade:trajectory:", "antigravity:cascade:trajectory:04", "antigravity:cascade:trajectory:+4",
+		} {
+			_, err := agenttest.AnswerControl(antigravityProvider{}, tc.payload, requestID, tc.decision)
+			assert.ErrorContains(t, err, "malformed", "%s: %s", name, requestID)
+			assert.NotErrorIs(t, err, agent.ErrInvalidControlDecision, "the stored request is at fault, not the decision")
+		}
 	}
 }
 

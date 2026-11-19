@@ -1231,6 +1231,7 @@ func TestCodexAsyncQuestionRoundTrip(t *testing.T) {
 	records := sink.PublishedControls()
 	require.Len(t, records, 1)
 	record := records[0]
+	agenttest.AssertPublishedControlKeys(t, codexProvider{}, sink)
 
 	question := agenttest.ControlPromptOf(codexProvider{}, record.Payload).GetQuestion()
 	require.Len(t, question.GetQuestions(), 1)

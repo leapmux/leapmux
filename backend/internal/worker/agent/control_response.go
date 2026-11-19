@@ -17,8 +17,9 @@ type ControlResponseContext struct {
 	// RequestID is the key of the stored request, and it is never empty. The
 	// Worker resolves only an answer that addresses this key
 	// (Provider.ControlResponseRequestID), so a provider does not check the
-	// answer's own id against it. A provider can still check that the stored
-	// payload agrees with the key, and refuse it with RefusalUnreadableRequest.
+	// answer's own id against it. The Worker also resolves only a stored
+	// payload that agrees with the key (StoredControlRequestAgrees), so a
+	// provider does not check that agreement either.
 	RequestID       string
 	RequestPayload  json.RawMessage
 	ResponseContent []byte
@@ -104,7 +105,8 @@ const ControlResponseRefusedText = "the agent provider could not read this contr
 // completes the browser's sentence "The response was not sent: ...".
 const (
 	// RefusalUnreadableRequest: the stored control request does not decode, it
-	// lacks a field that the reply needs, or it states an id other than its key.
+	// lacks a field that the reply needs, or its payload gives no key or another
+	// key than the one that stores it (StoredControlRequestAgrees).
 	RefusalUnreadableRequest = "LeapMux cannot read the stored request that this answer is for"
 	// RefusalUnreadableAnswer: the answer does not decode into the fields that the
 	// reply needs.

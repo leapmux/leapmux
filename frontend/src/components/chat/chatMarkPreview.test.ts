@@ -5,7 +5,8 @@ import { createComputed, createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
 import { ControlDecisionSchema, ControlPromptSchema, PermissionOptionKind } from '~/generated/proto/leapmux/v1/agent_control_pb'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, AvailableOptionGroupSchema, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeControlResponseMessage } from '~/test-support/messageFactory'
 import { __resetMarkPreviewCacheForTest, forgetMarkPreview, getCachedMarkPreview, messageMarkPreviewText, warmMarkPreview } from './chatMarkPreview'
@@ -381,6 +382,32 @@ describe('warmMarkPreview', () => {
     })
   })
 
+  // The bucket's signal must notify for each preview that lands, not only the first:
+  // an open card waits for its own dot after other dots of the agent resolved.
+  it('updates a reactive reader for each later preview of the agent', () => {
+    createRoot((dispose) => {
+      let first: string | undefined
+      let second: string | undefined
+      createComputed(() => {
+        first = getCachedMarkPreview('a1', 5n)
+      })
+      createComputed(() => {
+        second = getCachedMarkPreview('a1', 6n)
+      })
+      void warmMarkPreview('a1', 5n, testMessageContext({
+        messageBySeq: () => userMessage(5n, 'first preview'),
+        fetchMessage: vi.fn(),
+      }))
+      expect(first).toBe('first preview')
+      void warmMarkPreview('a1', 6n, testMessageContext({
+        messageBySeq: () => userMessage(6n, 'second preview'),
+        fetchMessage: vi.fn(),
+      }))
+      expect(second).toBe('second preview')
+      dispose()
+    })
+  })
+
   it('replaces a cached preview when the current message revision changes', async () => {
     const [message, setMessage] = createSignal(userMessage(5n, 'before supplement'))
     const [contentVersion, setContentVersion] = createSignal(0)
@@ -641,5 +668,140 @@ describe('warmMarkPreview', () => {
     }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('now available'))
     expect(back).toHaveBeenCalledOnce()
+  })
+})
+
+// A tab draws its rail before the agent's settings reach the browser, so the label that a
+// preview reads can arrive after the rail caches the preview.
+describe('warmMarkPreview of a preview that reads a settings label', () => {
+  afterEach(() => clearSettingsLabelCache())
+
+  /** A saved approval of a Droid plan that switched the permission mode to `auto-medium`. */
+  function droidPlanApproval(): AgentChatMessage {
+    const message = makeControlResponseMessage(AgentProvider.DROID, { approved: true }, undefined, {
+      prompt: create(ControlPromptSchema, {
+        kind: { case: 'plan', value: {} },
+      }),
+      decision: create(ControlDecisionSchema, {
+        kind: {
+          case: 'plan',
+          value: { approve: true, permissionMode: 'auto-medium' },
+        },
+      }),
+    })
+    message.seq = 5n
+    return message
+  }
+
+  function droidModeLabels(): void {
+    updateSettingsLabelCache(AgentProvider.DROID, [
+      create(AvailableOptionGroupSchema, {
+        id: 'permissionMode',
+        options: [
+          { id: 'auto-medium', name: 'Auto (Medium)' },
+        ],
+      }),
+    ])
+  }
+
+  it('previews the row again when the label that it read arrives', () => {
+    const approval = droidPlanApproval()
+    const context = testMessageContext({
+      messageBySeq: () => approval,
+      fetchMessage: vi.fn(),
+    })
+    void warmMarkPreview('a1', 5n, context)
+    expect(getCachedMarkPreview('a1', 5n)).toBe('Approve (auto-medium)')
+
+    droidModeLabels()
+    // The cached preview names the mode by its value: it answers nothing until a warm.
+    expect(getCachedMarkPreview('a1', 5n)).toBeUndefined()
+    void warmMarkPreview('a1', 5n, context)
+    expect(getCachedMarkPreview('a1', 5n)).toBe('Approve (Auto (Medium))')
+  })
+
+  it('keeps the preview while the labels that it read are unchanged', () => {
+    const approval = droidPlanApproval()
+    void warmMarkPreview('a1', 5n, testMessageContext({
+      messageBySeq: () => approval,
+      fetchMessage: vi.fn(),
+    }))
+    updateSettingsLabelCache(AgentProvider.DROID, [
+      create(AvailableOptionGroupSchema, {
+        id: 'model',
+        options: [
+          { id: 'droid-model', name: 'Droid Model' },
+        ],
+      }),
+    ])
+    expect(getCachedMarkPreview('a1', 5n)).toBe('Approve (auto-medium)')
+  })
+
+  // The rail warms the active dot in an effect, and its open card must show the label
+  // without another hover.
+  it('warms the preview again in a computation when the label arrives', () => {
+    createRoot((dispose) => {
+      const approval = droidPlanApproval()
+      const context = testMessageContext({
+        messageBySeq: () => approval,
+        fetchMessage: vi.fn(),
+      })
+      let preview: string | undefined
+      createComputed(() => {
+        void warmMarkPreview('a1', 5n, context)
+      })
+      createComputed(() => {
+        preview = getCachedMarkPreview('a1', 5n)
+      })
+      expect(preview).toBe('Approve (auto-medium)')
+
+      droidModeLabels()
+      expect(preview).toBe('Approve (Auto (Medium))')
+      dispose()
+    })
+  })
+
+  it('fetches an out-of-window preview again when the label that it read arrives', async () => {
+    const fetchMessage = vi.fn(async () => droidPlanApproval())
+    const context = testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    })
+    void warmMarkPreview('a1', 5n, context)
+    await vi.waitFor(() => expect(getCachedMarkPreview('a1', 5n)).toBe('Approve (auto-medium)'))
+
+    droidModeLabels()
+    expect(getCachedMarkPreview('a1', 5n)).toBeUndefined()
+    void warmMarkPreview('a1', 5n, context)
+    await vi.waitFor(() => expect(getCachedMarkPreview('a1', 5n)).toBe('Approve (Auto (Medium))'))
+    expect(fetchMessage).toHaveBeenCalledTimes(2)
+  })
+
+  // The first warm of an out-of-window dot finds no preview and reads no label before its
+  // fetch resolves, and the open card must still follow a label that arrives later.
+  it('warms an out-of-window preview again in a computation when the label arrives', async () => {
+    const fetchMessage = vi.fn(async () => droidPlanApproval())
+    const context = testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    })
+    let preview: string | undefined
+    const dispose = createRoot((dispose) => {
+      createComputed(() => {
+        void warmMarkPreview('a1', 5n, context)
+      })
+      createComputed(() => {
+        preview = getCachedMarkPreview('a1', 5n)
+      })
+      return dispose
+    })
+    try {
+      await vi.waitFor(() => expect(preview).toBe('Approve (auto-medium)'))
+      droidModeLabels()
+      await vi.waitFor(() => expect(preview).toBe('Approve (Auto (Medium))'))
+    }
+    finally {
+      dispose()
+    }
   })
 })

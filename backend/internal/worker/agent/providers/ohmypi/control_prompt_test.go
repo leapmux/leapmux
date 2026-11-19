@@ -829,6 +829,7 @@ func TestAnswerControlRequest_TheBridgeAnswersOmpDialogChainFromTheAnswer(t *tes
 	published := r.sink.PublishedControls()
 	require.Len(t, published, 1)
 	assert.Equal(t, contracts.OhMyPiAskTypeRequest, readOmpControlPayload(published[0].Payload).text("type"))
+	agenttest.AssertPublishedControlKeys(t, ompProvider{}, r.sink)
 	agenttest.RequireProto(t, &leapmuxv1.ControlQuestion{
 		Id: "langs", Question: "Which languages?", MultiSelect: true, AllowCustomText: proto.Bool(true),
 		Options: []*leapmuxv1.QuestionOption{ompOption("0", "Go"), ompOption("1", "Rust"), ompOption("2", "TypeScript")},
@@ -837,7 +838,7 @@ func TestAnswerControlRequest_TheBridgeAnswersOmpDialogChainFromTheAnswer(t *tes
 	answer, err := agenttest.AnswerControl(ompProvider{}, published[0].Payload, published[0].RequestID,
 		agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"0", "1"}, CustomText: "Zig too"}))
 	require.NoError(t, err)
-	require.NoError(t, r.agent.SendRawInput(answer.Content, agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: answer.Content}))
 	r.waitForDialogAnswers(1)
 	r.emit(askStart("call_2"), multiAskDialog2)
 	r.waitForDialogAnswers(2)
@@ -877,7 +878,7 @@ func TestAnswerControlRequest_TheBridgeClearsAnInitialSelectionThatTheUserClears
 		agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{}))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"leapmux_ask_answer","id":"d1","answers":[{"id":"langs"}]}`, string(answer.Content))
-	require.NoError(t, r.agent.SendRawInput(answer.Content, agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: answer.Content}))
 	assert.Equal(t, "Go", r.waitForDialogAnswers(1)[0]["value"])
 	r.emit(askStart("optional-languages"),
 		nativeAskDialog(t, "d2", "select", "(1 selected) Languages", "Go", "Rust", askOtherOption, "✔ Done selecting"))

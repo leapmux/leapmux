@@ -75,6 +75,23 @@ func (kimiProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) strin
 	return ""
 }
 
+// ControlRequestKey reads the key that the agent publishes a Kimi Code request
+// under: the server's own `interaction_id` (publishControl). LeapMux's
+// workspace-trust question states no key, so its session gives it
+// (providerkit.WorkspaceTrustRequestKey).
+func (kimiProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if providerkit.IsWorkspaceTrustQuestion(payload) {
+		return providerkit.WorkspaceTrustRequestKey(payload, agentSessionID)
+	}
+	var interaction struct {
+		InteractionID string `json:"interaction_id"`
+	}
+	if json.Unmarshal(payload, &interaction) != nil || interaction.InteractionID == "" {
+		return "", false
+	}
+	return interaction.InteractionID, true
+}
+
 // ResolveControlResponse turns the neutral answer into the server's own
 // answer body. See control_response.go.
 func (kimiProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {

@@ -432,7 +432,8 @@ func (a *Agent) withdrawAllControls() {
 // ResolveControlResponse built the frame from the stored request, so the frame
 // carries every id its route needs. A frame whose request is no longer pending
 // is refused: the runtime settled it already, and its card is gone.
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw, stop := input.Data, input.Stop
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	a.Mu.Unlock()
@@ -593,29 +594,17 @@ func (a *Agent) controlPending(requestID string) bool {
 // --- resolution (pure) ---
 
 // resolveControlReply turns the reader's neutral answer into the reply frame
-// for the request stored under requestID. It reads nothing but its arguments.
+// for the stored request requestPayload. It reads nothing but its arguments.
+// The Worker resolves only a stored request that agrees with its key
+// (agent.StoredControlRequestAgrees), so the key needs no check here.
 //
 // feedback is a deny reason the runtime's approval route cannot carry. The
 // service queues it as the reader's next message instead. refusal is the reason
 // the reader sees when no reply can be built, empty when one can.
-func resolveControlReply(requestID string, requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, refusal string) {
+func resolveControlReply(requestPayload, response []byte) (frame codewhaleReplyFrame, feedback string, refusal string) {
 	_, behavior, message, decoded := agent.DecodeControlBehavior(response)
 	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		return codewhaleReplyFrame{}, "", agent.RefusalNoDecision
-	}
-	var stored struct {
-		RequestID string                 `json:"request_id"`
-		Request   codewhaleControlHeader `json:"request"`
-	}
-	if err := json.Unmarshal(requestPayload, &stored); err != nil {
-		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
-	}
-	if stored.RequestID != requestID {
-		// buildControlPayload writes the request's key into its payload, so a
-		// payload that states another id, or none, disagrees with its own key
-		// and LeapMux cannot trust it.
-		slog.Warn("codewhale stored control request disagrees with its key", "request_id", requestID, "stored", stored.RequestID)
-		return codewhaleReplyFrame{}, "", agent.RefusalUnreadableRequest
 	}
 	env, found := storedControlEvent(requestPayload)
 	if !found {

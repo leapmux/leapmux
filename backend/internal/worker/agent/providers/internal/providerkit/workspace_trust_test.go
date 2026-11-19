@@ -549,6 +549,48 @@ func TestWorkspaceTrustAsksOnceForEachSession(t *testing.T) {
 	assert.Equal(t, 2, sink.PublishedControlCount(), "another session asks its own question")
 }
 
+// The question's payload states no key, so the session that the Worker
+// stores with it gives the key, which is the key that Ask publishes it under.
+func TestWorkspaceTrustRequestKeyIsTheKeyOfThePublication(t *testing.T) {
+	t.Parallel()
+	sink, services := newWorkspaceTrustSink()
+	var trust WorkspaceTrust
+	trust.Ask(services, &fakeWorkspaceTrustHost{}, "session-1", "/work/project", []string{"MCP servers"})
+	published := sink.LastPublishedControl()
+	key, ok := WorkspaceTrustRequestKey(published.Payload, published.AgentSessionID)
+	require.True(t, ok)
+	assert.Equal(t, published.RequestID, key)
+
+	for name, tc := range map[string]struct {
+		payload   string
+		sessionID string
+	}{
+		"a question of no session": {string(published.Payload), ""},
+		"another payload":          {`{"type":"control_request","request_id":"workspace-trust:session-1"}`, "session-1"},
+		"a payload with no type":   {`{"path":"/work/project"}`, "session-1"},
+	} {
+		key, ok := WorkspaceTrustRequestKey([]byte(tc.payload), tc.sessionID)
+		assert.False(t, ok, name)
+		assert.Empty(t, key, name)
+	}
+}
+
+// A question of no session would be stored with the session that the sink
+// holds, and its key would then disagree with the stored question, so Ask
+// asks nothing and checks nothing.
+func TestWorkspaceTrustAsksNothingWithoutASession(t *testing.T) {
+	t.Parallel()
+	sink, services := newWorkspaceTrustSink()
+	host := &fakeWorkspaceTrustHost{}
+	var trust WorkspaceTrust
+	trust.Ask(services, host, "", "/work/project", nil)
+	assert.Zero(t, sink.PublishedControlCount())
+	assert.Zero(t, host.checks)
+
+	trust.Ask(services, host, "session-1", "/work/project", nil)
+	assert.Equal(t, 1, sink.PublishedControlCount(), "a later session still asks")
+}
+
 // An agent that learns of the untrusted folder again, from an event that repeats,
 // asks no second question once the reader answered the first.
 func TestWorkspaceTrustAsksOnceForEachSessionAfterAnAnswer(t *testing.T) {

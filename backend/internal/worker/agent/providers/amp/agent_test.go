@@ -686,18 +686,18 @@ func TestRawInputReachesTheRunningProcess(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	userLine := []byte(`{"type":"user","message":{"role":"user","content":[]}}`)
-	assert.ErrorContains(t, h.agent.SendRawInput(userLine, agent.StopContext{}), "no Amp process")
+	assert.ErrorContains(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}), "no Amp process")
 	fp := h.send("go")
-	require.NoError(t, h.agent.SendRawInput(userLine, agent.StopContext{}))
+	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}))
 	assert.Len(t, fp.lines(), 2)
 
 	// A process that an interrupt signalled takes no new line.
 	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
-	assert.ErrorContains(t, h.agent.SendRawInput(userLine, agent.StopContext{}), "no Amp process")
+	assert.ErrorContains(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}), "no Amp process")
 	assert.Len(t, fp.lines(), 2)
 
 	h.agent.Stop()
-	assert.ErrorIs(t, h.agent.SendRawInput(userLine, agent.StopContext{}), errAgentStopped)
+	assert.ErrorIs(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}), errAgentStopped)
 }
 
 func TestStderrComesFromTheLastProcess(t *testing.T) {

@@ -32,7 +32,7 @@ func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
 	// The synthesized plan-mode prompt frame carries no top-level method; its request.tool_name is
 	// the pruned context, and the neutral allow/deny envelope is forwarded verbatim.
 	content := []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`)
-	res := agenttest.ResolveAnswer(codexProvider{}, []byte(`{"request":{"tool_name":"`+contracts.CodexControlToolPlanModePrompt+`"}}`), "plan-1",
+	res := agenttest.ResolveAnswer(codexProvider{}, []byte(`{"type":"control_request","request_id":"plan-1","request":{"tool_name":"`+contracts.CodexControlToolPlanModePrompt+`","input":{}}}`), "plan-1",
 		agent.ControlAnswer{Content: content})
 
 	assert.Equal(t, content, res.Content)
@@ -58,7 +58,7 @@ func TestCodexResolveControlResponse_PreservesTheResponseWithoutARequest(t *test
 func TestResolveControlResponse_CodexAsyncQuestion(t *testing.T) {
 	t.Parallel()
 
-	request := json.RawMessage(`{"request":{"tool_name":"CodexAsyncQuestion","input":{"question_item_id":"[\"request_user_input_async\",\"call_abc\",0]","title":"Which color?"}}}`)
+	request := json.RawMessage(`{"type":"control_request","request_id":"codex-async-question-call_abc-0","request":{"tool_name":"CodexAsyncQuestion","input":{"question_item_id":"[\"request_user_input_async\",\"call_abc\",0]","title":"Which color?"}}}`)
 	for _, test := range []struct {
 		name        string
 		content     string

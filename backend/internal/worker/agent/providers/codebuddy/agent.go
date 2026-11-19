@@ -224,7 +224,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		a.setTurnActive(false)
 		return err
 	}
-	if err := a.SendRawInput(raw, agent.StopContext{}); err != nil {
+	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
 		a.setTurnActive(false)
 		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
 	}

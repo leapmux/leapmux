@@ -30,13 +30,17 @@ const gooseKindNamedPermission = `{"jsonrpc":"2.0","id":7,"method":"session/requ
 		{"optionId":"reject_once","kind":"reject_once","name":"reject_once"},
 		{"optionId":"reject_always","kind":"reject_always","name":"reject_always"}]}}`
 
-// A shell call states its command, and a call with no options takes
-// LeapMux's allow and deny.
+// A shell call states its command. The protocol answers a call with no
+// options only with the cancelled outcome, so LeapMux's cancel is its one
+// option.
 func TestReadControlRequest_GooseReadsAShellPermissionThroughTheBase(t *testing.T) {
 	t.Parallel()
 	command := "npm test -- --runInBand"
 	agenttest.RequireProto(t, agenttest.PermissionPrompt(&leapmuxv1.PermissionPrompt{
-		Title: "Run", Command: command, InputJson: `{"command":"npm test -- --runInBand"}`, Options: agent.AllowDenyOptions(),
+		Title: "Run", Command: command, InputJson: `{"command":"npm test -- --runInBand"}`,
+		Options: []*leapmuxv1.PermissionOption{{
+			OptionId: acp.CancelOptionID, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Cancel", EndsTurn: true,
+		}},
 	}), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"execute","title":"Run","rawInput":{"command":"npm test -- --runInBand"}}}}`)))
 }
 
@@ -88,11 +92,11 @@ func TestReadControlRequest_GooseReadsAnElicitationThroughTheBase(t *testing.T) 
 	assert.Equal(t, "future-mode", future.GetMode(), "an unknown mode stays as the server sent it")
 }
 
-// A payload that Goose's reader does not recognize is the generic prompt,
-// which states no arguments out of the envelope it could not read.
-func TestReadControlRequest_GooseReadsAnUnknownRequestAsGeneric(t *testing.T) {
+// A payload that Goose's reader does not recognize reads as unrecognized, so
+// it offers no answer that Goose would not read.
+func TestReadControlRequest_GooseReadsAnUnknownRequestAsUnrecognized(t *testing.T) {
 	t.Parallel()
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"unknown_envelope":{"nothing":"here"}}`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"unknown_envelope":{"nothing":"here"}}`)))
 }
 
 // Each option is selected as it is, under the Worker's key of the request,
@@ -143,19 +147,23 @@ func TestAnswerControlRequest_GooseDeliversTheReasonOfARefusalAsAMessage(t *test
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 }
 
-// A call with no options takes LeapMux's allow and deny, in the neutral
-// envelope, whose deny carries its own message.
-func TestAnswerControlRequest_GooseAnswersAnOptionlessPermissionInTheNeutralEnvelope(t *testing.T) {
+// A call with no options takes LeapMux's cancel, which reaches Goose as the
+// protocol's cancelled outcome under Goose's own id. Goose's reply has no
+// field for the reason, so the reason follows the answer as a message.
+func TestAnswerControlRequest_GooseCancelsAnOptionlessPermission(t *testing.T) {
 	t.Parallel()
 	payload := `{"jsonrpc":"2.0","id":7,"params":{"toolCall":{"toolCallId":"c","kind":"edit","title":"Edit"}}}`
-	got, err := agenttest.AnswerControl(Registration().Plugin, []byte(payload), gooseTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
+	got, err := agenttest.AnswerControl(Registration().Plugin, []byte(payload), gooseTestRequestID, agenttest.PermissionDecision(acp.CancelOptionID, "not this file"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:7","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
+	resolved := agenttest.ResolveAnswer(Registration().Plugin, []byte(payload), gooseTestRequestID, got)
+	require.NoError(t, resolved.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"cancelled"}}}`, string(resolved.Content))
+	assert.Equal(t, "not this file", got.FollowUp)
 
-	got, err = agenttest.AnswerControl(Registration().Plugin, []byte(payload), gooseTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "not this file"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:7","response":{"behavior":"deny","message":"not this file"}}}`, string(got.Content))
-	assert.Empty(t, got.FollowUp)
+	for _, id := range []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny} {
+		_, err := agenttest.AnswerControl(Registration().Plugin, []byte(payload), gooseTestRequestID, agenttest.PermissionDecision(id, ""))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Goose cannot read LeapMux's %s", id)
+	}
 }
 
 // Each elicitation answer is the shared form's: an accept with the filled

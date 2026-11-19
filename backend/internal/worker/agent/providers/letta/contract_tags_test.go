@@ -24,7 +24,11 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	assert.Equal(t, "decision", contracts.LettaReplyDecision)
 	assert.Equal(t, "behavior", contracts.LettaReplyBehavior)
 	assert.Equal(t, "message", contracts.LettaReplyMessage)
+	assert.Equal(t, "updated_input", contracts.LettaReplyUpdatedInput)
+	assert.Equal(t, "selected_permission_suggestion_ids", contracts.LettaReplySelectedPermissionSuggestionIDs)
 	assert.Equal(t, "error", contracts.LettaReplyError)
+	assert.Equal(t, "allow", contracts.LettaBehaviorAllow)
+	assert.Equal(t, "deny", contracts.LettaBehaviorDeny)
 
 	assert.Equal(t, "input", contracts.LettaCommandInput)
 	assert.Equal(t, "abort_message", contracts.LettaCommandAbortMessage)
@@ -59,12 +63,30 @@ func TestLettaContractVocabularyMatchesTheWire(t *testing.T) {
 	assert.Equal(t, "error", contracts.LettaToolStatusError)
 	for field, key := range map[string]string{
 		"ID": contracts.LettaDeltaFieldID, "RunID": contracts.LettaDeltaFieldRunID,
+		"Status":      contracts.LettaDeltaFieldStatus,
+		"MessageType": contracts.LettaDeltaFieldMessageType,
+		"Content":     contracts.LettaDeltaFieldContent,
+		"ToolCallID":  contracts.LettaDeltaFieldToolCallID,
+		"ToolCalls":   contracts.LettaDeltaFieldToolCalls,
+		"ToolCall":    contracts.LettaDeltaFieldToolCall,
+		"ToolName":    contracts.LettaDeltaFieldToolName,
+		"ToolInput":   contracts.LettaDeltaFieldToolInput,
+		"ToolReturn":  contracts.LettaDeltaFieldToolReturn,
 		"ToolReturns": contracts.LettaDeltaFieldToolReturns,
 		"EventType":   contracts.LettaDeltaFieldEventType,
 		"EventData":   contracts.LettaDeltaFieldEventData,
 		"Message":     contracts.LettaDeltaFieldMessage,
 	} {
 		decoded, found := reflect.TypeFor[lettaDelta]().FieldByName(field)
+		assert.True(t, found, field)
+		assert.Equal(t, key, decoded.Tag.Get("json"))
+	}
+	for field, key := range map[string]string{
+		"CallID":    contracts.LettaDeltaFieldToolCallID,
+		"Name":      contracts.LettaDeltaFieldName,
+		"Arguments": contracts.LettaDeltaFieldArguments,
+	} {
+		decoded, found := reflect.TypeFor[lettaNativeToolCall]().FieldByName(field)
 		assert.True(t, found, field)
 		assert.Equal(t, key, decoded.Tag.Get("json"))
 	}

@@ -65,6 +65,19 @@ func TestResolveControlResponseConformance(t *testing.T) {
 
 // Each answer addresses the stored request, as every answer that the Worker
 // resolves does.
+// No Worker path resolves a request of an unknown type: it gives no key
+// (ControlRequestKey), so the Worker refuses it before MiMo reads it. The
+// resolution withholds the answer as well, so a caller that skips the
+// Worker's check sends MiMo nothing.
+func TestResolveControlResponseWithholdsARequestOfAnUnknownType(t *testing.T) {
+	t.Parallel()
+	response := allowEnvelope("mimo-permission:per_1")
+	res := agenttest.ResolveAnswerPastTheKeyCheck(mimoProvider{}, []byte(`{"type":"session.status"}`), "mimo-permission:per_1", agent.ControlAnswer{Content: response})
+	assert.True(t, res.Withhold)
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest)
+	assert.Equal(t, response, res.Content)
+}
+
 func TestResolveControlResponse(t *testing.T) {
 	t.Parallel()
 
@@ -101,8 +114,6 @@ func TestResolveControlResponse(t *testing.T) {
 			response: allowEnvelope("mimo-question:que_2"), planExit: true},
 		{name: "a deny with feedback rejects a plan", requestID: "mimo-question:que_2", payload: storedPlanPayload,
 			response: denyEnvelope("mimo-question:que_2", "Add tests"), planExit: true},
-		{name: "a request of an unknown type is withheld", requestID: "mimo-permission:per_1", payload: `{"type":"session.status"}`,
-			response: allowEnvelope("mimo-permission:per_1"), withhold: true},
 		{name: "a request that is gone is withheld", requestID: "mimo-permission:per_1", payload: "",
 			response: allowEnvelope("mimo-permission:per_1"), withhold: true},
 	} {

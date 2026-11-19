@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +17,7 @@ func TestPublishedControlWithdrawalKeepsAReusedRequestID(t *testing.T) {
 	raw := []byte(`{"jsonrpc":"2.0","id":7,"method":"request"}`)
 	first := base.PublishControlRequestWithApproval(sink, raw, nil, nil)
 	assert.True(t, base.ControlPublicationIsCurrent(first))
-	require.NoError(t, base.SendRawInput([]byte(`{"id":7,"result":{}}`), agent.StopContext{}))
+	require.NoError(t, base.SendRawInput(sink.Answer(first.RequestID, []byte(`{"id":7,"result":{}}`))))
 	second := base.PublishControlRequestWithApproval(sink, raw, nil, nil)
 	assert.False(t, base.ControlPublicationIsCurrent(first))
 	assert.True(t, base.ControlPublicationIsCurrent(second))

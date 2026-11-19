@@ -87,7 +87,8 @@ func (s storedControlPayload) questions() []json.RawMessage {
 //  3. A `question.asked` that the Worker recorded under the plan tool's name
 //     is the plan approval.
 //  4. A `permission.asked` is a permission with MiMo's own answers.
-//  5. Any other request is the generic permission.
+//  5. Any other request reads as unrecognized: MiMo raises no other request,
+//     and the resolution refuses an answer to one.
 func (mimoProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	stored := readStoredControlPayload(input.Payload)
 	elicitation := mimoElicitation(stored)
@@ -102,7 +103,7 @@ func (mimoProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 	case stored.eventType == contracts.MiMoEventPermissionAsked:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: mimoPermissionPrompt(stored)}}
 	default:
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 }
 
@@ -235,8 +236,9 @@ func (mimoProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.
 //     envelope, and the Worker sends MiMo a rejection with that message. An
 //     option carries no text, so this is the only answer that carries it.
 //   - One of MiMo's reply words is selected as it is.
-//   - LeapMux's allow and deny, which the generic prompt offers, take the
-//     neutral envelope.
+//
+// A permission offers MiMo's reply words alone (mimoPermissionOptions), so the
+// answer refuses any other option.
 func mimoPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	decision, option, err := agent.PermissionDecisionOf(input)
 	if err != nil {
@@ -252,6 +254,6 @@ func mimoPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, 
 	case contracts.MiMoPermissionReplyOnce, contracts.MiMoPermissionReplyAlways, contracts.MiMoPermissionReplyReject:
 		return agent.ControlAnswer{Content: agent.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
 	default:
-		return agent.AnswerAllowDeny(input)
+		return agent.ControlAnswer{}, agent.InvalidControlDecision("MiMo Code offers no option %q", option.GetOptionId())
 	}
 }

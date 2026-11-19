@@ -25,11 +25,13 @@ export function canSendControlResponse(request: ControlRequest | null | undefine
 }
 
 /**
- * What the banner says about a request whose bytes LeapMux could not read.
+ * What the banner says about a request whose bytes LeapMux could not read as a request
+ * of its provider.
  *
- * The Worker reads no prompt from such bytes (`agent.UnreadableControlPrompt` in Go), so
- * nobody knows what the agent asked for. The banner states the fault instead, and offers
- * no decision, because the Worker refuses every answer to the request. See RL-002.
+ * The Worker reads no prompt from such bytes (`agent.UnreadableControlPrompt` and
+ * `agent.UnrecognizedControlPrompt` in Go), so nobody knows what the agent asked for. The
+ * banner states the fault instead, and offers no decision, because the Worker refuses
+ * every answer to the request. See RL-002.
  */
 export function controlPayloadFaultNotice(fault: ControlPayloadFault | undefined): string {
   switch (fault) {
@@ -37,6 +39,8 @@ export function controlPayloadFaultNotice(fault: ControlPayloadFault | undefined
       return 'LeapMux cannot read this request. The agent sent bytes that are not JSON.'
     case 'not-an-object':
       return 'LeapMux cannot read this request. The agent sent JSON that is not an object.'
+    case 'unrecognized':
+      return 'LeapMux cannot read this request. The agent sent a kind of request that LeapMux does not recognize.'
     default:
       return ''
   }

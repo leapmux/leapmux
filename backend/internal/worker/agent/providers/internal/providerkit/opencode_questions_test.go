@@ -53,6 +53,30 @@ func TestIsOpenCodeQuestionEvent(t *testing.T) {
 	}
 }
 
+// A provider keys the control request of a question by the daemon's own id,
+// so a stored event of another type, or one whose id is not non-empty text,
+// gives no id, and the Worker refuses every answer to it.
+func TestOpenCodeQuestionID(t *testing.T) {
+	id, ok := OpenCodeQuestionID(openCodeQuestionEvent(t, map[string]any{"id": "que_1", "questions": []any{}}))
+	assert.True(t, ok)
+	assert.Equal(t, "que_1", id)
+
+	for name, payload := range map[string][]byte{
+		"no id":                         openCodeQuestionEvent(t, map[string]any{"questions": []any{}}),
+		"an empty id":                   openCodeQuestionEvent(t, map[string]any{"id": ""}),
+		"an id that is a number":        openCodeQuestionEvent(t, map[string]any{"id": 7}),
+		"properties that are no object": openCodeQuestionEvent(t, "que_1"),
+		"an id outside the properties":  []byte(`{"type":"question.asked","id":"que_1","properties":{}}`),
+		"a permission with an id":       []byte(`{"type":"permission.asked","properties":{"id":"per_1"}}`),
+		"a reply to the question":       []byte(`{"type":"question.replied","properties":{"id":"que_1"}}`),
+		"no JSON":                       []byte(`not json`),
+	} {
+		id, ok := OpenCodeQuestionID(payload)
+		assert.False(t, ok, name)
+		assert.Empty(t, id, name)
+	}
+}
+
 func TestOpenCodeQuestionPrompt_ReadsTheQuestionsAndTheirOptions(t *testing.T) {
 	prompt := OpenCodeQuestionPrompt(openCodeQuestionEvent(t, map[string]any{
 		"id": "que_1", "sessionID": "ses_9",

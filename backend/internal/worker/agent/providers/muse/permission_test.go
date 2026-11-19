@@ -70,6 +70,8 @@ func TestBypassApprovesPendingAndLaterRequirementsButKeepsQuestions(t *testing.T
 			a.HandleOutput(nativePermissionRequest(t, "second", 0))
 			_, question := questionRequest(t, []any{map[string]any{"id": "q", "question": "Which option?", "options": []any{}, "selection": map[string]any{"mode": "single"}}})
 			a.HandleOutput(question)
+			require.Equal(t, 3, sink.PublishedControlCount(), "two approvals and a question")
+			agenttest.AssertPublishedControlKeys(t, museProvider{}, sink)
 			a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.MuseApprovalModeAllowAll})
 			if effective == contracts.MuseApprovalModeAllowAll {
 				require.Eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(decisions) == 2 }, 30*time.Second, time.Millisecond)
@@ -115,7 +117,7 @@ func TestRawControlAnswerKeepsTheExactLargeRequirementIndex(t *testing.T) {
 	key := testApprovalKey("session", "approval", index)
 	answer := agenttest.ResolveAnswer(museProvider{}, request, key, agent.ControlAnswer{Content: approvalAnswer(key)})
 	require.False(t, answer.Withhold)
-	require.NoError(t, a.SendRawInput(answer.Content, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer.Content}))
 	assert.Equal(t, index, received)
 }
 
@@ -154,7 +156,7 @@ func TestRawControlMethodMustMatchItsNativeIdentity(t *testing.T) {
 				delete(params, "approvalId")
 			}
 			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": key, "method": method, "params": params})
-			assert.Error(t, a.SendRawInput(raw, agent.StopContext{}))
+			assert.Error(t, a.SendRawInput(agent.RawInput{Data: raw}))
 			assert.Zero(t, calls, "a mismatched method must reach no native control")
 		})
 	}
@@ -238,7 +240,7 @@ func TestFailedAutomaticMuseAnswerKeepsOneManualFallback(t *testing.T) {
 	request := nativePermissionRequest(t, "approval", 0)
 	answer := agenttest.ResolveAnswer(museProvider{}, request, key, agent.ControlAnswer{Content: approvalAnswer(key)})
 	require.False(t, answer.Withhold)
-	assert.Error(t, a.SendRawInput(answer.Content, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer.Content}))
 	mu.Lock()
 	assert.Equal(t, 2, calls, "the reader can retry a definite refusal")
 	mu.Unlock()

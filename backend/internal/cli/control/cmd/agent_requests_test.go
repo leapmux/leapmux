@@ -171,6 +171,13 @@ func TestControlRequestRowOf_ProjectsEachKind(t *testing.T) {
 		assert.Equal(t, controlKindUnreadable, row.Kind)
 		assert.Equal(t, "not_an_object", row.Fault)
 	})
+	t.Run("unrecognized", func(t *testing.T) {
+		row := controlRequestRowOf("ag-1", pendingRequest("c1", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{
+			Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED,
+		}}))
+		assert.Equal(t, controlKindUnreadable, row.Kind)
+		assert.Equal(t, "unrecognized", row.Fault)
+	})
 	t.Run("a request that does not block, with an answer", func(t *testing.T) {
 		r := pendingRequest("c1", permissionPrompt())
 		r.NonBlocking = true
@@ -278,6 +285,13 @@ request c2 of agent ag-1: dialog (the agent does not wait for it; answered, pend
   message: Line one.
            Line two.
 `, renderRequests(t, unreadable, answered), "a value of several lines continues under its first line")
+	})
+	t.Run("unrecognized", func(t *testing.T) {
+		unrecognized := pendingRequest("c1", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED}})
+		assert.Equal(t, `request c1 of agent ag-1: unreadable
+  LeapMux cannot read this request (unrecognized), so it takes no answer.
+  Stop the agent's turn with "leapmux control agent interrupt ag-1".
+`, renderRequests(t, unrecognized))
 	})
 	t.Run("a refusal that ends the turn", func(t *testing.T) {
 		cancel := &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{

@@ -139,9 +139,10 @@ func TestReadControlRequest_AMemberOfTheWrongTypeReadsAsAbsent(t *testing.T) {
 	assert.Equal(t, []string{"once", "reject"}, nativeOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"permission.asked","data":{}}`))))
 }
 
-// The registry publishes no other request, so any other payload reads as the
-// generic permission, whose answer the resolver refuses.
-func TestReadControlRequest_AnyOtherPayloadIsTheGenericPermission(t *testing.T) {
+// The registry publishes no other request, and the resolver refuses an answer
+// to any other payload, so such a payload reads as unrecognized: a prompt with
+// Allow and Deny would fail only after a click.
+func TestReadControlRequest_AnyOtherPayloadIsUnrecognized(t *testing.T) {
 	for _, payload := range []string{
 		`{}`,
 		`{"type":"permission.asked"}`,
@@ -155,9 +156,7 @@ func TestReadControlRequest_AnyOtherPayloadIsTheGenericPermission(t *testing.T) 
 		`{"type":"form.created","data":{"form":{"fields":{"key":"a","type":"string"}}}}`,
 		`{"type":"form.created","data":{}}`,
 	} {
-		got := agenttest.ControlPromptOf(opencodeProvider{}, []byte(payload))
-		require.NotNil(t, got.GetPermission(), payload)
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, nativeOptionIDs(got), payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(opencodeProvider{}, []byte(payload)), payload)
 	}
 }
 
@@ -338,19 +337,23 @@ func TestAnswerControlRequest_RefusesAPermissionDecisionThatTheRequestDoesNotTak
 	}
 }
 
-// A request that is no native control takes LeapMux's allow and deny in the
-// neutral envelope.
-func TestAnswerControlRequest_TheGenericPromptTakesTheNeutralEnvelope(t *testing.T) {
-	got, err := agenttest.AnswerControl(opencodeProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
-
-	got, err = agenttest.AnswerControl(opencodeProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"deny","message":"no"}}}`, string(got.Content))
-
-	_, err = agenttest.AnswerControl(opencodeProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision("once", ""))
-	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the generic prompt offers no native decision")
+// A request that is no native control takes no answer: its prompt states the
+// fault, and even a permission prompt drawn for it answers nothing that the
+// resolver would send.
+func TestAnswerControlRequest_ARequestThatIsNoNativeControlTakesNoAnswer(t *testing.T) {
+	for _, decision := range []*leapmuxv1.ControlDecision{
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"),
+		agenttest.PermissionDecision("once", ""),
+	} {
+		_, err := agenttest.AnswerControl(opencodeProvider{}, []byte(`{}`), "r", decision)
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+		_, err = opencodeProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+			Request: agent.NewControlRequestInput([]byte(`{}`)), RequestID: "r",
+			Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+		})
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	}
 }
 
 func TestAnswerControlRequest_AnswersAQuestionFormByFieldKey(t *testing.T) {

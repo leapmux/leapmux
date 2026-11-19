@@ -41,9 +41,23 @@ func zcodeText(fields map[string]json.RawMessage, key string) string {
 	return value
 }
 
-// ReadControlRequest reads ZCode's control requests: a question, an MCP form,
-// LeapMux's workspace-trust question, the plan approval, and a permission.
+// ReadControlRequest reads ZCode's control requests: LeapMux's
+// workspace-trust question, and the two requests of the app-server, a
+// permission and a user input. A user input is a question, an MCP form or the
+// plan approval, and any other request reads as a permission.
+//
+// A request of another method reads as unrecognized: the app-server raises
+// no other request, and the resolution builds no reply to one
+// (zcodeReplyForAnswer).
 func (zcodeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
+	if prompt, ok := providerkit.ReadWorkspaceTrustPrompt(input.Payload, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE); ok {
+		return prompt
+	}
+	switch providerkit.StringField(input.Payload, "method") {
+	case contracts.ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput:
+	default:
+		return agent.UnrecognizedControlPrompt()
+	}
 	toolName := agent.ControlToolName(input.Payload)
 	if toolName == contracts.ZCodeToolNameAskUserQuestion {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
@@ -52,9 +66,6 @@ func (zcodeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 	}
 	if elicitation, ok := zcodeElicitationPrompt(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
-	}
-	if prompt, ok := providerkit.ReadWorkspaceTrustPrompt(input.Payload, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE); ok {
-		return prompt
 	}
 	if toolName == contracts.ZCodeToolNameExitPlanMode {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: zcodeStoredPlanText(input.Payload)}}}

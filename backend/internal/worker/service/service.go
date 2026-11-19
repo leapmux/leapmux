@@ -110,7 +110,7 @@ type Service struct {
 	beforeGitIndexLockFn  func(string)
 	createAgentRecordFn   func(context.Context, *db.Queries, db.CreateAgentParams) error
 	getAgentByIDFn        func(context.Context, string) (db.Agent, error)
-	sendControlResponseFn func(string, []byte) error
+	sendControlResponseFn func(agentID string, answer agent.RawInput) error
 	updateAgentSettingsFn func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
@@ -742,8 +742,8 @@ func New(cfg Config) *Service {
 	svc.startTerminalFn = svc.startTerminalProcess
 	svc.createAgentRecordFn = func(ctx context.Context, q *db.Queries, p db.CreateAgentParams) error { return q.CreateAgent(ctx, p) }
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
-	svc.sendControlResponseFn = func(agentID string, content []byte) error {
-		return svc.Agents.SendRawInput(agentID, content, agent.StopContext{})
+	svc.sendControlResponseFn = func(agentID string, answer agent.RawInput) error {
+		return svc.Agents.SendRawInput(agentID, answer)
 	}
 	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus

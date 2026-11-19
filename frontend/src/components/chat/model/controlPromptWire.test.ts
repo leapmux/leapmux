@@ -348,11 +348,18 @@ describe('controlPayloadFaultFromWire', () => {
   it('reads the fault of an unreadable payload, and none for a readable one', () => {
     expect(controlPayloadFaultFromWire(prompt({ case: 'unreadable', value: ControlPayloadFault.NOT_AN_OBJECT }))).toBe('not-an-object')
     expect(controlPayloadFaultFromWire(prompt({ case: 'unreadable', value: ControlPayloadFault.MALFORMED }))).toBe('malformed')
+    expect(controlPayloadFaultFromWire(prompt({ case: 'unreadable', value: ControlPayloadFault.UNRECOGNIZED }))).toBe('unrecognized')
     expect(controlPayloadFaultFromWire(prompt({
       case: 'permission',
       value: { options: [] },
     }))).toBeUndefined()
     expect(controlPayloadFaultFromWire(undefined)).toBeUndefined()
+  })
+
+  // The request is unreadable whatever its fault, so it must still offer no answer.
+  it('reads an unstated fault, and one that this browser does not know, as malformed', () => {
+    expect(controlPayloadFaultFromWire(prompt({ case: 'unreadable', value: ControlPayloadFault.UNSPECIFIED }))).toBe('malformed')
+    expect(controlPayloadFaultFromWire(prompt({ case: 'unreadable', value: 99 as ControlPayloadFault }))).toBe('malformed')
   })
 })
 

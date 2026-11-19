@@ -93,6 +93,12 @@ func (svc *Service) listControlRequests(dbAgent db.Agent) (*leapmuxv1.ListContro
 	return response, nil
 }
 
+// unanswerableControlRequest refuses a decision about a request whose prompt
+// states a fault (leapmuxv1.ControlPayloadFault): no decision answers it.
+func unanswerableControlRequest() error {
+	return agent.InvalidControlDecision("LeapMux cannot read this request, so it takes no answer; stop the agent instead")
+}
+
 // answerControl answers one request instance with a neutral decision. The
 // provider builds its own answer from the decision, and the Worker then
 // claims, delivers and records it (deliverControlAnswer). No client sends
@@ -101,8 +107,11 @@ func (svc *Service) listControlRequests(dbAgent db.Agent) (*leapmuxv1.ListContro
 // A request that is gone, or an instance that the Worker retired, answers
 // with its state and no error, as RecordControlResponse does for it. A failed
 // read also answers with the state, which reads the row again and states its
-// own failure. So each error that this returns is the caller's: a missing
-// request ID, or a decision that does not answer the prompt.
+// own failure. A stored request whose payload disagrees with its key
+// (storedControlRequestRefusal) answers with its state and the refusal, as
+// the claim path refuses an answer. So each error that this returns is the
+// caller's: a missing request ID, a decision about a request whose prompt
+// states a fault, or a decision that does not answer the prompt.
 func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRequest) (*leapmuxv1.AnswerControlResponse, error) {
 	if r.GetRequestId() == "" {
 		return nil, errors.New("the control request ID is missing")
@@ -117,12 +126,23 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 		return response, nil
 	}
 	plugin := svc.Agents.Registry().Plugin(dbAgent.AgentProvider)
+	// A payload that is no JSON object states its fault, which is the refusal.
+	// Any other payload must agree with its key before a provider reads it.
+	if _, unreadable := agent.UnreadableControlPrompt(row.Payload); unreadable {
+		return nil, unanswerableControlRequest()
+	}
+	meta := storedControlRequestMetadata(row)
+	if refusal := storedControlRequestRefusal(plugin, dbAgent.ID, meta); refusal != nil {
+		state, errText := svc.reportControlResponseState(dbAgent, row.RequestID, row.ClaimToken, refusal)
+		return &leapmuxv1.AnswerControlResponse{State: state, Error: errText}, nil
+	}
 	request := agent.ControlRequest{
 		RequestID: row.RequestID, Payload: row.Payload, SourceSeq: row.SourceSeq, AgentSessionID: row.AgentSessionID, NonBlocking: row.NonBlocking,
 	}
 	prompt := controlRequestPrompt(svc.Queries, plugin, dbAgent.ID, request)
 	if prompt.GetUnreadable() != leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED {
-		return nil, agent.InvalidControlDecision("LeapMux cannot read this request, so it takes no answer; stop the agent instead")
+		// The provider does not recognize the request (agent.UnrecognizedControlPrompt).
+		return nil, unanswerableControlRequest()
 	}
 	input := agent.ControlAnswerInput{
 		Request:   controlRequestInput(svc.Queries, plugin, dbAgent.ID, request),
@@ -143,7 +163,7 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 		content:      answer.Content,
 		planApproval: answer.PlanApproval,
 		followUp:     followUp,
-		decision:     deliveredControlDecision(plugin, storedControlRequestMetadata(row), input, answer),
+		decision:     deliveredControlDecision(plugin, meta, input, answer),
 	})
 	if err != nil {
 		return nil, err

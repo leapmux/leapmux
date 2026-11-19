@@ -84,10 +84,12 @@ func TestGeminiPlanResponseRejectsAnInvalidDecisionOrUnadvertisedOption(t *testi
 	result := agenttest.ResolveAnswer(geminiProvider{}, []byte(strings.ReplaceAll(string(request), "proceed_once", "different-option")), "jsonrpc:4", agent.ControlAnswer{Content: []byte(valid)})
 	assert.True(t, result.Withhold)
 
-	// A stored request that states no id gives the reply no id to answer.
+	// A stored request that states no id gives the reply no id to answer. It
+	// gives no key either, so the Worker refuses it before Gemini reads it
+	// (agent.StoredControlRequestAgrees), and this pins Gemini's own guard.
 	noID := strings.Replace(string(request), `"id":4,`, "", 1)
 	require.NotEqual(t, string(request), noID)
-	result = agenttest.ResolveAnswer(geminiProvider{}, []byte(noID), "jsonrpc:4", agent.ControlAnswer{Content: []byte(valid)})
+	result = agenttest.ResolveAnswerPastTheKeyCheck(geminiProvider{}, []byte(noID), "jsonrpc:4", agent.ControlAnswer{Content: []byte(valid)})
 	assert.True(t, result.Withhold)
 	assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest)
 }

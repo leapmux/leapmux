@@ -38,7 +38,9 @@ func isCodewhaleCommandTool(toolName string) bool {
 //   - An `approval.required` event is a permission for one call. Codewhale
 //     states no options, so the prompt states LeapMux's allow and deny.
 //
-// Any other payload reads as the generic prompt.
+// Any other payload reads as unrecognized: the runtime takes an answer only
+// to an approval or to a question of that tool, and the resolution refuses
+// LeapMux's Allow to any other request (resolveControlReply).
 func (codewhaleProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	if questions, ok := codewhaleQuestions(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{Questions: questions}}}
@@ -46,7 +48,7 @@ func (codewhaleProvider) ReadControlRequest(input agent.ControlRequestInput) *le
 	if permission, ok := codewhalePermissionPrompt(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
-	return agent.GenericPermissionPrompt()
+	return agent.UnrecognizedControlPrompt()
 }
 
 // codewhaleStoredEvent reads the runtime's event object of a stored payload,

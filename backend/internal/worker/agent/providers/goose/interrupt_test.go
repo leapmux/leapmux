@@ -70,9 +70,10 @@ func TestACPAgent_Interrupt_SkipsARequestTheReaderAlreadyAnswered(t *testing.T) 
 
 	a, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
-	a.SetSinkForTest(agentapi.NewProviderServices(&agenttest.Sink{}))
+	controls := &agenttest.ControlSink{}
+	a.SetSinkForTest(agentapi.NewProviderServices(controls))
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1"}}`))
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`), agentapi.StopContext{}))
+	require.NoError(t, a.SendRawInput(controls.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`))))
 
 	require.NoError(t, a.Interrupt(agentapi.StopContext{}))
 

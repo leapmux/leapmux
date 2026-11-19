@@ -103,6 +103,7 @@ func TestDroidBypassPreservesProtectedConfirmations(t *testing.T) {
 					}
 				}
 				require.NotNil(t, published)
+				agenttest.AssertPublishedControlKeys(t, droidProvider{}, sink)
 				if !tc.mixed {
 					var payload struct {
 						Details json.RawMessage `json:"details"`
@@ -112,7 +113,7 @@ func TestDroidBypassPreservesProtectedConfirmations(t *testing.T) {
 				}
 				answer, err := json.Marshal(droidResponseEnvelope("protected", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}))
 				require.NoError(t, err)
-				require.NoError(t, a.SendRawInput(answer, agent.StopContext{}), "the protected request remains answerable by the user")
+				require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}), "the protected request remains answerable by the user")
 			})
 		}
 	}
@@ -213,11 +214,11 @@ func TestDroidRejectsUnknownAndRepeatedControlAnswers(t *testing.T) {
 	a.SetStdinForTest(writer)
 	raw, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
 	require.NoError(t, err)
-	assert.Error(t, a.SendRawInput(raw, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: raw}))
 	request := permissionRequest(t, "approval", "Edit")
 	a.onRequestPermission(&request)
-	require.NoError(t, a.SendRawInput(raw, agent.StopContext{}))
-	assert.Error(t, a.SendRawInput(raw, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: raw}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: raw}))
 	writer.mu.Lock()
 	assert.Equal(t, 1, bytes.Count(writer.buf.Bytes(), []byte("\n")))
 	writer.mu.Unlock()
@@ -238,7 +239,7 @@ func TestDroidFailedAutomaticWriteKeepsAManualFallback(t *testing.T) {
 	a.SetStdinForTest(writer)
 	answer, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Contains(t, writer.String(), `"selectedOption":"proceed_once"`)
 }
 

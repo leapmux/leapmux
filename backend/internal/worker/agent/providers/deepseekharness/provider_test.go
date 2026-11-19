@@ -19,8 +19,10 @@ func TestProviderPreservesRawControlResponses(t *testing.T) {
 	agenttest.AssertWithholdsTheResponseForAMalformedRequest(t, Registration().Plugin)
 }
 
-// A stored request that does not decode, that asks nothing, or whose eventId
-// is not the key that stores it gives LeapMux no request to answer.
+// A stored request that does not decode, or that asks nothing, gives LeapMux
+// no request to answer. One whose eventId is not the key that stores it gives
+// another key, so the Worker refuses it before the provider reads it
+// (agent.StoredControlRequestAgrees).
 func TestProviderWithholdsAValidNativeAnswerForAnInvalidStoredRequest(t *testing.T) {
 	t.Parallel()
 	content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"allow","answers":[{"id":"native-question","selected":["Second"]}]}}}`)
@@ -31,7 +33,7 @@ func TestProviderWithholdsAValidNativeAnswerForAnInvalidStoredRequest(t *testing
 		"not json",
 		"null",
 		`{"type":"waterfall","event":"user-questions/request","eventId":"native-event","agentId":"native-root","request":{"questions":null}}`,
-		question("another-event"),
+		`{"type":"waterfall","event":"user-questions/request","eventId":"native-event","request":{"questions":[{"id":"native-question","question":"Which?","options":[{"label":"First"}]}]}}`,
 	} {
 		resolution := agenttest.ResolveAnswer(Registration().Plugin, []byte(request), "native-event", agent.ControlAnswer{Content: content})
 		assert.Equal(t, content, resolution.Content)
@@ -39,7 +41,27 @@ func TestProviderWithholdsAValidNativeAnswerForAnInvalidStoredRequest(t *testing
 		assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest, request)
 	}
 	resolution := agenttest.ResolveAnswer(Registration().Plugin, []byte(question("native-event")), "native-event", agent.ControlAnswer{Content: content})
-	assert.False(t, resolution.Withhold, "the same request under its own key takes the answer")
+	assert.False(t, resolution.Withhold, "the request under its own key takes the answer")
+}
+
+// The key of a stored control is its eventId, which the agent publishes it
+// under, so the Worker refuses a row whose payload states another eventId.
+func TestControlRequestKeyIsTheEventID(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+	publishPermission(t, a, "approval")
+	require.Equal(t, 1, sink.PublishedControlCount())
+	agenttest.AssertPublishedControlKeys(t, Registration().Plugin, sink)
+	for _, payload := range []string{
+		`{"type":"waterfall","event":"approval/request","agentId":"native-root"}`,
+		`{"type":"waterfall","event":"approval/request","eventId":"","agentId":"native-root"}`,
+		`{"type":"waterfall","event":"approval/request","eventId":7,"agentId":"native-root"}`,
+	} {
+		key, ok := Registration().Plugin.ControlRequestKey([]byte(payload), "")
+		assert.False(t, ok, payload)
+		assert.Empty(t, key, payload)
+	}
 }
 
 func TestProviderPreservesNativeResumeTokens(t *testing.T) {

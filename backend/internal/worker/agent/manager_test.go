@@ -160,10 +160,10 @@ func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachme
 func (s *stubProvider) PublishTurnActive() agent.TurnState {
 	return agent.TurnState{}
 }
-func (s *stubProvider) SendRawInput(data []byte, stop agent.StopContext) error { return nil }
-func (s *stubProvider) Stop()                                                  {}
-func (s *stubProvider) IsStopped() bool                                        { return false }
-func (s *stubProvider) DiscardOutput()                                         {}
+func (s *stubProvider) SendRawInput(agent.RawInput) error { return nil }
+func (s *stubProvider) Stop()                             {}
+func (s *stubProvider) IsStopped() bool                   { return false }
+func (s *stubProvider) DiscardOutput()                    {}
 func (s *stubProvider) ClearContext() (string, error) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()

@@ -30,8 +30,9 @@ func TestBypassApprovesPendingAndLaterPermissionsButKeepsQuestions(t *testing.T)
 }
 
 func TestMiMoClaimsAControlBeforeItsHTTPAnswer(t *testing.T) {
-	a, _, server := newControlTestAgent(t)
+	a, sink, server := newControlTestAgent(t)
 	feed(a, permissionAskedEvent(t, "permission", testSessionID, ""))
+	answer := sink.Answer("mimo-permission:permission", allowEnvelope("mimo-permission:permission"))
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	server.handle("POST /permission/permission/reply", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
@@ -42,9 +43,13 @@ func TestMiMoClaimsAControlBeforeItsHTTPAnswer(t *testing.T) {
 		writeJSON(w, http.StatusOK, `true`)
 	})
 	done := make(chan error, 1)
-	go func() { done <- a.SendRawInput(allowEnvelope("mimo-permission:permission"), agent.StopContext{}) }()
-	<-entered
-	second := a.SendRawInput(allowEnvelope("mimo-permission:permission"), agent.StopContext{})
+	go func() { done <- a.SendRawInput(answer) }()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("the first answer returned before it reached the server: %v", err)
+	}
+	second := a.SendRawInput(answer)
 	close(release)
 	require.NoError(t, <-done)
 	assert.Error(t, second)
@@ -55,10 +60,11 @@ func TestMiMoKeepsAnAcceptedAnswerAcrossAStaleRequestReplay(t *testing.T) {
 	a, sink, server := newControlTestAgent(t)
 	request := permissionAskedEvent(t, "permission", testSessionID, "")
 	feed(a, request)
-	require.NoError(t, a.SendRawInput(allowEnvelope("mimo-permission:permission"), agent.StopContext{}))
+	answer := sink.Answer("mimo-permission:permission", allowEnvelope("mimo-permission:permission"))
+	require.NoError(t, a.SendRawInput(answer))
 	feed(a, request)
 	assert.Equal(t, 1, sink.PublishedControlCount())
-	assert.Error(t, a.SendRawInput(allowEnvelope("mimo-permission:permission"), agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(answer))
 	assert.Len(t, server.requestsTo("POST /permission/permission/reply"), 1)
 }
 
@@ -115,6 +121,35 @@ func TestMiMoOldPublicationCannotCancelAReplacement(t *testing.T) {
 	assert.Equal(t, next.payload, []byte(retained.Payload))
 }
 
+// MiMo can announce a waiting request again with other content, for example
+// when the stream reconnects (restatePendingControls), and the new content
+// replaces the request's instance. The server applies an answer to the request
+// ID, so an answer reaches MiMo only while the instance that it answers is
+// current, and an answer that states no instance reaches nothing.
+func TestMiMoRefusesAnAnswerToAReplacedRequest(t *testing.T) {
+	a, sink, server := newControlTestAgent(t)
+	asked := func(command string) []byte {
+		return eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{
+			"id": "permission", "sessionID": testSessionID, "permission": "bash", "patterns": []string{command},
+			"metadata": map[string]any{"command": command},
+		})
+	}
+	feed(a, asked("ls"))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+	feed(a, asked("rm -rf build"))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	current := sink.LastPublishedControl()
+	require.NotEqual(t, replaced.InstanceID, current.InstanceID)
+
+	answer := allowEnvelope("mimo-permission:permission")
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: replaced.InstanceID}), agent.ErrControlInstanceReplaced)
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+	assert.Empty(t, server.requestsTo("POST /permission/permission/reply"), "no answer reaches the request that replaced the answered one")
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: current.InstanceID}))
+	assert.Len(t, server.requestsTo("POST /permission/permission/reply"), 1)
+}
+
 func TestMiMoAutomaticFailurePublishesOneManualFallback(t *testing.T) {
 	a, sink, server := newControlTestAgent(t)
 	a.permissionPolicy = contracts.MiMoPermissionPolicyBypass
@@ -126,6 +161,6 @@ func TestMiMoAutomaticFailurePublishesOneManualFallback(t *testing.T) {
 	require.Eventually(t, a.approvalWork.Idle, 30*time.Second, time.Millisecond)
 	assert.Len(t, server.requestsTo("POST /permission/permission/reply"), 1)
 	server.respond("POST /permission/permission/reply", http.StatusOK, `true`)
-	require.NoError(t, a.SendRawInput(allowEnvelope("mimo-permission:permission"), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("mimo-permission:permission", allowEnvelope("mimo-permission:permission"))))
 	assert.Len(t, server.requestsTo("POST /permission/permission/reply"), 2)
 }

@@ -85,7 +85,9 @@ func AllowDenyOptions() []*leapmuxv1.PermissionOption {
 }
 
 // GenericPermissionPrompt is the prompt of a request that the provider does
-// not recognize: LeapMux's allow and deny, with no arguments. The arguments
+// not recognize but can still answer: LeapMux's allow and deny, with no
+// arguments. A provider whose answer to it does not reach its runtime reads
+// such a request as UnrecognizedControlPrompt instead. The arguments
 // stay out on purpose: the answer sends the request's own input back, and a
 // prompt that drew the whole envelope as arguments would show one part of
 // the payload while the answer sent another.
@@ -150,10 +152,26 @@ func UnreadableControlPrompt(payload []byte) (*leapmuxv1.ControlPrompt, bool) {
 	if fault == leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED {
 		return nil, false
 	}
+	return controlFaultPrompt(fault), true
+}
+
+// UnrecognizedControlPrompt is the prompt of a request whose payload is a
+// JSON object that its provider does not recognize, so the provider can build
+// no answer that its runtime reads. Like the prompt of a payload that is no
+// JSON object (UnreadableControlPrompt), it offers no answer: a client states
+// the fault and offers a stop, and AnswerControl refuses every decision.
+func UnrecognizedControlPrompt() *leapmuxv1.ControlPrompt {
+	return controlFaultPrompt(leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED)
+}
+
+// controlFaultPrompt is the prompt of a request that the Worker cannot read
+// for the reason fault. The request takes no text, so the composer's text is
+// a message.
+func controlFaultPrompt(fault leapmuxv1.ControlPayloadFault) *leapmuxv1.ControlPrompt {
 	return &leapmuxv1.ControlPrompt{
 		Kind:          &leapmuxv1.ControlPrompt_Unreadable{Unreadable: fault},
 		EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE,
-	}, true
+	}
 }
 
 // controlPayloadFault is why payload cannot be read as a JSON object, or

@@ -53,6 +53,7 @@ func TestKiroControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	// session, so each dialog passes the session guard and reaches the reader.
 	a.SetSessionIDForTest("test-session")
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, contracts.KiroMethodUserInput)
+	agenttest.AssertPublishedControlKeys(t, kiroProvider{}, sink)
 }
 
 func TestKiroInterruptCancelsBeforeReleasingPendingControls(t *testing.T) {
@@ -253,7 +254,7 @@ func TestKiroResolvedInteractionAfterTheAnswerCancelsNothing(t *testing.T) {
 		"result": map[string]any{"action": contracts.KiroUserInputActionAnswered, "answer": "Postgres"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(requestID, answer)))
 	syncPeer(t, a)
 
 	// Kiro reports every resolution, the reader's own answer included.

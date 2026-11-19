@@ -88,11 +88,11 @@ func (t StopTarget) InterruptChild(childKey string, stop StopContext) error {
 	return interrupter.InterruptChild(childKey, stop)
 }
 
-func (t StopTarget) SendRawInput(data []byte, stop StopContext) error {
+func (t StopTarget) SendRawInput(input RawInput) error {
 	if t.entry == nil {
 		return ErrAgentNotFound
 	}
-	return t.entry.provider.SendRawInput(data, stop)
+	return t.entry.provider.SendRawInput(input)
 }
 
 func (t StopTarget) EscalationReady() bool {

@@ -74,6 +74,7 @@ func TestCodebuddyInterruptRefusesEachWaitingPermissionWithoutASecondStop(t *tes
 	a.HandleOutput(canUseTool("perm_b"))
 	a.HandleOutput(canUseTool("perm_a"))
 	require.Len(t, controls.PublishedControls(), 2)
+	agenttest.AssertPublishedControlKeys(t, codebuddyProvider{}, controls)
 
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
@@ -176,7 +177,7 @@ func TestCodebuddyFailedAnswerKeepsTheNativePermissionOpen(t *testing.T) {
 	a, _, _ := permissionFixture(t)
 	a.HandleOutput(canUseTool("perm_1"))
 	a.SetStdinForTest(agenttest.FailingStdin{})
-	require.Error(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)}))
 	a.mu.Lock()
 	_, open := a.controls["perm_1"]
 	a.mu.Unlock()
@@ -233,7 +234,7 @@ func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 	for name, settle := range map[string]func(t *testing.T, a *Agent, controls *agenttest.ControlSink){
 		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
-			require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)}))
 		},
 		"the native turn ended": func(_ *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
@@ -282,9 +283,9 @@ func TestCodebuddyBypassApprovesPendingAndLaterTools(t *testing.T) {
 	for _, id := range []string{"question", "later-question"} {
 		assert.NotContains(t, peer.String(), `"request_id":"`+id+`"`, "Bypass must not answer a question")
 		answer := []byte(codebuddyControlAnswer(`{"allowed":true,"updatedInput":{"answers":{"Color":"Green"}}}`)(id))
-		require.NoError(t, a.SendRawInput(answer, agent.StopContext{}), "the question must remain answerable")
+		require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}), "the question must remain answerable")
 		assert.Contains(t, peer.String(), string(answer))
-		require.ErrorContains(t, a.SendRawInput(answer, agent.StopContext{}), "no longer pending")
+		require.ErrorContains(t, a.SendRawInput(agent.RawInput{Data: answer}), "no longer pending")
 	}
 }
 
@@ -319,10 +320,10 @@ func TestCodebuddyInterruptRefusesAQuestionBeforeTheCompletedAssistantFrame(t *t
 func TestCodebuddyRefusesAnUnknownOrRepeatedPermissionAnswer(t *testing.T) {
 	a, _, stdin := permissionFixture(t)
 	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Empty(t, stdinFrames(t, stdin))
 	a.HandleOutput(canUseTool("perm_1"))
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
+	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Len(t, stdinFrames(t, stdin), 1)
 }

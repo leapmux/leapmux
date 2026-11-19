@@ -27,7 +27,7 @@ func TestJSONRPCUsesConfiguredFramingForEveryWrite(t *testing.T) {
 			return b.SendErrorResponse(json.RawMessage(`0`), -32601, "Unsupported method")
 		}, `{"jsonrpc":"2.0","id":0,"error":{"code":-32601,"message":"Unsupported method"}}`},
 		{"raw input", func(b *providerkit.JSONRPCProcess) error {
-			return b.SendRawInput([]byte(" {\"id\":9007199254740993}\n"), agent.StopContext{})
+			return b.SendRawInput(agent.RawInput{Data: []byte(" {\"id\":9007199254740993}\n")})
 		}, " {\"id\":9007199254740993}\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

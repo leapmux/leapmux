@@ -1385,6 +1385,27 @@ describe('useAgentOperations', () => {
       })
     })
 
+    // The agent can replace a request with another instance under the same id while
+    // the reader answers it. The Worker then reports the answered instance canceled with
+    // no error, so the answer fails nothing: its card goes, and the replacement's card
+    // stays for the reader to answer.
+    it('removes only the answered instance when the agent replaced it, and keeps the replacement', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, controlStore } = setup()
+          const replaced = request('r1', 'claim-1')
+          controlStore.addRequest('a1', replaced)
+          controlStore.addRequest('a1', request('r1', 'claim-2'))
+          vi.mocked(workerAgent.answerControl).mockResolvedValueOnce(create(AnswerControlResponseSchema, { state: ControlResponseState.CANCELED }))
+          await expect(ops.handleControlAnswer(replaced, allow)).resolves.toBe(true)
+          expect(controlStore.getRequests('a1').map(r => r.claimToken)).toEqual(['claim-2'])
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
     it('echoes the answered instance\'s per-instance claimToken so the worker dedups per instance', async () => {
       await createRoot(async (dispose) => {
         try {

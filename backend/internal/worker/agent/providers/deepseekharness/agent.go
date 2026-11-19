@@ -302,7 +302,7 @@ func (a *Agent) CompactContext() error {
 
 func (a *Agent) DiscardOutput() { a.discard.Store(true); a.Process.DiscardOutput() }
 
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error { return a.answerControl(raw) }
+func (a *Agent) SendRawInput(input agent.RawInput) error { return a.answerControl(input.Data) }
 
 // HandleOutput accepts one native mux frame for provider tests.
 func (a *Agent) HandleOutput(raw []byte) {

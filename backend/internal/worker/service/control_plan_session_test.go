@@ -31,7 +31,7 @@ func createPlanSessionTestAgent(t *testing.T, svc *Service, provider leapmuxv1.A
 	require.NoError(t, err)
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", AgentSessionID: "original", RequestID: "plan", ClaimToken: "claim",
-		Payload: []byte(`{"request":{"tool_name":"` + tool + `"}}`),
+		Payload: []byte(`{"type":"control_request","request_id":"plan","request":{"tool_name":"` + tool + `"}}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)

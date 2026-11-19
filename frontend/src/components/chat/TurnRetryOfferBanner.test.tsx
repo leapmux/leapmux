@@ -99,6 +99,18 @@ describe('TurnRetryOfferBanner', () => {
     expect(screen.getByTestId('turn-retry-offer-retry')).toHaveTextContent('Retry with GPT-6 Luna')
   })
 
+  // The cache can learn the label after the banner shows, as when another agent of the
+  // provider reports its catalog. The button then names the model by its label.
+  it('draws the label that the cache learns after the banner shows', () => {
+    render(() => (
+      <TurnRetryOfferBanner offer={OFFER} provider={AgentProvider.CODEX} onRetry={accept} />
+    ))
+    expect(screen.getByTestId('turn-retry-offer-retry')).toHaveTextContent('Retry with gpt-6-luna')
+
+    updateSettingsLabelCache(AgentProvider.CODEX, MODEL_GROUPS)
+    expect(screen.getByTestId('turn-retry-offer-retry')).toHaveTextContent('Retry with GPT-6 Luna')
+  })
+
   // The live region is always mounted. Its class swaps, so a screen reader
   // hears the sentence once when the offer arrives.
   it('renders no banner content while the worker made no offer', () => {

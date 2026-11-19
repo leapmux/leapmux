@@ -15,6 +15,20 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// ControlRequestKey reads the key that the agent publishes a request under:
+// the `id` that omp's dialog states (publishRegisteredDialog), which the
+// bridge's question request repeats (routeAskDialog), exactly as omp states
+// it. It is no JSON-RPC id, so it takes no canonical form.
+func (ompProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(payload, &request) != nil || request.ID == "" {
+		return "", false
+	}
+	return request.ID, true
+}
+
 // dialogHeader takes the routing fields of an extension_ui_request frame.
 //
 // Every dialog blocks omp until the host answers it with an extension_ui_response
@@ -394,7 +408,8 @@ func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 // turns it into the dialog chain omp waits on (see answerAsk). Every other frame
 // reaches omp unchanged, and a cancellation of the bridge's request also ends the
 // bridge's state for that call.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var head struct {
 		Type      string `json:"type"`
 		ID        string `json:"id"`

@@ -120,14 +120,14 @@ func TestReadControlRequest_GrokToolPermissionReadsThroughTheBaseReader(t *testi
 	assert.Equal(t, []string{"allow-once", "reject-once"}, grokOptionIDs(permission.GetOptions()))
 
 	// Grok presents the normalized input with a `variant` tag, beside the name in
-	// `_meta`. With no option list, LeapMux's allow and deny answer it.
+	// `_meta`. With no option list, only LeapMux's cancel answers it.
 	const command = "npm test -- --runInBand"
 	permission = agenttest.ControlPromptOf(grokProvider{}, []byte(`{"method":"session/request_permission","params":{"toolCall":{"toolCallId":"c","kind":"execute","title":"Execute",
 		"rawInput":{"variant":"Bash","command":"`+command+`"},"_meta":{"x.ai/tool":{"name":"run_terminal_command"}}}}}`)).GetPermission()
 	require.NotNil(t, permission)
 	assert.Equal(t, command, permission.GetCommand())
 	assert.Equal(t, "Execute", permission.GetTitle())
-	assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, grokOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{acp.CancelOptionID}, grokOptionIDs(permission.GetOptions()))
 
 	// The arguments carry the whole call, the command included.
 	permission = agenttest.ControlPromptOf(grokProvider{}, []byte(`{"method":"session/request_permission","params":{"toolCall":{"toolCallId":"command","kind":"execute","title":"Run command",
@@ -140,12 +140,9 @@ func TestReadControlRequest_GrokToolPermissionReadsThroughTheBaseReader(t *testi
 	assert.Equal(t, []string{"once", "reject"}, grokOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
 }
 
-func TestReadControlRequest_GrokReadsAnUnknownRequestAsTheGenericPermission(t *testing.T) {
+func TestReadControlRequest_GrokReadsAnUnknownRequestAsUnrecognized(t *testing.T) {
 	for _, payload := range []string{`{"method":"_x.ai/unknown"}`, `{}`, `not json`, `{"method":7,"params":{"planContent":"x"}}`} {
-		prompt := agenttest.ControlPromptOf(grokProvider{}, []byte(payload))
-		require.NotNil(t, prompt.GetPermission(), payload)
-		assert.Empty(t, prompt.GetPermission().GetTitle(), payload)
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, grokOptionIDs(prompt.GetPermission().GetOptions()), payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(grokProvider{}, []byte(payload)), payload)
 	}
 }
 
@@ -413,13 +410,20 @@ func TestAnswerControlRequest_GrokPermissionWithNoRejectOptionCancels(t *testing
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"r","result":{"outcome":{"outcome":"cancelled"},"_meta":{"followup_message":"why"}}}`, string(got.Content))
 }
 
-// A request with no options takes LeapMux's allow and deny, in the neutral
-// envelope that the base resolution rewrites.
-func TestAnswerControlRequest_GrokPermissionWithNoOptionsTakesTheNeutralEnvelope(t *testing.T) {
-	payload := `{"params":{"toolCall":{"toolCallId":"c","title":"Edit"}}}`
-	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
+// A request with no options takes LeapMux's cancel, which reaches Grok as the
+// protocol's cancelled outcome under Grok's own id, with the reason in Grok's
+// own field.
+func TestAnswerControlRequest_GrokPermissionWithNoOptionsCancels(t *testing.T) {
+	payload := `{"jsonrpc":"2.0","id":3,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"c","title":"Edit"}}}`
+	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:3", agenttest.PermissionDecision(acp.CancelOptionID, "why"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"deny","message":"`+contracts.ControlAnswerMessageRejectedByUser+`"}}}`, string(got.Content))
+	resolved := agenttest.ResolveAnswer(grokProvider{}, []byte(payload), "jsonrpc:3", got)
+	require.NoError(t, resolved.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"result":{"outcome":{"outcome":"cancelled"},"_meta":{"followup_message":"why"}}}`, string(resolved.Content))
+	assert.Empty(t, got.FollowUp, "the reason rides in the reply, so it is not sent twice")
+
+	_, err = agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:3", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Grok cannot read LeapMux's deny")
 }
 
 func TestAnswerControlRequest_GrokElicitationTakesTheNeutralEnvelopeThatGrokResolves(t *testing.T) {

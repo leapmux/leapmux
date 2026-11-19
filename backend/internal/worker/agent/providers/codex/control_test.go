@@ -300,23 +300,23 @@ func TestCodexBypassSweepWaitsForAcknowledgement(t *testing.T) {
 func TestCodexSendRawInputRefusesAnAnswerToAClosedRequest(t *testing.T) {
 	t.Parallel()
 
-	a, _, stdin := newCodexControlAgent(t)
+	a, sink, stdin := newCodexControlAgent(t)
 	handleCodexOutput(a, providerkit.ParseLine([]byte(codexCommandApprovalLine)))
 
-	answer := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	answer := sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`))
+	require.NoError(t, a.SendRawInput(answer))
 	assert.Equal(t, 1, strings.Count(stdin.String(), `"id":7`))
 
-	err := a.SendRawInput(answer, agent.StopContext{})
-	require.ErrorIs(t, err, providerkit.ErrControlRequestNotPending)
+	err := a.SendRawInput(answer)
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 	assert.Equal(t, 1, strings.Count(stdin.String(), `"id":7`), "a second answer never reaches Codex")
 
-	err = a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":"unknown","result":{}}`), agent.StopContext{})
-	require.ErrorIs(t, err, providerkit.ErrControlRequestNotPending)
+	err = a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":"unknown","result":{}}`)})
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 
 	// A request and a notification are not answers, so they pass.
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":3,"method":"turn/interrupt","params":{}}`), agent.StopContext{}))
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","method":"initialized"}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":3,"method":"turn/interrupt","params":{}}`)}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","method":"initialized"}`)}))
 	assert.Contains(t, stdin.String(), `"method":"turn/interrupt"`)
 	assert.Contains(t, stdin.String(), `"method":"initialized"`)
 }

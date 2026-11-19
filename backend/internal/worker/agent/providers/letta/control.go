@@ -52,6 +52,24 @@ type lettaPermissionSuggestion struct {
 	Text string `json:"text"`
 }
 
+// The fields of a published control request that LeapMux chose, which the
+// Worker writes (onControlRequest, postQuestionRequest) and reads back
+// (readLettaControlPayload). The tool fields take the contract's names
+// instead, the ones that a stream_delta carries.
+const (
+	lettaControlFieldType      = "type"
+	lettaControlFieldRequestID = "requestId"
+)
+
+// ControlRequestKey reads the key that the agent publishes a Letta request
+// under: the `requestId` that it writes into the payload (onControlRequest,
+// postQuestionRequest).
+func (lettaProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	fields, _ := providerkit.RawObject(payload)
+	requestID, _ := providerkit.RawString(fields[lettaControlFieldRequestID])
+	return requestID, requestID != ""
+}
+
 // onControlRequest publishes one permission request. `body` is the frame's
 // `request` object and `requestID` the frame's `request_id`.
 //
@@ -86,8 +104,8 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 	// ones a stream_delta carries. A payload that spelled them differently drew
 	// a banner titled "Tool" with no command.
 	payloadBytes, err := json.Marshal(map[string]any{
-		"type":                              string(kind),
-		"requestId":                         requestID,
+		lettaControlFieldType:               string(kind),
+		lettaControlFieldRequestID:          requestID,
 		contracts.LettaDeltaFieldToolName:   req.ToolName,
 		contracts.LettaDeltaFieldToolCallID: req.ToolCallID,
 		contracts.LettaDeltaFieldToolInput:  req.Input,
@@ -140,8 +158,8 @@ func (a *Agent) postQuestionRequest(tool *lettaTool, delta *lettaDelta) {
 	slog.Info("letta: question request",
 		"agent_id", a.AgentID(), "request_id", requestID, "tool", tool.name)
 	payloadBytes, err := json.Marshal(map[string]any{
-		"type":                              string(lettaControlAskUser),
-		"requestId":                         requestID,
+		lettaControlFieldType:               string(lettaControlAskUser),
+		lettaControlFieldRequestID:          requestID,
 		contracts.LettaDeltaFieldToolName:   tool.name,
 		contracts.LettaDeltaFieldToolCallID: tool.id,
 		contracts.LettaDeltaFieldToolInput: map[string]json.RawMessage{
@@ -196,13 +214,8 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	if len(ctx.RequestPayload) == 0 {
 		return agent.ControlResponseResolution{Content: ctx.ResponseContent}
 	}
-	var request struct {
-		Type       string          `json:"type"`
-		RequestID  string          `json:"requestId"`
-		ToolCallID string          `json:"tool_call_id"`
-		ToolInput  json.RawMessage `json:"tool_input"`
-	}
-	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
+	request, readable := readLettaControlPayload(ctx.RequestPayload)
+	if !readable {
 		resolution := agent.ControlResponseResolution{Content: ctx.ResponseContent}
 		resolution.Refuse(agent.RefusalUnreadableRequest)
 		return resolution
@@ -214,22 +227,27 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 		resolution.Refuse(agent.RefusalNoDecision)
 		return resolution
 	}
-	if request.Type == string(lettaControlAskUser) {
-		// Only a question request states its input as the question call's own object.
-		var input map[string]json.RawMessage
-		if err := json.Unmarshal(request.ToolInput, &input); err != nil {
-			var resolution agent.ControlResponseResolution
-			resolution.Refuse(agent.RefusalUnreadableRequest)
-			return resolution
-		}
-		return lettaResolveQuestion(ctx, request.ToolCallID, input[contracts.LettaQuestionFieldQuestions], behavior, message)
+	switch request.kind {
+	case string(lettaControlAskUser):
+		// Only a question request states its input as the question call's own
+		// object. An input that is no object reads as `{}`, which states no
+		// question, so lettaResolveQuestion withholds the answer.
+		questions := providerkit.RawFields(request.toolInput)[contracts.LettaQuestionFieldQuestions]
+		return lettaResolveQuestion(ctx, request.toolCallID, questions, behavior, message)
+	case string(lettaControlPermission):
+	default:
+		// The Worker publishes no other request, so Letta Code waits for no
+		// answer to this one.
+		resolution := agent.ControlResponseResolution{Content: ctx.ResponseContent}
+		resolution.Refuse(agent.RefusalUnreadableRequest)
+		return resolution
 	}
 
-	behaviorWord := "deny"
+	lettaBehavior := contracts.LettaBehaviorDeny
 	if behavior == contracts.ControlAnswerBehaviorAllow {
-		behaviorWord = "allow"
+		lettaBehavior = contracts.LettaBehaviorAllow
 	}
-	raw, err := lettaApprovalResponse(request.RequestID, behaviorWord, message)
+	raw, err := lettaApprovalResponse(request.requestID, lettaBehavior, message)
 	if err != nil {
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalUnencodableReply)
@@ -239,8 +257,9 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 }
 
 // lettaApprovalResponse encodes the approval_response payload that answers the
-// permission `requestID` with a decision: `behavior` is `allow` or `deny`, and
-// `message` is the reason that the model reads.
+// permission `requestID` with a decision: `behavior` is
+// contracts.LettaBehaviorAllow or contracts.LettaBehaviorDeny, and `message` is
+// the reason that the model reads.
 func lettaApprovalResponse(requestID, behavior, message string) ([]byte, error) {
 	decision, err := json.Marshal(contracts.LettaApprovalDecision{Behavior: behavior, Message: message})
 	if err != nil {
@@ -387,25 +406,28 @@ func (a *Agent) lettaSession() string {
 //     for a permission resolves the approval that the running turn waits for.
 //   - The question response becomes a task notification in a `create_message`
 //     input. A running turn queues it, and an idle conversation starts a turn.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data := input.Data
 	if a.IsStopped() {
 		return errAgentStopped
 	}
-	var head struct {
-		Kind string `json:"kind"`
-		Type string `json:"type"`
+	// SendRawInput reads each field by its exact name, as Letta Code does. Go's
+	// decoder matches a struct tag in any letter case, and the Worker forwards a
+	// permission answer to Letta Code without a change.
+	fields, ok := providerkit.RawObject(data)
+	if !ok {
+		return errors.New("the Letta control answer is not a JSON object")
 	}
-	if err := json.Unmarshal(data, &head); err != nil {
-		return fmt.Errorf("the Letta control answer is not JSON: %w", err)
-	}
+	kind, _ := providerkit.RawString(fields[contracts.LettaReplyKind])
+	answerType, _ := providerkit.RawString(fields[contracts.LettaQuestionFieldType])
 	scope := a.runtime()
 	if scope.AgentID == "" || scope.ConversationID == "" {
 		return errors.New("the Letta runtime identity is not known yet; the answer cannot be addressed")
 	}
 	switch {
-	case head.Kind == contracts.LettaReplyKindApprovalResponse:
+	case kind == contracts.LettaReplyKindApprovalResponse:
 		return a.answerPermission(data, scope)
-	case head.Type == contracts.LettaQuestionResponseType:
+	case answerType == contracts.LettaQuestionResponseType:
 		notification, err := lettaQuestionNotification(data)
 		if err != nil {
 			return err

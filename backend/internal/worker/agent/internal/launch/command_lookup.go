@@ -304,6 +304,22 @@ func pwshNativeLookupSetup() string {
 
 func isCsh(shell string) bool { return shell == "csh" || shell == "tcsh" }
 
+// cshUnaliasBuiltins is the first line of each csh command that the package
+// builds. An alias replaces a builtin at the start of a line, and tcsh and csh
+// let a profile alias each builtin that the commands call there: set, setenv,
+// unsetenv, exec, else, foreach and break. The line removes those aliases. It
+// stands alone, because csh substitutes the aliases of a whole line before it
+// runs any command of that line. tcsh refuses an alias named unalias.
+//
+// It removes no other alias, so a selected wrapper alias keeps the echo,
+// which, eval and source of its profile. buildCshCommand removes the alias of
+// exit only before its own exit, for the same reason. The other words that
+// the commands use, such as then, endif and end, take no alias.
+//
+// No line of the file can remove an alias named if: it breaks the line that
+// sources the file (see cshInvocationPrefix) before the file runs.
+const cshUnaliasBuiltins = "unalias set setenv unsetenv exec else foreach break\n"
+
 func lookupSetup(shell string, nativeOnly bool) string {
 	switch {
 	case terminal.IsPwsh(shell):
@@ -315,7 +331,7 @@ func lookupSetup(shell string, nativeOnly bool) string {
 	case shell == "xonsh":
 		return xonshLookupSetup
 	case isCsh(shell):
-		return ""
+		return cshUnaliasBuiltins
 	default:
 		return posixProtocolSetup(shell) + posixLookupSetup(shell)
 	}

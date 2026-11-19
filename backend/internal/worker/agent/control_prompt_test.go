@@ -73,6 +73,12 @@ func TestReadControlPrompt(t *testing.T) {
 		assert.Equal(t, leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE, got.GetEditorPurpose())
 	})
 
+	t.Run("an unrecognized request keeps its fault and takes no text", func(t *testing.T) {
+		got := ReadControlPrompt(&promptReader{prompt: UnrecognizedControlPrompt()}, NewControlRequestInput([]byte(`{"method":"x"}`)))
+		assert.Equal(t, leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED, got.GetUnreadable())
+		assert.Equal(t, leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE, got.GetEditorPurpose())
+	})
+
 	t.Run("a provider that reads no prompt states the generic one", func(t *testing.T) {
 		for name, prompt := range map[string]*leapmuxv1.ControlPrompt{
 			"nil":     nil,
@@ -117,6 +123,16 @@ func TestUnreadableControlPrompt(t *testing.T) {
 		assert.Equal(t, leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE, prompt.GetEditorPurpose(),
 			"the composer offers no answer to a request that takes none: %s", payload)
 	}
+}
+
+// A provider reads a JSON object that it does not recognize, and whose
+// generic answer its runtime would not read, as this prompt. Like an
+// unreadable payload, it offers no answer.
+func TestUnrecognizedControlPrompt(t *testing.T) {
+	prompt := UnrecognizedControlPrompt()
+	assert.Equal(t, leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED, prompt.GetUnreadable())
+	assert.Equal(t, leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE, prompt.GetEditorPurpose())
+	assert.NotSame(t, prompt, UnrecognizedControlPrompt(), "each call returns its own prompt, so a caller can change it")
 }
 
 func TestIsAllowOption(t *testing.T) {
@@ -317,6 +333,7 @@ func TestWithEditorPurpose(t *testing.T) {
 		"a plan":                                {&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}, feedback},
 		"a dialog":                              {&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Dialog{Dialog: &leapmuxv1.DialogPrompt{}}}, none},
 		"unreadable":                            {&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_MALFORMED}}, none},
+		"unrecognized":                          {&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED}}, none},
 		"a provider's own purpose stays":        {&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Dialog{Dialog: &leapmuxv1.DialogPrompt{}}, EditorPurpose: answer}, answer},
 		"a provider's none on a question stays": {&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{}}, EditorPurpose: none}, none},
 	} {

@@ -97,7 +97,9 @@ func TestReasonixPlanApprovalPreservesStringNativeID(t *testing.T) {
 }
 
 // Each answer addresses the stored request, as every answer that the Worker
-// resolves does.
+// resolves does. A stored request with no native id gives no key, so the
+// Worker refuses it before Reasonix reads it (agent.StoredControlRequestAgrees),
+// and the case pins Reasonix's own guard past that check.
 func TestReasonixPlanApprovalWithholdsInvalidAnswers(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -114,7 +116,7 @@ func TestReasonixPlanApprovalWithholdsInvalidAnswers(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			result := resolveReasonixPlan(tc.payload, tc.response)
+			result := agenttest.ResolveAnswerPastTheKeyCheck(reasonixProvider{}, []byte(tc.payload), "jsonrpc:3", agent.ControlAnswer{Content: tc.response})
 			assert.True(t, result.Withhold)
 			assert.EqualError(t, result.Refusal(), tc.reason)
 		})

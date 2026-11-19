@@ -171,33 +171,52 @@ func TestControlApprovalQueueRefusalKeepsTheCard(t *testing.T) {
 	assert.True(t, base.OutstandingControlForTest("jsonrpc:1"))
 }
 
+// A standing approval owns the answer of its request until its write
+// finishes. A reader answer to the same request in that window is a second
+// answer, so both raw input paths refuse it and write nothing.
 func TestControlApprovalCannotRaceAReaderAnswer(t *testing.T) {
 	t.Parallel()
-	writer := newGatedStdin(0, nil)
-	release := sync.OnceFunc(func() { close(writer.release) })
-	defer release()
-	ctx := testutil.DeadlineContext(t)
-	base := &JSONRPCProcess{Process: Process{stdin: writer}}
-	sink := &agenttest.ControlSink{}
-	publication := base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{})
-	queued := make(chan bool, 1)
-	go func() { queued <- base.ApproveOutstandingControlRequest(sink, publication) }()
-	select {
-	case accepted := <-queued:
-		require.True(t, accepted)
-	case <-ctx.Done():
-		t.Fatal("approval admission waited for stdin")
+	for name, send := range map[string]func(*JSONRPCProcess, agent.RawInput) error{
+		"SendRawInput":                     (*JSONRPCProcess).SendRawInput,
+		"SendRawInputToOutstandingRequest": (*JSONRPCProcess).SendRawInputToOutstandingRequest,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			writer := newGatedStdin(0, nil)
+			release := sync.OnceFunc(func() { close(writer.release) })
+			defer release()
+			ctx := testutil.DeadlineContext(t)
+			base := &JSONRPCProcess{Process: Process{stdin: writer}}
+			sink := &agenttest.ControlSink{}
+			publication := base.PublishControlRequestWithApproval(sink, []byte(`{"id":1,"method":"approve"}`), nil, map[string]any{})
+			queued := make(chan bool, 1)
+			go func() { queued <- base.ApproveOutstandingControlRequest(sink, publication) }()
+			select {
+			case accepted := <-queued:
+				require.True(t, accepted)
+			case <-ctx.Done():
+				t.Fatal("approval admission waited for stdin")
+			}
+			select {
+			case <-writer.entered:
+			case <-ctx.Done():
+				t.Fatal("the approval write did not start")
+			}
+			assert.Empty(t, sink.CanceledControls())
+			answered := make(chan error, 1)
+			go func() { answered <- send(base, sink.Answer(publication.RequestID, []byte(`{"id":1,"result":{}}`))) }()
+			select {
+			case err := <-answered:
+				assert.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+			case <-writer.entered:
+				t.Fatal("a second answer reached the agent while the standing approval wrote its own")
+			case <-ctx.Done():
+				t.Fatal("the reader answer waited for the standing approval")
+			}
+			release()
+			require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
+		})
 	}
-	select {
-	case <-writer.entered:
-	case <-ctx.Done():
-		t.Fatal("the approval write did not start")
-	}
-	assert.Empty(t, sink.CanceledControls())
-	err := base.SendRawInputToOutstandingRequest([]byte(`{"id":1,"result":{}}`), agent.StopContext{})
-	assert.ErrorIs(t, err, ErrControlRequestNotPending)
-	release()
-	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
 }
 
 func TestControlApprovalPreservesSortedOrderBeforeLaterFrames(t *testing.T) {

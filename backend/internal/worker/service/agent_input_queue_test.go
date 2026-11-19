@@ -1264,8 +1264,8 @@ func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
 	}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
-	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
-		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
+	require.NoError(t, svc.Agents.SendRawInput(agentID, agent.RawInput{Data: []byte(
+		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")}))
 	require.Eventually(t, func() bool {
 		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
 	}, inputQueueWait, 5*time.Millisecond)

@@ -267,14 +267,22 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	return nil
 }
 
+// consumeStep records that the transcript holds the step in its final form.
+// The provider reads no later frame of a consumed step (applyUpdate), so no
+// later frame can withdraw the step's control either. consumeStep withdraws
+// it, so no request stays visible, or appears later, for a step that the
+// provider no longer follows.
 func (a *Agent) consumeStep(state *cascadeState, index int) {
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
 	if record := state.steps[index]; record != nil {
 		record.consumed = true
 		record.raw = nil
 		record.text = ""
 	}
+	control := state.controls[index]
+	delete(state.controls, index)
+	a.Mu.Unlock()
+	a.retireControl(state, control)
 }
 
 func plannerThinkingOnly(raw json.RawMessage) (json.RawMessage, error) {

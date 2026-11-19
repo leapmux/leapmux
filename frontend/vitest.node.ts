@@ -484,7 +484,6 @@ export const NODE_TEST_FILES = [
   'src/lib/searchParam.test.ts',
   'src/lib/settingJson.test.ts',
   'src/lib/settingsChangedEvent.test.ts',
-  'src/lib/settingsLabelCache.test.ts',
   'src/lib/shallowEqual.test.ts',
   // Shiki's WASM loader uses Blob.stream(), DecompressionStream, and Response.bytes().
   // jsdom lacks these APIs, so tests that initialize the Oniguruma WASM engine use Node's implementations.

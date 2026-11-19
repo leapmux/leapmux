@@ -904,6 +904,30 @@ func RestartRequiredSettings(options optionmap.Map) SettingsApplyResult {
 	return SettingsApplyResult{Settlements: settlements}
 }
 
+// RawInput is one frame that an agent receives in the provider's own wire
+// format, without the user-message envelope (Agent.SendRawInput).
+type RawInput struct {
+	// Data is the frame.
+	Data []byte
+	// Stop is the user stop that the frame delivers, such as the interrupt
+	// frame of SendAgentRawMessage. The zero value delivers no stop.
+	Stop StopContext
+	// ControlInstanceID identifies the control request instance that the frame
+	// answers: the claim token that the Worker stored for the request, which is
+	// ControlRequest.InstanceID when the provider stated one. Only the Worker's
+	// delivery of an answer states it, and every other frame leaves it empty.
+	//
+	// A provider can replace a waiting request with another instance under the
+	// same request ID, for example when the runtime asks something else in the
+	// same place. An answer to the replaced instance must not reach the
+	// replacement. So a provider that states its own instances delivers an
+	// answer only while the instance that the answer states is the request's
+	// current instance. It refuses an answer that states no instance, because
+	// that answer cannot prove which instance it is for
+	// (ControlInstanceRefusal).
+	ControlInstanceID string
+}
+
 // Agent is the interface that all coding agent providers must implement.
 type Agent interface {
 	AgentID() string
@@ -943,7 +967,12 @@ type Agent interface {
 	// lives on the interface rather than in each provider's SendInput so a new
 	// provider cannot leave it out.
 	PublishTurnActive() TurnState
-	SendRawInput(data []byte, stop StopContext) error
+	// SendRawInput writes one frame in the provider's own wire format, without
+	// the user-message envelope. The Worker writes two kinds of frame through
+	// it: the answer to a control request, which states the request instance
+	// that it answers, and a frame of SendAgentRawMessage, such as an
+	// interrupt, which can carry a user stop. RawInput states which.
+	SendRawInput(input RawInput) error
 	Stop()
 	IsStopped() bool
 	DiscardOutput()

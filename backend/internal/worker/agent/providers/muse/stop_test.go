@@ -75,7 +75,7 @@ func TestMuseRawInputRejectsAnUnsupportedMethodBeforeWriting(t *testing.T) {
 		calls++
 		return agenttest.RPCReply{}
 	}})
-	require.ErrorContains(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":"control","method":"future/method","params":{}}`), agent.NewStopContext(nil)), "unsupported")
+	require.ErrorContains(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":"control","method":"future/method","params":{}}`), Stop: agent.NewStopContext(nil)}), "unsupported")
 	assert.Zero(t, calls)
 }
 

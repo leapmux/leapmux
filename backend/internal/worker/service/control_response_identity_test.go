@@ -17,8 +17,10 @@ func TestControlResponsePreservesNativeIDsThroughStorageAndClaims(t *testing.T) 
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
 			request := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`, wireID))
-			_, requestID, valid := agent.ExtractJSONRPCID(request)
+			// The provider publishes a JSON-RPC request under its canonical key.
+			identity, valid := agent.JSONRPCControlRequestIdentity(request)
 			require.True(t, valid)
+			requestID := identity.Key
 			sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: request}))
 			stored, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: requestID})

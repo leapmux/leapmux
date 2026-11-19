@@ -154,19 +154,22 @@ func TestClineReadControlRequest_ThePlanToolsApprovalIsThePlanWhateverItsArgumen
 	}
 }
 
-// An envelope of another event, and a row that is no envelope, read as the
-// generic permission.
+// An envelope of another event, a row that is no envelope, and a capability
+// request of another capability read as unrecognized. Cline's hub takes an
+// answer only to an approval or to a question, and the resolution refuses any
+// other answer, so a prompt with Allow and Deny would fail only after a click.
 func TestClineReadControlRequest_ReadsNothingElse(t *testing.T) {
 	for _, payload := range []string{
 		`{"version":"v1","event":"tool.started","payload":{"toolName":"editor"}}`,
 		`{"payload":{"toolName":"editor","inputJson":"{}"}}`,
 		`{"event":7,"payload":{"toolName":"editor"}}`,
 		`{"type":"control_request"}`,
+		`{}`,
 	} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(clineProvider{}, []byte(payload)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(clineProvider{}, []byte(payload)), payload)
 	}
-	// A capability request of another capability is no question.
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(clineProvider{}, clinePromptQuestion(t, clineColorQuestion, "tool_executor.other")))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(clineProvider{}, clinePromptQuestion(t, clineColorQuestion, "tool_executor.other")))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(clineProvider{}, clinePromptQuestion(t, clineColorQuestion, "custom_tool.switch_to_act_mode")))
 }
 
 // An approval envelope whose payload is no object still asks: it states no
@@ -191,7 +194,7 @@ func TestClineReadControlRequest_ReadsTheQuestionAndItsOptions(t *testing.T) {
 func TestClineReadControlRequest_RecognizesAQuestionAndNothingElse(t *testing.T) {
 	assert.NotNil(t, agenttest.ControlPromptOf(clineProvider{}, clinePromptApprovalOf(t, contracts.ClineToolAskQuestion, map[string]any{})).GetPermission())
 	assert.NotNil(t, agenttest.ControlPromptOf(clineProvider{}, []byte(`{"version":"v1","event":"approval.requested","payload":{"capabilityName":"tool_executor.askQuestion"}}`)).GetPermission())
-	assert.NotNil(t, agenttest.ControlPromptOf(clineProvider{}, clinePromptQuestion(t, clineColorQuestion, "custom_tool.switch_to_act_mode")).GetPermission())
+	assert.Nil(t, agenttest.ControlPromptOf(clineProvider{}, clinePromptQuestion(t, clineColorQuestion, "custom_tool.switch_to_act_mode")).GetQuestion())
 }
 
 func TestClineReadControlRequest_TrimsTheQuestionAndKeepsOnlyTheOptionsThatAreText(t *testing.T) {

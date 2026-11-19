@@ -192,6 +192,10 @@ func pathCases(dir string) []pathCase {
 		{"keeps one entry of a directory that PATH holds twice", join(dir, system, dir), cli},
 		{"keeps the entries that only start like the directory", join(dir+"x", filepath.Join(dir, "sub"), bin), cli},
 		{"reads the directory literally", join(system, odd, bin), filepath.Join(odd, "leapmux")},
+		// xonsh expands `$NAME`, `${NAME}`, and a `~` after `=`, in an entry
+		// of a PATH that it passes on. homeEnv sets HOME.
+		{"reads a directory that holds a set variable literally", join(system, bin), filepath.Join(dir, "a$HOME ${HOME} b", "leapmux")},
+		{"reads a directory that holds a tilde after an equals sign literally", join(system, bin), filepath.Join(dir, "x=~", "leapmux")},
 		{"puts the root directory first", join(system, root, bin), filepath.Join(root, "leapmux")},
 		{"leaves PATH alone for a directory that holds the separator", join(system, bin), filepath.Join(dir, "a"+sep+"b", "leapmux")},
 		{"leaves PATH alone for a relative executable", join(system, bin), filepath.Join("cli-1", "leapmux")},

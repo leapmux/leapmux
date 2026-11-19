@@ -386,8 +386,8 @@ func (a *Agent) approveOutstandingForBypass() {
 // Codex JSON-RPC control request registers in the outstanding registry, so an absent
 // record means that a reader answer, a withdrawal, or a standing approval already
 // closed the request, and a second answer must not reach Codex.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
-	return a.SendRawInputToOutstandingRequest(data, stop)
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	return a.SendRawInputToOutstandingRequest(input)
 }
 
 // codexAutoReviewNotification is the part of an item/autoApprovalReview/completed

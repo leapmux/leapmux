@@ -99,11 +99,13 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
 			}
 
+			// A raw message answers no control request, so it states no
+			// request instance: AnswerControl is the one path of an answer.
 			deliver := func(data []byte) error {
 				if stop != nil {
-					return target.SendRawInput(data, stop.Context())
+					return target.SendRawInput(agent.RawInput{Data: data, Stop: stop.Context()})
 				}
-				return svc.Agents.SendRawInput(agentID, data, agent.StopContext{})
+				return svc.Agents.SendRawInput(agentID, agent.RawInput{Data: data})
 			}
 			if err := svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content, deliver); err != nil {
 				if stop != nil {

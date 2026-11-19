@@ -88,8 +88,9 @@ func kimiControlFrame(payload []byte, kind string) (frame, request map[string]js
 }
 
 // ReadControlRequest reads Kimi Code's control requests: a question, LeapMux's
-// workspace-trust question, and an approval. Any other payload reads as the
-// generic permission.
+// workspace-trust question, and an approval. Any other payload reads as
+// unrecognized: the server raises no other request, and the resolution
+// refuses an answer to one.
 func (kimiProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	if _, request, ok := kimiControlFrame(input.Payload, contracts.KimiInteractionKindQuestion); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
@@ -101,7 +102,7 @@ func (kimiProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 	}
 	frame, request, ok := kimiControlFrame(input.Payload, contracts.KimiInteractionKindApproval)
 	if !ok {
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 	return kimiApprovalPrompt(frame, request)
 }
@@ -304,7 +305,9 @@ func (kimiProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.
 			return providerkit.AnswerWorkspaceTrust(input)
 		}
 		if _, _, ok := kimiControlFrame(input.Request.Payload, contracts.KimiInteractionKindApproval); !ok {
-			return agent.AnswerAllowDeny(input)
+			// Only an approval and the trust question read as a permission
+			// (ReadControlRequest).
+			return agent.ControlAnswer{}, agent.InvalidControlDecision("Kimi Code asks no permission for this request")
 		}
 		return kimiPermissionAnswer(input)
 	default:

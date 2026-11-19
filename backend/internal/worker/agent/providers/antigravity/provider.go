@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type antigravityProvider struct {
@@ -59,12 +59,44 @@ func (antigravityProvider) ControlResponseRequestID(content []byte) string {
 			StepIndex    int    `json:"stepIndex"`
 		} `json:"interaction"`
 	}
-	if err := json.Unmarshal(content, &response); err == nil && response.CascadeID != "" && response.Interaction.TrajectoryID != "" && response.Interaction.StepIndex >= 0 {
-		return fmt.Sprintf("antigravity:%s:%s:%d", response.CascadeID, response.Interaction.TrajectoryID, response.Interaction.StepIndex)
+	if err := json.Unmarshal(content, &response); err == nil {
+		address := antigravityAddress{cascadeID: response.CascadeID, trajectoryID: response.Interaction.TrajectoryID, stepIndex: response.Interaction.StepIndex}
+		if address.valid() {
+			return address.requestID()
+		}
 	}
 	return agent.ProviderDefaults{}.ControlResponseRequestID(content)
 }
 
+// ControlRequestKey reads the key that the agent publishes a control under.
+// An interaction states the address of its step (antigravityAddress), as its
+// cascadeId, trajectoryId and stepIndex, and the address gives the key. The
+// plan review that the Worker raises itself has a key of its own, which its
+// payload states as its request_id (maybePublishPlan).
+func (antigravityProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	if agent.ControlToolName(payload) == contracts.AntigravityControlToolPlanReview {
+		return agent.EnvelopeControlRequestKey(payload)
+	}
+	var stored struct {
+		CascadeID    string `json:"cascadeId"`
+		TrajectoryID string `json:"trajectoryId"`
+		StepIndex    *int   `json:"stepIndex"`
+	}
+	if json.Unmarshal(payload, &stored) != nil || stored.StepIndex == nil {
+		return "", false
+	}
+	address := antigravityAddress{cascadeID: stored.CascadeID, trajectoryID: stored.TrajectoryID, stepIndex: *stored.StepIndex}
+	if !address.valid() {
+		return "", false
+	}
+	return address.requestID(), true
+}
+
+// ResolveControlResponse forwards the language server's own answer that
+// AnswerControlRequest built. The Worker resolves only a stored request whose
+// address is its key (ControlRequestKey), and the answer echoes the address
+// of that key (antigravityAddress.answer), so the answer reaches the step of
+// the stored request.
 func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	res := agent.DefaultControlResponseResolution(ctx)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
@@ -72,10 +104,7 @@ func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseCon
 		res.LeapMuxOwned = true
 		return res
 	}
-	var request struct {
-		CascadeID string `json:"cascadeId"`
-	}
-	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil || request.CascadeID == "" {
+	if _, ok := providerkit.RawObject(ctx.RequestPayload); !ok {
 		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
@@ -84,16 +113,11 @@ func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseCon
 		Interaction map[string]any `json:"interaction"`
 	}
 	if err := json.Unmarshal(ctx.ResponseContent, &response); err != nil || response.CascadeID == "" || response.Interaction == nil {
-		res.Refuse("the Antigravity control answer is malformed")
-		return res
-	}
-	if request.CascadeID != response.CascadeID {
-		// The answer's cascade is the cascade of the request's key
-		// (ControlResponseRequestID), so the stored request disagrees with its
-		// own key, and LeapMux cannot trust it.
-		slog.Warn("antigravity stored control request disagrees with its key",
-			"request_id", ctx.RequestID, "stored_cascade_id", request.CascadeID, "key_cascade_id", response.CascadeID)
-		res.Refuse(agent.RefusalUnreadableRequest)
+		// AnswerControlRequest answers each request of the language server
+		// natively. So this guard refuses only an answer that it did not
+		// build, such as the shared envelope, which the language server
+		// cannot read.
+		res.Refuse(agent.RefusalUnreadableAnswer)
 		return res
 	}
 	return res

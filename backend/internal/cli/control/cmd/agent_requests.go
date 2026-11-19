@@ -84,7 +84,8 @@ type controlRequestRow struct {
 	Elicitation *elicitationView `json:"elicitation,omitempty"`
 	Dialog      *dialogView      `json:"dialog,omitempty"`
 	// Fault says why LeapMux cannot read an unreadable request: "malformed"
-	// (not JSON) or "not_an_object".
+	// (not JSON), "not_an_object", or "unrecognized" (a JSON object that the
+	// agent's provider does not recognize as a request).
 	Fault string `json:"fault,omitempty"`
 }
 

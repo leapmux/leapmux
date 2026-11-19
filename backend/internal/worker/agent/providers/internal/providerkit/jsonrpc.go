@@ -58,13 +58,18 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 }
 
 // SendRawInput preserves provider JSON inside the selected frame and removes its answered control.
+// It refuses, and writes nothing, an answer to a held request that states another
+// instance or none, or whose standing approval is in flight (takeOutstandingControl).
 // Remove the control before the write because withdrawal can occur during that write.
 // A write that delivers no bytes restores the control for another answer.
 // ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
 // Restoring it in that case can send a second answer to a retired request.
-func (b *JSONRPCProcess) SendRawInput(data []byte, stop agent.StopContext) error {
-	restore, _ := b.takeOutstandingControl(data)
-	err := b.writeRawFrame(data)
+func (b *JSONRPCProcess) SendRawInput(input agent.RawInput) error {
+	restore, _, err := b.takeOutstandingControl(input)
+	if err != nil {
+		return err
+	}
+	err = b.writeRawFrame(input.Data)
 	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		restore()
 	}

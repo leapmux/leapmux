@@ -346,8 +346,10 @@ func TestReadControlRequest_RecognizesAQuestionAndNotAPlanApproval(t *testing.T)
 	assert.NotNil(t, agenttest.ControlPromptOf(mimoProvider{}, []byte(mustMiMoJSON(t, plan))).GetPlan(), "a question.asked recorded under the plan tool is the plan approval")
 
 	assert.Nil(t, agenttest.ControlPromptOf(mimoProvider{}, []byte(`{"type":"permission.asked"}`)).GetQuestion())
+	// MiMo raises no other request, and the resolution refuses an answer to
+	// one, so it reads as unrecognized.
 	for _, payload := range []string{`{"type":"question.replied","properties":{"requestID":"que_1"}}`, `{}`, `not json`} {
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, mimoOptionIDs(agenttest.ControlPromptOf(mimoProvider{}, []byte(payload))), "%s reads as the generic permission", payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(mimoProvider{}, []byte(payload)), "%s reads as unrecognized", payload)
 	}
 }
 
@@ -543,23 +545,22 @@ func TestAnswerControlRequest_AnswersAnMCPElicitationWithItsAction(t *testing.T)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"mimo-question:que_1","response":{"action":"accept","content":{}}}}`, string(got.Content))
 }
 
-// A request that MiMo does not state takes LeapMux's allow and deny in the
-// neutral envelope.
-func TestAnswerControlRequest_TheGenericPromptTakesTheNeutralEnvelope(t *testing.T) {
-	got, err := agenttest.AnswerControl(mimoProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
-
-	got, err = agenttest.AnswerControl(mimoProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"deny","message":"Rejected by user."}}}`, string(got.Content))
-
-	got, err = agenttest.AnswerControl(mimoProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"deny","message":"no"}}}`, string(got.Content))
-
-	_, err = agenttest.AnswerControl(mimoProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, "a note"))
-	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+// A request that MiMo does not state reads as unrecognized, so no decision
+// answers it, and LeapMux's own Allow and Deny answer no permission of MiMo,
+// whose prompt offers MiMo's reply words alone.
+func TestAnswerControlRequest_AnswersNoRequestThatMiMoDoesNotState(t *testing.T) {
+	for _, decision := range []*leapmuxv1.ControlDecision{
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""),
+	} {
+		_, err := agenttest.AnswerControl(mimoProvider{}, []byte(`{}`), "r", decision)
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+		_, err = mimoProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+			Request: agent.NewControlRequestInput([]byte(`{}`)), RequestID: "r",
+			Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+		})
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	}
 }
 
 func TestAnswerControlRequest_RefusesADecisionOfAnotherKind(t *testing.T) {

@@ -48,7 +48,7 @@ func answerCopilotFolderTrust(t *testing.T, a *Agent, requestID, decision string
 		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
 	}})
 	require.NoError(t, err)
-	return a.SendRawInput(raw, agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: raw})
 }
 
 // copilotFolderTrustRequestID identifies the question of the session `session-1`.
@@ -66,6 +66,7 @@ func TestFolderTrustAsksCopilotAboutTheWorkingDirectory(t *testing.T) {
 	published := sink.LastPublishedControl()
 	assert.Equal(t, copilotFolderTrustRequestID, published.RequestID)
 	assert.JSONEq(t, `{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["MCP servers"]}`, string(published.Payload))
+	agenttest.AssertPublishedControlKeys(t, copilotProvider{}, sink)
 }
 
 // A trusted folder, a refused check and an answer without a verdict ask nothing.
@@ -204,7 +205,7 @@ func TestFolderTrustResolvesTheNeutralDecision(t *testing.T) {
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := agenttest.ResolveAnswer(Registration().Plugin, request.Payload, request.RequestID, agent.ControlAnswer{Content: content})
+		resolution := agenttest.ResolveAnswerInSession(Registration().Plugin, request.Payload, request.AgentSessionID, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		var stored struct {
 			Response struct {

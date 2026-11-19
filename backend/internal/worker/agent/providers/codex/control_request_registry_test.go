@@ -42,4 +42,5 @@ func TestCodexControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T
 	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, func(content []byte) { handleCodexOutput(a, providerkit.ParseLine(content)) },
 		"item/commandExecution/requestApproval")
+	agenttest.AssertPublishedControlKeys(t, codexProvider{}, sink)
 }

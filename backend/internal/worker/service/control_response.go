@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -84,6 +85,27 @@ func (svc *Service) loadControlResponseRequestMetadata(agentID, requestID string
 		return meta, err
 	}
 	return storedControlRequestMetadata(request), nil
+}
+
+// storedControlRequestRefusal refuses a stored request whose payload gives no
+// key, or another key than the one that stores it (agent.StoredControlRequestAgrees).
+// The Worker wrote that key from the payload, so the row is corrupt, or the
+// provider derived the key wrongly, and no answer to it is safe to send. The
+// refusal leaves the request pending: the agent still waits, so the user's way
+// out is a stop.
+//
+// It is the one check of that agreement, and no provider repeats it. The
+// Worker runs it on each read of a request row that leads to an answer: in
+// answerControl before a provider reads the prompt or builds the answer, and
+// in processControlAnswer before a provider resolves the answer that the
+// Worker claims. It never runs on a row that the Worker only shows, or on the
+// stored payload of an answer that the Worker already delivered.
+func storedControlRequestRefusal(plugin agent.Provider, agentID string, meta controlResponseRequestMetadata) error {
+	if agent.StoredControlRequestAgrees(plugin, meta.RequestID, meta.Payload, meta.AgentSessionID) {
+		return nil
+	}
+	slog.Warn("the stored control request disagrees with its key", "agent_id", agentID, "request_id", meta.RequestID)
+	return errors.New(agent.RefusalUnreadableRequest)
 }
 
 // storedControlRequestMetadata is the metadata of one stored request row.
@@ -225,21 +247,14 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if err != nil {
 		return fmt.Errorf("read the control request: %w", err)
 	}
-	plan := resolveControlResponsePlan(plugin, meta, content, chosen.planApproval)
-	if followUp != (agent.ControlFollowUp{}) {
-		if plan.resolution.FollowUp != (agent.ControlFollowUp{}) {
-			return errors.New("the answer and its resolution both state a follow-up")
-		}
-		plan.resolution.FollowUp = followUp
-	}
 	// An agent restart, a context clear, or a provider-side cancel deletes the
 	// request row. LeapMux then refuses the answer instead of keeping it.
 	// StoreControlResponseAnswer repeats the same condition in SQL (WHERE EXISTS),
 	// and the two do not duplicate each other: this guard is the fast path that
 	// gives the caller a clear error, and the SQL predicate closes the race between
 	// the read above and the INSERT below.
-	if !plan.requestMeta.Exists {
-		return errors.New("the control request is no longer pending")
+	if !meta.Exists {
+		return agent.ErrControlRequestNotPending
 	}
 	// A SILENT refusal, and the only one here: every other gate below returns an
 	// error. The claim token identifies the request INSTANCE, so a mismatch means
@@ -253,8 +268,22 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	// It must stay BELOW the Exists gate. A missing row leaves ClaimToken empty,
 	// which would take this silent path instead of the error that says the request
 	// is gone.
-	if plan.answersARetiredInstance(claimToken) {
+	if meta.answersARetiredInstance(claimToken) {
 		return nil
+	}
+	// The row that the claim below stores must agree with its key. AnswerControl
+	// checked the row that it read, but a provider can republish under one claim
+	// token, so this read can hold other bytes. The check stays below the two
+	// gates above: a gone row and a retired instance keep their own outcomes.
+	if err := storedControlRequestRefusal(plugin, agentID, meta); err != nil {
+		return err
+	}
+	plan := resolveControlResponsePlan(plugin, meta, content, chosen.planApproval)
+	if followUp != (agent.ControlFollowUp{}) {
+		if plan.resolution.FollowUp != (agent.ControlFollowUp{}) {
+			return errors.New("the answer and its resolution both state a follow-up")
+		}
+		plan.resolution.FollowUp = followUp
 	}
 	if plan.isPlanPrompt() && (!plan.requestMeta.Loaded || !plan.hasDecision) {
 		return errors.New("the plan approval has no valid decision")
@@ -307,7 +336,7 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if deliveryID == "" {
 		answer, err := readAnswer()
 		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("the control request is no longer pending")
+			return agent.ErrControlRequestNotPending
 		}
 		if err != nil {
 			return fmt.Errorf("read control response delivery: %w", err)

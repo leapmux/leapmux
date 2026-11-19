@@ -411,6 +411,11 @@ func TestRequireAnswerable(t *testing.T) {
 	assert.Equal(t, cli.CodeConflict, e.Code)
 	assert.Contains(t, e.Hints[0], "agent interrupt ag-1")
 
+	unrecognized := pendingRequest("c1", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED}})
+	e = cli.FromError(requireAnswerable("ag-1", unrecognized))
+	assert.Equal(t, cli.CodeConflict, e.Code)
+	assert.Equal(t, "LeapMux cannot read request c1 (unrecognized), so it takes no answer", e.Message)
+
 	e = cli.FromError(requireAnswerable("ag-1", pendingRequest("c1", &leapmuxv1.ControlPrompt{})))
 	assert.Equal(t, cli.CodeVersionMismatch, e.Code)
 }
@@ -424,8 +429,20 @@ func TestControlAnswerResultOf(t *testing.T) {
 		assert.NoError(t, err, "the Worker holds the answer and delivers it: %v", state)
 	}
 
-	_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED})
-	assert.Equal(t, cli.CodeConflict, cli.FromError(err).Code)
+	// A canceled instance is a request that the agent replaced or withdrew, or
+	// that another client answered. The Worker states a replacement with no
+	// error text, and a withdrawal with its reason. Neither left an answer
+	// with the Worker, and a replacement waits under a new handle.
+	for _, errText := range []string{"", "the control request is no longer pending"} {
+		_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, Error: errText})
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeConflict, e.Code, "error text %q", errText)
+		assert.Equal(t, "request c1 is no longer pending: the agent replaced or withdrew it, or another client answered it", e.Message)
+		require.Len(t, e.Hints, 1)
+		assert.Contains(t, e.Hints[0], `"leapmux control agent requests ag-1"`)
+		assert.Contains(t, e.Hints[0], "new handle")
+		assert.False(t, e.Retryable(), "the same answer to the same handle cannot succeed")
+	}
 
 	_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, Error: "the agent's process ended"})
 	e := cli.FromError(err)
@@ -573,13 +590,13 @@ func TestAgentAnswerOverIPC_Refusals(t *testing.T) {
 		f := runControl(t, "agent", "approve", id, "claim-1").requireFailure(t, cli.CodeInvalidArgument)
 		assert.Contains(t, f.Message, "offers no option")
 	})
-	t.Run("a request that another client answered first", func(t *testing.T) {
+	t.Run("a request that the agent replaced, or that another client answered first", func(t *testing.T) {
 		w.mu.Lock()
 		w.refuseAnswer = ""
 		w.answerResponse = &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED}
 		w.mu.Unlock()
 		f := runControl(t, "agent", "approve", id, "claim-1").requireFailure(t, cli.CodeConflict)
-		assert.Contains(t, f.Message, "no longer pending")
+		assert.Contains(t, f.Message, "no longer pending: the agent replaced or withdrew it")
 	})
 	for _, answer := range w.recordedAnswers() {
 		assert.Equal(t, "claim-1", answer.GetClaimToken(), "an answered request is never answered again")

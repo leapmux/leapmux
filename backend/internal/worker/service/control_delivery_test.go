@@ -18,8 +18,8 @@ func TestControlResponseRecordsDeliveryBeforeItsRecoveryRead(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
+		AgentID: "agent-1", RequestID: "jsonrpc:7", ClaimToken: "claim",
+		Payload: []byte(`{"id":7,"method":"item/commandExecution/requestApproval"}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -37,12 +37,12 @@ func TestControlResponseRecordsDeliveryBeforeItsRecoveryRead(t *testing.T) {
 		query: svc.DB.QueryContext,
 	})
 	sends := 0
-	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
-	answer := workerAnswer{claimToken: "claim", content: []byte(`{"id":"request","result":{"decision":"accept"}}`)}
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
+	answer := workerAnswer{claimToken: "claim", content: []byte(`{"id":"jsonrpc:7","result":{"decision":"accept"}}`)}
 	require.Error(t, svc.processControlAnswer(row, answer))
 	require.Equal(t, 1, sends, "a recovery read must not strand a known-unsent reservation")
 	svc.Queries = db.New(svc.DB)
-	stored, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "request", ClaimToken: "claim"})
+	stored, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "jsonrpc:7", ClaimToken: "claim"})
 	require.NoError(t, err)
 	require.Equal(t, storedStateDelivered, stored.State)
 	require.NoError(t, svc.processControlAnswer(row, answer))

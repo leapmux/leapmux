@@ -276,6 +276,8 @@ When an agent needs your approval — to run a command, edit a file, or proceed 
 
 The provider's protocol supplies the buttons and labels. Most providers ask about one call at a time. Some offer approval for the rest of the session. Others offer a rule that the CLI remembers. Check each button's scope before you allow a call. Text that you submit with a denial reaches the agent as its rejection reason.
 
+Some agents that speak the Agent Client Protocol (ACP) offer no way to refuse a call. LeapMux then adds a **Cancel** button, which refuses the call and ends the agent's turn. An agent that offers no answer at all gets **Cancel** alone, because its protocol accepts no approval that the agent did not offer.
+
 The banner shows a **Permissions** choice when the provider supplies permission shortcuts. See [Changing settings mid-session](#changing-settings-mid-session). It offers **Unchanged**, **Smart**, or **Bypass** (only the shortcuts the session supports appear). An approval applies the selected shortcut to the session as well; the initial choice matches the session's current shortcut, and a plan-approval banner starts with **Smart** when the provider offers it.
 
 ### Questions
@@ -287,6 +289,8 @@ A question uses radio buttons for a single answer or checkboxes for several; you
 When an agent finishes planning, the banner shows the plan. **Approve** starts the work. **Reject** keeps plan mode and sends your feedback. **Clear Context** starts the work in a fresh session when the provider offers that choice. Some providers end plan mode without asking (see the [feature matrix](#feature-matrix)).
 
 If several prompts queue up, you answer them one at a time. LeapMux de-duplicates requests and remembers answered ones, so a reconnect never re-asks something you already handled.
+
+An agent can replace a prompt while you answer it, for example when it asks something else at the same step. LeapMux then does not send your answer, because it was for the earlier prompt. The banner shows the new prompt. Answer that one.
 
 After you answer, the transcript keeps a row that states your answer in the same words for every provider:
 

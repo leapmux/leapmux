@@ -114,6 +114,21 @@ func (s *ControlSink) PublishedControlCount() int {
 	return len(s.publishedControls)
 }
 
+// Answer is data as the Worker delivers an answer to the request requestID:
+// with the instance of the request's latest publication
+// (agent.RawInput.ControlInstanceID). It states no instance for a request that
+// the sink never published.
+func (s *ControlSink) Answer(requestID string, data []byte) agent.RawInput {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	for i := len(s.publishedControls) - 1; i >= 0; i-- {
+		if s.publishedControls[i].RequestID == requestID {
+			return agent.RawInput{Data: data, ControlInstanceID: s.publishedControls[i].InstanceID}
+		}
+	}
+	return agent.RawInput{Data: data}
+}
+
 func (s *ControlSink) LastPublishedControl() ControlRequestRecord {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,7 @@ func TestControlResponseDoesNotDeliverAnUnmatchedAnswer(t *testing.T) {
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	sends := 0
-	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
 	err = svc.processControlAnswer(row, workerAnswer{content: []byte(`{"id":"request","result":{"decision":"accept"}}`), claimToken: "old-claim"})
 	require.Error(t, err)
 	require.Zero(t, sends)
@@ -37,8 +38,8 @@ func TestControlResponseRefusesAReplacedProviderSession(t *testing.T) {
 			oldAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-				AgentID: "agent-1", AgentSessionID: "old-session", RequestID: "request", ClaimToken: "claim",
-				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
+				AgentID: "agent-1", AgentSessionID: "old-session", RequestID: "jsonrpc:1", ClaimToken: "claim",
+				Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval"}`),
 			})
 			require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "new-session"}))
 			currentAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
@@ -47,8 +48,8 @@ func TestControlResponseRefusesAReplacedProviderSession(t *testing.T) {
 				currentAgent = oldAgent
 			}
 			sends := 0
-			svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
-			err = svc.processControlAnswer(currentAgent, workerAnswer{content: []byte(`{"id":"request","result":{"decision":"accept"}}`), claimToken: "claim"})
+			svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
+			err = svc.processControlAnswer(currentAgent, workerAnswer{content: []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`), claimToken: "claim"})
 			require.ErrorContains(t, err, "session")
 			require.Zero(t, sends, "an earlier session cannot approve a request in its replacement")
 		})
@@ -70,8 +71,8 @@ func TestClearContextDoesNotSuppressOtherControlResponses(t *testing.T) {
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			var sent [][]byte
-			svc.sendControlResponseFn = func(_ string, content []byte) error {
-				sent = append(sent, append([]byte(nil), content...))
+			svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+				sent = append(sent, append([]byte(nil), answer.Data...))
 				return nil
 			}
 			response := []byte(`{"type":"control_response","clearContext":true,"response":{"subtype":"success","request_id":"request","response":{"behavior":"allow"}}}`)
@@ -99,27 +100,27 @@ func TestControlResponseRecoveryKeepsTheBytesThatWereDelivered(t *testing.T) {
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	encoder := &controlResponseEncoderForTest{
 		Provider: testRegistry.Plugin(provider),
-		content:  []byte(` {"id":"request","result":{"decision":"accept","encoder":"first"}} `),
+		content:  []byte(` {"id":"jsonrpc:1","result":{"decision":"accept","encoder":"first"}} `),
 	}
 	svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, encoder)))
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
+		AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "claim",
+		Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval"}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_control_encoding BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'answer storage failed'); END`)
 	require.NoError(t, err)
 	var sent [][]byte
-	svc.sendControlResponseFn = func(_ string, content []byte) error {
-		sent = append(sent, append([]byte(nil), content...))
+	svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+		sent = append(sent, append([]byte(nil), answer.Data...))
 		return nil
 	}
-	response := []byte(`{"id":"request","result":{"decision":"accept"}}`)
+	response := []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`)
 	require.ErrorContains(t, svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim"}), "answer storage failed")
 	require.Len(t, sent, 1)
-	encoder.content = []byte(`{"id":"request","result":{"decision":"accept","encoder":"changed"}}`)
+	encoder.content = []byte(`{"id":"jsonrpc:1","result":{"decision":"accept","encoder":"changed"}}`)
 	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_encoding")
 	require.NoError(t, err)
 	require.NoError(t, svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim"}))
@@ -136,13 +137,13 @@ func TestLeapMuxPlanApprovalKeepsTheRequestWhenRecordingFails(t *testing.T) {
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim",
-		Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
+		Payload: []byte(`{"type":"control_request","request_id":"plan","request":{"tool_name":"CodexPlanModePrompt"}}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER fail_control_answer BEFORE INSERT ON messages WHEN NEW.mark_type=%d BEGIN SELECT RAISE(ABORT, 'answer storage failed'); END`, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE))
 	require.NoError(t, err)
-	svc.sendControlResponseFn = func(string, []byte) error {
+	svc.sendControlResponseFn = func(string, agent.RawInput) error {
 		t.Fatal("LeapMux plan approval must not send a native control response")
 		return nil
 	}
@@ -161,12 +162,12 @@ func TestLeapMuxPlanApprovalRejectsMissingDecisions(t *testing.T) {
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim",
-		Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
+		Payload: []byte(`{"type":"control_request","request_id":"plan","request":{"tool_name":"CodexPlanModePrompt"}}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	sends := 0
-	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
 	err = svc.processControlAnswer(row, workerAnswer{content: []byte(`{"response":{"request_id":"plan"}}`), claimToken: "claim"})
 	require.Error(t, err)
 	require.Zero(t, sends)
@@ -178,21 +179,21 @@ func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) 
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
+				AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "claim",
+				Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			_, err = svc.DB.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER fail_control_answer BEFORE INSERT ON messages WHEN NEW.mark_type=%d BEGIN SELECT RAISE(ABORT, 'answer storage failed'); END`, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE))
 			require.NoError(t, err)
 			sends := 0
-			send := func(string, []byte) error { sends++; return nil }
+			send := func(string, agent.RawInput) error { sends++; return nil }
 			svc.sendControlResponseFn = send
-			response := []byte(`{"id":"request","result":{"decision":"accept","count":0,"enabled":false,"text":""}}`)
+			response := []byte(`{"id":"jsonrpc:1","result":{"decision":"accept","count":0,"enabled":false,"text":""}}`)
 			err = svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim"})
 			require.ErrorContains(t, err, "answer storage failed")
 			require.Equal(t, 1, sends)
-			request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+			request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "jsonrpc:1"})
 			require.NoError(t, err)
 			require.Equal(t, "claim", request.ClaimToken)
 			_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_answer")
@@ -200,14 +201,14 @@ func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) 
 
 			if replaceRequest {
 				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-					AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim",
-					Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
+					AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "new-claim",
+					Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
 				})
 			}
 			restored := New(svc.Config)
 			t.Cleanup(restored.InputQueue.StopAndWait)
 			restored.sendControlResponseFn = send
-			changedAnswer := []byte(`{"id":"request","result":{"decision":"decline"}}`)
+			changedAnswer := []byte(`{"id":"jsonrpc:1","result":{"decision":"decline"}}`)
 			require.NoError(t, restored.processControlAnswer(row, workerAnswer{content: changedAnswer, claimToken: "claim"}))
 			require.Equal(t, 1, sends, "recovery must retain the response that already reached the provider")
 			rows, err := restored.Queries.ListMessagesByAgentID(t.Context(), db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
@@ -215,7 +216,8 @@ func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) 
 			answers := controlResponseRows(rows)
 			require.Len(t, answers, 1)
 			stored := decodeStructuredControlResponse(t, answers[0])
-			require.JSONEq(t, string(response), string(stored.Response))
+			// The runtime received its own id, which the Worker restored.
+			require.JSONEq(t, strings.Replace(string(response), `"jsonrpc:1"`, `1`, 1), string(stored.Response))
 			requests, err := restored.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			if replaceRequest {
@@ -232,16 +234,16 @@ func TestControlResponseKeepsTheRequestWhenTheAgentCannotReceiveIt(t *testing.T)
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
+		AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "claim",
+		Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 	})
-	state, errText := deliverControlAnswerForTest(t, svc, "agent-1", "request", workerAnswer{
+	state, errText := deliverControlAnswerForTest(t, svc, "agent-1", "jsonrpc:1", workerAnswer{
 		claimToken: "claim",
-		content:    []byte(`{"id":"request","result":{"decision":"accept"}}`),
+		content:    []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`),
 	})
 	require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, state)
 	require.NotEmpty(t, errText)
-	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "jsonrpc:1"})
 	require.NoError(t, err, "a response that did not reach the agent must not remove its request")
 	require.Equal(t, "claim", request.ClaimToken)
 	rows, err := svc.Queries.ListMessagesByAgentID(t.Context(), db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
@@ -255,8 +257,8 @@ func TestControlResponseRetriesOnlyAfterConfirmedDeliveryFailure(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
+				AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "claim",
+				Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
@@ -265,14 +267,14 @@ func TestControlResponseRetriesOnlyAfterConfirmedDeliveryFailure(t *testing.T) {
 			if uncertain {
 				failure = agent.ErrDeliveryUncertain
 			}
-			svc.sendControlResponseFn = func(string, []byte) error {
+			svc.sendControlResponseFn = func(string, agent.RawInput) error {
 				sends++
 				if sends == 1 {
 					return failure
 				}
 				return nil
 			}
-			response := []byte(`{"id":"request","result":{"decision":"accept"}}`)
+			response := []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`)
 			err = svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim"})
 			require.ErrorIs(t, err, failure)
 			requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
@@ -294,21 +296,21 @@ func TestDeliveredControlResponseKeepsAReissuedRequest(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim",
-		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
+		AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "old-claim",
+		Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
-	svc.sendControlResponseFn = func(string, []byte) error {
+	svc.sendControlResponseFn = func(string, agent.RawInput) error {
 		createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-			AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim",
-			Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
+			AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "new-claim",
+			Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
 		})
 		return nil
 	}
-	err = svc.processControlAnswer(row, workerAnswer{content: []byte(`{"id":"request","result":{"decision":"accept"}}`), claimToken: "old-claim"})
+	err = svc.processControlAnswer(row, workerAnswer{content: []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`), claimToken: "old-claim"})
 	require.NoError(t, err)
-	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
+	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "jsonrpc:1"})
 	require.NoError(t, err)
 	require.Equal(t, "new-claim", request.ClaimToken)
 }
@@ -334,8 +336,8 @@ func processControlAnswerForTest(svc *Service, row db.Agent, content []byte, cla
 	defer func() { svc.sendControlResponseFn = previous }()
 	var received []byte
 	delivered := false
-	svc.sendControlResponseFn = func(_ string, data []byte) error {
-		received = append([]byte(nil), data...)
+	svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+		received = append([]byte(nil), answer.Data...)
 		delivered = true
 		return nil
 	}
@@ -351,7 +353,7 @@ func TestExecuteControlResponseRoutesVirtualChildToRootProcess(t *testing.T) {
 	child := createControlResponseChild(t, svc, root, "child")
 	plan := pendingControlResponsePlan(t, svc, child)
 	var owner string
-	svc.sendControlResponseFn = func(agentID string, _ []byte) error {
+	svc.sendControlResponseFn = func(agentID string, _ agent.RawInput) error {
 		owner = agentID
 		return nil
 	}
@@ -374,16 +376,16 @@ func createControlResponseChild(t *testing.T, svc *Service, parent db.Agent, id 
 
 func pendingControlResponsePlan(t *testing.T, svc *Service, row db.Agent) controlResponsePlan {
 	t.Helper()
-	payload := []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`)
+	payload := []byte(`{"id":1,"method":"item/commandExecution/requestApproval"}`)
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-		AgentID: row.ID, RequestID: "request", ClaimToken: "claim", AgentSessionID: row.AgentSessionID, Payload: payload,
+		AgentID: row.ID, RequestID: "jsonrpc:1", ClaimToken: "claim", AgentSessionID: row.AgentSessionID, Payload: payload,
 	})
 	return controlResponsePlan{
 		requestMeta: controlResponseRequestMetadata{
-			RequestID: "request", ClaimToken: "claim", AgentSessionID: row.AgentSessionID,
+			RequestID: "jsonrpc:1", ClaimToken: "claim", AgentSessionID: row.AgentSessionID,
 			Payload: payload, Exists: true, Loaded: true,
 		},
-		resolution: agent.ControlResponseResolution{Content: []byte(`{"id":"request","result":{"decision":"accept"}}`)},
+		resolution: agent.ControlResponseResolution{Content: []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`)},
 	}
 }
 
@@ -402,7 +404,7 @@ func TestExecuteControlResponseWaitsForRootLifecycle(t *testing.T) {
 				plan := pendingControlResponsePlan(t, svc, child)
 				var sends atomic.Int32
 				delivered := make(chan string, 1)
-				svc.sendControlResponseFn = func(owner string, _ []byte) error {
+				svc.sendControlResponseFn = func(owner string, _ agent.RawInput) error {
 					sends.Add(1)
 					delivered <- owner
 					return nil
@@ -442,8 +444,12 @@ func TestExecuteControlResponseWaitsForRootLifecycle(t *testing.T) {
 				select {
 				case err := <-done:
 					switch mutation {
-					case "retired", "replaced":
-						assert.ErrorContains(t, err, "no longer pending")
+					case "retired":
+						assert.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+						assert.NotErrorIs(t, err, agent.ErrControlInstanceReplaced, "a retired request has no replacement")
+						assert.Zero(t, sends.Load())
+					case "replaced":
+						assert.ErrorIs(t, err, agent.ErrControlInstanceReplaced)
 						assert.Zero(t, sends.Load())
 					case "provider-changed":
 						assert.ErrorContains(t, err, "different provider")

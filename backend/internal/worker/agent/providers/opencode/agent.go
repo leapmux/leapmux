@@ -115,11 +115,11 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	}
 	return run.PublishTurnActive()
 }
-func (a *Agent) SendRawInput(raw []byte, _ agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
 	if a.controls == nil {
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
 	}
-	return a.controls.answer(raw)
+	return a.controls.answer(input.Data)
 }
 
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {

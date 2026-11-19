@@ -752,9 +752,9 @@ func (m *Manager) lockRegistration(agentID string) (*agentRegistration, func()) 
 	return entry, unlock
 }
 
-// SendRawInput writes raw bytes directly to the specified agent's stdin
-// without wrapping in a UserInputMessage.
-func (m *Manager) SendRawInput(agentID string, data []byte, stop StopContext) error {
+// SendRawInput delivers one frame in the provider's own wire format to the
+// specified agent, without wrapping it in a UserInputMessage.
+func (m *Manager) SendRawInput(agentID string, input RawInput) error {
 	m.mu.RLock()
 	entry, ok := m.agents[agentID]
 	p := entry.providerOrNil()
@@ -764,7 +764,7 @@ func (m *Manager) SendRawInput(agentID string, data []byte, stop StopContext) er
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 
-	return p.SendRawInput(data, stop)
+	return p.SendRawInput(input)
 }
 
 // Interrupt aborts the agent's current turn using the provider-specific

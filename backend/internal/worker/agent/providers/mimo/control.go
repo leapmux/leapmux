@@ -53,6 +53,30 @@ const (
 	questionRequestPrefix   = "mimo-question:"
 )
 
+// ControlRequestKey reads the key that the agent publishes a MiMo request
+// under: the prefix of its event and MiMo's own id of the request
+// (handlePermissionAsked, handleQuestionAsked). The plan approval is a
+// question, so its key takes the question's prefix.
+func (mimoProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var stored struct {
+		Type       string `json:"type"`
+		Properties struct {
+			ID string `json:"id"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(payload, &stored) != nil || stored.Properties.ID == "" {
+		return "", false
+	}
+	switch stored.Type {
+	case contracts.MiMoEventPermissionAsked:
+		return permissionRequestPrefix + stored.Properties.ID, true
+	case contracts.OpenCodeEventQuestionAsked:
+		return questionRequestPrefix + stored.Properties.ID, true
+	default:
+		return "", false
+	}
+}
+
 // mimoControlKind is what one control request asks.
 type mimoControlKind int
 
@@ -783,15 +807,24 @@ func controlKindOfPayload(payload []byte) (mimoControlKind, bool) {
 	}
 }
 
-// executeControlReply sends one answer to MiMo. The request must be one that
+// executeControlReply sends data, the answer to the control instance
+// instanceID, to the request that it addresses. The request must be one that
 // MiMo still waits on and LeapMux published.
-func (a *Agent) executeControlReply(data []byte) error {
+//
+// MiMo can announce a waiting request again with other content, which
+// replaces the request's instance (publishControl), and the server applies an
+// answer to the request ID. So the answer goes only to the instance that it
+// states (agent.RawInput.ControlInstanceID).
+func (a *Agent) executeControlReply(data []byte, instanceID string) error {
 	requestID := mimoProvider{}.ControlResponseRequestID(data)
 	a.Mu.Lock()
 	control := a.controls[requestID]
 	a.Mu.Unlock()
 	if control == nil {
 		return fmt.Errorf("MiMo holds no pending request %q", requestID)
+	}
+	if err := agent.ControlInstanceRefusal(control.instanceID, instanceID); err != nil {
+		return err
 	}
 	answer, err := readControlAnswer(control.kind, control.payload, data)
 	if err != nil {

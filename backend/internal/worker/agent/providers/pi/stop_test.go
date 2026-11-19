@@ -107,7 +107,7 @@ func TestPiStopDoesNotWaitForAQueuedDialogBeforeClosingStdin(t *testing.T) {
 				queued = []byte(piFreshSettingsDialog)
 			} else {
 				a, sink, _ = piQuestionResponseFixture()
-				require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`), agent.StopContext{}))
+				require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`)}))
 				queued = []byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`)
 			}
 			writer := piBlockedShutdownProcess(t, a, clock)

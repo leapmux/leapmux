@@ -29,7 +29,8 @@ const droidAnswerPartSeparator = ", "
 //   - Any other permission request is a permission, with the options that
 //     Droid offers.
 //
-// Any other payload reads as the generic prompt.
+// Any other payload reads as unrecognized: Droid raises no other request, and
+// the resolution refuses an answer to one.
 func (droidProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	fields, _ := providerkit.RawObject(input.Payload)
 	switch providerkit.ObjectString(fields, "type") {
@@ -42,7 +43,7 @@ func (droidProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 	case contracts.DroidRequestTypePermission:
 		return droidPermissionRequestPrompt(fields)
 	default:
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 }
 
@@ -289,10 +290,15 @@ func (droidProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent
 
 // droidPermissionAnswer answers a permission prompt. A prompt of LeapMux's
 // allow and deny, for a request that offers no options, takes the shared
-// answers.
+// answers. Only a permission request reads as a permission
+// (ReadControlRequest), so the answer refuses a permission decision about any
+// other request.
 func droidPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	fields, _ := providerkit.RawObject(input.Request.Payload)
-	if providerkit.ObjectString(fields, "type") != contracts.DroidRequestTypePermission || len(droidOfferedOptions(fields)) == 0 {
+	if providerkit.ObjectString(fields, "type") != contracts.DroidRequestTypePermission {
+		return agent.ControlAnswer{}, agent.InvalidControlDecision("Factory Droid asks no permission for this request")
+	}
+	if len(droidOfferedOptions(fields)) == 0 {
 		return agent.AnswerAllowDeny(input)
 	}
 	decision, option, err := agent.PermissionDecisionOf(input)

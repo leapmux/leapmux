@@ -154,9 +154,12 @@ func TestLettaReadControlRequest_AToolInputThatIsNoObjectReadsAsEmpty(t *testing
 	}
 }
 
-func TestLettaReadControlRequest_AnyOtherPayloadIsTheGenericPermission(t *testing.T) {
+// The Worker publishes a question and a permission alone, and the resolution
+// refuses an answer to any other payload, so such a payload reads as
+// unrecognized.
+func TestLettaReadControlRequest_AnyOtherPayloadIsUnrecognized(t *testing.T) {
 	for _, payload := range []string{`{}`, `{"type":"control_request","tool_name":"Bash"}`, `{"type":7}`} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(lettaProvider{}, []byte(payload)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(lettaProvider{}, []byte(payload)), payload)
 	}
 }
 

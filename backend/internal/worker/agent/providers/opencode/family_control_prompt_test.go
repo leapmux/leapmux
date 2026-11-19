@@ -69,9 +69,7 @@ func TestFamilyReadControlRequest_ANonQuestionIsNoQuestion(t *testing.T) {
 		`{"type":"permission.asked","properties":{"id":"per_1"}}`,
 		`{}`,
 	} {
-		got := agenttest.ControlPromptOf(FamilyProvider{}, []byte(payload))
-		require.NotNil(t, got.GetPermission(), payload)
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, familyOptionIDs(got), "%s reads as the generic permission", payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(FamilyProvider{}, []byte(payload)), "%s reads as unrecognized", payload)
 	}
 
 	got := agenttest.ControlPromptOf(FamilyProvider{}, []byte(`{"method":"requestPermission","params":{"toolCall":{"toolCallId":"tc-1"}}}`))
@@ -104,6 +102,9 @@ func TestFamilyReadControlRequest_ARequestWithNoOptionsOffersTheDaemonPair(t *te
 		`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"}}}`,
 		`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},"options":[]}}`,
 		`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},"options":[null,"allow_once",7]}}`,
+		// An option that states no id as text is no answer that the daemon
+		// accepts (acp.PermissionOptions), so such a list offers no option.
+		`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},"options":[{"kind":"allow_once","name":"Allow"},{"optionId":"","kind":"reject_once"},{"optionId":7,"kind":"allow_always"}]}}`,
 		familyOptionLessRequest,
 	} {
 		permission := agenttest.ControlPromptOf(FamilyProvider{}, []byte(payload)).GetPermission()
@@ -187,11 +188,10 @@ func TestFamilyReadControlRequest_KeepsTheRequestDetailsWithoutItsRow(t *testing
 func TestFamilyReadControlRequest_AnAbsentOrMalformedToolCall(t *testing.T) {
 	for _, toolCall := range []string{`null`, `[]`} {
 		got := agenttest.ControlPromptOf(FamilyProvider{}, []byte(`{"params":{"toolCall":`+toolCall+`}}`))
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, familyOptionIDs(got), "%s with no option is no permission request", toolCall)
-		assert.Empty(t, got.GetPermission().GetTitle(), toolCall)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), got, "%s with no option is no permission request", toolCall)
 	}
 	got := agenttest.ControlPromptOf(FamilyProvider{}, []byte(`{"params":{}}`))
-	assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, familyOptionIDs(got))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), got)
 
 	got = agenttest.ControlPromptOf(FamilyProvider{}, []byte(`{"params":{"toolCall":{"title":{"invalid":true},"kind":["execute"]}}}`))
 	require.NotNil(t, got.GetPermission(), "a tool call of the wrong shape is still a permission request")
@@ -256,17 +256,16 @@ func TestFamilyAnswerControlRequest_TheCancelAnswersWithTheCancelledOutcome(t *t
 	assert.Equal(t, "not this file", got.FollowUp)
 }
 
-// A request that is no permission takes LeapMux's allow and deny in the
-// neutral envelope, and the deny carries its own message.
-func TestFamilyAnswerControlRequest_TheGenericPromptTakesTheNeutralEnvelope(t *testing.T) {
-	got, err := agenttest.AnswerControl(FamilyProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
-
-	got, err = agenttest.AnswerControl(FamilyProvider{}, []byte(`{}`), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"deny","message":"no"}}}`, string(got.Content))
-	assert.Empty(t, got.FollowUp)
+// A request that is no permission reads as unrecognized, so no decision
+// answers it: the daemon would not read LeapMux's neutral envelope.
+func TestFamilyAnswerControlRequest_ARequestThatIsNoPermissionTakesNoAnswer(t *testing.T) {
+	for _, decision := range []*leapmuxv1.ControlDecision{
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"),
+	} {
+		_, err := agenttest.AnswerControl(FamilyProvider{}, []byte(`{}`), "r", decision)
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	}
 }
 
 // The question bridge reads the answer back by its JSON-RPC id and its

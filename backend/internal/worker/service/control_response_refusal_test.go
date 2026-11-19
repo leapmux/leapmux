@@ -43,17 +43,17 @@ func TestDeliverControlAnswerStatesTheReasonOfARefusal(t *testing.T) {
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, plugin)))
 			createClaimTestAgent(t, svc, "agent-1")
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
+				AgentID: "agent-1", RequestID: "jsonrpc:1", ClaimToken: "claim",
+				Payload: []byte(`{"id":1,"method":"item/commandExecution/requestApproval"}`),
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			sends := 0
-			svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
+			svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
 
-			state, errText, err := svc.deliverControlAnswer(row, "request", workerAnswer{
+			state, errText, err := svc.deliverControlAnswer(row, "jsonrpc:1", workerAnswer{
 				claimToken: "claim",
-				content:    []byte(`{"id":"request","result":{"decision":"accept"}}`),
+				content:    []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`),
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, errText)
@@ -81,7 +81,7 @@ func TestDeliverControlAnswerStatesTheReasonOfAProviderRefusal(t *testing.T) {
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	sends := 0
-	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
 
 	state, errText, err := svc.deliverControlAnswer(row, "droid-perm-1", workerAnswer{
 		claimToken: "claim",

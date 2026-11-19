@@ -149,6 +149,27 @@ type Provider interface {
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
 	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
 	ControlResponseRequestID(content []byte) string
+	// ControlRequestKey derives the key that this provider publishes a control
+	// request under (ControlRequest.RequestID) from what the Worker stores
+	// beside that key: the request's payload, and the provider session that the
+	// request belongs to. The session decides the key only for a request whose
+	// payload states no key of its own, such as the workspace-trust question
+	// that LeapMux asks once for each session. ok is false for a payload that
+	// states no key.
+	//
+	// It must give the key that the provider's publication gives, for every
+	// payload that the provider publishes. The Worker refuses each answer to a
+	// stored request whose payload gives no key or another key
+	// (StoredControlRequestAgrees), with RefusalUnreadableRequest, before a
+	// provider reads the payload to answer it, because a disagreement means a
+	// corrupt store or a fault in the key's derivation. So no provider checks
+	// that agreement itself.
+	//
+	// It is pure: no I/O. The Worker calls it only with a payload that is a
+	// JSON object. The default (ProviderDefaults) reads the control_request
+	// envelope and a JSON-RPC request. A provider whose payload states its key in another way
+	// overrides it.
+	ControlRequestKey(payload []byte, agentSessionID string) (key string, ok bool)
 	// PlanApprovalOptions resolves live settings for an approved plan prompt or
 	// plan exit. An empty mode uses the provider's default exit mode.
 	// Bypass requires the preset's exact mode.
@@ -286,8 +307,13 @@ type Provider interface {
 	// ReadControlRequest reads one control request of this provider into
 	// the neutral prompt that a client draws: a permission with its options,
 	// a plan, questions, an MCP elicitation form, or an extension dialog. It
-	// never returns nil; a request that it does not recognize reads as
-	// GenericPermissionPrompt.
+	// never returns nil.
+	//
+	// A request that it does not recognize reads as GenericPermissionPrompt
+	// only when the provider answers that prompt's allow and deny in a form
+	// that its runtime reads. Otherwise it reads as UnrecognizedControlPrompt,
+	// which offers no answer: a prompt whose answer ResolveControlResponse
+	// refuses would fail only after the user chose it.
 	//
 	// A permission prompt always states its options. A runtime that states
 	// none gets LeapMux's own (AllowDenyOptions, or a provider's own once,

@@ -824,25 +824,28 @@ export function checkBackgroundTaskRoles(v, enumMembers) {
 }
 
 export function emitGoBackgroundTaskRoles(v) {
-  const cases = Object.entries(v.roles).map(([key, info]) => `case leapmuxv1.BackgroundTaskRole_${BACKGROUND_TASK_ROLE_MEMBERS[key].proto}:
- return BackgroundTaskRoleCapabilities{CountsAsTask: ${info.countsAsTask}, CanonicalChildActivity: ${info.canonicalChildActivity}}, true`).join('\n')
+  const cases = Object.entries(v.roles).map(([key, info]) => `\tcase leapmuxv1.BackgroundTaskRole_${BACKGROUND_TASK_ROLE_MEMBERS[key].proto}:
+\t\treturn BackgroundTaskRoleCapabilities{CountsAsTask: ${info.countsAsTask}, CanonicalChildActivity: ${info.canonicalChildActivity}}, true`).join('\n')
+  const fields = goFieldBlock([
+    ['CountsAsTask', 'bool'],
+    ['CanonicalChildActivity', 'bool'],
+  ])
   return `${GO_HEADER('background-task-roles.json')}package contracts
 
 import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 // BackgroundTaskRoleCapabilities separates task counters from canonical activity.
 type BackgroundTaskRoleCapabilities struct {
- CountsAsTask bool
- CanonicalChildActivity bool
+${fields}
 }
 
 // BackgroundTaskRoleCapabilitiesFor rejects unspecified and unknown roles.
 func BackgroundTaskRoleCapabilitiesFor(role leapmuxv1.BackgroundTaskRole) (BackgroundTaskRoleCapabilities, bool) {
- switch role {
- ${cases}
- case leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_UNSPECIFIED:
- }
- return BackgroundTaskRoleCapabilities{}, false
+\tswitch role {
+${cases}
+\tcase leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_UNSPECIFIED:
+\t}
+\treturn BackgroundTaskRoleCapabilities{}, false
 }
 `
 }
@@ -2703,14 +2706,21 @@ function codexPresetSettings(c, kind) {
 export function emitGoCodexPermissionPresets(c) {
   const presetMap = (kind, indent) => [
     `${indent}${jsonString(kind)}: {`,
-    ...codexPresetSettings(c, kind).map(setting => `${indent}\t${jsonString(setting.id)}: Codex${setting.key},`),
+    goMapBlock(codexPresetSettings(c, kind).map(setting => ({
+      key: `${jsonString(setting.id)}:`,
+      value: `Codex${setting.key}`,
+    })), `${indent}\t`),
     `${indent}},`,
   ].join('\n')
+  const settings = goConstBlock(Object.entries(c.settings).map(([key, setting]) => ({
+    name: `Codex${key}`,
+    value: jsonString(setting.value),
+  })))
   return `${GO_HEADER('codex-permission-presets.json')}package contracts
 
 // These constants hold the Codex setting values that the worker and presets share.
 const (
-${Object.entries(c.settings).map(([key, setting]) => `\tCodex${key} = ${jsonString(setting.value)}`).join('\n')}
+${settings}
 )
 
 // CodexPermissionPresets returns a new copy of each preset, keyed by its kind.
@@ -3145,9 +3155,8 @@ export const PROVIDER_PROTOCOLS = [
     preamble: [
       'Moonshot AI owns the kap-server event, origin, tool, display, decision and mode names.',
       'LeapMux owns the `plan` value of the permission-mode axis and `permission_mode` in `reply`.',
-      'Both sides read them -- the Go worker dispatches',
-      'the events and answers the approvals and questions, the browser plugin classifies the',
-      'same persisted payloads and writes the answers.',
+      'The Go worker dispatches the events and answers the approvals and questions. The browser',
+      'plugin classifies the same persisted payloads.',
     ].join('\n// '),
     tables: [
       {
@@ -3250,6 +3259,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'INTERACTION_KIND',
         tsType: 'KimiInteractionKind',
         doc: 'the controls carried by interaction frames',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'events',
@@ -4697,9 +4708,9 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'CONTROL_ANSWER',
     title: 'Control answer',
     preamble: [
-      'LeapMux owns this vocabulary. The Go worker writes it into a control answer; the',
-      'browser reads the behavior and the placeholder back in a saved answer, and its test',
-      'support builds the generic prompt with the option ids.',
+      'LeapMux owns this vocabulary. The Go worker writes it into the generic prompt and into',
+      'a control answer, and it reads the answer back. The browser reads none of it. Only the',
+      'browser\'s test support builds the same prompt and answers as fixtures.',
     ].join('\n// '),
     tables: [
       {
@@ -4709,6 +4720,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'ControlAnswerBehavior',
         owner: 'LeapMux chose',
         doc: 'the behavior of the neutral answer envelope',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'options',
@@ -4717,6 +4730,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'ControlAnswerOption',
         owner: 'LeapMux chose',
         doc: 'the ids of LeapMux\'s own Allow and Deny options',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'messages',
@@ -4725,6 +4740,8 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'ControlAnswerMessage',
         owner: 'LeapMux chose',
         doc: 'the placeholder reason of a refusal with no typed reason',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
     ],
   },
@@ -5196,9 +5213,9 @@ export const PROVIDER_PROTOCOLS = [
       'Codewhale owns the event names, the item kinds, the turn statuses, the modes, the',
       'postures, the tool names and the runtime field names. LeapMux owns the option-group id,',
       'the control payload key, the reply frame names, the decline answer and the two LeapMux',
-      'keys of a reply frame. Both sides read them. The worker dispatches the runtime\'s events',
-      'and writes the control and reply frames. The browser plugin classifies the same rows and',
-      'reads the saved answers back.',
+      'keys of a reply frame. Each table states the sides that read it. The worker dispatches',
+      'the runtime\'s events and writes the control and reply frames. The browser plugin',
+      'classifies the same rows; it reads no answer, because the worker builds every answer.',
     ].join('\n// '),
     tables: [
       {
@@ -5852,6 +5869,8 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'CAPABILITY',
         tsType: 'ClineCapability',
         doc: 'capability names that the hub asks the client to answer',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
       {
         key: 'runReasons',
@@ -6235,11 +6254,10 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'LETTA',
     title: 'Letta Code',
     preamble: [
-      'Letta owns the command, message, delta-kind, tool, subagent-state and loop-status names.',
-      'LeapMux owns the permission modes and the reply fields: the worker persists each transcript',
-      'row as Letta\'s own `stream_delta` payload, answers the server\'s `can_use_tool` request',
-      'with a FLAT `approval_response` payload, answers a question with a task notification,',
-      'and the browser draws all of them.',
+      'Letta Code owns every word here except the permission modes, which LeapMux chose.',
+      'The worker persists each transcript row as Letta\'s own `stream_delta` payload, and',
+      'the browser draws it. The worker answers the server\'s `can_use_tool` request with a',
+      'FLAT `approval_response` payload, and it answers a question with a task notification.',
     ].join('\n// '),
     tables: [
       {
@@ -6344,7 +6362,16 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'Reply',
         tsTable: 'REPLY',
         tsType: 'LettaReplyField',
-        doc: 'fields of the flat approval_response payload that the worker sends to answer a permission',
+        doc: 'fields of the flat approval_response payload that the worker sends to answer a permission, and of its decision',
+        readers: ['go'],
+        readersWhy: CONTROL_VOCABULARY_READERS_WHY,
+      },
+      {
+        key: 'behaviors',
+        goTable: 'Behavior',
+        tsTable: 'BEHAVIOR',
+        tsType: 'LettaBehavior',
+        doc: '`behavior` words of the decision of an approval_response',
         readers: ['go'],
         readersWhy: CONTROL_VOCABULARY_READERS_WHY,
       },
@@ -6875,6 +6902,8 @@ export function checkProviderStructs(spec, p) {
     mustBe(/^[A-Z][A-Za-z0-9]*$/.test(name), file, `structs.${name} must be a PascalCase Go type name`)
     mustBe(!constants.has(name), file, `structs.${name} takes the name of a generated declaration this domain already emits -- pick another, or the generated package will not compile`)
     mustBe(declared.has(definition.table), file, `structs.${name}.table ${JSON.stringify(definition.table)} is not a declared table`)
+    // goFieldBlock aligns the fields by the widest one, so it needs at least one.
+    mustBe(Array.isArray(definition.fields) && definition.fields.length > 0, file, `structs.${name} lists no field -- a generated struct must hold at least one field`)
     const seen = new Set()
     for (const field of definition.fields) {
       const table = field.table ?? definition.table
@@ -6944,19 +6973,16 @@ function emitGoStructs(spec, p) {
     return { blocks: [], needsJSON: false }
   let needsJSON = false
   const blocks = structs.map(([name, definition]) => {
-    const rows = definition.fields.map((field) => {
+    const body = goFieldBlock(definition.fields.map((field) => {
       if (field.type.includes('json.RawMessage'))
         needsJSON = true
       const tag = p[field.table ?? definition.table][field.key] + (field.omitempty ? ',omitempty' : '')
-      return {
-        name: field.key,
-        type: goFieldType(field.type),
-        tag: `\`json:${jsonString(tag)}\``,
-      }
-    })
-    const nameWidth = Math.max(...rows.map(r => r.name.length))
-    const typeWidth = Math.max(...rows.map(r => r.type.length))
-    const body = rows.map(r => `\t${r.name.padEnd(nameWidth)} ${r.type.padEnd(typeWidth)} ${r.tag}`).join('\n')
+      return [
+        field.key,
+        goFieldType(field.type),
+        `\`json:${jsonString(tag)}\``,
+      ]
+    }))
     const doc = (definition.doc ?? `${name} is one ${spec.title} record.`).split('\n').map(line => `// ${line}`.trimEnd()).join('\n')
     const tables = [
       ...new Set(definition.fields.map(f => f.table ?? definition.table)),
@@ -7277,10 +7303,22 @@ function emitGoStartupOptionGroups(spec, p) {
   const rows = Object.values(p.startupOptionGroups).map((group) => {
     const table = spec.tables.find(table => table.key === group.valuesTable)
     const value = key => `${prefix}${table.goTable}${key}`
-    const options = group.options.map(option => `\t\t{Value: ${value(option.value)}, Label: ${jsonString(option.label)}, Description: ${jsonString(option.description ?? '')}},`).join('\n')
+    const options = group.options.map(option => `\t\t\t{Value: ${value(option.value)}, Label: ${jsonString(option.label)}, Description: ${jsonString(option.description ?? '')}},`).join('\n')
     return `\t{\n\t\tID: ${prefix}OptionID${group.id}, Label: ${jsonString(group.label)}, DefaultValue: ${value(group.defaultValue)},\n\t\tReadOnlyReason: ${jsonString(group.readOnlyReason)},\n\t\tOptions: []${prefix}StartupOption{\n${options}\n\t\t},\n\t},`
   }).join('\n')
-  return `\n// ${prefix}StartupOption is one choice that a new agent accepts.\ntype ${prefix}StartupOption struct {\n\tValue string\n\tLabel string\n\tDescription string\n}\n\n// ${prefix}StartupOptionGroup supplies one launch axis and its default.\ntype ${prefix}StartupOptionGroup struct {\n\tID string\n\tLabel string\n\tDefaultValue string\n\tReadOnlyReason string\n\tOptions []${prefix}StartupOption\n}\n\n// ${prefix}StartupOptionGroups comes from the shared axis definition in its stated order.\nvar ${prefix}StartupOptionGroups = []${prefix}StartupOptionGroup{\n${rows}\n}\n`
+  const optionFields = goFieldBlock([
+    ['Value', 'string'],
+    ['Label', 'string'],
+    ['Description', 'string'],
+  ])
+  const groupFields = goFieldBlock([
+    ['ID', 'string'],
+    ['Label', 'string'],
+    ['DefaultValue', 'string'],
+    ['ReadOnlyReason', 'string'],
+    ['Options', `[]${prefix}StartupOption`],
+  ])
+  return `\n// ${prefix}StartupOption is one choice that a new agent accepts.\ntype ${prefix}StartupOption struct {\n${optionFields}\n}\n\n// ${prefix}StartupOptionGroup supplies one launch axis and its default.\ntype ${prefix}StartupOptionGroup struct {\n${groupFields}\n}\n\n// ${prefix}StartupOptionGroups comes from the shared axis definition in its stated order.\nvar ${prefix}StartupOptionGroups = []${prefix}StartupOptionGroup{\n${rows}\n}\n`
 }
 
 function emitTsStartupOptionGroups(spec, p) {
@@ -7460,10 +7498,26 @@ function byFirstString([a], [b]) {
       : 0
 }
 
-/** gofmt-stable alignment for map literals: pads keys so the values line up. */
-function goMapBlock(rows) {
+/**
+ * gofmt-stable alignment for map literals: pads keys so the values line up.
+ * `indent` is the indentation of the elements, one tab deeper than the literal.
+ */
+function goMapBlock(rows, indent = '\t') {
   const width = Math.max(...rows.map(r => r.key.length))
-  return rows.map(r => `\t${r.key.padEnd(width)} ${r.value},`).join('\n')
+  return rows.map(r => `${indent}${r.key.padEnd(width)} ${r.value},`).join('\n')
+}
+
+/**
+ * gofmt-stable alignment for struct fields: pads every cell but the last of each
+ * row to the widest cell of its column. Each row is the cells of one field, such
+ * as `[name, type]` or `[name, type, tag]`, and every row holds the same number of
+ * cells: gofmt aligns a column only across consecutive lines that all have it.
+ */
+function goFieldBlock(rows) {
+  const widths = rows[0].map((_, column) => Math.max(...rows.map(row => row[column].length)))
+  return rows.map(row => `\t${row.map((cell, column) => column === row.length - 1
+    ? cell
+    : cell.padEnd(widths[column])).join(' ')}`).join('\n')
 }
 
 export function emitGoWire(w, d) {

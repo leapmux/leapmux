@@ -18,9 +18,10 @@ message ControlPrompt {
     QuestionPrompt question = 3;
     ElicitationPrompt elicitation = 4;
     DialogPrompt dialog = 5;
-    // The Worker cannot read the payload at all, so the request offers no
-    // answer. The provider still waits, so a client shows the request and
-    // the fault, and offers a stop instead. AnswerControl refuses it.
+    // The Worker cannot read the payload as a request of its provider, so the
+    // request offers no answer. The provider still waits, so a client shows
+    // the request and the fault, and offers a stop instead. AnswerControl
+    // refuses it.
     ControlPayloadFault unreadable = 6;
   }
   // What the composer's editor does while this request waits.
@@ -28,13 +29,17 @@ message ControlPrompt {
 }
 
 // ControlPayloadFault is why the Worker cannot read a control request's
-// payload.
+// payload as a request of its provider.
 enum ControlPayloadFault {
   CONTROL_PAYLOAD_FAULT_UNSPECIFIED = 0;
   // The payload is not JSON.
   CONTROL_PAYLOAD_FAULT_MALFORMED = 1;
   // The payload is JSON, but not an object.
   CONTROL_PAYLOAD_FAULT_NOT_AN_OBJECT = 2;
+  // The payload is a JSON object, but the provider does not recognize it as
+  // a request that its runtime raises, so the provider can build no answer
+  // that the runtime reads.
+  CONTROL_PAYLOAD_FAULT_UNRECOGNIZED = 3;
 }
 
 // ControlEditorPurpose says what text typed in the composer means for a

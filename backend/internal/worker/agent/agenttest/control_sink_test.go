@@ -34,6 +34,24 @@ func TestControlSinkStoresTheSessionOfEachRequest(t *testing.T) {
 	}, sessions)
 }
 
+// A provider test delivers an answer as the Worker does: with the instance of
+// the request's latest publication. A republished request answers with its
+// new instance, so an answer to the replaced one reads as stale. The instance
+// of another request never stands in, and a request that the sink never
+// published states no instance.
+func TestControlSinkAnswerStatesTheInstanceOfTheLatestPublication(t *testing.T) {
+	t.Parallel()
+	sink := &ControlSink{}
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-1", InstanceID: "instance-1"}))
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-2", InstanceID: "instance-2"}))
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-1", InstanceID: "instance-3"}))
+	data := []byte(`{"answer":true}`)
+
+	assert.Equal(t, agent.RawInput{Data: data, ControlInstanceID: "instance-3"}, sink.Answer("req-1", data), "the republished request")
+	assert.Equal(t, agent.RawInput{Data: data, ControlInstanceID: "instance-2"}, sink.Answer("req-2", data))
+	assert.Equal(t, agent.RawInput{Data: data}, sink.Answer("never-published", data))
+}
+
 // A refused publication records nothing, whatever session the request states.
 func TestControlSinkRecordsNoRequestThatItRefuses(t *testing.T) {
 	t.Parallel()

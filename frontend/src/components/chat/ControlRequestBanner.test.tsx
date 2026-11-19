@@ -1,4 +1,5 @@
 import type { ControlDecisionSender } from './controls/types'
+import type { ControlPayloadFault } from './model/controlPrompt'
 import type { ControlQuestion } from './model/question'
 import type { QuestionDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import type { ControlRequest } from '~/stores/control.store'
@@ -11,7 +12,7 @@ import { DialogAction } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import * as clipboard from '~/lib/clipboard'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
-import { testControlRequest } from '~/test-support/controlRequests'
+import { CONTROL_PAYLOAD_FAULTS, testControlRequest, testFaultedControlRequest } from '~/test-support/controlRequests'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import * as banner from './ControlRequestBanner'
 import { useControlResponseHandling } from './controlResponseHandling'
@@ -794,12 +795,9 @@ describe('ControlRequestBanner reactive request removal', () => {
 // else. The stop lives with the QUESTION, away from the decisions, so it cannot be
 // pressed for one.
 describe('a request whose payload LeapMux cannot read', () => {
-  const faulted = (fault: 'malformed' | 'not-an-object'): ControlRequest => testControlRequest({
+  const faulted = (fault: ControlPayloadFault): ControlRequest => testFaultedControlRequest(fault, {
     agentId: 'agent-1',
     requestId: 'request-1',
-    editorRole: 'none',
-    payloadFault: fault,
-    originalPayload: new TextEncoder().encode('{not json'),
   })
 
   // A request with no fields reads as "Permission Required", and that sentence states
@@ -807,6 +805,7 @@ describe('a request whose payload LeapMux cannot read', () => {
   it.each([
     ['malformed', 'LeapMux cannot read this request. The agent sent bytes that are not JSON.'],
     ['not-an-object', 'LeapMux cannot read this request. The agent sent JSON that is not an object.'],
+    ['unrecognized', 'LeapMux cannot read this request. The agent sent a kind of request that LeapMux does not recognize.'],
   ] as const)('states the %s fault rather than a question it cannot read', (fault, notice) => {
     render(() => (
       <ControlRequestContent
@@ -822,13 +821,14 @@ describe('a request whose payload LeapMux cannot read', () => {
   // here, because the Worker refuses every answer to a request it cannot read. The stop
   // releases the agent without an answer, and the worker cancels from its own copy of
   // the bytes. Every provider, because the rule is the banner's own and a new provider
-  // must not reach a decision for bytes that nobody can read.
-  it.each(ALL_PROVIDERS)(
-    'offers no decision for provider %s',
-    (provider) => {
+  // must not reach a decision for bytes that nobody can read. Every fault, because an
+  // unrecognized request still decodes to an object that a provider plugin could read.
+  it.each(ALL_PROVIDERS.flatMap(provider => CONTROL_PAYLOAD_FAULTS.map(fault => [provider, fault] as const)))(
+    'offers no decision for provider %s and the %s fault',
+    (provider, fault) => {
       render(() => (
         <ControlRequestActions
-          request={faulted('malformed')}
+          request={faulted(fault)}
           answerState={createControlAnswerState()}
           agentProvider={provider}
           onDecide={vi.fn()}

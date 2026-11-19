@@ -99,7 +99,11 @@ type antigravityStep struct {
 		ModelUsage map[string]string `json:"modelUsage"`
 	} `json:"metadata"`
 	RequestedInteraction json.RawMessage `json:"requestedInteraction"`
-	PlannerResponse      struct {
+	// CompletedInteractions holds each interaction that the step requested and
+	// the user answered, with its answer. A step can request several
+	// interactions in turn, so their count tells two equal requests apart.
+	CompletedInteractions []json.RawMessage `json:"completedInteractions"`
+	PlannerResponse       struct {
 		Response         string `json:"response"`
 		ModifiedResponse string `json:"modifiedResponse"`
 		Thinking         string `json:"thinking"`
@@ -136,35 +140,13 @@ type antigravityStep struct {
 	} `json:"errorMessage"`
 }
 
-type requestedInteraction struct {
-	Permission  *permissionInteraction  `json:"permission"`
-	AskQuestion *askQuestionInteraction `json:"askQuestion"`
-}
-
+// permissionInteraction is the permission that a step requests, as the
+// automatic approval policy reads it: the resource that the step acts on.
 type permissionInteraction struct {
 	Resource struct {
 		Action string `json:"action"`
 		Target string `json:"target"`
 	} `json:"resource"`
-	ActionDescription       string `json:"actionDescription"`
-	SuggestedPersistPattern string `json:"suggestedPersistPattern"`
-}
-
-type askQuestionInteraction struct {
-	Questions []question `json:"questions"`
-}
-
-type question struct {
-	Question      string           `json:"question"`
-	Options       []questionOption `json:"options"`
-	IsMultiSelect bool             `json:"isMultiSelect"`
-	ID            string           `json:"id,omitempty"`
-	Header        string           `json:"header,omitempty"`
-}
-
-type questionOption struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
 }
 
 func isOpenStepStatus(status string) bool {

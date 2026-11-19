@@ -45,7 +45,7 @@ func TestMuseAnswerWaitsForThePublicationThatMadeItsCardVisible(t *testing.T) {
 		answer := agenttest.ResolveAnswer(museProvider{}, request, key, agent.ControlAnswer{Content: approvalAnswer(key)})
 		require.False(t, answer.Withhold)
 		result := make(chan error, 1)
-		go func() { result <- a.SendRawInput(answer.Content, agent.StopContext{}) }()
+		go func() { result <- a.SendRawInput(agent.RawInput{Data: answer.Content}) }()
 		synctest.Wait()
 		early := false
 		select {

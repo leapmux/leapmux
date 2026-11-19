@@ -427,12 +427,12 @@ func (a *Agent) HandleOutput(content []byte) {
 
 // SendRawInput executes a control answer that ResolveControlResponse built. It
 // refuses every other input, because the server takes no raw frame.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
-	return a.executeControlReply(data)
+	return a.executeControlReply(input.Data, input.ControlInstanceID)
 }

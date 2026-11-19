@@ -1147,7 +1147,7 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 				slog.Error("encode pi control cancellation", "agent_id", a.AgentID(), "error", marshalErr)
 				return
 			}
-			if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
+			if err := a.SendRawInput(agent.RawInput{Data: response}); err != nil {
 				slog.Warn("send pi control cancellation", "agent_id", a.AgentID(), "error", err)
 			}
 		}

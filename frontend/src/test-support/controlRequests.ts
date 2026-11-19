@@ -1,4 +1,4 @@
-import type { ControlPrompt, PermissionOption } from '~/components/chat/model/controlPrompt'
+import type { ControlPayloadFault, ControlPrompt, PermissionOption } from '~/components/chat/model/controlPrompt'
 import type { ControlEditorRole } from '~/components/chat/model/controlPromptWire'
 import type { ControlRequest } from '~/stores/control.store'
 import { screen, within } from '@solidjs/testing-library'
@@ -13,8 +13,8 @@ export const ALLOW_DENY_OPTIONS: readonly PermissionOption[] = [
 ]
 
 /**
- * The prompt of a request that the Worker's provider does not recognize: LeapMux's
- * own Allow and Deny (`agent.GenericPermissionPrompt` in Go).
+ * The prompt of a request that the Worker's provider does not recognize but can still
+ * answer: LeapMux's own Allow and Deny (`agent.GenericPermissionPrompt` in Go).
  */
 export const GENERIC_PERMISSION_PROMPT: ControlPrompt = {
   kind: 'permission',
@@ -53,6 +53,43 @@ export function testControlRequest(fields: Pick<ControlRequest, 'agentId' | 'req
     ...fields,
     prompt,
   }
+}
+
+/**
+ * The bytes that arrive with each payload fault, and the payload that the browser
+ * decodes from them (`handleControlRequest`). Only an `unrecognized` request is a JSON
+ * object, so only its payload holds what arrived: a provider plugin could read that
+ * object, and the request must still offer no answer.
+ */
+export const FAULTED_CONTROL_PAYLOADS: Readonly<Record<ControlPayloadFault, { bytes: string, payload: Record<string, unknown> }>> = {
+  'malformed': { bytes: '{not json', payload: {} },
+  'not-an-object': { bytes: '[1,2]', payload: {} },
+  'unrecognized': {
+    bytes: '{"method":"session/unknown","id":7}',
+    payload: { method: 'session/unknown', id: 7 },
+  },
+}
+
+/** Every payload fault, so a test that covers each fault also covers a new one. */
+export const CONTROL_PAYLOAD_FAULTS = Object.keys(FAULTED_CONTROL_PAYLOADS) as ControlPayloadFault[]
+
+/**
+ * One request whose payload has `fault`, as `handleControlRequest` keeps it: the
+ * decoded payload, the bytes that arrived, and no editor, which the Worker states for
+ * every such request. A test states the rest, an editor role included.
+ */
+export function testFaultedControlRequest(
+  fault: ControlPayloadFault,
+  fields: Pick<ControlRequest, 'agentId' | 'requestId'> & Partial<ControlRequest>,
+): ControlRequest {
+  const { bytes, payload } = FAULTED_CONTROL_PAYLOADS[fault]
+  return testControlRequest({
+    editorRole: 'none',
+    payload: structuredClone(payload),
+    originalPayload: new TextEncoder().encode(bytes),
+    ...fields,
+    payloadFault: fault,
+  })
 }
 
 /**

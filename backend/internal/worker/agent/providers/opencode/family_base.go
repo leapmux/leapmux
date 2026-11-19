@@ -77,11 +77,11 @@ func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, erro
 // that LeapMux answers by id on the stream it arrived on; a question never reached
 // that stream, so it has no id there to answer and the daemon reads its answer from
 // a route instead.
-func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
-	if handled, err := b.Questions.answer(b.Context(), raw); handled {
+func (b *FamilyBase) SendRawInput(input agent.RawInput) error {
+	if handled, err := b.Questions.answer(b.Context(), input.Data); handled {
 		return err
 	}
-	return b.Base.SendRawInput(raw, stop)
+	return b.Base.SendRawInput(input)
 }
 
 // SteerInput sends the steer as a second prompt on the running session.

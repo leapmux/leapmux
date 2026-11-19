@@ -266,9 +266,9 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                 ONE switch over the prompt, beside the content half's. Every kind
                 draws its own actions, and every one of them sends a decision: the
                 Worker's provider builds the runtime's own answer from it. A
-                permission prompt always states its options -- the runtime's own, or
-                LeapMux's allow and deny -- so the agent's turn, which blocks until an
-                answer reaches it, always has one.
+                permission prompt always states its options -- the runtime's own,
+                LeapMux's allow and deny, or LeapMux's Cancel -- so the agent's turn,
+                which blocks until an answer reaches it, always has one.
               */}
               <Switch>
                 <Match when={surfaceOf(props.controlSurface, 'question')}>

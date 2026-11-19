@@ -225,6 +225,18 @@ func (zcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) e
 	return nil
 }
 
+// ControlRequestKey reads the key of a stored ZCode request: the request id
+// that the app-server stated, which the Worker writes as the envelope's
+// request_id (handlePermissionRequest, handleUserInputRequest). LeapMux's
+// workspace-trust question states no key, so its session gives it
+// (providerkit.WorkspaceTrustRequestKey).
+func (zcodeProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if providerkit.IsWorkspaceTrustQuestion(payload) {
+		return providerkit.WorkspaceTrustRequestKey(payload, agentSessionID)
+	}
+	return agent.EnvelopeControlRequestKey(payload)
+}
+
 // ResolveControlResponse turns the neutral answer of AnswerControlRequest into the
 // app-server's reply frame.
 //
@@ -254,15 +266,6 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		return res
 	}
 	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
-	if stored.RequestID != ctx.RequestID {
-		// The agent writes the request's key into its payload, so a payload that
-		// states another id, or none, disagrees with its own key and LeapMux
-		// cannot trust it.
-		slog.Warn("zcode stored control request disagrees with its key",
-			"request_id", ctx.RequestID, "stored", stored.RequestID)
-		res.Refuse(agent.RefusalUnreadableRequest)
-		return res
-	}
 	if stored.Method == contracts.ZCodeMethodRequestUserInput && stored.Request.ToolName == zcodeControlMCPElicitation {
 		// An MCP server's form: AnswerControlRequest answers it as an MCP form
 		// (agent.AnswerElicitation), not with allow or deny.

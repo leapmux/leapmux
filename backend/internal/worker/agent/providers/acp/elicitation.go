@@ -60,8 +60,8 @@ func (b *Base) bindURLElicitation(line *providerkit.ParsedLine, publication prov
 }
 
 // SendRawInput delegates each answer and releases URL records that the transport no longer owns.
-func (b *Base) SendRawInput(data []byte, stop agent.StopContext) error {
-	err := b.JSONRPCProcess.SendRawInput(data, stop)
+func (b *Base) SendRawInput(input agent.RawInput) error {
+	err := b.JSONRPCProcess.SendRawInput(input)
 	b.forgetResolvedURLElicitations()
 	return err
 }

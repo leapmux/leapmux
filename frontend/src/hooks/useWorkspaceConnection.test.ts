@@ -2572,6 +2572,26 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
+    // An unrecognized request is a JSON object that its provider does not recognize. The
+    // payload decodes as it stands, so two such requests with one id stay apart by their
+    // fingerprint, and the request still offers no answer.
+    it('keeps an unrecognized request with its decoded payload', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
+        const bytes = '{"method":"session/unknown","id":7}'
+        handleControlRequest('a1', unreadable(bytes, ControlPayloadFault.UNRECOGNIZED), 'live', s)
+        const [kept] = s.controlStore.getRequests('a1')
+        expect(kept?.payloadFault).toBe('unrecognized')
+        expect(kept?.payload).toEqual({ method: 'session/unknown', id: 7 })
+        expect(new TextDecoder().decode(kept?.originalPayload)).toBe(bytes)
+        expect(kept?.editorRole).toBe('none')
+        handleControlRequest('a1', unreadable('{"method":"session/other","id":7}', ControlPayloadFault.UNRECOGNIZED), 'live', s)
+        expect(s.controlStore.getRequests('a1')).toHaveLength(2)
+        dispose()
+      })
+    })
+
     it('states no fault for a payload it could read', () => {
       createRoot((dispose) => {
         const s = argStores()

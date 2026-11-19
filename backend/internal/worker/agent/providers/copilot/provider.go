@@ -69,7 +69,8 @@ func (copilotProvider) ListStoredSessions(ctx context.Context, q agent.StoredSes
 type copilotSessionEventFrame struct {
 	Method string `json:"method"`
 	Params struct {
-		Event struct {
+		SessionID string `json:"sessionId"`
+		Event     struct {
 			Type string          `json:"type"`
 			Data json.RawMessage `json:"data"`
 		} `json:"event"`

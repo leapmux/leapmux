@@ -78,7 +78,8 @@ func readKiroControlRequest(payload []byte) kiroControlRequest {
 //     completes with what only Kiro states: the wider scopes of an always
 //     option, the command of a shell call, and the files of a turn review.
 //
-// The standard `elicitation/create` still reads as a form.
+// The standard `elicitation/create` still reads as a form, and any other
+// request reads as unrecognized, as the base reader reads it.
 func (kiroProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	request := readKiroControlRequest(input.Payload)
 	switch request.method {
@@ -94,7 +95,8 @@ func (kiroProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 	}
 	permission := acp.ReadPermissionPrompt(input)
 	if permission == nil {
-		return agent.GenericPermissionPrompt()
+		// As the base reader reads it (acp.ReadBaseControlRequest).
+		return agent.UnrecognizedControlPrompt()
 	}
 	completeKiroPermission(permission, kiroFields(providerkit.RawFields(request.params["_meta"])[contracts.KiroMetaNamespace]))
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}

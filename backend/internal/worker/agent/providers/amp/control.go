@@ -50,17 +50,20 @@ func (a *Agent) decidePermission(ctx context.Context, request helperRequest) hel
 	if len(input) == 0 {
 		input = json.RawMessage("{}")
 	}
-	payload, err := json.Marshal(contracts.AmpPermissionRequest{
-		Type:      contracts.AmpPermissionRequestTypeRequest,
-		ToolName:  request.Tool,
-		ToolUseID: toolUseID,
-		Input:     input,
+	requestID := a.bridge.newRequestID()
+	payload, err := json.Marshal(ampStoredPermissionRequest{
+		AmpPermissionRequest: contracts.AmpPermissionRequest{
+			Type:      contracts.AmpPermissionRequestTypeRequest,
+			ToolName:  request.Tool,
+			ToolUseID: toolUseID,
+			Input:     input,
+		},
+		RequestID: requestID,
 	})
 	if err != nil {
 		return rejectDecision(fmt.Sprintf("LeapMux could not read the tool input: %v", err))
 	}
 
-	requestID := a.bridge.newRequestID()
 	pending, ok := a.bridge.register(requestID)
 	if !ok {
 		return rejectDecision("LeapMux stopped the agent")
@@ -185,7 +188,8 @@ func (a *Agent) toolCallRow(toolUseID string) int64 {
 // Amp's stdin takes user lines alone, and Amp ends the whole session at any
 // other line. So SendRawInput refuses an answer whose behavior it cannot read,
 // and every line that is not a user line, and sends nothing to Amp.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(data); ok && requestID != "" {
 		return a.answerPermission(requestID, behavior, message)
 	}

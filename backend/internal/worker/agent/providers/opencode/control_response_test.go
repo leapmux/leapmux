@@ -56,25 +56,33 @@ func TestNativeWorkerControlTranslation(t *testing.T) {
 	}
 }
 
-// A row whose payload states another request than its key disagrees with that
-// key, so LeapMux cannot read the request that the answer is for.
-func TestNativeWorkerControlRefusesARequestThatDisagreesWithItsKey(t *testing.T) {
+// The key of a stored native request is its kind, the session that the
+// request states and its id, so a payload of another kind, session or id
+// gives another key, and the Worker refuses the row before OpenCode reads it
+// (agent.StoredControlRequestAgrees). A payload that states no id or no
+// session gives no key.
+func TestNativeWorkerControlRequestKeyReadsTheKindTheSessionAndTheID(t *testing.T) {
 	t.Parallel()
-	for name, tc := range map[string]struct {
-		kind    string
-		request json.RawMessage
-	}{
-		"a permission": {"permission", json.RawMessage(`{"type":"permission.asked","data":{"id":"per_1","sessionID":"ses_1","action":"shell","resources":[]}}`)},
-		"a form":       {"form", json.RawMessage(`{"type":"form.created","data":{"form":{"id":"frm_1","sessionID":"ses_1","fields":[{"key":"count","type":"integer"}]}}}`)},
+	for payload, want := range map[string]string{
+		`{"type":"permission.asked","data":{"id":"per_1","sessionID":"ses_1","action":"shell","resources":[]}}`:                  openCodeControlKey("permission", "ses_1", "per_1"),
+		`{"type":"form.created","data":{"form":{"id":"frm_1","sessionID":"ses_1","fields":[{"key":"count","type":"integer"}]}}}`: openCodeControlKey("form", "ses_1", "frm_1"),
 	} {
-		for _, key := range []string{
-			openCodeControlKey(tc.kind, "ses_1", "other"),
-			openCodeControlKey(tc.kind, "ses_other", map[string]string{"permission": "per_1", "form": "frm_1"}[tc.kind]),
-		} {
-			answer := agent.ControlAnswer{Content: agent.ControlResponseEnvelope(key, map[string]any{"behavior": "deny"})}
-			result := agenttest.ResolveAnswer(Registration().Plugin, tc.request, key, answer)
-			assert.True(t, result.Withhold, "%s under %s", name, key)
-			assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, "%s under %s", name, key)
-		}
+		key, ok := opencodeProvider{}.ControlRequestKey([]byte(payload), "")
+		assert.True(t, ok, payload)
+		assert.Equal(t, want, key, payload)
+	}
+	for _, payload := range []string{
+		`{"type":"permission.asked","data":{"sessionID":"ses_1"}}`,
+		`{"type":"permission.asked","data":{"id":"per_1"}}`,
+		`{"type":"permission.asked","data":{"id":1,"sessionID":"ses_1"}}`,
+		`{"type":"permission.asked","data":[]}`,
+		`{"type":"form.created","data":{"id":"frm_1","sessionID":"ses_1"}}`,
+		`{"type":"form.created","data":{"form":"frm_1"}}`,
+		`{"type":"question.asked","properties":{"id":"que_1"}}`,
+		`{"data":{"id":"per_1","sessionID":"ses_1"}}`,
+	} {
+		key, ok := opencodeProvider{}.ControlRequestKey([]byte(payload), "ses_1")
+		assert.False(t, ok, payload)
+		assert.Empty(t, key, payload)
 	}
 }

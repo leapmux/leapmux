@@ -19,10 +19,11 @@ export interface ControlRequest {
   editorRole: ControlEditorRole
   payload: Record<string, unknown>
   /**
-   * Set when LeapMux could not read the bytes into `payload`, which is then empty. The
-   * request is still kept: a BLOCKING request makes the agent wait for an answer, so
-   * dropping it leaves a turn that never ends and a reader with no question.
-   * `originalPayload` holds what arrived.
+   * Set when LeapMux could not read the bytes as a request of the agent's provider. When
+   * the bytes are no JSON object, `payload` is empty. An `unrecognized` request is a JSON
+   * object, so `payload` holds it. The request is still kept: a BLOCKING request makes
+   * the agent wait for an answer, so dropping it leaves a turn that never ends and a
+   * reader with no question. `originalPayload` holds what arrived.
    */
   payloadFault?: ControlPayloadFault
   /** Original provider bytes remain available for copying and inspection. */

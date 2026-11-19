@@ -42,7 +42,9 @@ func deepseekHarnessApprovalOptions() []*leapmuxv1.PermissionOption {
 //     runtime's two answers.
 //
 // Any other payload, and a user-questions request that mixes a plan review
-// with other questions, reads as the generic prompt.
+// with other questions, reads as unrecognized: the resolution refuses an
+// answer to an approval that states no tool and to another event, and the
+// agent cannot send the runtime an allow that answers no question.
 func (deepseekHarnessProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	fields, _ := providerkit.RawObject(input.Payload)
 	if providerkit.ObjectString(fields, "event") == contracts.DeepseekHarnessControlEventUserQuestions {
@@ -56,12 +58,12 @@ func (deepseekHarnessProvider) ReadControlRequest(input agent.ControlRequestInpu
 		if plan, ok := deepseekHarnessPlanPrompt(records); ok {
 			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: plan}}
 		}
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 	if permission, ok := deepseekHarnessApprovalPrompt(fields); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
-	return agent.GenericPermissionPrompt()
+	return agent.UnrecognizedControlPrompt()
 }
 
 // deepseekHarnessQuestionRecords reads the question records of a
@@ -235,14 +237,20 @@ func deepseekHarnessFeedbackFollowUp(feedback string) string {
 // deepseekHarnessPermissionAnswer answers a permission prompt:
 //
 //   - The approval's allow is a bare allow, which the runtime reads as
-//     `allowed-once`. The generic prompt's allow sends the request's input
-//     back, as the shared agent.AnswerAllowDeny does.
+//     `allowed-once`.
 //   - A deny carries the feedback, or the placeholder for none, and the
 //     feedback also follows as a message.
+//
+// Only an approval reads as a permission (ReadControlRequest), so the answer
+// refuses a permission decision about any other request.
 func deepseekHarnessPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	decision, option, err := agent.PermissionDecisionOf(input)
 	if err != nil {
 		return agent.ControlAnswer{}, err
+	}
+	fields, _ := providerkit.RawObject(input.Request.Payload)
+	if _, approval := deepseekHarnessApprovalPrompt(fields); !approval {
+		return agent.ControlAnswer{}, agent.InvalidControlDecision("DeepSeek Harness asks no permission for this request")
 	}
 	if agent.IsRefusalOption(option) {
 		return agent.ControlAnswer{
@@ -250,11 +258,7 @@ func deepseekHarnessPermissionAnswer(input agent.ControlAnswerInput) (agent.Cont
 			FollowUp: deepseekHarnessFeedbackFollowUp(decision.GetFeedback()),
 		}, nil
 	}
-	fields, _ := providerkit.RawObject(input.Request.Payload)
-	if _, approval := deepseekHarnessApprovalPrompt(fields); approval {
-		return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, map[string]any{"behavior": contracts.ControlAnswerBehaviorAllow})}, nil
-	}
-	return agent.ControlAnswer{Content: agent.AllowResponse(input.RequestID, agent.ControlToolInput(input.Request.Payload))}, nil
+	return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, map[string]any{"behavior": contracts.ControlAnswerBehaviorAllow})}, nil
 }
 
 // deepseekHarnessQuestionAnswer answers a question with the runtime's own

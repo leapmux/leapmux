@@ -81,13 +81,21 @@ export function controlPromptFromWire(prompt: WireControlPrompt | undefined): Co
  * Why the Worker could not read a request's payload, or undefined for a payload that it
  * read. Such a request offers no answer: the banner states the fault, and the stop is
  * the way out.
+ *
+ * A fault that this browser does not know, and an unstated one, read as `malformed`.
+ * Either way the request is unreadable, so it still offers no answer.
  */
 export function controlPayloadFaultFromWire(prompt: WireControlPrompt | undefined): ControlPayloadFault | undefined {
   if (prompt?.kind.case !== 'unreadable')
     return undefined
-  return prompt.kind.value === ControlPayloadFaultWire.NOT_AN_OBJECT
-    ? 'not-an-object'
-    : 'malformed'
+  switch (prompt.kind.value) {
+    case ControlPayloadFaultWire.NOT_AN_OBJECT:
+      return 'not-an-object'
+    case ControlPayloadFaultWire.UNRECOGNIZED:
+      return 'unrecognized'
+    default:
+      return 'malformed'
+  }
 }
 
 /** The editor role of one prompt. An unstated purpose is feedback. */

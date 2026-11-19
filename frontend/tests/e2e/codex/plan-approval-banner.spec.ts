@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import { codexTest } from '../codex-fixtures'
-import { answerControl, chooseSettingsOption, controlButton, enterControlFeedback, expectSettingsChip, expectSettingsOptionChosen, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerPlanReview, chooseSettingsOption, enterControlFeedback, expectSettingsChip, expectSettingsOptionChosen, planReviewButton, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
 
@@ -60,8 +60,8 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     const control = (testId: string) => page.getByTestId(testId).filter({ visible: true })
     const firstBanner = await waitForControlBanner(page)
     await expect(firstBanner.getByText('Plan Ready for Review')).toBeVisible()
-    await expect(controlButton(page, 'deny')).toHaveText('Reject')
-    await expect(controlButton(page, 'allow')).toHaveText('Approve')
+    await expect(planReviewButton(page, 'reject')).toHaveText('Reject')
+    await expect(planReviewButton(page, 'approve')).toHaveText('Approve')
     await expect(control('plan-clear-context-checkbox')).toBeVisible()
     await expect(control('control-permissions-pill-group')).toBeVisible()
     // Codex offers both presets, and a plan approval opens on Smart, which upstream Codex calls Approve for me.
@@ -72,14 +72,14 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(pills.getByRole('radio', { name: 'Bypass' })).toHaveAttribute('aria-checked', 'false')
 
     await enterControlFeedback(page, REVISE_PLAN_PROMPT)
-    await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
-    await expect(controlButton(page, 'allow')).toHaveCount(0)
+    await expect(planReviewButton(page, 'reject')).toHaveText('Send feedback')
+    await expect(planReviewButton(page, 'approve')).toHaveCount(0)
     await expect(control('plan-clear-context-checkbox')).toHaveCount(0)
     await expect(control('control-permissions-pill-group')).toHaveCount(0)
     const revised = await modelScript.queue({
       text: proposedPlan(modelScript.prompt('# Dummy plan revised\n\nAdd tests before implementation.')),
     })
-    await answerControl(page, 'deny')
+    await answerPlanReview(page, 'reject')
     await modelScript.waitForSteps(revised + 1)
 
     await waitForAgentIdle(page)
@@ -95,7 +95,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     const clearContextSwitch = control('plan-clear-context-checkbox').locator('input[type="checkbox"]')
     await expect(clearContextSwitch).not.toBeChecked()
     await clearContextSwitch.check()
-    await answerControl(page, 'allow')
+    await answerPlanReview(page, 'approve')
     // Scoped to the prompt's own text, not to the banner slot. Executing the
     // approved plan can raise the NEXT control request into that same slot,
     // which says nothing about whether this approval cleared.

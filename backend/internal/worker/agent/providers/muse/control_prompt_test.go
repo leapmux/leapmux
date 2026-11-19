@@ -114,7 +114,7 @@ func TestReadControlRequest_MuseTakesTheToolNameOfTheParamsFirst(t *testing.T) {
 }
 
 // LeapMux invents no choice for malformed data: one invalid or unknown
-// choice spoils the whole list, and the request reads as the generic prompt.
+// choice spoils the whole list, and the request reads as unrecognized.
 func TestReadControlRequest_MuseReturnsNoInventedChoicesForMalformedData(t *testing.T) {
 	for _, choices := range []any{
 		nil, false, 0, map[string]any{}, []any{}, []any{nil},
@@ -128,11 +128,11 @@ func TestReadControlRequest_MuseReturnsNoInventedChoicesForMalformedData(t *test
 		[]any{museChoice("deny", "denied", "once"), museChoice("deny", "denied", "once")},
 		[]any{map[string]any{"choiceId": "deny", "label": "Deny", "decision": "denied", "scope": "once", "acceptsFeedback": "true"}},
 	} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, museApproval(t, choices)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, museApproval(t, choices)))
 	}
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, []byte(`{"method":"","params":{"availableChoices":[]}}`)))
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, []byte(`{"method":"item/started","params":{}}`)))
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, []byte(`not json`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, []byte(`{"method":"","params":{"availableChoices":[]}}`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, []byte(`{"method":"item/started","params":{}}`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, []byte(`not json`)))
 }
 
 func TestMuseRefusalWithFeedback_SendsTheChosenChoiceWithTheFeedback(t *testing.T) {
@@ -149,30 +149,14 @@ func TestMuseRefusalWithFeedback_SendsTheChosenChoiceWithTheFeedback(t *testing.
 	assert.ErrorContains(t, err, `the Muse choice "no-feedback" takes no feedback`, "the chosen refusal is never swapped for another")
 }
 
-// LeapMux's own deny takes the first once-scope denial that accepts the
-// feedback, as the browser's composer did.
-func TestMuseRefusalWithFeedback_TakesTheFirstOnceDenialForLeapMuxsDeny(t *testing.T) {
-	for _, decision := range []string{"denied", "abort"} {
-		params := museParamsOf(t, museApproval(t, []any{
-			map[string]any{"choiceId": "allow_once", "label": "Allow once", "decision": "approved", "scope": "once"},
-			map[string]any{"choiceId": "no-feedback", "label": "Reject", "decision": decision, "scope": "once"},
-			map[string]any{"choiceId": "native-reject", "label": "Reject", "decision": decision, "scope": "once", "acceptsFeedback": true},
-		}))
-		got, err := museRefusalWithFeedback(params, contracts.ControlAnswerOptionDeny, "  Native feedback 界\n", "worker-request")
-		require.NoError(t, err, decision)
-		assert.JSONEq(t, `{"jsonrpc":"2.0","id":"worker-request","result":{"choiceId":"native-reject","feedback":"  Native feedback 界\n"}}`, string(got.Content), decision)
-	}
-}
-
 func TestMuseRefusalWithFeedback_RefusesADenialThatMuseCannotTake(t *testing.T) {
-	refuses := func(choices any, reason string) {
+	refuses := func(choices any, optionID, reason string) {
 		t.Helper()
-		_, err := museRefusalWithFeedback(museParamsOf(t, museApproval(t, choices)), contracts.ControlAnswerOptionDeny, "Feedback", "worker-request")
+		_, err := museRefusalWithFeedback(museParamsOf(t, museApproval(t, choices)), optionID, "Feedback", "worker-request")
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 		assert.ErrorContains(t, err, reason)
 	}
 	const invalid = "the native Muse approval choices are invalid"
-	const noDenial = "Muse supplies no denial choice that accepts this feedback"
 	for name, choices := range map[string]any{
 		"absent list":           nil,
 		"null list":             json.RawMessage(`null`),
@@ -188,16 +172,11 @@ func TestMuseRefusalWithFeedback_RefusesADenialThatMuseCannotTake(t *testing.T) 
 		"partial list":          []any{nil, museChoice("deny", "denied", "once")},
 		"duplicate IDs":         []any{museChoice("deny", "denied", "once"), museChoice("deny", "denied", "once")},
 	} {
-		t.Run(name, func(t *testing.T) { refuses(choices, invalid) })
+		t.Run(name, func(t *testing.T) { refuses(choices, "deny", invalid) })
 	}
-	refuses([]any{museChoice("deny", "denied", "once")}, noDenial)
-	refuses([]any{map[string]any{"choiceId": "abort", "label": "Reject", "decision": "abort", "scope": "once", "acceptsFeedback": false}}, noDenial)
-	for _, choice := range [][2]string{
-		{"denied", "session"}, {"denied", "localPersistent"}, {"abort", "session"}, {"abort", "localPersistent"},
-		{"futureDecision", "once"}, {"abort", "futureScope"}, {"timedOut", "once"},
-	} {
-		refuses([]any{map[string]any{"choiceId": "native-choice", "label": "Choice", "decision": choice[0], "scope": choice[1], "acceptsFeedback": true}}, noDenial)
-	}
+	refuses([]any{museChoice("deny", "denied", "once")}, "deny", `the Muse choice "deny" takes no feedback`)
+	refuses([]any{map[string]any{"choiceId": "deny", "label": "Deny", "decision": "denied", "scope": "once", "acceptsFeedback": true}}, contracts.ControlAnswerOptionDeny,
+		`Muse offers no choice "`+contracts.ControlAnswerOptionDeny+`"`)
 }
 
 func TestAnswerControlRequest_MuseSendsTheExactWorkerRequestIDAndNativeChoiceID(t *testing.T) {
@@ -234,31 +213,31 @@ func TestAnswerControlRequest_MuseRefusalWithFeedbackKeepsTheChosenRefusal(t *te
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the chosen denial accepts no feedback")
 }
 
-// A request with unreadable choices or questions keeps the shared Allow and
-// Deny, so the user can still answer it.
-func TestAnswerControlRequest_MuseGenericPromptTakesTheSharedAnswers(t *testing.T) {
+// A request with unreadable choices or questions reads as unrecognized: the
+// resolution refuses LeapMux's own Deny to each of them, and its Allow to all
+// but a few, so no decision answers such a request.
+func TestAnswerControlRequest_MuseAnswersNoRequestThatAnElementSpoils(t *testing.T) {
 	for _, payload := range [][]byte{
 		museApproval(t, 0),
 		museApproval(t, []any{museChoice("native", "futureDecision", "once")}),
+		museApproval(t, []any{museChoice("allow", "approved", "once"), museChoice("native", "futureDecision", "once")}),
 		museUserInput(t, 0),
 	} {
-		got, err := agenttest.AnswerControl(museProvider{}, payload, "native-pending", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
-		require.NoError(t, err)
-		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-pending","response":{"behavior":"deny","message":"Rejected by user."}}}`, string(got.Content))
-		got, err = agenttest.AnswerControl(museProvider{}, payload, "native-pending", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-		require.NoError(t, err)
-		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-pending","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, payload), "%s", payload)
+		for _, decision := range []*leapmuxv1.ControlDecision{
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""),
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Feedback"),
+		} {
+			_, err := agenttest.AnswerControl(museProvider{}, payload, "native-pending", decision)
+			assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "%s", payload)
+			_, err = museProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+				Request: agent.NewControlRequestInput(payload), RequestID: "native-pending",
+				Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+			})
+			assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "%s", payload)
+		}
 	}
-
-	_, err := agenttest.AnswerControl(museProvider{}, museApproval(t, 0), "native-pending", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Feedback"))
-	assert.ErrorContains(t, err, "choices are invalid")
-	got, err := agenttest.AnswerControl(museProvider{}, museApproval(t, []any{
-		museChoice("native", "futureDecision", "once"),
-		map[string]any{"choiceId": "deny", "label": "Deny", "decision": "denied", "scope": "once", "acceptsFeedback": true},
-	}), "native-pending", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Feedback"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"native-pending","result":{"choiceId":"deny","feedback":"Feedback"}}`, string(got.Content),
-		"a typed refusal answers natively even when an unknown choice spoils the prompt")
 }
 
 func museQuestionPrompt(t *testing.T, payload []byte) *leapmuxv1.ControlQuestion {
@@ -328,7 +307,7 @@ func TestReadControlRequest_MuseRefusesTheCompleteFormForOneInvalidQuestion(t *t
 			fields["id"] = "later-question"
 		}
 		later := museTestQuestion(fields)
-		require.Truef(t, proto.Equal(agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, museUserInput(t, []any{museTestQuestion(nil), later}))), "%s refuses the form", name)
+		require.Truef(t, proto.Equal(agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, museUserInput(t, []any{museTestQuestion(nil), later}))), "%s refuses the form", name)
 		assert.Nil(t, museQuestionPrompts(museParamsOf(t, museUserInput(t, []any{museTestQuestion(nil), later}))), name)
 	}
 }
@@ -367,10 +346,10 @@ func TestReadControlRequest_MuseRejectsAMalformedCompleteQuestionList(t *testing
 		[]any{museTestQuestion(nil), nil},
 		[]any{museTestQuestion(nil), museTestQuestion(nil)},
 	} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, museUserInput(t, questions)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, museUserInput(t, questions)))
 	}
 	// Only a user-input request asks.
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, museJSON(t, map[string]any{"method": "userInput/settled", "params": map[string]any{"questions": []any{museTestQuestion(nil)}}})))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, museJSON(t, map[string]any{"method": "userInput/settled", "params": map[string]any{"questions": []any{museTestQuestion(nil)}}})))
 }
 
 func TestAnswerControlRequest_MuseKeepsExactSelectionsAndIndependentTypedNotes(t *testing.T) {
@@ -492,12 +471,12 @@ func TestAnswerControlRequest_MuseAnswersResolveIntoMusesReply(t *testing.T) {
 
 // The prompt states only questions that the resolver accepts an answer to:
 // readNativeQuestions decides both, so a question that the resolver refuses
-// reads as the generic prompt, and one that it accepts reads as a question.
+// reads as unrecognized, and one that it accepts reads as a question.
 func TestReadControlRequest_MuseStatesOnlyQuestionsThatTheResolverAccepts(t *testing.T) {
 	badCounts := museUserInput(t, []any{museTestQuestion(map[string]any{
 		"options": threeOptions(), "selection": map[string]any{"mode": "single", "minSelections": 2, "maxSelections": 1},
 	})})
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(museProvider{}, badCounts))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, badCounts))
 
 	wholeCount := museUserInput(t, []any{museTestQuestion(map[string]any{
 		"options": threeOptions(), "selection": map[string]any{"mode": "multiple", "minSelections": 2.0, "maxSelections": 3},

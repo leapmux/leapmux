@@ -11,6 +11,20 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// ControlRequestKey reads the key that the agent publishes a dialog under:
+// the `id` of Pi's extension_ui_request, exactly as Pi states it
+// (handlePiExtensionUIRequest). It is no JSON-RPC id, so it takes no
+// canonical form.
+func (piProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(payload, &request) != nil || request.ID == "" {
+		return "", false
+	}
+	return request.ID, true
+}
+
 // rememberOpenDialog records a published dialog that Pi waits on.
 func (a *Agent) rememberOpenDialog(id string) {
 	a.Mu.Lock()

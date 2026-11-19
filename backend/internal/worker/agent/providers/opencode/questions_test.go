@@ -20,7 +20,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,8 +73,9 @@ func TestOpenCodeQuestions_PublishedPayloadDoesNotWithholdTheAnswer(t *testing.T
 		return len(published) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
 
+	agenttest.AssertPublishedControlKeys(t, FamilyProvider{}, sink)
 	answer := []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`)
-	resolved := agenttest.ResolveAnswer(acp.Provider{}, published[0].Payload, published[0].RequestID, agent.ControlAnswer{Content: answer})
+	resolved := agenttest.ResolveAnswer(FamilyProvider{}, published[0].Payload, published[0].RequestID, agent.ControlAnswer{Content: answer})
 	assert.False(t, resolved.Withhold, "the answer reaches the daemon")
 	assert.Equal(t, answer, resolved.Content)
 }

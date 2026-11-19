@@ -32,8 +32,8 @@ func TestClineDefiniteReplyFailureKeepsTheManualRequest(t *testing.T) {
 				}
 				return fakeReply{}
 			})
-			require.Error(t, r.agent.SendRawInput(payload, agent.StopContext{}))
-			assert.NoError(t, r.agent.SendRawInput(payload, agent.StopContext{}))
+			require.Error(t, r.agent.SendRawInput(agent.RawInput{Data: payload}))
+			assert.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: payload}))
 			assert.Equal(t, int32(2), calls.Load())
 		})
 	}
@@ -65,7 +65,7 @@ func TestClineLostReplyReportsUncertainDelivery(t *testing.T) {
 	r.hub.handle(commandApprovalRespond, func(fakeCommand) fakeReply { close(entered); return fakeReply{Hold: true} })
 	done := make(chan error, 1)
 	go func() {
-		done <- r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "request", Approved: true}), agent.StopContext{})
+		done <- r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "request", Approved: true})})
 	}()
 	<-entered
 	r.agent.cancel()
@@ -129,7 +129,7 @@ func TestClineIgnoredQuestionAnswerIsNotReportedAsDelivered(t *testing.T) {
 	r.hub.handle(commandCapabilityRespond, func(fakeCommand) fakeReply {
 		return fakeReply{Payload: map[string]any{"requestId": "request", "ignored": true}}
 	})
-	err := r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "request", Ok: true}), agent.StopContext{})
+	err := r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "request", Ok: true})})
 	assert.ErrorIs(t, err, errUnknownControl)
 	assert.Equal(t, []string{"request"}, r.sink.CanceledControls())
 }

@@ -127,9 +127,7 @@ func TestReadControlRequest_QwenReadsEveryOtherRequestThroughTheBaseReader(t *te
 	assert.Equal(t, []string{"proceed_once", acp.CancelOptionID}, qwenOptionIDs(permission.GetOptions()), "a request with no reject option gains LeapMux's cancel")
 
 	for _, payload := range []string{`{"method":"x"}`, `{}`, `not json`} {
-		generic := agenttest.ControlPromptOf(qwenProvider{}, []byte(payload)).GetPermission()
-		require.NotNil(t, generic, payload)
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, qwenOptionIDs(generic.GetOptions()), payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(qwenProvider{}, []byte(payload)), payload)
 	}
 
 	elicitation := agenttest.ControlPromptOf(qwenProvider{}, []byte(`{"method":"elicitation/create","params":{"message":"Hi","server":"s"}}`)).GetElicitation()
@@ -374,14 +372,20 @@ func TestAnswerControlRequest_QwenPermissionSendsTheReasonAsAFollowUp(t *testing
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "an approval carries no reason")
 }
 
-// A request with no options takes LeapMux's allow and deny, whose neutral deny
-// carries the reason itself.
-func TestAnswerControlRequest_QwenPermissionWithNoOptionsTakesTheNeutralEnvelope(t *testing.T) {
-	payload := `{"params":{"toolCall":{"toolCallId":"c","title":"Edit"}}}`
-	got, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), "r", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"))
+// A request with no options takes LeapMux's cancel, which reaches Qwen as the
+// protocol's cancelled outcome under Qwen's own id. Qwen's reply has no field
+// for the reason, so the reason follows the answer as a message.
+func TestAnswerControlRequest_QwenPermissionWithNoOptionsCancels(t *testing.T) {
+	payload := `{"jsonrpc":"2.0","id":3,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"c","title":"Edit"}}}`
+	got, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), "jsonrpc:3", agenttest.PermissionDecision(acp.CancelOptionID, "no"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"behavior":"deny","message":"no"}}}`, string(got.Content))
-	assert.Empty(t, got.FollowUp)
+	resolved := agenttest.ResolveAnswer(qwenProvider{}, []byte(payload), "jsonrpc:3", got)
+	require.NoError(t, resolved.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"result":{"outcome":{"outcome":"cancelled"}}}`, string(resolved.Content))
+	assert.Equal(t, "no", got.FollowUp)
+
+	_, err = agenttest.AnswerControl(qwenProvider{}, []byte(payload), "jsonrpc:3", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"))
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Qwen cannot read LeapMux's deny")
 }
 
 func TestAnswerControlRequest_QwenElicitationTakesTheNeutralEnvelope(t *testing.T) {

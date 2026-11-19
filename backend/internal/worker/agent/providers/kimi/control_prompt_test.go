@@ -12,10 +12,26 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // kimiTestRequestID is the stored id of the request that each test answers.
 const kimiTestRequestID = "req-1"
+
+// kimiStoredUnder is the stored request, with its interaction id replaced by
+// requestID: the key that the request then gives, and so the key that the
+// Worker stores it under.
+func kimiStoredUnder(t *testing.T, stored, requestID string) []byte {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(stored), &fields))
+	encoded, err := json.Marshal(requestID)
+	require.NoError(t, err)
+	fields["interaction_id"] = encoded
+	payload, err := json.Marshal(fields)
+	require.NoError(t, err)
+	return payload
+}
 
 // kimiApprovalPayload builds one pending approval, as the control surface
 // receives it. fields replace the frame's own fields, such as agent_id, and
@@ -279,8 +295,9 @@ func TestKimiReadControlRequest_ReadsNoQuestionFromAListThatIsNoList(t *testing.
 }
 
 // A frame that is neither a question nor an approval is no Kimi request, and
-// so is a frame whose request is no object.
-func TestKimiReadControlRequest_ReadsAnyOtherPayloadAsTheGenericPermission(t *testing.T) {
+// so is a frame whose request is no object. The resolution refuses an answer
+// to either, so it reads as unrecognized.
+func TestKimiReadControlRequest_ReadsAnyOtherPayloadAsUnrecognized(t *testing.T) {
 	t.Parallel()
 	for _, payload := range []string{
 		`{}`,
@@ -290,7 +307,7 @@ func TestKimiReadControlRequest_ReadsAnyOtherPayloadAsTheGenericPermission(t *te
 		`{"type":"interaction","kind":"other","request":{}}`,
 		`not json`,
 	} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(kimiProvider{}, []byte(payload)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(kimiProvider{}, []byte(payload)), payload)
 	}
 }
 
@@ -390,9 +407,12 @@ func TestKimiAnswerControlRequest_EachPermissionAnswerResolvesToTheServerBody(t 
 		{kimiStoredSubagentPlan, "plan_approve:Approach B", "", map[string]any{"kind": "approval", "decision": "approved", "selected_label": "Approach B"}},
 		{kimiStoredSubagentPlan, "plan_reject:Revise", "Split step 1.", map[string]any{"kind": "approval", "decision": "rejected", "selected_label": "Revise", "feedback": "Split step 1."}},
 	} {
-		got, err := agenttest.AnswerControl(kimiProvider{}, []byte(tc.stored), kimiTestRequestID, agenttest.PermissionDecision(tc.option, tc.feedback))
+		// Each request is stored under its own interaction id.
+		requestID, ok := kimiProvider{}.ControlRequestKey([]byte(tc.stored), "")
+		require.True(t, ok, tc.option)
+		got, err := agenttest.AnswerControl(kimiProvider{}, []byte(tc.stored), requestID, agenttest.PermissionDecision(tc.option, tc.feedback))
 		require.NoError(t, err, tc.option)
-		res := agenttest.ResolveAnswer(kimiProvider{}, []byte(tc.stored), kimiTestRequestID, got)
+		res := agenttest.ResolveAnswer(kimiProvider{}, []byte(tc.stored), requestID, got)
 		require.False(t, res.Withhold, tc.option)
 		assert.Equal(t, tc.body, nativeResponse(t, res.Content), tc.option)
 	}
@@ -440,7 +460,7 @@ func TestKimiAnswerControlRequest_RefusesAPermissionDecisionThatThePromptDoesNot
 // refusal.
 func TestKimiAnswerControlRequest_AnswersThePlanApprovalAndItsChoices(t *testing.T) {
 	t.Parallel()
-	payload := []byte(kimiStoredPlan)
+	payload := kimiStoredUnder(t, kimiStoredPlan, kimiTestRequestID)
 	got, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, PermissionMode: contracts.KimiModeYolo}))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"behavior": "allow", "updatedInput": map[string]any{}}, kimiSentResponse(t, got.Content))
@@ -477,19 +497,19 @@ func TestKimiAnswerControlRequest_AnswersEveryQuestionByItsID(t *testing.T) {
 		map[string]any{"id": "q_1", "question": "Which sizes?", "options": []any{map[string]any{"id": "opt_1_0", "label": "S"}, map[string]any{"id": "opt_1_1", "label": "M"}}, "multi_select": true},
 		map[string]any{"id": "q_2", "question": "Anything else?"},
 	})
-	got, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.QuestionDecision(
+	got, err := agenttest.AnswerControl(kimiProvider{}, payload, "question_1", agenttest.QuestionDecision(
 		&leapmuxv1.QuestionAnswer{Selected: []string{"opt_0_1"}},
 		&leapmuxv1.QuestionAnswer{Selected: []string{"opt_1_0", "opt_1_1"}, CustomText: "XL"},
 	))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow","answers":{
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"question_1","response":{"behavior":"allow","answers":{
 		"q_0":{"kind":"single","option_id":"opt_0_1"},
 		"q_1":{"kind":"multi_with_other","option_ids":["opt_1_0","opt_1_1"],"other_text":"XL"},
 		"q_2":{"kind":"skipped"}
 	}}}}`, string(got.Content))
 	assert.Empty(t, got.FollowUp)
 
-	res := agenttest.ResolveAnswer(kimiProvider{}, payload, kimiTestRequestID, got)
+	res := agenttest.ResolveAnswer(kimiProvider{}, payload, "question_1", got)
 	require.False(t, res.Withhold)
 	assert.Equal(t, "question", nativeResponse(t, res.Content)["kind"])
 }
@@ -512,15 +532,15 @@ func TestKimiAnswerControlRequest_AnswersTheSelectedOptionIDsOfASingleQuestion(t
 // own and the text is sent once.
 func TestKimiAnswerControlRequest_StopsAQuestionAsARefusalThatCarriesTheReason(t *testing.T) {
 	t.Parallel()
-	got, err := agenttest.AnswerControl(kimiProvider{}, []byte(kimiStoredQuestion), kimiTestRequestID, agenttest.CancelQuestions("User stopped"))
+	got, err := agenttest.AnswerControl(kimiProvider{}, kimiStoredUnder(t, kimiStoredQuestion, kimiTestRequestID), kimiTestRequestID, agenttest.CancelQuestions("User stopped"))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"behavior": "deny", "message": "User stopped"}, kimiSentResponse(t, got.Content))
 	assert.Empty(t, got.FollowUp)
-	res := agenttest.ResolveAnswer(kimiProvider{}, []byte(kimiStoredQuestion), kimiTestRequestID, got)
+	res := agenttest.ResolveAnswer(kimiProvider{}, kimiStoredUnder(t, kimiStoredQuestion, kimiTestRequestID), kimiTestRequestID, got)
 	assert.Equal(t, map[string]any{"kind": "question", "dismissed": true}, nativeResponse(t, res.Content))
 	assert.Equal(t, agent.FeedbackFollowUp("User stopped"), res.FollowUp)
 
-	got, err = agenttest.AnswerControl(kimiProvider{}, []byte(kimiStoredQuestion), kimiTestRequestID, agenttest.CancelQuestions(""))
+	got, err = agenttest.AnswerControl(kimiProvider{}, kimiStoredUnder(t, kimiStoredQuestion, kimiTestRequestID), kimiTestRequestID, agenttest.CancelQuestions(""))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"behavior": "deny", "message": "Rejected by user."}, kimiSentResponse(t, got.Content))
 }
@@ -618,9 +638,11 @@ func TestKimiAnswerControlRequest_AnswersTheWorkspaceTrustQuestion(t *testing.T)
 		require.NoError(t, err, option)
 		assert.Equal(t, response, kimiSentResponse(t, got.Content), option)
 	}
-	got, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PermissionDecision("workspace-reject", ""))
+	// The question is stored under the key of its session.
+	trustRequestID := providerkit.WorkspaceTrustRequestID("session_1")
+	got, err := agenttest.AnswerControl(kimiProvider{}, payload, trustRequestID, agenttest.PermissionDecision("workspace-reject", ""))
 	require.NoError(t, err)
-	res := agenttest.ResolveAnswer(kimiProvider{}, payload, kimiTestRequestID, got)
+	res := agenttest.ResolveAnswerInSession(kimiProvider{}, payload, "session_1", trustRequestID, got)
 	assert.Equal(t, map[string]any{"decision": "reject"}, nativeResponse(t, res.Content))
 	_, err = agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PermissionDecision("workspace-reject", "Not here."))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the trust question takes no reason")
@@ -629,25 +651,23 @@ func TestKimiAnswerControlRequest_AnswersTheWorkspaceTrustQuestion(t *testing.T)
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the question offers its own two answers only")
 }
 
-// A payload that is no Kimi request reads as the generic permission, which
-// the shared Allow and Deny answer.
-func TestKimiAnswerControlRequest_AnswersTheGenericPermission(t *testing.T) {
+// A payload that is no Kimi request reads as unrecognized, so no decision
+// answers it, and a permission decision drawn for it anyway answers nothing.
+func TestKimiAnswerControlRequest_AnswersNoUnrecognizedRequest(t *testing.T) {
 	t.Parallel()
 	payload := []byte(`{"request":{"tool_name":"Bash","input":{"command":"ls"}}}`)
-	got, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"behavior": "allow", "updatedInput": map[string]any{"command": "ls"}}, kimiSentResponse(t, got.Content))
-
-	got, err = agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
-	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"behavior": "deny", "message": "Rejected by user."}, kimiSentResponse(t, got.Content))
-
-	got, err = agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."))
-	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"behavior": "deny", "message": "No."}, kimiSentResponse(t, got.Content))
-
-	_, err = agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, "Why?"))
-	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "feedback goes with a refusal")
+	for _, decision := range []*leapmuxv1.ControlDecision{
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."),
+	} {
+		_, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, decision)
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+		_, err = kimiProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+			Request: agent.NewControlRequestInput(payload), RequestID: kimiTestRequestID,
+			Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+		})
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	}
 }
 
 func TestKimiAnswerControlRequest_RefusesAPromptKindThatKimiNeverStates(t *testing.T) {

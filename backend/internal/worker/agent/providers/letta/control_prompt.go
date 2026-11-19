@@ -13,28 +13,47 @@ import (
 // no tool name.
 const lettaToolTitleFallback = "Tool"
 
-// lettaControlPayload is the part of a published control request that the
-// prompt reads. The Worker writes the payload itself (onControlRequest,
-// postQuestionRequest), and `type` says which of the two requests it is.
+// lettaControlPayload is a published control request, as the prompt and the
+// answer read it. The Worker writes the payload itself (onControlRequest,
+// postQuestionRequest), and its `type`, which kind holds, says which of the two
+// requests it is.
 type lettaControlPayload struct {
-	kind      string
-	toolName  string
-	toolInput json.RawMessage
+	kind       string
+	requestID  string
+	toolName   string
+	toolCallID string
+	toolInput  json.RawMessage
 }
 
-// readLettaControlPayload reads payload. A field that is not text reads as
-// empty, and a tool input that is not a JSON object reads as `{}`.
-func readLettaControlPayload(payload []byte) lettaControlPayload {
+// readLettaControlPayload reads payload by the names that the Worker writes it
+// under. A field that is not text reads as empty, and a tool input that is not a
+// JSON object reads as `{}`. It reports false when payload is neither a JSON
+// object nor JSON null, and when a field that the Worker writes as text holds
+// another value. The Worker writes no such payload, so an answer to it cannot be
+// addressed.
+func readLettaControlPayload(payload []byte) (lettaControlPayload, bool) {
 	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(payload, &fields)
-	kind, _ := providerkit.RawString(fields["type"])
-	toolName, _ := providerkit.RawString(fields[contracts.LettaDeltaFieldToolName])
-	toolInput := json.RawMessage("{}")
-	var object map[string]json.RawMessage
-	if raw := fields[contracts.LettaDeltaFieldToolInput]; json.Unmarshal(raw, &object) == nil && object != nil {
-		toolInput = raw
+	if json.Unmarshal(payload, &fields) != nil {
+		return lettaControlPayload{toolInput: json.RawMessage("{}")}, false
 	}
-	return lettaControlPayload{kind: kind, toolName: toolName, toolInput: toolInput}
+	readable := true
+	text := func(key string) string {
+		value, ok := providerkit.RawString(fields[key])
+		if !ok && providerkit.RawPresent(fields[key]) {
+			readable = false
+		}
+		return value
+	}
+	// The calls of text set readable, so they run in a statement of their own: Go
+	// does not order the read of a variable against a call in one return.
+	read := lettaControlPayload{
+		kind:       text(lettaControlFieldType),
+		requestID:  text(lettaControlFieldRequestID),
+		toolName:   text(contracts.LettaDeltaFieldToolName),
+		toolCallID: text(contracts.LettaDeltaFieldToolCallID),
+		toolInput:  providerkit.RawObjectOrEmpty(fields[contracts.LettaDeltaFieldToolInput]),
+	}
+	return read, readable
 }
 
 // ReadControlRequest reads the two requests that the Worker publishes for
@@ -45,9 +64,10 @@ func readLettaControlPayload(payload []byte) lettaControlPayload {
 //   - A permission request (`permission`) asks whether one tool call may run.
 //     A call of the question tool is one of them: Strict mode asks it.
 //
-// Any other payload reads as the generic permission prompt.
+// Any other payload reads as unrecognized: the Worker publishes no other
+// request, and the resolution refuses an answer to one.
 func (lettaProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	payload := readLettaControlPayload(input.Payload)
+	payload, _ := readLettaControlPayload(input.Payload)
 	switch payload.kind {
 	case string(lettaControlAskUser):
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
@@ -56,7 +76,7 @@ func (lettaProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 	case string(lettaControlPermission):
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: lettaPermissionPrompt(payload)}}
 	default:
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 }
 
@@ -146,7 +166,8 @@ func lettaPromptOptions(raw json.RawMessage) []*leapmuxv1.QuestionOption {
 func (lettaProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	switch input.Prompt.GetKind().(type) {
 	case *leapmuxv1.ControlPrompt_Question:
-		return providerkit.AskUserQuestionAnswers(input, readLettaControlPayload(input.Request.Payload).toolInput)
+		payload, _ := readLettaControlPayload(input.Request.Payload)
+		return providerkit.AskUserQuestionAnswers(input, payload.toolInput)
 	case *leapmuxv1.ControlPrompt_Permission:
 		return agent.AnswerAllowDeny(input)
 	default:

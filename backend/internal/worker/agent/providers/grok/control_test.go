@@ -23,6 +23,7 @@ func TestGrokControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	// other providers' identity tests do, so each dialog reaches the reader.
 	a.SetSessionIDForTest("")
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, contracts.GrokMethodAskUserQuestion)
+	agenttest.AssertPublishedControlKeys(t, grokProvider{}, sink)
 }
 
 func TestGrokPublishesEachOfItsOwnDialogs(t *testing.T) {
@@ -112,7 +113,7 @@ func TestGrokResolvedInteractionLeavesAnAnsweredCardAlone(t *testing.T) {
 	// The reader answers. The answer retires the record of the request.
 	answer, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 9, "result": map[string]any{"outcome": "accepted", "answers": map[string]any{}}})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(requestID, answer)))
 	syncPeer(t, a)
 
 	// Grok echoes the resolution for the reader's own answer too.

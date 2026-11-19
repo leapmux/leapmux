@@ -24,7 +24,7 @@ import (
 //   - Any other `form.created` event is a form (openCodeElicitationPrompt).
 //   - A `permission.asked` event is a permission
 //     (readOpenCodePermissionPrompt).
-//   - Any other request is the generic permission. The registry publishes no
+//   - Any other request reads as unrecognized. The registry publishes no
 //     other request, and the resolver refuses an answer to one.
 func (opencodeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	if form, ok := readOpenCodePromptForm(input.Payload); ok {
@@ -36,7 +36,7 @@ func (opencodeProvider) ReadControlRequest(input agent.ControlRequestInput) *lea
 	if permission, ok := readOpenCodePermissionPrompt(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
-	return agent.GenericPermissionPrompt()
+	return agent.UnrecognizedControlPrompt()
 }
 
 // AnswerControlRequest answers the control requests of the native protocol
@@ -47,8 +47,8 @@ func (opencodeProvider) ReadControlRequest(input agent.ControlRequestInput) *lea
 //     accept into the form's answer, with each external field confirmed, and
 //     a decline or a cancel into the form's cancellation.
 //   - A permission selects one native decision (answerOpenCodePermission).
-//   - The generic permission takes LeapMux's allow and deny in the neutral
-//     envelope.
+//
+// No other request has a prompt that takes an answer (ReadControlRequest).
 func (opencodeProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	switch input.Prompt.GetKind().(type) {
 	case *leapmuxv1.ControlPrompt_Question:
@@ -59,7 +59,7 @@ func (opencodeProvider) AnswerControlRequest(input agent.ControlAnswerInput) (ag
 	if _, ok := readOpenCodePermissionPrompt(input.Request.Payload); ok {
 		return answerOpenCodePermission(input)
 	}
-	return agent.AnswerAllowDeny(input)
+	return agent.ControlAnswer{}, agent.InvalidControlDecision("OpenCode publishes no such request")
 }
 
 // answerOpenCodePermission answers a native permission:

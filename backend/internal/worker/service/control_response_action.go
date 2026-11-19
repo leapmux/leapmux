@@ -73,13 +73,16 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	}
 	pending, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: agentID, RequestID: plan.requestMeta.RequestID})
 	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("the control request is no longer pending")
+		return agent.ErrControlRequestNotPending
 	}
 	if err != nil {
 		return fmt.Errorf("recheck the pending control request before delivery: %w", err)
 	}
-	if pending.ClaimToken != plan.requestMeta.ClaimToken || pending.AgentSessionID != plan.requestMeta.AgentSessionID {
-		return errors.New("the control request is no longer pending")
+	if pending.ClaimToken != plan.requestMeta.ClaimToken {
+		return agent.ErrControlInstanceReplaced
+	}
+	if pending.AgentSessionID != plan.requestMeta.AgentSessionID {
+		return agent.ErrControlRequestNotPending
 	}
 	if mode := plan.settings.GetPermissionMode(); mode != "" {
 		group := optionids.GroupByID(svc.optionGroupsForAgent(&latest), agent.OptionIDPermissionMode)
@@ -104,8 +107,12 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 		return nil
 	}
 	// processControlAnswer refuses a withheld resolution before it calls this
-	// function, so every plan that arrives here forwards its content.
-	return svc.sendControlResponseFn(ownerID, plan.resolution.Content)
+	// function, so every plan that arrives here forwards its content. The
+	// check above leaves a window before the provider writes: the provider can
+	// replace the request under the same ID in it. So the answer states the
+	// instance that it answers, and the provider refuses it when that instance
+	// is no longer current (agent.RawInput.ControlInstanceID).
+	return svc.sendControlResponseFn(ownerID, agent.RawInput{Data: plan.resolution.Content, ControlInstanceID: plan.requestMeta.ClaimToken})
 }
 
 func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Agent, plan controlResponsePlan) error {
@@ -142,6 +149,6 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 //
 // Its caller refuses the answer in SILENCE. See the gate in processControlAnswer
 // for why that is the correct outcome rather than an error.
-func (plan controlResponsePlan) answersARetiredInstance(claimToken string) bool {
-	return plan.requestMeta.ClaimToken != claimToken
+func (meta controlResponseRequestMetadata) answersARetiredInstance(claimToken string) bool {
+	return meta.ClaimToken != claimToken
 }

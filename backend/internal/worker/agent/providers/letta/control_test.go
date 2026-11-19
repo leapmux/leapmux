@@ -80,7 +80,7 @@ func TestPermissionAnswerKeepsUnknownNumbersAndEmptyValues(t *testing.T) {
 	fake, a := openedAgent(t)
 	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
 	answer := []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow","counter":9007199254740993,"zero":0,"enabled":false,"text":""}}`)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	decision := inputPayload(t, fake)["decision"].(map[string]any)
 	assert.Equal(t, json.Number("9007199254740993"), decision["counter"])
 	assert.Equal(t, json.Number("0"), decision["zero"])
@@ -95,7 +95,7 @@ func TestPermissionAnswerNeedsNativeAcceptance(t *testing.T) {
 	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
 	result := make(chan error, 1)
 	go func() {
-		result <- a.SendRawInput([]byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`), agent.StopContext{})
+		result <- a.SendRawInput(agent.RawInput{Data: []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`)})
 	}()
 	command := fake.nextCommand(t)
 	ack, err := json.Marshal(map[string]any{"type": "input_accepted", "request_id": command["request_id"], "runtime": command["runtime"], "accepted": false, "error": "Approval request is no longer pending"})
@@ -114,10 +114,10 @@ func TestPermissionAnswerRefusesUnknownAndRepeatedRequests(t *testing.T) {
 	t.Parallel()
 	_, a := openedAgent(t)
 	answer := []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`)
-	require.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
-	require.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 }
 
 func TestStoppedProcessCannotSendInputOverAnOpenSocket(t *testing.T) {
@@ -164,10 +164,157 @@ func TestMalformedPermissionAnswersKeepTheRequestOpen(t *testing.T) {
 			fake, a := openedAgent(t)
 			a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
 			invalid := []byte(`{"kind":"approval_response","request_id":"permission","decision":` + decision + `}`)
-			require.Error(t, a.SendRawInput(invalid, agent.StopContext{}))
-			require.NoError(t, a.SendRawInput([]byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`), agent.StopContext{}))
+			require.Error(t, a.SendRawInput(agent.RawInput{Data: invalid}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`)}))
 			assert.Equal(t, map[string]any{"behavior": "allow"}, inputPayload(t, fake)["decision"], "only the valid decision reaches the native runtime")
 		})
+	}
+}
+
+// Letta Code reads each field of an approval_response by its exact name, and the
+// worker forwards the bytes of the answer unchanged. Go's decoder matches a
+// struct tag in any letter case, so a check that decodes the answer into a
+// struct accepts a field whose name differs from Letta's only in case, and Letta
+// Code then reads that field as missing. A deny without its message is the
+// protocol violation that leaves the tool call waiting.
+func TestPermissionAnswerReadsEachFieldByItsExactName(t *testing.T) {
+	t.Parallel()
+	for name, answer := range map[string]string{
+		"kind":       `{"Kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`,
+		"request ID": `{"kind":"approval_response","Request_ID":"permission","decision":{"behavior":"allow"}}`,
+		"decision":   `{"kind":"approval_response","request_id":"permission","Decision":{"behavior":"allow"}}`,
+		"error":      `{"kind":"approval_response","request_id":"permission","Error":"The reader is gone."}`,
+		"behavior":   `{"kind":"approval_response","request_id":"permission","decision":{"Behavior":"allow"}}`,
+		"message":    `{"kind":"approval_response","request_id":"permission","decision":{"behavior":"deny","Message":"Not now."}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake, a := openedAgent(t)
+			a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
+			require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(answer)}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`)}))
+			assert.Equal(t, map[string]any{"behavior": "allow"}, inputPayload(t, fake)["decision"], "only the answer that Letta Code can read reaches it")
+		})
+	}
+}
+
+// Each refusal states the part of the answer that Letta Code would reject, and
+// an answer that Letta Code accepts returns its request ID.
+func TestValidatePermissionAnswerStatesWhatLettaWouldReject(t *testing.T) {
+	t.Parallel()
+	const head = `{"kind":"approval_response","request_id":"permission",`
+	for answer, want := range map[string]string{
+		`{"kind":"approval_response","decision":{"behavior":"allow"}}`:                 "the Letta permission answer has no valid request ID",
+		`{"kind":"approval_response","request_id":"","decision":{"behavior":"allow"}}`: "the Letta permission answer has no valid request ID",
+		`{"kind":"approval_response","request_id":7,"decision":{"behavior":"allow"}}`:  "the Letta permission answer has no valid request ID",
+		head + `"error":7}`:    "the Letta permission error is not text",
+		head + `"error":null}`: "the Letta permission error is not text",
+		`{"kind":"approval_response","request_id":"permission"}`:                              "the Letta permission answer states neither allow nor deny",
+		head + `"decision":"allow"}`:                                                          "the Letta permission answer states neither allow nor deny",
+		head + `"decision":{"behavior":"ask"}}`:                                               "the Letta permission answer states neither allow nor deny",
+		head + `"decision":{"behavior":7}}`:                                                   "the Letta permission answer states neither allow nor deny",
+		head + `"decision":{"behavior":"deny"}}`:                                              "the Letta permission answer has no valid message",
+		head + `"decision":{"behavior":"allow","message":7}}`:                                 "the Letta permission answer has no valid message",
+		head + `"decision":{"behavior":"allow","updated_input":"text"}}`:                      "the Letta updated input is not an object or an array",
+		head + `"decision":{"behavior":"allow","selected_permission_suggestion_ids":"a"}}`:    "the Letta permission suggestions are not a list of strings",
+		head + `"decision":{"behavior":"allow","selected_permission_suggestion_ids":[7]}}`:    "the Letta permission suggestions are not a list of strings",
+		head + `"decision":{"behavior":"allow","selected_permission_suggestion_ids":[null]}}`: "the Letta permission suggestion is not text",
+	} {
+		_, err := validatePermissionAnswer([]byte(answer))
+		assert.EqualError(t, err, want, answer)
+	}
+	for _, answer := range []string{
+		head + `"error":"The reader is gone."}`,
+		head + `"decision":{"behavior":"allow"}}`,
+		head + `"decision":{"behavior":"deny","message":""}}`,
+		head + `"decision":{"behavior":"deny","message":"Not now."}}`,
+		head + `"decision":{"behavior":"allow","updated_input":{"command":"ls"}}}`,
+		head + `"decision":{"behavior":"allow","updated_input":["ls"]}}`,
+		head + `"decision":{"behavior":"allow","updated_input":null}}`,
+		head + `"decision":{"behavior":"allow","selected_permission_suggestion_ids":[]}}`,
+		head + `"decision":{"behavior":"allow","selected_permission_suggestion_ids":["always"]}}`,
+	} {
+		id, err := validatePermissionAnswer([]byte(answer))
+		require.NoError(t, err, answer)
+		assert.Equal(t, "permission", id, answer)
+	}
+}
+
+// SendRawInput states why it refuses an answer, so the reader of the error can
+// tell a malformed answer from an answer of another kind.
+func TestSendRawInputStatesWhyItRefusesAnAnswer(t *testing.T) {
+	t.Parallel()
+	_, a := openedAgent(t)
+	for answer, want := range map[string]string{
+		`not json`:                     "the Letta control answer is not a JSON object",
+		`["approval_response"]`:        "the Letta control answer is not a JSON object",
+		`{"kind":7}`:                   "the Letta control answer is neither an approval_response nor a question response",
+		`{"kind":"create_message"}`:    "the Letta control answer is neither an approval_response nor a question response",
+		`{"type":"ask_user_question"}`: "the Letta control answer is neither an approval_response nor a question response",
+	} {
+		assert.EqualError(t, a.SendRawInput(agent.RawInput{Data: []byte(answer)}), want, answer)
+	}
+}
+
+// The worker writes each of these fields of a published request as text. A
+// request whose field holds another value is not one that the worker wrote, so
+// the answer to it is withheld instead of being addressed from a guess. A
+// `requestId` that is no text gives no key, so the Worker refuses that request
+// first (agent.StoredControlRequestAgrees), and the case pins the provider's
+// own guard past that check.
+func TestResolveControlResponseWithholdsARequestWhoseFieldIsNotText(t *testing.T) {
+	t.Parallel()
+	content, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": "perm-1", "response": map[string]any{"behavior": "allow"}}})
+	require.NoError(t, err)
+	for _, field := range []string{"type", "requestId", "tool_name", "tool_call_id"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			request := map[string]any{"type": "permission", "requestId": "perm-1", "tool_name": "Bash", "tool_call_id": "call-1", "tool_input": map[string]any{}}
+			request[field] = 7
+			payload, err := json.Marshal(request)
+			require.NoError(t, err)
+
+			resolution := agenttest.ResolveAnswerPastTheKeyCheck(lettaProvider{}, payload, "perm-1", agent.ControlAnswer{Content: content})
+
+			assert.True(t, resolution.Withhold)
+			assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest)
+			assert.Equal(t, content, resolution.Content, "a recovery reads the response bytes")
+		})
+	}
+}
+
+// The Worker publishes a question and a permission alone, so Letta Code waits
+// for no answer to a request of another type, and the answer is withheld
+// rather than sent as an approval of a request that Letta Code never raised.
+func TestResolveControlResponseWithholdsARequestOfAnotherType(t *testing.T) {
+	t.Parallel()
+	content, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": "perm-1", "response": map[string]any{"behavior": "allow"}}})
+	require.NoError(t, err)
+	for _, kind := range []string{"", "control_request", "approval"} {
+		payload, err := json.Marshal(map[string]any{"type": kind, "requestId": "perm-1", "tool_name": "Bash", "tool_call_id": "call-1", "tool_input": map[string]any{}})
+		require.NoError(t, err)
+		resolution := agenttest.ResolveAnswer(lettaProvider{}, payload, "perm-1", agent.ControlAnswer{Content: content})
+		assert.True(t, resolution.Withhold, kind)
+		assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest, kind)
+		assert.Equal(t, content, resolution.Content, kind)
+	}
+}
+
+// The key of a stored request is the requestId that the agent writes into the
+// payload of each request that it publishes.
+func TestControlRequestKeyIsTheKeyOfEachPublication(t *testing.T) {
+	t.Parallel()
+	_, a := openedAgent(t)
+	sink := &agenttest.ControlSink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.HandleOutput(permissionFrame("perm-1", contracts.LettaToolBash, "shell"))
+	a.HandleOutput(permissionFrame("", contracts.LettaToolBash, "other"))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	agenttest.AssertPublishedControlKeys(t, lettaProvider{}, sink)
+	for _, payload := range []string{`{"type":"permission"}`, `{"type":"permission","requestId":""}`, `{"type":"permission","requestId":7}`} {
+		key, ok := lettaProvider{}.ControlRequestKey([]byte(payload), "")
+		assert.False(t, ok, payload)
+		assert.Empty(t, key, payload)
 	}
 }
 
@@ -357,6 +504,9 @@ func TestQuestionReceiptPostsAQuestionRequest(t *testing.T) {
 	assert.Equal(t, "ask-1", published.ToolCallID)
 	assert.JSONEq(t, lettaColorQuestions, string(published.ToolInput.Questions), "the request asks the questions that the receipt posted")
 	assert.Equal(t, "local-conv-1", request.AgentSessionID)
+	key, ok := lettaProvider{}.ControlRequestKey(request.Payload, request.AgentSessionID)
+	assert.True(t, ok)
+	assert.Equal(t, request.RequestID, key, "the Worker answers the question under the key that it was published under")
 }
 
 func TestQuestionReceiptPostsOneRequestForRepeatedFrames(t *testing.T) {
@@ -475,7 +625,7 @@ func TestQuestionResponseTravelsAsATaskNotification(t *testing.T) {
 
 	// The text holds the three characters that Letta Code escapes in XML, and quotes that it keeps.
 	response := `{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":[{"question":"Use <b> & \"x\"?","header":"Tag","options":[{"label":"Yes","description":"Use it"},{"label":"No","description":"Skip it"}]}],"status":"answered","answers":{"Use <b> & \"x\"?":"Yes"}}`
-	require.NoError(t, a.SendRawInput([]byte(response), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(response)}))
 
 	command := fake.nextCommand(t)
 	require.Equal(t, "input", command["type"])
@@ -498,7 +648,7 @@ func TestQuestionDismissalTravelsAsATaskNotification(t *testing.T) {
 	t.Parallel()
 	fake, a := openedAgent(t)
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"dismissed"}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"dismissed"}`)}))
 
 	payload := inputPayload(t, fake)
 	messages, ok := payload["messages"].([]any)
@@ -523,7 +673,7 @@ func TestQuestionResponseThatLettaWouldRefuseIsNotSent(t *testing.T) {
 		"another version":          `{"type":"ask_user_question_response","version":1,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"dismissed"}`,
 		"no call":                  `{"type":"ask_user_question_response","version":2,"questions":` + lettaColorQuestions + `,"status":"dismissed"}`,
 	} {
-		assert.Error(t, a.SendRawInput([]byte(response), agent.StopContext{}), name)
+		assert.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(response)}), name)
 	}
 	select {
 	case command := <-fake.commands:
@@ -601,7 +751,7 @@ func TestQueuedQuestionAnswerEchoIsNotARow(t *testing.T) {
 	sink := &agenttest.Sink{}
 	fake, a := openedAgentWithSink(t, sink)
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"answered","answers":{"Which color do you prefer?":"Red"}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"answered","answers":{"Which color do you prefer?":"Red"}}`)}))
 	payload := inputPayload(t, fake)
 	id := sentClientMessageID(t, payload)
 	require.True(t, isLeapMuxClientMessageID(id), "the answer states a LeapMux id: %q", id)
@@ -642,7 +792,7 @@ func TestEchoOfEveryAnswerLeapMuxSendsIsNoRow(t *testing.T) {
 			sink := &agenttest.Sink{}
 			fake, a := openedAgentWithSink(t, sink)
 
-			require.NoError(t, a.SendRawInput([]byte(response), agent.StopContext{}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(response)}))
 			payload := inputPayload(t, fake)
 			id := sentClientMessageID(t, payload)
 			text := sentMessageText(t, payload)
@@ -674,7 +824,7 @@ func TestEchoOfAQuestionAnswerStatesTheIDOfTheAnswer(t *testing.T) {
 	sink := &agenttest.Sink{}
 	fake, a := openedAgentWithSink(t, sink)
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":`+lettaColorQuestions+`,"status":"dismissed"}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"dismissed"}`)}))
 	id := sentClientMessageID(t, inputPayload(t, fake))
 	require.True(t, isLeapMuxClientMessageID(id), "the answer states a LeapMux id: %q", id)
 

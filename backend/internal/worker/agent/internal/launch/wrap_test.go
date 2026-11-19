@@ -180,8 +180,8 @@ func TestBuildShellWrappedCommand_Csh_NoProbeEmitsNoConditional(t *testing.T) {
 		"unsetenv CLAUDECODE; '/bin/echo' ''\n'/bin/echo' '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'\n"))
 	// The control CLI step holds a conditional of its own, which the gate
 	// does not need.
-	launch, found := strings.CutPrefix(script, cshReprependControlCLI)
-	require.True(t, found, "the command starts with the control CLI step: %q", script)
+	launch, found := strings.CutPrefix(script, cshUnaliasBuiltins+cshReprependControlCLI)
+	require.True(t, found, "the command starts with the line that frees the builtins and the control CLI step: %q", script)
 	assert.NotContains(t, launch, "then")
 }
 
@@ -196,7 +196,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "%print "+nuQuote(delimiter))
-	assert.Contains(t, cmd.Args[4], "hide-env -i CLAUDECODE")
+	assert.Contains(t, cmd.Args[4], "%hide-env -i CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], `^"claude"`)
 	assert.NotContains(t, cmd.Args[4], "exec")
 	assert.Contains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
@@ -241,7 +241,7 @@ func TestBuildShellWrappedCommand_PwshCore_Interactive(t *testing.T) {
 			assert.Equal(t, "-Login", cmd.Args[1])
 			assert.Equal(t, "-Command", cmd.Args[2])
 			assert.Contains(t, cmd.Args[3], "[Console]::Out.WriteLine('"+delimiter+"')")
-			assert.Contains(t, cmd.Args[3], "Remove-Item Env:CLAUDECODE")
+			assert.Contains(t, cmd.Args[3], "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath 'Env:CLAUDECODE'")
 			assert.Contains(t, cmd.Args[3], "__leapmux_lookup 'claude'")
 			assert.NotContains(t, cmd.Args[3], "exec")
 			assert.Contains(t, cmd.Args[3], "LEAPMUX_TEST_GATE_A")
@@ -266,7 +266,7 @@ func TestBuildShellWrappedCommand_WindowsPowerShell_Interactive(t *testing.T) {
 			assert.Equal(t, "-Command", cmd.Args[1])
 			assert.NotContains(t, cmd.Args, "-Login")
 			assert.Contains(t, cmd.Args[2], "[Console]::Out.WriteLine('"+delimiter+"')")
-			assert.Contains(t, cmd.Args[2], "Remove-Item Env:CLAUDECODE")
+			assert.Contains(t, cmd.Args[2], "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath 'Env:CLAUDECODE'")
 			assert.Contains(t, cmd.Args[2], "__leapmux_lookup 'claude'")
 			assert.Contains(t, cmd.Args[2], "LEAPMUX_TEST_GATE_A")
 		})
@@ -474,14 +474,14 @@ func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers_NuAndPwsh(t *testing.
 		context.Background(), "/usr/bin/nu", true, "codex",
 		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
 	)
-	assert.Contains(t, nuCmd.Args[4], "hide-env -i CODEX_CI")
+	assert.Contains(t, nuCmd.Args[4], "%hide-env -i CODEX_CI")
 	assert.NotContains(t, nuCmd.Args[4], "CLAUDECODE")
 
 	pwshCmd, _, _ := wrapShellCmd(t,
 		context.Background(), "/usr/bin/pwsh", true, "codex",
 		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
 	)
-	assert.Contains(t, pwshCmd.Args[3], "Remove-Item Env:CODEX_CI")
+	assert.Contains(t, pwshCmd.Args[3], "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath 'Env:CODEX_CI'")
 	assert.NotContains(t, pwshCmd.Args[3], "CLAUDECODE")
 }
 
@@ -676,7 +676,7 @@ func TestBuildShellWrappedCommand_EveryDialectSetsTheSetEnvEntries(t *testing.T)
 		{"/bin/tcsh", []string{`setenv LEAPMUX_TEST_PORT ${__LEAPMUX_PIN_`, `setenv LEAPMUX_TEST_PATH ${__LEAPMUX_PIN_`}},
 		{"/usr/bin/nu", []string{`$env.LEAPMUX_TEST_PORT = $env.__LEAPMUX_PIN_`, `$env.LEAPMUX_TEST_PATH = $env.__LEAPMUX_PIN_`}},
 		{"/usr/bin/pwsh", []string{`$env:LEAPMUX_TEST_PORT = $env:__LEAPMUX_PIN_`, `$env:LEAPMUX_TEST_PATH = $env:__LEAPMUX_PIN_`}},
-		{"/usr/bin/xonsh", []string{`__xonsh__.env["LEAPMUX_TEST_PORT"] = __xonsh__.env.pop("__LEAPMUX_PIN_`, `__xonsh__.env["LEAPMUX_TEST_PATH"] = __xonsh__.env.pop("__LEAPMUX_PIN_`}},
+		{"/usr/bin/xonsh", []string{`__leapmux_pin("LEAPMUX_TEST_PORT", "__LEAPMUX_PIN_`, `__leapmux_pin("LEAPMUX_TEST_PATH", "__LEAPMUX_PIN_`}},
 	}
 	for _, c := range cases {
 		t.Run(c.shell, func(t *testing.T) {

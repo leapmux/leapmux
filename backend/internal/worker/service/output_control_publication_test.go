@@ -720,7 +720,7 @@ func TestControlFinalizationWaitsForAnInFlightRepeatedPublication(t *testing.T) 
 		publicationDone <- sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: before.Payload})
 	}()
 	<-entered
-	svc.sendControlResponseFn = func(string, []byte) error { return nil }
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { return nil }
 	responseDone := make(chan error, 1)
 	go func() {
 		responseDone <- svc.processControlAnswer(row, workerAnswer{

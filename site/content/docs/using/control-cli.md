@@ -381,7 +381,14 @@ An agent asks the user through a control request: a permission prompt, a plan to
   - With several questions, each value says which question it answers: `--option 2:1` and `"1:Use the cache"`.
   - A question that no `--option` answers keeps the options that the agent selected for it, which `agent requests` shows as its `default`. With no value at all, the command sends those defaults.
   - `--field <name>=<value>` fills an MCP form, once for each field. A field that `agent requests` lists with a `when` condition takes a value only while the condition holds; otherwise the form neither sends nor requires it. A field that the list leaves out is hidden, and it keeps its default.
-- **The Worker checks each answer against the prompt**, as it does for the browser, and fails a wrong one with `invalid_argument`. A request that the agent withdrew, or that another client answered first, fails with `conflict`.
+- **The Worker checks each answer against the prompt**, as it does for the browser, and fails a wrong one with `invalid_argument`. A request that the agent replaced or withdrew, or that another client answered first, fails with `conflict`. Run `agent requests` again for the new handle of a replaced request.
+- **A request that LeapMux cannot read takes no answer.** `agent requests` lists it as `unreadable` and states the reason. `--json` states the reason as `fault`:
+  - `malformed`: the agent sent bytes that are not JSON.
+  - `not_an_object`: the agent sent JSON that is not an object.
+  - `unrecognized`: the agent sent a kind of request that LeapMux does not recognize.
+
+  The answer commands fail with `conflict`. Stop the agent's turn with `agent interrupt` instead. The browser banner states the same reason and offers no answer buttons.
+- **LeapMux refuses an answer to a stored request that does not match its key.** The answer fails with "LeapMux cannot read the stored request that this answer is for", and the request stays pending.
 - **An agent cannot answer its own requests.** The command fails with `usage`: the user answers them.
 
 ### The input queue

@@ -428,6 +428,26 @@ func validApprovalStage(stage map[string]json.RawMessage, approvalID string, see
 	return resolutionOK && kindOK
 }
 
+// ControlRequestKey reads the key that the agent publishes a Muse request
+// under: the identity of its approval or of its user input (controlID), which
+// publishControl derives from the same `params`.
+func (museProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request struct {
+		Params controlParams `json:"params"`
+	}
+	if json.Unmarshal(payload, &request) != nil {
+		return "", false
+	}
+	key, err := controlID(request.Params)
+	if err != nil {
+		return "", false
+	}
+	return key, true
+}
+
+// ResolveControlResponse turns the answer into Muse's own reply, addressed by
+// the request's key. The Worker resolves only a stored request that gives
+// that key (ControlRequestKey), so the key needs no check here.
 func (museProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.ControlResponseResolution{Content: ctx.ResponseContent}
 	if len(ctx.RequestPayload) == 0 {
@@ -441,23 +461,12 @@ func (museProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
-	key, err := controlID(request.Params)
-	if err != nil {
-		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	}
-	if ctx.RequestID != key {
-		// The stored request disagrees with its own request key, so LeapMux
-		// cannot trust it.
-		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	}
 	method, params, err := nativeControlReply(request.Params, ctx.ResponseContent)
 	if err != nil {
 		result.Refuse(err.Error())
 		return result
 	}
-	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": key, "method": method, "params": params})
+	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": ctx.RequestID, "method": method, "params": params})
 	if err != nil {
 		result.Refuse(agent.RefusalUnencodableReply)
 		return result

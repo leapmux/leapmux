@@ -146,7 +146,8 @@ func TestReadControlRequest_KiroShellPermissionStatesItsCommandAndEveryScope(t *
 		"_meta":{"kiro":{"toolId":"run_command","command":"`+command+`"}}}}`)).GetPermission()
 	assert.Equal(t, command, permission.GetCommand())
 	assert.Equal(t, command, permission.GetTitle())
-	assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, kiroOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{acp.CancelOptionID}, kiroOptionIDs(permission.GetOptions()),
+		"the protocol answers a call with no options only with the cancelled outcome")
 }
 
 // The command that the base reader found is what the call runs, so Kiro's own
@@ -184,11 +185,9 @@ func TestReadControlRequest_KiroTurnReviewStatesTheFilesThatItHolds(t *testing.T
 	assert.Empty(t, permission.GetCommand())
 }
 
-func TestReadControlRequest_KiroReadsAnUnknownRequestAsTheGenericPermission(t *testing.T) {
+func TestReadControlRequest_KiroReadsAnUnknownRequestAsUnrecognized(t *testing.T) {
 	for _, payload := range []string{`{"method":"_kiro/unknown"}`, `{}`, `not json`, `{"method":7}`} {
-		prompt := agenttest.ControlPromptOf(kiroProvider{}, []byte(payload))
-		require.NotNil(t, prompt.GetPermission(), payload)
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, kiroOptionIDs(prompt.GetPermission().GetOptions()), payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(kiroProvider{}, []byte(payload)), payload)
 	}
 	permission := agenttest.ControlPromptOf(kiroProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},
 		"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`)).GetPermission()
@@ -375,6 +374,22 @@ func TestAnswerControlRequest_KiroPermissionCarriesTheReasonInKirosOwnField(t *t
 
 	_, err = agenttest.AnswerControl(kiroProvider{}, []byte(payload), "jsonrpc:1", agenttest.PermissionDecision("accept", "a note"))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "an approval carries no reason")
+}
+
+// A request with no options takes LeapMux's cancel, which passes Kiro's
+// resolution as the protocol's cancelled outcome under Kiro's own id, with the
+// reason in Kiro's own field.
+func TestAnswerControlRequest_KiroPermissionWithNoOptionsCancels(t *testing.T) {
+	payload := `{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"c","title":"ls"}}}`
+	got, err := agenttest.AnswerControl(kiroProvider{}, []byte(payload), "jsonrpc:1", agenttest.PermissionDecision(acp.CancelOptionID, "Use rg"))
+	require.NoError(t, err)
+	resolved := agenttest.ResolveAnswer(kiroProvider{}, []byte(payload), "jsonrpc:1", got)
+	require.NoError(t, resolved.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{"outcome":{"outcome":"cancelled"},"_meta":{"kiro":{"rejectionReason":"Use rg"}}}}`, string(resolved.Content))
+	assert.Empty(t, got.FollowUp, "the reason rides in the reply, so it is not sent twice")
+
+	_, err = agenttest.AnswerControl(kiroProvider{}, []byte(payload), "jsonrpc:1", agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Kiro cannot read LeapMux's allow")
 }
 
 // A wider scope travels as LeapMux's own option, and Kiro's resolution turns it

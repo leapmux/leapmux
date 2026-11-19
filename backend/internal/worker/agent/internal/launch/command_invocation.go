@@ -314,8 +314,9 @@ func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	ordered := len(prepared.candidates) != 0
 	var script strings.Builder
 	// The step runs after the profile and before StripEnvKeys and the pins, so
-	// a PATH that a provider pins wins (see cshReprependControlCLI).
-	script.WriteString(cshReprependControlCLI + cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
+	// a PATH that a provider pins wins (see cshReprependControlCLI). Only the
+	// line that frees the builtins from the profile's aliases comes first.
+	script.WriteString(cshUnaliasBuiltins + cshReprependControlCLI + cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.pins))
 	if ordered {
 		script.WriteString("\nset __lm_chosen = 0\nset __lm_status = 127\n")
 	}

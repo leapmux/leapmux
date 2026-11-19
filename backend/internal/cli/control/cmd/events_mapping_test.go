@@ -410,6 +410,7 @@ func TestPromptDetail(t *testing.T) {
 		{"an elicitation", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: &leapmuxv1.ElicitationPrompt{Message: "Sign in"}}}, "Sign in"},
 		{"a dialog", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Dialog{Dialog: &leapmuxv1.DialogPrompt{Message: "Continue?"}}}, "Continue?"},
 		{"an unreadable request", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_MALFORMED}}, "LeapMux cannot read it (malformed)"},
+		{"an unrecognized request", &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNRECOGNIZED}}, "LeapMux cannot read it (unrecognized)"},
 		{"no prompt", nil, ""},
 	}
 	for _, tc := range cases {

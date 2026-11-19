@@ -78,7 +78,7 @@ func TestCodexResolvedNotificationKeepsReaderFinalizationOwnership(t *testing.T)
 				handleCodexOutput(a, providerkit.ParseLine([]byte(codexCommandApprovalLine)))
 			}
 			if state == "answered" {
-				require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`), agentapi.StopContext{}))
+				require.NoError(t, a.SendRawInput(controls.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`))))
 				assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
 			}
 			a.handleServerRequestResolved(json.RawMessage(`{"threadId":"main-thread","requestId":7}`))
@@ -257,6 +257,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 
 	rec := sink.LastPublishedControl()
 	assert.Equal(t, "jsonrpc:42", rec.RequestID)
+	agenttest.AssertPublishedControlKeys(t, codexProvider{}, sink)
 
 	// Verify that the payload preserves the original content.
 	var parsed struct {
@@ -2983,6 +2984,7 @@ func TestHandleCodexOutput_ASecondPlanPromptRetiresTheFirst(t *testing.T) {
 	}
 
 	require.Equal(t, 2, sink.PublishedControlCount())
+	agenttest.AssertPublishedControlKeys(t, codexProvider{}, sink)
 	assert.Equal(t, []string{"codex-plan-prompt-turn-1"}, sink.CanceledControls(),
 		"the superseded card would have approved the second turn's plan")
 }

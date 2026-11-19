@@ -445,7 +445,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		assert.Equal(t, "session_1", byID["approval_9"]["session_id"])
 		assert.Equal(t, contracts.KimiFrameInteraction, byID["question_9"]["type"])
 		assert.Equal(t, "agent-0", byID["question_9"]["agent_id"])
-		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_9", "allow", nil, nil), agent.StopContext{}))
+		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_9", "allow", nil, nil)}))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "interactions", "approval_9", "")), 1)
 	})
 	t.Run("withdraws only controls absent from the confirmed native replay", func(t *testing.T) {
@@ -469,8 +469,8 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		_, stale := rig.agent.controls["approval_1"]
 		rig.agent.Mu.Unlock()
 		assert.False(t, stale)
-		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), errKimiControlGone)
-		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_2", "allow", nil, nil), agent.StopContext{}))
+		require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)}), errKimiControlGone)
+		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_2", "allow", nil, nil)}))
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_2", "")), 1)
 	})

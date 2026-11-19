@@ -1,6 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { create } from '@bufbuild/protobuf'
+import { afterEach, describe, expect, it } from 'vitest'
+import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { makeTranscriptMessage } from '~/test-support/messageFactory'
+import { createMessageRenderCacheStore } from '../../../messageRenderCache'
+import { extractedRow } from '../../../rowExtraction'
+import { cachedChatRow } from '../../../rowModelCache'
+import { prepareMessage } from '../../../rowPreparation'
 import { input } from '../../testUtils'
 import { codexAgentCounterpart, codexAgentRequest, codexAgentResults, resolveCodexAgentItem } from './agent'
+import '../plugin'
 
 const item = {
   id: 'call',
@@ -147,5 +156,70 @@ describe('codex agent counterpart validation', () => {
         another: { status: 'running' },
       },
     }).map(result => result.agentId)).toEqual(['child', 'another'])
+  })
+})
+
+// A tab draws its rows before the agent's settings reach the browser. A spawn row names
+// its model and its effort by the labels that arrive later, as the settings chips do.
+describe('codex spawn row labels', () => {
+  afterEach(() => clearSettingsLabelCache())
+
+  it('names the model and the effort by the labels that arrive after the row draws', () => {
+    const message = makeTranscriptMessage({
+      id: 'spawn',
+      provider: AgentProvider.CODEX,
+      spanId: 'spawn-call',
+      spanType: 'collabAgentToolCall',
+      agentSessionId: 'codex-session',
+      content: {
+        item: {
+          id: 'spawn-call',
+          type: 'collabAgentToolCall',
+          tool: 'spawnAgent',
+          prompt: 'Inspect the code.',
+          model: 'gpt-x',
+          reasoningEffort: 'high',
+          status: 'inProgress',
+          receiverThreadIds: ['child-1'],
+        },
+      },
+    }, 1n)
+    const prepared = prepareMessage(message)
+    const context = {
+      renderCache: createMessageRenderCacheStore().forRow('spawn-revision'),
+      spanId: message.spanId,
+      spanType: message.spanType,
+    }
+    const metadata = () => {
+      const row = extractedRow(cachedChatRow(context, AgentProvider.CODEX, prepared.resolved, prepared.category, undefined))
+      return row?.kind === 'tool' && row.call.kind === 'agent'
+        ? row.call.request.metadata
+        : undefined
+    }
+    expect(metadata()).toEqual([
+      { label: 'Agent ID', value: 'child-1' },
+      { label: 'Model', value: 'gpt-x' },
+      { label: 'Reasoning effort', value: 'high' },
+    ])
+
+    updateSettingsLabelCache(AgentProvider.CODEX, [
+      create(AvailableOptionGroupSchema, {
+        id: 'model',
+        options: [
+          { id: 'gpt-x', name: 'GPT X' },
+        ],
+      }),
+      create(AvailableOptionGroupSchema, {
+        id: 'effort',
+        options: [
+          { id: 'high', name: 'High' },
+        ],
+      }),
+    ])
+    expect(metadata()).toEqual([
+      { label: 'Agent ID', value: 'child-1' },
+      { label: 'Model', value: 'GPT X' },
+      { label: 'Reasoning effort', value: 'High' },
+    ])
   })
 })

@@ -29,6 +29,7 @@ func TestACPCancelNotificationWithdrawsTheRequestAndWritesNoRow(t *testing.T) {
 	base.handleACPOutput(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":"33d8e110-393a-4abb-935e-022e86e4e347",` +
 		`"method":"session/request_permission","params":{}}`)))
 	published := sink.LastPublishedControl()
+	agenttest.AssertPublishedControlKeys(t, Provider{}, sink)
 
 	base.handleACPOutput(providerkit.ParseLine([]byte(acpGooseCancelNotification)))
 

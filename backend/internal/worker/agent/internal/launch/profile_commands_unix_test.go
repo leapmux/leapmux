@@ -35,6 +35,13 @@ func useBashProfile(t *testing.T, content string) string {
 	return shell
 }
 
+// assertProfileCommandExchange is assertProfileCommandExchangeWithEnvironment
+// without the report of the environment. Only Unix tests call it.
+func assertProfileCommandExchange(t *testing.T, cmd *exec.Cmd, delimiter string, args []string) {
+	t.Helper()
+	assertProfileCommandExchangeWithEnvironment(t, cmd, delimiter, args, nil)
+}
+
 func TestProfileCommandUsesTheAliasOrFunctionItDiscovers(t *testing.T) {
 	const name = "leapmux-profile-command"
 	quote := shellquote.POSIX.Quote

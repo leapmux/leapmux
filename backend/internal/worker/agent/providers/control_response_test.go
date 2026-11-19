@@ -94,7 +94,9 @@ func TestControlResponsePreservesNativeAnswerBytes(t *testing.T) {
 		{"mimo permission option", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"permission.asked","properties":{"id":"per_1","permission":"bash"},"request":{"tool_name":"bash"}}`, "mimo-permission:per_1",
 			`{"jsonrpc":"2.0","id":"mimo-permission:per_1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`, `{"jsonrpc":"2.0","id":"mimo-permission:per_1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`},
 	}
-	for _, provider := range append([]leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT}, acpProvidersForTest()...) {
+	// GitHub Copilot publishes no JSON-RPC request, so the Worker refuses such a
+	// stored request before Copilot reads it (agent.StoredControlRequestAgrees).
+	for _, provider := range acpProvidersForTest() {
 		for _, options := range []string{`[]`, `[{"optionId":"once","name":"Allow once","kind":"allow_once"}]`} {
 			cases = append(cases, jsonRPCCase(provider.String()+options, provider, `{"id":7,"method":"session/request_permission","params":{"options":`+options+`}}`, `{"id":7,"result":{"outcome":{"optionId":"once"}}}`))
 		}
@@ -110,9 +112,13 @@ func TestControlResponsePreservesNativeAnswerBytes(t *testing.T) {
 	}
 }
 
+// Each provider that publishes a JSON-RPC request answers it under its native
+// id. GitHub Copilot publishes none: it keys each request of its runtime by
+// its session and its own request id, so the Worker refuses a stored JSON-RPC
+// request before Copilot reads it (agent.StoredControlRequestAgrees).
 func TestControlResponseRestoresTheNativeRequestID(t *testing.T) {
 	registry := Registry()
-	for _, provider := range append([]leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT}, acpProvidersForTest()...) {
+	for _, provider := range append([]leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}, acpProvidersForTest()...) {
 		for _, wireID := range []string{`42`, `0`, `-5`, `1e3`, `9007199254740993`, `"42"`, `"001"`, `"abc-123"`} {
 			t.Run(provider.String()+"/"+wireID, func(t *testing.T) {
 				request := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"session/request_permission","params":{}}`, wireID))

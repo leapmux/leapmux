@@ -94,7 +94,8 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 }
 
 // SendRawInput claims each control response before it writes to the native process.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var frame struct {
 		Type     string `json:"type"`
 		Response struct {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -39,8 +40,8 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 				require.NoError(t, err)
 				var sent [][]byte
-				svc.sendControlResponseFn = func(_ string, content []byte) error {
-					sent = append(sent, append([]byte(nil), content...))
+				svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+					sent = append(sent, append([]byte(nil), answer.Data...))
 					return nil
 				}
 				response, err := json.Marshal(map[string]any{"response": map[string]any{

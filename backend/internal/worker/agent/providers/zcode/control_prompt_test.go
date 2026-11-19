@@ -123,10 +123,26 @@ func zcodeBashPermission(t *testing.T, params map[string]any) []byte {
 
 func TestZCodeReadControlRequest_RecognizesAQuestionByItsRecordedToolName(t *testing.T) {
 	t.Parallel()
-	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"request":{"tool_name":"AskUserQuestion"}}`)).GetQuestion())
-	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"request":{"tool_name":"ExitPlanMode"}}`)).GetPlan(), "the plan approval travels over the same method")
-	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"request":{"tool_name":"Bash"}}`)).GetPermission())
-	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{}`)).GetPermission())
+	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"method":"interaction/requestUserInput","request":{"tool_name":"AskUserQuestion"}}`)).GetQuestion())
+	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"method":"interaction/requestUserInput","request":{"tool_name":"ExitPlanMode"}}`)).GetPlan(), "the plan approval travels over the same method")
+	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"method":"interaction/requestPermission","request":{"tool_name":"Bash"}}`)).GetPermission())
+	assert.NotNil(t, agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"method":"interaction/requestPermission"}`)).GetPermission())
+}
+
+// The app-server raises a permission and a user input, and LeapMux asks the
+// workspace-trust question. The resolution builds no reply to a request of
+// another method, so a prompt with Allow and Deny would fail only after a
+// click, and such a request reads as unrecognized.
+func TestZCodeReadControlRequest_ReadsARequestOfAnotherMethodAsUnrecognized(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{
+		`{"type":"control_request","request_id":"req-1","id":7,"method":"unknown/method","request":{"tool_name":"AskUserQuestion"}}`,
+		`{"type":"control_request","request_id":"req-1","id":7,"request":{"tool_name":"Bash"}}`,
+		`{"method":7,"request":{"tool_name":"ExitPlanMode"}}`,
+		`{}`,
+	} {
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(zcodeProvider{}, []byte(payload)), payload)
+	}
 }
 
 func TestZCodeReadControlRequest_ReadsAQuestionAndItsOptions(t *testing.T) {
@@ -589,7 +605,7 @@ func TestZCodeReadControlRequest_ReadsAnUnknownToolAsAPermission(t *testing.T) {
 	assert.Empty(t, permission.GetCommand(), "only a shell call states a command")
 	assert.JSONEq(t, `{"arg":1,"command":"ls"}`, permission.GetInputJson())
 
-	got = agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{}`))
+	got = agenttest.ControlPromptOf(zcodeProvider{}, []byte(`{"method":"interaction/requestPermission"}`))
 	assert.Equal(t, "{}", got.GetPermission().GetInputJson(), "a request with no input states an empty object, which the allow sends back")
 	assert.Empty(t, got.GetPermission().GetTitle())
 }
@@ -802,16 +818,19 @@ func TestZCodeReadControlRequest_DrawsTheHookTrustQuestionWithTheAgentName(t *te
 func TestZCodeAnswerControlRequest_AnswersTheHookTrustQuestion(t *testing.T) {
 	t.Parallel()
 	payload := zcodeTrustQuestion(t)
+	// The question is stored under the key of its session.
+	const sessionID = "sess-1"
+	requestID := providerkit.WorkspaceTrustRequestID(sessionID)
 	for option, decision := range map[string]string{"workspace-trust": "trust", "workspace-reject": "reject"} {
-		got, err := agenttest.AnswerControl(zcodeProvider{}, payload, zcodeTestRequestID, agenttest.PermissionDecision(option, ""))
+		got, err := agenttest.AnswerControl(zcodeProvider{}, payload, requestID, agenttest.PermissionDecision(option, ""))
 		require.NoError(t, err, option)
-		res := agenttest.ResolveAnswer(zcodeProvider{}, payload, zcodeTestRequestID, got)
+		res := agenttest.ResolveAnswerInSession(zcodeProvider{}, payload, sessionID, requestID, got)
 		require.False(t, res.Withhold, option)
-		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"decision":"`+decision+`"}}}`, string(res.Content), option)
+		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+requestID+`","response":{"decision":"`+decision+`"}}}`, string(res.Content), option)
 	}
-	_, err := agenttest.AnswerControl(zcodeProvider{}, payload, zcodeTestRequestID, agenttest.PermissionDecision("workspace-reject", "Not here."))
+	_, err := agenttest.AnswerControl(zcodeProvider{}, payload, requestID, agenttest.PermissionDecision("workspace-reject", "Not here."))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the trust question takes no reason")
-	_, err = agenttest.AnswerControl(zcodeProvider{}, payload, zcodeTestRequestID, agenttest.PermissionDecision("allow_once", ""))
+	_, err = agenttest.AnswerControl(zcodeProvider{}, payload, requestID, agenttest.PermissionDecision("allow_once", ""))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the question offers its own two answers only")
 }
 

@@ -699,6 +699,7 @@ func TestAnswerControlRequest_ACustomAnswerTakesTheSelectThenInputExchange(t *te
 	a, sink, output := piQuestionResponseFixture()
 	published := sink.PublishedControls()
 	require.Len(t, published, 1)
+	agenttest.AssertPublishedControlKeys(t, piProvider{}, sink)
 	input := agent.NewControlRequestInput(published[0].Payload)
 	frame := []byte(`{"type":"tool_execution_start","toolCallId":"question","toolName":"ask_user_question","args":{"questions":[{"question":"Choose","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}}`)
 	input.Source = func() (agent.MessageContent, bool) { return agent.MessageContent{Original: frame}, true }
@@ -711,7 +712,7 @@ func TestAnswerControlRequest_ACustomAnswerTakesTheSelectThenInputExchange(t *te
 		Decision: agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: "My custom answer"}),
 	})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer.Content, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer.Content}))
 	assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","value":"3. Type something."}`, output.String())
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
 	frames := strings.Split(strings.TrimSpace(output.String()), "\n")
@@ -727,7 +728,7 @@ func TestAnswerControlRequest_AFreshApprovalReachesTheFreshImplementationPath(t 
 	payload := piPlanMenu("Proposed plan ready. What next?", []any{"Implement here", "Start fresh and implement", "Stay in Plan mode"})
 	answer, err := answerPi(t, payload, nil, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, ClearContext: true}))
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer.Content, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer.Content}))
 	a.Mu.Lock()
 	pending := a.freshImplementationPending
 	a.Mu.Unlock()

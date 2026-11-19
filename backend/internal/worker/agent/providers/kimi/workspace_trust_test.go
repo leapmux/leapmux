@@ -50,7 +50,7 @@ func answerKimiWorkspaceTrust(t *testing.T, a *Agent, requestID, decision string
 		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
 	}})
 	require.NoError(t, err)
-	return a.SendRawInput(raw, agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: raw})
 }
 
 // A workspace that Kimi Code does not trust gets one question, which names the
@@ -230,6 +230,9 @@ func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 	rig := newKimiTrustRig(t, false)
 	rig.agent.checkWorkspaceTrust()
 	request := rig.sink.LastPublishedControl()
+	// The question states no key, so the session that the Worker stores with
+	// it gives the key that the agent published it under.
+	agenttest.AssertPublishedControlKeys(t, kimiProvider{}, rig.sink)
 	for behavior, want := range map[string]string{
 		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
 		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
@@ -238,7 +241,7 @@ func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := agenttest.ResolveAnswer(kimiProvider{}, request.Payload, request.RequestID, agent.ControlAnswer{Content: content})
+		resolution := agenttest.ResolveAnswerInSession(kimiProvider{}, request.Payload, request.AgentSessionID, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		assert.Contains(t, string(resolution.Content), `"decision":"`+want+`"`, behavior)
 	}

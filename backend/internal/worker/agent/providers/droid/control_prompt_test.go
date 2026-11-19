@@ -105,10 +105,18 @@ func TestReadControlRequest_DroidReadsTheToolNameCommandAndInputDefensively(t *t
 	assert.Equal(t, "{}", permission.GetInputJson(), "an input that is no object states an empty object")
 }
 
-func TestReadControlRequest_DroidPayloadOutsideThePermissionChannelIsGeneric(t *testing.T) {
+// Droid raises no other request, and the resolution refuses an answer to
+// one, so a payload outside the permission channel reads as unrecognized.
+func TestReadControlRequest_DroidPayloadOutsideThePermissionChannelIsUnrecognized(t *testing.T) {
 	for _, payload := range []string{`{"type":"settings_updated"}`, `{}`, `not json`, `{"type":7}`} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(droidProvider{}, []byte(payload)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(droidProvider{}, []byte(payload)), payload)
 	}
+	// A permission decision drawn for such a payload anyway answers nothing.
+	_, err := droidProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+		Request: agent.NewControlRequestInput([]byte(`{"type":"settings_updated"}`)), RequestID: droidTestRequestID,
+		Prompt: agent.GenericPermissionPrompt(), Decision: agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+	})
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 }
 
 func TestReadControlRequest_DroidStatesTheOfferedOptionsWithTheirKinds(t *testing.T) {
@@ -341,11 +349,11 @@ func TestAnswerControlRequest_DroidRefusesAnAnswerToARequestWithNoQuestion(t *te
 // Worker sends the reason as the user's next message.
 func TestAnswerControlRequest_DroidCancelledQuestionDeniesWithItsReason(t *testing.T) {
 	payload := askUserRequestPayload(t, colorAndSizes()...)
-	got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.CancelQuestions("User stopped"))
+	got, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-ask-1", agenttest.CancelQuestions("User stopped"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"deny","message":"User stopped"}}}`, string(got.Content))
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-ask-1","response":{"behavior":"deny","message":"User stopped"}}}`, string(got.Content))
 	assert.Empty(t, got.FollowUp, "droidResolveControlResponse queues the reason itself")
-	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-ask-1", got)
 	require.NoError(t, resolution.Refusal())
 	assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(droidResult(t, resolution.Content)))
 	assert.Equal(t, agent.FeedbackFollowUp("User stopped"), resolution.FollowUp)
@@ -364,10 +372,10 @@ func TestAnswerControlRequest_DroidSelectsTheOfferedOption(t *testing.T) {
 	for option, behavior := range map[string]string{
 		"proceed_once": "allow", "proceed_always": "allow", "proceed_auto_run_high": "allow", "cancel": "deny",
 	} {
-		got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(option, ""))
+		got, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1", agenttest.PermissionDecision(option, ""))
 		require.NoError(t, err, option)
-		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"`+behavior+`","selectedOption":"`+option+`"}}}`, string(got.Content), option)
-		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
+		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-perm-1","response":{"behavior":"`+behavior+`","selectedOption":"`+option+`"}}}`, string(got.Content), option)
+		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", got)
 		require.NoError(t, resolution.Refusal(), option)
 		assert.JSONEq(t, `{"selectedOption":"`+option+`"}`, string(droidResult(t, resolution.Content)), option)
 		assert.Empty(t, got.FollowUp, option)
@@ -378,11 +386,11 @@ func TestAnswerControlRequest_DroidSelectsTheOfferedOption(t *testing.T) {
 // `cancel` and which the Worker sends as the next message.
 func TestAnswerControlRequest_DroidRefusalWithFeedbackDeniesWithIt(t *testing.T) {
 	payload := permissionRequestPayload(t, "Edit", "edit", "proceed_once", "cancel")
-	got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision("cancel", "Use the other file."))
+	got, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1", agenttest.PermissionDecision("cancel", "Use the other file."))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"deny","message":"Use the other file."}}}`, string(got.Content))
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-perm-1","response":{"behavior":"deny","message":"Use the other file."}}}`, string(got.Content))
 	assert.Empty(t, got.FollowUp)
-	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", got)
 	require.NoError(t, resolution.Refusal())
 	assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(droidResult(t, resolution.Content)))
 	assert.Equal(t, agent.FeedbackFollowUp("Use the other file."), resolution.FollowUp)
@@ -391,9 +399,9 @@ func TestAnswerControlRequest_DroidRefusalWithFeedbackDeniesWithIt(t *testing.T)
 func TestAnswerControlRequest_DroidLeapMuxRefusalDeniesARequestWithNoCancel(t *testing.T) {
 	payload := permissionRequestPayload(t, "Edit", "edit", "proceed_once")
 	for _, feedback := range []string{"", "No."} {
-		got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, feedback))
+		got, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1", agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, feedback))
 		require.NoError(t, err)
-		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
+		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", got)
 		require.NoError(t, resolution.Refusal())
 		assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(droidResult(t, resolution.Content)), "a cancel needs no offer")
 	}
@@ -426,16 +434,17 @@ func TestAnswerControlRequest_DroidRequestWithNoOptionsTakesTheSharedAnswers(t *
 	_, err = agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, "a note"))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 
-	got, err = agenttest.AnswerControl(droidProvider{}, []byte(`{"type":"settings_updated"}`), droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
-	require.NoError(t, err)
-	assert.Contains(t, string(got.Content), contracts.ControlAnswerMessageRejectedByUser)
+	// A payload outside the permission channel reads as unrecognized, so no
+	// decision answers it.
+	_, err = agenttest.AnswerControl(droidProvider{}, []byte(`{"type":"settings_updated"}`), droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 }
 
 // A plan takes the shared plan answer, and the Worker turns its permission
 // mode into Droid's own approval option.
 func TestAnswerControlRequest_DroidAnswersAPlan(t *testing.T) {
 	payload := droidJSON(t, map[string]any{
-		"type": "permission_request", "rpcId": "rpc-9",
+		"type": "permission_request", "requestId": droidTestRequestID, "rpcId": "rpc-9",
 		"toolUse":          map[string]any{"name": contracts.DroidToolExitSpecMode, "input": map[string]any{"plan": "# Plan"}},
 		"confirmationType": contracts.DroidConfirmationTypeExitSpecMode,
 		"details":          map[string]any{"plan": "# Plan"},
@@ -464,12 +473,12 @@ func TestAnswerControlRequest_DroidAnswersAPlan(t *testing.T) {
 // answer with its question.
 func TestAnswerControlRequest_DroidQuestionAnswerResolvesIntoDroidsReply(t *testing.T) {
 	payload := askUserRequestPayload(t, colorAndSizes()...)
-	got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.QuestionDecision(
+	got, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-ask-1", agenttest.QuestionDecision(
 		&leapmuxv1.QuestionAnswer{Selected: []string{"Red"}},
 		&leapmuxv1.QuestionAnswer{Selected: []string{"Small"}, CustomText: "XL"},
 	))
 	require.NoError(t, err)
-	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, droidTestRequestID, got)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-ask-1", got)
 	require.NoError(t, resolution.Refusal())
 	assert.JSONEq(t, `{"cancelled":false,"answers":[{"index":1,"question":"Which color?","answer":"Red"},{"index":2,"question":"Which sizes?","answer":"Small, XL"}]}`,
 		string(droidResult(t, resolution.Content)))

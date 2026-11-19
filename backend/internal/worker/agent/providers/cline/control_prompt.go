@@ -49,7 +49,8 @@ func clineEventPayload(payload []byte, event string) (map[string]json.RawMessage
 //     its answer, so the plan is in the transcript.
 //   - Any other `approval.requested` is a permission for the call it states.
 //
-// Any other payload reads as the generic permission prompt.
+// Any other payload reads as unrecognized: Cline's hub takes an answer only
+// to an approval or to a question, and the resolution refuses any other.
 func (clineProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	if questions, ok := clineQuestions(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
@@ -58,7 +59,7 @@ func (clineProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 	}
 	approval, ok := clineEventPayload(input.Payload, contracts.ClineEventApprovalRequested)
 	if !ok {
-		return agent.GenericPermissionPrompt()
+		return agent.UnrecognizedControlPrompt()
 	}
 	toolName, _ := providerkit.RawString(approval["toolName"])
 	if toolName == contracts.ClineToolSwitchToActMode {

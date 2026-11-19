@@ -166,18 +166,21 @@ const nuReprependControlCLI = `let __lm_cli = ($env.` + controlCLIVariable + `? 
 
 // pwshReprependControlCLI is the step for PowerShell 7 and Windows PowerShell
 // 5.1, which reads $env:PATH regardless of case on Windows. It uses only .NET
-// members that both versions have. buildPwshCommand runs it before it sets
-// $ErrorActionPreference, so a failure in it reports an error and the launch
-// goes on.
+// members that both versions have. It calls Where-Object by its
+// module-qualified name, because PowerShell runs a function or an alias of the
+// profile before a cmdlet of the same name. buildPwshCommand runs it before it
+// sets $ErrorActionPreference, so a failure in it reports an error and the
+// launch goes on.
 const pwshReprependControlCLI = `$__lm_cli = [string]$env:` + controlCLIVariable + `; ` +
 	`if ($null -ne $env:PATH -and $__lm_cli -match '^(/|[A-Za-z]:[\\/]|[\\/][\\/])') { ` +
 	`$__lm_cli_dir = [System.IO.Path]::GetDirectoryName($__lm_cli); ` +
 	`$__lm_separator = [string][System.IO.Path]::PathSeparator; ` +
 	`if ($__lm_cli_dir -and -not $__lm_cli_dir.Contains($__lm_separator)) { ` +
-	`$env:PATH = (@($__lm_cli_dir) + @($env:PATH.Split([char]$__lm_separator) | Where-Object { $_ -cne $__lm_cli_dir })) -join $__lm_separator } }; `
+	`$env:PATH = (@($__lm_cli_dir) + @($env:PATH.Split([char]$__lm_separator) | Microsoft.PowerShell.Core\Where-Object { $_ -cne $__lm_cli_dir })) -join $__lm_separator } }; `
 
 // xonshReprependControlCLI is the step for xonsh. It is Python, and it follows
-// xonshLookupSetup, which imports os as __lm_os.
+// xonshLookupSetup, which imports os as __lm_os, and xonshEnvironmentSetup,
+// which defines __LeapmuxExactPath.
 //
 // It reads the environment that a program would receive, which detype gives:
 //
@@ -189,19 +192,21 @@ const pwshReprependControlCLI = `$__lm_cli = [string]$env:` + controlCLIVariable
 //
 // The string of the detyped PATH holds each entry, an empty one included.
 // The EnvPath that __xonsh__.env holds drops the one empty entry of an empty
-// PATH, so the step splits the string. It assigns a list, which xonsh keeps as
-// an EnvPath with the same entries.
+// PATH, so the step splits the string.
 //
-// xonsh expands `$NAME` and a leading `~` in each entry of PATH when it passes
-// PATH on, with the step or without it. An absolute directory has no leading
-// `~`, and a directory that holds `$` and the name of a set variable reaches
-// the program expanded, as every entry of the profile does.
+// xonsh expands `$NAME`, `${NAME}`, a leading `~` and a `~` after `=` in each
+// entry of a plain EnvPath when it passes the list on. The detyped entries
+// are expanded already, and the directory must reach the program literally,
+// so the step stores the entries as a __LeapmuxExactPath. The program then
+// receives the PATH that controlenv.Apply makes of the PATH that it receives
+// without the step.
 //
 // `xonsh -c` prints the value of an expression statement, so the step holds
-// only assignments and if statements.
-const xonshReprependControlCLI = "__lm_cli_environ = __xonsh__.env.detype()\n" +
-	"__lm_cli = __lm_cli_environ.get(\"" + controlCLIVariable + "\", \"\")\n" +
+// only assignments and if statements. pythonString quotes the variable, as it
+// quotes each Go value that the package writes into Python code.
+var xonshReprependControlCLI = "__lm_cli_environ = __xonsh__.env.detype()\n" +
+	"__lm_cli = __lm_cli_environ.get(" + pythonString(controlCLIVariable) + ", \"\")\n" +
 	"if \"PATH\" in __lm_cli_environ and __lm_os.path.isabs(__lm_cli):\n" +
 	"    __lm_cli_dir = __lm_os.path.dirname(__lm_cli)\n" +
 	"    if __lm_os.pathsep not in __lm_cli_dir:\n" +
-	"        __xonsh__.env[\"PATH\"] = [__lm_cli_dir] + [__lm_entry for __lm_entry in __lm_cli_environ[\"PATH\"].split(__lm_os.pathsep) if __lm_entry != __lm_cli_dir]\n"
+	"        __xonsh__.env[\"PATH\"] = __LeapmuxExactPath([__lm_cli_dir] + [__lm_entry for __lm_entry in __lm_cli_environ[\"PATH\"].split(__lm_os.pathsep) if __lm_entry != __lm_cli_dir])\n"

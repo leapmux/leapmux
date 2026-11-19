@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -403,24 +404,30 @@ func cshClearEnv(keys []string) string {
 	return strings.Join(parts, "; ") + "; "
 }
 
+// nuClearEnv removes environment variables the Nushell way. The `%` sigil calls
+// the builtin even when the profile defines a command of the same name.
 func nuClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "hide-env -i " + key
+		parts[i] = "%hide-env -i " + key
 	}
 	return strings.Join(parts, "; ") + "; "
 }
 
+// pwshClearEnv removes environment variables the PowerShell way. PowerShell
+// runs a function or an alias before a cmdlet of the same name, and a profile
+// can define either, so the step calls the cmdlet by its module-qualified
+// name, as pwshSetEnv does.
 func pwshClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "Remove-Item Env:" + key + " -ErrorAction SilentlyContinue"
+		parts[i] = "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath " + shellquote.PowerShell.Quote("Env:"+key) + " -ErrorAction SilentlyContinue"
 	}
 	return strings.Join(parts, "; ") + "; "
 }
@@ -472,12 +479,14 @@ func cshEnvSeed(vars []string) string {
 }
 
 // nuEnvCondition builds a Nushell conditional expression that checks
-// whether any of vars is set and non-empty.
-// e.g. `($env | get -o VAR1 | default "") != "" or ...`
+// whether any of vars is set and non-empty. The `%` sigil calls each builtin
+// even when the profile defines a command of the same name. For example:
+//
+//	($env | %get -o VAR1 | %default '') != '' or ...
 func nuEnvCondition(vars []string) string {
 	parts := make([]string, len(vars))
 	for i, v := range vars {
-		parts[i] = fmt.Sprintf("($env | get -o %s | default '') != ''", v)
+		parts[i] = fmt.Sprintf("($env | %%get -o %s | %%default '') != ''", v)
 	}
 	return strings.Join(parts, " or ")
 }

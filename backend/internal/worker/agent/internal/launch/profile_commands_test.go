@@ -228,11 +228,6 @@ func TestProfileCommandPowerShellRegistrySizedProbe(t *testing.T) {
 	}
 }
 
-func assertProfileCommandExchange(t *testing.T, cmd *exec.Cmd, delimiter string, args []string) {
-	t.Helper()
-	assertProfileCommandExchangeWithEnvironment(t, cmd, delimiter, args, nil)
-}
-
 func assertProfileCommandExchangeWithEnvironment(t *testing.T, cmd *exec.Cmd, delimiter string, args []string, wantEnvironment *profilePeerEnvironment) {
 	t.Helper()
 	if wantEnvironment != nil {

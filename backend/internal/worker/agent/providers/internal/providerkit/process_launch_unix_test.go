@@ -30,6 +30,16 @@ import (
 
 func TestWrappedProcessWriter(*testing.T) { agenttest.RunInheritedWriterPeer() }
 
+// outputPipeFile is the file under one output pipe of a started process. Only
+// the Unix tests read a pipe's file, so it lives here: on Windows it would be
+// unused, which the linter refuses.
+func outputPipeFile(reader io.Reader) *os.File {
+	if pipe, ok := reader.(*processOutputPipe); ok {
+		return pipe.file
+	}
+	return reader.(*os.File)
+}
+
 func wrappedBashProfile(t *testing.T, body string) (string, string) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")

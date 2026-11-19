@@ -298,6 +298,21 @@ func openCodeQuestionControlID(questionID string) string {
 	return "opencode-question:" + questionID
 }
 
+// ControlRequestKey reads the key of a stored request of the family's
+// transport. A question that the question bridge publishes is keyed by the
+// daemon's own question id (openCodeQuestionControlID). Any other request is
+// a request of the Agent Client Protocol, which the base keys.
+func (p FamilyProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if providerkit.IsOpenCodeQuestionEvent(payload) {
+		id, ok := providerkit.OpenCodeQuestionID(payload)
+		if !ok {
+			return "", false
+		}
+		return openCodeQuestionControlID(id), true
+	}
+	return p.Provider.ControlRequestKey(payload, agentSessionID)
+}
+
 // ACPArgs builds the daemon's arguments with its own server enabled.
 //
 // The port is the daemon's to choose. `--port 0` makes it bind one and never state

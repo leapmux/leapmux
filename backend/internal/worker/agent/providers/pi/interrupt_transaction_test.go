@@ -300,7 +300,7 @@ func TestPiOldAbortWritePreservesAReplacementQuestion(t *testing.T) {
 	assert.Contains(t, a.questionDialogs, "replacement-select")
 	assert.Empty(t, a.interruptRequests, "the replacement turn inherits no old intent")
 	a.Mu.Unlock()
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"replacement-select","value":"My replacement answer"}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"replacement-select","value":"My replacement answer"}`)}))
 	a.HandleOutput([]byte(`{"type":"extension_ui_request","id":"replacement-input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
 	frames := strings.Split(strings.TrimSpace(output.String()), "\n")
 	require.Len(t, frames, 2)

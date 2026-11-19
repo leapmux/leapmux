@@ -2,6 +2,7 @@ import type { ChatRow } from './model/row'
 import type { ControlDecision, ControlPrompt } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it } from 'vitest'
+import { COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '~/generated/contracts/copilot-protocol'
 import { ControlDecisionSchema, ControlPromptSchema, ElicitationAction, PermissionOptionKind } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
@@ -10,6 +11,7 @@ import { makeControlResponseMessage } from '~/test-support/messageFactory'
 import { classifyMessage, toClassificationInput } from './messageClassifier'
 import { resolveMessageForRendering } from './providers/registry'
 import { extractChatRow, extractedRow } from './rowExtraction'
+import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
 import './providers'
 
 /**
@@ -140,6 +142,40 @@ describe('saved answer rows', () => {
       expect(savedAnswerRow(AgentProvider.CLINE, answer, prompt, decision)).toEqual({
         kind: 'control-response',
         display: { kind: 'label', text: 'Approve (Act)' },
+      })
+    })
+
+    // Copilot keeps two mode axes: its session mode (Interactive, Plan, Autopilot), which the
+    // mode chip reads, and its permission mode, which a plan approval switches. The row names
+    // the permission mode, so it reads the permission-mode group and never the session-mode one.
+    it('reads a Copilot mode from its permission-mode group', () => {
+      updateSettingsLabelCache(AgentProvider.GITHUB_COPILOT, [
+        create(AvailableOptionGroupSchema, {
+          id: COPILOT_OPTION.SessionMode,
+          options: [
+            { id: COPILOT_MODE.Interactive, name: 'Interactive' },
+            { id: COPILOT_MODE.Plan, name: 'Plan' },
+            { id: COPILOT_MODE.Autopilot, name: 'Autopilot' },
+          ],
+        }),
+        create(AvailableOptionGroupSchema, {
+          id: OPTION_ID_PERMISSION_MODE,
+          options: [
+            { id: COPILOT_PERMISSION_MODE.Manual, name: 'Manual' },
+            { id: COPILOT_PERMISSION_MODE.Assisted, name: 'Assisted' },
+            { id: COPILOT_PERMISSION_MODE.AllowAll, name: 'Allow All' },
+          ],
+        }),
+      ])
+      const approval = create(ControlDecisionSchema, {
+        kind: {
+          case: 'plan',
+          value: { approve: true, permissionMode: COPILOT_PERMISSION_MODE.Assisted },
+        },
+      })
+      expect(savedAnswerRow(AgentProvider.GITHUB_COPILOT, { approved: true }, prompt, approval)).toEqual({
+        kind: 'control-response',
+        display: { kind: 'label', text: 'Approve (Assisted)' },
       })
     })
 

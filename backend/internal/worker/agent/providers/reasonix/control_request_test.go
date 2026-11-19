@@ -114,6 +114,7 @@ func TestReasonixControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testin
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, func(content []byte) {
 		a.HandleOutput(content)
 	}, contracts.MCPElicitationMethodACP)
+	agenttest.AssertPublishedControlKeys(t, reasonixProvider{}, sink)
 }
 
 func TestReasonixAnswersNativeMCPInteraction(t *testing.T) {

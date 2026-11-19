@@ -43,6 +43,19 @@ func IsOpenCodeQuestionEvent(payload []byte) bool {
 	return eventType == contracts.OpenCodeEventQuestionAsked
 }
 
+// OpenCodeQuestionID returns the daemon's own id of a stored `question.asked`
+// event: its `properties.id`. ok is false for another payload, and for an id
+// that is absent, empty, or not a string. Each provider keys the control
+// request of a question by this id (agent.Provider.ControlRequestKey).
+func OpenCodeQuestionID(payload []byte) (string, bool) {
+	if !IsOpenCodeQuestionEvent(payload) {
+		return "", false
+	}
+	properties, _ := RawObject(openCodeEventFields(payload)["properties"])
+	id, _ := RawString(properties["id"])
+	return id, id != ""
+}
+
 // OpenCodeQuestionPrompt reads the questions of a stored `question.asked`
 // event into a question prompt.
 //

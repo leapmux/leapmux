@@ -129,9 +129,10 @@ func TestReadControlRequest_DeepseekHarnessRoutesAPlanReviewToThePlan(t *testing
 }
 
 // A plan review beside another question is neither a question nor a plan,
-// and the reader falls back to the generic prompt.
-func TestReadControlRequest_DeepseekHarnessPlanReviewBesideAnotherQuestionIsGeneric(t *testing.T) {
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), deepseekHarnessPrompt(t, deepseekHarnessUserQuestions([]any{
+// and the agent cannot send the runtime an allow that answers no question, so
+// it reads as unrecognized.
+func TestReadControlRequest_DeepseekHarnessPlanReviewBesideAnotherQuestionIsUnrecognized(t *testing.T) {
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), deepseekHarnessPrompt(t, deepseekHarnessUserQuestions([]any{
 		map[string]any{"id": "plan-review", "question": "Approve?", "intent": map[string]any{"kind": "plan-review"}},
 		map[string]any{"id": "other", "question": "Other?"},
 	})))
@@ -145,9 +146,9 @@ func TestReadControlRequest_DeepseekHarnessRefusesAControlThatItCannotRead(t *te
 		deepseekHarnessApproval(map[string]any{"toolName": 7}),
 		map[string]any{"event": "other/request", "request": map[string]any{"toolName": "bash"}},
 	} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), deepseekHarnessPrompt(t, payload))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), deepseekHarnessPrompt(t, payload))
 	}
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(deepseekHarnessProvider{}, []byte("not json")))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(deepseekHarnessProvider{}, []byte("not json")))
 
 	// The question recognizer claims a user-questions request first, so one
 	// whose every record is unreadable is a question with nothing to answer.
@@ -230,19 +231,23 @@ func TestAnswerControlRequest_DeepseekHarnessRefusalFeedbackAlsoFollowsAsAMessag
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "an approval carries no feedback")
 }
 
-// A payload that the reader does not recognize takes the shared Allow and
-// Deny. Its allow sends the request's input back, and a typed refusal still
-// follows as a message.
-func TestAnswerControlRequest_DeepseekHarnessGenericPromptTakesTheSharedAnswers(t *testing.T) {
+// A payload that the reader does not recognize reads as unrecognized, so no
+// decision answers it, and a permission decision drawn for it anyway is
+// refused rather than sent as an answer that the runtime cannot take.
+func TestAnswerControlRequest_DeepseekHarnessAnswersNoUnrecognizedRequest(t *testing.T) {
 	payload := map[string]any{"event": "other/request", "request": map[string]any{"input": map[string]any{"a": 1}}}
-	got, err := deepseekHarnessAnswer(t, payload, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"allow","updatedInput":{"a":1}}}}`, string(got.Content))
-
-	got, err = deepseekHarnessAnswer(t, payload, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"deny","message":"No."}}}`, string(got.Content))
-	assert.Equal(t, "No.", got.FollowUp)
+	for _, decision := range []*leapmuxv1.ControlDecision{
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+		agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."),
+	} {
+		_, err := deepseekHarnessAnswer(t, payload, decision)
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+		_, err = deepseekHarnessProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+			Request: agent.NewControlRequestInput(deepseekHarnessJSON(t, payload)), RequestID: "native-event",
+			Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+		})
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	}
 }
 
 func TestAnswerControlRequest_DeepseekHarnessAnswersAPlanReview(t *testing.T) {

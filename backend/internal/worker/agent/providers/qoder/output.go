@@ -175,7 +175,7 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 			slog.Error("qoder: encode control failure", "agent_id", a.AgentID(), "error", marshalErr)
 			return
 		}
-		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
+		if err := a.SendRawInput(agent.RawInput{Data: response}); err != nil {
 			slog.Warn("qoder: send control failure", "agent_id", a.AgentID(), "error", err)
 		}
 	}
@@ -618,7 +618,7 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 // sendControlFire sends a control request without waiting for its response.
 func (a *Agent) sendControlFire(requestBody string) error {
 	msg := `{"type":"control_request","request_id":"` + shortID() + `","request":` + requestBody + `}`
-	return a.SendRawInput([]byte(msg), agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: []byte(msg)})
 }
 
 const qoderSendFailureExitTag = "qoder-send-failure-exit"
@@ -632,7 +632,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (q
 	}
 	defer release()
 	msg := `{"type":"control_request","request_id":"` + requestID + `","request":` + requestBody + `}`
-	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
+	if err := a.SendRawInput(agent.RawInput{Data: []byte(msg)}); err != nil {
 		release()
 		// A failed stdin write can precede the process exit report.
 		timer := a.Clock().NewTimer(time.Second, qoderSendFailureExitTag)

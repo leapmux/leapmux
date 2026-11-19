@@ -383,7 +383,7 @@ func TestKimiResolveWithholdsWhatItCannotRead(t *testing.T) {
 	}{
 		"no decision":                      {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{}}}`)},
 		"an unknown behavior":              {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"maybe"}}}`)},
-		"a stored request of another kind": {`{"type":"tool.call.started"}`, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow"}}}`)},
+		"a stored request of another kind": {`{"type":"tool.call.started","interaction_id":"approval_1"}`, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow"}}}`)},
 		"fields of the wrong type":         {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow","scope":7}}}`)},
 	} {
 		res := resolve(t, "approval_1", tc.stored, tc.content, nil)

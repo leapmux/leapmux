@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,17 +26,12 @@ func seedApprovalControl(t *testing.T, a *Agent, index int, action, target strin
 		}},
 	})
 	require.NoError(t, err)
-	var step antigravityStep
-	require.NoError(t, json.Unmarshal(raw, &step))
-	var interaction requestedInteraction
-	require.NoError(t, json.Unmarshal(step.RequestedInteraction, &interaction))
+	step, err := decodeStep(raw)
+	require.NoError(t, err)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	control := &antigravityControl{
-		requestID:  fmt.Sprintf("antigravity:%s:%s:%d", a.root.id, a.root.trajectoryID, index),
-		instanceID: id.Generate(), cascadeID: a.root.id, trajectoryID: a.root.trajectoryID,
-		stepIndex: index, kind: "permission", permission: interaction.Permission,
-	}
+	control, err := newInteractionControl(a.root.id, a.root.trajectoryID, index, step)
+	require.NoError(t, err)
 	a.root.controls[index] = control
 	a.root.steps[index] = &stepState{status: contracts.AntigravityStepStatusWaiting, raw: raw}
 	return control
@@ -166,6 +161,112 @@ func TestAntigravityPermissionModeChangesReuseApprovalPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The automatic approval policy reads the interaction that the step requests
+// now. A permission that the step replaced with a question answers nothing,
+// so a switch to Bypass sends no permission answer to the question.
+func TestAntigravityPermissionModeChangeReadsTheCurrentInteraction(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	rpc, server := newRecordedLanguageServer(t)
+	a.Mu.Lock()
+	a.rpc = rpc
+	a.Mu.Unlock()
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("permission")}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("question")}))
+	a.UpdateSettings(optionmap.Map{"permissionMode": contracts.AntigravityModeBypass})
+	waitForApprovalWork(t, a)
+	assert.Empty(t, server.answered(), "no permission answer reaches a step that asks a question")
+	require.Equal(t, 2, sink.PublishedControlCount())
+	assert.NotNil(t, agenttest.ControlPromptOf(antigravityProvider{}, sink.LastPublishedControl().Payload).GetQuestion())
+}
+
+// An automatic approval claims the interaction that it answers, not the
+// step. The language server keeps each answered interaction of a step in
+// `completedInteractions`, and the step can then request another one. The
+// policy answers that one too, even when it repeats the first, and it does
+// not answer a repeated frame of an interaction that it answered.
+func TestAntigravityAutomaticApprovalAnswersEachInteractionOfAStep(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	rpc, server := newRecordedLanguageServer(t)
+	a.Mu.Lock()
+	a.rpc = rpc
+	a.mode = contracts.AntigravityModeBypass
+	a.Mu.Unlock()
+	first := waitingStep(`{"permission":{"resource":{"action":"command","target":"echo first"}}}`, 0)
+	second := `{"permission":{"resource":{"action":"command","target":"echo second"}}}`
+	for _, tc := range []struct {
+		step    json.RawMessage
+		answers int
+	}{
+		{step: first, answers: 1},
+		{step: first, answers: 1},
+		{step: waitingStep(second, 1), answers: 2},
+		{step: waitingStep(second, 2), answers: 3},
+	} {
+		feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{tc.step}))
+		waitForApprovalWork(t, a)
+		require.Len(t, server.answered(), tc.answers)
+	}
+	for _, answer := range server.answered() {
+		assert.JSONEq(t, `{"trajectoryId":"trajectory","stepIndex":0,"permission":{"allow":true,"scope":"PERMISSION_SCOPE_ONCE"}}`, string(answer))
+	}
+	assert.Zero(t, sink.PublishedControlCount())
+}
+
+// An automatic approval answers the control instance that the policy read,
+// and the language server addresses the answer to the step. The approval
+// publishes the requests that the policy leaves to the user after it claims
+// its own, so the step can replace the approved permission before the
+// approval reaches the language server. The approval then reaches nothing,
+// because it would answer the step's new interaction, and the user sees the
+// new request.
+//
+// The test holds the approval in that window. A request whose earlier
+// publication failed waits in the output queue, so the approval publishes
+// it, and the sink holds that publication.
+func TestAntigravityAutomaticApprovalDropsAReplacedInteraction(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	rpc, server := newRecordedLanguageServer(t)
+	a.Mu.Lock()
+	a.rpc = rpc
+	a.Mu.Unlock()
+	sink.fail.Store(true)
+	approvable := waitingStep(`{"permission":{"resource":{"action":"command","target":"echo approved"}}}`, 0)
+	manual := waitingStep(`{"permission":{"resource":{"action":"unknown_action","target":"manual"}}}`, 0)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{approvable, manual}))
+	require.Zero(t, sink.PublishedControlCount(), "both publications wait in the output queue")
+	a.Mu.Lock()
+	approved := a.root.controls[0]
+	a.Mu.Unlock()
+	require.NotNil(t, approved)
+	sink.fail.Store(false)
+	sink.entered = make(chan struct{}, 8)
+	var unblock func()
+	sink.release, unblock = newTestGate(t)
+
+	a.UpdateSettings(optionmap.Map{"permissionMode": contracts.AntigravityModeBypass})
+	receiveTestValue(t, sink.entered)
+	a.Mu.Lock()
+	claimed := approved.approvalClaimed
+	a.Mu.Unlock()
+	require.True(t, claimed, "the approval claimed the permission before it publishes the manual request")
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{waitingInteractionStep("question")}))
+	unblock()
+	waitForApprovalWork(t, a)
+
+	assert.Empty(t, server.answered(), "the approval of the replaced permission reaches no interaction")
+	assert.Zero(t, approvedNotificationCount(sink))
+	a.Mu.Lock()
+	current := a.root.controls[0]
+	a.Mu.Unlock()
+	require.NotNil(t, current)
+	assert.NotEqual(t, approved.instanceID, current.instanceID)
+	var published []string
+	for _, request := range sink.PublishedControls() {
+		published = append(published, request.InstanceID)
+	}
+	assert.Contains(t, published, current.instanceID, "the user sees the question that replaced the permission")
 }
 
 func TestAntigravityPermissionModeRevokesUnclaimedApprovals(t *testing.T) {

@@ -58,24 +58,42 @@ func TestReadControlRequest_ReadsOptionsWithNoToolCall(t *testing.T) {
 	assert.Equal(t, []string{"once", "reject"}, optionIDs(permission.GetOptions()))
 }
 
-func TestReadControlRequest_AToolCallWithNoOptionsTakesLeapMuxAllowAndDeny(t *testing.T) {
-	permission := agenttest.ControlPromptOf(Provider{}, []byte(`{"params":{"toolCall":{"toolCallId":"call-1","kind":"edit","title":"Edit"}}}`)).GetPermission()
-	require.NotNil(t, permission)
-	assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, optionIDs(permission.GetOptions()))
-	assert.Empty(t, permission.GetCommand(), "only an execute call states a command")
-
-	permission = agenttest.ControlPromptOf(Provider{}, []byte(`{"params":{"toolCall":{"toolCallId":"call-1","title":"Run"},"options":[null,"reject"]}}`)).GetPermission()
-	require.NotNil(t, permission, "a tool call carries the request when every option is unreadable")
-	assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, optionIDs(permission.GetOptions()))
+// wantCancelOption is LeapMux's cancel option, as a client reads it.
+func wantCancelOption() *leapmuxv1.PermissionOption {
+	return &leapmuxv1.PermissionOption{
+		OptionId: CancelOptionID,
+		Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
+		Name:     "Cancel",
+		EndsTurn: true,
+	}
 }
 
-func TestReadControlRequest_ANonPermissionPayloadIsGeneric(t *testing.T) {
+// The protocol selects only an option that the runtime offered, so a request
+// that offers none has one answer: the `cancelled` outcome. The prompt still
+// states the tool call, so the reader sees what the agent asked for.
+func TestReadControlRequest_APermissionWithNoOptionsOffersOnlyCancel(t *testing.T) {
+	for name, options := range map[string]string{
+		"no option list":           ``,
+		"an empty list":            `,"options":[]`,
+		"a null list":              `,"options":null`,
+		"only unreadable elements": `,"options":[null,"reject",42]`,
+		"a list that is no list":   `,"options":"allow_once"`,
+	} {
+		payload := `{"params":{"toolCall":{"toolCallId":"call-1","kind":"execute","title":"Run","rawInput":{"command":"ls"}}` + options + `}}`
+		agenttest.RequireProto(t, agenttest.PermissionPrompt(&leapmuxv1.PermissionPrompt{
+			Title: "Run", Command: "ls", InputJson: `{"command":"ls"}`, Options: []*leapmuxv1.PermissionOption{wantCancelOption()},
+		}), agenttest.ControlPromptOf(Provider{}, []byte(payload)), name)
+	}
+}
+
+// A runtime reads only a JSON-RPC result for its request, and nothing turns
+// LeapMux's Allow and Deny into one, so a payload that is no permission and no
+// elicitation reads as unrecognized: it offers no answer that the runtime
+// would not read.
+func TestReadControlRequest_ANonPermissionPayloadIsUnrecognized(t *testing.T) {
 	for _, payload := range []string{`{"params":{"sessionId":"s"}}`, `{}`, `not json`,
 		`{"params":{"options":"allow_once"}}`, `{"params":{"options":7}}`, `{"params":{"options":{"optionId":"once"}}}`, `{"params":{"options":true}}`} {
-		permission := agenttest.ControlPromptOf(Provider{}, []byte(payload)).GetPermission()
-		require.NotNil(t, permission, payload)
-		assert.Empty(t, permission.GetTitle(), payload)
-		assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, optionIDs(permission.GetOptions()), payload)
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Provider{}, []byte(payload)), payload)
 	}
 }
 
@@ -85,19 +103,23 @@ func TestReadControlRequest_AMalformedOptionListKeepsTheToolCall(t *testing.T) {
 	assert.Equal(t, "Run", permission.GetTitle())
 }
 
-func TestReadControlRequest_DropsAnOptionThatStatesNoKindAndReadsEachField(t *testing.T) {
-	permission := agenttest.ControlPromptOf(Provider{}, []byte(`{"params":{"options":[null,"allow_once",42,{"optionId":"once","kind":"allow_once","name":""},[],{"optionId":7,"kind":null,"name":{"text":"x"}},{"optionId":"later","kind":"defer","name":""}]}}`)).GetPermission()
+// An option is an answer only through its optionId: the runtime accepts the
+// id of an option that it offered and no other. So an option that states no
+// id, an empty id or an id that is not text is no answer, and the prompt drops
+// it rather than send an id that the runtime never offered.
+func TestReadControlRequest_DropsAnOptionThatStatesNoIDAndReadsEachField(t *testing.T) {
+	permission := agenttest.ControlPromptOf(Provider{}, []byte(`{"params":{"options":[null,"allow_once",42,{"optionId":"once","kind":"allow_once","name":""},[],{"optionId":7,"kind":null,"name":{"text":"x"}},{"optionId":"","kind":"allow_always","name":"Always"},{"kind":"reject_once","name":"No"},{"optionId":"later","kind":"defer","name":""}]}}`)).GetPermission()
 	require.NotNil(t, permission)
 	options := permission.GetOptions()
-	require.Len(t, options, 4, "three readable options, and LeapMux's cancel because none rejects")
+	require.Len(t, options, 3, "two readable options, and LeapMux's cancel because none rejects")
 	assert.Equal(t, "once", options[0].GetOptionId())
 	assert.Empty(t, options[0].GetName(), "an empty name is no name")
-	assert.Equal(t, "", options[1].GetOptionId(), "a value of the wrong type reads as empty")
+	assert.Equal(t, "later", options[1].GetOptionId())
+	assert.Equal(t, "defer", options[1].GetName(), "an unknown kind labels an option that states no name")
 	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER, options[1].GetKind())
-	assert.Equal(t, "defer", options[2].GetName(), "an unknown kind labels an option that states no name")
-	assert.Equal(t, CancelOptionID, options[3].GetOptionId())
-	assert.True(t, options[3].GetEndsTurn(), "the cancelled outcome cancels the prompt turn")
-	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, options[3].GetKind())
+	assert.Equal(t, CancelOptionID, options[2].GetOptionId())
+	assert.True(t, options[2].GetEndsTurn(), "the cancelled outcome cancels the prompt turn")
+	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, options[2].GetKind())
 }
 
 func TestReadControlRequest_MergesTheArgumentsOfTheToolCallRow(t *testing.T) {
@@ -190,20 +212,44 @@ func TestAnswerPermission_TheCancelOptionAnswersWithTheCancelledOutcome(t *testi
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "a request with its own reject option offers no cancel")
 }
 
-func TestAnswerPermission_LeapMuxAllowAndDenyTakeTheNeutralEnvelope(t *testing.T) {
-	payload := `{"params":{"toolCall":{"toolCallId":"call-1","title":"Edit"}}}`
-	got, err := answerBase(t, payload, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""), nil)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:7","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
+// optionlessPermission is a permission request that offers no option.
+const optionlessPermission = `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s",
+	"toolCall":{"toolCallId":"call-1","kind":"edit","title":"Edit"}}}`
 
-	got, err = answerBase(t, payload, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "no"), nil)
+// The runtime reads only the protocol's own reply, so every answer that the
+// prompt of a request with no option offers must reach it as that reply, under
+// the runtime's own id. The only such reply is the `cancelled` outcome.
+func TestAnswerPermission_EveryAnswerToAPermissionWithNoOptionsIsTheCancelledOutcome(t *testing.T) {
+	options := agenttest.ControlPromptOf(Provider{}, []byte(optionlessPermission)).GetPermission().GetOptions()
+	require.NotEmpty(t, options, "the reader must have an answer to give")
+	for _, option := range options {
+		id := option.GetOptionId()
+		got, err := agenttest.AnswerControl(Provider{}, []byte(optionlessPermission), "jsonrpc:7", agenttest.PermissionDecision(id, ""))
+		require.NoError(t, err, id)
+		resolved := agenttest.ResolveAnswer(Provider{}, []byte(optionlessPermission), "jsonrpc:7", got)
+		require.NoError(t, resolved.Refusal(), id)
+		assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"cancelled"}}}`, string(resolved.Content), id)
+		assert.Empty(t, got.FollowUp, id)
+	}
+
+	// The reason of the refusal follows the answer as a message, because the
+	// base protocol's reply has no field for it.
+	got, err := agenttest.AnswerControl(Provider{}, []byte(optionlessPermission), "jsonrpc:7", agenttest.PermissionDecision(CancelOptionID, "use the other file"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:7","response":{"behavior":"deny","message":"no"}}}`, string(got.Content))
-	assert.Empty(t, got.FollowUp, "the neutral deny carries its own message")
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"cancelled"}}}`,
+		string(agenttest.ResolveAnswer(Provider{}, []byte(optionlessPermission), "jsonrpc:7", got).Content))
+	assert.Equal(t, "use the other file", got.FollowUp)
+
+	// LeapMux's allow and deny answer in an envelope that the runtime cannot
+	// read, so the prompt offers neither.
+	for _, id := range []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny} {
+		_, err := agenttest.AnswerControl(Provider{}, []byte(optionlessPermission), "jsonrpc:7", agenttest.PermissionDecision(id, ""))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, id)
+	}
 }
 
-// A runtime that names its own options allow and deny still gets its own
-// answer: the neutral envelope is only for LeapMux's options.
+// A runtime whose own options have the ids allow and deny gets its own answer,
+// not LeapMux's neutral envelope.
 func TestAnswerPermission_ARuntimeOptionNamedAllowIsSelected(t *testing.T) {
 	payload := `{"params":{"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"},{"optionId":"later","kind":"allow_always"}]}}`
 	got, err := answerBase(t, payload, agenttest.PermissionDecision("allow", ""), nil)

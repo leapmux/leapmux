@@ -128,7 +128,7 @@ func (a *Agent) approvePendingPermissions() {
 				Error:     providerkit.ControlPublicationFailure,
 			})
 		} else {
-			raw, err = lettaApprovalResponse(id, "allow", "")
+			raw, err = lettaApprovalResponse(id, contracts.LettaBehaviorAllow, "")
 		}
 		if err == nil {
 			err = a.sendPermissionPayload(scope, raw)
@@ -140,54 +140,55 @@ func (a *Agent) approvePendingPermissions() {
 	}
 }
 
-// validatePermissionAnswer checks native decision fields without converting unknown numbers.
+// validatePermissionAnswer checks an approval_response before the Worker
+// forwards it to Letta Code, and returns its request ID. The Worker forwards the
+// bytes of the answer without a change, so a number that Go cannot hold stays
+// exact. The check therefore reads each field by the exact name that Letta Code
+// reads: Go's decoder matches a struct tag in any letter case, and a field whose
+// name differs only in case reaches Letta Code as a missing field.
 func validatePermissionAnswer(data []byte) (string, error) {
-	var reply struct {
-		RequestID string          `json:"request_id"`
-		Decision  json.RawMessage `json:"decision"`
-		Error     json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(data, &reply) != nil || reply.RequestID == "" {
+	reply := providerkit.RawFields(data)
+	requestID, _ := providerkit.RawString(reply[contracts.LettaReplyRequestID])
+	if requestID == "" {
 		return "", errors.New("the Letta permission answer has no valid request ID")
 	}
-	if len(reply.Error) > 0 {
-		if _, ok := providerkit.RawString(reply.Error); !ok {
+	if replyError, present := reply[contracts.LettaReplyError]; present {
+		if _, ok := providerkit.RawString(replyError); !ok {
 			return "", errors.New("the Letta permission error is not text")
 		}
-		return reply.RequestID, nil
+		return requestID, nil
 	}
-	var decision struct {
-		Behavior     string          `json:"behavior"`
-		Message      json.RawMessage `json:"message"`
-		UpdatedInput json.RawMessage `json:"updated_input"`
-		Suggestions  json.RawMessage `json:"selected_permission_suggestion_ids"`
+	decision := providerkit.RawFields(reply[contracts.LettaReplyDecision])
+	behavior, _ := providerkit.RawString(decision[contracts.LettaReplyBehavior])
+	if behavior != contracts.LettaBehaviorAllow && behavior != contracts.LettaBehaviorDeny {
+		return "", fmt.Errorf("the Letta permission answer states neither %s nor %s", contracts.LettaBehaviorAllow, contracts.LettaBehaviorDeny)
 	}
-	if json.Unmarshal(reply.Decision, &decision) != nil || decision.Behavior != "allow" && decision.Behavior != "deny" {
-		return "", errors.New("the Letta permission answer states neither allow nor deny")
-	}
-	if len(decision.Message) > 0 || decision.Behavior == "deny" {
-		if _, ok := providerkit.RawString(decision.Message); !ok {
+	// Letta Code requires a deny to state its message as text. The check holds a
+	// message that an allow states to the same rule.
+	if message, present := decision[contracts.LettaReplyMessage]; present || behavior == contracts.LettaBehaviorDeny {
+		if _, ok := providerkit.RawString(message); !ok {
 			return "", errors.New("the Letta permission answer has no valid message")
 		}
 	}
-	if decision.Behavior == "allow" {
-		input := bytes.TrimSpace(decision.UpdatedInput)
-		if providerkit.RawPresent(input) && input[0] != '{' && input[0] != '[' {
-			return "", errors.New("the Letta updated input is not an object or an array")
+	if behavior != contracts.LettaBehaviorAllow {
+		return requestID, nil
+	}
+	input := bytes.TrimSpace(decision[contracts.LettaReplyUpdatedInput])
+	if providerkit.RawPresent(input) && input[0] != '{' && input[0] != '[' {
+		return "", errors.New("the Letta updated input is not an object or an array")
+	}
+	if raw, present := decision[contracts.LettaReplySelectedPermissionSuggestionIDs]; present {
+		var suggestions []*string
+		if json.Unmarshal(raw, &suggestions) != nil || suggestions == nil {
+			return "", errors.New("the Letta permission suggestions are not a list of strings")
 		}
-		if len(decision.Suggestions) > 0 {
-			var suggestions []*string
-			if json.Unmarshal(decision.Suggestions, &suggestions) != nil || suggestions == nil {
-				return "", errors.New("the Letta permission suggestions are not a list of strings")
-			}
-			for _, suggestion := range suggestions {
-				if suggestion == nil {
-					return "", errors.New("the Letta permission suggestion is not text")
-				}
+		for _, suggestion := range suggestions {
+			if suggestion == nil {
+				return "", errors.New("the Letta permission suggestion is not text")
 			}
 		}
 	}
-	return reply.RequestID, nil
+	return requestID, nil
 }
 
 func (a *Agent) answerPermission(data []byte, scope runtimeScope) error {

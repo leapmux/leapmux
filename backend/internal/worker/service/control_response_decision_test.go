@@ -152,15 +152,15 @@ func TestFinalizeControlResponse_StatesNoDecisionThatTheAnswerRowLacks(t *testin
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			svc, _, _ := answerControlFixture(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "request",
-				`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`)
+			svc, _, _ := answerControlFixture(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "jsonrpc:1",
+				`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`)
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			_, err = svc.DB.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER fail_control_answer BEFORE INSERT ON messages WHEN NEW.mark_type=%d BEGIN SELECT RAISE(ABORT, 'answer storage failed'); END`, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE))
 			require.NoError(t, err)
 			err = svc.processControlAnswer(row, workerAnswer{
 				claimToken: "claim-1",
-				content:    []byte(`{"id":"request","result":{"decision":"accept"}}`),
+				content:    []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`),
 				decision:   permissionDecisionOf("accept", ""),
 			})
 			require.ErrorContains(t, err, "answer storage failed")
@@ -169,7 +169,7 @@ func TestFinalizeControlResponse_StatesNoDecisionThatTheAnswerRowLacks(t *testin
 			_, err = svc.DB.ExecContext(t.Context(), `UPDATE control_response_payloads SET decision = COALESCE(?, X'')`, stored)
 			require.NoError(t, err)
 
-			recorded, err := svc.recordControlResponse(row, &leapmuxv1.RecordControlResponseRequest{RequestId: "request", ClaimToken: "claim-1"})
+			recorded, err := svc.recordControlResponse(row, &leapmuxv1.RecordControlResponseRequest{RequestId: "jsonrpc:1", ClaimToken: "claim-1"})
 			require.NoError(t, err)
 			require.Empty(t, recorded.GetError())
 			assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, recorded.GetState())

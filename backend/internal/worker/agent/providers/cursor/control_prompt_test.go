@@ -144,7 +144,7 @@ func TestReadControlRequest_CursorAskQuestionFallsBackForEachLabel(t *testing.T)
 
 // Cursor speaks the Agent Client Protocol for everything but its own two
 // requests, and the base reads those: the options that the runtime offers,
-// the command of a shell call, an MCP form, and the generic prompt of a
+// the command of a shell call, an MCP form, and the unrecognized prompt of a
 // request that nothing recognizes.
 func TestReadControlRequest_CursorReadsEveryOtherRequestThroughTheBase(t *testing.T) {
 	t.Parallel()
@@ -171,15 +171,15 @@ func TestReadControlRequest_CursorReadsEveryOtherRequestThroughTheBase(t *testin
 	assert.Equal(t, "Run command", permission.GetTitle())
 	assert.Equal(t, command, permission.GetCommand())
 	assert.JSONEq(t, string(encodedInput), permission.GetInputJson())
-	assert.Equal(t, []string{contracts.ControlAnswerOptionAllow, contracts.ControlAnswerOptionDeny}, cursorOptionIDs(permission.GetOptions()),
-		"a call with no options takes LeapMux's allow and deny")
+	assert.Equal(t, []string{acp.CancelOptionID}, cursorOptionIDs(permission.GetOptions()),
+		"the protocol answers a call with no options only with the cancelled outcome")
 
 	elicitation := agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"jsonrpc":"2.0","id":7,"method":"elicitation/create","params":{"mode":"form","message":"Sign in"}}`)).GetElicitation()
 	require.NotNil(t, elicitation)
 	assert.Equal(t, "Sign in", elicitation.GetMessage())
 
 	for _, payload := range []string{`{"method":"cursor/update_todos","params":{}}`, `{"method":7}`, `not json`, `{}`} {
-		agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(payload)))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(payload)), payload)
 	}
 }
 

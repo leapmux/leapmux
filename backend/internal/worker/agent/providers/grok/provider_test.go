@@ -118,6 +118,9 @@ func TestGrokPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 }
 
 // A stored request that states no id has no request that a reply could answer.
+// The stored request states no id, so it gives no key, and the Worker refuses
+// it before Grok reads it (agent.StoredControlRequestAgrees). Grok's own guard
+// still withholds the answer, because a reply needs the request's id.
 func TestGrokPlanApprovalOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(map[string]any{
@@ -126,7 +129,7 @@ func TestGrokPlanApprovalOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T
 	})
 	require.NoError(t, err)
 	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
-		result := agenttest.ResolveAnswer(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: neutralDecision(t, grokStoredRequestID, behavior, "")})
+		result := agenttest.ResolveAnswerPastTheKeyCheck(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: neutralDecision(t, grokStoredRequestID, behavior, "")})
 		assert.True(t, result.Withhold, behavior)
 		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, behavior)
 	}
@@ -233,6 +236,9 @@ func TestGrokFolderTrustWithholdsAnUnreadableAnswer(t *testing.T) {
 // A stored folder-trust question that states no id has no request that a
 // reply could answer. The refusal blames the stored request, not the answer,
 // whichever option the reader chose.
+// The stored request states no id, so it gives no key, and the Worker refuses
+// it before Grok reads it (agent.StoredControlRequestAgrees). Grok's own guard
+// still withholds the answer, because a reply needs the request's id.
 func TestGrokFolderTrustOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(map[string]any{
@@ -241,7 +247,7 @@ func TestGrokFolderTrustOfAStoredRequestWithNoIDWithholdsTheAnswer(t *testing.T)
 	})
 	require.NoError(t, err)
 	for _, option := range []string{contracts.GrokTrustOutcomeTrust, contracts.GrokTrustOutcomeReject} {
-		result := agenttest.ResolveAnswer(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: selectedOption(t, grokStoredRequestID, option)})
+		result := agenttest.ResolveAnswerPastTheKeyCheck(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: selectedOption(t, grokStoredRequestID, option)})
 		assert.True(t, result.Withhold, option)
 		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, option)
 	}
@@ -291,7 +297,8 @@ func TestGrokResumeHandleIsAToken(t *testing.T) {
 
 // A stored dialog that states no id has no request that a reply could answer,
 // so the provider withholds each rewritten answer rather than send it with no
-// id.
+// id. Such a dialog gives no key either, so the Worker refuses it before Grok
+// reads it (agent.StoredControlRequestAgrees), and this pins Grok's own guard.
 func TestGrokWithholdsAnAnswerToAStoredRequestWithNoID(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -307,7 +314,7 @@ func TestGrokWithholdsAnAnswerToAStoredRequestWithNoID(t *testing.T) {
 			"params": map[string]any{"sessionId": grokTestSession, "toolCallId": "call_1"},
 		})
 		require.NoError(t, err)
-		result := agenttest.ResolveAnswer(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: tc.response})
+		result := agenttest.ResolveAnswerPastTheKeyCheck(grokProvider{}, payload, grokStoredRequestID, agent.ControlAnswer{Content: tc.response})
 		assert.True(t, result.Withhold, tc.method)
 	}
 }

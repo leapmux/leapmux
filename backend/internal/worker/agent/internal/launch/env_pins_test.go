@@ -78,6 +78,7 @@ type pinResult struct {
 	StrippedPresent bool
 	EmptyPresent    bool
 	EmptyValue      string
+	Path            string
 }
 
 func readPinResult(t *testing.T, output []byte) pinResult {
@@ -100,7 +101,7 @@ func TestPinnedEnvironmentChild(t *testing.T) {
 	}
 	_, stripped := os.LookupEnv("LEAPMUX_TEST_STRIPPED")
 	emptyValue, emptyPresent := os.LookupEnv("LEAPMUX_TEST_EMPTY")
-	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue})
+	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue, Path: os.Getenv("PATH")})
 	if err != nil {
 		os.Exit(2)
 	}

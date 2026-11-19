@@ -16,6 +16,7 @@ import type { LiveWrite, TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassifier'
+import { controlPayloadIsObject } from '~/components/chat/model/controlPrompt'
 import { controlEditorRoleFromWire, controlPayloadFaultFromWire, controlPromptFromWire } from '~/components/chat/model/controlPromptWire'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
@@ -806,10 +807,11 @@ export function handleControlRequest(
   // - Its failure reason, which the Worker states in the prompt.
   // - The Stop control.
   // The decoded payload is the instance's fingerprint (`addRequest`) and the banner's raw
-  // copy. An unreadable payload decodes to an empty object, and the original bytes stay.
+  // copy. A payload that is no JSON object decodes to an empty object, and the original
+  // bytes stay. An unrecognized request is still a JSON object, so it decodes as it stands.
   const payloadFault = controlPayloadFaultFromWire(cr.prompt)
   let payload: Record<string, unknown> = {}
-  if (!payloadFault) {
+  if (controlPayloadIsObject(payloadFault)) {
     try {
       payload = JSON.parse(TEXT_DECODER.decode(cr.payload)) as Record<string, unknown>
     }

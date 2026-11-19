@@ -12,8 +12,8 @@ import (
 )
 
 // resolutionRecorder records the context of each resolution. ResolveAnswer
-// calls only ControlResponseRequestID and ResolveControlResponse, so the
-// embedded Provider stays nil.
+// calls only ControlResponseRequestID, ControlRequestKey and
+// ResolveControlResponse, so the embedded Provider stays nil.
 type resolutionRecorder struct {
 	agent.Provider
 	contexts   []agent.ControlResponseContext
@@ -22,6 +22,10 @@ type resolutionRecorder struct {
 
 func (r *resolutionRecorder) ControlResponseRequestID(content []byte) string {
 	return agent.ProviderDefaults{}.ControlResponseRequestID(content)
+}
+
+func (r *resolutionRecorder) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	return agent.ProviderDefaults{}.ControlRequestKey(payload, agentSessionID)
 }
 
 func (r *resolutionRecorder) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
@@ -85,6 +89,53 @@ func TestResolveAnswerPanicsForAnAnswerToAnotherRequest(t *testing.T) {
 		assert.Panics(t, func() { ResolveAnswer(recorder, payload, "req-1", agent.ControlAnswer{Content: content}) }, name)
 		assert.Empty(t, recorder.contexts, name)
 	}
+}
+
+// The Worker resolves only a stored request whose payload gives its key, so
+// ResolveAnswer refuses to state a payload that gives another key or none,
+// and the provider never sees it. A payload that is no JSON object, and an
+// absent payload, stay for the suites that pin a provider's own guards
+// against them, and ResolveAnswerPastTheKeyCheck states any payload.
+func TestResolveAnswerPanicsForAStoredRequestThatDisagreesWithItsKey(t *testing.T) {
+	t.Parallel()
+	content := agent.AllowResponse("req-1", json.RawMessage(`{}`))
+	for name, payload := range map[string]string{
+		"another key":  `{"type":"control_request","request_id":"req-2","request":{"tool_name":"Bash"}}`,
+		"no key":       `{"type":"control_request","request":{"tool_name":"Bash"}}`,
+		"an empty key": `{"type":"control_request","request_id":"","request":{"tool_name":"Bash"}}`,
+	} {
+		recorder := &resolutionRecorder{}
+		assert.Panics(t, func() { ResolveAnswer(recorder, []byte(payload), "req-1", agent.ControlAnswer{Content: content}) }, name)
+		assert.Empty(t, recorder.contexts, name)
+
+		ResolveAnswerPastTheKeyCheck(recorder, []byte(payload), "req-1", agent.ControlAnswer{Content: content})
+		assert.Len(t, recorder.contexts, 1, "%s reaches the provider past the key check", name)
+	}
+	for name, payload := range map[string][]byte{"no payload": nil, "a payload that is no JSON object": []byte(`not json`)} {
+		recorder := &resolutionRecorder{}
+		ResolveAnswer(recorder, payload, "req-1", agent.ControlAnswer{Content: content})
+		assert.Len(t, recorder.contexts, 1, name)
+	}
+}
+
+// A provider whose key reads the session resolves a stored request in the
+// session that the Worker stores with it.
+func TestResolveAnswerInSessionReadsTheKeyInTheSession(t *testing.T) {
+	t.Parallel()
+	recorder := &sessionKeyRecorder{}
+	content := agent.AllowResponse("key-of-s1", json.RawMessage(`{}`))
+	ResolveAnswerInSession(recorder, []byte(`{}`), "s1", "key-of-s1", agent.ControlAnswer{Content: content})
+	assert.Len(t, recorder.contexts, 1)
+	assert.Panics(t, func() {
+		ResolveAnswerInSession(recorder, []byte(`{}`), "s2", "key-of-s1", agent.ControlAnswer{Content: content})
+	}, "another session gives another key")
+}
+
+// sessionKeyRecorder keys each stored request by its session alone.
+type sessionKeyRecorder struct{ resolutionRecorder }
+
+func (r *sessionKeyRecorder) ControlRequestKey(_ []byte, agentSessionID string) (string, bool) {
+	return "key-of-" + agentSessionID, agentSessionID != ""
 }
 
 // A request whose row is gone states no payload and so no tool name, and an

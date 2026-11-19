@@ -77,7 +77,7 @@ func TestReadControlRequest_ReasonixRecognizesOnlyTheExactGate(t *testing.T) {
 		require.NotNil(t, permission, name)
 		assert.Equal(t, []string{"allow_once", "reject_once"}, reasonixOptionIDs(permission.GetOptions()), name)
 	}
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{}`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{}`)))
 }
 
 func reasonixOptionIDs(options []*leapmuxv1.PermissionOption) []string {
@@ -90,7 +90,7 @@ func reasonixOptionIDs(options []*leapmuxv1.PermissionOption) []string {
 
 // Every other request is the base protocol's: the command of a shell call,
 // the options in the order that Reasonix sends them, the MCP form, and the
-// generic prompt of a request that nothing recognizes.
+// unrecognized prompt of a request that nothing recognizes.
 func TestReadControlRequest_ReasonixReadsEveryOtherRequestThroughTheBase(t *testing.T) {
 	t.Parallel()
 	shell := agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"method":"session/request_permission","params":{
@@ -122,7 +122,7 @@ func TestReadControlRequest_ReasonixReadsEveryOtherRequestThroughTheBase(t *test
 	assert.Equal(t, "Hi", hi.GetMessage())
 	assert.Equal(t, "form", hi.GetMode(), "an elicitation that states no mode is a form")
 
-	agenttest.RequireProto(t, agent.GenericPermissionPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"method":"x"}`)))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"method":"x"}`)))
 }
 
 // Approve sends the neutral allow with the plan settings, and the Worker

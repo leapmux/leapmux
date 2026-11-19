@@ -242,6 +242,19 @@ func (a *Agent) respond(id string, result any) {
 	}
 }
 
+// ControlRequestKey reads the key that the agent publishes a Droid request
+// under: the `requestId` that it writes into the payload (onRequestPermission,
+// onAskUser).
+func (droidProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request struct {
+		RequestID string `json:"requestId"`
+	}
+	if json.Unmarshal(payload, &request) != nil || request.RequestID == "" {
+		return "", false
+	}
+	return request.RequestID, true
+}
+
 // droidStoredRequest is the part of a published control request that the reply
 // reads. onRequestPermission and onAskUser write these fields.
 type droidStoredRequest struct {

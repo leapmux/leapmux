@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -32,8 +33,8 @@ func TestPlanApprovalSettingsPersistOutsideTheNativeResponse(t *testing.T) {
 			require.NoError(t, err)
 			response := []byte(" {\"type\":\"control_response\",\"extra\":9007199254740993,\"response\":{\"subtype\":\"success\",\"request_id\":\"plan\",\"response\":{\"behavior\":\"allow\"}}} \n")
 			var sent [][]byte
-			svc.sendControlResponseFn = func(_ string, bytes []byte) error {
-				sent = append(sent, append([]byte(nil), bytes...))
+			svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+				sent = append(sent, append([]byte(nil), answer.Data...))
 				return nil
 			}
 			chosen := workerAnswer{claimToken: "claim", content: response, planApproval: settings}
@@ -77,12 +78,12 @@ func TestPlanSettingsRequireAMatchingApprovalBeforeReservation(t *testing.T) {
 			}))
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-				Payload: []byte(fmt.Sprintf(`{"request":{"tool_name":%q}}`, tc.tool)),
+				Payload: []byte(fmt.Sprintf(`{"type":"control_request","request_id":"request","request":{"tool_name":%q}}`, tc.tool)),
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			writes := 0
-			svc.sendControlResponseFn = func(string, []byte) error { writes++; return nil }
+			svc.sendControlResponseFn = func(string, agent.RawInput) error { writes++; return nil }
 			err = svc.processControlAnswer(row, workerAnswer{
 				claimToken: "claim", planApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: tc.mode},
 				content: []byte(fmt.Sprintf(`{"response":{"request_id":"request","response":{"behavior":%q}}}`, tc.behavior)),
@@ -122,8 +123,8 @@ func TestClaudePlanApprovalIncludesTheNativePermissionUpdate(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
 	var delivered []byte
-	svc.sendControlResponseFn = func(_ string, content []byte) error {
-		delivered = append([]byte(nil), content...)
+	svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+		delivered = append([]byte(nil), answer.Data...)
 		return nil
 	}
 	require.NoError(t, svc.processControlAnswer(row, workerAnswer{

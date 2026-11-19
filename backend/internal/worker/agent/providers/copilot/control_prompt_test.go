@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // copilotTestRequestID is the stored id of the request that each test answers.
@@ -31,11 +32,27 @@ func copilotOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
 	return ids
 }
 
-// copilotResolveAnswer resolves an answer through the provider's own
-// resolution, as the service does after AnswerControlRequest.
-func copilotResolveAnswer(t *testing.T, payload []byte, answer agent.ControlAnswer) map[string]any {
+// copilotTestSession is the session of each stored frame (copilotStoredFrame).
+const copilotTestSession = "session-1"
+
+// copilotStoredKey is the key that the Worker stores payload under: the key
+// that the provider reads from it in copilotTestSession.
+func copilotStoredKey(t *testing.T, payload []byte) string {
 	t.Helper()
-	return copilotNativeResponse(t, agenttest.ResolveAnswer(copilotPlugin(t), payload, copilotTestRequestID, answer))
+	key, ok := copilotPlugin(t).ControlRequestKey(payload, copilotTestSession)
+	require.True(t, ok, "the stored request gives no key: %s", payload)
+	return key
+}
+
+// copilotResolveDecision answers payload with decision under its stored key,
+// and resolves the answer through the provider's own resolution, as the
+// service does after AnswerControlRequest.
+func copilotResolveDecision(t *testing.T, payload []byte, decision *leapmuxv1.ControlDecision) map[string]any {
+	t.Helper()
+	key := copilotStoredKey(t, payload)
+	answer, err := agenttest.AnswerControl(copilotPlugin(t), payload, key, decision)
+	require.NoError(t, err)
+	return copilotNativeResponse(t, agenttest.ResolveAnswerInSession(copilotPlugin(t), payload, copilotTestSession, key, answer))
 }
 
 func TestCopilotReadControlRequest_AQuestionReadsItsChoicesAndAcceptsAnEmptyAnswer(t *testing.T) {
@@ -254,22 +271,29 @@ func TestCopilotReadControlRequest_OffersTheSingleApprovalAloneWhereNoRuleIsExpr
 	}
 }
 
-// Copilot reads every payload it does not recognize as a bare permission,
-// never as the generic prompt.
-func TestCopilotReadControlRequest_ReadsAnUnknownPayloadAsABarePermission(t *testing.T) {
+// A permission request whose request the runtime states in no readable
+// shape is still a permission: a bare one with the single approval and the
+// refusal.
+func TestCopilotReadControlRequest_ReadsAnUnreadablePermissionRequestAsABarePermission(t *testing.T) {
+	t.Parallel()
+	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{
+		Options: []*leapmuxv1.PermissionOption{
+			{OptionId: "once", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow once"},
+			{OptionId: "reject", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Reject"},
+		},
+	}}}, agenttest.ControlPromptOf(copilotPlugin(t), copilotPermissionFrame(t, "not an object")))
+}
+
+// The runtime raises no other request, and no answer of the agent reaches
+// the runtime for one, so any other payload reads as unrecognized.
+func TestCopilotReadControlRequest_ReadsAnUnknownPayloadAsUnrecognized(t *testing.T) {
 	t.Parallel()
 	for _, payload := range [][]byte{
 		[]byte(`{}`),
 		[]byte(`not json`),
 		copilotStoredFrame(t, contracts.CopilotEventToolStarted, map[string]any{"toolName": "view"}),
-		copilotPermissionFrame(t, "not an object"),
 	} {
-		agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{
-			Options: []*leapmuxv1.PermissionOption{
-				{OptionId: "once", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow once"},
-				{OptionId: "reject", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Reject"},
-			},
-		}}}, agenttest.ControlPromptOf(copilotPlugin(t), payload))
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(copilotPlugin(t), payload), "%s", payload)
 	}
 }
 
@@ -322,13 +346,10 @@ func TestCopilotAnswerControlRequest_EachPermissionAnswerResolvesToTheRuntimeDec
 		"project": {"kind": contracts.CopilotDecisionApproveForLocation, "approval": map[string]any{"kind": "read"}},
 		"reject":  {"kind": contracts.CopilotDecisionReject},
 	} {
-		got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PermissionDecision(option, ""))
-		require.NoError(t, err, option)
-		assert.Equal(t, want, copilotResolveAnswer(t, payload, got), option)
+		assert.Equal(t, want, copilotResolveDecision(t, payload, agenttest.PermissionDecision(option, "")), option)
 	}
-	got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PermissionDecision("reject", "Use the other file."))
-	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"kind": contracts.CopilotDecisionReject, "feedback": "Use the other file."}, copilotResolveAnswer(t, payload, got))
+	assert.Equal(t, map[string]any{"kind": contracts.CopilotDecisionReject, "feedback": "Use the other file."},
+		copilotResolveDecision(t, payload, agenttest.PermissionDecision("reject", "Use the other file.")))
 }
 
 // The composer's send is a refusal, and its text rides the deny.
@@ -358,11 +379,9 @@ func TestCopilotAnswerControlRequest_TheAutoModeSwitchSendsEachIndependentDecisi
 
 func TestCopilotAnswerControlRequest_ASamplingDecisionResolvesToTheSavedDecision(t *testing.T) {
 	t.Parallel()
-	payload := copilotStoredFrame(t, contracts.CopilotEventSamplingRequested, map[string]any{"serverName": "sampler", "request": map[string]any{}})
+	payload := copilotStoredFrame(t, contracts.CopilotEventSamplingRequested, map[string]any{"requestId": "native-1", "serverName": "sampler", "request": map[string]any{}})
 	for option, decision := range map[string]string{"once": contracts.CopilotSamplingDecisionAllow, "reject": contracts.CopilotSamplingDecisionDeny} {
-		got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PermissionDecision(option, ""))
-		require.NoError(t, err, option)
-		assert.Equal(t, map[string]any{"decision": decision}, copilotResolveAnswer(t, payload, got), option)
+		assert.Equal(t, map[string]any{"decision": decision}, copilotResolveDecision(t, payload, agenttest.PermissionDecision(option, "")), option)
 	}
 }
 
@@ -385,8 +404,12 @@ func TestCopilotAnswerControlRequest_AnswersTheWorkspaceTrustQuestion(t *testing
 	got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PermissionDecision("workspace-trust", ""))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`, string(got.Content))
-	resolved := agenttest.ResolveAnswer(copilotPlugin(t), payload, copilotTestRequestID, got)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"decision":"trust"}}}`, string(resolved.Content))
+	// The question is stored under the key of its session.
+	trustRequestID := providerkit.WorkspaceTrustRequestID(copilotTestSession)
+	trust, err := agenttest.AnswerControl(copilotPlugin(t), payload, trustRequestID, agenttest.PermissionDecision("workspace-trust", ""))
+	require.NoError(t, err)
+	resolved := agenttest.ResolveAnswerInSession(copilotPlugin(t), payload, copilotTestSession, trustRequestID, trust)
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+trustRequestID+`","response":{"decision":"trust"}}}`, string(resolved.Content))
 
 	got, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PermissionDecision("workspace-reject", ""))
 	require.NoError(t, err)
@@ -421,9 +444,8 @@ func TestCopilotAnswerControlRequest_AQuestionAnswerStatesWhetherTheUserTypedIt(
 		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":`+tc.response+`}}`, string(got.Content), tc.name)
 	}
 
-	got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"B"}}))
-	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"answer": "B", "wasFreeform": false}, copilotResolveAnswer(t, payload, got))
+	assert.Equal(t, map[string]any{"answer": "B", "wasFreeform": false},
+		copilotResolveDecision(t, payload, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"B"}})))
 }
 
 // The reader states no multiple-choice question for Copilot, so only a prompt
@@ -453,11 +475,11 @@ func TestCopilotAnswerControlRequest_AMultipleChoiceAnswerSendsEachChoiceAndTheT
 // a typed answer.
 func TestCopilotAnswerControlRequest_ACancelledQuestionDeniesWithItsFeedback(t *testing.T) {
 	t.Parallel()
-	payload := copilotStoredFrame(t, contracts.CopilotEventUserInputRequested, map[string]any{"question": "Which one?", "choices": []any{"A"}})
+	payload := copilotStoredFrame(t, contracts.CopilotEventUserInputRequested, map[string]any{"requestId": "native-1", "question": "Which one?", "choices": []any{"A"}})
 	got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.CancelQuestions("User stopped"))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"deny","message":"User stopped"}}}`, string(got.Content))
-	assert.Equal(t, map[string]any{"answer": "User stopped", "wasFreeform": true}, copilotResolveAnswer(t, payload, got))
+	assert.Equal(t, map[string]any{"answer": "User stopped", "wasFreeform": true}, copilotResolveDecision(t, payload, agenttest.CancelQuestions("User stopped")))
 
 	got, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.CancelQuestions(""))
 	require.NoError(t, err)
@@ -491,7 +513,7 @@ func TestCopilotAnswerControlRequest_RefusesAQuestionAnswerThatTheRequestDoesNot
 
 func TestCopilotAnswerControlRequest_APlanApprovalAllowsWithItsSettings(t *testing.T) {
 	t.Parallel()
-	payload := copilotStoredFrame(t, contracts.CopilotEventExitPlanModeRequested, map[string]any{"planContent": "# Ship it", "recommendedAction": "autopilot"})
+	payload := copilotStoredFrame(t, contracts.CopilotEventExitPlanModeRequested, map[string]any{"requestId": "native-1", "planContent": "# Ship it", "recommendedAction": "autopilot"})
 	got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PlanDecision(&leapmuxv1.PlanDecision{
 		Approve: true, PermissionMode: "allow-all", ClearContext: true,
 	}))
@@ -499,13 +521,15 @@ func TestCopilotAnswerControlRequest_APlanApprovalAllowsWithItsSettings(t *testi
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content),
 		"the frame states no tool input, so the approval sends an empty one, as the browser does")
 	assert.True(t, proto.Equal(&leapmuxv1.PlanApprovalSettings{PermissionMode: "allow-all", ClearContext: true}, got.PlanApproval))
-	assert.Equal(t, map[string]any{"approved": true, "selectedAction": "autopilot"}, copilotResolveAnswer(t, payload, got))
+	assert.Equal(t, map[string]any{"approved": true, "selectedAction": "autopilot"}, copilotResolveDecision(t, payload, agenttest.PlanDecision(&leapmuxv1.PlanDecision{
+		Approve: true, PermissionMode: "allow-all", ClearContext: true,
+	})))
 
 	got, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Feedback: "Split step 1."}))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"deny","message":"Split step 1."}}}`, string(got.Content))
 	assert.Nil(t, got.PlanApproval, "a refusal applies no settings")
-	assert.Equal(t, map[string]any{"approved": false, "feedback": "Split step 1."}, copilotResolveAnswer(t, payload, got))
+	assert.Equal(t, map[string]any{"approved": false, "feedback": "Split step 1."}, copilotResolveDecision(t, payload, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Feedback: "Split step 1."})))
 
 	_, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, ChoiceId: "autopilot"}))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "Copilot's plan offers no choices")
@@ -513,11 +537,12 @@ func TestCopilotAnswerControlRequest_APlanApprovalAllowsWithItsSettings(t *testi
 
 func TestCopilotAnswerControlRequest_AnElicitationAnswersWithItsActionAndContent(t *testing.T) {
 	t.Parallel()
-	payload := copilotStoredFrame(t, contracts.CopilotEventElicitationRequested, map[string]any{"message": "Sign in", "requestedSchema": map[string]any{"type": "object"}})
+	payload := copilotStoredFrame(t, contracts.CopilotEventElicitationRequested, map[string]any{"requestId": "native-1", "message": "Sign in", "requestedSchema": map[string]any{"type": "object"}})
 	got, err := agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.ElicitationDecision(leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, `{"user":"ada"}`))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"action":"accept","content":{"user":"ada"}}}}`, string(got.Content))
-	assert.Equal(t, map[string]any{"action": "accept", "content": map[string]any{"user": "ada"}}, copilotResolveAnswer(t, payload, got))
+	assert.Equal(t, map[string]any{"action": "accept", "content": map[string]any{"user": "ada"}},
+		copilotResolveDecision(t, payload, agenttest.ElicitationDecision(leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, `{"user":"ada"}`)))
 
 	got, err = agenttest.AnswerControl(copilotPlugin(t), payload, copilotTestRequestID, agenttest.ElicitationDecision(leapmuxv1.ElicitationAction_ELICITATION_ACTION_DECLINE, ""))
 	require.NoError(t, err)
@@ -545,9 +570,10 @@ func TestCopilotResolveControlResponse_AURLElicitationAcceptsWithoutContent(t *t
 	url := copilotStoredFrame(t, contracts.CopilotEventElicitationRequested, map[string]any{
 		"requestId": "native-1", "mode": "url", "url": "https://example.com/auth", "message": "Sign in",
 	})
-	answer, err := agenttest.AnswerControl(copilotPlugin(t), url, copilotTestRequestID, agenttest.ElicitationDecision(leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, ""))
+	key := copilotStoredKey(t, url)
+	answer, err := agenttest.AnswerControl(copilotPlugin(t), url, key, agenttest.ElicitationDecision(leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, ""))
 	require.NoError(t, err)
-	resolution := agenttest.ResolveAnswer(copilotPlugin(t), url, copilotTestRequestID, answer)
+	resolution := agenttest.ResolveAnswerInSession(copilotPlugin(t), url, copilotTestSession, key, answer)
 	require.NoError(t, resolution.Refusal(), "the accept of a URL reaches the runtime")
 	assert.Contains(t, string(resolution.Content), `"action":"accept"`)
 	assert.NotContains(t, string(resolution.Content), `"content"`)

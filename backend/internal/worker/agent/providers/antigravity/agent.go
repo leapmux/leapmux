@@ -573,6 +573,8 @@ func isInputNotRegistered(err error) bool {
 	return providerkit.IsHTTPStatus(err, 500) && strings.Contains(strings.ToLower(streamErrorText(err)), "input not registered")
 }
 
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
-	return a.executeControlReply(data)
+// SendRawInput delivers the Worker's answer to one control request instance
+// (executeControlReply). The language server takes no other raw frame.
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	return a.executeControlReply(input.Data, input.ControlInstanceID)
 }

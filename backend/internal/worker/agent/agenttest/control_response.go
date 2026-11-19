@@ -26,9 +26,11 @@ func conformanceAnswer() agent.ControlAnswer {
 // a recovery reads.
 //
 // No Worker path resolves this context today: the Worker's AnswerControl RPC
-// refuses a request that is not a JSON object before the provider answers it.
-// The suite pins the provider's own guard, so a later caller that skips that
-// check still sends nothing that the provider cannot match to its request.
+// refuses a request that is not a JSON object before the provider answers it,
+// and the delivery refuses such a request before the provider resolves the
+// answer (agent.StoredControlRequestAgrees). The suite pins the provider's own
+// guard, so a later caller that skips those checks still sends nothing that
+// the provider cannot match to its request.
 func AssertWithholdsTheResponseForAMalformedRequest(t *testing.T, provider agent.Provider) {
 	t.Helper()
 	answer := conformanceAnswer()
@@ -39,11 +41,14 @@ func AssertWithholdsTheResponseForAMalformedRequest(t *testing.T, provider agent
 }
 
 // AssertPreservesTheResponseWithoutARequest pins that an absent request does not
-// change the response bytes that provider forwards. The Worker resolves an
-// answer with no stored request when an agent restart deletes the request row
-// after the Worker's AnswerControl RPC reads it. The delivery reads the row
-// again, resolves the answer, and only then refuses it, because the request is
-// gone.
+// change the response bytes that provider forwards.
+//
+// No Worker path resolves this context today. An agent restart can delete the
+// request row after the Worker's AnswerControl RPC reads it, and the delivery
+// then reads the row again and refuses the answer before the provider resolves
+// it, because the request is gone. The suite pins the provider's own handling,
+// so a later caller that resolves such an answer still forwards its bytes
+// unchanged.
 func AssertPreservesTheResponseWithoutARequest(t *testing.T, provider agent.Provider) {
 	t.Helper()
 	answer := conformanceAnswer()

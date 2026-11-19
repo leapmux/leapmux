@@ -289,7 +289,8 @@ var errUnknownControl = errors.New("the Cline request no longer waits for an ans
 // SendRawInput delivers a control answer. The answer is the native reply that
 // the provider's ResolveControlResponse built from the neutral answer of
 // AnswerControlRequest: an approval reply or a capability reply.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data := input.Data
 	if a.IsStopped() {
 		return errAgentStopped
 	}
@@ -437,6 +438,33 @@ type storedControlRequest struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// ControlRequestKey reads the key that the Worker publishes a Cline request
+// under: the hub's own id of the request, which the `payload` of its event
+// envelope states. An approval states it as `approvalId` (handleApprovalRequested),
+// and a capability request as `requestId` (publishQuestion).
+func (clineProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request storedControlRequest
+	if json.Unmarshal(payload, &request) != nil {
+		return "", false
+	}
+	var id string
+	switch request.Event {
+	case contracts.ClineEventApprovalRequested:
+		var approval approvalRequest
+		if json.Unmarshal(request.Payload, &approval) != nil {
+			return "", false
+		}
+		id = approval.ApprovalID
+	case contracts.ClineEventCapabilityRequested:
+		var capability capabilityRequest
+		if json.Unmarshal(request.Payload, &capability) != nil {
+			return "", false
+		}
+		id = capability.RequestID
+	}
+	return id, id != ""
+}
+
 // declinedToolReason is the reason of a refused tool call that the user gave no
 // reason for. Cline shows the model this text as the call's error, and the browser
 // words it as a plain refusal.
@@ -477,14 +505,6 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 		if err := json.Unmarshal(request.Payload, &approval); err != nil {
 			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored approval does not decode: %v", err))
 		}
-		if approval.ApprovalID == "" {
-			return withhold(agent.RefusalUnreadableRequest, "the stored approval states no id")
-		}
-		// The stored request disagrees with its own request key, so LeapMux
-		// cannot trust it.
-		if approval.ApprovalID != ctx.RequestID {
-			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored approval states id %s, and its request key is %s", approval.ApprovalID, ctx.RequestID))
-		}
 		reply := contracts.ClineApprovalReply{ApprovalId: approval.ApprovalID, Approved: allow}
 		if !allow {
 			reply.Reason = message
@@ -504,16 +524,8 @@ func resolveControlResponse(ctx agent.ControlResponseContext) agent.ControlRespo
 		if err := json.Unmarshal(request.Payload, &capability); err != nil {
 			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request does not decode: %v", err))
 		}
-		if capability.RequestID == "" {
-			return withhold(agent.RefusalUnreadableRequest, "the stored capability request states no id")
-		}
 		if capability.CapabilityName != contracts.ClineCapabilityAskQuestion {
 			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request is %s, not a question", capability.CapabilityName))
-		}
-		// The stored request disagrees with its own request key, so LeapMux
-		// cannot trust it.
-		if capability.RequestID != ctx.RequestID {
-			return withhold(agent.RefusalUnreadableRequest, fmt.Sprintf("the stored capability request states id %s, and its request key is %s", capability.RequestID, ctx.RequestID))
 		}
 		if !allow {
 			reason := message
