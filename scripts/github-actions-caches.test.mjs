@@ -1621,6 +1621,33 @@ describe('cache native setup', () => {
     for (const pkg of aptPackages.split(' ')) expect(steps[install].run).toContain(pkg)
   })
 
+  it('uses the primary Ubuntu archive before setting up the amd64 runner', () => {
+    const { steps } = yaml('.github/workflows/ci.yaml').jobs.linux
+    const archive = steps.find(step => step.name === 'Use the primary Ubuntu APT archive')
+    const setup = steps.find(step => step.uses === './.github/actions/setup-build')
+    expect(archive?.if).toBe('matrix.arch == \'amd64\'')
+    expect(steps.indexOf(archive)).toBeLessThan(steps.indexOf(setup))
+
+    const dir = fixture()
+    const mirrors = join(dir, 'apt-mirrors.txt')
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    const sudo = join(bin, 'sudo')
+    writeFileSync(sudo, '#!/bin/sh\n[ "$1" = install ] && [ "$5" = "$FIXTURE_APT_MIRRORS" ] || exit 1\nexec "$@"\n')
+    chmodSync(sudo, 0o755)
+    const script = archive.run.replace('/etc/apt/apt-mirrors.txt', '"$FIXTURE_APT_MIRRORS"')
+    expect(script).not.toContain('/etc/apt/apt-mirrors.txt')
+    const env = { RUNNER_TEMP: dir, FIXTURE_APT_MIRRORS: mirrors }
+    const absent = runShell(script, dir, env, bin)
+    expect(absent.status, absent.stderr).toBe(0)
+    expect(existsSync(mirrors)).toBe(false)
+
+    writeFileSync(mirrors, 'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\n')
+    const present = runShell(script, dir, env, bin)
+    expect(present.status, present.stderr).toBe(0)
+    expect(readFileSync(mirrors, 'utf8')).toBe('https://archive.ubuntu.com/ubuntu/\n')
+  })
+
   it('installs shells only for the native tests and caches Homebrew downloads', () => {
     const setup = yaml('.github/actions/setup-build/action.yaml')
     expect(setup.inputs['test-shells'].default).toBe('false')

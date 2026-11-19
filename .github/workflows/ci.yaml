@@ -45,6 +45,18 @@ jobs:
           # Hugo reads Git history in the canonical site check.
           fetch-depth: ${{ matrix.arch == 'amd64' && '0' || '1' }}
 
+      - name: Use the primary Ubuntu APT archive
+        if: matrix.arch == 'amd64'
+        shell: bash
+        # Downloads from the regional mirror can take over an hour while
+        # still receiving data. APT only times out after inactivity.
+        run: |
+          apt_mirrors=/etc/apt/apt-mirrors.txt
+          if [[ -f "$apt_mirrors" ]]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' > "$RUNNER_TEMP/leapmux-apt-mirrors.txt"
+            sudo install -m 0644 "$RUNNER_TEMP/leapmux-apt-mirrors.txt" "$apt_mirrors"
+          fi
+
       - name: Setup build toolchain
         id: setup
         uses: ./.github/actions/setup-build
