@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -210,4 +211,49 @@ func TestRunTabRename_RefusesATabTypeNeitherArmRenames(t *testing.T) {
 	f := runControl(t, "tab", "rename", "file-2", "notes").requireFailure(t, "usage")
 	assert.Contains(t, f.Message, "a file tab has no title")
 	assert.Empty(t, disp.called(), "a tab neither arm renames must reach the worker with nothing")
+}
+
+func TestControlRejectsExplicitBlankTargetsBeforeCalling(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "tab", args: []string{"tab", "rename", "", "Changed"}},
+		{name: "tile", args: []string{"tile", "split", ""}},
+		{name: "workspace", args: []string{"workspace", "rename", "", "Changed"}},
+		{name: "read", args: []string{"tab", "get", ""}},
+		{name: "whitespace", args: []string{"tab", "move", " \t", "--tile", "other"}},
+		{name: "variadic", args: []string{"agent", "wait", fullTestID("first"), ""}},
+		{name: "placement", args: []string{"terminal", "open", "--workspace="}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub, disp := startSelfRenameIPC(t)
+			out := runControl(t, tc.args...)
+			assert.Empty(t, disp.called(), "the command must not reach the Worker")
+			assert.Empty(t, hub.called(), "the command must not reach the Hub")
+			failure := out.requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, failure.Message, "empty")
+		})
+	}
+}
+
+func TestControlDefaultsOmittedReadTargetAndAcceptsExplicitSelf(t *testing.T) {
+	_, disp := startSelfRenameIPC(t)
+
+	assert.Equal(t, "agent-1", runControl(t, "tab", "get").Data(t)["id"])
+	assert.Equal(t, "agent-1", runControl(t, "tab", "rename", "self", "Changed").Data(t)["id"])
+	assert.Equal(t, []string{"Changed"}, disp.sentTitles())
+}
+
+func startSelfRenameIPC(t *testing.T) (*recordingHub, *renameDispatcher) {
+	t.Helper()
+	tab := agentTab()
+	tab.Tab.TabId = "agent-1"
+	hub := &recordingHub{locateTab: tab}
+	disp := &renameDispatcher{stored: "Changed"}
+	startSpawnIPC(t, hub, disp)
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", tab.GetTab().GetTabId())
+	t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", "agent")
+	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", tab.GetWorkerId())
+	return hub, disp
 }

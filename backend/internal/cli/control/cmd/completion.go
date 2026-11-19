@@ -20,23 +20,11 @@ import (
 // freeze the prompt.
 const completionTimeout = 2 * time.Second
 
-// kindOfArg maps the name of a positional argument to the kind of object it
-// takes. The Use line gives each argument its name, so the name is the one
-// declaration that completion reads.
-var kindOfArg = map[string]resolve.Kind{
-	"tab":       resolve.KindTab,
-	"agent":     resolve.KindAgent,
-	"terminal":  resolve.KindTerminal,
-	"tile":      resolve.KindTile,
-	"workspace": resolve.KindWorkspace,
-	"worker":    resolve.KindWorker,
-}
-
 // completeTargets completes a positional target with "self" and the ids of
 // the live objects of its kind. Each candidate carries its title as the
 // description that zsh and fish show.
 func completeTargets(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	kind, ok := kindOfArg[spec.Name]
+	kind, ok := targetArguments[spec.Name]
 	if !ok {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

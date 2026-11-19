@@ -66,15 +66,7 @@ the stored credentials.`
 		}
 	}
 	cli.SetFooter(root, guideFooter)
-	cli.DescribeArgs(root, map[string]string{
-		"tab":       resolve.KindTab.Help(),
-		"agent":     resolve.KindAgent.Help(),
-		"terminal":  resolve.KindTerminal.Help(),
-		"workspace": resolve.KindWorkspace.Help(),
-		"tile":      resolve.KindTile.Help(),
-		"worker":    resolve.KindWorker.Help(),
-		"text":      `The text, or "-" to read it from standard input.`,
-	})
+	configureTargetArguments(root)
 	addHubHints(root)
 	return root
 }
@@ -186,9 +178,8 @@ type tabTarget struct {
 }
 
 // resolveTab resolves the tab target input of kind and derives what need
-// asks for. An empty input selects the caller's own tab. Only a command that
-// reads passes one: a command that changes or removes a tab declares its
-// target as required, so its input is never empty.
+// asks for. An empty input selects the caller's own tab. The command parser
+// rejects explicit blank targets, so empty input here means an omitted target.
 //
 // The Worker defaults to $LEAPMUX_CONTROL_WORKER_ID. Inside a tab, "self"
 // then needs no hub call at all when the command needs only the Worker, and
