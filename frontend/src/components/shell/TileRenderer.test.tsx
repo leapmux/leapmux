@@ -212,7 +212,9 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       confirmLink: async () => false,
       ops: {
         agentOps: {
-          availableProviders: () => [AgentProvider.CLAUDE_CODE],
+          providerStore: {
+            providers: () => [AgentProvider.CLAUDE_CODE],
+          },
           handleOpenAgent: options.onNewAgent ?? (() => {}),
           handleRetryMessage: () => {},
           handleDeleteMessage: () => {},
@@ -234,12 +236,6 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         isActiveWorkspaceMutatable: () => true,
         isActiveWorkspaceArchived: () => false,
         activeWorkspace: () => ({ id: s.workspaceId }),
-        getCurrentTabContext: () => ({
-          workerId: 'worker-1',
-          workingDir: '/repo',
-          homeDir: '/home/me',
-          gitToplevel: '/repo',
-        }),
         getMruAgentContext,
       },
       tab: {

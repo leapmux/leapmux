@@ -46,7 +46,9 @@ func newFakeThreadsCLI(t *testing.T, body string) fakeThreadsCLI {
 }
 
 func (c fakeThreadsCLI) plugin() ampProvider {
-	return ampProvider{cli: launch.Binaries(c.program)}
+	return ampProvider{cli: launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		return launch.Spec{Program: c.program}, launch.Found
+	})}
 }
 
 func (c fakeThreadsCLI) args(t *testing.T) []string {

@@ -118,7 +118,7 @@ func TestDescendantProcesses_FindsABackgroundedChild(t *testing.T) {
 			return false
 		}
 		got = procs
-		return len(procs) > 0
+		return contains(namesOf(got), want)
 	}, "expected the backgrounded child to appear beneath the shell")
 
 	assert.Contains(t, namesOf(got), want)
@@ -339,7 +339,13 @@ func TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan(t *testing.T) 
 			return false
 		}
 		out = got
-		return len(got) > 0
+		// The fork can appear as the shell until the child executes the job.
+		for _, entry := range got {
+			if contains(namesOf(entry.Processes), want) {
+				return true
+			}
+		}
+		return false
 	}, "expected the busy terminal to report its child")
 
 	ids := make([]string, 0, len(out))

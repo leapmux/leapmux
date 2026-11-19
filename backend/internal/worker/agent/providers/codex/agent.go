@@ -508,9 +508,10 @@ func (a *Agent) Stop() {
 	a.Process.Stop()
 	a.outputMu.Lock()
 	a.finishCodexSteersAfterExit()
-	a.flushAllCodexGeneration(agent.MessageCompletionInterrupted)
-	a.persistIncompleteCodexTools("", true, agent.MessageCompletionInterrupted)
-	a.finishAllCodexRawExecutions(agent.MessageCompletionInterrupted)
+	completion := a.ProcessExitCompletion()
+	a.flushAllCodexGeneration(completion)
+	a.persistIncompleteCodexTools("", true, completion)
+	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()

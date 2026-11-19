@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,50 +113,8 @@ func fileExists(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// zcodeLaunchCache memoizes launch resolution per (shell, loginShell). Resolution spawns a
-// login shell and up to three interpreter subprocesses, and the availability scan plus
-// every agent launch ask for the same answer. Only a CONCLUSIVE resolution is cached, for
-// the same reason binaryAvailabilityCache caches only a conclusive probe: caching
-// Unknown would freeze a load-induced timeout as a permanent verdict for the worker's
-// lifetime.
-var (
-	zcodeLaunchCache   sync.Map // zcodeLaunchKey -> zcodeLaunchCacheEntry
-	zcodeLaunchMutexes sync.Map // zcodeLaunchKey -> *sync.Mutex
-)
-
-type zcodeLaunchKey struct {
-	shellPath  string
-	loginShell bool
-}
-
-type zcodeLaunchCacheEntry struct {
-	spec launch.Spec
-	res  launch.Resolution
-}
-
-// resolveZCodeLaunch is the registered ResolverFunc: the cache in front of
-// resolveZCodeLaunchWith.
 func resolveZCodeLaunch(ctx context.Context, shellPath string, loginShell bool) (launch.Spec, launch.Resolution) {
-	key := zcodeLaunchKey{shellPath, loginShell}
-	if v, ok := zcodeLaunchCache.Load(key); ok {
-		e := v.(zcodeLaunchCacheEntry)
-		return e.spec, e.res
-	}
-	// Single-flight per key, with a mutex rather than a sync.Once: an attempt that ends
-	// inconclusively must be repeatable, and a spent Once cannot repeat.
-	muAny, _ := zcodeLaunchMutexes.LoadOrStore(key, &sync.Mutex{})
-	mu := muAny.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-	if v, ok := zcodeLaunchCache.Load(key); ok {
-		e := v.(zcodeLaunchCacheEntry)
-		return e.spec, e.res
-	}
-	spec, res := resolveZCodeLaunchWith(ctx, shellPath, loginShell, zcodeProductionDeps())
-	if res != launch.Unknown {
-		zcodeLaunchCache.Store(key, zcodeLaunchCacheEntry{spec, res})
-	}
-	return spec, res
+	return resolveZCodeLaunchWith(ctx, shellPath, loginShell, zcodeProductionDeps())
 }
 
 // resolveZCodeLaunchWith resolves how to launch ZCode using the supplied lookups.
@@ -173,17 +132,21 @@ func resolveZCodeLaunchWith(
 	// 1. Explicit override. It replaces discovery, so a wrong value is an error the user
 	// can see rather than a silent fall-through to a different installation.
 	if script := strings.TrimSpace(deps.getenv(zcodeScriptEnvOverride)); script != "" {
-		if !deps.fileExists(script) {
+		absoluteScript, err := absoluteOverridePath(script)
+		if err != nil {
+			return launch.Spec{}, launch.Unknown
+		}
+		if !deps.fileExists(absoluteScript) {
 			return launch.Spec{}, launch.Missing
 		}
 		// No PATH probe ran, so nothing about it is inconclusive.
-		return resolveZCodeInterpreter(ctx, shellPath, loginShell, script, deps, false)
+		return resolveZCodeInterpreter(ctx, shellPath, loginShell, absoluteScript, deps, false)
 	}
 
 	// 2. A `zcode` launcher on PATH.
 	onPath := deps.probeName(ctx, shellPath, loginShell, zcodeBinaryCandidates[0])
 	if onPath == launch.ProbeYes {
-		spec := launch.Spec{Program: zcodeBinaryCandidates[0]}
+		spec := launch.ShellCommands(zcodeBinaryCandidates...)
 		if script, found := findZCodeScript(deps.fileExists); found {
 			spec.Env = zcodeProviderConfigEnv(script, deps)
 		}
@@ -201,12 +164,18 @@ func resolveZCodeLaunchWith(
 		}
 		return launch.Spec{}, launch.Missing
 	}
-	// The PATH probe's verdict travels WITH the interpreter search. An inconclusive probe
-	// is not settled by finding a script: if no interpreter works either, the answer is
-	// Unknown, because a working `zcode` on PATH was never ruled out -- and
-	// resolveZCodeLaunch CACHES a Missing for the worker's life, so freezing one
-	// here reports ZCode as not installed until the worker restarts.
+	// Keep the result inconclusive if neither the launcher probe nor the
+	// interpreter search can establish whether ZCode is usable.
 	return resolveZCodeInterpreter(ctx, shellPath, loginShell, script, deps, !onPath.Settled())
+}
+
+// Resolve path overrides against the Worker before the probe and the
+// app-server start in their own directories.
+func absoluteOverridePath(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	return filepath.Abs(path)
 }
 
 // zcodeInterpreter is one candidate program that might be able to run zcode.cjs.
@@ -231,7 +200,7 @@ type zcodeInterpreter struct {
 //
 // A candidate that proves nothing -- a subprocess the context killed, a shell that would
 // not start -- makes the whole answer Unknown even when a later candidate answered
-// "no" conclusively. Otherwise one timeout would be cached as "ZCode is not installed".
+// "no" conclusively. The caller can retry an inconclusive result.
 func resolveZCodeInterpreter(
 	ctx context.Context,
 	shellPath string,
@@ -249,6 +218,22 @@ func resolveZCodeInterpreter(
 	}
 
 	if node := strings.TrimSpace(deps.getenv(zcodeNodeEnvOverride)); node != "" {
+		if !strings.ContainsAny(node, "/\\") && filepath.VolumeName(node) == "" {
+			path, result := deps.resolveProgramPath(ctx, shellPath, loginShell, node)
+			if result == launch.ProbeUnknown {
+				return launch.Spec{}, launch.Unknown
+			}
+			if result == launch.ProbeNo {
+				return launch.Spec{}, search.result()
+			}
+			node = path
+		} else {
+			path, err := absoluteOverridePath(node)
+			if err != nil {
+				return launch.Spec{}, launch.Unknown
+			}
+			node = path
+		}
 		if spec, ok := search.try(zcodeInterpreter{program: node}); ok {
 			return spec, launch.Found
 		}
@@ -265,19 +250,27 @@ func resolveZCodeInterpreter(
 	// the interpreter probe below runs the same program the launch will run (and the
 	// program word reaching the shell needs no PATH lookup, which is why
 	// Wrap quotes it).
-	var fromPath []zcodeInterpreter
+	checkedPaths := make(map[string]struct{})
 	for _, name := range nodeInterpreterNames() {
 		path, res := deps.resolveProgramPath(ctx, shellPath, loginShell, name)
 		if !res.Settled() {
 			search.sawInconclusive = true
 			continue
 		}
-		if res == launch.ProbeYes && path != "" {
-			fromPath = append(fromPath, zcodeInterpreter{program: path})
+		if res != launch.ProbeYes || path == "" {
+			continue
 		}
-	}
-	if spec, ok := search.try(fromPath...); ok {
-		return spec, launch.Found
+		key := path
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(filepath.Clean(path))
+		}
+		if _, checked := checkedPaths[key]; checked {
+			continue
+		}
+		checkedPaths[key] = struct{}{}
+		if spec, ok := search.try(zcodeInterpreter{program: path}); ok {
+			return spec, launch.Found
+		}
 	}
 	return launch.Spec{}, search.result()
 }
@@ -296,13 +289,11 @@ func (s *zcodeInterpreterSearch) try(candidates ...zcodeInterpreter) (launch.Spe
 	for _, c := range candidates {
 		res := s.deps.probeInterpreter(s.ctx, c.program, c.env)
 		if res == launch.ProbeYes {
-			env := make([]string, 0, len(c.env)+len(s.launchEnv))
-			env = append(env, c.env...)
-			env = append(env, s.launchEnv...)
 			return launch.Spec{
-				Program:    c.program,
-				PrefixArgs: []string{s.script},
-				Env:        env,
+				Program:     c.program,
+				PrefixArgs:  []string{s.script},
+				Env:         slices.Clone(s.launchEnv),
+				RequiredEnv: slices.Clone(c.env),
 			}, true
 		}
 		if !res.Settled() {
@@ -700,7 +691,10 @@ func darwinHelperExecutable(helperApp string) string {
 func probeNodeSQLite(ctx context.Context, program string, env []string) launch.ProbeResult {
 	cmd := exec.CommandContext(ctx, program, "-e", zcodeNodeSQLiteProbeScript)
 	cmd.Dir = os.TempDir()
-	cmd.Env = append(os.Environ(), env...)
+	if launch.RefreshProbeCommandPath(ctx, cmd) != nil {
+		return launch.ProbeUnknown
+	}
+	cmd.Env = append(cmd.Environ(), env...)
 	procutil.HideConsoleWindow(cmd)
 	procutil.DetachFromTerminal(cmd)
 	// Both streams are discarded: a working interpreter still writes an ExperimentalWarning

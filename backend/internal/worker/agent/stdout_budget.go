@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 // stdoutConfiguredMax is the worker's configured application payload budget
@@ -131,6 +132,15 @@ const StdoutScannerStartBuf = 1024 * 1024
 // stays in that provider, which is where the read loop the caller hands
 // this to lives.
 func NewStdoutScanner(stdout io.Reader) *bufio.Scanner {
+	return newStdoutScanner(stdout, scanStdoutLine)
+}
+
+// NewLaunchStdoutScanner reads complete shell markers before native output.
+func NewLaunchStdoutScanner(stdout io.Reader, delimiter string) *bufio.Scanner {
+	return newStdoutScanner(stdout, launch.PreambleSplit(delimiter, scanStdoutLine, scanStdoutLine))
+}
+
+func newStdoutScanner(stdout io.Reader, split bufio.SplitFunc) *bufio.Scanner {
 	scanner := bufio.NewScanner(stdout)
 	stdoutMu.Lock()
 	configured := stdoutConfiguredMax
@@ -140,28 +150,30 @@ func NewStdoutScanner(stdout io.Reader) *bufio.Scanner {
 		start = configured
 	}
 	scanner.Buffer(make([]byte, 0, start), configured)
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		max := LiveMaxMessageSize()
-		if max < 1 {
-			max = 1
-		}
-		// ScanLines first so a buffer of many short lines totaling > max
-		// still yields the first short token. ErrTooLong only when a single
-		// line (complete token, or incomplete line with no newline yet)
-		// exceeds the live ceiling — otherwise a later Observe shrink would
-		// still admit an oversized in-progress line that Buffer's configured
-		// max would allow.
-		advance, token, err = bufio.ScanLines(data, atEOF)
-		if err != nil {
-			return 0, nil, err
-		}
-		if token != nil && len(token) > max {
-			return 0, nil, bufio.ErrTooLong
-		}
-		if advance == 0 && !atEOF && len(data) > max {
-			return 0, nil, bufio.ErrTooLong
-		}
-		return advance, token, nil
-	})
+	scanner.Split(split)
 	return scanner
+}
+
+func scanStdoutLine(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	max := LiveMaxMessageSize()
+	if max < 1 {
+		max = 1
+	}
+	// ScanLines first so a buffer of many short lines totaling > max
+	// still yields the first short token. ErrTooLong only when a single
+	// line (complete token, or incomplete line with no newline yet)
+	// exceeds the live ceiling — otherwise a later Observe shrink would
+	// still admit an oversized in-progress line that Buffer's configured
+	// max would allow.
+	advance, token, err = bufio.ScanLines(data, atEOF)
+	if err != nil {
+		return 0, nil, err
+	}
+	if token != nil && len(token) > max {
+		return 0, nil, bufio.ErrTooLong
+	}
+	if advance == 0 && !atEOF && len(data) > max {
+		return 0, nil, bufio.ErrTooLong
+	}
+	return advance, token, nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -168,4 +169,19 @@ func TestDroidOutputPathStartupDoesNotRequireAWorkerReaderRoot(t *testing.T) {
 	require.Len(t, calls, 1, "the controlled native peer must receive one startup request")
 	assert.Equal(t, droidMethodInitializeSession, calls[0].method)
 	assert.NotEmpty(t, calls[0].pid)
+}
+
+func TestDroidStartupReportsTheMissingCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses an isolated POSIX PATH")
+	}
+	t.Setenv("PATH", t.TempDir())
+	home := t.TempDir()
+	started, err := Start(t.Context(), agent.Options{
+		AgentID: "missing-droid", HomeDir: home, WorkingDir: home, Shell: "/bin/sh",
+		StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.Nil(t, started)
+	require.ErrorIs(t, err, launch.ErrNoCandidate)
+	assert.ErrorContains(t, err, "(droid)")
 }

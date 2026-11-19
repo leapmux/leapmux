@@ -48,6 +48,7 @@ const (
 
 // fakeLaunchRecord is what one launch of the fake process saw.
 type fakeLaunchRecord struct {
+	PID         int      `json:"pid"`
 	Args        []string `json:"args"`
 	TasksDir    string   `json:"tasks_dir"`
 	RuntimeDir  string   `json:"runtime_dir"`
@@ -113,6 +114,7 @@ func forwardedArgs(args []string) []string {
 
 func runFakeRuntimeProcess(args []string) int {
 	record := fakeLaunchRecord{
+		PID:         os.Getpid(),
 		Args:        args,
 		TasksDir:    os.Getenv(envTasksDir),
 		RuntimeDir:  os.Getenv(envRuntimeDir),

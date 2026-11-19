@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent, workerTerminal } from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AvailableProvidersContext, createAvailableProvidersStore } from '~/hooks/useAvailableProviders'
 import { GitMode } from '~/hooks/useGitModeState'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { withPreferences } from '~/test-support/preferencesProvider'
@@ -90,6 +91,26 @@ async function openMenu(trigger: HTMLElement) {
 }
 
 describe('BranchContextMenu', () => {
+  it('mounts provider buttons only while the branch menu is open', async () => {
+    render(() => {
+      const store = createAvailableProvidersStore()
+      void store.refresh('w-1')
+      return (
+        <AvailableProvidersContext.Provider value={store}>
+          <BranchContextMenu workerId="w-1" isWorktree={false} actions={stubBranchMenuActions()} />
+        </AvailableProvidersContext.Provider>
+      )
+    })
+    await waitFor(() => expect(listProviders).toHaveBeenCalledOnce())
+    const trigger = screen.getByRole('button')
+    const providerButton = () => screen.queryByTestId(`menu-new-agent-${AgentProvider.CODEX}`)
+    expect(providerButton()).toBeNull()
+    await openMenu(trigger)
+    expect(providerButton()).toBeInTheDocument()
+    await fireEvent.click(trigger)
+    expect(providerButton()).toBeNull()
+  })
+
   // One item per git mode, so the label the user picks states the radio they
   // then see. A single "Change branch..." made the mode invisible until the
   // dialog opened.

@@ -464,12 +464,12 @@ func (a *Agent) Stop() {
 	active := a.activityStateLocked().Active
 	a.asks.clearLocked()
 	a.Mu.Unlock()
-	if !stopped && active {
+	if !stopped && active && a.IntentionalStopRequested() {
 		// Best effort. A failure falls through to the teardown below.
 		_, _ = a.sendCommand(CommandAbort, nil, abortWaitOnStop)
 	}
 	a.Process.Stop()
-	a.finishOutput(agent.MessageCompletionInterrupted)
+	a.finishOutput(a.ProcessExitCompletion())
 }
 
 // Wait blocks until the process exits, then keeps the unfinished output of an

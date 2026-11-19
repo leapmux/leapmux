@@ -8,13 +8,16 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coder/quartz"
+	gopsnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
@@ -95,6 +98,12 @@ type launchedRuntime struct {
 func launchRuntime(ctx context.Context, sink agent.ProviderServices, l runtimeLaunch) (*launchedRuntime, error) {
 	var lastErr error
 	for attempt := 0; attempt < launchAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if attempt > 0 {
+			slog.Warn("codewhale runtime lost its reserved port; retrying on another", "agent_id", l.opts.AgentID, "attempt", attempt+1)
+		}
 		launched, err := launchRuntimeOnce(ctx, sink, l)
 		if err == nil {
 			return launched, nil
@@ -103,7 +112,6 @@ func launchRuntime(ctx context.Context, sink agent.ProviderServices, l runtimeLa
 		if !errors.Is(err, errPortTaken) {
 			return nil, err
 		}
-		slog.Warn("codewhale runtime lost its reserved port; retrying on another", "agent_id", l.opts.AgentID, "attempt", attempt+1)
 	}
 	return nil, lastErr
 }
@@ -113,28 +121,35 @@ var errPortTaken = errors.New("another process took the reserved port")
 
 // launchRuntimeOnce starts one runtime process and waits for it to answer.
 func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runtimeLaunch) (*launchedRuntime, error) {
+	const startPhase = "runtime start"
 	registration := Registration()
 	port, err := providerkit.ReserveLoopbackPort()
 	if err != nil {
 		return nil, err
 	}
 	processCtx, cancel := context.WithCancel(ctx)
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(processCtx, launch.WrapSpec{
+	prepared, err := launch.Wrap(processCtx, launch.WrapSpec{
 		Shell:      l.opts.Shell,
 		LoginShell: l.opts.LoginShell,
 		Launch:     l.spec,
 		BaseArgs:   []string{"app-server", "--http", "--host", "127.0.0.1", "--port", strconv.Itoa(port)},
 		WorkingDir: l.opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd := prepared.Cmd
+
 	cmd.Env = runtimeEnv(cmd.Environ(), l.opts, l.store, l.token)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	a := newAgent(l.opts, sink, l.clock)
-	a.Process = providerkit.NewProcess(l.opts, providerkit.ProcessLaunch{ProviderName: codewhaleProviderName, ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, processCtx, cancel)
+	a.Process = providerkit.NewProcess(l.opts, providerkit.ProcessLaunch{ProviderName: codewhaleProviderName, ShutdownGrace: registration.ShutdownGrace}, pipes, processCtx, cancel)
 	a.stopProcess = cancel
 	a.store = l.store
 	a.children = newCodewhaleChildren(processCtx)
@@ -144,7 +159,7 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 	a.DrainStderr(stderr)
 
 	waiter := providerkit.NewListenWaiter(listeningLinePattern)
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		if !waiter.Observe(line) {
 			slog.Debug("codewhale runtime stdout", "agent_id", a.AgentID(), "line", shortText(string(line), 200))
 		}
@@ -153,16 +168,26 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 	fail := func(phase string, err error) (*launchedRuntime, error) {
 		a.Stop()
 		_ = a.Wait()
-		if strings.Contains(a.Stderr(), bindFailureText) {
-			return nil, errPortTaken
+		cause := a.FinalizeStartupCause(err)
+		if errors.Is(cause, launch.ErrNoCandidate) {
+			return nil, a.FormatStartupError(phase, cause)
 		}
-		return nil, a.FormatStartupError(phase, err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, a.FormatStartupError(phase, ctxErr)
+		}
+		var exit *exec.ExitError
+		bindAddress := fmt.Sprintf("%s 127.0.0.1:%d:", bindFailureText, port)
+		if phase == startPhase && a.Ready() && errors.As(cause, &exit) && exit.ExitCode() > 0 &&
+			strings.Contains(a.Stderr(), bindAddress) {
+			cause = fmt.Errorf("%w (%w)", errPortTaken, cause)
+		}
+		return nil, a.FormatStartupError(phase, cause)
 	}
 
 	timeout := l.opts.EffectiveStartupTimeout()
 	address, err := waiter.Wait(ctx, a.Clock(), a.ProcessDone(), timeout)
 	if err != nil {
-		return fail("runtime start", err)
+		return fail(startPhase, err)
 	}
 	endpoint, err := providerkit.NewHTTPEndpoint(address, providerkit.BearerAuth(l.token))
 	if err != nil {
@@ -172,8 +197,84 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 	if err := a.waitHealthy(ctx, timeout); err != nil {
 		return fail("runtime health", err)
 	}
-	recordStoreOwner(l.store, cmd.Process.Pid, port)
+	if identity, ok := runtimeListenerIdentity(ctx, a, port); ok {
+		recordStoreOwner(l.store, identity, port)
+	} else {
+		slog.Debug("the Codewhale runtime listener has no verified owner", "agent_id", l.opts.AgentID, "port", port)
+	}
 	return &launchedRuntime{agent: a, endpoint: endpoint}, nil
+}
+
+// A forwarding shell or Node launcher can have the same arguments as the
+// runtime. Verify ownership of the listener among this launch's processes.
+func runtimeListenerIdentity(ctx context.Context, a *Agent, port int) (procutil.ProcessIdentity, bool) {
+	identities, err := a.ObserveProcessTree(ctx)
+	if err != nil {
+		slog.Debug("observe the Codewhale runtime tree", "agent_id", a.AgentID(), "error", err)
+	}
+	if runtime.GOOS == "windows" {
+		return runtimeListenerFromSnapshot(ctx, identities, port, gopsnet.ConnectionsWithContext)
+	}
+	var listener procutil.ProcessIdentity
+	for _, identity := range identities {
+		if !identity.Runs() {
+			continue
+		}
+		connections, err := gopsnet.ConnectionsPidWithContext(ctx, "tcp", int32(identity.PID))
+		if err != nil {
+			continue
+		}
+		ownsListener := slices.ContainsFunc(connections, func(connection gopsnet.ConnectionStat) bool {
+			return isRuntimeListener(connection, port)
+		})
+		if !ownsListener || !identity.Runs() {
+			continue
+		}
+		if !listener.IsZero() {
+			return procutil.ProcessIdentity{}, false
+		}
+		listener = identity
+	}
+	return listener, !listener.IsZero()
+}
+
+func isRuntimeListener(connection gopsnet.ConnectionStat, port int) bool {
+	return connection.Status == "LISTEN" && connection.Laddr.IP == "127.0.0.1" && int(connection.Laddr.Port) == port
+}
+
+func runtimeListenerFromSnapshot(ctx context.Context, identities []procutil.ProcessIdentity, port int, readConnections func(context.Context, string) ([]gopsnet.ConnectionStat, error)) (procutil.ProcessIdentity, bool) {
+	live := make(map[int32]procutil.ProcessIdentity, len(identities))
+	for _, identity := range identities {
+		if identity.Runs() {
+			live[int32(identity.PID)] = identity
+		}
+	}
+	if len(live) == 0 || ctx.Err() != nil {
+		return procutil.ProcessIdentity{}, false
+	}
+	// On Windows a PID-filtered query still reads the whole TCP table.
+	connections, err := readConnections(ctx, "tcp4")
+	if err != nil || ctx.Err() != nil {
+		return procutil.ProcessIdentity{}, false
+	}
+	var listener procutil.ProcessIdentity
+	for _, connection := range connections {
+		if !isRuntimeListener(connection, port) {
+			continue
+		}
+		identity := live[connection.Pid]
+		if !identity.Runs() {
+			continue
+		}
+		if !listener.IsZero() && listener != identity {
+			return procutil.ProcessIdentity{}, false
+		}
+		listener = identity
+	}
+	if ctx.Err() != nil || !listener.Runs() {
+		return procutil.ProcessIdentity{}, false
+	}
+	return listener, true
 }
 
 // runtimeEnv builds the runtime's environment.
@@ -259,10 +360,9 @@ func processIdentity(ctx context.Context, pid int32) (createTime int64, ok bool)
 
 // recordStoreOwner writes the store's ownership record. A failure is logged and
 // otherwise ignored: the record only helps a later start reclaim an orphan.
-func recordStoreOwner(store codewhaleStore, runtimePID, port int) {
+func recordStoreOwner(store codewhaleStore, runtimeIdentity procutil.ProcessIdentity, port int) {
 	ctx := context.Background()
-	owner := storeOwner{RuntimePID: int32(runtimePID), Port: port, WorkerPID: int32(os.Getpid())}
-	owner.RuntimeCreateTime, _ = processIdentity(ctx, owner.RuntimePID)
+	owner := storeOwner{RuntimePID: int32(runtimeIdentity.PID), RuntimeCreateTime: runtimeIdentity.StartTime, Port: port, WorkerPID: int32(os.Getpid())}
 	owner.WorkerCreateTime, _ = processIdentity(ctx, owner.WorkerPID)
 	encoded, err := json.Marshal(owner)
 	if err != nil {

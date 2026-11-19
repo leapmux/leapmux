@@ -3,10 +3,15 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 
@@ -474,6 +479,37 @@ func TestPutAgentForTestAcceptsValueAndPointerProviders(t *testing.T) {
 	assert.True(t, m.HasAgent("pointer"))
 }
 
+func TestListAvailableProvidersReadsCurrentShellPath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell profile")
+	}
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile")
+	shell := filepath.Join(dir, "shell")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\n. "+shellquote.POSIX.Quote(profile)+"\nexec /bin/sh \"$@\"\n")
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	reg := testRegistration(provider)
+	reg.Locator = launch.Binaries("leapmux-shell-path-test")
+	registry := agenttest.MustNewRegistry(reg)
+	programDir := t.TempDir()
+	testutil.WriteExecutable(t, filepath.Join(programDir, "leapmux-shell-path-test"), "#!/bin/sh\nexit 0\n")
+
+	for _, tc := range []struct {
+		path string
+		want []leapmuxv1.AgentProvider
+	}{
+		{programDir, []leapmuxv1.AgentProvider{provider}},
+		{dir, nil},
+		{programDir, []leapmuxv1.AgentProvider{provider}},
+	} {
+		require.NoError(t, os.WriteFile(profile, []byte("export PATH="+shellquote.POSIX.Quote(tc.path)+"\n"), 0o600))
+		providers, complete := registry.ListAvailable(context.Background(), shell, false)
+		require.True(t, complete)
+		require.Equal(t, tc.want, providers)
+	}
+}
+
 func TestListAvailableProviders_ExpiredContextIsIncomplete(t *testing.T) {
 	// A provider found by a PATH probe, so the scan runs the shell that the
 	// cancelled context stops.
@@ -508,4 +544,39 @@ func TestListAvailableProvidersCompleteWhenTheShellAnswers(t *testing.T) {
 	providers, complete := r.ListAvailable(context.Background(), "/bin/sh", false)
 	assert.Empty(t, providers)
 	assert.True(t, complete, "every probe answered")
+}
+
+func TestListAvailableProvidersFindsProfileCommandsWithoutRunningThem(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a Bash profile fixture")
+	}
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "checkout")
+	neutral := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(checkout, "private-bin"), 0o700))
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	witness := filepath.Join(dir, "executed")
+	profile := filepath.Join(dir, "profile")
+	const callable = "leapmux_registry_profile"
+	const relative = "leapmux_registry_checkout"
+	require.NoError(t, os.WriteFile(profile, []byte("export PATH=./private-bin\n"+callable+"() { printf started > "+shellquote.POSIX.Quote(witness)+"; }\n"), 0o600))
+	t.Setenv("BASH_ENV", profile)
+	t.Setenv("TMPDIR", neutral)
+	testutil.WriteExecutable(t, filepath.Join(checkout, "private-bin", relative), "#!/bin/sh\nexit 0\n")
+	t.Chdir(checkout)
+	// The same shell can discover the relative executable in the checkout.
+	probe := exec.CommandContext(t.Context(), shell, "-c", "command -v "+relative)
+	output, err := probe.Output()
+	require.NoError(t, err)
+	assert.Equal(t, "./private-bin/"+relative+"\n", string(output))
+	first := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	first.Locator = launch.Binaries(callable)
+	second := testRegistration(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	second.Locator = launch.Binaries(relative)
+	registry := agenttest.MustNewRegistry(first, second)
+	providers, complete := registry.ListAvailable(t.Context(), shell, false)
+	require.True(t, complete)
+	assert.Equal(t, []leapmuxv1.AgentProvider{first.Provider}, providers)
+	assert.NoFileExists(t, witness)
 }

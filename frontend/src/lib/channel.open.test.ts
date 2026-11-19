@@ -163,12 +163,14 @@ describe('ChannelManager openChannel', () => {
       rpcTimeoutFn: () => 20,
     })
     try {
-      const openPromise = brokenMgr.openChannel('w1')
+      const pingFailure = expect(brokenMgr.openChannel('w1')).rejects.toThrow(
+        `RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`,
+      )
       await h.settle()
       brokenWs.simulateOpen()
       await h.settle()
       // The worker never answers the ping.
-      await expect(openPromise).rejects.toThrow(`RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`)
+      await pingFailure
       expect(closed).toHaveLength(1)
     }
     finally {

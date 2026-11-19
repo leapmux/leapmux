@@ -57,6 +57,9 @@ vi.mock('~/stores/workerInfo.store', () => ({
 vi.mock('~/api/workerRpc', () => ({
   workerAgent: {
     openAgent: vi.fn(),
+    listAvailableProviders: vi.fn(async () => ({
+      providers: [AgentProvider.CLAUDE_CODE],
+    })),
   },
   workerGit: {
     getGitWorkingTreeState: vi.fn(async () => ({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: false })),
@@ -112,7 +115,6 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
     onCreate: mockCreate,
     onClose: vi.fn(),
     startPoint: { kind: 'directory' } as WorkspaceStartPoint,
-    availableProviders: [AgentProvider.CLAUDE_CODE],
     repoGitStore: createRepoGitStore(),
     ...overrides,
   }

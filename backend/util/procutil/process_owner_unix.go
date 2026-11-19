@@ -3,6 +3,7 @@
 package procutil
 
 import (
+	"context"
 	"errors"
 	"os"
 	"syscall"
@@ -21,6 +22,10 @@ func identifyStartedProcess(process *os.Process) (ProcessIdentity, bool) {
 func (*processOwnerPlatform) attach(ProcessIdentity) error { return nil }
 
 func (*processOwnerPlatform) attachAndResume(ProcessIdentity) error { return nil }
+
+func (o *ProcessOwner) findDescendantsLocked(ctx context.Context) ([]ProcessIdentity, error) {
+	return o.findHostDescendantsLocked(ctx)
+}
 
 func (*processOwnerPlatform) signalRoot(root ProcessIdentity, signal syscall.Signal) error {
 	if root.IsZero() || !root.Runs() {

@@ -41,7 +41,7 @@ const pins = {
 // test-scripts` runs this file on Linux amd64, and `task test-cache-native`
 // runs it on macOS, Windows and Linux arm64, so CI runs every real extractor.
 // The Windows branch also runs below against a recording runner, which
-// checks the PowerShell command on every host.
+// checks the Windows tar command on every host.
 const currentOs = process.env.RUNNER_OS
   ?? (process.platform === 'win32'
     ? 'Windows'
@@ -472,37 +472,38 @@ describe('extractArchive', () => {
 
   it('extracts a zip archive with the platform extractor', () => {
     const dir = fixture()
-    const archive = join(dir, 'protoc.zip')
+    const archive = join(dir, 'protoc [fixture]\'s.zip')
     writeFileSync(archive, createStoredZip({
       'bin/protoc': 'binary',
       'include/google/protobuf/descriptor.proto': 'syntax;',
     }))
-    const destination = join(dir, 'out')
+    const destination = join(dir, 'out [fixture]\'s')
     extractArchive(archive, destination, { os: currentOs })
     expect(readFileSync(join(destination, 'bin', 'protoc'), 'utf8')).toBe('binary')
     expect(readFileSync(join(destination, 'include', 'google', 'protobuf', 'descriptor.proto'), 'utf8')).toBe('syntax;')
   })
 
-  it('passes the Windows paths to Expand-Archive through the environment', () => {
+  it('passes literal Windows paths directly to the system tar', () => {
     const dir = fixture()
     const calls = []
     const archive = 'C:\\Users\\O\'Brien\\work\\task.zip'
     const destination = join(dir, 'out')
     extractArchive(archive, destination, {
       os: 'Windows',
-      run: (command, args, options) => {
-        calls.push({ command, args, options })
+      systemRoot: 'D:\\Windows',
+      run: (command, args) => {
+        calls.push({ command, args })
         return { status: 0, stdout: '', stderr: '' }
       },
     })
     expect(calls).toHaveLength(1)
-    expect(calls[0].command).toBe('powershell.exe')
-    // A quote in a path cannot end a string of the command, because the
-    // command holds no path.
-    expect(calls[0].args.at(-1)).toBe('Expand-Archive -LiteralPath $env:LEAPMUX_EXTRACT_ARCHIVE -DestinationPath $env:LEAPMUX_EXTRACT_DESTINATION -Force')
-    expect(calls[0].args.join(' ')).not.toContain('Brien')
-    expect(calls[0].options.env.LEAPMUX_EXTRACT_ARCHIVE).toBe(archive)
-    expect(calls[0].options.env.LEAPMUX_EXTRACT_DESTINATION).toBe(destination)
+    expect(calls[0].command).toBe('D:\\Windows\\System32\\tar.exe')
+    expect(calls[0].args).toEqual([
+      '-xf',
+      archive,
+      '-C',
+      destination,
+    ])
   })
 
   it('reports the output of a failed extractor', () => {

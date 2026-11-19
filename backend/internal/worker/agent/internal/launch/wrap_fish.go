@@ -1,16 +1,15 @@
 package launch
 
 import (
+	"fmt"
 	"strings"
-
-	"github.com/leapmux/leapmux/internal/util/shellquote"
 )
 
 func fishClearEnv(keys []string) string {
 	var body strings.Builder
 	for _, key := range keys {
 		// An unexported global shadows a universal without changing its saved value.
-		body.WriteString("set --global --unexport " + key + "; or exit $status; ")
+		body.WriteString("builtin set --global --unexport " + key + "; or builtin exit $status; ")
 	}
 	return body.String()
 }
@@ -18,34 +17,33 @@ func fishClearEnv(keys []string) string {
 func fishSetEnv(pins []environmentPin) string {
 	var body strings.Builder
 	for _, pin := range pins {
-		body.WriteString("set --global --export " + pin.target + " \"$" + pin.source + "\"; or exit $status; ")
-		body.WriteString("set --global --unexport " + pin.source + "; or exit $status; ")
+		body.WriteString("builtin set --global --export " + pin.target + " \"$" + pin.source + "\"; or builtin exit $status; ")
+		body.WriteString("builtin set --global --unexport " + pin.source + "; or builtin exit $status; ")
 	}
 	return body.String()
 }
 
-func buildFishCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
-	quote := shellquote.POSIX.Quote
-	arguments := make([]string, 0, len(spec.BaseArgs))
-	for _, argument := range spec.BaseArgs {
-		arguments = append(arguments, quote(argument))
+func buildFishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
+	var script strings.Builder
+	script.WriteString(fishClearEnv(spec.StripEnvKeys) + fishSetEnv(spec.pins))
+	if len(prepared.candidates) != 0 {
+		script.WriteString(fishLookupSetup)
+		fmt.Fprintf(&script, "set -l __lm_selected\nfor __lm_candidate in %s\nset __lm_selected \"$__lm_candidate\"\n__leapmux_lookup \"$__lm_selected\" command\nif test \"$__lm_kind\" != missing; break; end\nend\n", strings.Join(quotedArguments(prepared.candidates, fishQuote), " "))
+		fmt.Fprintf(&script, "if test \"$__lm_kind\" = missing; builtin printf '\\n%%s\\n' %s >&2; builtin exit 127; end\n", fishQuote(prepared.exhaustedMarker))
+	} else {
+		fmt.Fprintf(&script, "set __lm_kind external\nset __lm_path %s\n", fishQuote(spec.Launch.Program))
 	}
-	command := "exec " + quote(spec.Launch.Program) + " " + strings.Join(arguments, " ")
-	prefix := fishClearEnv(spec.StripEnvKeys) + fishSetEnv(spec.pins)
-	ready := "echo " + quote(delimiter) + "; "
-	if spec.EnvGated == nil {
-		return prefix + ready + command
+	fmt.Fprintf(&script, "set -l __lm_args %s\n", strings.Join(quotedArguments(spec.BaseArgs, fishQuote), " "))
+	if gate := spec.EnvGated; gate != nil {
+		conditions := make([]string, len(gate.EnvVars))
+		for index, name := range gate.EnvVars {
+			conditions[index] = `test -n "$` + name + `"`
+		}
+		fmt.Fprintf(&script, "if %s\n%selse\n%sset -a __lm_args %s\nend\n",
+			strings.Join(conditions, "; or "), protocolLine("fish", prepared.MetaPrefix+gate.MetaKey+"=false", true),
+			protocolLine("fish", prepared.MetaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, fishQuote), " "))
 	}
-	gate := spec.EnvGated
-	conditions := make([]string, 0, len(gate.EnvVars))
-	for _, variable := range gate.EnvVars {
-		conditions = append(conditions, "test -n \"$"+variable+"\"")
-	}
-	extra := make([]string, 0, len(gate.Args))
-	for _, argument := range gate.Args {
-		extra = append(extra, quote(argument))
-	}
-	return prefix + "if " + strings.Join(conditions, "; or ") + "; " +
-		"echo " + quote(metaPrefix+gate.MetaKey+"=false") + "; " + ready + command + "; else; " +
-		"echo " + quote(metaPrefix+gate.MetaKey+"=true") + "; " + ready + command + " " + strings.Join(extra, " ") + "; end"
+	script.WriteString(protocolLine("fish", prepared.Delimiter, spec.EnvGated == nil))
+	script.WriteString("if test \"$__lm_kind\" = external; exec \"$__lm_path\" $__lm_args; else; $__lm_selected $__lm_args; end\nbuiltin exit $status\n")
+	return script.String()
 }

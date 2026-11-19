@@ -3,7 +3,6 @@ package antigravity
 import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func (a *Agent) Stop() { a.stop(nil) }
@@ -26,7 +25,8 @@ func (a *Agent) stop(expected *cascadeState) {
 	a.awaitStreams(group, antigravityStopTimerTag)
 	a.quotaWork.CloseAndWait()
 	a.approvalWork.CloseAndWait()
-	a.finishCascades(states, agent.MessageCompletionInterrupted, bgtask.StatusStopped)
+	completion := a.ProcessExitCompletion()
+	a.finishCascades(states, completion, agent.IncompleteTaskStatus(completion))
 	a.Process.Stop()
 	if a.rpc.endpoint != nil {
 		a.rpc.endpoint.Close()

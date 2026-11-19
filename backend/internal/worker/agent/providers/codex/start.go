@@ -103,7 +103,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
@@ -113,6 +113,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		BaseArgs:   codexBaseArgs(),
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd := prepared.Cmd
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	if opts.LoginShell {
@@ -120,7 +125,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +135,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// reader reads the permission settings to decide a standing approval, so a write
 	// after `go ReadOutputLoop` would race it.
 	a := &Agent{
-		JSONRPCProcess:    providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)},
+		JSONRPCProcess:    providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)},
 		model:             opts.Model(),
 		effort:            opts.Effort(),
 		workingDir:        opts.WorkingDir,
@@ -150,7 +155,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.DrainStderr(stderrPipe)
 
 	// Read stdout JSONL in background.
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.ReadOutputLoop(scanner, a.handleOutput)
 
 	cleanup := func() {

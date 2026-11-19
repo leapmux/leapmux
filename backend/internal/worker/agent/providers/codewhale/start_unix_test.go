@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,9 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 // startHome makes a home whose Codewhale state the test owns, so a start never
@@ -119,6 +122,56 @@ func TestStartOpensAThreadOnAFreshStore(t *testing.T) {
 
 	require.NoError(t, a.SendInput("Say hello.", nil))
 	awaitReply(t, sink)
+}
+
+func TestStartRecordsTheNativeListenerBehindAProfileFunction(t *testing.T) {
+	record := installFakeCodewhale(t, "")
+	runtimePath, err := exec.LookPath("codewhale")
+	require.NoError(t, err)
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	profile := filepath.Join(t.TempDir(), "profile")
+	require.NoError(t, os.WriteFile(profile, []byte("codewhale() { "+shellquote.POSIX.Quote(runtimePath)+" \"$@\"; }\n"), 0o600))
+	t.Setenv("BASH_ENV", profile)
+	opts := startOptions(t, startHome(t), optionmap.Map{})
+	opts.Shell = shell
+	a, _ := startAgent(t, opts)
+	runs := readLaunchRecords(t, record)
+	require.Len(t, runs, 1)
+	require.NotEqual(t, a.Cmd().Process.Pid, runs[0].PID, "the shell stays alive around the runtime")
+
+	bytes, err := os.ReadFile(filepath.Join(a.store.dir, ownerFileName))
+	require.NoError(t, err)
+	var owner storeOwner
+	require.NoError(t, json.Unmarshal(bytes, &owner))
+	assert.Equal(t, int32(runs[0].PID), owner.RuntimePID, "the persisted identity must name the native listener")
+}
+
+func TestRuntimeDoesNotRetryExhaustionAfterABindWarning(t *testing.T) {
+	shell, err := exec.LookPath("bash")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "profile-calls")
+	profile := filepath.Join(dir, "profile")
+	require.NoError(t, os.WriteFile(profile, []byte("printf 'attempt\\n' >> "+shellquote.POSIX.Quote(calls)+
+		"\nprintf 'Failed to bind during profile setup\\n' >&2\n"), 0o600))
+	t.Setenv("BASH_ENV", profile)
+	t.Setenv("PATH", dir)
+	opts := agent.Options{AgentID: "cw-bind-warning", Shell: shell, WorkingDir: dir, StartupTimeout: 30 * time.Second}
+	started, err := launchRuntime(t.Context(), agent.NewProviderServices(&agenttest.ControlSink{}), runtimeLaunch{
+		opts: opts, spec: launch.ShellCommands("leapmux-codewhale-missing"), store: codewhaleStore{dir: dir},
+		token: "test-token", clock: quartz.NewReal(),
+	})
+	require.Nil(t, started)
+	require.ErrorIs(t, err, launch.ErrNoCandidate)
+	assert.ErrorContains(t, err, "leapmux-codewhale-missing")
+	assert.ErrorContains(t, err, "Failed to bind during profile setup")
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 127, exit.ExitCode())
+	history, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	assert.Equal(t, "attempt\n", string(history))
 }
 
 func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {

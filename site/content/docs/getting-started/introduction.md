@@ -30,11 +30,11 @@ LeapMux is built for two overlapping audiences:
 
 ## Supported coding agents
 
-LeapMux supports {{< agent-provider-count >}} coding-agent providers. A provider only appears in the agent picker if its installation is detected on the machine that will run your agents — its CLI binary, or ZCode's desktop application — so the list you see depends on what is installed.
+LeapMux supports {{< agent-provider-count >}} coding-agent providers. The picker lists the providers the selected Worker can resolve in its configured shell. A command on PATH, a profile alias, or a profile function can supply a provider. LeapMux can also use ZCode's desktop installation.
 
 Every provider is first-class: you get a consistent core experience — chat, streamed tool calls, permission prompts, and session resume — with all of them. The plan/todo sidebar appears for agents whose CLI emits task/todo tools or reports a session goal. What you can do varies only by what each agent's own CLI offers; the [feature matrix](/docs/using/coding-agents/#feature-matrix) states each provider's exact support and limits.
 
-| Agent | Detected binary |
+| Agent | Command |
 |-------|-----------------|
 | Claude Code | `claude` |
 | Codex | `codex` |

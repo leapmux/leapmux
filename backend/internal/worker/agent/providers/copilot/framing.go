@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 const copilotHeaderLimit = 8192
@@ -30,21 +31,18 @@ func newCopilotScanner(reader io.Reader, delimiter string, limit int) *bufio.Sca
 		return scanner
 	}
 	scanner.Buffer(make([]byte, min(agent.StdoutScannerStartBuf, limit+copilotHeaderLimit)), limit+copilotHeaderLimit)
-	inPreamble := delimiter != ""
-	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+	shellLines := func(data []byte, atEOF bool) (int, []byte, error) {
 		maximum := min(limit, agent.LiveMaxMessageSize())
-		if inPreamble {
-			advance, line, err := bufio.ScanLines(data, atEOF)
-			if len(line) > maximum || (advance == 0 && len(data) > maximum) {
-				return 0, nil, errors.New("the Copilot preamble exceeds the message size limit")
-			}
-			if bytes.Equal(bytes.TrimSpace(line), []byte(delimiter)) {
-				inPreamble = false
-			}
-			return advance, line, err
+		advance, line, err := bufio.ScanLines(data, atEOF)
+		if len(line) > maximum || (advance == 0 && len(data) > maximum) {
+			return 0, nil, errors.New("the Copilot preamble exceeds the message size limit")
 		}
-		return splitCopilotFrame(data, atEOF, maximum)
-	})
+		return advance, line, err
+	}
+	nativeFrames := func(data []byte, atEOF bool) (int, []byte, error) {
+		return splitCopilotFrame(data, atEOF, min(limit, agent.LiveMaxMessageSize()))
+	}
+	scanner.Split(launch.PreambleSplit(delimiter, shellLines, nativeFrames))
 	return scanner
 }
 

@@ -1286,7 +1286,7 @@ func (a *Agent) confirmedZCodeSettingsLocked() optionmap.Map {
 // carries the complete confirmed state so expiring an older writer loses no effect.
 func (a *Agent) captureZCodeSessionObservationLocked() {
 	a.Mu.Lock()
-	if a.StoppedLocked() || a.ProcessExitedLocked() || a.IntentionalStopRequested() || a.sessionChanging || a.sessionID == "" {
+	if a.StoppedLocked() || a.OutputDispatchFinishedLocked() || a.IntentionalStopRequested() || a.sessionChanging || a.sessionID == "" {
 		a.Mu.Unlock()
 		return
 	}

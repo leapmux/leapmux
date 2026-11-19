@@ -33,47 +33,55 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// The app-server has no working-directory flag: it takes the workspace path in
 	// every request. Wrap still sets cmd.Dir, which is what the
 	// tools it runs inherit.
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     spec,
 		BaseArgs:   []string{"app-server", "--stdio"},
 		WorkingDir: opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	abortPreparation := func(err error) (agent.Agent, error) {
+		cancel()
+		return nil, errors.Join(err, prepared.Close())
+	}
+	cmd := prepared.Cmd
+
 	// Wrap already prepended spec.PrefixArgs and seeded
 	// spec.Env onto cmd, so this is the same finalization every provider runs.
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 	// Read credentials before the process starts, using its finalized environment
 	// and shell profile. Current desktops can sign in without config.json.
-	accountEnvironment, err := resolveZCodeAccountEnvironment(ctx, opts, cmd.Environ())
+	reusableEnvironment := prepared.ReusableEnvironment()
+	accountEnvironment, err := resolveZCodeAccountEnvironment(ctx, opts, reusableEnvironment)
 	if err != nil {
-		cancel()
-		return nil, err
+		return abortPreparation(err)
 	}
 	opts.HomeDir = accountEnvironment.home
 	credentials := accountEnvironment.credentials
 	catalog, err := loadZCodeCatalog(opts.HomeDir)
 	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
-		cancel()
-		return nil, err
+		return abortPreparation(err)
 	}
 	storeLocation, err := zcodeToolStorePaths(ctx, agent.StoredSessionQuery{
-		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: cmd.Environ(),
+		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: reusableEnvironment,
 		Shell: opts.Shell, LoginShell: opts.LoginShell,
 	}, newZCodeStorageQuery(&spec))
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("resolve the ZCode native store: %w", err)
+		return abortPreparation(fmt.Errorf("resolve the ZCode native store: %w", err))
 	}
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		Process:                   providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "zcode", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel),
 		sink:                      sink,
 		workingDir:                opts.WorkingDir,
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
@@ -119,7 +127,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.DrainStderr(stderrPipe)
 
-	scanner := agent.NewStdoutScanner(stdout)
+	scanner := a.NewOutputScanner(stdout)
 	go a.ReadOutput(scanner, a.interceptResponse, a.handleOutput)
 
 	cleanup := func() {

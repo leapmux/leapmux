@@ -68,18 +68,6 @@ func (t *ProcessTable) index(records []ProcessRecord) {
 	}
 }
 
-func SnapshotProcessTable(ctx context.Context) (*ProcessTable, error) {
-	processes, err := process.ProcessesWithContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return buildProcessTable(ctx, processes, func(ctx context.Context, candidate *process.Process) (int32, error) {
-		return candidate.PpidWithContext(ctx)
-	}, func(ctx context.Context, candidate *process.Process) (int64, error) {
-		return candidate.CreateTimeWithContext(ctx)
-	})
-}
-
 // buildProcessTable accepts readers for deterministic ownership failure tests.
 func buildProcessTable(ctx context.Context, processes []*process.Process, readParent func(context.Context, *process.Process) (int32, error), readStart func(context.Context, *process.Process) (int64, error)) (*ProcessTable, error) {
 	table := newProcessTable(len(processes))

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
@@ -33,16 +32,21 @@ func prepareConnection(ctx context.Context, opts agent.Options, registration age
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	pinned := []string{"MUSE_NO_AUTO_UPDATE=1"}
-	if env == nil {
-		env = os.Environ()
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
+		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec,
+		BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinned, Environment: env,
+	})
+	if err != nil {
+		cancel()
+		return nil, err
 	}
-	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: spec, BaseArgs: args, WorkingDir: opts.WorkingDir, SetEnv: pinned, Environment: env})
+	cmd := prepared.Cmd
 	cmd.Env = envutil.PinEnv(providerkit.FinalizeAgentEnv(cmd.Environ(), opts), pinned...)
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
-	c := &connection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Muse Code", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: delimiter, PreambleMetaPrefix: prefix}, pipes, ctx, cancel)}}
+	c := &connection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Muse Code", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)}}
 	c.stdout, c.stderr = pipes.Stdout(), pipes.Stderr()
 	return c, nil
 }
@@ -67,7 +71,7 @@ func (c *connection) initialize(opts agent.Options, handle providerkit.LineHandl
 	c.DrainStderr(c.stderr)
 	go func() {
 		defer close(c.outputDone)
-		c.ReadOutputLoop(agent.NewStdoutScanner(c.stdout), func(line *providerkit.ParsedLine) {
+		c.ReadOutputLoop(c.NewOutputScanner(c.stdout), func(line *providerkit.ParsedLine) {
 			if handle != nil {
 				handle(line)
 			} else if line.HasID() {

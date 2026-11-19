@@ -273,7 +273,9 @@ func TestReclaimStorePreservesVerifiedStopErrors(t *testing.T) {
 func TestRecordStoreOwnerNamesThisWorkerAndTheRuntime(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
-	recordStoreOwner(store, os.Getpid(), 4242)
+	identity, present := procutil.IdentifyProcess(os.Getpid())
+	require.True(t, present)
+	recordStoreOwner(store, identity, 4242)
 
 	data, err := os.ReadFile(filepath.Join(store.dir, ownerFileName))
 	require.NoError(t, err)
@@ -287,5 +289,5 @@ func TestRecordStoreOwnerNamesThisWorkerAndTheRuntime(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist, "the record is written by rename")
 
 	// A store that vanished takes no record and raises nothing.
-	recordStoreOwner(codewhaleStore{dir: filepath.Join(store.dir, "absent")}, os.Getpid(), 1)
+	recordStoreOwner(codewhaleStore{dir: filepath.Join(store.dir, "absent")}, identity, 1)
 }

@@ -925,22 +925,14 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// reach it. The worker owner's own agents (via the local-IPC remote CLI,
 	// which dispatches with the owner's user id) still pass this gate.
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, _ *leapmuxv1.ListAvailableProvidersRequest, sender channel.ResponseWriter) {
-		// Discovery probes run in parallel (one goroutine per provider), so
-		// this deadline is effectively a per-probe wall-clock cap. Uses the
+		// Discovery runs within one request deadline. Use the
 		// API timeout rather than startup timeout: probing binary presence
 		// should never take as long as the MCP-heavy agent handshake.
-		// Derived from the inbound ctx so a dialog dismissal cancels every
-		// probe in flight.
 		ctx, cancel := context.WithTimeout(ctx, svc.agentAPITimeout())
 		defer cancel()
 		providers, complete := svc.Agents.Registry().ListAvailable(ctx, svc.agentShell(), svc.agentLoginShell())
 		if !complete {
-			// An INCOMPLETE scan is not evidence of absence. A probe
-			// proves nothing when its deadline killed it, and equally
-			// when the shell could not start at all, a login profile
-			// exited non-zero, or a fork failed under load. The factory
-			// refuses to cache any of those, so a retry only re-runs what
-			// did not answer.
+			// The shell may fail before any executable lookup runs.
 			sendUnavailable(sender, "provider scan did not finish; retry")
 			return
 		}

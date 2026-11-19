@@ -46,7 +46,9 @@ func newFakeHistoryCLI(t *testing.T, body string) fakeHistoryCLI {
 }
 
 func (c fakeHistoryCLI) plugin() clineProvider {
-	return clineProvider{cli: launch.Binaries(c.program)}
+	return clineProvider{cli: launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+		return launch.Spec{Program: c.program}, launch.Found
+	})}
 }
 
 func (c fakeHistoryCLI) args(t *testing.T) []string {

@@ -305,6 +305,26 @@ describe('DropdownMenu', () => {
     expect(popover).toBeInTheDocument()
     expect(screen.getByText('Content')).toBeInTheDocument()
   })
+
+  it('dismisses a menu at a caller-supplied fixed point when its pane scrolls', () => {
+    const anchor = new DOMRect(30, 40, 0, 0)
+    render(() => (
+      <>
+        <div data-testid="scrolling-pane" />
+        <DropdownMenu
+          anchorRef={() => anchor}
+          open={() => true}
+          data-testid="fixed-point-menu"
+        >
+          <button role="menuitem">Copy</button>
+        </DropdownMenu>
+      </>
+    ))
+    const popover = screen.getByTestId('fixed-point-menu')
+    expect(popover.matches(':popover-open')).toBe(true)
+    screen.getByTestId('scrolling-pane').dispatchEvent(new Event('scroll'))
+    expect(popover.matches(':popover-open')).toBe(false)
+  })
 })
 
 describe('DropdownMenu nested-submenu dismiss', () => {
@@ -551,7 +571,28 @@ describe('DropdownMenu contextMenuFor', () => {
     expect(e.defaultPrevented).toBe(true)
   })
 
-  it('hides a press-anchored menu when anything else scrolls', () => {
+  it('keeps a press-anchored menu open when a sibling pane scrolls', () => {
+    vi.useFakeTimers()
+    try {
+      const { row, popover } = renderRowMenu()
+      const transcript = document.createElement('div')
+      row.after(transcript)
+      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+      expect(popover.matches(':popover-open')).toBe(true)
+
+      transcript.dispatchEvent(new Event('scroll'))
+      expect(popover.matches(':popover-open')).toBe(true)
+
+      row.parentElement!.dispatchEvent(new Event('scroll'))
+      expect(popover.matches(':popover-open')).toBe(false)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('hides a press-anchored menu when the document scrolls', () => {
     vi.useFakeTimers()
     try {
       const { row, popover } = renderRowMenu()

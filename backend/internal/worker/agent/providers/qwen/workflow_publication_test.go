@@ -90,6 +90,8 @@ func TestQwenWorkflowFinalPublicationRecoversAfterItsNativeReaderRetires(t *test
 			queue.ConfigureRetry(t.Context(), clock, nil)
 			t.Cleanup(queue.StopRetries)
 			created, stopped := testutil.NewTimerTraps(t, clock, agent.OutputRetryTimerTag)
+			workflowTickerStop := clock.Trap().TickerStop("qwen", "workflow")
+			t.Cleanup(workflowTickerStop.Close)
 			a.SetSinkForTest(agent.NewOrderedProviderServices(queue, services))
 
 			a.HandleOutput(rawUpdate(t, qwenWorkflowOpenFrame))
@@ -135,6 +137,9 @@ func TestQwenWorkflowFinalPublicationRecoversAfterItsNativeReaderRetires(t *test
 				assert.Zero(t, sink.acceptedFinalClosures.Load())
 			}
 
+			// The reader clears its state before it stops the ticker. Join the
+			// stop before advancing to the output retry timer.
+			workflowTickerStop.MustWait(ctx).MustRelease(ctx)
 			delay := testutil.WaitForTimer(t, ctx, created)
 			sink.blocked.Store(false)
 			testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopped)

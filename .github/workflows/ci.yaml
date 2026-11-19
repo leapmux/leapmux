@@ -50,6 +50,7 @@ jobs:
         uses: ./.github/actions/setup-build
         with:
           rust-components: clippy,rustfmt
+          test-shells: 'true'
           # Only push-to-main saves the compiled caches; see the input's docs.
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
           monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
@@ -245,6 +246,7 @@ jobs:
         with:
           # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
+          test-shells: 'true'
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
           monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
 
@@ -353,6 +355,7 @@ jobs:
         with:
           # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
+          test-shells: 'true'
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
           monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
 

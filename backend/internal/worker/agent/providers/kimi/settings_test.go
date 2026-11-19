@@ -502,6 +502,9 @@ func TestKimiPublicStepUsageUsesTheNewestOwnedMainRequest(t *testing.T) {
 		require.True(t, valid)
 		return fields
 	}
+	usageUpdateCount := func() int {
+		return len(rig.sink.SessionInfoValues(contracts.SessionInfoKeyContextUsage))
+	}
 	usage := func(turn string, index int, input, output string) string {
 		return fmt.Sprintf(`{"type":"turn.updated","turn_id":%q,"step":{"index":%d,"outcome":"completed","started_at":"2026-11-18T00:00:00Z","usage":{"input_other":%s,"output":%s,"input_cache_read":90,"input_cache_creation":0}}}`, turn, index, input, output)
 	}
@@ -515,7 +518,7 @@ func TestKimiPublicStepUsageUsesTheNewestOwnedMainRequest(t *testing.T) {
 	assert.EqualValues(t, 120, fields[contracts.ContextUsageFieldContextTokens])
 	assert.EqualValues(t, 262144, fields[contracts.ContextUsageFieldContextWindow])
 
-	before := rig.sink.SessionInfoCount()
+	before := usageUpdateCount()
 	rig.conversationFrame(t, facts)
 	rig.conversationFrame(t, usage("t0", 1, "37", "8"))
 	rig.conversationFrame(t, usage("t0", 3, "5.5", "1"))
@@ -524,7 +527,7 @@ func TestKimiPublicStepUsageUsesTheNewestOwnedMainRequest(t *testing.T) {
 	adoptNativeKimiChild(t, rig.agent, "agent-0")
 	rig.conversationAgentFrame(t, "agent-0", `{"type":"turn.started","turn":{"turn_id":"child-turn","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 	rig.conversationAgentFrame(t, "agent-0", usage("child-turn", 6, "63", "9"))
-	assert.Equal(t, before, rig.sink.SessionInfoCount())
+	assert.Equal(t, before, usageUpdateCount())
 	assert.Equal(t, fields, readout())
 
 	// Native end headers carry the request summaries even when their live updates
@@ -542,8 +545,11 @@ func TestKimiPublicStepUsageUsesTheNewestOwnedMainRequest(t *testing.T) {
 
 	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:02Z","steps":[]}}`)
 	rig.conversationFrame(t, usage("t1", 1, "51", "7"))
-	before = rig.sink.SessionInfoCount()
+	before = usageUpdateCount()
+	// A background quota update can arrive between these observations.
+	used := 0.5
+	rig.agent.publishRateLimits(kimiRateLimitValues(kimiPlanUsages{Limit5h: &kimiQuotaWindow{UsedRatio: &used}}))
 	rig.conversationFrame(t, usage("t0", 7, "99", "8"))
-	assert.Equal(t, before, rig.sink.SessionInfoCount())
+	assert.Equal(t, before, usageUpdateCount())
 	assert.EqualValues(t, 51, readout()[contracts.ContextUsageFieldInputTokens])
 }

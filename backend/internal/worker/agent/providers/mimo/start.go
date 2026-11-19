@@ -51,7 +51,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 
-	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
+	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       spec,
@@ -60,22 +60,28 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		BaseArgs:     mimoServeArgs,
 		WorkingDir:   opts.WorkingDir,
 	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd := prepared.Cmd
+
 	cmd.Env = mimoLaunchEnv(cmd.Environ(), secret, opts)
 
-	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 	a := newAgentState(sink, mimoRPC{timeout: opts.EffectiveAPITimeout()}, opts.WorkingDir, quartz.NewReal())
-	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, StopSignal: mimoStopSignal}, pipes, ctx, cancel)
+	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, StopSignal: mimoStopSignal}, pipes, ctx, cancel)
 	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 	a.DrainStderr(stderrPipe)
 
 	listening := providerkit.NewListenWaiter(mimoListenPattern)
-	go a.ReadLines(agent.NewStdoutScanner(stdout), func(line []byte) {
+	go a.ReadLines(a.NewOutputScanner(stdout), func(line []byte) {
 		if !listening.Observe(line) {
 			slog.Debug("mimo stdout", "agent_id", a.AgentID(), "line", string(line))
 		}

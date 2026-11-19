@@ -143,7 +143,6 @@ interface TileRendererOpts {
     isActiveWorkspaceMutatable: () => boolean
     isActiveWorkspaceArchived: () => boolean
     activeWorkspace: () => { id: string } | null
-    getCurrentTabContext: () => TabContext
     getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   }
   /**
@@ -268,7 +267,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     isActiveWorkspaceMutatable,
     isActiveWorkspaceArchived,
     activeWorkspace,
-    getCurrentTabContext,
     getMruAgentContext,
   } = opts.workspace
   const { handleTabSelect, handleTabClose, probeBusy, setIsTabEditing, isTabEditing, closingTabKeys } = opts.tab
@@ -736,13 +734,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
    * reactive. The optional fields are omitted while their loads answer
    * undefined: TabBar's prop types take no explicit undefined.
    */
-  const buildNewTabProps = (tileId: string) => {
-    const providers = agentOps.availableProviders()
+  const buildNewTabProps = (tileId: string, workerId: string) => {
+    const providers = agentOps.providerStore.providers(workerId)
     const shells = termOps.availableShells()
     const defaultShell = termOps.defaultShell()
     const loadingProvider = newAgentLoadingProvider()
     return {
       showAddButton: isActiveWorkspaceMutatable(),
+      onOpenMenu: () => activateTile(tileId),
       onNewAgent: (provider?: AgentProvider) => {
         activateTile(tileId)
         return agentOps.handleOpenAgent(provider)
@@ -779,7 +778,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         : {}),
       newTerminalLoading: newTerminalLoading(),
       newShellLoading: newShellLoading(),
-      hasActiveTabContext: !!getCurrentTabContext().workerId,
+      hasActiveTabContext: Boolean(workerId),
     }
   }
 
@@ -789,6 +788,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // fallback path (mobile layout's focused-tile bar) creates one here
     // so it re-fires when `mainPredicates` updates without tileId
     // changing.
+    const workerId = () => selection.activeTabForTile(tileId)?.workerId ?? ''
     const fallbackActions = createMemo(() => buildTileActions(tileId))
     const liveActions = actions ?? fallbackActions
     return (
@@ -806,7 +806,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         onClose={handleTabClose}
         onRename={(tab, title) => renameTab({ view, metadata }, tab, title)}
-        newTab={buildNewTabProps(tileId)}
+        newTab={buildNewTabProps(tileId, workerId())}
         {...(isMobileLayout()
           ? {
               mobile: {

@@ -1,7 +1,6 @@
 import type { Component } from 'solid-js'
 import type { WorkspaceStartPoint } from './workspaceStartPoint'
 import type { WorkspaceCreationSubmission } from '~/components/shell/useTabCreation'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { generateSlug } from 'random-word-slugs'
 import { Show } from 'solid-js'
@@ -19,7 +18,7 @@ import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { createTitleState } from '~/hooks/createTitleState'
-import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { useWorkerAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { GitMode, initialIntentForMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { formatErrorMessage } from '~/lib/errors'
@@ -39,8 +38,6 @@ interface NewWorkspaceDialogProps {
    * mutating a half-filled one under the user.
    */
   startPoint: WorkspaceStartPoint
-  availableProviders?: AgentProvider[]
-  onRefreshProviders?: () => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -90,9 +87,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   // unfinished label.
   const title = createTitleState(() => generateSlug(3, { format: 'title' }))
 
-  const { agentProvider, setAgentProvider, recordProviderUse, noProviders } = useAgentProviderSelection(
-    () => props.availableProviders,
-  )
+  const { agentProvider, recordProviderUse, noProviders, picker } = useWorkerAgentProviderSelection(worker.workerId)
 
   const sessionId = createSessionIdState(agentProvider)
 
@@ -158,16 +153,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       <DialogTopSection>
         <DialogTopRow>
           <WorkerSelector state={worker} />
-          <AgentProviderSelector
-            value={agentProvider}
-            onChange={setAgentProvider}
-            {...(props.availableProviders !== undefined
-              ? { availableProviders: props.availableProviders }
-              : {})}
-            {...(props.onRefreshProviders !== undefined
-              ? { onRefresh: props.onRefreshProviders }
-              : {})}
-          />
+          <AgentProviderSelector {...picker} />
         </DialogTopRow>
         <TitleInput state={title} />
       </DialogTopSection>

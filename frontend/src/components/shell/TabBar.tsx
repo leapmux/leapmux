@@ -79,6 +79,7 @@ function tabTypeLabel(type: TabType): string {
 /** New-tab actions surfaced by the Plus button and overflow menu. */
 interface TabBarNewTabProps {
   showAddButton: boolean
+  onOpenMenu?: () => void
   onNewAgent: (provider?: AgentProvider) => void
   onNewTerminal: () => void
   onNewTerminalWithShell?: (shell: string) => void
@@ -584,6 +585,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
     },
   })
 
+  const onNewTabMenuToggle = (open: boolean) => {
+    if (open)
+      props.newTab.onOpenMenu?.()
+  }
+
   // Shared menu items for "More options" (used in full, collapsed-new-tab, and collapsed-overflow menus)
   const renderMoreMenuItems = () => (
     <>
@@ -633,6 +639,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const CollapsedNewTabMenu: Component<{ wrapperClass: string }> = menuProps => (
     <div class={menuProps.wrapperClass}>
       <DropdownMenu
+        onToggle={onNewTabMenuToggle}
         trigger={triggerProps => (
           <IconButton
             icon={Plus}
@@ -754,6 +761,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                   />
                 </TabBarTooltip>
                 <DropdownMenu
+                  onToggle={onNewTabMenuToggle}
                   trigger={triggerProps => (
                     <TabBarTooltip text="More options">
                       <IconButton
@@ -777,6 +785,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               {/* Micro: collapsed "..." button with everything including tile actions */}
               <div class={styles.collapsedOverflow}>
                 <DropdownMenu
+                  onToggle={onNewTabMenuToggle}
                   trigger={triggerProps => (
                     <IconButton
                       icon={Ellipsis}

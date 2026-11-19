@@ -505,35 +505,47 @@ func (a *Agent) Stop() {
 func (a *Agent) stop() {
 	a.mu.Lock()
 	a.stopped = true
-	// Amp answers the SIGINT below with an error `result`, which the reader
-	// handles before the stop ends the turn itself. The flag makes that result
-	// end the turn as interrupted, as Interrupt does.
-	if a.turn.active {
+	proc, threadID := a.proc, a.threadID
+	if proc != nil {
+		proc.NoteIntentionalStop()
+	}
+	// Amp can answer an accepted shutdown signal with an error result.
+	// Mark that result as interrupted before sending the signal.
+	if a.turn.active && (proc == nil || proc.IntentionalStopRequested()) {
 		a.turn.interruptRequested = true
 	}
-	proc := a.proc
 	a.mu.Unlock()
 
 	a.cancel()
 	a.bridge.close(errAgentStopped)
+	completion := agent.MessageCompletionInterrupted
+	shellStatus := bgtask.StatusStopped
 	if proc != nil {
 		proc.markEnding()
-		proc.NoteIntentionalStop()
-		// SIGINT first, so Amp sends its cancel and the server stops the turn;
-		// Process.Stop then closes stdin and reaps the process group.
-		if err := proc.signalInterrupt(); err != nil {
-			slog.Debug("amp stop signal failed", "agent_id", a.agentID, "error", err)
+		// Give a live runtime a chance to stop the active turn before
+		// Process.Stop closes stdin and reaps the process.
+		if proc.IntentionalStopRequested() {
+			if err := proc.signalInterrupt(); err != nil {
+				slog.Debug("amp stop signal failed", "agent_id", a.agentID, "error", err)
+			}
 		}
 		proc.Stop()
-	}
-	// A turn that no `result` ended -- a kill ended the process, or none ran --
-	// ends as an interruption.
-	if proc != nil {
 		<-proc.handled
+		completion = proc.ProcessExitCompletion()
+		shellStatus = processShellExitStatus(proc)
 	}
-	a.finishTurn(agent.MessageCompletionInterrupted, nil)
-	// A process exit closes these rows also. Stop covers an agent that started no process.
-	a.closeAllShellRows(bgtask.StatusStopped)
+	if proc != nil && completion == agent.MessageCompletionError {
+		message := exitMessage(proc, threadID, a.exitStderr(proc))
+		a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+			if turn.interruptRequested {
+				return agent.MessageCompletionInterrupted, errorResultLine(threadID, interruptedMessage)
+			}
+			return agent.MessageCompletionError, errorResultLine(threadID, message)
+		})
+	} else {
+		a.finishTurn(completion, nil)
+	}
+	a.closeAllShellRows(shellStatus)
 	a.sink.ReportProgress(agent.ResetProgress())
 	providerkit.RemoveAgentDir("amp", a.agentID, a.dir)
 	close(a.done)

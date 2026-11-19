@@ -2,6 +2,7 @@ package providerkit
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -9,6 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func outputPipeFile(reader io.Reader) *os.File {
+	if pipe, ok := reader.(*processOutputPipe); ok {
+		return pipe.file
+	}
+	return reader.(*os.File)
+}
 
 // Stat can return a native invalid-handle error for a closed file on Windows.
 // A zero-byte write checks Go's closed-file state without emitting data.

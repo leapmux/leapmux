@@ -4,19 +4,26 @@ package cline
 
 import (
 	"context"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 // C-M5 end to end: a start finds the agent directory of a crashed worker,
@@ -69,4 +76,135 @@ func TestClineStartWaitsUntilTheDaemonOfACrashedWorkerEnded(t *testing.T) {
 	assert.NotEmpty(t, sink.LastSessionID(), "the new daemon opened the session")
 	old.proc.waitExit(t)
 	assert.True(t, old.proc.cmd.ProcessState.Success(), "the old daemon ended through its shutdown, with no kill")
+}
+
+func TestClineReportsTheSelectedCommandExitStatus(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	const candidate = "leapmux-cline-exit-peer"
+	testutil.WriteExecutable(t, filepath.Join(dir, candidate), "#!/bin/sh\nprintf 'selected command ran\\n' >&2\nexit 127\n")
+
+	started, err := startDaemonProcess(t.Context(), agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second},
+		launch.ShellCommands(candidate), dir, quartz.NewReal())
+	require.Nil(t, started)
+	require.ErrorContains(t, err, "stderr: selected command ran")
+	require.ErrorIs(t, err, errDaemonExited)
+	require.NotErrorIs(t, err, launch.ErrNoCandidate)
+	var native *exec.ExitError
+	require.ErrorAs(t, err, &native)
+	assert.Equal(t, 127, native.ExitCode())
+}
+
+func TestClineStartupExhaustionPeer(*testing.T) { agenttest.RunInheritedWriterPeer() }
+
+func TestClinePreservesFinalLaunchFailureAfterCancellation(t *testing.T) {
+	t.Run("candidate exhaustion", func(t *testing.T) {
+		err := cancelClineWhileDraining(t, "leapmux_cline_provider", "")
+		require.ErrorIs(t, err, launch.ErrNoCandidate)
+		assert.ErrorContains(t, err, "(leapmux_cline_provider)")
+		assert.True(t, strings.HasSuffix(err.Error(), "stderr: provider absent diagnostic"), "%v", err)
+		var native *exec.ExitError
+		require.ErrorAs(t, err, &native)
+		assert.Equal(t, 127, native.ExitCode())
+	})
+	t.Run("selected provider exit", func(t *testing.T) {
+		err := cancelClineWhileDraining(t, "leapmux_cline_provider",
+			"leapmux_cline_provider() { printf '\\nEADDRINUSE from selected provider\\n' >&2; return 37; }\n")
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NotErrorIs(t, err, launch.ErrNoCandidate)
+		assert.ErrorContains(t, err, "EADDRINUSE from selected provider")
+		var native *exec.ExitError
+		require.ErrorAs(t, err, &native)
+		assert.Equal(t, 37, native.ExitCode())
+	})
+}
+
+func cancelClineWhileDraining(t *testing.T, candidate, wrapper string) error {
+	t.Helper()
+	profile := agenttest.InstallStartupExhaustionProfile(t, "TestClineStartupExhaustionPeer", false)
+	if wrapper != "" {
+		path := os.Getenv("BASH_ENV")
+		startup, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, append(startup, wrapper...), 0o600))
+	}
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	deadline := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
+	t.Cleanup(drain.Close)
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
+	t.Cleanup(stop.Close)
+	outcome := make(chan error, 1)
+	attempts := 0
+	go func() {
+		opts := agent.Options{Shell: profile.Shell, WorkingDir: dir, StartupTimeout: 30 * time.Second}
+		_, err := retryDaemonPort(ctx, opts.AgentID, func(port int) (*daemonStart, error) {
+			attempts++
+			return startDaemonOnPort(ctx, opts, launch.ShellCommands(candidate), dir, port, clock)
+		})
+		outcome <- err
+	}()
+	writer := profile.FinishSelection(t)
+	testutil.WaitForTimer(t, deadline, drain)
+	cancel()
+	testutil.WaitForTimer(t, deadline, stop)
+	require.NoError(t, writer.CloseWrite())
+
+	err := agenttest.AwaitStartupOutcome(t, deadline, outcome)
+	assert.NotErrorIs(t, err, errAddressInUse)
+	assert.Equal(t, 1, attempts)
+	return err
+}
+
+func TestClineKeepsAnObservedBindFailureAfterItsDiscoveryDeadline(t *testing.T) {
+	listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, "0"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	port := listener.Addr().(*net.TCPAddr).Port
+	profile := agenttest.InstallStartupExhaustionProfile(t, "TestClineStartupExhaustionPeer", false)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	filename := os.Getenv("BASH_ENV")
+	startup, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filename, append(startup,
+		("leapmux_cline_bind() { "+failedBindWitnessEnv+"=37 "+shellquote.POSIX.Quote(executable)+
+			" -test.run=^TestClineBindFailureWitness$; }\n")...), 0o600))
+
+	dir := t.TempDir()
+	clock := testutil.NewQuartzMock(t)
+	discovery := clock.Trap().NewTimer("cline", "discovery-deadline")
+	t.Cleanup(discovery.Close)
+	drain := clock.Trap().NewTimer(providerkit.WrappedProcessDrainTimerTag)
+	t.Cleanup(drain.Close)
+	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
+	t.Cleanup(stop.Close)
+	deadline := testutil.DeadlineContext(t)
+	const timeout = 50 * time.Millisecond
+	opts := agent.Options{Shell: profile.Shell, WorkingDir: dir, StartupTimeout: timeout}
+	outcome := make(chan error, 1)
+	go func() {
+		_, err := startDaemonOnPort(deadline, opts, launch.ShellCommands("leapmux_cline_bind"), dir, port, clock)
+		outcome <- err
+	}()
+	require.Equal(t, timeout, testutil.WaitForTimer(t, deadline, discovery))
+	writer := profile.FinishSelection(t)
+	testutil.WaitForTimer(t, deadline, drain)
+	advanced := clock.Advance(timeout)
+	testutil.WaitForTimer(t, deadline, stop)
+	advanced.MustWait(deadline)
+	require.NoError(t, writer.CloseWrite())
+	select {
+	case err := <-outcome:
+		require.ErrorIs(t, err, errAddressInUse)
+		assert.ErrorContains(t, err, strconv.Itoa(port))
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		assert.Equal(t, 37, exit.ExitCode())
+	case <-deadline.Done():
+		t.Fatal("Cline did not return its finalized bind failure")
+	}
 }
