@@ -24,6 +24,29 @@ import (
 
 const sessionFailurePeerAddress = "LEAPMUX_TEST_COPILOT_SESSION_FAILURE_PEER"
 
+type sessionFailureTimer struct {
+	tag   string
+	delay time.Duration
+}
+
+// sessionFailureClock observes startup cleanup without blocking timers that
+// the process may create later while reading the final diagnostics.
+type sessionFailureClock struct {
+	quartz.Clock
+	started chan<- sessionFailureTimer
+}
+
+func (c sessionFailureClock) NewTimer(delay time.Duration, tags ...string) *quartz.Timer {
+	timer := c.Clock.NewTimer(delay, tags...)
+	if len(tags) == 1 && (tags[0] == "stderr-drain" || tags[0] == providerkit.ProcessStopGraceTimerTag) {
+		select {
+		case c.started <- sessionFailureTimer{tag: tags[0], delay: delay}:
+		default:
+		}
+	}
+	return timer
+}
+
 func TestCopilotSessionFailurePeer(t *testing.T) {
 	address := os.Getenv(sessionFailurePeerAddress)
 	if address == "" {
@@ -66,29 +89,13 @@ func TestCopilotSessionFailureIncludesTheFinalNativeDiagnostic(t *testing.T) {
 	t.Setenv("PATH", dir)
 	t.Setenv(sessionFailurePeerAddress, listener.Addr().String())
 	clock := testutil.NewQuartzMock(t)
-	stderr := clock.Trap().NewTimer("stderr-drain")
-	stop := clock.Trap().NewTimer(providerkit.ProcessStopGraceTimerTag)
-	t.Cleanup(stderr.Close)
-	t.Cleanup(stop.Close)
 	deadline := testutil.DeadlineContext(t)
-	type timerEvent struct {
-		kind  string
-		delay time.Duration
-	}
-	events := make(chan timerEvent, 2)
-	for name, trap := range map[string]*quartz.Trap{"stderr": stderr, "stop": stop} {
-		go func() {
-			call, err := trap.Wait(deadline)
-			if err == nil && call.Release(deadline) == nil {
-				events <- timerEvent{kind: name, delay: call.Duration}
-			}
-		}()
-	}
+	events := make(chan sessionFailureTimer, 2)
 	opts := agent.Options{AgentID: "copilot-session-failure", WorkingDir: dir, HomeDir: dir, Shell: "/bin/sh",
 		APITimeout: 30 * time.Second, StartupTimeout: 30 * time.Second}
 	outcome := make(chan error, 1)
 	go func() {
-		started, err := startNativeCopilotWithClock(deadline, opts, agent.NewProviderServices(&agenttest.Sink{}), clock)
+		started, err := startNativeCopilotWithClock(deadline, opts, agent.NewProviderServices(&agenttest.Sink{}), sessionFailureClock{Clock: clock, started: events})
 		if started != nil {
 			started.Stop()
 			_ = started.Wait()
@@ -101,11 +108,11 @@ func TestCopilotSessionFailureIncludesTheFinalNativeDiagnostic(t *testing.T) {
 
 	select {
 	case event := <-events:
-		if event.kind == "stderr" {
+		if event.tag == "stderr-drain" {
 			clock.Advance(event.delay).MustWait(deadline)
 			select {
 			case next := <-events:
-				require.Equal(t, "stop", next.kind)
+				require.Equal(t, providerkit.ProcessStopGraceTimerTag, next.tag)
 			case <-deadline.Done():
 				t.Fatal("Copilot did not start shutdown after the diagnostic snapshot")
 			}

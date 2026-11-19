@@ -5,6 +5,7 @@ package procutil
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,20 @@ func TestPipeReadStateContinuesAfterSignalInterruption(t *testing.T) {
 	require.NoError(t, writer.Close())
 	conn, err := reader.SyscallConn()
 	require.NoError(t, err)
+
+	// A concurrent fork can retain the closed-on-exec writer until exec.
+	// Wait for hangup before taking the snapshots with injected interruptions.
+	var events int16
+	var pollErr error
+	require.NoError(t, conn.Control(func(handle uintptr) {
+		fds := []unix.PollFd{{Fd: int32(handle), Events: unix.POLLHUP}}
+		_, pollErr = retryInterruptedPipeQuery(func() (int, error) {
+			return unix.Poll(fds, int((30 * time.Second).Milliseconds()))
+		})
+		events = fds[0].Revents
+	}))
+	require.NoError(t, pollErr)
+	require.NotZero(t, events&unix.POLLHUP, "the kernel must observe the last writer close")
 
 	for _, interrupted := range []string{"count", "poll"} {
 		t.Run(interrupted, func(t *testing.T) {
