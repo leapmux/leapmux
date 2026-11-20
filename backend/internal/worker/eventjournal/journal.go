@@ -2,6 +2,7 @@
 package eventjournal
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -30,9 +31,9 @@ var (
 	ErrCursor      = errors.New("the event checkpoint does not match retained history for this tab")
 )
 
-// Journal is the only writer for its Worker database. A failed commit or a
-// full publication queue stops the journal before it can advertise a position
-// past an unrecorded notification.
+// Journal owns the event tables in one Worker database. A failed commit or a
+// full publication queue stops it before it can advertise a position past an
+// unrecorded notification.
 type Journal struct {
 	store    store
 	clock    quartz.Clock
@@ -46,6 +47,7 @@ type Journal struct {
 	changed             chan struct{}
 	accepted, committed uint64
 	closing             bool
+	readersStopped      bool
 	failure             error
 }
 
@@ -74,13 +76,14 @@ func (j *Journal) OwnedBy(owner userid.UserID) bool {
 	return !j.revoked.Load() && j.identity.owner.MatchesUser(owner)
 }
 
-// Record serializes one immutable terminal fact before admitting it. It never
+// Record serializes one immutable tab fact before admitting it. It never
 // waits for the database or for a subscriber. Only committed facts are read.
-func (j *Journal) Record(tabID string, fact *leapmuxv1.SemanticTabFact) {
-	if tabID == "" || fact.GetEvent() == nil {
+func (j *Journal) Record(tab Tab, fact *leapmuxv1.SemanticTabFact) {
+	if !tab.Valid() || fact.GetEvent() == nil {
 		return
 	}
-	item := observation{tabID: tabID, observed: j.clock.Now().UnixMilli()}
+	item := observation{tab: tab, observed: j.clock.Now().UnixMilli()}
+	item.requestOpening = bytes.Clone(fact.GetAgentRequest().GetRequestInstance())
 	var err error
 	if proto.Size(fact) <= maxObservationBytes {
 		item.fact, err = proto.Marshal(fact)
@@ -130,6 +133,16 @@ func (j *Journal) closeAdmissionLocked() {
 func (j *Journal) signalLocked() {
 	close(j.changed)
 	j.changed = make(chan struct{})
+}
+
+// StopReaders ends subscriptions while admitted producers finish publishing.
+func (j *Journal) StopReaders() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.readersStopped {
+		j.readersStopped = true
+		j.signalLocked()
+	}
 }
 
 // Stop ends subscriptions and waits for admitted facts to commit. A restart
@@ -183,7 +196,7 @@ func (j *Journal) writePublications(ctx context.Context) {
 		cancel()
 		if err != nil {
 			j.mu.Lock()
-			j.failLocked(fmt.Errorf("commit terminal events: %w", err))
+			j.failLocked(fmt.Errorf("commit tab events: %w", err))
 			j.mu.Unlock()
 			return
 		}
@@ -203,7 +216,7 @@ func (j *Journal) barrier(ctx context.Context) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	target := j.accepted
-	for !j.closing && j.committed < target {
+	for !j.closing && !j.readersStopped && j.committed < target {
 		changed := j.changed
 		j.mu.Unlock()
 		select {
@@ -218,7 +231,7 @@ func (j *Journal) barrier(ctx context.Context) error {
 }
 
 func (j *Journal) checkAvailableLocked() error {
-	if j.closing {
+	if j.closing || j.readersStopped {
 		if j.failure != nil {
 			return fmt.Errorf("%w: %v", ErrUnavailable, j.failure)
 		}

@@ -228,10 +228,43 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
   }
 }
 
-/** Start a CLI command whose output is a stream of JSON envelopes. */
-export function spawnCLI(cfg: CLIConfigDir, args: string[]) {
-  const { binaryPath, cliArgs, env } = controlProcess(cfg, args)
-  return spawn(binaryPath, cliArgs, { env })
+interface ControlEventLine {
+  kind: string
+  tab_id?: string
+  sequence?: number
+  replayed?: boolean
+  body?: string
+  request?: string
+  request_instance?: string
+}
+
+/** Start an events command and keep the complete JSON lines it writes. */
+export function startControlEventStream(cli: CLIConfigDir, args: string[]) {
+  const command = ['events', ...args]
+  const { binaryPath, cliArgs, env } = controlProcess(cli, command)
+  const child = spawn(binaryPath, cliArgs, { env })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', (text: string) => {
+    stdout += text
+  })
+  child.stderr.setEncoding('utf8').on('data', (text: string) => {
+    stderr += text
+  })
+  const finished = new Promise<{ code: number | null, signal: string | null, error?: string }>((resolve) => {
+    child.once('error', (err) => {
+      resolve({ code: null, signal: null, error: err.message })
+    })
+    child.once('close', (code, signal) => {
+      resolve({ code, signal })
+    })
+  })
+  const diagnostic = () => `stdout: ${stdout}\nstderr: ${stderr}`
+  const events = (): ControlEventLine[] => {
+    const lines = stdout.slice(0, stdout.lastIndexOf('\n') + 1).trim().split('\n').filter(Boolean)
+    return lines.map(line => parseEnvelope(line, command) as ControlEventLine)
+  }
+  return { child, finished, diagnostic, events }
 }
 
 function controlProcess(cfg: CLIConfigDir, args: string[], overrides?: Record<string, string>) {

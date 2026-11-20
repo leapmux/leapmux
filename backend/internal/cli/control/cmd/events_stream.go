@@ -794,28 +794,21 @@ func (s *eventStream) onAgentEvent(fs *feedState, ae *leapmuxv1.AgentEvent) erro
 		ev.Summary = fmt.Sprintf("request %s ended (%s)", cli.ShortID(cancel.GetClaimToken()), tokenWords(ev.State))
 		return s.emit(ev)
 	case *leapmuxv1.AgentEvent_TodosChanged:
-		key, counts, current := todoSummary(e.TodosChanged.GetTodos())
+		items := e.TodosChanged.GetTodos()
+		key := todoEventKey(items)
 		if key == track.todos {
 			return nil
 		}
 		track.todos = key
-		ev := tabStreamEvent(kindAgentTodos, tab)
-		ev.Todos = &counts
-		ev.Summary = fmt.Sprintf("%d of %d done", counts.Completed, counts.Total)
-		if current != "" {
-			ev.Summary += "; in progress: " + current
-		}
-		return s.emit(ev)
+		return s.emit(agentTodoEvent(tab, semanticevents.SummarizeTodos(items)))
 	case *leapmuxv1.AgentEvent_BackgroundTasksChanged:
-		key, counts := taskSummary(e.BackgroundTasksChanged.GetTasks())
+		items := e.BackgroundTasksChanged.GetTasks()
+		key := backgroundTaskEventKey(items)
 		if key == track.tasks {
 			return nil
 		}
 		track.tasks = key
-		ev := tabStreamEvent(kindAgentBackgroundTasks, tab)
-		ev.Tasks = &counts
-		ev.Summary = fmt.Sprintf("%d active of %d", counts.Active, counts.Total)
-		return s.emit(ev)
+		return s.emit(agentBackgroundTaskEvent(tab, semanticevents.SummarizeBackgroundTasks(items)))
 	default:
 		return nil
 	}
@@ -950,94 +943,28 @@ func agentStatusEvent(tab scopedTab, status leapmuxv1.AgentStatus, startupError 
 	return ev
 }
 
-// promptDetailLength caps the detail of a request in its summary. The whole
-// request is what `agent requests` prints.
-const promptDetailLength = 120
-
 func agentRequestEvent(tab scopedTab, req *leapmuxv1.AgentControlRequest) streamEvent {
-	ev := tabStreamEvent(kindAgentRequest, tab)
+	ev := agentRequestEventFields(tab, controlPromptKind(req.GetPrompt()), !req.GetNonBlocking(), semanticevents.PromptDetail(req.GetPrompt()))
 	ev.Request, ev.RequestID = req.GetClaimToken(), req.GetRequestId()
-	ev.Prompt = controlPromptKind(req.GetPrompt())
-	ev.Blocking = boolPtr(!req.GetNonBlocking())
-	ev.Summary = ev.Prompt
-	if detail := truncateRunes(oneLine(promptDetail(req.GetPrompt())), promptDetailLength); detail != "" {
-		ev.Summary += ": " + detail
-	}
-	if req.GetNonBlocking() {
-		ev.Summary += " (the agent goes on working)"
-	}
 	return ev
 }
 
-// promptDetail is the first text of a request that says what it asks.
-func promptDetail(prompt *leapmuxv1.ControlPrompt) string {
-	switch k := prompt.GetKind().(type) {
-	case *leapmuxv1.ControlPrompt_Permission:
-		return firstNonEmpty(k.Permission.GetTitle(), k.Permission.GetCommand(), k.Permission.GetText())
-	case *leapmuxv1.ControlPrompt_Plan:
-		return "approve the plan"
-	case *leapmuxv1.ControlPrompt_Question:
-		questions := k.Question.GetQuestions()
-		if len(questions) == 0 {
-			return ""
-		}
-		text := firstNonEmpty(questions[0].GetQuestion(), questions[0].GetHeader())
-		if more := len(questions) - 1; more > 0 {
-			text += fmt.Sprintf(" (and %s)", pluralize(more, "more question"))
-		}
-		return text
-	case *leapmuxv1.ControlPrompt_Elicitation:
-		return firstNonEmpty(k.Elicitation.GetMessage(), k.Elicitation.GetTitle(), k.Elicitation.GetDescription())
-	case *leapmuxv1.ControlPrompt_Dialog:
-		return firstNonEmpty(k.Dialog.GetTitle(), k.Dialog.GetMessage())
-	case *leapmuxv1.ControlPrompt_Unreadable:
-		return fmt.Sprintf("LeapMux cannot read it (%s)", enumToken(k.Unreadable))
-	default:
-		return ""
-	}
-}
-
-// todoSummary counts the items of a to-do list. A deleted item does not
-// count. key changes when an item or its status changes, and it is never
-// empty, so an empty list differs from the list that the stream does not
-// know yet. current is the first item in progress.
-func todoSummary(items []*leapmuxv1.TodoItem) (key string, counts todoCounts, current string) {
+func todoEventKey(items []*leapmuxv1.TodoItem) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d;", len(items))
 	for _, item := range items {
 		fmt.Fprintf(&b, "%q:%d;", item.GetContent(), item.GetStatus())
-		switch item.GetStatus() {
-		case leapmuxv1.TodoStatus_TODO_STATUS_DELETED:
-			continue
-		case leapmuxv1.TodoStatus_TODO_STATUS_COMPLETED:
-			counts.Completed++
-		case leapmuxv1.TodoStatus_TODO_STATUS_IN_PROGRESS:
-			counts.InProgress++
-			if current == "" {
-				current = firstNonEmpty(item.GetActiveForm(), item.GetContent())
-			}
-		case leapmuxv1.TodoStatus_TODO_STATUS_UNSPECIFIED, leapmuxv1.TodoStatus_TODO_STATUS_PENDING, leapmuxv1.TodoStatus_TODO_STATUS_BLOCKED:
-		}
-		counts.Total++
 	}
-	return b.String(), counts, current
+	return b.String()
 }
 
-// taskSummary counts the background tasks of an agent. A task is active
-// until it states when it ended. key changes when a task or its status
-// changes, and not when its activity text does. Like the key of
-// todoSummary, it is never empty.
-func taskSummary(tasks []*leapmuxv1.BackgroundTaskItem) (key string, counts taskCounts) {
+func backgroundTaskEventKey(tasks []*leapmuxv1.BackgroundTaskItem) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d;", len(tasks))
 	for _, task := range tasks {
 		fmt.Fprintf(&b, "%q:%d;", task.GetId(), task.GetStatus())
-		counts.Total++
-		if task.GetEndedAt() == "" {
-			counts.Active++
-		}
 	}
-	return b.String(), counts
+	return b.String()
 }
 
 func progressSummary(report progressReport) string {
@@ -1086,25 +1013,6 @@ func withError(text, err string) string {
 		return text
 	}
 	return text + ": " + err
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// truncateRunes cuts text to limit characters, the last of them an
-// ellipsis.
-func truncateRunes(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit-1]) + "…"
 }
 
 // crdtStateOf makes a CRDT state of a snapshot, so the batches that follow

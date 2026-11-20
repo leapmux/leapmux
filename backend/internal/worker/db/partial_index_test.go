@@ -220,6 +220,17 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			},
 		},
 		{
+			name:  "HasSemanticEventRequestOpening",
+			index: "semantic_event_request_open_idx",
+			run: func(t *testing.T) {
+				present, err := q.HasSemanticEventRequestOpening(t.Context(), queries.HasSemanticEventRequestOpeningParams{
+					TabType: int64(leapmuxv1.TabType_TAB_TYPE_AGENT), TabID: "agent", RequestOpenInstance: make([]byte, 32),
+				})
+				require.NoError(t, err)
+				assert.False(t, present)
+			},
+		},
+		{
 			name:  "GetChildAgentsBySpawnSpan",
 			index: "idx_agents_spawn_span",
 			run: func(t *testing.T) {

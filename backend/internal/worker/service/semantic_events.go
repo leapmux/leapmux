@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"sync"
@@ -17,14 +19,16 @@ import (
 	"github.com/leapmux/leapmux/internal/semanticevents"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/eventjournal"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 const semanticJournalDeadline = 5 * time.Second
 
 type semanticEventCapture struct {
-	mu               sync.Mutex
-	enabled, stopped bool
-	journal          atomic.Pointer[eventjournal.Journal]
+	mu                         sync.Mutex
+	enabled, draining, stopped bool
+	producersFinished          bool
+	journal                    atomic.Pointer[eventjournal.Journal]
 }
 
 // EnableSemanticEvents is called at Worker bootstrap, before starting producers.
@@ -41,7 +45,7 @@ func (svc *Service) bindSemanticEvents() {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 	owner := svc.RegisteredBy()
-	if !capture.enabled || capture.stopped || owner.IsZero() {
+	if !capture.enabled || capture.draining || capture.stopped || owner.IsZero() {
 		return
 	}
 	if journal := capture.journal.Load(); journal != nil {
@@ -61,21 +65,49 @@ func (svc *Service) bindSemanticEvents() {
 }
 
 func (svc *Service) recordTerminalFact(tabID string, event *leapmuxv1.TerminalEvent) {
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: tabID}
 	if journal := svc.semanticEvents.journal.Load(); journal != nil && journal.OwnedBy(svc.RegisteredBy()) {
-		journal.Record(tabID, semanticevents.TerminalFact(event))
+		journal.Record(tab, semanticevents.TerminalFact(event))
 	}
 }
 
-func (svc *Service) stopSemanticEvents(producersStopped bool) {
+func (svc *Service) recordAgentFact(agentID string, event *leapmuxv1.AgentEvent) {
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: agentID}
+	if journal := svc.semanticEvents.journal.Load(); journal != nil && journal.OwnedBy(svc.RegisteredBy()) {
+		fact := semanticevents.AgentFact(event, func(claim string) []byte {
+			return journal.RequestInstance(agentID, claim)
+		})
+		journal.Record(tab, fact)
+	}
+}
+
+func (svc *Service) stopSemanticEventReaders(producersFinished bool) {
 	capture := &svc.semanticEvents
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
+	capture.draining = true
+	capture.producersFinished = producersFinished
+	if journal := capture.journal.Load(); journal != nil {
+		journal.StopReaders()
+	}
+}
+
+// FinalizeSemanticEvents joins the journal writer after the dispatcher joins
+// its admitted handlers. A plain handler can commit a control response after
+// the provider processes have stopped.
+func (svc *Service) FinalizeSemanticEvents(handlersFinished bool) {
+	capture := &svc.semanticEvents
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.stopped {
+		return
+	}
 	capture.stopped = true
 	if journal := capture.journal.Load(); journal != nil {
 		budget := svc.ShutdownDeadline.Cap(semanticJournalDeadline)
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
-		if err := journal.Stop(ctx, producersStopped && budget > 0); err != nil {
+		if err := journal.Stop(ctx, capture.producersFinished && handlersFinished && budget > 0); err != nil {
 			slog.Warn("stop Worker event journal failed", "error", err)
 		}
 	}
@@ -91,13 +123,17 @@ func (c semanticWatchControl) OnClientFrame([]byte) { c.cancel() }
 func (c semanticWatchControl) OnCancel()            { c.cancel() }
 
 func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Caller, req *leapmuxv1.WatchSemanticEventsRequest, sender channel.ResponseWriter) {
-	tab := req.GetTab()
-	if tab.GetTabType() != leapmuxv1.TabType_TAB_TYPE_TERMINAL || tab.GetTabId() == "" {
-		sendSemanticWatchError(sender, codes.InvalidArgument, "a terminal tab is required")
+	tab := eventjournal.Tab{Type: req.GetTab().GetTabType(), ID: req.GetTab().GetTabId()}
+	if !tab.Valid() {
+		sendSemanticWatchError(sender, codes.InvalidArgument, "an agent or terminal tab is required")
 		return
 	}
-	if !caller.Allows(leapmuxv1.Scope_SCOPE_TERMINAL_READ) {
-		sendSemanticWatchError(sender, codes.PermissionDenied, "event history requires terminal:read")
+	scope, grant, queryAccess := leapmuxv1.Scope_SCOPE_TERMINAL_READ, "terminal:read", svc.Queries.CanWatchTerminalHistory
+	if tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
+		scope, grant, queryAccess = leapmuxv1.Scope_SCOPE_AGENT_READ, "agent:read", svc.Queries.CanWatchAgentHistory
+	}
+	if !caller.Allows(scope) {
+		sendSemanticWatchError(sender, codes.PermissionDenied, "event history requires "+grant)
 		return
 	}
 	journal := svc.semanticEvents.journal.Load()
@@ -125,23 +161,23 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		if !checkOwner() {
 			return false
 		}
-		allowed, err := svc.Queries.CanWatchTerminalHistory(ctx, tab.GetTabId())
+		allowed, err := queryAccess(ctx, tab.ID)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Warn("check terminal event history access failed", "error", err)
-				sendSemanticWatchError(sender, codes.Unavailable, "could not check access to terminal event history")
+				slog.Warn("check tab event history access failed", "error", err)
+				sendSemanticWatchError(sender, codes.Unavailable, "could not check access to tab event history")
 			}
 			return false
 		}
 		if !allowed {
-			sendSemanticWatchError(sender, codes.NotFound, "no terminal tab with retained access")
+			sendSemanticWatchError(sender, codes.NotFound, "no tab with retained access")
 		}
 		return allowed
 	}
 	if !checkAccess() {
 		return
 	}
-	reader, ready, err := journal.Open(ctx, tab.GetTabId(), req.GetAfterCursor())
+	reader, ready, err := journal.Open(ctx, tab, req.GetAfterCursor())
 	if err != nil {
 		reportSemanticWatchError(ctx, sender, err)
 		return
@@ -164,13 +200,25 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 			return
 		}
 		for _, frame := range frames {
-			if ctx.Err() != nil || !checkOwner() || !sendSemanticWatchFrame(sender, frame) {
+			if ctx.Err() != nil || !checkOwner() {
+				return
+			}
+			record := frame.GetRecord()
+			if request := record.GetFact().GetAgentRequest(); request != nil {
+				handle, err := svc.currentSemanticRequestHandle(ctx, journal, tab.ID, request)
+				if err != nil {
+					reportSemanticWatchError(ctx, sender, err)
+					return
+				}
+				record.CurrentRequestHandle = handle
+			}
+			if !checkOwner() || !sendSemanticWatchFrame(sender, frame) {
 				return
 			}
 			if gap := frame.GetGap(); gap != nil {
 				after = gap.GetResumeAfterSequence()
 			} else {
-				after = frame.GetRecord().GetSequence()
+				after = record.GetSequence()
 			}
 		}
 		if len(frames) == 0 {
@@ -183,14 +231,43 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 	}
 }
 
+func (svc *Service) currentSemanticRequestHandle(ctx context.Context, journal *eventjournal.Journal, agentID string, request *leapmuxv1.SemanticAgentRequest) (string, error) {
+	kind := request.GetPromptKind()
+	if kind < leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION ||
+		kind > leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_DIALOG {
+		return "", nil
+	}
+	tx, err := svc.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	queries := db.New(tx)
+	claim, err := queries.GetControlRequestClaim(ctx, db.GetControlRequestClaimParams{AgentID: agentID, RequestID: request.GetRequestId()})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if claim == "" || !hmac.Equal(request.GetRequestInstance(), journal.RequestInstance(agentID, claim)) {
+		return "", nil
+	}
+	state, err := controlResponseState(ctx, queries, agentID, request.GetRequestId(), claim)
+	if err != nil || state != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY {
+		return "", err
+	}
+	return claim, nil
+}
+
 func sendSemanticWatchFrame(sender channel.ResponseWriter, frame *leapmuxv1.WatchSemanticEventsResponse) bool {
 	raw, err := proto.Marshal(frame)
 	if err != nil {
-		sendSemanticWatchError(sender, codes.Internal, "could not encode a terminal event")
+		sendSemanticWatchError(sender, codes.Internal, "could not encode a tab event")
 		return false
 	}
 	if budget := sender.MaxPayloadBudget(); budget != 0 && len(raw) > budget {
-		sendSemanticWatchError(sender, codes.ResourceExhausted, "a terminal event exceeds this connection's payload limit")
+		sendSemanticWatchError(sender, codes.ResourceExhausted, "a tab event exceeds this connection's payload limit")
 		return false
 	}
 	return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw}) == nil

@@ -556,21 +556,27 @@ To follow an agent's chat, use `agent messages --follow` instead.
 
 `layout watch` prints the raw changes of the layout instead, and `agent messages --follow` prints an agent's chat.
 
-#### Resume a terminal event stream
+#### Resume a tab's event stream
 
 ```bash
 leapmux control events --tab "$T" --checkpoint terminal-events.json --kind terminal --json
 ```
 
 The first run starts at the latest recorded event. Stop it and run the same
-command again to read the terminal events that the Worker retained in the
+command again to read the events that the Worker retained in the
 meantime. The checkpoint covers `terminal.status`, `terminal.exit`,
 `terminal.title`, `terminal.bell`, `terminal.notification`, and
-`terminal.progress`. The Worker checks access to the terminal each time
+`terminal.progress`. The Worker checks access to the tab each time
 the CLI opens the stream.
 
+An agent tab also supports checkpoints. Its events cover activity, process
+status, turn ends, requests, to-do lists, and background tasks. For a
+request, `request_instance` correlates the request with its end. The
+Worker includes a `request` handle only if that instance still waits
+for an answer.
+
 Use the same tab and `--kind` selection when you resume. The checkpoint
-follows the tab across workspace moves. `--limit` counts the terminal
+follows the tab across workspace moves. `--limit` counts the tab
 events that the CLI prints. A `stream.gap` reports the affected sequence
 interval and why the Worker could not replay it.
 

@@ -14,8 +14,6 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-const terminalTabType = int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL)
-
 type retention struct {
 	age                          time.Duration
 	perTab, entries, bytes, tabs int64
@@ -31,10 +29,11 @@ type store struct {
 }
 
 type observation struct {
-	tabID    string
-	observed int64
-	fact     []byte
-	gap      leapmuxv1.SemanticWatchGapReason
+	tab            Tab
+	observed       int64
+	fact           []byte
+	gap            leapmuxv1.SemanticWatchGapReason
+	requestOpening []byte
 }
 
 func (s store) initialize(ctx context.Context, workerID string, owner userid.UserID, now time.Time) (row db.SemanticEventJournal, err error) {
@@ -76,7 +75,7 @@ func (s store) initialize(ctx context.Context, workerID string, owner userid.Use
 				return err
 			}
 			for _, tail := range tails {
-				_, err := s.append(ctx, q, observation{tabID: tail.TabID, observed: now.UnixMilli(),
+				_, err := s.append(ctx, q, observation{tab: Tab{Type: leapmuxv1.TabType(tail.TabType), ID: tail.TabID}, observed: now.UnixMilli(),
 					gap: leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP})
 				if err != nil {
 					return err
@@ -100,8 +99,8 @@ func (s store) write(ctx context.Context, apply func(*db.Queries) error) error {
 	return tx.Commit()
 }
 
-func (s store) ensureTail(ctx context.Context, q *db.Queries, tabID string, observed int64) (db.SemanticEventTail, error) {
-	key := db.GetSemanticEventTailParams{TabType: terminalTabType, TabID: tabID}
+func (s store) ensureTail(ctx context.Context, q *db.Queries, tab Tab, observed int64) (db.SemanticEventTail, error) {
+	key := db.GetSemanticEventTailParams{TabType: int64(tab.Type), TabID: tab.ID}
 	tail, err := q.GetSemanticEventTail(ctx, key)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return tail, err
@@ -115,15 +114,15 @@ func (s store) ensureTail(ctx context.Context, q *db.Queries, tabID string, obse
 		if err != nil {
 			return tail, err
 		}
-		if _, err := s.pruneThrough(ctx, q, victim.TabID, victim.HighSequence); err != nil {
+		if _, err := s.pruneThrough(ctx, q, Tab{Type: leapmuxv1.TabType(victim.TabType), ID: victim.TabID}, victim.HighSequence); err != nil {
 			return tail, err
 		}
-		if err := q.DeleteSemanticEventTail(ctx, db.DeleteSemanticEventTailParams{TabType: terminalTabType, TabID: victim.TabID}); err != nil {
+		if err := q.DeleteSemanticEventTail(ctx, db.DeleteSemanticEventTailParams{TabType: victim.TabType, TabID: victim.TabID}); err != nil {
 			return tail, err
 		}
 	}
 	if err := q.InitSemanticEventTail(ctx, db.InitSemanticEventTailParams{
-		TabType: terminalTabType, TabID: tabID, TabStreamID: id.Generate(), LastObservedUnixMillis: observed,
+		TabType: int64(tab.Type), TabID: tab.ID, TabStreamID: id.Generate(), LastObservedUnixMillis: observed,
 	}); err != nil {
 		return tail, err
 	}
@@ -133,23 +132,36 @@ func (s store) ensureTail(ctx context.Context, q *db.Queries, tabID string, obse
 func (s store) append(ctx context.Context, q *db.Queries, item observation) (int64, error) {
 	if item.gap != 0 {
 		item.fact = []byte{}
+		item.requestOpening = nil
 	}
-	tail, err := s.ensureTail(ctx, q, item.tabID, item.observed)
+	tail, err := s.ensureTail(ctx, q, item.tab, item.observed)
 	if err != nil {
 		return 0, err
+	}
+	if item.requestOpening != nil {
+		exists, err := q.HasSemanticEventRequestOpening(ctx, db.HasSemanticEventRequestOpeningParams{
+			TabType: int64(item.tab.Type), TabID: item.tab.ID, RequestOpenInstance: item.requestOpening,
+		})
+		if err != nil {
+			return 0, err
+		}
+		if exists {
+			return tail.HighSequence, nil
+		}
 	}
 	if tail.HighSequence == math.MaxInt64 {
 		return 0, errors.New("the tab's event sequence is exhausted")
 	}
 	sequence, err := q.AdvanceSemanticEventTail(ctx, db.AdvanceSemanticEventTailParams{
-		TabType: terminalTabType, TabID: item.tabID, ObservedUnixMillis: item.observed,
+		TabType: int64(item.tab.Type), TabID: item.tab.ID, ObservedUnixMillis: item.observed,
 	})
 	if err != nil {
 		return 0, err
 	}
 	if err := q.InsertSemanticEventEntry(ctx, db.InsertSemanticEventEntryParams{
-		TabType: terminalTabType, TabID: item.tabID, Sequence: sequence, ObservedUnixMillis: item.observed,
-		Fact: item.fact, GapReason: sql.NullInt64{Valid: item.gap != 0, Int64: int64(item.gap)},
+		TabType: int64(item.tab.Type), TabID: item.tab.ID, Sequence: sequence, ObservedUnixMillis: item.observed,
+		Fact: item.fact, RequestOpenInstance: item.requestOpening,
+		GapReason: sql.NullInt64{Valid: item.gap != 0, Int64: int64(item.gap)},
 	}); err != nil {
 		return 0, err
 	}
@@ -158,7 +170,7 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 		return 0, err
 	}
 	if cutoff := sequence - s.retention.perTab; cutoff > tail.FloorSequence {
-		usage, err = s.pruneThrough(ctx, q, item.tabID, cutoff)
+		usage, err = s.pruneThrough(ctx, q, item.tab, cutoff)
 		if err != nil {
 			return 0, err
 		}
@@ -168,7 +180,7 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 		if err != nil {
 			return 0, err
 		}
-		usage, err = s.pruneThrough(ctx, q, oldest.TabID, oldest.Sequence)
+		usage, err = s.pruneThrough(ctx, q, Tab{Type: leapmuxv1.TabType(oldest.TabType), ID: oldest.TabID}, oldest.Sequence)
 		if err != nil {
 			return 0, err
 		}
@@ -176,20 +188,20 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 	return sequence, nil
 }
 
-func (s store) pruneThrough(ctx context.Context, q *db.Queries, tabID string, sequence int64) (db.SemanticEventJournal, error) {
+func (s store) pruneThrough(ctx context.Context, q *db.Queries, tab Tab, sequence int64) (db.SemanticEventJournal, error) {
 	usage, err := q.ReadSemanticEventUsageThrough(ctx, db.ReadSemanticEventUsageThroughParams{
-		TabType: terminalTabType, TabID: tabID, ThroughSequence: sequence,
+		TabType: int64(tab.Type), TabID: tab.ID, ThroughSequence: sequence,
 	})
 	if err != nil {
 		return db.SemanticEventJournal{}, err
 	}
 	if err := q.DeleteSemanticEventsThrough(ctx, db.DeleteSemanticEventsThroughParams{
-		TabType: terminalTabType, TabID: tabID, ThroughSequence: sequence,
+		TabType: int64(tab.Type), TabID: tab.ID, ThroughSequence: sequence,
 	}); err != nil {
 		return db.SemanticEventJournal{}, err
 	}
 	if err := q.AdvanceSemanticEventFloor(ctx, db.AdvanceSemanticEventFloorParams{
-		TabType: terminalTabType, TabID: tabID, FloorSequence: sequence,
+		TabType: int64(tab.Type), TabID: tab.ID, FloorSequence: sequence,
 	}); err != nil {
 		return db.SemanticEventJournal{}, err
 	}
@@ -204,7 +216,7 @@ func (s store) pruneExpired(ctx context.Context, q *db.Queries, now time.Time) e
 		return err
 	}
 	for _, cutoff := range cutoffs {
-		if _, err := s.pruneThrough(ctx, q, cutoff.TabID, cutoff.Cutoff); err != nil {
+		if _, err := s.pruneThrough(ctx, q, Tab{Type: leapmuxv1.TabType(cutoff.TabType), ID: cutoff.TabID}, cutoff.Cutoff); err != nil {
 			return err
 		}
 	}

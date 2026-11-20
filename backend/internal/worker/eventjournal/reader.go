@@ -17,14 +17,14 @@ const readBatchSize = 32
 // Reader follows a single admitted tab generation. It has no event queue.
 type Reader struct {
 	journal  *Journal
-	tabID    string
+	tab      Tab
 	streamID string
 }
 
 // Open validates a cursor before exposing positions. Creating a fresh cursor
 // also gives a previously quiet tab an identity that survives a restart.
-func (j *Journal) Open(ctx context.Context, tabID string, cursor []byte) (reader *Reader, ready *leapmuxv1.SemanticWatchReady, err error) {
-	if tabID == "" {
+func (j *Journal) Open(ctx context.Context, tab Tab, cursor []byte) (reader *Reader, ready *leapmuxv1.SemanticWatchReady, err error) {
+	if !tab.Valid() {
 		return nil, nil, ErrCursor
 	}
 	if err := j.barrier(ctx); err != nil {
@@ -36,15 +36,15 @@ func (j *Journal) Open(ctx context.Context, tabID string, cursor []byte) (reader
 		var after int64
 		var err error
 		if len(cursor) == 0 {
-			tail, err = j.store.ensureTail(ctx, q, tabID, now.UnixMilli())
+			tail, err = j.store.ensureTail(ctx, q, tab, now.UnixMilli())
 			after = tail.HighSequence
 		} else {
-			tail, err = q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: terminalTabType, TabID: tabID})
+			tail, err = q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: int64(tab.Type), TabID: tab.ID})
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrCursor
 			}
 			if err == nil {
-				after, err = j.identity.position(tabID, tail.TabStreamID, cursor)
+				after, err = j.identity.position(tab, tail.TabStreamID, cursor)
 				if after > tail.HighSequence {
 					return ErrCursor
 				}
@@ -56,9 +56,9 @@ func (j *Journal) Open(ctx context.Context, tabID string, cursor []byte) (reader
 		if err := j.store.pruneExpired(ctx, q, now); err != nil {
 			return err
 		}
-		reader = &Reader{journal: j, tabID: tabID, streamID: tail.TabStreamID}
+		reader = &Reader{journal: j, tab: tab, streamID: tail.TabStreamID}
 		ready = &leapmuxv1.SemanticWatchReady{
-			Tab:      &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: tabID},
+			Tab:      &leapmuxv1.TabIdent{TabType: tab.Type, TabId: tab.ID},
 			WorkerId: j.identity.workerID, JournalId: j.identity.journalID, TabStreamId: tail.TabStreamID,
 			AfterSequence: after, HighWaterSequence: tail.HighSequence, Cursor: reader.cursor(after),
 		}
@@ -77,7 +77,7 @@ func (j *Journal) Open(ctx context.Context, tabID string, cursor []byte) (reader
 }
 
 func (r *Reader) cursor(sequence int64) []byte {
-	return r.journal.identity.sign(r.tabID, r.streamID, sequence)
+	return r.journal.identity.sign(r.tab, r.streamID, sequence)
 }
 
 // Read returns a consecutive page after the supplied position. The wake
@@ -97,7 +97,7 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := db.New(tx)
-	tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: terminalTabType, TabID: r.tabID})
+	tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: int64(r.tab.Type), TabID: r.tab.ID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ErrCursor
 	}
@@ -115,7 +115,7 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 		return nil, changed, nil
 	}
 	expired, err := q.GetExpiredSemanticEventCutoff(ctx, db.GetExpiredSemanticEventCutoffParams{
-		TabType: terminalTabType, TabID: r.tabID, ExpiredAt: j.clock.Now().Add(-j.store.retention.age).UnixMilli(),
+		TabType: int64(r.tab.Type), TabID: r.tab.ID, ExpiredAt: j.clock.Now().Add(-j.store.retention.age).UnixMilli(),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -134,7 +134,7 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 		return []*leapmuxv1.WatchSemanticEventsResponse{gap}, changed, nil
 	}
 	rows, err := q.ListSemanticEventEntriesAfter(ctx, db.ListSemanticEventEntriesAfterParams{
-		TabType: terminalTabType, TabID: r.tabID, AfterSequence: after, PageSize: readBatchSize,
+		TabType: int64(r.tab.Type), TabID: r.tab.ID, AfterSequence: after, PageSize: readBatchSize,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -167,7 +167,7 @@ func (r *Reader) persistExpiredCutoff(ctx context.Context, expired int64) (int64
 	j := r.journal
 	var floor int64
 	err := j.store.write(ctx, func(q *db.Queries) error {
-		tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: terminalTabType, TabID: r.tabID})
+		tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: int64(r.tab.Type), TabID: r.tab.ID})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrCursor
 		}
@@ -181,7 +181,7 @@ func (r *Reader) persistExpiredCutoff(ctx context.Context, expired int64) (int64
 		if floor == tail.FloorSequence {
 			return nil
 		}
-		_, err = j.store.pruneThrough(ctx, q, r.tabID, floor)
+		_, err = j.store.pruneThrough(ctx, q, r.tab, floor)
 		return err
 	})
 	return floor, err

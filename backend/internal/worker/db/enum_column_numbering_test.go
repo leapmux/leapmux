@@ -735,7 +735,8 @@ func TestSemanticEventEnumColumnsMatchProto(t *testing.T) {
 		return declaration
 	}
 	assert.Contains(t, table("semantic_event_tails"), fmt.Sprintf(
-		"CHECK (tab_type = %d)", leapmuxv1.TabType_TAB_TYPE_TERMINAL))
+		"CHECK (tab_type BETWEEN %d AND %d)",
+		leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_TERMINAL))
 	assert.Contains(t, table("semantic_event_entries"), fmt.Sprintf(
 		"CHECK (gap_reason BETWEEN %d AND %d)",
 		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP,

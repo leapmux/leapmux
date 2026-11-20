@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -24,10 +25,13 @@ type checkpointedEvents struct {
 
 func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 	bounded := s.bounded()
-	target, err := bounded.resolveTab(resolve.KindTerminal, opts.tab, resolve.Need{WorkerID: true})
+	target, err := bounded.resolveCheckpointTab(opts.tab)
 	bounded.Close()
 	if err != nil {
 		return err
+	}
+	if target.Type != leapmuxv1.TabType_TAB_TYPE_AGENT && target.Type != leapmuxv1.TabType_TAB_TYPE_TERMINAL {
+		return cli.Usagef("--checkpoint requires an agent or terminal tab")
 	}
 	checkpoint, err := openEventCheckpoint(opts.checkpoint)
 	if err != nil {
@@ -38,10 +42,10 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 	if err != nil {
 		return err
 	}
-	kinds := eventCheckpointKinds(opts.filter)
+	kinds := eventCheckpointKinds(opts.filter, target.Type)
 	if state != nil {
-		if target.ID != state.TabID || target.WorkerID != state.WorkerID {
-			return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a different terminal or Worker")
+		if target.ID != state.TabID || target.WorkerID != state.WorkerID || tabTypeName(target.Type) != state.TabType {
+			return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a different tab or Worker")
 		}
 		if !slices.Equal(kinds, state.Filter) {
 			return cli.Newf(cli.CodeConflict, "the event checkpoint uses a different --kind selection").
@@ -49,7 +53,7 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 		}
 	}
 	replay := checkpointedEvents{
-		opts: opts, tab: scopedTab{ID: target.ID, Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkerID: target.WorkerID},
+		opts: opts, tab: scopedTab{ID: target.ID, Type: target.Type, WorkerID: target.WorkerID},
 		printer: s.inv.Printer, kinds: kinds, state: state, save: checkpoint.save,
 	}
 	backoff := newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
@@ -81,6 +85,24 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 		}
 	}
 	return nil
+}
+
+func (s *session) resolveCheckpointTab(selector string) (tabTarget, error) {
+	if !s.c.IsWorkerIPC() || strings.TrimSpace(selector) != resolve.SelfTarget {
+		return s.resolveTab(resolve.KindTab, selector, resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
+	}
+	ipc, err := s.c.ControlIPCService()
+	if err != nil {
+		return tabTarget{}, err
+	}
+	identity, err := ipc.Whoami(s.ctx, &leapmuxv1.WhoamiRequest{})
+	if err != nil {
+		return tabTarget{}, err
+	}
+	if identity.GetTabId() == "" || identity.GetWorkerId() == "" {
+		return tabTarget{}, cli.Usagef("--tab self requires a local agent or terminal tab")
+	}
+	return tabTarget{ID: identity.GetTabId(), Type: identity.GetTabType(), WorkerID: identity.GetWorkerId(), Self: true}, nil
 }
 
 func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
@@ -122,7 +144,7 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 		case <-heartbeat:
 			if ready {
 				event := r.notice(kindStreamHeartbeat)
-				event.Summary = "watching terminal event history"
+				event.Summary = "watching " + tabTypeName(r.tab.Type) + " event history"
 				if err := r.print(event); err != nil {
 					return false, err
 				}
@@ -167,7 +189,7 @@ func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) er
 	}
 	start := &eventCheckpoint{
 		Version: eventCheckpointVersion, WorkerID: r.tab.WorkerID, TabID: r.tab.ID,
-		TabType: "terminal", JournalID: ready.GetJournalId(), TabStreamID: ready.GetTabStreamId(),
+		TabType: tabTypeName(r.tab.Type), JournalID: ready.GetJournalId(), TabStreamID: ready.GetTabStreamId(),
 		Filter: r.kinds, Sequence: after, Cursor: ready.GetCursor(),
 	}
 	if state := r.state; state != nil {
@@ -180,7 +202,7 @@ func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) er
 	}
 	event := r.notice(kindStreamReady)
 	event.JournalID, event.TabStreamID, event.Sequence = start.JournalID, start.TabStreamID, &after
-	event.Summary = "watching terminal event history"
+	event.Summary = "watching " + tabTypeName(r.tab.Type) + " event history"
 	if err := r.print(event); err != nil {
 		return err
 	}
@@ -206,7 +228,7 @@ func (r *checkpointedEvents) acceptFrame(frame *leapmuxv1.WatchSemanticEventsRes
 		if sequence <= after || sequence-after != 1 {
 			return after, invalidSemanticEventSequence()
 		}
-		decoded, ok := terminalFactEvent(record.GetFact(), r.tab)
+		decoded, ok := checkpointFactEvent(record, r.tab)
 		if !ok {
 			return after, invalidSemanticEventSequence()
 		}
@@ -224,7 +246,7 @@ func (r *checkpointedEvents) acceptFrame(frame *leapmuxv1.WatchSemanticEventsRes
 		}
 		event = r.notice(kindStreamGap)
 		event.GapReason, event.AfterSequence = reason, &after
-		event.Lost = eventCheckpointKinds(kindFilter{})
+		event.Lost = eventCheckpointKinds(kindFilter{}, r.tab.Type)
 		event.Summary = fmt.Sprintf("%s after sequence %d", message, after)
 	default:
 		return after, invalidSemanticEventSequence()
@@ -268,11 +290,11 @@ func invalidSemanticEventSequence() error {
 func semanticGapDescription(reason leapmuxv1.SemanticWatchGapReason) (string, string) {
 	switch reason {
 	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION:
-		return "retention", "terminal events expired"
+		return "retention", "tab events expired"
 	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP:
 		return "unclean_stop", "the Worker stopped before it confirmed all events were recorded"
 	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT:
-		return "source_limit", "the Worker could not retain a terminal event"
+		return "source_limit", "the Worker could not retain a tab event"
 	default:
 		return "", ""
 	}

@@ -40,6 +40,11 @@ func TestStreamEvent_TextLine(t *testing.T) {
 		assert.Equal(t, stamp+" terminal.notification tab=t-1 Build: all green", line)
 		assert.NotContains(t, line, "\n")
 	})
+
+	t.Run("a replayed request prints control characters as text", func(t *testing.T) {
+		ev := streamEvent{Kind: kindAgentRequest, Time: at, Summary: "question: confirm\x1b\x07\u009d now"}
+		assert.Equal(t, stamp+` agent.request question: confirm\u001b\u0007\u009d now`, ev.TextLine())
+	})
 	t.Run("a reconciled event says so", func(t *testing.T) {
 		ev := streamEvent{Kind: kindTabClosed, Time: at, TabID: "t-1", Summary: "agent tab", Reconciled: true}
 		assert.True(t, strings.HasSuffix(ev.TextLine(), " agent tab (after a gap)"))

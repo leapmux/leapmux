@@ -1771,7 +1771,10 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	svc.EnableSemanticEvents()
 	require.NotNil(t, svc.semanticEvents.journal.Load())
-	t.Cleanup(svc.Shutdown)
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	// The trap turns the hang-up into exit 7: without the stamped-set guard,
 	// the exit handler would persist that code over the sweep's sentinel and
@@ -1793,15 +1796,17 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 		}},
 	}, wWatch)
 	waitWatchUpdateAck(t, wWatch)
-	_, checkpoint, err := svc.semanticEvents.journal.Load().Open(t.Context(), terminalID, nil)
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: terminalID}
+	_, checkpoint, err := svc.semanticEvents.journal.Load().Open(t.Context(), tab, nil)
 	require.NoError(t, err)
 
 	svc.Shutdown()
+	svc.FinalizeSemanticEvents(true)
 
 	journal, err := eventjournal.Start(t.Context(), svc.DB, svc.WorkerID, svc.RegisteredBy(), svc.Clock)
 	require.NoError(t, err)
 	defer func() { assert.NoError(t, journal.Stop(t.Context(), true)) }()
-	reader, _, err := journal.Open(t.Context(), terminalID, checkpoint.GetCursor())
+	reader, _, err := journal.Open(t.Context(), tab, checkpoint.GetCursor())
 	require.NoError(t, err)
 	frames, _, err := reader.Read(t.Context(), checkpoint.GetAfterSequence())
 	require.NoError(t, err)

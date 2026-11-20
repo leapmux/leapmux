@@ -46,3 +46,6 @@ SELECT * FROM control_requests WHERE agent_id = ? ORDER BY created_at ASC;
 
 -- name: GetControlRequest :one
 SELECT * FROM control_requests WHERE agent_id = ? AND request_id = ?;
+
+-- name: GetControlRequestClaim :one
+SELECT claim_token FROM control_requests WHERE agent_id = ? AND request_id = ?;

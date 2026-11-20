@@ -31,6 +31,7 @@ func newEventsCommand() *cobra.Command {
 			{Comment: "Watch every terminal, with a heartbeat that shows the stream runs.", Command: "leapmux control events --kind terminal --heartbeat 30s"},
 			{Comment: "Watch a single terminal as it moves between workspaces.", Command: "leapmux control events --tab 87a19d5f --kind terminal --json"},
 			{Comment: "Resume one terminal's event history across CLI runs.", Command: "leapmux control events --tab 87a19d5f --checkpoint terminal-events.json --json"},
+			{Comment: "Resume permission and question events for one agent.", Command: "leapmux control events --tab 87a19d5f --checkpoint agent-events.json --kind agent.request,agent.request_ended --json"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("workspace", "", `watch only this workspace: an id, a prefix, "title:<title>" or "self" (default: every workspace)`)
@@ -39,7 +40,7 @@ func newEventsCommand() *cobra.Command {
 			cli.SetEnum(fs, "kind", kindFlagValues()...)
 			fs.Int("limit", 0, "end the stream after this many events; 0 runs without a limit")
 			fs.Duration("heartbeat", 0, "print a stream.heartbeat event at this interval, such as 30s; 0 prints none")
-			fs.String("checkpoint", "", "save and resume the event position for the terminal selected by --tab")
+			fs.String("checkpoint", "", "save and resume the event position for the agent or terminal selected by --tab")
 		},
 		Run: runEvents,
 	})
@@ -68,14 +69,16 @@ which of them can deliver. Read the state that you need after it, such as
 "leapmux control agent list". A new run without --checkpoint starts from
 the present.
 
-Use --tab with --checkpoint to resume one terminal's status, exit, bell,
-notification, title and progress events. The command saves its position
-after writing output. Reuse the same file and --kind selection on the next
-run. A record can appear again if the process stops after writing its line
-and before saving its cursor. Use journal_id, tab_stream_id and sequence to
-deduplicate. The Worker reports gaps when it cannot supply retained history.
-With --checkpoint, --limit counts only the printed terminal events. This
-mode follows the tab across workspace moves and does not take --workspace.
+Use --tab with --checkpoint to resume the retained events of one agent or
+terminal. The command saves its position after writing each selected event.
+Reuse the same file and --kind selection on the next run. A record can
+appear again if the process stops after writing its line and before saving
+its cursor. Use journal_id, tab_stream_id and sequence to deduplicate.
+The Worker reports gaps when it cannot supply retained history. A replayed
+agent request has a request_instance that correlates it with its end. It
+has a request handle only while that exact instance still needs an answer.
+With --checkpoint, --limit counts only the printed tab events. This mode
+follows the tab across workspace moves and does not take --workspace.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints

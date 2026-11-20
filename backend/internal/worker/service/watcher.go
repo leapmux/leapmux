@@ -367,7 +367,8 @@ type WatcherManager struct {
 	channelOwners map[string]uint64 // channelID -> sessionID
 	nextSession   uint64
 	// agentEvents queues immutable events. Its lock protects no agent activity.
-	agentEvents publicationQueues[*leapmuxv1.AgentEvent]
+	agentEvents     publicationQueues[*leapmuxv1.AgentEvent]
+	recordAgentFact func(string, *leapmuxv1.AgentEvent)
 	// terminalStatuses orders every status change and closed event of a terminal,
 	// live or replayed. Screen data and the other terminal events stay outside
 	// it: they go through BroadcastTerminalEvent.
@@ -488,7 +489,12 @@ func (m *WatcherManager) EnqueueAgentEvent(agentID string, event *leapmuxv1.Agen
 		return
 	}
 	snapshot := proto.Clone(event).(*leapmuxv1.AgentEvent)
-	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent { return snapshot })
+	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent {
+		if m.recordAgentFact != nil {
+			m.recordAgentFact(agentID, snapshot)
+		}
+		return snapshot
+	})
 }
 
 // DrainAgentEvents sends queued events outside every publication lock.

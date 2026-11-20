@@ -135,7 +135,7 @@ type Wiring struct {
 const handlerDrainTimeout = 5 * time.Second
 
 // WaitHandlers joins the dispatcher's handlers within one shutdown budget,
-// which the shutdown deadline caps.
+// which the shutdown deadline caps. The journal remains writable until then.
 //
 // It lives on Wiring because worker.Run holds no dispatcher. The deferred call
 // in Run orders it after client.Stop, so the goodbye still travels on the live
@@ -147,9 +147,11 @@ func (w *Wiring) WaitHandlers() {
 	}
 	// Each wait logs its own expiry (drain.Counter), so the wrapper adds none:
 	// one expired wait is one Warn, not two.
-	if w.dispatcher.WaitHandlers(w.Service.ShutdownDeadline.Cap(handlerDrainTimeout)) {
+	handlersFinished := w.dispatcher.WaitHandlers(w.Service.ShutdownDeadline.Cap(handlerDrainTimeout))
+	if handlersFinished {
 		slog.Info("worker handlers joined")
 	}
+	w.Service.FinalizeSemanticEvents(handlersFinished)
 }
 
 // Shutdown drains the worker and then flushes everything that drain wrote to

@@ -18,6 +18,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/semanticevents"
 )
 
 // The kinds of a control request, as `agent requests` prints them.
@@ -37,22 +38,14 @@ const (
 
 // controlPromptKind returns the kind token of prompt.
 func controlPromptKind(prompt *leapmuxv1.ControlPrompt) string {
-	switch prompt.GetKind().(type) {
-	case *leapmuxv1.ControlPrompt_Permission:
-		return controlKindPermission
-	case *leapmuxv1.ControlPrompt_Plan:
-		return controlKindPlan
-	case *leapmuxv1.ControlPrompt_Question:
-		return controlKindQuestion
-	case *leapmuxv1.ControlPrompt_Elicitation:
-		return controlKindElicitation
-	case *leapmuxv1.ControlPrompt_Dialog:
-		return controlKindDialog
-	case *leapmuxv1.ControlPrompt_Unreadable:
-		return controlKindUnreadable
-	default:
-		return controlKindUnknown
+	return promptKindToken(semanticevents.PromptKind(prompt))
+}
+
+func promptKindToken(kind leapmuxv1.SemanticControlPromptKind) string {
+	if token := enumToken(kind); token != "" {
+		return token
 	}
+	return controlKindUnknown
 }
 
 // controlRequestRow is one pending control request of an agent: a

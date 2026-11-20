@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/semanticevents"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -419,7 +420,7 @@ func TestPromptDetail(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, promptDetail(tc.prompt))
+			assert.Equal(t, tc.want, semanticevents.PromptDetail(tc.prompt))
 		})
 	}
 
@@ -429,7 +430,7 @@ func TestPromptDetail(t *testing.T) {
 			ClaimToken: "h", Prompt: &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{Command: long + "\nrm -rf /"}}},
 		})
 		detail := strings.TrimPrefix(ev.Summary, "permission: ")
-		assert.Len(t, []rune(detail), promptDetailLength)
+		assert.Len(t, []rune(detail), 120)
 		assert.True(t, strings.HasSuffix(detail, "…"))
 		assert.NotContains(t, ev.Summary, "\n")
 	})

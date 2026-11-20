@@ -1,52 +1,12 @@
-import type { CLIConfigDir } from './helpers/cli'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { mintCLITokenForAdmin, spawnCLI } from './helpers/cli'
+import { mintCLITokenForAdmin, startControlEventStream } from './helpers/cli'
 import { createTestDirectory } from './helpers/runDirectory'
 import { sendActiveTerminalInput, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, terminalTabs } from './helpers/ui'
-
-interface EventLine {
-  kind: string
-  tab_id?: string
-  sequence?: number
-  replayed?: boolean
-  body?: string
-}
-
-function startEvents(cli: CLIConfigDir, args: string[]) {
-  const child = spawnCLI(cli, ['events', ...args])
-  let stdout = ''
-  let stderr = ''
-  child.stdout.setEncoding('utf8').on('data', (text: string) => {
-    stdout += text
-  })
-  child.stderr.setEncoding('utf8').on('data', (text: string) => {
-    stderr += text
-  })
-  const finished = new Promise<{ code: number | null, signal: string | null, error?: string }>((resolve) => {
-    child.once('error', (err) => {
-      resolve({ code: null, signal: null, error: err.message })
-    })
-    child.once('close', (code, signal) => {
-      resolve({ code, signal })
-    })
-  })
-  const diagnostic = () => `stdout: ${stdout}\nstderr: ${stderr}`
-  const events = (): EventLine[] => {
-    const lines = stdout.slice(0, stdout.lastIndexOf('\n') + 1).trim().split('\n').filter(Boolean)
-    return lines.map((line) => {
-      const envelope = JSON.parse(line) as { data?: EventLine, error?: unknown }
-      if (!envelope.data)
-        throw new Error(`leapmux events failed: ${JSON.stringify(envelope.error)}`)
-      return envelope.data
-    })
-  }
-  return { child, finished, diagnostic, events }
-}
 
 test('replays a bell that rang between CLI processes and checkpoints it', async ({ authenticatedWorkspace, leapmuxServer, page }) => {
   void authenticatedWorkspace
@@ -67,7 +27,7 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
     'stream.ready,terminal.bell,terminal.notification',
   ]
 
-  const first = startEvents(cli, args)
+  const first = startControlEventStream(cli, args)
   try {
     await expect.poll(() => first.events().map(event => event.kind)).toContain('stream.ready')
     await expect.poll(() => existsSync(checkpoint)).toBe(true)
@@ -84,7 +44,7 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
   expect(await sendActiveTerminalInput(page, 'printf "\\aREPLAY_%s\\n" BELL\r')).toBe(true)
   await waitForTerminalText(page, 'REPLAY_BELL')
 
-  const resumed = startEvents(cli, [...args, '--limit', '1'])
+  const resumed = startControlEventStream(cli, [...args, '--limit', '1'])
   let replayedSequence: number
   try {
     await expect.poll(() => resumed.events().map(event => event.kind)).toContain('terminal.bell')
@@ -110,7 +70,7 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
     await resumed.finished
   }
 
-  const live = startEvents(cli, [...args, '--limit', '1'])
+  const live = startControlEventStream(cli, [...args, '--limit', '1'])
   try {
     await expect.poll(() => live.events().map(event => event.kind)).toContain('stream.ready')
     expect(await sendActiveTerminalInput(page, 'printf "\\033]9;LIVE_%s\\a" NOTICE\r')).toBe(true)

@@ -4012,7 +4012,7 @@ func broadcastReplayAgentEvent(sink *replaySink, replayAgentID string, event *le
 }
 
 func buildAgentControlRequest(queries *db.Queries, plugin agent.Provider, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
-	state, err := controlResponseState(queries, agentID, request.RequestID, claimToken)
+	state, err := controlResponseState(bgCtx(), queries, agentID, request.RequestID, claimToken)
 	return &leapmuxv1.AgentControlRequest{
 		Prompt:         controlRequestPrompt(queries, plugin, agentID, request),
 		ResponseState:  state,

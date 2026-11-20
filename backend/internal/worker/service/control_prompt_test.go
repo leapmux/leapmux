@@ -292,7 +292,7 @@ func TestAnswerControl_ReleasesAnAnswerToAnInstanceThatTheProviderReplaced(t *te
 	assert.Empty(t, response.GetError(), "nothing failed that the reader can still act on")
 	_, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "req-1", ClaimToken: "claim-1"})
 	require.ErrorIs(t, err, sql.ErrNoRows, "the Worker released the refused answer")
-	state, err := controlResponseState(svc.Queries, "agent-1", "req-1", "claim-2")
+	state, err := controlResponseState(bgCtx(), svc.Queries, "agent-1", "req-1", "claim-2")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, state, "the replacement waits for its answer")
 

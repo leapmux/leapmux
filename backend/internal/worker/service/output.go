@@ -709,7 +709,7 @@ func (publication *controlPublication) enqueueCancellation(handler *OutputHandle
 // enqueueControlCancel records and queues one exact cancellation without watcher delivery or logging.
 func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken string) (bool, error) {
 	changed := h.recordControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
-	state, err := controlResponseState(h.queries, agentID, requestID, claimToken)
+	state, err := controlResponseState(bgCtx(), h.queries, agentID, requestID, claimToken)
 	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
@@ -1492,6 +1492,9 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		}
 		return nil
 	}
+	if current.ClaimToken != "" && current.ClaimToken != stored.ClaimToken {
+		publication.enqueueCancellation(s.h, s.agentID, requestID, current.ClaimToken)
+	}
 	// A non-blocking request never enters pendingControl: the map is what an
 	// interrupt consults (NoteAgentStopRequested, Delivered), and a question
 	// survives both.
@@ -1502,7 +1505,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		}
 		st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
 		st.mu.Unlock()
-		publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
+		publication.activityChanged = publication.activityChanged || !known || previous.claimToken != stored.ClaimToken
 	}
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID

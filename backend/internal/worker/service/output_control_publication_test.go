@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -468,6 +469,16 @@ func TestControlPublicationDoesNotPublishAfterStorageFailure(t *testing.T) {
 func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "agent-1"}
+	_, start, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
 	createClaimTestAgent(t, svc, "agent-1")
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	payload := []byte(`{"id":7,"request_id":"permission-1","method":"interaction/requestPermission"}`)
@@ -482,6 +493,26 @@ func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	changed, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "permission-1"})
 	require.NoError(t, err)
 	assert.NotEqual(t, first.ClaimToken, changed.ClaimToken, "a revised request starts a new instance")
+	reader, _, err := journal.Open(t.Context(), tab, start.GetCursor())
+	require.NoError(t, err)
+	records, _, err := reader.Read(t.Context(), start.GetAfterSequence())
+	require.NoError(t, err)
+	var lifecycle []*leapmuxv1.SemanticTabFact
+	for _, record := range records {
+		fact := record.GetRecord().GetFact()
+		if fact.GetAgentRequest() != nil || fact.GetAgentRequestEnded() != nil {
+			lifecycle = append(lifecycle, fact)
+		}
+	}
+	require.Len(t, lifecycle, 3)
+	opened, ended, replacement := lifecycle[0].GetAgentRequest(), lifecycle[1].GetAgentRequestEnded(), lifecycle[2].GetAgentRequest()
+	require.NotNil(t, opened)
+	require.NotNil(t, ended, "replacement must end the earlier request before the new opening")
+	require.NotNil(t, replacement)
+	assert.Equal(t, journal.RequestInstance(tab.ID, first.ClaimToken), opened.GetRequestInstance())
+	assert.Equal(t, opened.GetRequestInstance(), ended.GetRequestInstance())
+	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, ended.GetState())
+	assert.Equal(t, journal.RequestInstance(tab.ID, changed.ClaimToken), replacement.GetRequestInstance())
 }
 
 func TestControlPublicationCancellationKeepsAReplacementInstance(t *testing.T) {

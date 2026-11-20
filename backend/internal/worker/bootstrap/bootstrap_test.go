@@ -305,6 +305,8 @@ func wireForTestWithKeypair(
 	require.NoError(t, err)
 
 	client := newTestHubClient(t, "http://127.0.0.1:0")
+	var w *Wiring
+	t.Cleanup(func() { w.WaitHandlers() })
 	t.Cleanup(client.Stop)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -322,7 +324,7 @@ func wireForTestWithKeypair(
 		DataDir:        shortWorkerDataDir(t),
 	}
 	adjust(&params)
-	w := Wire(params)
+	w = Wire(params)
 	if runtime.GOOS != "windows" {
 		factory := w.Service.ControlIPC.(*controlipc.Factory)
 		if factory.SocketDir != "" && factory.SocketDir != controlipc.SocketDir(params.DataDir) {

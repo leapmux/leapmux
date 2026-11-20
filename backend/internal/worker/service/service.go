@@ -684,6 +684,7 @@ func New(cfg Config) *Service {
 		lastBellAt:      make(map[string]time.Time),
 	}
 	watchers.recordTerminalFact = svc.recordTerminalFact
+	watchers.recordAgentFact = svc.recordAgentFact
 	// The seed is config data, so it is minted here -- the one place the raw
 	// string exists -- rather than inside the setter.
 	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {
@@ -1196,9 +1197,9 @@ func (svc *Service) shutdown() {
 
 	// Queue dispatch runs outside the RPC handler that created it. Join those
 	// goroutines before the startup drains and provider teardown below.
-	svc.ShutdownDeadline.Wait(inputQueueIdle,
+	inputQueueFinished := svc.ShutdownDeadline.Wait(inputQueueIdle,
 		"shutdown deadline passed while input queue dispatches still ran; abandoning them")
-	svc.ShutdownDeadline.Wait(svc.nativeTurnRestartsInFlight.DoneChan(),
+	nativeRestartsFinished := svc.ShutdownDeadline.Wait(svc.nativeTurnRestartsInFlight.DoneChan(),
 		"shutdown deadline passed while native turn restarts still ran; abandoning them")
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
@@ -1215,7 +1216,8 @@ func (svc *Service) shutdown() {
 	// cancelled startup records no startup failure (see cancelForShutdown).
 	svc.AgentStartup.closeClaims()
 	svc.TerminalStartup.closeClaims()
-	logShutdownStragglers("agent startup", svc.AgentStartup.drainForShutdown(svc.ShutdownDeadline))
+	agentStartups := svc.AgentStartup.drainForShutdown(svc.ShutdownDeadline)
+	logShutdownStragglers("agent startup", agentStartups)
 	terminalStartups := svc.TerminalStartup.drainForShutdown(svc.ShutdownDeadline)
 	logShutdownStragglers("terminal startup", terminalStartups)
 	// Also drain in-flight close handlers. The frontend fires close RPCs
@@ -1247,9 +1249,11 @@ func (svc *Service) shutdown() {
 	// stay ACTIVE for the next boot. StopAll joins exit handlers within its
 	// budget and reports stragglers before the caller closes the database.
 	var stops sync.WaitGroup
+	var agentExits []string
 	stops.Go(func() {
 		if svc.Agents != nil {
-			logShutdownStragglers("agent", svc.Agents.StopAll(svc.ShutdownDeadline.Cap(agentStopTimeout)))
+			agentExits = svc.Agents.StopAll(svc.ShutdownDeadline.Cap(agentStopTimeout))
+			logShutdownStragglers("agent", agentExits)
 		}
 	})
 	// PTYs outlive Service.Shutdown otherwise: in the sidecar's SwitchMode the
@@ -1269,7 +1273,6 @@ func (svc *Service) shutdown() {
 		logShutdownStragglers("terminal", terminalExits)
 	})
 	stops.Wait()
-	svc.stopSemanticEvents(closesFinished && len(terminalStartups) == 0 && len(terminalExits) == 0)
 
 	// Stop the tunnel idle reaper goroutine. The worker process is exiting, so
 	// correctness does not depend on it, but stopping it keeps the goroutine
@@ -1316,7 +1319,9 @@ func (svc *Service) shutdown() {
 	// one reads the registry and broadcasts, so both must finish while the
 	// context below is still live and before the caller closes the database.
 	// After StopAll, which is what produces the exits that spawn them.
-	svc.Output.waitActivityRefreshesUntil(svc.ShutdownDeadline)
+	activityFinished := svc.Output.waitActivityRefreshesUntil(svc.ShutdownDeadline)
+	svc.stopSemanticEventReaders(inputQueueFinished && nativeRestartsFinished && closesFinished && activityFinished &&
+		len(agentStartups) == 0 && len(terminalStartups) == 0 && len(agentExits) == 0 && len(terminalExits) == 0)
 
 	// Cancel the background-task write context last, AFTER every drain. Any
 	// in-flight bgtask write the drains did not cover now fails fast

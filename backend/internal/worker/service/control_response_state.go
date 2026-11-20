@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,8 +12,8 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func controlResponseState(queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
-	answer, err := queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
+func controlResponseState(ctx context.Context, queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
+	answer, err := queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 	})
 	if err == nil {
@@ -21,8 +22,8 @@ func controlResponseState(queries *db.Queries, agentID, requestID, claimToken st
 	if !errors.Is(err, sql.ErrNoRows) {
 		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, err
 	}
-	request, err := queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: agentID, RequestID: requestID})
-	if errors.Is(err, sql.ErrNoRows) || err == nil && request.ClaimToken != claimToken {
+	currentClaim, err := queries.GetControlRequestClaim(ctx, db.GetControlRequestClaimParams{AgentID: agentID, RequestID: requestID})
+	if errors.Is(err, sql.ErrNoRows) || err == nil && currentClaim != claimToken {
 		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, nil
 	}
 	if err != nil {
@@ -78,7 +79,7 @@ func (svc *Service) deliverControlAnswer(currentAgent db.Agent, requestID string
 // card of its own, so no failure is left to show. While the instance still
 // waits, the refusal keeps its text, because its card stays.
 func (svc *Service) reportControlResponseState(currentAgent db.Agent, requestID, claimToken string, operationErr error) (leapmuxv1.ControlResponseState, string) {
-	state, stateErr := controlResponseState(svc.Queries, currentAgent.ID, requestID, claimToken)
+	state, stateErr := controlResponseState(bgCtx(), svc.Queries, currentAgent.ID, requestID, claimToken)
 	if stateErr == nil && state == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED && errors.Is(operationErr, agent.ErrControlInstanceReplaced) {
 		operationErr = nil
 	}

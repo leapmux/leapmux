@@ -127,7 +127,7 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 	}
 	row, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: dbAgent.ID, RequestID: r.GetRequestId()})
 	if err != nil || row.ClaimToken != r.GetClaimToken() {
-		state, stateErr := controlResponseState(svc.Queries, dbAgent.ID, r.GetRequestId(), r.GetClaimToken())
+		state, stateErr := controlResponseState(bgCtx(), svc.Queries, dbAgent.ID, r.GetRequestId(), r.GetClaimToken())
 		response := &leapmuxv1.AnswerControlResponse{State: state}
 		if stateErr != nil {
 			response.Error = stateErr.Error()

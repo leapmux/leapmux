@@ -50,6 +50,8 @@ message SemanticWatchRecord {
   int64 observed_unix_millis = 2;
   SemanticTabFact fact = 3;
   bytes cursor = 4;
+  // Present when this exact request instance still waits for an answer.
+  string current_request_handle = 5;
 }
 
 enum SemanticWatchGapReason {
@@ -75,12 +77,66 @@ message SemanticTabFact {
     TerminalNotification terminal_notification = 4;
     TerminalTitleChanged terminal_title = 5;
     TerminalProgress terminal_progress = 6;
+    SemanticAgentActivity agent_activity = 7;
+    SemanticAgentStatus agent_status = 8;
+    AgentTurnEnd agent_turn_end = 9;
+    SemanticAgentRequest agent_request = 10;
+    SemanticAgentRequestEnded agent_request_ended = 11;
+    SemanticAgentTodos agent_todos = 12;
+    SemanticAgentBackgroundTasks agent_background_tasks = 13;
   }
 }
 
 message SemanticTerminalStatus {
   TerminalStatus status = 1;
   string startup_error = 2;
+}
+
+message SemanticAgentActivity {
+  AgentActivityState state = 1;
+  optional int32 tool_calls = 2;
+}
+
+message SemanticAgentStatus {
+  AgentStatus status = 1;
+  string startup_error = 2;
+}
+
+enum SemanticControlPromptKind {
+  SEMANTIC_CONTROL_PROMPT_KIND_UNSPECIFIED = 0;
+  SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION = 1;
+  SEMANTIC_CONTROL_PROMPT_KIND_PLAN = 2;
+  SEMANTIC_CONTROL_PROMPT_KIND_QUESTION = 3;
+  SEMANTIC_CONTROL_PROMPT_KIND_ELICITATION = 4;
+  SEMANTIC_CONTROL_PROMPT_KIND_DIALOG = 5;
+  SEMANTIC_CONTROL_PROMPT_KIND_UNREADABLE = 6;
+}
+
+// The identity correlates this request with its end without exposing a claim.
+message SemanticAgentRequest {
+  string request_id = 1;
+  bytes request_instance = 2;
+  SemanticControlPromptKind prompt_kind = 3;
+  bool blocking = 4;
+  string detail = 5;
+}
+
+message SemanticAgentRequestEnded {
+  string request_id = 1;
+  bytes request_instance = 2;
+  ControlResponseState state = 3;
+}
+
+message SemanticAgentTodos {
+  int32 total = 1;
+  int32 completed = 2;
+  int32 in_progress = 3;
+  string current = 4;
+}
+
+message SemanticAgentBackgroundTasks {
+  int32 total = 1;
+  int32 active = 2;
 }
 
 // WatchReplayMode selects which history a WatchEvents subscriber replays before

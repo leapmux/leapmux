@@ -896,8 +896,8 @@ CREATE TABLE semantic_event_journal (
 );
 
 CREATE TABLE semantic_event_tails (
-    -- TabType ordinal. The journal currently admits terminal tabs.
-    tab_type INTEGER NOT NULL CHECK (typeof(tab_type) = 'integer') CHECK (tab_type = 2),
+    -- TabType ordinal. Worker-owned agent and terminal tabs publish facts.
+    tab_type INTEGER NOT NULL CHECK (typeof(tab_type) = 'integer') CHECK (tab_type BETWEEN 1 AND 2),
     tab_id TEXT NOT NULL CHECK (tab_id <> ''),
     tab_stream_id TEXT NOT NULL CHECK (tab_stream_id <> ''),
     high_sequence INTEGER NOT NULL CHECK (high_sequence >= 0),
@@ -915,6 +915,8 @@ CREATE TABLE semantic_event_entries (
     sequence INTEGER NOT NULL CHECK (sequence > 0),
     observed_unix_millis INTEGER NOT NULL,
     fact BLOB NOT NULL,
+    -- A request opening has one journal-local identity while it is retained.
+    request_open_instance BLOB CHECK (request_open_instance IS NULL OR length(request_open_instance) = 32),
     -- SemanticWatchGapReason ordinal. The reader derives retention from floor_sequence.
     gap_reason INTEGER CHECK (gap_reason IS NULL OR typeof(gap_reason) = 'integer') CHECK (gap_reason BETWEEN 2 AND 3),
     CHECK ((gap_reason IS NULL AND length(fact) > 0) OR (gap_reason IS NOT NULL AND length(fact) = 0)),
@@ -922,6 +924,9 @@ CREATE TABLE semantic_event_entries (
     FOREIGN KEY (tab_type, tab_id) REFERENCES semantic_event_tails(tab_type, tab_id) ON DELETE CASCADE
 );
 CREATE INDEX semantic_event_age_idx ON semantic_event_entries (observed_unix_millis, ingest_order);
+CREATE UNIQUE INDEX semantic_event_request_open_idx
+    ON semantic_event_entries (tab_type, tab_id, request_open_instance)
+    WHERE request_open_instance IS NOT NULL;
 
 -- +goose Down
 DROP TABLE IF EXISTS semantic_event_entries;

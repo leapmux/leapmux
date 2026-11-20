@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/filelock"
@@ -120,7 +121,7 @@ func (f *eventCheckpointFile) read() (*eventCheckpoint, error) {
 	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		return nil, cli.Usagef("the event checkpoint must contain one JSON object")
 	}
-	if state.Version != eventCheckpointVersion || state.TabType != "terminal" ||
+	if state.Version != eventCheckpointVersion || (state.TabType != "agent" && state.TabType != "terminal") ||
 		state.WorkerID == "" || state.TabID == "" || state.JournalID == "" || state.TabStreamID == "" ||
 		state.Sequence < 0 || len(state.Cursor) == 0 || state.Filter == nil {
 		return nil, cli.Usagef("the event checkpoint has an invalid version, source, filter or position")
@@ -145,10 +146,11 @@ func (f *eventCheckpointFile) save(state *eventCheckpoint) error {
 // eventCheckpointKinds spells the selected facts in the vocabulary's order.
 // Equivalent flags share a checkpoint. Changing what may be skipped requires
 // a different checkpoint, even when the cursor itself remains valid.
-func eventCheckpointKinds(filter kindFilter) []string {
+func eventCheckpointKinds(filter kindFilter, tabType leapmuxv1.TabType) []string {
+	family := tabTypeName(tabType)
 	result := make([]string, 0)
 	for _, kind := range eventKinds {
-		if strings.HasPrefix(kind.name, "terminal.") && filter.selects(kind.name) {
+		if kindFamily(kind.name) == family && filter.selects(kind.name) {
 			result = append(result, kind.name)
 		}
 	}

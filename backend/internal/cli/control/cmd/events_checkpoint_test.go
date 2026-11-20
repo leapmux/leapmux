@@ -190,7 +190,7 @@ func TestCheckpointedEventsPersistsVisibleGapsWithoutUsingTheLimit(t *testing.T)
 	replay := makeCheckpointedEvents(t, io.Discard)
 	replay.printer.Err = &output
 	replay.save = func(state *eventCheckpoint) error {
-		assert.Contains(t, output.String(), "terminal events expired")
+		assert.Contains(t, output.String(), "tab events expired")
 		assert.Equal(t, int64(10), state.Sequence)
 		return nil
 	}

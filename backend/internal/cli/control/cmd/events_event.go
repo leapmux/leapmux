@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/leapmux/leapmux/internal/cli"
 )
@@ -16,7 +17,8 @@ import (
 // that a kind does not set is absent from its JSON.
 type streamEvent struct {
 	Kind string `json:"kind"`
-	// Time is when the stream received the event, in UTC.
+	// Time is the Worker observation time for a journal record. For live
+	// notifications without a journal, it is when the stream received the event.
 	Time time.Time `json:"time"`
 	// WorkspaceID, TabID and TabType identify the tab of a tab, agent or
 	// terminal event, and the workspace of a workspace event.
@@ -51,6 +53,8 @@ type streamEvent struct {
 	// answer` take. RequestID is the provider's own id of the request.
 	Request   string `json:"request,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+	// RequestInstance correlates the historical request and its end.
+	RequestInstance string `json:"request_instance,omitempty"`
 	// Prompt is what an agent.request asks: "permission", "plan",
 	// "question", "elicitation", "dialog" or "unreadable".
 	Prompt string `json:"prompt,omitempty"`
@@ -172,7 +176,13 @@ func (e streamEvent) TextLine() string {
 	}
 	if e.Summary != "" {
 		b.WriteByte(' ')
-		b.WriteString(oneLine(e.Summary))
+		for _, char := range oneLine(e.Summary) {
+			if unicode.IsControl(char) {
+				fmt.Fprintf(&b, "\\u%04x", char)
+			} else {
+				b.WriteRune(char)
+			}
+		}
 	}
 	if e.Reconciled {
 		b.WriteString(" (after a gap)")

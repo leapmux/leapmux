@@ -1520,7 +1520,7 @@ func (h *OutputHandler) WaitActivityRefreshes() {
 // the processes stop and before it cancels the background-task context, so no
 // refresh reads the registry or broadcasts after the caller closes the
 // database.
-func (h *OutputHandler) waitActivityRefreshesUntil(deadline *drain.Deadline) {
-	deadline.Wait(h.activityRefreshes.DoneChan(),
+func (h *OutputHandler) waitActivityRefreshesUntil(deadline *drain.Deadline) bool {
+	return deadline.Wait(h.activityRefreshes.DoneChan(),
 		"shutdown deadline passed while activity refreshes still ran; abandoning them")
 }
