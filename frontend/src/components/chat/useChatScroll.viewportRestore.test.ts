@@ -102,6 +102,36 @@ describe('useChatScroll viewport restore', () => {
       expect(cleared).toBe(true)
     }))
 
+  it('preserves the landing allowance when a saved tail gap has already closed', () =>
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(300)
+      div.setClientHeight(0)
+      const onSetLandingRefillPages = vi.fn()
+      const onLoadOlderMessages = vi.fn()
+      const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: true })
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages: () => [],
+        savedViewportScroll: saved,
+        landingRefillPages: () => 0,
+        onSetLandingRefillPages,
+        hasOlderMessages: () => true,
+        hasNewerMessages: () => false,
+        onLoadOlderMessages,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      div.setClientHeight(500)
+      triggerResizeObserversSync()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(onSetLandingRefillPages).not.toHaveBeenCalled()
+      expect(onLoadOlderMessages).not.toHaveBeenCalled()
+      expect(hook.readHistoryIntent()).toBe('tail')
+    }))
+
   it('restores a saved raw scrollTop fallback when no row anchor resolves', () =>
     inRoot(async () => {
       const div = makeFakeScrollDiv()
@@ -473,6 +503,35 @@ describe('useChatScroll restore onto a row that does not show its height yet', (
 })
 
 describe('useChatScroll resize', () => {
+  it('uses one landing refill when a settled resize makes the page unscrollable', async () => {
+    const loadNewer = vi.fn()
+    const [remaining, setRemaining] = createSignal<0 | 1>(1)
+    const h = mountScrollHarness({
+      heights: [100, 100, 100, 100, 100, 100],
+      hasNewer: true,
+      hookOptions: {
+        landingRefillPages: remaining,
+        onSetLandingRefillPages: pages => setRemaining(pages ?? 0),
+        onLoadNewerMessages: loadNewer,
+      },
+    })
+    expect(loadNewer).not.toHaveBeenCalled()
+    h.div.setClientHeight(700)
+    await h.resizeFlush()
+    expect(loadNewer).toHaveBeenCalledExactlyOnceWith('landing-refill')
+    await h.resizeFlush()
+    expect(loadNewer).toHaveBeenCalledOnce()
+    h.dispose()
+  })
+
+  it('reports a native move away from the tail before its scroll event', () => {
+    const h = mountScrollHarness()
+    expect(h.hook.readHistoryIntent()).toBe('tail')
+    h.div.setScrollTop(4000)
+    expect(h.hook.readHistoryIntent()).toBe('history')
+    h.dispose()
+  })
+
   it('does not stick when the reader leaves follow mode between a resize and its flush', async () => {
     const h = mountScrollHarness()
     expect(h.hook.isFollowing()).toBe(true)

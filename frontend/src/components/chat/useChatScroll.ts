@@ -4,7 +4,7 @@ import type { AnchorRow } from './chatScrollAnchor'
 import type { ChatScrollController } from './chatScrollPreserve'
 import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
 import type { AgentChatMessage, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { LandingRefillPages, SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
+import type { HistoryPagePurpose, LandingRefillPages, SavedViewportScroll, ScrollAnchor, ViewportHistoryIntent } from '~/stores/chatTypes'
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
 import { trailingDebounce } from '~/lib/debounce'
 import { monotonicNow } from '~/lib/monotonicNow'
@@ -15,7 +15,7 @@ import { messageIdOfRow } from './chatPendingRows'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
 import { cannotScroll, clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createHmrSettleWindow } from './chatScrollHmrSettleWindow'
-import { createScrollInput, isListScrollKey } from './chatScrollInput'
+import { createScrollInput, innerScrollerTakes, isListScrollKey } from './chatScrollInput'
 import { createScrollInputActivity } from './chatScrollInputActivity'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
@@ -481,11 +481,11 @@ export interface PaginationCallbacks {
   /** Spend the remaining landing refill or clear the limit after reader input. */
   onSetLandingRefillPages?: (pages: LandingRefillPages | undefined) => void
   /** Called when the user scrolls near the top and older messages should be loaded. */
-  onLoadOlderMessages?: () => void
+  onLoadOlderMessages?: (purpose?: HistoryPagePurpose) => void
   /** Called when the user scrolls near the bottom and newer messages should be loaded. */
-  onLoadNewerMessages?: () => void
+  onLoadNewerMessages?: (purpose?: HistoryPagePurpose) => void
   /**
-   * Re-fetch the latest page and snap to the live tail. Resolves when caught up.
+   * Fetch a latest landing. The background reconciler can finish a gap left after it.
    *
    * Each of the three jump callbacks takes the signal of the pending history jump of the
    * hook (see ScrollContext.beginHistoryJump): an abort abandons the fetch, so the page
@@ -572,6 +572,7 @@ export interface UseChatScrollResult {
   atBottom: Accessor<boolean>
   /** The current request to follow the live tail, including while its rows are pending. */
   followRequestedTracked: Accessor<boolean>
+  readHistoryIntent: () => ViewportHistoryIntent | undefined
   /**
    * Follow mode: the reader place is the tail (a tail that waits does not count), the tail
    * is loaded, the jump to the latest page of the request settled, and the view did not
@@ -768,19 +769,20 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   })
 
   // What the reader asked the view to show (see ReaderPlace). A mount on a window that is
-  // paged away from the live tail requests no tail. Only the effect that shows a place, the
-  // first-view rule, and isFollowingTracked read the signal tracked. Every other reader
-  // reads it untracked (`readerPlace`), so no caller gets a new dependency. Its two writers
+  // paged away from the live tail requests no tail. The placement effect, the first-view
+  // rule, and the tracked viewport accessors subscribe to the signal.
+  // Imperative callers read it through `readerPlace`. Its two writers
   // are setReaderPlace and showWaitingPlace.
   const [readerPlaceSignal, writeReaderPlace] = createSignal<ReaderPlace>(untrack(hasNewerMessages)
     ? POSITION_PLACE
     : TAIL_PLACE)
   const readerPlace = (): ReaderPlace => untrack(readerPlaceSignal)
-  /** See ScrollContext.followRequested. */
-  const followRequested = (): boolean => {
-    const place = readerPlace()
+  const followRequestedTracked = (): boolean => {
+    const place = readerPlaceSignal()
     return place.kind === 'tail' || (place.kind === 'waiting' && place.wait.place.kind === 'tail')
   }
+  /** See ScrollContext.followRequested. */
+  const followRequested = () => untrack(followRequestedTracked)
   // Whether loaded rows exist and none is in the list: no row shows a position then.
   const awaitingFirstView = (): boolean => untrack(opts.admission.awaitingFirstView)
   // Set by the cleanup of the hook: a microtask that a write of the reader place queued
@@ -840,8 +842,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let stickToBottomNow: () => void = () => {}
   // The controller of the pending history jump (see ScrollContext.beginHistoryJump), or
   // null while no jump is pending. A signal, so that the first-view rule and a memo over
-  // isFollowingTracked run again when a jump begins and when it ends. Every other reader
-  // reads it untracked.
+  // isFollowingTracked run again when a jump begins and when it ends. The buffer filler
+  // waits for its placement, and the viewport accessor reports the pending reader command.
   const [historyJump, setHistoryJump] = createSignal<AbortController | null>(null)
   // The jump to the latest page that did not settle (see ChatTailFollower.pendingJump),
   // assigned where the tail follower is created. No jump is pending before that.
@@ -1525,7 +1527,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    */
   const retakeScrollControl = () => {
     bufferFillPaused = false
-    resumePrefetchAfterLanding()
     hmrSettle.end()
   }
 
@@ -1587,8 +1588,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     geomVersion: geomTick,
     isAtTopEdge,
     isAtBottomEdge,
-    onLoadOlder: () => opts.onLoadOlderMessages?.(),
-    onLoadNewer: () => opts.onLoadNewerMessages?.(),
+    onLoadOlder: purpose => opts.onLoadOlderMessages?.(purpose),
+    onLoadNewer: purpose => opts.onLoadNewerMessages?.(purpose),
     isAtBottom,
     isFollowing: isFollowingTracked,
     anchorAtViewportTop,
@@ -1682,7 +1683,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     clearSavedViewportScroll: () => opts.onClearSavedViewportScroll?.(),
     savedViewportScroll: () => opts.savedViewportScroll?.(),
     lastAnchor: () => lastAnchor,
-    onGeometrySettled: bumpGeomTick,
+    onGeometrySettled: () => {
+      bumpGeomTick()
+      if (landingRefillPages() === 1)
+        fillScrollBuffer()
+    },
   })
 
   /**
@@ -1742,13 +1747,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       heldAnchor = null
       // A move resumes the buffer-fill pre-fetch a forced stop OR the dev HMR settle
       // window paused (see cancelPendingScroll and createHmrSettleWindow).
-      bufferFillPaused = false
-      resumePrefetchAfterLanding()
-      hmrSettle.end()
       velocity.sample(st)
       const dir = inferScrollDirection(baseline, st)
       if (dir)
         lastScrollDir = dir
+      retakeScrollControl()
+      resumePrefetchAfterLanding()
       // Scale the render-ahead by the just-sampled speed (0 while idle or before two
       // samples -> no lead), capped so an extreme flick can't mount an unbounded slice.
       // Head in THIS event's resolved direction -- not the stale lastScrollDir.
@@ -1792,11 +1796,25 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     fillScrollBuffer()
   }
 
-  // Touch/pointer overscroll-at-top → load older history. Self-contained gesture
-  // tracker; the drag math lives in createOverscrollDrag.
+  const loadAtDraggedEdge = (target: EventTarget | null, direction: -1 | 1): boolean => {
+    const element = visibleListEl()
+    if (!element || innerScrollerTakes(target, element, direction))
+      return false
+    const older = direction === -1
+    if (older
+      ? !isAtTopEdge()
+      : !isAtBottomEdge()) {
+      return false
+    }
+    takeReaderInput()
+    lastScrollDir = older ? 'older' : 'newer'
+    return older
+      ? tryLoadOlderOnExplicitTopIntent()
+      : tryLoadNewerOnExplicitBottomIntent()
+  }
   const overscroll = createOverscrollDrag({
-    atTop: isAtTopEdge,
-    onDragAtTop: tryLoadOlderOnExplicitTopIntent,
+    onDragAtTop: target => loadAtDraggedEdge(target, -1),
+    onDragAtBottom: target => loadAtDraggedEdge(target, 1),
   })
 
   // After any geometry change -- older-message prepend, window trim, or a row-height
@@ -2100,10 +2118,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // view at the top and paging older history to exhaustion (the reload climb-to-top
   // runaway). While the place of the mount waits for its rows, the filler fetches nothing
   // (see `placeWaits`), and it fills after the placement.
-  const loadBufferedPage = (load: () => boolean): void => {
-    if (landingRefillPages() === 1)
+  const loadBufferedPage = (load: (purpose?: HistoryPagePurpose) => boolean): void => {
+    if (landingRefillPages() === 1) {
       opts.onSetLandingRefillPages?.(0)
-    load()
+      load('landing-refill')
+    }
+    else {
+      load()
+    }
   }
   const landingPrefetchPaused = (): boolean => {
     const pages = landingRefillPages()
@@ -2290,9 +2312,17 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   return {
     atBottom,
-    followRequestedTracked: () => {
-      readerPlaceSignal()
-      return followRequested()
+    followRequestedTracked,
+    readHistoryIntent: () => {
+      const el = visibleListEl()
+      if (!el)
+        return undefined
+      const place = readerPlaceSignal()
+      if (historyJump() !== null || (place.kind === 'waiting' && place.wait.place.kind !== 'tail'))
+        return 'jumping'
+      return followRequestedTracked() && !seen.hasUnseenUpwardMove(el)
+        ? 'tail'
+        : 'history'
     },
     isFollowing,
     isFollowingTracked,
@@ -2334,20 +2364,20 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     forceScrollToBottom,
     pageScroll,
     handlers: {
-      onScroll: handleScroll,
-      onWheel: handleWheel,
-      onKeyDown: (event) => {
+      onScroll: () => batch(handleScroll),
+      onWheel: event => batch(() => handleWheel(event)),
+      onKeyDown: event => batch(() => {
         if (isListScrollKey(event))
           staleNativeTranslator.invalidate()
         handleKeyDown(event)
-      },
+      }),
       onTouchStart: (event) => {
         // The user grabbed the surface -- stop any coasting programmatic scroll now.
         cancelPendingScroll()
         inputActivity.onTouchStart(event)
         overscroll.onTouchStart(event)
       },
-      onTouchMove: (event) => {
+      onTouchMove: event => batch(() => {
         // One finger that drags vertically past the touch slop moves the content: the
         // reader takes control. A horizontal swipe on a wide code block and a pinch move
         // nothing in the list, and the history jump stays. A drag that does move the list
@@ -2355,7 +2385,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         if (inputActivity.isVerticalDrag(event))
           takeReaderInput()
         overscroll.onTouchMove(event)
-      },
+      }),
       onTouchEnd: (event) => {
         inputActivity.onTouchEnd(event)
         overscroll.onTouchEnd()
@@ -2370,7 +2400,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         inputActivity.onPointerDown(event)
         overscroll.onPointerDown(event)
       },
-      onPointerMove: overscroll.onPointerMove,
+      onPointerMove: event => batch(() => overscroll.onPointerMove(event)),
       // The window listeners of the input tracker end the pointer. They run first, in the
       // capture phase, so the list ends only its drag gesture here.
       onPointerUp: () => overscroll.onPointerUp(),

@@ -40,6 +40,7 @@ import { LIVE_STATUS_FIELDS, TERMINAL_LIVE_STATUS_FIELDS } from '~/stores/tab.he
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
+import { deferred } from '~/test-support/async'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -1866,6 +1867,7 @@ describe('reconcileLaggingTails', () => {
       getLastSeq: overrides.getLastSeq ?? (() => 1n),
       getLiveTailSeq: overrides.getLiveTailSeq ?? (() => 1n),
       isFetchingNewer: overrides.isFetchingNewer ?? (() => false),
+      isFetchingOlder: () => false,
       isReplaying: overrides.isReplaying ?? (() => false),
       keepsReadingPosition: overrides.keepsReadingPosition ?? (() => false),
       keepHistoryWindow: id => kept.push(id),
@@ -3288,6 +3290,9 @@ describe('useWorkspaceConnection replay ownership', () => {
   }
 
   function mountReplay(initial: {
+    cold?: boolean
+    viewportHeight?: number
+    observedTail?: bigint
     cost?: number
     seq?: bigint
     status?: AgentStatus
@@ -3352,11 +3357,17 @@ describe('useWorkspaceConnection replay ownership', () => {
       tabs.selection.setActiveById(TabType.AGENT, agentId)
       const agentSessionStore = createAgentSessionStore()
       const chatStore = createChatStore()
-      chatStore.setMessages(agentId, initial.seq === undefined
-        ? []
-        : [
-            create(AgentChatMessageSchema, { id: 'initial', seq: initial.seq, source: MessageSource.USER }),
-          ])
+      if (initial.viewportHeight !== undefined)
+        chatStore.reportViewport(agentId, initial.viewportHeight, true)
+      if (!initial.cold) {
+        chatStore.setMessages(agentId, initial.seq === undefined
+          ? []
+          : [
+              create(AgentChatMessageSchema, { id: 'initial', seq: initial.seq, source: MessageSource.USER }),
+            ])
+      }
+      if (initial.observedTail !== undefined)
+        chatStore.liveTail.bump(agentId, initial.observedTail)
       if (initial.cost !== undefined)
         agentSessionStore.updateInfo(agentId, { totalCostUsd: initial.cost })
       const agentActivityStore = createAgentActivityStore()
@@ -3494,6 +3505,259 @@ describe('useWorkspaceConnection replay ownership', () => {
         : {}),
     })
   }
+
+  function emitCatchUpStart(
+    state: ReturnType<typeof mountReplay>,
+    latestSeq: bigint,
+    paging?: { replayPageLimit: number, messageReplaySkipped: boolean },
+  ): void {
+    const handle = state.handles.at(-1)!
+    handle.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId: handle.requestId(),
+      event: {
+        case: 'catchUpStart',
+        value: { latestSeq, ...paging },
+      },
+    }))
+  }
+
+  function acknowledgeReplay(state: ReturnType<typeof mountReplay>): void {
+    const handle = state.handles.at(-1)!
+    const listener = vi.mocked(handle.handle.onEvent).mock.calls[0]![0]
+    const request = state.transmitted.at(-1)!
+    listener(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: handle.requestId(),
+          agentStates: request.agents.map(entry => ({ agentId: entry.agentId, mode: entry.mode, replayId: entry.replayId })),
+        },
+      },
+    }))
+  }
+
+  it('re-anchors with the effective replay size when a small-pane gap exceeds two pages', async () => {
+    const state = mountReplay({ seq: 7n, viewportHeight: 384 })
+    await flushStream()
+    const entry = state.transmitted.at(-1)!.agents.find(agent => agent.agentId === state.agentId)
+    expect(entry?.replayPageLimit).toBe(8)
+    state.chatStore.reportViewport(state.agentId, 1400, true)
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockResolvedValue(pageReply(24n))
+
+    emitCatchUpStart(state, 24n, { replayPageLimit: 8, messageReplaySkipped: true })
+    await flushStream()
+
+    expect(listMessages).toHaveBeenCalledExactlyOnceWith(
+      'w1',
+      { agentId: state.agentId, anchor: MessagePageAnchor.LATEST, limit: 8 },
+      {
+        signal: expect.any(AbortSignal),
+      },
+    )
+    expect(state.chatStore.getLastSeq(state.agentId)).toBe(24n)
+  })
+
+  it('samples the loaded sequence again when a resized pane reconnects', async () => {
+    const state = mountReplay({ seq: 7n, viewportHeight: 384 })
+    await flushStream()
+    const opening = state.transmitted.at(-1)!.agents.find(agent => agent.agentId === state.agentId)
+    expect(opening?.cursorSeq).toBe(7n)
+    expect(opening?.replayPageLimit).toBe(8)
+    state.emitMessage({ type: 'assistant' }, { seq: 8n })
+    state.emitMessage({ type: 'assistant' }, { seq: 9n })
+    state.chatStore.reportViewport(state.agentId, 576, true)
+    state.handles[0]!.end()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushStream()
+
+    const reopened = state.transmitted.at(-1)!.agents.find(agent => agent.agentId === state.agentId)
+    expect(reopened?.replayId).not.toBe(opening?.replayId)
+    expect(reopened?.cursorSeq).toBe(9n)
+    expect(reopened?.windowTailSeq).toBe(9n)
+    expect(reopened?.replayPageLimit).toBe(12)
+  })
+
+  it('requests contiguous replay from the loaded tail when the observed tail is ahead', async () => {
+    vi.mocked(workerAgent.listAgentMessages).mockImplementation(() => new Promise(() => {}))
+    const state = mountReplay({ seq: 7n, observedTail: 14n, viewportHeight: 384 })
+    await flushStream()
+
+    expect(state.chatStore.liveTail.get(state.agentId)).toBe(14n)
+    const entry = state.transmitted.at(-1)!.agents.find(agent => agent.agentId === state.agentId)
+    expect(entry?.cursorSeq).toBe(7n)
+    expect(entry?.windowTailSeq).toBe(7n)
+    expect(entry?.replayPageLimit).toBe(8)
+  })
+
+  it('aborts the previous replay’s pending re-anchor when root hydration replaces its receipt', async () => {
+    const state = mountReplay({ agentId: 'child-1', seq: 7n, viewportHeight: 384 })
+    await flushStream()
+    acknowledgeReplay(state)
+    const latest = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockReturnValue(latest.promise)
+    emitCatchUpStart(state, 24n, { replayPageLimit: 8, messageReplaySkipped: true })
+    const signal = listMessages.mock.calls[0]![2]!.signal!
+    expect(signal.aborted).toBe(false)
+    state.addAgent('root-1', { workerId: 'w1' }, { activate: false })
+    state.metadata.patch('child-1', { rootAgentId: 'root-1', parentAgentId: 'root-1', hydrated: true })
+    await flushStream()
+
+    expect(signal.aborted).toBe(true)
+    latest.resolve(pageReply(24n))
+    await flushStream()
+    expect(state.chatStore.getLastSeq(state.agentId)).toBe(7n)
+  })
+
+  it('extends contiguous replay with one negotiated page at the gap limit', async () => {
+    const state = mountReplay({ seq: 7n, viewportHeight: 384 })
+    await flushStream()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockResolvedValue(create(ListAgentMessagesResponseSchema))
+    emitCatchUpStart(state, 23n, { replayPageLimit: 8, messageReplaySkipped: false })
+    await flushStream()
+    listMessages.mockClear().mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+      messages: Array.from({ length: 8 }, (_, index) => ({
+        id: `forward-${index}`,
+        seq: BigInt(index + 16),
+        source: MessageSource.USER,
+      })),
+      latestSeq: 23n,
+    }))
+    for (let seq = 8n; seq <= 15n; seq++)
+      state.emitMessage({ type: 'assistant' }, { seq, replay: true })
+    const handle = state.handles.at(-1)!
+    handle.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId: handle.requestId(),
+      event: {
+        case: 'catchUpComplete',
+        value: { latestSeq: 23n, startTailSeq: 23n },
+      },
+    }))
+    await flushStream()
+
+    expect(listMessages).toHaveBeenCalledExactlyOnceWith(
+      'w1',
+      {
+        agentId: state.agentId,
+        anchor: MessagePageAnchor.AFTER,
+        cursorSeq: 15n,
+        limit: 8,
+      },
+      {
+        signal: expect.any(AbortSignal),
+      },
+    )
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual(
+      Array.from({ length: 17 }, (_, index) => BigInt(index + 7)),
+    )
+  })
+
+  it('keeps a single initial history request across selection and the full watch acknowledgement', async () => {
+    const first = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockReturnValue(first.promise)
+    const state = mountReplay({ cold: true })
+    await flushStream()
+
+    acknowledgeReplay(state)
+    await flushStream()
+    expect(listMessages).toHaveBeenCalledTimes(1)
+    expect(listMessages.mock.calls[0]![2]?.signal?.aborted).toBe(false)
+    first.resolve(pageReply(1n))
+    await flushStream()
+    expect(state.chatStore.getLastSeq(state.agentId)).toBe(1n)
+  })
+
+  it('refreshes marks once when a warm replay finishes', async () => {
+    const state = mountReplay({ seq: 1n })
+    await flushStream()
+    const listMarks = vi.mocked(workerAgent.listMessageMarks)
+    listMarks.mockClear()
+    acknowledgeReplay(state)
+    const handle = state.handles.at(-1)!
+    handle.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId: handle.requestId(),
+      event: {
+        case: 'catchUpComplete',
+        value: { latestSeq: 1n, startTailSeq: 1n },
+      },
+    }))
+    await flushStream()
+
+    expect(listMarks).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an explicit oldest request during large-gap reconciliation', async () => {
+    const state = mountReplay({ seq: 100n })
+    await flushStream()
+    const oldest = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockImplementation((_worker, request) => request.anchor === MessagePageAnchor.OLDEST
+      ? oldest.promise
+      : Promise.resolve(pageReply(1n)))
+
+    const home = state.chatStore.jumpToOldestMessages('w1', state.agentId)
+    emitCatchUpStart(state, 100n + CATCH_UP_GAP_LIMIT + 1n)
+
+    expect(listMessages.mock.calls.some(([, req]) => req.anchor === MessagePageAnchor.LATEST)).toBe(false)
+    expect(listMessages.mock.calls[0]![2]?.signal?.aborted).toBe(false)
+    oldest.resolve(pageReply(1n))
+    await expect(home).resolves.toBe(true)
+  })
+
+  function pageReply(seq: bigint) {
+    return create(ListAgentMessagesResponseSchema, {
+      messages: [
+        create(AgentChatMessageSchema, { id: `page-${seq}`, seq, source: MessageSource.USER }),
+      ],
+      hasMore: true,
+      latestSeq: seq,
+    })
+  }
+
+  it('refreshes retained rows when the reader leaves the tail during re-anchoring', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    const latest = deferred<ReturnType<typeof pageReply>>()
+    const original = state.chatStore.getMessages(state.agentId)[0]!
+    const revised = { ...original, supplementalRevision: 1n }
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockImplementation((_worker, request) => request.anchor === MessagePageAnchor.LATEST
+      ? latest.promise
+      : Promise.resolve(create(ListAgentMessagesResponseSchema, {
+          messages: [revised],
+        })))
+
+    const liveSeq = 7n + CATCH_UP_GAP_LIMIT + 1n
+    emitCatchUpStart(state, liveSeq)
+    expect(listMessages).toHaveBeenCalledTimes(1)
+    state.chatStore.reportViewport(state.agentId, 500, false)
+    latest.resolve(pageReply(liveSeq))
+    await flushStream()
+
+    expect(state.chatStore.getMessages(state.agentId)).toEqual([revised])
+    expect(state.chatStore.hasNewerMessages(state.agentId)).toBe(true)
+  })
+
+  it('accepts a deleted sequence hole in the current ordered replay only', async () => {
+    const state = mountReplay({ seq: 1n })
+    await flushStream()
+    emitCatchUpStart(state, 3n)
+    state.emitMessage({ type: 'assistant' }, { seq: 3n })
+    expect(state.chatStore.getLastSeq(state.agentId)).toBe(1n)
+
+    state.emitMessage({ type: 'assistant' }, { seq: 3n, replay: true })
+
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([1n, 3n])
+  })
 
   function emitActivity(state: ReturnType<typeof mountReplay>, level: AgentActivityState, replay = false, numToolUses?: number) {
     const current = state.handles.at(-1)

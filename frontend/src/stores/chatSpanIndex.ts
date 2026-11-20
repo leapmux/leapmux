@@ -24,7 +24,7 @@ export interface ChatSpanIndex {
    */
   index: (agentId: string, ...messages: AgentChatMessage[]) => boolean
   /** Replace an agent's index with exactly `messages` (clear, then index). */
-  reindex: (agentId: string, messages: AgentChatMessage[]) => void
+  reindex: (agentId: string, messages: readonly AgentChatMessage[]) => void
   /** The request message for a spanId, or undefined. */
   getRequestMessage: (agentId: string, identity: MessageSpanIdentity) => AgentChatMessage | undefined
   /** The result message for a spanId, or undefined. */
@@ -121,7 +121,7 @@ export function createSpanIndex(): ChatSpanIndex {
     return conflict
   }
 
-  function reindex(agentId: string, messages: AgentChatMessage[]) {
+  function reindex(agentId: string, messages: readonly AgentChatMessage[]) {
     requests.delete(agentId)
     results.delete(agentId)
     // These messages are the authoritative window, so a reported conflict requires no further rebuild.

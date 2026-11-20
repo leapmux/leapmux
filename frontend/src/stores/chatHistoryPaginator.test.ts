@@ -126,7 +126,10 @@ function harness(init: {
     getLastMessageSeq: lastServer,
     caughtUpToLiveTail,
     getViewportHeight: () => init.viewportHeight,
-    addMessage,
+    addMessagePage: (agentId, messages) => {
+      for (const message of messages)
+        addMessage(agentId, message)
+    },
     trimOldestEnd,
     trimNewestEnd,
     replaceTodos,
@@ -174,6 +177,12 @@ describe('chatHistoryPaginator', () => {
       [5000, 50],
     ])('uses %s pixels to select %s rows', (height, limit) => {
       expect(landingPageLimit(height)).toBe(limit)
+    })
+
+    it.each([1, 12])('applies a contract page cap of %s to every estimate', (limit) => {
+      expect(landingPageLimit(undefined, limit)).toBe(limit)
+      expect(landingPageLimit(-1, limit)).toBe(limit)
+      expect(landingPageLimit(5000, limit)).toBe(limit)
     })
   })
 
@@ -331,6 +340,31 @@ describe('chatHistoryPaginator', () => {
       expect(h.bumpLiveTail).not.toHaveBeenCalled()
     })
 
+    it('leaves evidence of more history after two pages with no reported tail', async () => {
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+      })
+      listAgentMessages
+        .mockResolvedValueOnce(page([
+          makeMsg(2n),
+        ], true))
+        .mockResolvedValueOnce(page([
+          makeMsg(3n),
+        ], true))
+        .mockResolvedValueOnce(page([
+          makeMsg(4n),
+        ], false))
+
+      await h.paginator.catchUpToTail('w', 'a', 1n)
+
+      expect(listAgentMessages).toHaveBeenCalledTimes(2)
+      expect(h.state.messagesByAgent.a?.at(-1)?.seq).toBe(3n)
+      expect(h.state.hasMoreNewer.a).toBe(true)
+      expect(h.state.tailFillDeferred.a).toBe(true)
+    })
+
     it('does not lower a live tail that a broadcast raised above the page tail', async () => {
       const h = harness({
         messages: [
@@ -451,6 +485,40 @@ describe('chatHistoryPaginator', () => {
           ? before
           : after)
     }
+
+    it('keeps the newer copy of an id that moved across the seek cursor', async () => {
+      const h = harness({
+        messages: [],
+        caughtUp: () => true,
+      })
+      const previous = makeMsg(4n, 'notification')
+      const current = makeMsg(7n, 'notification')
+      routeByAnchor(page([previous], true), page([current], false))
+
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
+
+      expect(h.applyMessages).toHaveBeenCalledExactlyOnceWith('a', [current], true)
+    })
+
+    it('releases the sibling seek request when its other page fails', async () => {
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+      })
+      const failure = new Error('Could not read the older seek page.')
+      let newerSignal: AbortSignal | undefined
+      listAgentMessages.mockImplementation((_worker, request, options) => {
+        if (request.anchor === MessagePageAnchor.BEFORE)
+          return Promise.reject(failure)
+        newerSignal = options.signal
+        return new Promise(() => {})
+      })
+
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 8n)).rejects.toBe(failure)
+      expect(newerSignal?.aborted).toBe(true)
+      expect(h.applyMessages).not.toHaveBeenCalled()
+    })
 
     it('uses the taller viewport while keeping the seek to two requests', async () => {
       const h = harness({ messages: [], viewportHeight: 5000 })

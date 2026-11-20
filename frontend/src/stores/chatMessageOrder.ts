@@ -10,7 +10,7 @@ export function preferNewerSupplement(previous: AgentChatMessage, incoming: Agen
 }
 
 /** The first message sequence, or undefined for an empty window. */
-export function firstMessageSeq(messages: AgentChatMessage[]): bigint | undefined {
+export function firstMessageSeq(messages: readonly AgentChatMessage[]): bigint | undefined {
   return messages[0]?.seq
 }
 
@@ -25,7 +25,7 @@ export function isReapablePhantom(seq: bigint, latestSeq: bigint, reapCeilingSeq
 }
 
 /** The last message sequence, or undefined for an empty window. */
-export function lastMessageSeq(messages: AgentChatMessage[]): bigint | undefined {
+export function lastMessageSeq(messages: readonly AgentChatMessage[]): bigint | undefined {
   return messages.at(-1)?.seq
 }
 

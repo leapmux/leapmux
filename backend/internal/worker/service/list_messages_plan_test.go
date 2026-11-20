@@ -163,7 +163,7 @@ func TestShouldSkipCatchUpReplay(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, shouldSkipCatchUpReplay(tc.replay, tc.cursorSeq, tc.skipGapBase, tc.latestSeq))
+			assert.Equal(t, tc.want, shouldSkipCatchUpReplay(tc.replay, tc.cursorSeq, tc.skipGapBase, tc.latestSeq, contracts.CatchUpGapLimit))
 		})
 	}
 }

@@ -30,7 +30,8 @@ enum WatchReplayMode {
   WATCH_REPLAY_MODE_AFTER_CURSOR = 2;
   // Replay every message after cursor_seq, as AFTER_CURSOR does, but replay
   // NOTHING when the gap to the live tail is larger than
-  // contracts.CatchUpGapLimit. The worker measures the gap from
+  // contracts.CatchUpGapLimit or two requested replay pages, whichever is smaller.
+  // The worker measures the gap from
   // WatchAgentEntry.window_tail_seq when the client declares it, else from
   // cursor_seq. A windowed client abandons a gap that large and re-anchors on
   // the newest page, so the burst would be pure waste. The client learns the
@@ -96,7 +97,7 @@ message WatchAgentEntry {
   WatchMode mode = 4;
   // The subscriber's loaded window tail, used ONLY as the base of the
   // AFTER_CURSOR_OR_NONE skip decision: a windowed client re-anchors when the
-  // gap from its LOADED tail exceeds contracts.CatchUpGapLimit, and the resume
+  // gap from its loaded tail exceeds the replay budget, and the resume
   // cursor can lead that tail (frames the client observed but dropped while
   // scrolled away). UNSET (the CLI, which never skips) keeps cursor_seq as the
   // base. Never affects the replay query itself: that still pages after
@@ -106,6 +107,9 @@ message WatchAgentEntry {
   // Positive identity of this FULL lifetime. NOTIFY carries zero.
   // Keep replay and cursor fields fixed while this identity remains FULL.
   uint64 replay_id = 6;
+  // The transcript page size for this FULL lifetime. Zero uses the default.
+  // The Worker clamps this size to the shared message page limit.
+  optional uint32 replay_page_limit = 7;
 }
 
 message WatchTerminalEntry {
@@ -312,6 +316,10 @@ message CatchUpStart {
   // UNSPECIFIED when the worker sends no opinion; the client then keeps whatever
   // it holds rather than overwriting a fresher answer with a blank one.
   AgentActivityState activity_state = 2;
+  // The capped replay skipped transcript rows because the gap exceeded its budget.
+  bool message_replay_skipped = 3;
+  // The effective transcript page size, present when the request selected one.
+  optional uint32 replay_page_limit = 4;
 }
 
 message CatchUpComplete {

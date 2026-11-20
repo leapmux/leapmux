@@ -1,7 +1,7 @@
 import type { MessageContextResolver } from '~/components/chat/messageContextResolver'
 import type { AgentChatMessage, ListMessageMarksResponse } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
-import { createRoot } from 'solid-js'
+import { createEffect, createMemo, createRoot, getOwner, runWithOwner } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
@@ -1584,7 +1584,9 @@ describe('createChatStore', () => {
           expect(store.getMessages('a1')).toHaveLength(50)
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.isInitialLoadComplete('a1')).toBe(true)
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT })
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT }, {
+            signal: expect.any(AbortSignal),
+          })
           dispose()
         })
       })
@@ -1628,6 +1630,32 @@ describe('createChatStore', () => {
     })
 
     describe('refreshLoadedMessages', () => {
+      it('stops after an in-flight page when the retained window moves out of range', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const rows = Array.from({ length: 100 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))
+          store.setMessages('a1', rows)
+          const first = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+          mockListAgentMessages
+            .mockReturnValueOnce(first.promise)
+            .mockResolvedValueOnce({ messages: [], hasMore: false })
+
+          const refresh = store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+          store.setMessages('a1', [
+            makeMessage('new-window', 200n),
+          ])
+          first.resolve({
+            messages: rows.slice(0, MESSAGE_PAGE_LIMIT),
+            hasMore: true,
+          })
+          await refresh
+
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(1)
+          expect(store.getLastSeq('a1')).toBe(200n)
+          dispose()
+        })
+      })
+
       it('updates every loaded page without adding new rows or changing pagination', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
@@ -1820,6 +1848,8 @@ describe('createChatStore', () => {
             anchor: MessagePageAnchor.BEFORE,
             cursorSeq: 51n,
             limit: MESSAGE_PAGE_LIMIT,
+          }, {
+            signal: expect.any(AbortSignal),
           })
           dispose()
         })
@@ -1892,6 +1922,95 @@ describe('createChatStore', () => {
     })
 
     describe('catchUpToTail', () => {
+      it('publishes one ordered page and exposes stable prefixes to synchronous observers', () => {
+        const published: bigint[][] = []
+        const observed: AgentChatMessage[][] = []
+        const lastRows: bigint[] = []
+        let observedTail: (() => bigint) | undefined
+        const { store, dispose } = createRoot((dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
+          createEffect(() => {
+            published.push(store.getMessages('a1').map(row => row.seq))
+          })
+          const owner = getOwner()
+          store.subscribeMessages('a1', () => {
+            const lastSeq = store.getLastSeq('a1')
+            if (lastSeq === 2n)
+              observedTail = runWithOwner(owner, () => createMemo(() => store.getLastSeq('a1')))
+            observed.push(store.getMessages('a1'))
+            lastRows.push(store.getLoadedMessageBySeq('a1', lastSeq)!.seq)
+          })
+          return { store, dispose }
+        })
+        const initial = store.getMessages('a1')[0]
+
+        store.addMessagePage('a1', [
+          makeMessage('m2', 2n),
+          makeMessage('m3', 3n),
+          makeMessage('m4', 4n),
+        ])
+
+        expect(published).toEqual([
+          [1n],
+          [1n, 2n, 3n, 4n],
+        ])
+        expect(observed.map(prefix => prefix.map(row => row.seq))).toEqual([
+          [1n],
+          [1n, 2n],
+          [1n, 2n, 3n],
+        ])
+        expect(lastRows).toEqual([1n, 2n, 3n])
+        expect(observedTail?.()).toBe(4n)
+        expect(store.getMessages('a1')[0]).toBe(initial)
+        dispose()
+      })
+
+      it('keeps a saved prefix detached when insertion falls back on a collision', () => {
+        const store = createChatStore()
+        store.setMessages('a1', [
+          makeMessage('first', 1n),
+        ])
+        const original = store.getMessages('a1')[0]
+        let prefix: AgentChatMessage[] | undefined
+        store.subscribeMessages('a1', (message) => {
+          if (message.id === 'collision')
+            prefix = store.getMessages('a1')
+        })
+
+        store.addMessagePage('a1', [
+          makeMessage('second', 2n),
+          makeMessage('collision', 2n),
+        ])
+
+        expect(prefix?.map(row => row.id)).toEqual(['first', 'second'])
+        expect(prefix?.[0]).toBe(original)
+        expect(store.getMessages('a1')[0]).toBe(original)
+      })
+
+      it('applies ordinary duplicate and resequence rules when a page stops appending', () => {
+        const store = createChatStore()
+        store.setMessages('a1', [
+          makeMessage('old', 1n),
+        ])
+        store.addMessagePage('a1', [
+          makeMessage('first', 2n),
+          makeMessage('colliding', 2n),
+          {
+            ...makeMessage('old', 3n),
+            previousSeq: 1n,
+          },
+          makeMessage('last', 4n),
+        ])
+
+        expect(store.getMessages('a1').map(row => [row.id, row.seq])).toEqual([
+          ['first', 2n],
+          ['old', 3n],
+          ['last', 4n],
+        ])
+      })
       it('should fetch a single batch of newer messages', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
@@ -1915,6 +2034,8 @@ describe('createChatStore', () => {
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 50n,
             limit: MESSAGE_PAGE_LIMIT,
+          }, {
+            signal: expect.any(AbortSignal),
           })
           dispose()
         })
@@ -1952,12 +2073,16 @@ describe('createChatStore', () => {
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 50n,
             limit: MESSAGE_PAGE_LIMIT,
+          }, {
+            signal: expect.any(AbortSignal),
           })
           expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, 'w1', {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 100n,
             limit: MESSAGE_PAGE_LIMIT,
+          }, {
+            signal: expect.any(AbortSignal),
           })
           dispose()
         })
@@ -2242,18 +2367,17 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockReset()
           const store = createChatStore()
-          // Start at the tail with 50 messages (seq 1-50).
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i + 1}`, BigInt(i + 1))))
+          // Start at the tail with 100 messages.
+          store.setMessages('a1', Array.from({ length: 100 }, (_, i) => makeMessage(`m${i + 1}`, BigInt(i + 1))))
 
-          // Three forward pages of 50 (seq 51-200) -- past MAX_LOADED (150) but under
-          // the ceiling (1200).
-          for (let p = 0; p < 3; p++) {
-            const start = 51 + p * 50
+          // Two forward pages exceed the base cap and fit below the ceiling.
+          for (let p = 0; p < 2; p++) {
+            const start = 101 + p * 50
             const page = Array.from({ length: 50 }, (_, i) => makeMessage(`m${start + i}`, BigInt(start + i)))
-            mockListAgentMessages.mockResolvedValueOnce({ messages: page, hasMore: p < 2 })
+            mockListAgentMessages.mockResolvedValueOnce({ messages: page, hasMore: p === 0 })
           }
 
-          await store.catchUpToTail('w1', 'a1', 50n)
+          await store.catchUpToTail('w1', 'a1', 100n)
 
           const msgs = store.getMessages('a1')
           // catch-up caps the oldest end at the CEILING, not the base -- consistent with
@@ -2276,11 +2400,11 @@ describe('createChatStore', () => {
           // Seed just under the ceiling (seq 1..1150).
           const seed = MAX_LOADED_CHAT_MESSAGES_CEILING - 50
           store.setMessages('a1', Array.from({ length: seed }, (_, i) => makeMessage(`m${i + 1}`, BigInt(i + 1))))
-          // Replay 3 forward pages of 50 (seq seed+1 .. seed+150) -> would reach 1300.
-          for (let p = 0; p < 3; p++) {
+          // Two forward pages take the window past the ceiling.
+          for (let p = 0; p < 2; p++) {
             const start = seed + 1 + p * 50
             const pg = Array.from({ length: 50 }, (_, i) => makeMessage(`m${start + i}`, BigInt(start + i)))
-            mockListAgentMessages.mockResolvedValueOnce({ messages: pg, hasMore: p < 2 })
+            mockListAgentMessages.mockResolvedValueOnce({ messages: pg, hasMore: p === 0 })
           }
 
           await store.catchUpToTail('w1', 'a1', BigInt(seed))
@@ -2289,7 +2413,7 @@ describe('createChatStore', () => {
           // The per-page ceiling trim binds: the window is capped at the ceiling, the
           // newest rows (the live tail) are retained, and the oldest end is trimmed.
           expect(msgs.length).toBe(MAX_LOADED_CHAT_MESSAGES_CEILING)
-          expect(msgs.at(-1)!.seq).toBe(BigInt(seed + 150)) // live tail kept
+          expect(msgs.at(-1)!.seq).toBe(BigInt(seed + 100)) // live tail kept
           expect(msgs[0]?.seq).toBeGreaterThan(1n) // oldest trimmed to the ceiling
           expect(store.hasOlderMessages('a1')).toBe(true)
           dispose()
@@ -2477,6 +2601,36 @@ describe('createChatStore', () => {
     })
 
     describe('loadNewerPage (single page, scroll-down)', () => {
+      it('uses the viewport limit for a landing refill and a full page for ordinary paging', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const rows = [
+            makeMessage('first', 1n),
+            makeMessage('known-tail', 3n),
+          ]
+          store.setMessages('a1', rows)
+          store.trimNewestEnd('a1', 1)
+          store.reportViewport('a1', 320, false)
+          mockListAgentMessages
+            .mockResolvedValueOnce({
+              messages: [
+                makeMessage('middle', 2n),
+              ],
+              hasMore: true,
+            })
+            .mockResolvedValueOnce({
+              messages: [rows[1]],
+              hasMore: false,
+            })
+
+          await store.loadNewerPage('w1', 'a1', 'landing-refill')
+          await store.loadNewerPage('w1', 'a1')
+
+          expect(mockListAgentMessages.mock.calls.map(([, request]) => request.limit)).toEqual([8, MESSAGE_PAGE_LIMIT])
+          expect(store.getMessages('a1').map(row => row.seq)).toEqual([1n, 2n, 3n])
+          dispose()
+        })
+      })
       it('appends a page, clears hasMoreNewer at the tail', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
@@ -2497,6 +2651,8 @@ describe('createChatStore', () => {
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 30n,
             limit: MESSAGE_PAGE_LIMIT,
+          }, {
+            signal: expect.any(AbortSignal),
           })
           dispose()
         })
@@ -3084,7 +3240,123 @@ describe('createChatStore', () => {
       })
     })
 
+    it('reopens live append when a preserved newer gap is deleted', () => {
+      const store = createChatStore()
+      store.setMessages('a1', [
+        makeMessage('m10', 10n),
+      ])
+      store.reconcileAuthoritativeTail('a1', 111n)
+      store.keepHistoryWindow('a1')
+      store.reconcileAuthoritativeTail('a1', 10n, 111n)
+
+      expect(store.hasNewerMessages('a1')).toBe(false)
+      expect(store.addMessage('a1', makeMessage('m112', 112n))).toBe(true)
+    })
+
     describe('jumpToLatestMessages', () => {
+      it('uses the reported tail even when its newest page is older', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          mockListAgentMessages
+            .mockResolvedValueOnce({
+              messages: [
+                makeMessage('m10', 10n),
+              ],
+              hasMore: true,
+              latestSeq: 11n,
+            })
+            .mockResolvedValueOnce({
+              messages: [
+                makeMessage('m11', 11n),
+              ],
+              hasMore: false,
+              latestSeq: 11n,
+            })
+
+          await expect(store.jumpToLatestMessages('w1', 'a1')).resolves.toBe(true)
+
+          expect(store.getMessages('a1').map(row => row.seq)).toEqual([10n, 11n])
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(2)
+          dispose()
+        })
+      })
+
+      it('discards rows above the latest page response’s reported tail', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          const rows = [
+            makeMessage('m9', 9n),
+            makeMessage('deleted', 10n),
+          ]
+          store.setMessages('a1', rows)
+          mockListAgentMessages.mockResolvedValueOnce({ messages: rows, hasMore: true, latestSeq: 9n })
+
+          await expect(store.jumpToLatestMessages('w1', 'a1')).resolves.toBe(true)
+
+          expect(store.getMessages('a1').map(row => row.seq)).toEqual([9n])
+          expect(store.liveTail.get('a1')).toBe(9n)
+          dispose()
+        })
+      })
+
+      it('defers a third request and resumes after the loaded tail without skipping rows', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', [
+            makeMessage('m50', 50n),
+          ])
+          store.liveTail.bump('a1', 51n)
+          const page = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+          const sent = deferred<void>()
+          const rows = [
+            makeMessage('m52', 52n),
+            makeMessage('m53', 53n),
+          ]
+          const cursors: bigint[] = []
+          mockListAgentMessages
+            .mockResolvedValueOnce({
+              messages: [
+                makeMessage('m50', 50n),
+              ],
+              hasMore: false,
+            })
+            .mockImplementationOnce((_worker, request: { cursorSeq: bigint }) => {
+              cursors.push(request.cursorSeq)
+              sent.resolve()
+              return page.promise
+            })
+            .mockImplementation(async (_worker, request: { cursorSeq: bigint }) => {
+              cursors.push(request.cursorSeq)
+              return {
+                messages: rows.filter(row => row.seq > request.cursorSeq),
+                hasMore: false,
+              }
+            })
+
+          const landing = store.jumpToLatestMessages('w1', 'a1')
+          await sent.promise
+          for (const row of rows)
+            store.addMessage('a1', row)
+          page.resolve({
+            messages: [
+              makeMessage('m51', 51n),
+            ],
+            hasMore: false,
+          })
+          await expect(landing).resolves.toBe(true)
+          expect(cursors).toEqual([50n])
+          expect(store.hasNewerMessages('a1')).toBe(true)
+          expect(store.isTailFillDeferred('a1')).toBe(true)
+
+          await store.resumeDeferredTailFill('w1', 'a1')
+
+          expect(cursors).toEqual([50n, 51n])
+          expect(store.getMessages('a1').map(row => row.seq)).toEqual([50n, 51n, 52n, 53n])
+          expect(store.hasNewerMessages('a1')).toBe(false)
+          dispose()
+        })
+      })
+
       it('ends its request and frees its fetch flag when the reader abandons the jump', async () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()
@@ -3183,27 +3455,33 @@ describe('createChatStore', () => {
           store.addMessage('a1', makeMessage('live200', 200n))
           expect(store.liveTail.get('a1')).toBe(200n)
 
-          // jumpToLatest re-anchors on a LATEST page that raced the burst (reaches only
-          // seq 50), so the gap-free forward fill pages AFTER to the live tail -- 150+
-          // rows across four pages.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: pageOf(1, 50),
-            hasMore: false,
-          }) // LATEST -> 1..50
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: pageOf(51, 50),
-            hasMore: true,
-          }) // AFTER 50 -> 51..100
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: pageOf(101, 50),
-            hasMore: true,
-          }) // AFTER 100 -> 101..150
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: pageOf(151, 50),
-            hasMore: false,
-          }) // AFTER 150 -> 151..200 (tail)
+          mockListAgentMessages
+            .mockResolvedValueOnce({
+              messages: pageOf(35, 16),
+              hasMore: true,
+            })
+            .mockResolvedValueOnce({
+              messages: pageOf(51, 16),
+              hasMore: true,
+            })
+            .mockResolvedValueOnce({
+              messages: pageOf(67, 50),
+              hasMore: true,
+            })
+            .mockResolvedValueOnce({
+              messages: pageOf(117, 50),
+              hasMore: true,
+            })
+            .mockResolvedValueOnce({
+              messages: pageOf(167, 34),
+              hasMore: false,
+            })
 
           await store.jumpToLatestMessages('w1', 'a1')
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(2)
+          expect(store.getLastSeq('a1')).toBe(66n)
+          expect(store.isTailFillDeferred('a1')).toBe(true)
+          await store.resumeDeferredTailFill('w1', 'a1')
 
           const msgs = store.getMessages('a1')
           // forwardFillToLiveTail trims each page to the BASE cap (150), NOT the
@@ -3218,87 +3496,46 @@ describe('createChatStore', () => {
         })
       })
 
-      it('terminates with one auto-retry when a forward page advances neither the tail nor reports has_more=false', async () => {
+      it('settles a stale recorded tail after an empty forward response', async () => {
         await createRoot(async (dispose) => {
-          mockListAgentMessages.mockClear()
           const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))) // seq 1..50
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true
-          // A live message bumps latestLiveSeq beyond anything the server still
-          // holds (e.g. it was rolled back / deleted server-side).
-          store.addMessage('a1', makeMessage('live100', 100n)) // dropped, latestLiveSeq=100
-
-          // LATEST page reaches only seq 50; the gap-free loop then forward-fetches.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), // seq 1..50
-            hasMore: false,
-          })
-          // Every subsequent AFTER fetch returns a non-empty page that is ENTIRELY
-          // already in the window (so the merge advances getLastSeq by nothing) yet
-          // claims has_more=true -- the spin-forever trap the cursor guard breaks.
-          mockListAgentMessages.mockResolvedValue({
-            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), // seq 1..50 dups
-            hasMore: true,
-          })
+          const row = makeMessage('m50', 50n)
+          store.setMessages('a1', [row])
+          store.liveTail.bump('a1', 100n)
+          mockListAgentMessages
+            .mockResolvedValueOnce({
+              messages: [row],
+              hasMore: false,
+            })
+            .mockResolvedValueOnce({ messages: [], hasMore: false })
 
           await store.jumpToLatestMessages('w1', 'a1')
-          // It returned (no infinite loop): the LATEST page, the non-advancing AFTER
-          // fetch that tripped the stall guard, then ONE direct auto-retry anchored
-          // just below latestLiveSeq (cursor 99) before it gives up and sticks.
-          expect(mockListAgentMessages).toHaveBeenCalledTimes(3)
-          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', {
-            agentId: 'a1',
-            anchor: MessagePageAnchor.AFTER,
-            cursorSeq: 99n, // latestLiveSeq (100) - 1
-            limit: MESSAGE_PAGE_LIMIT,
-          })
-          expect(store.getLastSeq('a1')).toBe(50n) // still unreachable, so we stuck anyway
-          // The unreachable seq 100 is clamped out of latestLiveSeq so a later
-          // loadNewerPage/scroll doesn't re-wedge hasMoreNewer chasing the gap.
+
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(2)
           expect(store.liveTail.get('a1')).toBe(50n)
           expect(store.hasNewerMessages('a1')).toBe(false)
+          expect(store.isTailFillDeferred('a1')).toBe(false)
           dispose()
         })
       })
 
-      it('auto-retry from the tail cursor recovers the live tail after a dedup-stall', async () => {
+      it('treats a reported zero tail as an empty window', async () => {
         await createRoot(async (dispose) => {
-          mockListAgentMessages.mockClear()
           const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))) // seq 1..50
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true
-          store.addMessage('a1', makeMessage('live52', 52n)) // dropped, latestLiveSeq=52
-
-          // LATEST reaches seq 50.
+          const removed = makeMessage('removed', 50n)
+          store.setMessages('a1', [removed], true)
           mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))),
-            hasMore: false,
-          })
-          // The plain AFTER(50) page stalls (returns dups, has_more=true)...
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))),
+            messages: [removed],
             hasMore: true,
-          })
-          // ...but the auto-retry anchored at latestLiveSeq-1 (cursor 51) reaches the
-          // genuine tail (seq 52), healing the gap.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: [
-              makeMessage('m51', 51n),
-              makeMessage('live52', 52n),
-            ],
-            hasMore: false,
+            latestSeq: 0n,
           })
 
           await store.jumpToLatestMessages('w1', 'a1')
-          expect(mockListAgentMessages).toHaveBeenCalledTimes(3)
-          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', {
-            agentId: 'a1',
-            anchor: MessagePageAnchor.AFTER,
-            cursorSeq: 51n, // latestLiveSeq (52) - 1
-            limit: MESSAGE_PAGE_LIMIT,
-          })
-          expect(store.getLastSeq('a1')).toBe(52n) // tail recovered
-          expect(store.hasNewerMessages('a1')).toBe(false)
+
+          expect(store.getMessages('a1')).toEqual([])
+          expect(store.liveTail.get('a1')).toBe(0n)
+          expect(store.hasOlderMessages('a1')).toBe(false)
+          expect(mockListAgentMessages).toHaveBeenCalledTimes(1)
           dispose()
         })
       })
@@ -3319,62 +3556,16 @@ describe('createChatStore', () => {
               hasMore: false,
             } // 1..50
           })
-          // Every subsequent AFTER fetch can't yet see seq 70 (committed after the
-          // query snapshot): it returns only already-present rows -- a dedup-stall.
-          mockListAgentMessages.mockResolvedValue({
-            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), // 1..50 dups
-            hasMore: true,
-          })
+          // The forward query has an older snapshot, so it cannot see the broadcast yet.
+          mockListAgentMessages.mockResolvedValueOnce({ messages: [], hasMore: false })
 
           await store.jumpToLatestMessages('w1', 'a1')
-          // seq 70 stayed unreachable across fill+retry, so the window sticks at 50.
+          // The window still ends at 50 after the forward request.
           expect(store.getLastSeq('a1')).toBe(50n)
           // ...but latestLiveSeq is NOT clamped down to 50: seq 70 advanced past the
           // entry snapshot (it arrived during the jump), so it is preserved for
           // later recovery rather than silently forgotten.
           expect(store.liveTail.get('a1')).toBe(70n)
-          dispose()
-        })
-      })
-
-      it('re-attempts the forward fill across rounds to pull a tail that advances in steps', async () => {
-        await createRoot(async (dispose) => {
-          mockListAgentMessages.mockClear()
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))) // seq 1..50
-          store.trimNewestEnd('a1', 30) // window 1..30, hasMoreNewer=true, latestLiveSeq=50
-          store.addMessage('a1', makeMessage('live70', 70n)) // dropped, latestLiveSeq=70
-
-          // call 1 LATEST: reaches seq 50.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))),
-            hasMore: false,
-          })
-          // call 2 AFTER(50): advances the tail partway (51..60) but not to 70.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 10 }, (_, i) => makeMessage(`p${i}`, BigInt(i + 51))), // 51..60
-            hasMore: true,
-          })
-          // call 3 AFTER(60): a dedup-stall (same rows, no advance) ends round 0's fill.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 10 }, (_, i) => makeMessage(`p${i}`, BigInt(i + 51))), // 51..60 dups
-            hasMore: true,
-          })
-          // call 4 retry AFTER(69): still can't see the tail (dups) -- round 0 made
-          // progress (50 -> 60), so the OUTER loop re-attempts.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 10 }, (_, i) => makeMessage(`p${i}`, BigInt(i + 51))), // 51..60 dups
-            hasMore: true,
-          })
-          // call 5 round 1 AFTER(60): the tail has now caught up; pull 61..70.
-          mockListAgentMessages.mockResolvedValueOnce({
-            messages: Array.from({ length: 10 }, (_, i) => makeMessage(`q${i}`, BigInt(i + 61))), // 61..70
-            hasMore: false,
-          })
-
-          await store.jumpToLatestMessages('w1', 'a1')
-          expect(store.getLastSeq('a1')).toBe(70n) // tail reached via the second round
-          expect(store.hasNewerMessages('a1')).toBe(false)
           dispose()
         })
       })

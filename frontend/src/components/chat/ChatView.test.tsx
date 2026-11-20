@@ -371,6 +371,7 @@ vi.mock('./useChatScroll', async () => {
         },
         atBottom: () => true,
         followRequestedTracked: isFollowing,
+        readHistoryIntent: () => undefined,
         // As the real hook does: `isFollowing` gives its caller no dependency on follow
         // mode, and only the tracked accessor runs a memo again.
         isFollowing: () => untrack(isFollowing),
@@ -5405,10 +5406,22 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(onViewportChange).toHaveBeenLastCalledWith(400, true)
 
       mockState.setIsFollowing!(false)
+      expect(onViewportChange).toHaveBeenLastCalledWith(400, false)
       viewportSizeObserverState.onHeight!(1200)
       expect(onViewportChange).toHaveBeenLastCalledWith(1200, false)
 
+      onViewportChange.mockClear()
       setActive(false)
+      viewportSizeObserverState.onHeight!(1100)
+      expect(onViewportChange).not.toHaveBeenCalled()
+
+      mockState.setPaneHidden!(true)
+      setActive(true)
+      viewportSizeObserverState.onHeight!(1000)
+      expect(onViewportChange).not.toHaveBeenCalled()
+
+      mockState.setPaneHidden!(false)
+      expect(onViewportChange).toHaveBeenLastCalledWith(1000, false)
       onViewportChange.mockClear()
       viewportSizeObserverState.onHeight!(0)
       expect(onViewportChange).not.toHaveBeenCalled()

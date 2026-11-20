@@ -743,6 +743,33 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
 })
 
 describe('useChatScroll the buffer fill around Home', () => {
+  it('loads newer history from an unscrollable landing on an upward swipe', () =>
+    createRoot((dispose) => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(300)
+      const loadNewer = vi.fn()
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages: () => [],
+        landingRefillPages: () => 0,
+        hasNewerMessages: () => true,
+        onLoadNewerMessages: loadNewer,
+      }))
+      hook.attachListRef(div.el)
+      const touch = (clientY: number): TouchEvent => ({
+        touches: [
+          { clientX: 50, clientY },
+        ],
+      }) as unknown as TouchEvent
+
+      hook.handlers.onTouchStart(touch(100))
+      hook.handlers.onTouchMove(touch(70))
+
+      expect(loadNewer).toHaveBeenCalledOnce()
+      dispose()
+    }))
+
   it('makes Home resume a buffer fill that a forced stop paused', () =>
     inRoot(async () => {
       const div = makeFakeScrollDiv()
@@ -781,8 +808,8 @@ describe('useChatScroll the buffer fill around Home', () => {
     }))
 })
 
-describe('useChatScroll the per-window state of the buffer fill', () => {
-  it('forgets a side that it marked stuck when Home starts a history jump', () =>
+describe('useChatScroll oldest landing refill', () => {
+  it('uses one newer refill when Home replaces the window with a short oldest page', () =>
     inRoot(async () => {
       const div = makeFakeScrollDiv()
       div.setClientHeight(500)
@@ -793,6 +820,7 @@ describe('useChatScroll the per-window state of the buffer fill', () => {
         totalHeight: () => 300,
       }
       const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      const [hasOlder, setHasOlder] = createSignal(true)
       const [hasNewer, setHasNewer] = createSignal(false)
       const [landingRefillPages, setLandingRefillPages] = createSignal<0 | 1>()
       const jump = deferred<boolean>()
@@ -801,7 +829,7 @@ describe('useChatScroll the per-window state of the buffer fill', () => {
       const hook = useChatScroll(withStaticAdmission({
         virtualizer: virt,
         messages,
-        hasOlderMessages: () => true,
+        hasOlderMessages: hasOlder,
         hasNewerMessages: hasNewer,
         landingRefillPages,
         onSetLandingRefillPages: setLandingRefillPages,
@@ -822,27 +850,32 @@ describe('useChatScroll the per-window state of the buffer fill', () => {
       const olderLoadsWhileStuck = olderLoads
       expect(olderLoadsWhileStuck).toBe(2)
 
-      // Home starts a history jump, whose page replaces the window: the mark belongs to the
-      // old window. With the mark kept, the filler would turn to the newer side.
+      // The filler waits while the oldest request owns the landing.
       hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key: 'Home', cancelable: true }))
       setHasNewer(true)
       await settle()
       expect(olderLoads).toBe(olderLoadsWhileStuck)
       expect(newerLoads).toBe(0)
 
-      setLandingRefillPages(1)
+      batch(() => {
+        setMessages([
+          { id: 'first', seq: 1n } as AgentChatMessage,
+        ])
+        setHasOlder(false)
+        setLandingRefillPages(1)
+      })
       jump.resolve(true)
       await settle()
-      expect(olderLoads).toBe(olderLoadsWhileStuck + 1)
-      expect(newerLoads).toBe(0)
+      expect(olderLoads).toBe(olderLoadsWhileStuck)
+      expect(newerLoads).toBe(1)
 
       setMessages(prev => [...prev, {} as AgentChatMessage])
       await settle()
-      expect(olderLoads).toBe(olderLoadsWhileStuck + 1)
-      expect(newerLoads).toBe(0)
+      expect(olderLoads).toBe(olderLoadsWhileStuck)
+      expect(newerLoads).toBe(1)
 
       hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
-      expect(newerLoads).toBe(1)
+      expect(newerLoads).toBe(2)
     }))
 })
 

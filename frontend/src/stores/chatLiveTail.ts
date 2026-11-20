@@ -29,8 +29,14 @@ import { createPerAgentStore } from './chatPerAgentStore'
  * (shouldSkipCatchUpReplay in the worker service), so the strict `>` must agree
  * on both sides of the wire.
  */
-export function exceedsCatchUpGapLimit(tailSeq: bigint, windowTail: bigint): boolean {
-  return tailSeq - windowTail > CATCH_UP_GAP_LIMIT
+export function exceedsCatchUpGapLimit(tailSeq: bigint, windowTail: bigint, pageLimit?: number): boolean {
+  const replayBudget = pageLimit === undefined
+    ? CATCH_UP_GAP_LIMIT
+    : 2n * BigInt(pageLimit)
+  const limit = replayBudget < CATCH_UP_GAP_LIMIT
+    ? replayBudget
+    : CATCH_UP_GAP_LIMIT
+  return tailSeq - windowTail > limit
 }
 
 export function createLiveTailTracker() {

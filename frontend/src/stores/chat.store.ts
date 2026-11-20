@@ -3,7 +3,7 @@ import type { ChatRailData } from './chatMessageMarks'
 import type { PromptSuggestion } from './chatPromptSuggestion'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { TurnRetryOffer } from './chatTurnRetryOffer'
-import type { LandingRefillPages, SavedViewportScroll } from './chatTypes'
+import type { LandingRefillPages, SavedViewportScroll, ViewportHistoryIntent } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity, ToolSpanSide } from '~/lib/messageSpan'
 import { toBinary } from '@bufbuild/protobuf'
@@ -19,11 +19,12 @@ import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
 import { createLiveCompactionStore } from './chatCompaction'
 import { createContentVersionStore } from './chatContentVersions'
 import { createGoalStore } from './chatGoalStore'
-import { createHistoryFetchRunner, createHistoryPaginator } from './chatHistoryPaginator'
+import { createHistoryFetchRunner, createHistoryPaginator, landingPageLimit } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
 import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, preferNewerSupplement } from './chatMessageOrder'
+import { OrderedChatPage } from './chatOrderedPage'
 import { createPerAgentStore } from './chatPerAgentStore'
 import { createPromptSuggestionStore } from './chatPromptSuggestion'
 import { createSpanIndex } from './chatSpanIndex'
@@ -191,7 +192,24 @@ export function createChatStore() {
   const viewportScroll = createPerAgentStore<SavedViewportScroll | undefined>(undefined)
   const landingRefillPages = createPerAgentStore<LandingRefillPages | undefined>(undefined)
   // Keep the last visible viewport available while its pane is hidden.
-  const visibleViewports = new Map<string, { height: number, followsTail: boolean }>()
+  const visibleViewports = new Map<string, { height: number, followRequested: boolean }>()
+  const viewportReaders = new Map<string, () => ViewportHistoryIntent | undefined>()
+  const orderedPages = new Map<string, OrderedChatPage<AgentChatMessage>>()
+  const loadedRows = (agentId: string): readonly AgentChatMessage[] => {
+    // Even a reader created during ingestion needs the publication dependency.
+    const published = state.messagesByAgent[agentId]
+    return orderedPages.get(agentId)?.rows ?? published ?? []
+  }
+
+  /** End the append transaction before a write that can reorder the window. */
+  function publishOrderedPage(agentId: string, page = orderedPages.get(agentId)): void {
+    if (!page || orderedPages.get(agentId) !== page)
+      return
+    orderedPages.delete(agentId)
+    const rows = page.finish()
+    if (rows.length > 0 && rows !== state.messagesByAgent[agentId])
+      setState('messagesByAgent', agentId, rows)
+  }
   // Track the highest observed server sequence, including messages outside the loaded window.
   // createLiveTailTracker owns its increase, reconciliation, and removal rules.
   const liveTail = createLiveTailTracker()
@@ -232,7 +250,7 @@ export function createChatStore() {
    * createSpanIndex uses message classification so a fetched request cannot occupy the result position.
    */
   function reindexSpans(agentId: string) {
-    spanIdx.reindex(agentId, state.messagesByAgent[agentId] ?? [])
+    spanIdx.reindex(agentId, loadedRows(agentId))
   }
 
   // chatContentVersions tracks same-sequence content changes that preserve the store proxy.
@@ -266,6 +284,7 @@ export function createChatStore() {
    * useAgentOperations.handleAgentClose supplies the separate control and attachment cleanup.
    */
   function forgetAgent(agentId: string) {
+    orderedPages.delete(agentId)
     messageObservers.delete(agentId)
     windowObservers.delete(agentId)
     // Abort history fetches and background catch-up, then remove their controllers.
@@ -297,6 +316,7 @@ export function createChatStore() {
     // Drop the agent's entry in each composed per-agent sub-store.
     liveTail.forget(agentId)
     visibleViewports.delete(agentId)
+    viewportReaders.delete(agentId)
     messageMarks.forget(agentId)
     markSeeder.forget(agentId)
     // The hover-preview cache survives scroll-rail remounts because it belongs to the module.
@@ -324,6 +344,7 @@ export function createChatStore() {
    * Return without changes when no loaded row qualifies.
    */
   function reapPhantomRows(agentId: string, latestSeq: bigint, reapCeilingSeq?: bigint) {
+    publishOrderedPage(agentId)
     const prev = state.messagesByAgent[agentId]
     if (!prev || prev.length === 0)
       return
@@ -381,6 +402,10 @@ export function createChatStore() {
         includes: message => isReapablePhantom(message.seq, latestSeq, reapCeilingSeq),
       })
       reapPhantomRows(agentId, latestSeq, reapCeilingSeq)
+      if ((lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n) >= liveTail.get(agentId)) {
+        setState('hasMoreNewer', agentId, false)
+        setState('tailFillDeferred', agentId, false)
+      }
     })
   }
 
@@ -451,6 +476,9 @@ export function createChatStore() {
 
   /** Return the window when it holds more than `maxCount` messages, else null. */
   function windowOverMessageCap(agentId: string, maxCount: number): AgentChatMessage[] | null {
+    if (loadedRows(agentId).length <= maxCount)
+      return null
+    publishOrderedPage(agentId)
     const prev = state.messagesByAgent[agentId]
     if (!prev || prev.length <= maxCount)
       return null
@@ -504,22 +532,21 @@ export function createChatStore() {
     if (fetched.length === 0)
       return
     return batch(() => {
+      publishOrderedPage(agentId)
       // Snapshot the previous window so the merge can reclaim dropped row state.
       const prevWindow = state.messagesByAgent[agentId] ?? []
       // chatMessageOrder.mergeWindow owns the pure ordering rules for plain arrays.
       // This store applies the reactive effects after that merge.
       const next = mergeWindow(prevWindow, fetched, side)
       publishWindowReplacement(agentId, prevWindow, next)
-      invalidateNewSupplements(prevWindow, next)
-      setState('messagesByAgent', agentId, next)
-      // Rebuild the span index from the entire merged window in sequence order.
-      // Indexing only the older page could assign a prepended request to the wrong position when its result already exists.
-      reindexSpans(agentId)
-      const merged = state.messagesByAgent[agentId] ?? []
+      if (next !== prevWindow) {
+        invalidateNewSupplements(prevWindow, next)
+        setState('messagesByAgent', agentId, next)
+        reindexSpans(agentId)
+        reclaimDroppedRows(prevWindow, next)
+      }
       for (const message of fetched)
         notifyMessageObservers(agentId, message)
-      // Reclaim content versions for rows that left the window.
-      reclaimDroppedRows(prevWindow, merged)
       if (side === 'newer') {
         for (const msg of fetched)
           liveTail.bump(agentId, msg.seq)
@@ -532,6 +559,7 @@ export function createChatStore() {
    */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
     return batch(() => {
+      publishOrderedPage(agentId)
       const prevRows = state.messagesByAgent[agentId] ?? []
       const previousById = new Map(prevRows.map(message => [message.id, message]))
       const finalMessages = messages.map((message) => {
@@ -582,7 +610,8 @@ export function createChatStore() {
     },
 
     getMessages(agentId: string): AgentChatMessage[] {
-      return state.messagesByAgent[agentId] ?? []
+      const published = state.messagesByAgent[agentId]
+      return orderedPages.get(agentId)?.snapshot() ?? published ?? []
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {
@@ -594,20 +623,23 @@ export function createChatStore() {
      * Return false for an empty window or a sequence at or below its loaded tail.
      * Then apply these conditions in order:
      * - hasMoreNewer requires refusal beyond that loaded tail.
-     * - Otherwise, during replay, seq > lastSeq + 1 requires refusal.
+     * - Otherwise, during replay, refuse a sequence gap unless the active ordered page covers it.
      * - Otherwise, require both lastSeq < recordedLiveTail and seq > recordedLiveTail for refusal.
-     * When hasMoreNewer is false, replay accepts the next contiguous frame even when the worker supplies no authoritative tail.
+     * A contiguous replay frame needs no page coverage or authoritative tail.
      * After replay, use the recorded tail instead of contiguity so a deleted sequence does not require an unnecessary fetch.
      * recordedLiveTail identifies the observed tail before this message increases it.
      */
-    beyondUnloadedNewerTail(agentId: string, seq: bigint, recordedLiveTail: bigint): boolean {
+    beyondUnloadedNewerTail(agentId: string, seq: bigint, recordedLiveTail: bigint, replayCoveredThrough?: bigint): boolean {
       const lastSeq = this.getLastSeq(agentId)
       if (lastSeq === 0n || seq <= lastSeq)
         return false
       if (state.hasMoreNewer[agentId])
         return true
-      if (state.catchingUp[agentId])
-        return seq > lastSeq + 1n
+      if (state.catchingUp[agentId]) {
+        // The current ordered AFTER replay can prove a deleted sequence is absent.
+        const replayCoversTail = replayCoveredThrough !== undefined && replayCoveredThrough <= lastSeq
+        return !replayCoversTail && seq > lastSeq + 1n
+      }
       return lastSeq < recordedLiveTail && seq > recordedLiveTail
     },
 
@@ -620,9 +652,9 @@ export function createChatStore() {
      * liveTail still records a refused message's sequence. Paging or a jump can later read its range contiguously.
      * Pass recordedLiveTail from before this message increases the tail.
      */
-    shouldDropBeyondWindow(agentId: string, message: AgentChatMessage, recordedLiveTail: bigint): boolean {
+    shouldDropBeyondWindow(agentId: string, message: AgentChatMessage, recordedLiveTail: bigint, replayCoveredThrough?: bigint): boolean {
       const firstSeq = this.getFirstSeq(agentId)
-      const beyondTail = this.beyondUnloadedNewerTail(agentId, message.seq, recordedLiveTail)
+      const beyondTail = this.beyondUnloadedNewerTail(agentId, message.seq, recordedLiveTail, replayCoveredThrough)
       const beforeHead = !!state.hasMoreOlder[agentId] && firstSeq !== 0n && message.seq < firstSeq
       return beyondTail || beforeHead
     },
@@ -692,7 +724,27 @@ export function createChatStore() {
       return { inWindow: inserted, changed }
     },
 
-    addMessage(agentId: string, message: AgentChatMessage): boolean {
+    addMessagePage(agentId: string, messages: readonly AgentChatMessage[]): void {
+      if (messages.length === 0)
+        return
+      batch(() => {
+        // An observer can reenter ingestion. It uses the existing owner's working range.
+        const existing = orderedPages.get(agentId)
+        const page = existing ?? new OrderedChatPage(state.messagesByAgent[agentId] ?? [])
+        if (!existing)
+          orderedPages.set(agentId, page)
+        try {
+          for (const message of messages)
+            this.addMessage(agentId, message)
+        }
+        finally {
+          if (!existing)
+            publishOrderedPage(agentId, page)
+        }
+      })
+    },
+
+    addMessage(agentId: string, message: AgentChatMessage, replayCoveredThrough?: bigint): boolean {
       return batch(() => {
         notifyMessageObservers(agentId, message)
         // Read the recorded live tail before this message increases it.
@@ -715,13 +767,23 @@ export function createChatStore() {
 
         // Look for a loaded row with this ID before processing the message.
         // A LEAPMUX notification can update or move its existing row during consolidation.
-        const messages = state.messagesByAgent[agentId] ?? []
-        const existingIdx = messages.findLastIndex(m => m.id === message.id)
+        const page = orderedPages.get(agentId)
+        const existingIdx = page?.indexOf(message.id) ?? loadedRows(agentId).findLastIndex(row => row.id === message.id)
 
         // Refuse a new row that would cross unloaded history.
         // An existing row uses its separate update path instead. See shouldDropBeyondWindow.
-        if (existingIdx === -1 && this.shouldDropBeyondWindow(agentId, message, recordedLiveTail))
+        if (existingIdx === -1 && this.shouldDropBeyondWindow(agentId, message, recordedLiveTail, replayCoveredThrough))
           return false
+        if (existingIdx === -1 && page?.append(message)) {
+          if (spanIdx.index(agentId, message))
+            reindexSpans(agentId)
+          bumpMessageVersion(agentId)
+          return true
+        }
+
+        // The shared single-row transition preserves resequences and in-place revisions.
+        publishOrderedPage(agentId, page)
+        const messages = state.messagesByAgent[agentId] ?? []
 
         // Select the existing-row or new-row method.
         // inWindow reports whether message.id remains loaded. changed reports an actual window change.
@@ -738,7 +800,7 @@ export function createChatStore() {
 
     getLastSeq(agentId: string): bigint {
       // The store uses 0n as the empty-window sentinel.
-      return lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
+      return lastMessageSeq(loadedRows(agentId)) ?? 0n
     },
 
     /**
@@ -764,7 +826,7 @@ export function createChatStore() {
           return
         }
         contentVersionLeases.delete(id)
-        if (!untrack(() => state.messagesByAgent[agentId]?.some(message => message.id === id)))
+        if (!untrack(() => loadedRows(agentId).some(message => message.id === id)))
           contentVersions.forget([id])
       }
     },
@@ -918,7 +980,7 @@ export function createChatStore() {
     /** Get the first sequence in the current window. */
     getFirstSeq(agentId: string): bigint {
       // The store uses zero for an empty window.
-      return firstMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
+      return firstMessageSeq(loadedRows(agentId)) ?? 0n
     },
 
     hasOlderMessages(agentId: string): boolean {
@@ -957,8 +1019,7 @@ export function createChatStore() {
      * The one-page margin prevents that final fetch from removing the live tail.
      */
     atWindowCeiling(agentId: string): boolean {
-      const msgs = state.messagesByAgent[agentId]
-      return !!msgs && msgs.length >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_LIMIT
+      return loadedRows(agentId).length >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_LIMIT
     },
 
     isFetchingOlder(agentId: string): boolean {
@@ -998,7 +1059,7 @@ export function createChatStore() {
     getLastMessageSeq: agentId => lastMessageSeq(state.messagesByAgent[agentId] ?? []),
     caughtUpToLiveTail: agentId => baseStore.caughtUpToLiveTail(agentId),
     getViewportHeight: agentId => visibleViewports.get(agentId)?.height,
-    addMessage: (agentId, message) => baseStore.addMessage(agentId, message),
+    addMessagePage: (agentId, messages) => baseStore.addMessagePage(agentId, messages),
     trimOldestEnd: (agentId, maxCount) => baseStore.trimOldestEnd(agentId, maxCount),
     trimNewestEnd: (agentId, maxCount) => baseStore.trimNewestEnd(agentId, maxCount),
     replaceTodos: todos.replace,
@@ -1020,18 +1081,37 @@ export function createChatStore() {
     goal,
     viewportScroll,
     landingRefillPages,
-    reportViewport(agentId: string, height: number, followsTail: boolean) {
+    replayPageLimit(agentId: string): number {
+      return landingPageLimit(visibleViewports.get(agentId)?.height)
+    },
+    reportViewport(agentId: string, height: number, followRequested: boolean) {
       if (Number.isFinite(height) && height > 0)
-        visibleViewports.set(agentId, { height, followsTail })
+        visibleViewports.set(agentId, { height, followRequested })
+    },
+    registerViewportReader(agentId: string, read: () => ViewportHistoryIntent | undefined): () => void {
+      viewportReaders.set(agentId, read)
+      return () => {
+        if (viewportReaders.get(agentId) === read)
+          viewportReaders.delete(agentId)
+      }
+    },
+    viewportJumpPending(agentId: string): boolean {
+      return viewportReaders.get(agentId)?.() === 'jumping'
     },
     keepsReadingPosition(agentId: string): boolean {
+      const intent = viewportReaders.get(agentId)?.()
+      if (intent === 'tail' || intent === 'history')
+        return intent === 'history'
       const saved = viewportScroll.get(agentId)
       return saved === undefined
-        ? visibleViewports.get(agentId)?.followsTail === false
+        ? visibleViewports.get(agentId)?.followRequested === false
         : !saved.atBottom
     },
     keepHistoryWindow(agentId: string) {
-      setState('hasMoreNewer', agentId, true)
+      batch(() => {
+        setState('hasMoreNewer', agentId, true)
+        setState('tailFillDeferred', agentId, false)
+      })
     },
     /**
      * Return reactive scroll-rail data for this agent:
@@ -1042,7 +1122,7 @@ export function createChatStore() {
      */
     getRailData(agentId: string): ChatRailData {
       const marks = messageMarks.get(agentId)
-      const messages = state.messagesByAgent[agentId] ?? []
+      const messages = loadedRows(agentId)
       const windowFirstSeq = firstMessageSeq(messages)
       const windowLastSeq = lastMessageSeq(messages)
       const { minSeq, maxSeq } = resolveRailRange({
@@ -1075,9 +1155,7 @@ export function createChatStore() {
      */
     getLoadedMessageBySeq(agentId: string, seq: bigint): AgentChatMessage | undefined {
       return untrack(() => {
-        const messages = state.messagesByAgent[agentId]
-        if (!messages)
-          return undefined
+        const messages = loadedRows(agentId)
         // Binary-search the window because its rows have unique ascending sequences.
         // A missing mark message requires no scan through every loaded row.
         const idx = lowerBoundBySeq(messages, seq)

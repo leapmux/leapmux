@@ -1,50 +1,61 @@
-/** Drag distance (px) before an at-top overscroll counts as a load-older gesture. */
+/** Drag distance in pixels before an overscroll requests another page. */
 const OVERSCROLL_DRAG_THRESHOLD_PX = 12
 
-/**
- * Tracks touch/pointer "overscroll at the top" drags: when the user drags
- * downward while the scroll container is already at scrollTop 0, fire
- * `onDragAtTop` (which loads older history). Touch and non-mouse pointer share
- * the same drag logic over separate start coordinates; mouse pointers are
- * ignored (they scroll via the wheel, handled separately). Extracted from the
- * scroll hook because it is a self-contained input-gesture unit with no coupling
- * to the sticky-bottom / anchoring math.
- */
-export function createOverscrollDrag(deps: { atTop: () => boolean, onDragAtTop: () => boolean }) {
-  let touchStartY: number | null = null
-  let pointerStartY: number | null = null
+interface DragPoint {
+  clientX: number
+  clientY: number
+}
 
-  // Fire onDragAtTop once the downward drag crosses the threshold while at the
-  // top; return true (so the caller resets the start) if it consumed the drag.
-  const tryFire = (startY: number | null, currentY: number): boolean => {
-    if (startY === null || !deps.atTop())
+/** Recognize vertical drags at either loaded edge, even when the pane cannot scroll. */
+export function createOverscrollDrag(deps: {
+  onDragAtTop: (target: EventTarget | null) => boolean
+  onDragAtBottom: (target: EventTarget | null) => boolean
+}) {
+  let touchStart: DragPoint | undefined
+  let pointerStart: DragPoint | undefined
+
+  const pointOf = (event: DragPoint): DragPoint => ({
+    clientX: event.clientX,
+    clientY: event.clientY,
+  })
+  const tryFire = (start: DragPoint | undefined, current: DragPoint, target: EventTarget | null): boolean => {
+    if (!start)
       return false
-    if (currentY - startY < OVERSCROLL_DRAG_THRESHOLD_PX)
+    const deltaY = current.clientY - start.clientY
+    if (Math.abs(deltaY) < OVERSCROLL_DRAG_THRESHOLD_PX || Math.abs(deltaY) <= Math.abs(current.clientX - start.clientX))
       return false
-    return deps.onDragAtTop()
+    return deltaY > 0
+      ? deps.onDragAtTop(target)
+      : deps.onDragAtBottom(target)
   }
 
   return {
     onTouchStart: (event: TouchEvent) => {
-      touchStartY = event.touches[0]?.clientY ?? null
+      const touch = event.touches.length === 1
+        ? event.touches[0]
+        : undefined
+      touchStart = touch && pointOf(touch)
     },
     onTouchMove: (event: TouchEvent) => {
-      if (tryFire(touchStartY, event.touches[0]?.clientY ?? 0))
-        touchStartY = null
+      const touch = event.touches.length === 1
+        ? event.touches[0]
+        : undefined
+      if (!touch || tryFire(touchStart, touch, event.target))
+        touchStart = undefined
     },
     onTouchEnd: () => {
-      touchStartY = null
+      touchStart = undefined
     },
     onPointerDown: (event: PointerEvent) => {
       if (event.pointerType !== 'mouse')
-        pointerStartY = event.clientY
+        pointerStart = pointOf(event)
     },
     onPointerMove: (event: PointerEvent) => {
-      if (event.pointerType !== 'mouse' && tryFire(pointerStartY, event.clientY))
-        pointerStartY = null
+      if (event.pointerType !== 'mouse' && tryFire(pointerStart, event, event.target))
+        pointerStart = undefined
     },
     onPointerUp: () => {
-      pointerStartY = null
+      pointerStart = undefined
     },
   }
 }

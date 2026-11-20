@@ -568,6 +568,7 @@ export function handleAgentMessage(
   catchUpPhase: CatchUpPhase,
   replayId = 0n,
   effectMode: 'apply-current-state' | 'retain-transcript' = 'apply-current-state',
+  replayCoveredThrough?: bigint,
 ): void {
   const { chatStore, view, selection } = stores
   const applyCurrentState = effectMode === 'apply-current-state' && !msg.transcriptOnly
@@ -585,7 +586,7 @@ export function handleAgentMessage(
   if (applyCurrentState)
     applyNotificationMetadata(agentId, msg, parsed, stores, catchUpPhase, replayId)
 
-  chatStore.addMessage(agentId, msg)
+  chatStore.addMessage(agentId, msg, replayCoveredThrough)
   // A tool's result row means that the tool stopped. Clear its live progress and badge.
   if (applyCurrentState && catchUpPhase === 'live')
     dropFinishedToolProgress(agentId, msg, parsed, chatStore)

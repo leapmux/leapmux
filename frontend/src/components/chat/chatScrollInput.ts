@@ -15,7 +15,7 @@ const PAGE_SCROLL_OVERLAP_PX = 48
  * vertically and can still move in `direction` (-1 up, 1 down). The browser gives a wheel
  * or a key of that direction to that element, so the list does not move.
  */
-function innerScrollerTakes(target: EventTarget | null, list: HTMLElement, direction: -1 | 1): boolean {
+export function innerScrollerTakes(target: EventTarget | null, list: HTMLElement, direction: -1 | 1): boolean {
   if (!(target instanceof Element) || !list.contains(target))
     return false
   for (let node: Element | null = target; node !== null && node !== list; node = node.parentElement) {
@@ -151,7 +151,7 @@ export function createScrollInput(ctx: ScrollContext, extras: {
     })
   }
 
-  const pageScroll = (direction: -1 | 1) => {
+  const pageScroll = (direction: -1 | 1) => batch(() => {
     // A page is an input of the reader, like a wheel: it stops the pending history jump.
     // Both of its paths reach here: the page key of the list, and the application shortcut.
     // The hook decides whether the input counts (see takeIntent).
@@ -195,7 +195,7 @@ export function createScrollInput(ctx: ScrollContext, extras: {
       extras.tryLoadNewerOnExplicitBottomIntent()
     else
       extras.tryLoadOlderOnExplicitTopIntent()
-  }
+  })
 
   /**
    * An input that states a direction: it abandons the pending history jump, because the
