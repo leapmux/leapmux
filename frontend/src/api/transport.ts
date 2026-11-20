@@ -305,7 +305,9 @@ export const transport = createConnectTransport({
  *
  * `keepalive` requests share a 64 KiB budget across ALL in-flight ones, and a
  * request over it fails outright — so a caller must fall back rather than
- * discover this during unload, where no retry is possible.
+ * discover this during unload, where the current page cannot retry. The CRDT
+ * submitter retains an unacknowledged batch in its durable outbox for the next
+ * load.
  */
 export const MAX_KEEPALIVE_BODY_BYTES = 60 * 1024
 

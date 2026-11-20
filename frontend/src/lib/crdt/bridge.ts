@@ -39,7 +39,8 @@ export interface OpBuilderCtx {
 export interface CRDTBridge {
   workspaceId: () => string | null
   /**
-   * Enqueue a fresh batch — speculatively applies + ships in 16ms.
+   * Enqueue a fresh batch — stages it in the durable outbox, applies it
+   * speculatively, and ships it in 16 ms.
    * Returns the batch_id so callers (e.g. cross-workspace move
    * rollback) can correlate the eventual commit/reject outcome with
    * the local action.
@@ -51,9 +52,10 @@ export interface CRDTBridge {
    * `enqueue` only queues and arms a ~16 ms timer, and on a real unload
    * (Cmd+R, tab close) that timer never fires -- so a store that materializes a
    * debounced gesture on `pagehide` still loses it. Calling this immediately
-   * afterwards, in the SAME handler, is what gets it onto the wire: the request
-   * goes out over a `keepalive` transport, which survives the document being
-   * torn down.
+   * afterwards, in the SAME handler, starts a `keepalive` request that can
+   * survive the document being torn down. If that request remains
+   * unacknowledged, the next load restores the account-scoped outbox and
+   * retries the original batch id.
    *
    * In one handler rather than a second `pagehide` listener in the runtime,
    * because listener order would otherwise decide it: DOM listeners on one

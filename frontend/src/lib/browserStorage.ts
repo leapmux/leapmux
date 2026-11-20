@@ -113,6 +113,7 @@ export const KEY_ACTIVE_WORKSPACE = 'active-workspace'
 export const KEY_WORKSPACE_SORT = 'workspace-sort'
 export const KEY_USER_EVENTS_RELAY_SEQ = 'user-events-relay-seq'
 export const KEY_CHANNEL_RELAY_SEQ = 'channel-relay-seq'
+export const KEY_CRDT_OUTBOX = 'crdt-outbox'
 
 /** Dynamic key prefixes — single source of truth for all consumers. */
 export const PREFIX_EDITOR_DRAFT = 'editor-draft:'
@@ -308,6 +309,16 @@ export const LOCAL_KEY_SPECS = {
     scope: 'account',
     ttlMs: YEAR_MS,
     access: 'sync',
+  },
+  // Unacknowledged CRDT batches staged before unload. The exact account
+  // namespace prevents a Hub or user switch from replaying another identity's
+  // edits. Seven days caps abandoned batches without expiring an ordinary
+  // offline weekend.
+  [KEY_CRDT_OUTBOX]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'async',
   },
   // `sync`: seeded eagerly from the synchronous account-change callback.
   [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: {

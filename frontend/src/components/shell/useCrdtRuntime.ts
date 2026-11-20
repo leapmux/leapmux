@@ -653,6 +653,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   //   - transport timeout → retry same op_ids (principal-aware dedup)
   const opsSubmitter = createOpsSubmitter({
     pending: () => pendingMgr(),
+    storageAccount: opts.storageAccount,
     reconnect: () => userEvents.reconnect(),
   })
 
@@ -667,15 +668,16 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
       setCRDTBridge(null)
       return
     }
+    void opsSubmitter.restoreOutbox()
     setCRDTBridge({
       workspaceId: () => opts.getWorkspaceId(),
       enqueue: (batch) => {
         opsSubmitter.enqueue(batch)
         return batch.batchId
       },
-      // Sent over the keepalive transport: a normal fetch started while the
-      // page is unloading is cancelled with it, so an op enqueued from a
-      // `pagehide` handler would never reach the hub. See CRDTBridge.flushNow.
+      // Start an immediate keepalive send. A normal fetch is cancelled with the
+      // unloading page; an unacknowledged keepalive send remains in the durable
+      // outbox for the next load. See CRDTBridge.flushNow.
       flushNow: () => void opsSubmitter.flush({ unload: true }),
       clock: () => mgr.clock,
       originClientId: ownClientId,

@@ -1,12 +1,17 @@
 import type { OpBatch } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import type { HubUserId } from '~/lib/browserStorage'
 import { create } from '@bufbuild/protobuf'
+import { IDBFactory } from 'fake-indexeddb'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { userCRDTClient, userCRDTUnloadClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
+import { FloatingWindowRecordSchema, HLCSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { BatchRejectionReason, OpBatchSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { flushStorageWrites, resetBrowserStorageForTests, setStorageAccountForTests, storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { HLCClock } from '~/lib/crdt/hlc'
+import { newBatch, setFloatingX } from '~/lib/crdt/ops'
+import { loadCrdtOutbox, storeCrdtOutbox } from '~/lib/crdt/outbox'
 import { PendingOpsManager } from '~/lib/crdt/pendingOps'
 import { createOpsSubmitter } from './useOpsSubmitter'
 
@@ -47,6 +52,12 @@ function pendingAtEpoch(epoch: bigint) {
   const pending = new PendingOpsManager('user' as HubUserId, new HLCClock('client'))
   bootstrapPending(pending, epoch)
   return pending
+}
+
+function durableBatch(pending: PendingOpsManager, id = 'durable-batch', windowId = 'window-1') {
+  return newBatch([
+    setFloatingX({ originClientId: 'client', clock: pending.clock }, windowId, 42),
+  ], id)
 }
 
 interface FakePendingOpts {
@@ -832,5 +843,180 @@ describe('createOpsSubmitter unload flush', () => {
 
     expect(userCRDTClient.submitOps).toHaveBeenCalledTimes(1)
     expect(userCRDTUnloadClient.submitOps).not.toHaveBeenCalled()
+  })
+})
+
+describe('createOpsSubmitter durable outbox', () => {
+  const account = storageAccountFor(TEST_HUB, 'outbox-user')
+
+  beforeEach(() => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    resetBrowserStorageForTests()
+    setStorageAccountForTests('outbox-user')
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+      ],
+    })
+  })
+
+  afterEach(() => vi.useRealTimers())
+
+  it('stages a valid batch before the unload send starts', async () => {
+    const pending = pendingAtEpoch(7n)
+    const submitter = createOpsSubmitter({
+      pending: () => pending,
+      storageAccount: () => account,
+      client: {
+        submitOps: vi.fn(),
+      } as never,
+    })
+    const candidate = durableBatch(pending)
+
+    submitter.enqueue(candidate)
+    await flushStorageWrites()
+
+    expect(await loadCrdtOutbox()).toEqual([
+      { ...candidate, epoch: 7n },
+    ])
+  })
+
+  it('restores and submits a batch once after concurrent reload calls for the same account', async () => {
+    const beforeReload = pendingAtEpoch(7n)
+    const firstSubmitter = createOpsSubmitter({
+      pending: () => beforeReload,
+      storageAccount: () => account,
+      client: {
+        submitOps: vi.fn(),
+      } as never,
+    })
+    const candidate = durableBatch(beforeReload)
+    firstSubmitter.enqueue(candidate)
+    await flushStorageWrites()
+    expect(await loadCrdtOutbox()).toEqual([candidate])
+
+    const afterReload = pendingAtEpoch(7n)
+    const submitOps = vi.fn().mockResolvedValue(committedResponse(candidate.batchId))
+    const reloaded = createOpsSubmitter({
+      pending: () => afterReload,
+      storageAccount: () => account,
+      client: { submitOps } as never,
+    })
+    await Promise.all([
+      reloaded.restoreOutbox(),
+      reloaded.restoreOutbox(),
+    ])
+    expect(afterReload.state.pendingBatches).toEqual([candidate])
+    await reloaded.flush()
+    await flushStorageWrites()
+
+    expect(submitOps).toHaveBeenCalledTimes(1)
+    expect(submitOps.mock.calls[0]?.[0].batches).toEqual([
+      { ...candidate, epoch: 7n },
+    ])
+    expect(afterReload.state.pendingBatches).toEqual([])
+    expect(await loadCrdtOutbox()).toEqual([])
+  })
+
+  it('does not restore another account\'s batches', async () => {
+    let activeAccount = account
+    const ownerPending = pendingAtEpoch(7n)
+    const owner = createOpsSubmitter({
+      pending: () => ownerPending,
+      storageAccount: () => activeAccount,
+      client: {
+        submitOps: vi.fn(),
+      } as never,
+    })
+    owner.enqueue(durableBatch(ownerPending))
+    await owner.restoreOutbox()
+    await flushStorageWrites()
+
+    setStorageAccountForTests('other-user')
+    const otherAccount = storageAccountFor(TEST_HUB, 'other-user')
+    activeAccount = otherAccount
+    const otherPending = pendingAtEpoch(7n)
+    const submitOps = vi.fn().mockResolvedValue({ results: [] })
+    const other = createOpsSubmitter({
+      pending: () => otherPending,
+      storageAccount: () => activeAccount,
+      client: { submitOps } as never,
+    })
+    await other.restoreOutbox()
+    await other.flush()
+
+    expect(submitOps).not.toHaveBeenCalled()
+    expect(otherPending.state.pendingBatches).toEqual([])
+  })
+
+  it('merges a concurrent enqueue after restored batches and persists both before submit', async () => {
+    const pending = pendingAtEpoch(7n)
+    const restored = durableBatch(pending, 'restored-batch', 'window-1')
+    restored.epoch = 7n
+    expect(await storeCrdtOutbox([restored]).durable).toBe(true)
+
+    let durableIdsAtSubmit: string[] = []
+    let submittedIds: string[] = []
+    const submitOps = vi.fn(async (request: { batches: OpBatch[] }) => {
+      submittedIds = request.batches.map(batch => batch.batchId)
+      durableIdsAtSubmit = (await loadCrdtOutbox()).map(batch => batch.batchId)
+      return { results: [] }
+    })
+    const submitter = createOpsSubmitter({
+      pending: () => pending,
+      storageAccount: () => account,
+      client: { submitOps } as never,
+    })
+
+    const restoring = submitter.restoreOutbox()
+    submitter.enqueue(durableBatch(pending, 'new-batch', 'window-2'))
+    await restoring
+    await submitter.flush()
+
+    expect(submitOps).toHaveBeenCalledTimes(1)
+    expect(submittedIds).toEqual([
+      'restored-batch',
+      'new-batch',
+    ])
+    expect(durableIdsAtSubmit).toEqual([
+      'restored-batch',
+      'new-batch',
+    ])
+  })
+
+  it('drops a restored write when the canonical register is newer', async () => {
+    const beforeReload = pendingAtEpoch(7n)
+    const firstSubmitter = createOpsSubmitter({
+      pending: () => beforeReload,
+      storageAccount: () => account,
+      client: {
+        submitOps: vi.fn(),
+      } as never,
+    })
+    firstSubmitter.enqueue(durableBatch(beforeReload))
+    await flushStorageWrites()
+
+    const afterReload = pendingAtEpoch(7n)
+    afterReload.state.confirmedState.floatingWindows['window-1'] = create(FloatingWindowRecordSchema, {
+      windowId: 'window-1',
+      x: {
+        value: 100,
+        hlc: create(HLCSchema, { physical: BigInt(Date.now()) + 1_000_000n, logical: 0n, clientId: 'peer' }),
+      },
+    })
+    const submitOps = vi.fn().mockResolvedValue({ results: [] })
+    const reloaded = createOpsSubmitter({
+      pending: () => afterReload,
+      storageAccount: () => account,
+      client: { submitOps } as never,
+    })
+    await reloaded.restoreOutbox()
+    await reloaded.flush()
+    await flushStorageWrites()
+
+    expect(submitOps).not.toHaveBeenCalled()
+    expect(afterReload.state.pendingBatches).toEqual([])
+    expect(await loadCrdtOutbox()).toEqual([])
   })
 })

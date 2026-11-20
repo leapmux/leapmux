@@ -25,7 +25,8 @@ export const adminUserClient = createClient(AdminUserService, transport)
 export const adminNetworkClient = createClient(AdminNetworkService, transport)
 /**
  * SubmitOps over the keepalive transport, for the `pagehide` flush only. See
- * `unloadTransport` for why keepalive is what makes that flush reach the hub at
- * all, and for the 64 KiB budget it carries.
+ * `unloadTransport` for why keepalive lets that request outlive the page, and
+ * for the 64 KiB budget it carries. The submitter's durable outbox handles a
+ * missing acknowledgement.
  */
 export const userCRDTUnloadClient = createClient(UserCRDT, unloadTransport)
