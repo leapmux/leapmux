@@ -760,6 +760,16 @@ func (services *orderedProviderServices) SetTurnState(state TurnState, seq uint6
 	}
 	services.submitEffect("release turn", func() error { services.ProviderServices.SetTurnState(state, seq); return nil })
 }
+func (services *orderedProviderServices) BindNativeInputTurn(receipt NativeInputReceipt, nativeTurnID string) error {
+	return services.transcript.submit("bind native input", func() error {
+		return services.ProviderServices.BindNativeInputTurn(receipt, nativeTurnID)
+	})
+}
+func (services *orderedProviderServices) RetireNativeInputTurn(receipt NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	return services.transcript.submit("retire native input", func() error {
+		return services.ProviderServices.RetireNativeInputTurn(receipt, outcome)
+	})
+}
 func (services *orderedProviderServices) ReportSteersEchoed(count int) {
 	if count <= 0 {
 		return

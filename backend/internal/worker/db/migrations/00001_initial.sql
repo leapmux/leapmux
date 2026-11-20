@@ -154,6 +154,12 @@ CREATE TABLE messages (
     -- that failure to the write.
     seq                 INTEGER NOT NULL CHECK (seq >= 1),
     agent_session_id    TEXT NOT NULL DEFAULT '',
+    native_input_id     TEXT NOT NULL DEFAULT '' CHECK (native_input_id = '' OR agent_session_id <> ''),
+    native_turn_id      TEXT NOT NULL DEFAULT '' CHECK (native_turn_id = '' OR native_input_id <> ''),
+    -- AgentInputTurnOutcome is present only on a verified turn's final row.
+    input_turn_outcome  INTEGER CHECK (input_turn_outcome IS NULL OR typeof(input_turn_outcome) = 'integer')
+        CHECK (input_turn_outcome BETWEEN 1 AND 4)
+        CHECK (input_turn_outcome IS NULL OR native_turn_id <> ''),
     source              INTEGER NOT NULL CHECK (typeof(source) = 'integer') CHECK (source BETWEEN 1 AND 3),
     content             BLOB NOT NULL,
     -- A ContentCompression ordinal, under the same CHECK as the supplemental
@@ -239,6 +245,21 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type IS NOT NULL;
 CREATE UNIQUE INDEX idx_messages_idempotency_key
     ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
+CREATE INDEX idx_messages_native_input
+    ON messages(agent_id, agent_session_id, native_input_id, native_turn_id, seq) WHERE native_input_id <> '';
+
+-- A native start can follow a prompt and precede acceptance of the input row.
+-- Keep the binding independent of either row. A retirement records the local
+-- result when no native completion row exists.
+CREATE TABLE native_agent_inputs (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL CHECK (agent_session_id <> ''),
+    native_input_id TEXT NOT NULL CHECK (native_input_id <> ''),
+    native_turn_id TEXT NOT NULL DEFAULT '',
+    retired_outcome INTEGER CHECK (retired_outcome IS NULL OR typeof(retired_outcome) = 'integer')
+        CHECK (retired_outcome BETWEEN 1 AND 4),
+    PRIMARY KEY (agent_id, agent_session_id, native_input_id)
+) WITHOUT ROWID;
 -- Serves the notification duplicate lookup, which reads only messages whose
 -- generated count identifies a journal or corrupt private storage. Partial
 -- (only counted rows) so the far-more-numerous ordinary inserts skip it, and
@@ -445,6 +466,7 @@ END;
 CREATE TABLE control_requests (
     agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     agent_session_id TEXT NOT NULL DEFAULT '',
+    native_turn_id TEXT NOT NULL DEFAULT '' CHECK (native_turn_id = '' OR agent_session_id <> ''),
     request_id  TEXT NOT NULL,
     payload     BLOB NOT NULL,
     source_seq  INTEGER NOT NULL DEFAULT 0 CHECK (source_seq >= 0),
@@ -878,6 +900,7 @@ DROP TABLE IF EXISTS agent_input_queue_attachments;
 DROP TABLE IF EXISTS agent_input_queue_items;
 DROP TABLE IF EXISTS agent_input_queue_state;
 DROP TABLE IF EXISTS agent_turn_ends;
+DROP TABLE IF EXISTS native_agent_inputs;
 DROP TABLE IF EXISTS agent_message_retractions;
 DROP VIEW IF EXISTS control_response_answers;
 DROP TABLE IF EXISTS control_response_payloads;

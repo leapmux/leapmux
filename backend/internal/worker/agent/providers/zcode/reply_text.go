@@ -8,9 +8,8 @@ import (
 )
 
 // ReplyText reads the reply of a model-response session.updated event, as
-// the browser's zcodeAssistantText does. The event states the whole reply
-// under `content`; a turn that only called tools states an empty one, which
-// is no reply.
+// the browser does. ResolveProviderData removes text already stored in an
+// earlier row before the reader extracts a recovered reply.
 func (zcodeProvider) ReplyText(message agent.MessageContent) (string, bool) {
 	event, ok := parseZCodeEvent(message.Original)
 	if !ok || event.Type != contracts.ZCodeEventSessionUpdated {
@@ -23,4 +22,18 @@ func (zcodeProvider) ReplyText(message agent.MessageContent) (string, bool) {
 	var text string
 	_ = json.Unmarshal(payload.Content, &text)
 	return text, true
+}
+
+func zcodeAcceptedReplyPrefix(supplemental []byte) string {
+	var supplement map[string]json.RawMessage
+	if json.Unmarshal(supplemental, &supplement) != nil {
+		return ""
+	}
+	var coverage map[string]json.RawMessage
+	if json.Unmarshal(supplement[contracts.ZCodeSupplementResponseText], &coverage) != nil {
+		return ""
+	}
+	var prefix string
+	_ = json.Unmarshal(coverage[contracts.ZCodeResponseTextAcceptedPrefix], &prefix)
+	return prefix
 }

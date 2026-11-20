@@ -68,6 +68,19 @@ type TurnState struct {
 	Steerable bool
 }
 
+// NativeInputReceipt identifies one ordinary input in the provider's session.
+// The Worker records it only when the provider acknowledges the send.
+type NativeInputReceipt struct {
+	SessionID string
+	InputID   string
+}
+
+// InputReceiptSender supplies the native identity needed to follow an input
+// through its own turn.
+type InputReceiptSender interface {
+	SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
+}
+
 // TurnStateLease keeps one accepted provider state current through a store mutation.
 // Release the lease before a provider call or observer delivery.
 type TurnStateLease interface{ Release() }
@@ -89,6 +102,12 @@ type MessageContent struct {
 	IdempotencyKey string
 	// AgentSessionID identifies the provider session that produced these bytes.
 	AgentSessionID string
+	// NativeInputID identifies the verified input that owns this output.
+	NativeInputID string
+	// NativeTurnID identifies the provider turn that produced this output.
+	NativeTurnID string
+	// InputTurnOutcome is set only on the last record of a verified turn.
+	InputTurnOutcome leapmuxv1.AgentInputTurnOutcome
 	// Supplemental holds recovered provider data. Metadata holds worker-calculated fields.
 	Supplemental []byte
 	Metadata     []byte
@@ -228,6 +247,8 @@ type PreparedTranscriptWriter interface {
 
 // TurnServices publishes the provider's turn state.
 type TurnServices interface {
+	BindNativeInputTurn(receipt NativeInputReceipt, nativeTurnID string) error
+	RetireNativeInputTurn(receipt NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error
 	// SetTurnState publishes whether a turn is active. It is the only signal for
 	// that fact. Steerable states whether the active turn accepts steering.
 	// The Worker derives two answers from this state.
@@ -325,7 +346,9 @@ type ControlRequest struct {
 	// value makes the sink store the session that it holds when it stores the
 	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
-	RequestID      string
+	// NativeTurnID identifies the provider turn that owns this prompt.
+	NativeTurnID string
+	RequestID    string
 	// InstanceID optionally identifies this publication across asynchronous cancellation.
 	// A provider that supplies it must use a fresh secure ID when the request
 	// changes its payload, session, or blocking behavior.

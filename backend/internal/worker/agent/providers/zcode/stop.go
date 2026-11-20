@@ -622,6 +622,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 	}
 	a.persistZCodeStopRow()
 	if owner != nil {
+		a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED)
 		a.Mu.Lock()
 		a.dropZCodeTurnLocked(owner)
 		a.Mu.Unlock()
@@ -768,19 +769,26 @@ func (a *Agent) Wait() error {
 func (a *Agent) finalizeZCodeProcessTranscript() {
 	completion := a.ProcessExitCompletion()
 	a.flushZCodeGeneration(completion)
-	a.retireZCodeProcessTurns()
+	outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+	if completion == agent.MessageCompletionInterrupted {
+		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	}
+	a.retireZCodeProcessTurns(outcome)
 	a.persistIncompleteZCodeTools(completion)
 }
 
 // retireZCodeProcessTurns clears every owner after process exit and orders the
 // last retry callback with native event dispatch.
-func (a *Agent) retireZCodeProcessTurns() {
+func (a *Agent) retireZCodeProcessTurns(outcome leapmuxv1.AgentInputTurnOutcome) {
 	a.dispatchMu.Lock()
 	defer a.unlockZCodeDispatch()
 	a.retryHistory = nil
 	a.Mu.Lock()
 	a.compactionSessionID = ""
-	a.clearZCodeTurnsLocked()
+	retired := a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
+	for _, receipt := range retired {
+		a.retireObservedInput(receipt, outcome)
+	}
 	a.publishZCodeModelAPIRetryLocked()
 }

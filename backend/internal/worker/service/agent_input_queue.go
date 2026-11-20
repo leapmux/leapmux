@@ -281,7 +281,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 				return inputqueue.DispatchResult{}, err
 			}
 		}
-		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
+		if _, err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
@@ -289,12 +289,14 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
+		receipt, err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments)
+		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{
 			StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines,
 			SupplementalContent: resolvedInput.supplementalContent,
+			NativeReceipt:       receipt,
 		}, nil
 	}
 }
@@ -569,7 +571,7 @@ func acceptedTranscriptProto(message inputqueue.AcceptedTranscript) *leapmuxv1.A
 		Id: message.ID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content: message.Content, ContentCompression: message.ContentCompression,
 		SupplementalContent: message.SupplementalContent, SupplementalContentCompression: message.SupplementalContentCompression,
-		Seq: message.Seq, AgentProvider: message.AgentProvider,
+		Seq: message.Seq, AgentProvider: message.AgentProvider, AgentSessionId: message.AgentSessionID,
 		MarkType: message.MarkType, SpanLines: message.SpanLines,
 		CreatedAt: message.CreatedAt,
 	}
@@ -662,7 +664,24 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
+			response := &leapmuxv1.ListAgentInputQueueResponse{Snapshot: svc.queueSnapshotProto(snapshot)}
+			if inputID := r.GetReplyInputId(); inputID != "" {
+				state, err := svc.Queries.GetInputReplyState(ctx, db.GetInputReplyStateParams{
+					AgentID: r.GetAgentId(), InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+					InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
+				})
+				switch {
+				case err == nil:
+					outcome := leapmuxv1.AgentInputTurnOutcome(state.Outcome)
+					response.InputReply = &leapmuxv1.AgentInputTurnReply{
+						AcceptedSeq: state.AcceptedSeq, Outcome: outcome, WaitingForUser: state.Outcome == 0 && state.WaitingForUser,
+					}
+				case !errors.Is(err, sql.ErrNoRows):
+					sendQueueError(sender, err)
+					return
+				}
+			}
+			sendProtoResponse(sender, response)
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceBeginQueuedAgentInputEditProcedure, dispatchPlain,

@@ -962,7 +962,7 @@ type zcodeTurnSettlement struct {
 	callCompletion agent.MessageCompletion
 	// persistEnd records this owner's outcome after its scopes and tools close.
 	// Nil settles identity without persisting a row or touching buffered work.
-	persistEnd func(closed int, publishTurnEnd bool)
+	persistEnd func(closed int, publishTurnEnd bool, completion agent.MessageCompletion)
 	// afterForeground retains retry ownership until the actual settlement claim.
 	afterForeground func()
 }
@@ -1067,7 +1067,7 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 	closed := a.persistIncompleteZCodeToolsForTurn(owner, settle.callCompletion)
 
 	a.resetZCodeTurnProgress(owner)
-	settle.persistEnd(closed, publishTurnEnd)
+	settle.persistEnd(closed, publishTurnEnd, settle.textCompletion)
 	a.resetZCodeSpansWhenIdle()
 
 	// The app-server's own reading is authoritative, and reading it takes an RPC --
@@ -1095,11 +1095,12 @@ func (a *Agent) resetZCodeSpansWhenIdle() {
 // row. It NEVER fabricates a native turn.completed frame or divider; the
 // evidence is the patch that proves the turn ended.
 func (a *Agent) zcodeRecoverySettlement(owner *zcodeTurnState, completion agent.MessageCompletion, evidence []byte) zcodeTurnSettlement {
-	record := func(publish bool) { a.persistZCodeRecoveryEvidenceForOwner(owner, completion, evidence, publish) }
 	return zcodeTurnSettlement{
 		textCompletion: completion,
 		callCompletion: completion,
-		persistEnd:     func(_ int, publish bool) { record(publish) },
+		persistEnd: func(_ int, publish bool, settled agent.MessageCompletion) {
+			a.persistZCodeRecoveryEvidenceForOwner(owner, settled, evidence, publish)
+		},
 	}
 }
 
@@ -1118,11 +1119,17 @@ func (a *Agent) persistZCodeRecoveryEvidenceForOwner(owner *zcodeTurnState, comp
 		a.persistZCodeBackgroundTurnEnd(owner, evidence, completion)
 		return
 	}
+	sink := a.zcodeProgressSinkForTurn(owner)
+	if sink.nativeInputID != "" {
+		content.InputTurnOutcome = zcodeInputTurnOutcome(completion)
+	} else {
+		a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	}
 	var err error
 	if publish {
-		err = a.zcodeProgressSinkForTurn(owner).PersistTurnEnd(content, agent.SpanInfo{})
+		err = sink.PersistTurnEnd(content, agent.SpanInfo{})
 	} else {
-		err = a.zcodeProgressSinkForTurn(owner).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+		err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	}
 	if err != nil {
 		slog.Error("zcode persist recovery evidence", "agent_id", a.AgentID(), "turn_id", owner.id, "error", err)
@@ -1145,7 +1152,8 @@ func (a *Agent) settleZCodeTurnLost(owner *zcodeTurnState, state *zcodeTurnRecov
 	return a.settleZCodeTurn(owner, zcodeTurnSettlement{
 		textCompletion: agent.MessageCompletionError,
 		callCompletion: agent.MessageCompletionError,
-		persistEnd: func(int, bool) {
+		persistEnd: func(int, bool, agent.MessageCompletion) {
+			a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 			a.persistZCodeRecoveryError(owner, "ZCode stopped reporting progress, and its native state could not confirm that this turn ended.")
 		},
 	})
@@ -1260,6 +1268,10 @@ func (a *Agent) expireZCodeNativeSettlement(ctx context.Context, owner *zcodeTur
 	defer a.unlockZCodeDispatch()
 	a.Mu.Lock()
 	current := a.currentZCodeRecoveryLocked(owner, state) && owner.pendingNative == pending && ctx.Err() == nil
+	if current {
+		// The native end identifies the turn, but recovery could not verify all of its output.
+		owner.replyUnproved = true
+	}
 	a.Mu.Unlock()
 	if !current {
 		return true, nil
@@ -1267,9 +1279,9 @@ func (a *Agent) expireZCodeNativeSettlement(ctx context.Context, owner *zcodeTur
 	settle := pending.settlement
 	settle.textCompletion, settle.callCompletion = agent.MessageCompletionError, agent.MessageCompletionError
 	nativeEnd := settle.persistEnd
-	settle.persistEnd = func(closed int, publish bool) {
+	settle.persistEnd = func(closed int, publish bool, completion agent.MessageCompletion) {
 		if nativeEnd != nil {
-			nativeEnd(closed, publish)
+			nativeEnd(closed, publish, completion)
 		}
 		a.persistZCodeRecoveryError(owner, "ZCode ended this turn, but LeapMux could not restore all of its output.")
 	}

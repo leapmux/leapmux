@@ -531,9 +531,16 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 // same applies to an ExitHandler, which runs while a lifecycle caller waits --
 // see the contract on that type.
 func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := m.SendInputWithReceipt(agentID, content, attachments)
+	return err
+}
+
+// SendInputWithReceipt delivers input and returns its provider identity when
+// the provider supplies one.
+func (m *Manager) SendInputWithReceipt(agentID, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
 	return deliverProviderInput(p, nil, content, attachments)
 }
@@ -541,18 +548,22 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 // SendInputToSession uses a provider instance that the caller validated under its lifecycle lock.
 // The provider checks the expected session while constructing the native request.
 func SendInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return deliverProviderInput(provider, &sessionID, content, attachments)
+	_, err := deliverProviderInput(provider, &sessionID, content, attachments)
+	return err
 }
 
-func deliverProviderInput(p Agent, expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func deliverProviderInput(p Agent, expected *string, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
 	if err := prepareProviderProcessForInput(p); err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
 	var err error
-	if expected == nil {
-		err = p.SendInput(content, attachments)
-	} else {
+	var receipt NativeInputReceipt
+	if expected != nil {
 		err = p.SendInputForSession(*expected, content, attachments)
+	} else if sender, ok := p.(InputReceiptSender); ok {
+		receipt, err = sender.SendInputWithReceipt(content, attachments)
+	} else {
+		err = p.SendInput(content, attachments)
 	}
 	if errors.Is(err, ErrAgentBusy) {
 		// The refusal disproves the Worker's view of the turn, and both consumers
@@ -562,12 +573,13 @@ func deliverProviderInput(p Agent, expected *string, content string, attachments
 		// leaving it out. SendChildInput does NOT do this: a collab child's
 		// activity comes from its background-task registry row.
 		state := p.PublishTurnActive()
-		return &AgentBusyError{Err: err, ActiveTurnSteerable: state.Steerable}
+		return NativeInputReceipt{}, &AgentBusyError{Err: err, ActiveTurnSteerable: state.Steerable}
 	}
-	if err == nil {
-		observeGoalCommand(p, GoalDeliverySend, content)
+	if err != nil {
+		return NativeInputReceipt{}, err
 	}
-	return err
+	observeGoalCommand(p, GoalDeliverySend, content)
+	return receipt, nil
 }
 
 // Prepare the retained delivery target. A readiness check in the service may

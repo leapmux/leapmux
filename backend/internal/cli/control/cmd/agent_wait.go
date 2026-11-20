@@ -163,7 +163,7 @@ wait:
 					continue
 				}
 				rows[i].State = agentStateToken(ev.state)
-			case activityQueueChanged:
+			case activityInputChanged:
 				if !spec.until.needsEmptyQueue() {
 					continue
 				}
@@ -254,7 +254,8 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 	}
 	queues := &queueWatch{
 		read: func(ctx context.Context, agentID string) (*leapmuxv1.AgentInputQueueSnapshot, error) {
-			return workerReplyReader(s.c, workerOf[agentID], agentID).readQueue(ctx)
+			response, err := workerReplyReader(s.c, workerOf[agentID], agentID).readQueue(ctx, "")
+			return response.GetSnapshot(), err
 		},
 		notice: inv.Printer.Notice,
 		now:    time.Now,

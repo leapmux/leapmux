@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -229,8 +230,10 @@ func TestStoreAcceptRecordsTheSenderOfAnAgentMessage(t *testing.T) {
 	require.NotNil(t, prepared)
 	assert.Equal(t, claudeSender(), prepared.Item.Sender, "the dispatch reads the sender from its full row")
 
-	transcript, _, err := store.Accept(t.Context(), *prepared, DispatchResult{StartsTurn: true})
+	native := agent.NativeInputReceipt{SessionID: "native-session", InputID: "native-input"}
+	transcript, _, err := store.Accept(t.Context(), *prepared, DispatchResult{StartsTurn: true, NativeReceipt: native})
 	require.NoError(t, err)
+	assert.Equal(t, native.SessionID, transcript.AgentSessionID)
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, transcript.MarkType, "the rail marks an agent message as it marks a user message")
 	raw, err := msgcodec.Decompress(transcript.Content, transcript.ContentCompression)
 	require.NoError(t, err)
@@ -241,9 +244,12 @@ func TestStoreAcceptRecordsTheSenderOfAnAgentMessage(t *testing.T) {
 
 	var stored []byte
 	var storedCompression leapmuxv1.ContentCompression
-	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT supplemental_content, supplemental_content_compression FROM messages WHERE id = ?`, input.ID).Scan(&stored, &storedCompression))
+	var sessionID, nativeInputID string
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT supplemental_content, supplemental_content_compression, agent_session_id, native_input_id FROM messages WHERE id = ?`, input.ID).Scan(&stored, &storedCompression, &sessionID, &nativeInputID))
 	assert.Equal(t, transcript.SupplementalContent, stored, "the live row and the stored row carry one supplement")
 	assert.Equal(t, transcript.SupplementalContentCompression, storedCompression)
+	assert.Equal(t, native.SessionID, sessionID)
+	assert.Equal(t, native.InputID, nativeInputID)
 
 	// The delivered row answers a repeat from the same tab, and refuses one
 	// from another tab.

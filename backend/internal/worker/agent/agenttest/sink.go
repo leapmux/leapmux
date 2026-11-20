@@ -193,6 +193,8 @@ type Message struct {
 	stored               bool
 	Source               leapmuxv1.MessageSource
 	AgentSessionID       string
+	NativeInputID        string
+	InputTurnOutcome     leapmuxv1.AgentInputTurnOutcome
 	IdempotencyKey       string
 	Content              []byte
 	SupplementalContent  []byte
@@ -293,6 +295,7 @@ func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agen
 		spans = slices.Clone(owner.spans)
 	}
 	s.messages = append(s.messages, Message{Source: source, AgentSessionID: identity.sessionID, IdempotencyKey: identity.key, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
+		NativeInputID: content.NativeInputID, InputTurnOutcome: content.InputTurnOutcome,
 		stored:   s.PersistErr == nil,
 		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans,
 		TranscriptOnly: owner != nil && !owner.currentLocked()})
@@ -540,6 +543,11 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 	}
 	content.WriteReceipt.RecordStoredWrite(true)
 	s.turnLifecycle = append(s.turnLifecycle, "turn_end")
+	return nil
+}
+
+func (s *Sink) BindNativeInputTurn(agent.NativeInputReceipt, string) error { return nil }
+func (s *Sink) RetireNativeInputTurn(agent.NativeInputReceipt, leapmuxv1.AgentInputTurnOutcome) error {
 	return nil
 }
 
@@ -2061,10 +2069,14 @@ func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error) { retu
 func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)  { return false, nil }
 func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error     { return nil }
 func (nop) SetTurnState(agent.TurnState, uint64)                          {}
-func (nop) RequeueDroppedInput(agent.SteerRequest) error                  { return nil }
-func (nop) CaptureBackgroundTaskExit(bool) func() error                   { return nil }
-func (nop) CaptureBackgroundTaskStartFailure() func() error               { return nil }
-func (nop) OutputQueue() *agent.OutputQueue                               { return nil }
+func (nop) BindNativeInputTurn(agent.NativeInputReceipt, string) error    { return nil }
+func (nop) RetireNativeInputTurn(agent.NativeInputReceipt, leapmuxv1.AgentInputTurnOutcome) error {
+	return nil
+}
+func (nop) RequeueDroppedInput(agent.SteerRequest) error    { return nil }
+func (nop) CaptureBackgroundTaskExit(bool) func() error     { return nil }
+func (nop) CaptureBackgroundTaskStartFailure() func() error { return nil }
+func (nop) OutputQueue() *agent.OutputQueue                 { return nil }
 func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
 	return func() error { return nil }
 }

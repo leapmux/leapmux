@@ -24,11 +24,18 @@ func (p zcodeProgressPublication) ReportProgress(update agent.ProgressUpdate) {
 
 type zcodeProgressSink struct {
 	agent.ProviderServices
-	scopes []string
-	source agent.MessageContent
+	scopes        []string
+	source        agent.MessageContent
+	nativeInputID string
+	nativeTurnID  string
+	turnScoped    bool
 }
 
 func (s zcodeProgressSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	if s.turnScoped {
+		content.NativeInputID = s.nativeInputID
+		content.NativeTurnID = s.nativeTurnID
+	}
 	if content.Publication != nil {
 		return content.Clone()
 	}
@@ -75,6 +82,14 @@ func (a *Agent) zcodeProgressSinkForTurn(owner *zcodeTurnState) zcodeProgressSin
 	if source.Publication == nil && owner.pendingNative != nil {
 		source = owner.pendingNative.source
 	}
+	var nativeInputID, nativeTurnID string
+	if owner.inputConfirmed && !owner.replyUnproved {
+		nativeInputID = owner.inputID
+		nativeTurnID = owner.id
+	}
 	a.Mu.Unlock()
-	return zcodeProgressSink{ProviderServices: a.sink, scopes: scopes, source: source}
+	return zcodeProgressSink{
+		ProviderServices: a.sink, scopes: scopes, source: source, turnScoped: true,
+		nativeInputID: nativeInputID, nativeTurnID: nativeTurnID,
+	}
 }

@@ -25,6 +25,9 @@ import (
 type retryWorker struct {
 	*activityWorker
 	transcriptRequests []*leapmuxv1.ListAgentMessagesRequest
+	exactInputID       string
+	exactReply         *leapmuxv1.AgentInputTurnReply
+	exactRows          []*leapmuxv1.AgentChatMessage
 }
 
 func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
@@ -56,12 +59,30 @@ func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, r
 		if !held {
 			w.enqueued <- &in
 		}
+	case leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure:
+		var in leapmuxv1.ListAgentInputQueueRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		if w.exactReply == nil || in.GetReplyInputId() != w.exactInputID {
+			w.activityWorker.DispatchWith(ctx, caller, req, rw)
+			return
+		}
+		w.mu.Lock()
+		snapshot := proto.CloneOf(w.queue)
+		w.mu.Unlock()
+		writeProtoResponse(rw, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: snapshot, InputReply: w.exactReply})
 	case leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure:
 		var in leapmuxv1.ListAgentMessagesRequest
 		_ = proto.Unmarshal(req.GetPayload(), &in)
 		w.mu.Lock()
 		w.transcriptRequests = append(w.transcriptRequests, &in)
-		resp := transcriptPage(w.rows, &in)
+		rows := w.rows
+		if in.GetReplyInputId() != "" && in.GetReplyInputId() == w.exactInputID {
+			rows = w.exactRows
+		}
+		resp := transcriptPage(rows, &in)
 		w.mu.Unlock()
 		writeProtoResponse(rw, resp)
 	default:
@@ -183,6 +204,40 @@ func TestAgentSendWaitOverIPC_ARecognizedRetryReportsDeliveryWhileWaiting(t *tes
 	assert.Equal(t, "delivered", data["message"])
 	assert.Equal(t, "waiting_for_user", data["state"])
 	assert.Empty(t, w.enqueued)
+}
+
+func TestAgentSendWaitOverIPC_ARetryReturnsItsCompletedTurnDuringALaterPrompt(t *testing.T) {
+	id := fullTestID("ag-2")
+	inputID := requestScopedID("completed-run", requestScopeAgentSend, id)
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{
+		id: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+	})}
+	w.queue = &leapmuxv1.AgentInputQueueSnapshot{ActiveTurn: true}
+	w.rows = []*leapmuxv1.AgentChatMessage{
+		userMessageRow(1, inputID),
+		replyRow(2, "The first turn finished."),
+		userMessageRow(3, "later-input"),
+		replyRow(4, "The later turn needs permission."),
+	}
+	w.exactInputID = inputID
+	w.exactReply = &leapmuxv1.AgentInputTurnReply{
+		AcceptedSeq: 1, Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+	}
+	w.exactRows = w.rows[1:2]
+	startAgentWorker(t, id, w)
+
+	data := runControl(t, "agent", "send", id, "Run the first turn", "--wait", "--request-id", "completed-run").Data(t)
+	assert.Equal(t, inputID, data["input_id"])
+	assert.Equal(t, "delivered", data["message"])
+	assert.Equal(t, "waiting_for_user", data["state"], "the tab is waiting on later work")
+	assert.Equal(t, "completed", data["turn_outcome"])
+	assert.Equal(t, []any{"The first turn finished."}, data["replies"])
+	assert.Empty(t, w.enqueued)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	assert.True(t, slices.ContainsFunc(w.transcriptRequests, func(req *leapmuxv1.ListAgentMessagesRequest) bool {
+		return req.GetReplyInputId() == inputID && req.GetCursorSeq() == 1 && req.GetIncludeReplyText()
+	}), "the command must read the exact input's turn")
 }
 
 func TestAgentSendWaitOverIPC_AFreshKeyDoesNotQueueBehindAPrompt(t *testing.T) {

@@ -282,7 +282,20 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
-			dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
+			var dbMessages []db.Message
+			var queryErr error
+			if inputID := r.GetReplyInputId(); inputID != "" {
+				if plan.mode.descending() {
+					sendInvalidArgument(sender, "reply_input_id requires an oldest or after page")
+					return
+				}
+				dbMessages, queryErr = svc.Queries.ListInputReplyMessages(ctx, db.ListInputReplyMessagesParams{
+					AgentID: agentID, InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+					InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*", CursorSeq: plan.bound, PageSize: plan.limit + 1,
+				})
+			} else {
+				dbMessages, queryErr = svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
+			}
 			if queryErr != nil {
 				slog.Error("failed to list messages", "agent_id", agentID, "error", queryErr)
 				sendInternalError(sender, "failed to list messages")

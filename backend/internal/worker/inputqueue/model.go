@@ -396,6 +396,7 @@ type PreparedDispatch struct {
 type AcceptedTranscript struct {
 	ID                             string
 	AgentID                        string
+	AgentSessionID                 string
 	Seq                            int64
 	Content                        []byte
 	ContentCompression             leapmuxv1.ContentCompression
@@ -415,6 +416,7 @@ type DispatchResult struct {
 	TurnSteerable bool
 	SpanLines     string
 	Steering      bool
+	NativeReceipt agent.NativeInputReceipt
 	// SupplementalContent stores the original provider source for frontend extraction.
 	SupplementalContent []byte
 	AfterAccept         func()

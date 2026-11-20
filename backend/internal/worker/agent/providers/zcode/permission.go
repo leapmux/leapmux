@@ -25,6 +25,7 @@ type pendingControl struct {
 	wireKey         string
 	sessionID       string
 	ownerSessionID  string
+	nativeTurnID    string
 	instanceID      string
 	automaticReply  json.RawMessage
 	ready           bool

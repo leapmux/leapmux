@@ -332,8 +332,8 @@ func TestAwaitAgents_RechecksTheQueueWithoutAnActivityChange(t *testing.T) {
 	}
 	events := feedEvents(
 		level("a-1", idle),
-		activityEvent{kind: activityQueueChanged, agentID: "outside"},
-		activityEvent{kind: activityQueueChanged, agentID: "a-1"},
+		activityEvent{kind: activityInputChanged, agentID: "outside"},
+		activityEvent{kind: activityInputChanged, agentID: "a-1"},
 		activityEvent{kind: activityClosed, agentID: "a-1"},
 	)
 	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, queued, agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})

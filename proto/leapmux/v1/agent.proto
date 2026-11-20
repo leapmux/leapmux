@@ -659,8 +659,31 @@ message EnqueueAgentInputResponse {
   bool existing_input_missing = 3;
 }
 
-message ListAgentInputQueueRequest { string agent_id = 1; }
-message ListAgentInputQueueResponse { AgentInputQueueSnapshot snapshot = 1; }
+message ListAgentInputQueueRequest {
+  string agent_id = 1;
+  // Ask for the state of a previously submitted input's native turn.
+  string reply_input_id = 2;
+}
+message ListAgentInputQueueResponse {
+  AgentInputQueueSnapshot snapshot = 1;
+  // Present when the accepted input has a native receipt.
+  AgentInputTurnReply input_reply = 2;
+}
+
+enum AgentInputTurnOutcome {
+  AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED = 0;
+  AGENT_INPUT_TURN_OUTCOME_COMPLETED = 1;
+  AGENT_INPUT_TURN_OUTCOME_INTERRUPTED = 2;
+  AGENT_INPUT_TURN_OUTCOME_FAILED = 3;
+  // The provider stopped tracking the input before proving its outcome.
+  AGENT_INPUT_TURN_OUTCOME_UNPROVED = 4;
+}
+
+message AgentInputTurnReply {
+  int64 accepted_seq = 1;
+  AgentInputTurnOutcome outcome = 2;
+  bool waiting_for_user = 3;
+}
 
 message BeginQueuedAgentInputEditRequest {
   string agent_id = 1;
@@ -863,6 +886,8 @@ message ListAgentMessagesRequest {
   // Fill AgentChatMessage.reply_text on each agent row that holds a reply.
   // The browser extracts the text itself and leaves this unset.
   bool include_reply_text = 5;
+  // Restrict an OLDEST or AFTER page to the accepted input's own native turn.
+  string reply_input_id = 6;
 }
 
 message ListAgentMessagesResponse {

@@ -31,7 +31,8 @@ import (
 // A retry compares its own key with the stored key (storedRequest), never
 // with the content that the input holds now.
 
-const inputIdempotencyKeyPrefix = "input:"
+// InputRequestKeyPrefix distinguishes accepted queue input from provider rows.
+const InputRequestKeyPrefix = "input:"
 
 // inputIdempotencyKey returns the key of a request that queues input, after
 // its admission. The policy for adding a new input does not change the key.
@@ -102,7 +103,7 @@ func inputIdempotencyKey(input NewItem) string {
 		panic(fmt.Sprintf("marshal queued input idempotency key: %v", err))
 	}
 	sum := sha256.Sum256(data)
-	return inputIdempotencyKeyPrefix + hex.EncodeToString(sum[:])
+	return InputRequestKeyPrefix + hex.EncodeToString(sum[:])
 }
 
 type storedInputRequest struct {

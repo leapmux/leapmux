@@ -394,7 +394,7 @@ func TestInsertInputTranscriptRefusesAnItemWithoutItsRequestKey(t *testing.T) {
 		}},
 		Text: "hi",
 	}
-	_, err = insertInputTranscript(t.Context(), tx, item, nil, 1, "", nil)
+	_, err = insertInputTranscript(t.Context(), tx, item, nil, 1, DispatchResult{})
 	require.ErrorContains(t, err, "the input keyless holds no idempotency key")
 	var rows int
 	require.NoError(t, tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages WHERE id = 'keyless'`).Scan(&rows))

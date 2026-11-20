@@ -37,6 +37,8 @@ type agentReplyResult struct {
 	// State is the agent's activity when the wait ended: a token of
 	// AgentActivityState, or "unknown".
 	State string `json:"state"`
+	// TurnOutcome reports the native turn's result when the Worker proved it.
+	TurnOutcome string `json:"turn_outcome,omitempty"`
 	// Replies is the agent's reply text after the message, as the transcript
 	// shows it: the last reply, or every reply with --all. It is empty when
 	// the agent replied with no text.
@@ -63,13 +65,17 @@ const (
 	// replyWaitingForUser is an agent that waits for an answer to a
 	// permission prompt, before or after it received the message.
 	replyWaitingForUser
+	replyInterrupted
+	replyFailed
+	replyUnproved
 )
 
 // replyVerdict is the result of one evaluation.
 type replyVerdict struct {
-	step    replyStep
-	message string
-	replies []string
+	step        replyStep
+	message     string
+	replies     []string
+	turnOutcome leapmuxv1.AgentInputTurnOutcome
 	// paused is the pause reason of the queue that holds the message, or
 	// UNSPECIFIED. A pause can end by itself, as after a planned restart, so
 	// the wait goes on and only says why it waits.
@@ -78,10 +84,10 @@ type replyVerdict struct {
 
 // replyReader reads what an evaluation needs from the Worker.
 type replyReader struct {
-	readQueue func(ctx context.Context) (*leapmuxv1.AgentInputQueueSnapshot, error)
+	readQueue func(ctx context.Context, inputID string) (*leapmuxv1.ListAgentInputQueueResponse, error)
 	// readRowsAfter reads every row after the seq in ascending order, each
 	// with its reply text.
-	readRowsAfter func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, error)
+	readRowsAfter func(ctx context.Context, afterSeq int64, replyInputID string) ([]*leapmuxv1.AgentChatMessage, error)
 	// latestSeq reads the seq of the agent's last row, or 0 when the Worker
 	// cannot tell.
 	latestSeq func(ctx context.Context) (int64, error)
@@ -96,17 +102,18 @@ func workerReplyReader(c *control.Client, workerID, agentID string) replyReader 
 		return callInnerRPC(ctx, c, workerID, method, in, out)
 	}
 	return replyReader{
-		readQueue: func(ctx context.Context) (*leapmuxv1.AgentInputQueueSnapshot, error) {
+		readQueue: func(ctx context.Context, inputID string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
 			var resp leapmuxv1.ListAgentInputQueueResponse
 			if err := call(ctx, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure,
-				&leapmuxv1.ListAgentInputQueueRequest{AgentId: agentID}, &resp); err != nil {
+				&leapmuxv1.ListAgentInputQueueRequest{AgentId: agentID, ReplyInputId: inputID}, &resp); err != nil {
 				return nil, err
 			}
-			return resp.GetSnapshot(), nil
+			return &resp, nil
 		},
-		readRowsAfter: func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, error) {
+		readRowsAfter: func(ctx context.Context, afterSeq int64, replyInputID string) ([]*leapmuxv1.AgentChatMessage, error) {
 			return pageRowsAfter(afterSeq, func(req *leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
 				req.AgentId, req.IncludeReplyText = agentID, true
+				req.ReplyInputId = replyInputID
 				var resp leapmuxv1.ListAgentMessagesResponse
 				if err := call(ctx, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
 					return nil, err
@@ -215,13 +222,19 @@ func judgeDelivered(state leapmuxv1.AgentActivityState, queue *leapmuxv1.AgentIn
 // its text answers its parent, not the user. The user's answer to a prompt
 // is no new message, so the turn goes on past it.
 func repliesAfter(rows []*leapmuxv1.AgentChatMessage, all bool) []string {
+	if next := slices.IndexFunc(rows, func(row *leapmuxv1.AgentChatMessage) bool {
+		return row.GetParentSpanId() == "" && row.GetMarkType() == leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE
+	}); next >= 0 {
+		rows = rows[:next]
+	}
+	return replyTexts(rows, all)
+}
+
+func replyTexts(rows []*leapmuxv1.AgentChatMessage, all bool) []string {
 	replies := []string{}
 	for _, row := range rows {
 		if row.GetParentSpanId() != "" {
 			continue
-		}
-		if row.GetMarkType() == leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE {
-			break
 		}
 		if row.GetSource() == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && row.ReplyText != nil {
 			replies = append(replies, row.GetReplyText())
@@ -257,6 +270,9 @@ const (
 	replyWaitWaiting
 	// replyWaitTimedOut is a wait that its timeout ended.
 	replyWaitTimedOut
+	replyWaitInterrupted
+	replyWaitFailed
+	replyWaitUnproved
 )
 
 // replyEvaluator evaluates the message of one wait.
@@ -267,6 +283,8 @@ type replyEvaluator struct {
 	notice func(format string, args ...any)
 	// noticed is the pause reason that the last notice stated.
 	noticed leapmuxv1.AgentInputQueuePauseReason
+	// delivered records a receipt even if a later transcript read is canceled.
+	delivered bool
 }
 
 // evaluate reads the queue first, and the transcript only when the message
@@ -274,10 +292,14 @@ type replyEvaluator struct {
 // Worker accepted the message, and the queue after it: the message would
 // then be in neither.
 func (e *replyEvaluator) evaluate(ctx context.Context, state leapmuxv1.AgentActivityState) (replyVerdict, error) {
-	queue, err := e.reader.readQueue(ctx)
+	observation, err := e.reader.readQueue(ctx, e.spec.inputID)
 	if err != nil {
 		return replyVerdict{}, err
 	}
+	if exact := observation.GetInputReply(); exact != nil {
+		return e.evaluateExact(ctx, exact)
+	}
+	queue := observation.GetSnapshot()
 	if i := slices.IndexFunc(queue.GetItems(), func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == e.spec.inputID }); i >= 0 {
 		verdict, err := judgeQueued(state, queue, queue.GetItems()[i])
 		if err == nil && verdict.paused != e.noticed {
@@ -288,11 +310,43 @@ func (e *replyEvaluator) evaluate(ctx context.Context, state leapmuxv1.AgentActi
 		}
 		return verdict, err
 	}
-	rows, err := e.reader.readRowsAfter(ctx, e.spec.baseline)
+	rows, err := e.reader.readRowsAfter(ctx, e.spec.baseline, "")
 	if err != nil {
 		return replyVerdict{}, err
 	}
 	return judgeDelivered(state, queue, rows, e.spec.inputID, e.spec.all)
+}
+
+func (e *replyEvaluator) evaluateExact(ctx context.Context, reply *leapmuxv1.AgentInputTurnReply) (replyVerdict, error) {
+	if reply.GetAcceptedSeq() <= 0 {
+		return replyVerdict{}, cli.Newf(cli.CodeInternal, "the Worker returned an invalid input sequence")
+	}
+	e.delivered = true
+	rows, err := e.reader.readRowsAfter(ctx, reply.GetAcceptedSeq(), e.spec.inputID)
+	if err != nil {
+		return replyVerdict{}, err
+	}
+	outcome := reply.GetOutcome()
+	verdict := replyVerdict{
+		step: replyPending, message: messageDelivered, replies: replyTexts(rows, e.spec.all), turnOutcome: outcome,
+	}
+	switch outcome {
+	case leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED:
+		if reply.GetWaitingForUser() {
+			verdict.step = replyWaitingForUser
+		}
+	case leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED:
+		verdict.step = replySettled
+	case leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED:
+		verdict.step = replyInterrupted
+	case leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED:
+		verdict.step = replyFailed
+	case leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED:
+		verdict.step = replyUnproved
+	default:
+		return replyVerdict{}, cli.Newf(cli.CodeVersionMismatch, "the Worker returned an unknown input turn outcome")
+	}
+	return verdict, nil
 }
 
 // awaitReply evaluates the message after each event of the agent until the
@@ -307,7 +361,10 @@ func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityE
 		if replies == nil {
 			replies = []string{}
 		}
-		return agentReplyResult{ID: spec.agentID, InputID: spec.inputID, Message: v.message, State: agentStateToken(state), Replies: replies}
+		return agentReplyResult{
+			ID: spec.agentID, InputID: spec.inputID, Message: v.message, State: agentStateToken(state),
+			TurnOutcome: enumToken(v.turnOutcome), Replies: replies,
+		}
 	}
 	last := replyVerdict{message: messageQueued}
 	if spec.acceptedSeq > 0 {
@@ -328,7 +385,15 @@ wait:
 		case replySettled:
 			return result(verdict), replyWaitSettled, nil
 		case replyWaitingForUser:
+			// The Worker can report the prompt before its activity event arrives.
+			state = leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
 			return result(verdict), replyWaitWaiting, nil
+		case replyInterrupted:
+			return result(verdict), replyWaitInterrupted, nil
+		case replyFailed:
+			return result(verdict), replyWaitFailed, nil
+		case replyUnproved:
+			return result(verdict), replyWaitUnproved, nil
 		case replyPending:
 			// The next event of the agent wakes the next evaluation.
 		}
@@ -347,13 +412,16 @@ wait:
 					WithExitCode(cli.ExitWaitEnded)
 			case activityLevel, activityChange:
 				state = ev.state
-			case activityTurnEnd, activityStatusChange, activityQueueChanged:
+			case activityTurnEnd, activityStatusChange, activityInputChanged:
 				// Recheck the queue and transcript without changing the activity.
 			}
 		}
 	}
 	cause := context.Cause(ctx)
 	if errors.Is(cause, errAgentWaitExpired) {
+		if evaluator.delivered {
+			last.message = messageDelivered
+		}
 		return result(last), replyWaitTimedOut, nil
 	}
 	return agentReplyResult{}, 0, cause
@@ -388,7 +456,7 @@ func awaitFirstLevel(ctx context.Context, events <-chan activityEvent, agentID s
 				return 0, cli.Newf(cli.CodeNotFound, "agent %s is closed", agentID)
 			case activityLevel:
 				return ev.state, nil
-			case activityChange, activityTurnEnd, activityStatusChange, activityQueueChanged:
+			case activityChange, activityTurnEnd, activityStatusChange, activityInputChanged:
 				// The level read began after this event, so the level
 				// replaces it.
 			}
@@ -491,6 +559,12 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 	switch {
 	case outcome == replyWaitWaiting:
 		p.Notice("agent %s waits for an answer to a permission prompt; list it with \"leapmux control agent requests %s\"", result.ID, result.ID)
+	case outcome == replyWaitInterrupted:
+		p.Notice("the turn for input %s was interrupted", result.InputID)
+	case outcome == replyWaitFailed:
+		p.Notice("the turn for input %s failed", result.InputID)
+	case outcome == replyWaitUnproved:
+		p.Notice("the Worker could not prove the outcome of the turn for input %s", result.InputID)
 	case result.Message == messageQueued:
 		p.Notice("the wait ended after %s. The last queue snapshot for agent %s still held the message", timeout, result.ID)
 	default:

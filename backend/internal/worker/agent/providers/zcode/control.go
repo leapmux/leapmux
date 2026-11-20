@@ -143,7 +143,7 @@ func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, reco
 		return
 	}
 
-	a.completeZCodeControlRequest(requestID, record, payload)
+	a.completeZCodeControlRequest(requestID, req.TurnID, record, payload)
 }
 
 // zcodeUserInputRequest is the interaction/requestUserInput params.
@@ -378,7 +378,7 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 		return
 	}
 
-	a.completeZCodeControlRequest(req.RequestID, record, payload)
+	a.completeZCodeControlRequest(req.RequestID, req.TurnID, record, payload)
 }
 
 // zcodeSharedQuestions projects ZCode's questions into the shared Claude
@@ -1073,7 +1073,7 @@ func (a *Agent) zcodeControlRequestCurrent(requestID string, record *pendingCont
 	return record != nil && a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
 }
 
-func (a *Agent) completeZCodeControlRequest(requestID string, record *pendingControl, payload json.RawMessage) bool {
+func (a *Agent) completeZCodeControlRequest(requestID, turnID string, record *pendingControl, payload json.RawMessage) bool {
 	prepared := newPendingControl(payload)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -1085,6 +1085,7 @@ func (a *Agent) completeZCodeControlRequest(requestID string, record *pendingCon
 	}
 	record.payload = prepared.payload
 	record.automaticReply = prepared.automaticReply
+	record.nativeTurnID = turnID
 	record.prepared = true
 	return true
 }
@@ -1130,7 +1131,10 @@ func (a *Agent) publishZCodeControlInstanceToSink(requestID string, record *pend
 	if !current {
 		return
 	}
-	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.ownerSessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: record.ownerSessionID, NativeTurnID: record.nativeTurnID,
+		RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload,
+	})
 	a.Mu.Lock()
 	current = a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
 	if err == nil && !record.answered {

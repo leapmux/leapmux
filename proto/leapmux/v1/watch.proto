@@ -219,6 +219,9 @@ message AgentEvent {
     // The revision lets NOTIFY clients re-read the queue without receiving
     // the input previews in input_queue_changed.
     uint64 input_queue_revision = 24;
+    // A native input's reply or prompt state changed. This wakes readers
+    // without sending transcript text or native input identities.
+    AgentInputReplyChanged input_reply_changed = 25;
   }
 }
 
@@ -230,6 +233,8 @@ message AgentEvent {
 message AgentMessagesRetracted {
   repeated int64 seqs = 1;
 }
+
+message AgentInputReplyChanged {}
 
 // ReplayOrigin identifies the replay that produced a replay frame.
 message ReplayOrigin {

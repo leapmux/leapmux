@@ -1352,7 +1352,7 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	if s.beforeAcceptWrite != nil {
 		s.beforeAcceptWrite()
 	}
-	accepted, err := insertInputTranscript(ctx, tx, item, attachments, item.ReservedSeq, result.SpanLines, result.SupplementalContent)
+	accepted, err := insertInputTranscript(ctx, tx, item, attachments, item.ReservedSeq, result)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
@@ -1408,7 +1408,7 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 // rows of a retry carry the same supplement. The row takes over the idempotency key that
 // the queue row stored at the enqueue, which an edit of the item did not change, so a
 // retry of the request that queued the item still matches the row.
-func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, attachments []Attachment, seq int64, spanLines string, supplemental []byte) (AcceptedTranscript, error) {
+func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, attachments []Attachment, seq int64, result DispatchResult) (AcceptedTranscript, error) {
 	if item.idempotencyKey == "" {
 		// The schema requires the key on every queue row, so only an item that
 		// no queue row supplied lacks it.
@@ -1418,6 +1418,7 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 	if err != nil {
 		return AcceptedTranscript{}, err
 	}
+	supplemental := result.SupplementalContent
 	if len(item.SourcePayload) > 0 {
 		// validateSchedule admits a source payload only on a retry kind, whose
 		// dispatcher resolves no supplement of its own.
@@ -1443,21 +1444,22 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 	} else if controlReplyKind(item.Kind) {
 		mark = leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE
 	}
+	spanLines := result.SpanLines
 	if spanLines == "" {
 		spanLines = "[]"
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
-		(id, agent_id, seq, source, content, content_compression, idempotency_key, depth, span_id,
+		(id, agent_id, seq, agent_session_id, native_input_id, source, content, content_compression, idempotency_key, depth, span_id,
 		 parent_span_id, span_type, span_lines, span_color, mark_type, created_at,
 		 supplemental_content, supplemental_content_compression)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, COALESCE(?, X''), ?)`,
-		item.ID, item.AgentID, seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, COALESCE(?, X''), ?)`,
+		item.ID, item.AgentID, seq, result.NativeReceipt.SessionID, result.NativeReceipt.InputID, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		compressed, compression, item.idempotencyKey, spanLines, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
 		return AcceptedTranscript{}, err
 	}
 	return AcceptedTranscript{
-		ID: item.ID, AgentID: item.AgentID, Seq: seq,
+		ID: item.ID, AgentID: item.AgentID, AgentSessionID: result.NativeReceipt.SessionID, Seq: seq,
 		Content: compressed, ContentCompression: compression,
 		SupplementalContent: supplementalContent, SupplementalContentCompression: supplementalCompression,
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
@@ -1608,7 +1610,7 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 		if err != nil {
 			return nil, false, Snapshot{}, err
 		}
-		row, err := insertInputTranscript(ctx, tx, item, attachments, seq, spanLines, nil)
+		row, err := insertInputTranscript(ctx, tx, item, attachments, seq, DispatchResult{SpanLines: spanLines})
 		if err != nil {
 			return nil, false, Snapshot{}, err
 		}

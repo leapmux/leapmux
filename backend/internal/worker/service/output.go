@@ -1451,14 +1451,15 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	}
 	claimToken := request.InstanceID
 	if claimToken != "" && err == nil && current.ClaimToken == claimToken &&
-		(!bytes.Equal(current.Payload, payload) || current.AgentSessionID != request.AgentSessionID || current.NonBlocking != request.NonBlocking) {
+		(!bytes.Equal(current.Payload, payload) || current.AgentSessionID != request.AgentSessionID ||
+			current.NativeTurnID != request.NativeTurnID || current.NonBlocking != request.NonBlocking) {
 		return errors.New("the control request instance changed without a new instance ID")
 	}
 	if claimToken == "" {
 		claimToken = id.Generate()
 	}
 	reusable := request.InstanceID == "" && err == nil && previous.claimToken == current.ClaimToken &&
-		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
+		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID && current.NativeTurnID == request.NativeTurnID
 	if request.NonBlocking {
 		// A non-blocking request outlives its scope, so its claim reuse reads no
 		// scope: only the stored row decides.
@@ -1472,6 +1473,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
 		AgentID:        s.agentID,
 		AgentSessionID: request.AgentSessionID,
+		NativeTurnID:   request.NativeTurnID,
 		RequestID:      requestID,
 		Payload:        payload,
 		ClaimToken:     claimToken,
@@ -1504,6 +1506,9 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	}
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID
+	if request.NativeTurnID != "" {
+		s.h.enqueueInputReplyChanged(s.agentID)
+	}
 	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.plugin, s.agentID, s.agentProvider, request, stored.ClaimToken)
 	if stateErr != nil {
 		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
@@ -2118,6 +2123,9 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		ID:                             msgID,
 		AgentID:                        agentID,
 		AgentSessionID:                 content.AgentSessionID,
+		NativeInputID:                  content.NativeInputID,
+		NativeTurnID:                   content.NativeTurnID,
+		InputTurnOutcome:               workerdb.OptionalStorageEnum(content.InputTurnOutcome),
 		IdempotencyKey:                 content.IdempotencyKey,
 		Source:                         source,
 		Content:                        compressed,
@@ -2281,6 +2289,16 @@ func (h *OutputHandler) publishMessageWrite(write messageWrite, seq int64) {
 	} else {
 		h.enqueueMessage(agentID, write.message)
 	}
+	if write.params.InputTurnOutcome != nil {
+		h.enqueueInputReplyChanged(agentID)
+	}
+}
+
+func (h *OutputHandler) enqueueInputReplyChanged(agentID string) {
+	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event:   &leapmuxv1.AgentEvent_InputReplyChanged{InputReplyChanged: &leapmuxv1.AgentInputReplyChanged{}},
+	})
 }
 
 // persistMessageWithTodoEvent stores one provider message and applies its extracted

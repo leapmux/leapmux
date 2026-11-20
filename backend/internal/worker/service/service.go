@@ -29,6 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -944,6 +945,13 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
+	if err := svc.Queries.RetireNativeInputsAfterRestart(bgCtx(), db.RetireNativeInputsAfterRestartParams{
+		UnprovedOutcome: workerdb.OptionalStorageEnum(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED),
+		UserSource:      leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
+	}); err != nil {
+		slog.Warn("recover native input outcomes failed", "error", err)
+	}
 	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
 		slog.Warn("recover agent input queues failed", "error", err)
 	}

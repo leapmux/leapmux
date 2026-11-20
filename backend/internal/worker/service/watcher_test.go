@@ -1452,6 +1452,7 @@ func TestEventClassCoversEveryAgentOneofCase(t *testing.T) {
 		"background_tasks_changed": true,
 		"activity_changed":         true,
 		"input_queue_revision":     true,
+		"input_reply_changed":      true,
 		// input_queue_changed is deliberately absent: a queue snapshot carries
 		// every item with a text preview, so it is content.
 	}

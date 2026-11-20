@@ -1,14 +1,15 @@
 -- name: StoreControlRequest :one
 -- Repeated announcements keep the current claim inside one runtime owner.
 -- A changed owner, payload, or session starts a new instance.
-INSERT INTO control_requests (agent_id, agent_session_id, request_id, payload, claim_token, source_seq, non_blocking)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO control_requests (agent_id, agent_session_id, native_turn_id, request_id, payload, claim_token, source_seq, non_blocking)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (agent_id, request_id) DO UPDATE SET
     source_seq = CASE WHEN control_requests.claim_token = excluded.claim_token AND control_requests.payload = excluded.payload AND control_requests.agent_session_id = excluded.agent_session_id AND control_requests.source_seq > 0
         THEN control_requests.source_seq ELSE excluded.source_seq END,
     payload = excluded.payload,
     claim_token = excluded.claim_token,
     agent_session_id = excluded.agent_session_id,
+    native_turn_id = excluded.native_turn_id,
     non_blocking = excluded.non_blocking
 RETURNING claim_token, source_seq, agent_session_id, non_blocking;
 

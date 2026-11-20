@@ -286,6 +286,27 @@
       "reply": "Hello"
     },
     {
+      "name": "zcode: a recovered reply omits text already stored",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "content": { "type": "session.updated", "payload": { "content": "Already stored. Newly recovered.", "stopReason": "stop" }},
+      "supplemental": { "provider": { "zcodeResponseText": { "acceptedPrefix": "Already stored. " }}},
+      "reply": "Newly recovered."
+    },
+    {
+      "name": "zcode: a recovered reply keeps text when the coverage differs",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "content": { "type": "session.updated", "payload": { "content": "The actual reply.", "stopReason": "stop" }},
+      "supplemental": { "provider": { "zcodeResponseText": { "acceptedPrefix": "Other text." }}},
+      "reply": "The actual reply."
+    },
+    {
+      "name": "zcode: a fully covered native response has no new reply",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "content": { "type": "session.updated", "payload": { "content": "Already stored.", "stopReason": "stop" }},
+      "supplemental": { "provider": { "zcodeResponseText": { "acceptedPrefix": "Already stored." }}},
+      "reply": null
+    },
+    {
       "name": "zcode: a turn that only called tools is no reply",
       "provider": "AGENT_PROVIDER_ZCODE",
       "content": { "type": "session.updated", "payload": { "content": "", "stopReason": "tool-calls" }},

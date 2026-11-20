@@ -125,6 +125,7 @@ func TestEventMapping_EveryAgentEventHasADecision(t *testing.T) {
 		"goal_changed":        {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_GoalChanged{GoalChanged: &leapmuxv1.AgentGoalSnapshot{}}}, ""},
 		// A revision tells wait commands to re-read their queue predicate.
 		"input_queue_revision": {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_InputQueueRevision{InputQueueRevision: 7}}, ""},
+		"input_reply_changed":  {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_InputReplyChanged{InputReplyChanged: &leapmuxv1.AgentInputReplyChanged{}}}, ""},
 		// The progress of an answer's delivery: agent.request_ended reports
 		// its outcome.
 		"control_response_changed": {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_ControlResponseChanged{ControlResponseChanged: &leapmuxv1.AgentControlRequest{ClaimToken: "h-1"}}}, ""},

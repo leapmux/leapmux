@@ -62,6 +62,16 @@ sql:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "MessageCompletion"
               pointer: true
+          - column: "messages.input_turn_outcome"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputTurnOutcome"
+              pointer: true
+          - column: "native_agent_inputs.retired_outcome"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputTurnOutcome"
+              pointer: true
           - column: "agent_input_queue_state.pause_reason"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

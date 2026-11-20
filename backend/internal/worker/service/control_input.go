@@ -143,15 +143,15 @@ func (input controlInput) sessionID() string {
 	return input.source.AgentSessionID
 }
 
-func (svc *Service) sendResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) error {
+func (svc *Service) sendResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	if input.source == nil {
-		return svc.Agents.SendInput(agentID, input.text, attachments)
+		return svc.Agents.SendInputWithReceipt(agentID, input.text, attachments)
 	}
 	provider, err := svc.controlInputProvider(agentID, input)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return agent.SendInputToSession(provider, input.sessionID(), input.text, attachments)
+	return agent.NativeInputReceipt{}, agent.SendInputToSession(provider, input.sessionID(), input.text, attachments)
 }
 
 // steerResolvedInput retains the validated provider and the question's session.
