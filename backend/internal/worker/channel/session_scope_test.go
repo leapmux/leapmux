@@ -87,7 +87,7 @@ func TestHandleOpen_GivesEveryCallerTheRelayWorker(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			mgr, ck, _ := setupTestManagerWith(t, 0, 0)
-			_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+			_, msg1, err := startTestHandshake(t, ck)
 			require.NoError(t, err)
 
 			resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{

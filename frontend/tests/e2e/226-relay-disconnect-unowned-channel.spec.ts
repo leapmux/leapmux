@@ -4,6 +4,7 @@ import { test } from './fixtures'
 import { withCleanup } from './helpers/cleanup'
 import { markSuiteServerLog, readSuiteServerLog } from './helpers/suiteServerLog'
 import { gotoWorkspace } from './helpers/ui'
+import { waitForAgentStartupViaAPI } from './helpers/workerTabs'
 
 /**
  * A page that closes must leave no frame for a channel that the hub closed.
@@ -50,37 +51,47 @@ function channelIdsLogged(records: ServerLogRecord[], msg: string): string[] {
     : [])
 }
 
-/** Count the WatchEvents opens of a page, through the dev event of the app. */
-async function installWatchOpenCounter(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    ;(window as unknown as { __watchOpens?: number }).__watchOpens = 0
-    window.addEventListener('leapmux:watch-events-open', () => {
-      const w = window as unknown as { __watchOpens?: number }
-      w.__watchOpens = (w.__watchOpens ?? 0) + 1
-    })
-  })
+interface RelayPageState {
+  caughtUp: boolean
+  pendingRPCs: number
 }
 
-async function watchOpenCount(page: Page): Promise<number> {
-  return page.evaluate(() => (window as unknown as { __watchOpens?: number }).__watchOpens ?? 0)
-}
-
-/** Open the workspace in a new page, and wait until the page watches its agent. */
-async function openWatchingPage(context: BrowserContext, adminToken: string, workspaceId: string): Promise<Page> {
+/** Open a page and wait for its agent replay and outstanding unary requests. */
+async function openWatchingPage(context: BrowserContext, adminToken: string, workspaceId: string, agentId: string): Promise<Page> {
   const page = await context.newPage()
-  await installWatchOpenCounter(page)
+  await page.addInitScript((targetAgentId) => {
+    const state: RelayPageState = { caughtUp: false, pendingRPCs: 0 }
+    Object.assign(window, { __relayPageState: state })
+    window.addEventListener('leapmux:watch-events-catch-up-complete', (event) => {
+      if ((event as CustomEvent<{ agentId: string }>).detail.agentId === targetAgentId)
+        state.caughtUp = true
+    })
+    window.addEventListener('leapmux:rpc-send', () => {
+      state.pendingRPCs++
+    })
+    window.addEventListener('leapmux:rpc-recv', () => {
+      state.pendingRPCs--
+    })
+  }, agentId)
   await gotoWorkspace(page, adminToken, workspaceId)
-  await expect.poll(() => watchOpenCount(page), 'the page opens its WatchEvents stream').toBeGreaterThanOrEqual(1)
+  await expect.poll(
+    () => page.evaluate(() => (window as Window & { __relayPageState?: RelayPageState }).__relayPageState),
+    'the page has completed its agent replay and outstanding RPCs',
+  ).toEqual({ caughtUp: true, pendingRPCs: 0 })
   return page
 }
 
 test.describe('relay disconnect', () => {
   test('a closed page leaves no frame for a channel that the hub closed', async ({ browser, leapmuxServer, workspace }) => {
-    const { hubUrl, adminToken, serverLogPath } = leapmuxServer
+    const { hubUrl, adminToken, workerId, serverLogPath } = leapmuxServer
+    const { workspaceId, agentId } = workspace
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const mark = markSuiteServerLog(serverLogPath)
     const context = await browser.newContext({ baseURL: hubUrl })
     await withCleanup(async () => {
-      const page = await openWatchingPage(context, adminToken, workspace.workspaceId)
+      // Requests already in flight can race relay teardown. Wait for the
+      // initial requests before closing the page to exercise stream teardown.
+      const page = await openWatchingPage(context, adminToken, workspaceId, agentId)
       await page.close()
 
       // The hub logs each channel that it closes for the relay. The worker then
@@ -100,7 +111,7 @@ test.describe('relay disconnect', () => {
       // every frame that it sent before, on one ordered connection, and the hub
       // reads the connection in order. So by then the hub has read every frame
       // that the worker sent while it closed the old channels.
-      await openWatchingPage(context, adminToken, workspace.workspaceId)
+      await openWatchingPage(context, adminToken, workspaceId, agentId)
 
       const warnings = channelIdsLogged(logRecords(readSuiteServerLog(serverLogPath, mark)), UNOWNED_CHANNEL_WARNING)
       expect(warnings.filter(id => closedIds.includes(id)), 'no frame reaches the hub after it closed the channel').toEqual([])

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -358,9 +359,12 @@ func TestSocketNamespaceProcessHelper(t *testing.T) {
 	}
 	directory, err := prepareSocketDirectory(data, os.Getenv("LEAPMUX_NAMESPACE_TEST_ROOT"))
 	require.NoError(t, err)
+	// Keep the namespace lock reachable until the child stops waiting.
+	t.Cleanup(func() { require.NoError(t, directory.Close()) })
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(directory.Path(), "orphan.sock"), Net: "unix"})
 	require.NoError(t, err)
 	defer func() { _ = listener.Close() }()
+	runtime.GC()
 	_, err = fmt.Fprintln(os.Stdout, "ready")
 	require.NoError(t, err)
 	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')

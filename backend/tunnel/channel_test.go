@@ -3302,7 +3302,7 @@ func TestCallRPCReturnsTheWorkersErrorWithItsCode(t *testing.T) {
 // relays a call states its source on the wire, and the answer arrives as
 // CallRPC's does.
 func TestCallRequestSendsTheWholeRequest(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ctx := testutil.DeadlineContext(t)
 	want := &leapmuxv1.InnerRpcRequest{
 		Method:  leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
