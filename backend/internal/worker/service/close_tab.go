@@ -345,8 +345,11 @@ func (svc *Service) prepareTabClose(ctx context.Context, tabType leapmuxv1.TabTy
 	var selection *selectedWorktreeIdentity
 	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE &&
 		(tabType == leapmuxv1.TabType_TAB_TYPE_AGENT || tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL) {
-		var err error
-		selection, err = svc.readTabWorktreeSelection(ctx, tabType, tabID, userID)
+		owner, owned := userid.New(userID)
+		err := errCreationOwnerMissing
+		if owned {
+			selection, err = svc.readTabWorktreeSelection(ctx, tabType, tabID, owner)
+		}
 		if err != nil {
 			setWorktreeRemovalFailed(result, &db.Worktree{WorktreePath: workingDir}, err)
 			snapshot.LookupFailed = true

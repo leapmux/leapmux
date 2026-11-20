@@ -26,6 +26,14 @@ func branchWorktreeSelector(branch string) *leapmuxv1.GitWorktreeSelector {
 	return &leapmuxv1.GitWorktreeSelector{Selector: &leapmuxv1.GitWorktreeSelector_Branch{Branch: branch}}
 }
 
+func TestReadTabWorktreeSelectionRefusesAZeroOwner(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	selection, err := svc.readTabWorktreeSelection(t.Context(), leapmuxv1.TabType_TAB_TYPE_TERMINAL, "terminal", userid.UserID{})
+	require.ErrorIs(t, err, errCreationOwnerMissing)
+	assert.Nil(t, selection)
+}
+
 func TestResolveGitWorktreeMatchesAnExactAttachedBranchInOneRepo(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)

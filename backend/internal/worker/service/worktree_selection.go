@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
@@ -87,7 +88,7 @@ func (selection selectedWorktreeIdentity) read(ctx context.Context) (*gitPathInf
 }
 
 func (svc *Service) verifyTabWorktreeForLaunch(ctx context.Context, tabType leapmuxv1.TabType, tabID, workingDir string) error {
-	selection, err := svc.readTabWorktreeSelection(ctx, tabType, tabID, svc.RegisteredBy().String())
+	selection, err := svc.readTabWorktreeSelection(ctx, tabType, tabID, svc.RegisteredBy())
 	if err != nil || selection == nil {
 		return err
 	}
@@ -98,9 +99,13 @@ func (svc *Service) verifyTabWorktreeForLaunch(ctx context.Context, tabType leap
 	return err
 }
 
-func (svc *Service) readTabWorktreeSelection(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (*selectedWorktreeIdentity, error) {
+func (svc *Service) readTabWorktreeSelection(ctx context.Context, tabType leapmuxv1.TabType, tabID string, userID userid.UserID) (*selectedWorktreeIdentity, error) {
+	owner, ok := userid.OwnerFilter(userID)
+	if !ok {
+		return nil, errCreationOwnerMissing
+	}
 	data, err := svc.Queries.GetTabCreationSelectedWorktree(ctx, db.GetTabCreationSelectedWorktreeParams{
-		UserID: userID, WorkerID: svc.WorkerID, TabID: tabID, TabType: int64(tabType),
+		UserID: owner, WorkerID: svc.WorkerID, TabID: tabID, TabType: int64(tabType),
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
