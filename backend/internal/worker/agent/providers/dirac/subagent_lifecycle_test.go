@@ -306,14 +306,20 @@ func TestDiracTaskletWatcherKeepsASpawnObservedDuringFinalPublication(t *testing
 		}
 		return result
 	}
-	a.HandleOutput(diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "native-spawn-card", "name": "subagents", "status": "completed"}))
+	firstFrame := diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "native-spawn-card", "name": "subagents", "status": "completed"})
+	firstDone := make(chan struct{})
+	go func() {
+		a.HandleOutput(firstFrame)
+		close(firstDone)
+	}()
 	ctx := testutil.DeadlineContext(t)
 	assert.Equal(t, bgtask.StatusSucceeded, waitDiracChildClose(t, ctx, sink))
 	appendDiracTasklet(t, root, "Bea", "another-native-conversation")
-	done := make(chan struct{})
+	secondFrame := diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "spawn-Bea", "name": "subagents", "status": "completed"})
+	secondDone := make(chan struct{})
 	go func() {
-		a.HandleOutput(diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "spawn-Bea", "name": "subagents", "status": "completed"}))
-		close(done)
+		a.HandleOutput(secondFrame)
+		close(secondDone)
 	}()
 	select {
 	case <-observed:
@@ -322,7 +328,12 @@ func TestDiracTaskletWatcherKeepsASpawnObservedDuringFinalPublication(t *testing
 	}
 	release()
 	select {
-	case <-done:
+	case <-firstDone:
+	case <-ctx.Done():
+		t.Fatal("the first spawn handler did not finish")
+	}
+	select {
+	case <-secondDone:
 	case <-ctx.Done():
 		t.Fatal("the second spawn handler did not finish")
 	}
