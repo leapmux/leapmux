@@ -21,17 +21,22 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	return s.conn.queryError(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID:                    p.ID,
-		AuthTokenHash:         p.AuthTokenHash,
-		RegisteredBy:          p.RegisteredBy.String(),
-		AutoRegistered:        ptrconv.BoolToInt64(p.AutoRegistered),
-		X25519PublicKey:       p.PublicKeys.X25519,
-		MlkemPublicKey:        p.PublicKeys.Mlkem,
-		SlhdsaPublicKey:       p.PublicKeys.Slhdsa,
-		RegistrationAttemptID: stringToNull(p.RegistrationAttemptID),
-		RegistrationKeyHash:   p.RegistrationKeyHashOrNil(),
-	}))
+	return s.conn.withTransaction(ctx, func(conn *sqliteConn) error {
+		if err := conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
+			ID:                    p.ID,
+			AuthTokenHash:         p.AuthTokenHash,
+			RegisteredBy:          p.RegisteredBy.String(),
+			AutoRegistered:        ptrconv.BoolToInt64(p.AutoRegistered),
+			X25519PublicKey:       p.PublicKeys.X25519,
+			MlkemPublicKey:        p.PublicKeys.Mlkem,
+			SlhdsaPublicKey:       p.PublicKeys.Slhdsa,
+			RegistrationAttemptID: stringToNull(p.RegistrationAttemptID),
+			RegistrationKeyHash:   p.RegistrationKeyHashOrNil(),
+		}); err != nil {
+			return conn.queryError(err)
+		}
+		return conn.queryError(conn.q.AdvanceWorkerEnrollment(ctx, p.RegisteredBy.String()))
+	})
 }
 
 func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, error) {
@@ -100,6 +105,15 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		},
 		s.conn.q.ListWorkersByUserID,
 		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
+}
+
+func (s *workerStore) InventoryState(ctx context.Context, owner userid.UserID) (store.WorkerInventoryState, error) {
+	userID, ok := userid.OwnerFilter(owner)
+	if !ok {
+		return store.WorkerInventoryState{}, store.ErrNotFound
+	}
+	row, err := s.conn.q.GetWorkerEnrollmentRevision(ctx, userID)
+	return store.WorkerInventoryState{Revision: row.Revision, ActiveWorkers: row.ActiveWorkers}, s.conn.queryError(err)
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {

@@ -60,13 +60,19 @@ func (s *session) receiveSemanticWatch(ctx context.Context, workerID string, req
 		}
 		return nil
 	}
+	return s.receiveSemanticHistory(ctx, workerID, semanticWatchProcedure, payload, forward)
+}
+
+func (s *session) receiveSemanticHistory(ctx context.Context, workerID, procedure string, payload []byte,
+	forward func([]byte, *leapmuxv1.RpcError, bool) error,
+) error {
 	if s.c.IsWorkerIPC() {
 		client, err := s.c.ControlIPCStreamService()
 		if err != nil {
 			return err
 		}
 		stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
-			Method: "worker." + semanticWatchProcedure, TargetWorkerId: workerID,
+			Method: "worker." + procedure, TargetWorkerId: workerID,
 			Payload: payload, ClientRequestId: id.Generate(),
 		})
 		if err != nil {
@@ -83,12 +89,6 @@ func (s *session) receiveSemanticWatch(ctx context.Context, workerID string, req
 			}
 		}
 	}
-	return s.receiveEncryptedSemanticWatch(ctx, workerID, payload, forward)
-}
-
-func (s *session) receiveEncryptedSemanticWatch(ctx context.Context, workerID string, payload []byte,
-	forward func([]byte, *leapmuxv1.RpcError, bool) error,
-) error {
 	openCtx, cancelOpen := rpcDeadline(ctx)
 	ch, err := s.c.OpenE2EEChannel(openCtx, ctx, workerID)
 	cancelOpen()
@@ -96,10 +96,10 @@ func (s *session) receiveEncryptedSemanticWatch(ctx context.Context, workerID st
 		return err
 	}
 	defer ch.Close()
-	return readEncryptedSemanticWatch(ctx, ch, payload, forward)
+	return readEncryptedSemanticWatch(ctx, ch, procedure, payload, forward)
 }
 
-func readEncryptedSemanticWatch(ctx context.Context, ch semanticWatchChannel, payload []byte,
+func readEncryptedSemanticWatch(ctx context.Context, ch semanticWatchChannel, procedure string, payload []byte,
 	forward func([]byte, *leapmuxv1.RpcError, bool) error,
 ) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -120,7 +120,7 @@ func readEncryptedSemanticWatch(ctx context.Context, ch semanticWatchChannel, pa
 		}
 	}
 	startCtx, cancelStart := rpcDeadline(ctx)
-	requestID, err := ch.SendRPCNoWait(startCtx, semanticWatchProcedure, payload, tunnel.RPCHandlers{
+	requestID, err := ch.SendRPCNoWait(startCtx, procedure, payload, tunnel.RPCHandlers{
 		Stream: func(message *leapmuxv1.InnerStreamMessage) {
 			owned := &leapmuxv1.InnerStreamMessage{
 				End: message.GetEnd(), Payload: bytes.Clone(message.GetPayload()),

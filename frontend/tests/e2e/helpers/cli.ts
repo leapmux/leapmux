@@ -76,9 +76,13 @@ const E2E_CLI_SCOPES = [
  * The recover command supports bootstrap only. Token issuance uses AdminUserService/IssueAPIToken.
  * The token belongs to the user of the adminToken session, and the credential file targets source.hubUrl.
  */
-export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIConfigDir> {
+export async function mintCLITokenForAdmin(
+  source: CLITokenSource,
+  options: { scopes?: readonly string[], elevate?: boolean } = {},
+): Promise<CLIConfigDir> {
   const hubURL = source.hubUrl
   const cookie = source.adminToken
+  const scopes = options.scopes ?? E2E_CLI_SCOPES
   const user = await mintStep('read the administrator', () => getCurrentUser(hubURL, cookie))
   if (!user.id || !user.username)
     throw new Error('mintCLITokenForAdmin: the session user has no ID or username.')
@@ -97,7 +101,7 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
     installationName: `e2e-${Date.now()}`,
     ttlSeconds: '3600',
     // See E2E_CLI_SCOPES.
-    scopes: E2E_CLI_SCOPES,
+    scopes,
   }, { cookie, operation: 'mintCLITokenForAdmin' })
   const bearer = minted.accessToken
   if (!bearer) {
@@ -124,14 +128,15 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
     username: user.username,
     // This local scope list lets auth status describe the grant without a request.
     // The hub remains authoritative. Keep the list equal to the issuance request.
-    scope: E2E_CLI_SCOPES.join(' '),
+    scope: scopes.join(' '),
   }
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
   // Elevate the new credential separately from the session that issued it.
   // Hub settings and some admin procedures check the acting credential, so the issuer elevation does not transfer.
   // The required approval uses a browser ceremony. The fixture performs that ceremony for the CLI.
-  await elevateMintedCredential(hubURL, bearer, cookie)
+  if (options.elevate ?? true)
+    await elevateMintedCredential(hubURL, bearer, cookie)
 
   return {
     path: configDir,

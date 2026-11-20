@@ -231,3 +231,13 @@ SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)
 FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.id = ?;
+
+-- name: GetWorkerEnrollmentRevision :one
+SELECT CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS SIGNED) AS revision,
+       CAST((SELECT COUNT(*) FROM workers WHERE registered_by = sqlc.arg(user_id)
+         AND deregistering_at IS NULL AND deleted_at IS NULL) AS SIGNED) AS active_workers;
+
+-- name: AdvanceWorkerEnrollment :exec
+INSERT INTO worker_enrollment_revisions (user_id, revision)
+VALUES (sqlc.arg(user_id), 1)
+ON DUPLICATE KEY UPDATE revision = revision + 1;

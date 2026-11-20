@@ -24,7 +24,7 @@ var SQLTruncateTableOrder = []string{
 	// api_tokens, device_authorizations and oauth_authorization_codes -- and
 	// before users, which its own owner and vouch columns point at.
 	"oauth_clients",
-	"workspaces", "worker_registration_keys", "workers",
+	"workspaces", "worker_registration_keys", "workers", "worker_enrollment_revisions",
 	"passkey_credentials", "webauthn_sessions",
 	"user_sessions", "users",
 }

@@ -340,3 +340,74 @@ test('replays a tab opened, moved out and back, and closed while disconnected', 
     await account.finished
   }
 })
+
+test('replays an account bell from a terminal opened and closed while disconnected', async ({ authenticatedWorkspace, leapmuxServer, page }) => {
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const reader = await mintCLITokenForAdmin(leapmuxServer, {
+    scopes: ['worker:read', 'terminal:read'],
+    elevate: false,
+  })
+  const checkpoint = join(createTestDirectory('leapmux-account-events-'), 'checkpoint.json')
+  const args = [
+    '--checkpoint',
+    checkpoint,
+    '--kind',
+    'stream.ready,terminal.bell',
+  ]
+  const initial = startControlEventStream(reader, args)
+  const isReady = () => initial.events().some(event => event.kind === 'stream.ready')
+  try {
+    await expect.poll(() => isReady() || initial.child.exitCode !== null).toBe(true)
+    expect(isReady(), initial.diagnostic()).toBe(true)
+    expect(initial.events().find(event => event.kind === 'stream.ready')).toMatchObject({
+      scope: { workers_live: 1 },
+    })
+    await expect.poll(() => existsSync(checkpoint)).toBe(true)
+  }
+  finally {
+    initial.child.kill('SIGINT')
+    await initial.finished
+  }
+
+  const terminal = await runCLI(cli, [
+    'terminal',
+    'open',
+    '--workspace',
+    authenticatedWorkspace.workspaceId,
+    '--worker',
+    leapmuxServer.workerId,
+  ]) as { id: string }
+  const tab = tabById(page, terminal.id)
+  await tab.click()
+  await waitForTerminalReady(page)
+  expect(await sendActiveTerminalInput(page, 'printf "\\aACCOUNT_%s\\n" BELL\r')).toBe(true)
+  await waitForTerminalText(page, 'ACCOUNT_BELL')
+  const closed = await runCLI(cli, [
+    'tab',
+    'close',
+    terminal.id,
+    '--worktree',
+    'keep',
+    '--allow-busy',
+  ]) as { tombstoned: boolean, worker_close_error?: string }
+  expect(closed.tombstoned).toBe(true)
+  expect(closed.worker_close_error).toBeUndefined()
+  await expect(tab).toHaveCount(0)
+
+  const resumed = startControlEventStream(reader, [...args, '--limit', '1'])
+  try {
+    await expect.poll(() => resumed.events().some(event => event.kind === 'terminal.bell')).toBe(true)
+    expect(await resumed.finished, resumed.diagnostic()).toEqual({ code: 0, signal: null })
+    expect(resumed.events().filter(event => event.kind === 'terminal.bell')).toEqual([
+      expect.objectContaining({
+        tab_id: terminal.id,
+        worker_id: leapmuxServer.workerId,
+        replayed: true,
+      }),
+    ])
+  }
+  finally {
+    resumed.child.kill()
+    await resumed.finished
+  }
+})

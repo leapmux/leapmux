@@ -197,6 +197,12 @@ func (k WorkerPublicKeys) Proto() *leapmuxv1.WorkerPublicKeys {
 	return &leapmuxv1.WorkerPublicKeys{X25519: k.X25519, Mlkem: k.Mlkem, Slhdsa: k.Slhdsa}
 }
 
+// WorkerInventoryState counts enrollments and the owner's active Workers.
+type WorkerInventoryState struct {
+	Revision      int64
+	ActiveWorkers int64
+}
+
 // Worker represents a registered worker node.
 type Worker struct {
 	ID string

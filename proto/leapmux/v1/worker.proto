@@ -177,6 +177,10 @@ service WorkerManagementService {
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  // Read a witness for the authenticated account's active Worker inventory.
+  rpc GetWorkerEnrollmentRevision(GetWorkerEnrollmentRevisionRequest) returns (GetWorkerEnrollmentRevisionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
   // Get a single worker's details. A worker that is deregistering answers
   // NotFound, as ListWorkers does not list it.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse) {
@@ -289,6 +293,14 @@ message ListWorkersRequest {
 message ListWorkersResponse {
   repeated Worker workers = 1;
   PageResponse page = 2;
+}
+
+message GetWorkerEnrollmentRevisionRequest {}
+
+message GetWorkerEnrollmentRevisionResponse {
+  string owner_user_id = 1;
+  int64 revision = 2;
+  int64 active_workers = 3;
 }
 
 message GetWorkerRequest {

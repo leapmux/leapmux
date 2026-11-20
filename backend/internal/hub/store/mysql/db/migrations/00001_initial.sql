@@ -243,6 +243,13 @@ CREATE INDEX idx_workers_deregistering_at ON workers(deregistering_at);
 -- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
+-- The enrollment revision survives the removal of the Worker's row.
+CREATE TABLE worker_enrollment_revisions (
+    user_id VARCHAR(255) NOT NULL PRIMARY KEY,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+
 CREATE TABLE worker_registration_keys (
     id          VARCHAR(255) PRIMARY KEY, -- public id; the key itself is never stored
     key_hash VARBINARY(32) NOT NULL UNIQUE CHECK (OCTET_LENGTH(key_hash) = 32),
@@ -936,5 +943,6 @@ DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
 DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS workers;
+DROP TABLE IF EXISTS worker_enrollment_revisions;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;

@@ -46,6 +46,7 @@ func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 		leapmuxv1connect.UserCRDTGetMaterializedProcedure,
 		// WorkerManagementService surface.
 		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
+		leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure,
 		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
 	}
 	for _, procedure := range expected {

@@ -8,8 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 )
 
-func checkpointFactEvent(record *leapmuxv1.SemanticWatchRecord, tab scopedTab) (streamEvent, bool) {
-	fact := record.GetFact()
+func checkpointFactEvent(fact *leapmuxv1.SemanticTabFact, handle string, tab scopedTab) (streamEvent, bool) {
 	if tab.Type == leapmuxv1.TabType_TAB_TYPE_TERMINAL {
 		return terminalFactEvent(fact, tab)
 	}
@@ -33,7 +32,7 @@ func checkpointFactEvent(record *leapmuxv1.SemanticWatchRecord, tab scopedTab) (
 			return streamEvent{}, false
 		}
 		event := agentRequestEventFields(tab, promptKindToken(request.GetPromptKind()), request.GetBlocking(), request.GetDetail())
-		event.Request, event.RequestID = record.GetCurrentRequestHandle(), request.GetRequestId()
+		event.Request, event.RequestID = handle, request.GetRequestId()
 		event.RequestInstance = hex.EncodeToString(request.GetRequestInstance())
 		return event, true
 	case *leapmuxv1.SemanticTabFact_AgentRequestEnded:

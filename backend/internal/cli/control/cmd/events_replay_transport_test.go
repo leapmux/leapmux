@@ -39,7 +39,7 @@ func TestEncryptedSemanticWatchPreservesABurstWhileOutputWaits(t *testing.T) {
 		result := make(chan error, 1)
 		var received []byte
 		go func() {
-			result <- readEncryptedSemanticWatch(ctx, fixture, nil, func(raw []byte, _ *leapmuxv1.RpcError, end bool) error {
+			result <- readEncryptedSemanticWatch(ctx, fixture, semanticWatchProcedure, nil, func(raw []byte, _ *leapmuxv1.RpcError, end bool) error {
 				if end {
 					return io.EOF
 				}

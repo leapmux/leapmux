@@ -61,6 +61,8 @@ type recordingHub struct {
 	listWorkspacesErr error
 	systemBuild       *leapmuxv1.BuildInfo
 	readLayoutEvents  func(*leapmuxv1.ReadLayoutEventsRequest) (*leapmuxv1.ReadLayoutEventsResponse, error)
+	workerEnrollment  func() int64
+	workerActiveCount func() int64
 	// listWorkerPages, when non-nil, makes the stub answer ListWorkers one
 	// page at a time: the cursor "" reads the first page, and the cursor
 	// "page-N" reads page N. Each page but the last carries the next cursor.
@@ -137,6 +139,14 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 	h.procedures = append(h.procedures, procedure)
 	h.mu.Unlock()
 	switch {
+	case procedure == leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure && h.workerEnrollment != nil:
+		active := int64(len(h.workers))
+		if h.workerActiveCount != nil {
+			active = h.workerActiveCount()
+		}
+		return proto.Marshal(&leapmuxv1.GetWorkerEnrollmentRevisionResponse{
+			OwnerUserId: "u-spawn", Revision: h.workerEnrollment(), ActiveWorkers: active,
+		})
 	case procedure == leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure && h.readLayoutEvents != nil:
 		request := new(leapmuxv1.ReadLayoutEventsRequest)
 		if err := proto.Unmarshal(payload, request); err != nil {

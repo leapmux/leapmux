@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
@@ -17,22 +18,62 @@ import (
 )
 
 const eventCheckpointVersion = 1
-const maxEventCheckpointBytes = 8 << 10
+const maxEventCheckpointBytes = contracts.MaxMessageSize
 const eventCheckpointLockDirectory = ".leapmux-event-locks"
 const layoutCheckpointScope = "layout"
 
 type eventCheckpoint struct {
-	Version     int      `json:"version"`
-	WorkerID    string   `json:"worker_id,omitempty"`
-	TabType     string   `json:"tab_type,omitempty"`
-	TabID       string   `json:"tab_id,omitempty"`
-	JournalID   string   `json:"journal_id"`
-	TabStreamID string   `json:"tab_stream_id,omitempty"`
-	Filter      []string `json:"kinds"`
-	Sequence    int64    `json:"sequence"`
-	Cursor      []byte   `json:"cursor"`
-	Scope       string   `json:"scope,omitempty"`
-	WorkspaceID string   `json:"workspace_id,omitempty"`
+	Version     int                     `json:"version"`
+	WorkerID    string                  `json:"worker_id,omitempty"`
+	TabType     string                  `json:"tab_type,omitempty"`
+	TabID       string                  `json:"tab_id,omitempty"`
+	JournalID   string                  `json:"journal_id"`
+	TabStreamID string                  `json:"tab_stream_id,omitempty"`
+	Filter      []string                `json:"kinds"`
+	Sequence    int64                   `json:"sequence"`
+	Cursor      []byte                  `json:"cursor"`
+	Scope       string                  `json:"scope,omitempty"`
+	WorkspaceID string                  `json:"workspace_id,omitempty"`
+	Account     *accountEventCheckpoint `json:"account,omitempty"`
+}
+
+const accountCheckpointScope = "account"
+
+type eventHistoryPosition struct {
+	JournalID string `json:"journal_id"`
+	Sequence  int64  `json:"sequence"`
+	Cursor    []byte `json:"cursor"`
+}
+
+func (p *eventHistoryPosition) valid() bool {
+	return p != nil && p.JournalID != "" && p.Sequence >= 0 && len(p.Cursor) != 0
+}
+
+type accountWorkerPositions map[string]*eventHistoryPosition
+
+type accountEventCheckpoint struct {
+	OwnerID            string                            `json:"owner_user_id"`
+	EnrollmentRevision int64                             `json:"enrollment_revision"`
+	Hub                *eventHistoryPosition             `json:"hub,omitempty"`
+	Workers            map[string]accountWorkerPositions `json:"workers"`
+}
+
+func (p *accountEventCheckpoint) valid() bool {
+	if p == nil || p.OwnerID == "" || p.EnrollmentRevision < 0 || p.Workers == nil ||
+		(p.Hub != nil && !p.Hub.valid()) {
+		return false
+	}
+	for workerID, positions := range p.Workers {
+		if workerID == "" || positions == nil {
+			return false
+		}
+		for kind, position := range positions {
+			if (kind != "agent" && kind != "terminal") || !position.valid() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type eventCheckpointFile struct {
@@ -131,8 +172,15 @@ func (f *eventCheckpointFile) read() (*eventCheckpoint, error) {
 }
 
 func (state eventCheckpoint) valid() bool {
-	if state.Version != eventCheckpointVersion || state.JournalID == "" ||
-		state.Sequence < 0 || len(state.Cursor) == 0 || state.Filter == nil {
+	if state.Version != eventCheckpointVersion || state.Filter == nil {
+		return false
+	}
+	if state.Scope == accountCheckpointScope {
+		return state.Account.valid() && state.WorkerID == "" && state.TabID == "" &&
+			state.TabType == "" && state.TabStreamID == "" && state.WorkspaceID == "" &&
+			state.JournalID == "" && state.Sequence == 0 && len(state.Cursor) == 0
+	}
+	if state.Account != nil || state.JournalID == "" || state.Sequence < 0 || len(state.Cursor) == 0 {
 		return false
 	}
 	switch state.Scope {

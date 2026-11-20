@@ -610,9 +610,28 @@ the first available position. Pass the full workspace ID to resume a
 checkpoint after that workspace is deleted. The command replays
 through its final position and exits with status `0`.
 
-Use an exact tab checkpoint to resume events that originate on a
-Worker. A layout checkpoint follows the Hub's committed lifecycle
-events.
+A workspace checkpoint follows the Hub's committed lifecycle events.
+Use an exact tab checkpoint or an account checkpoint for Worker events.
+
+#### Resume account events
+
+```bash
+leapmux control events --checkpoint account-events.json --kind terminal,workspace,tab --json
+```
+
+An account checkpoint follows the selected event kinds across the
+account's Workers and the Hub. It saves a separate position for the Hub
+and for each selected event family on each Worker, including Workers
+with no tabs. Resume with the same event kinds.
+
+A Worker membership change can leave events unavailable. The stream
+reports the gap before saving the new inventory. A temporarily offline
+Worker can resume from its saved position when it reconnects. The CLI
+scans Workers in turns to share the Hub's connection limit. Records
+committed at their source's first admission in this run carry
+`replayed: true`. Use the
+Worker ID, tab type, journal ID, and sequence to deduplicate Worker
+records. The order of events from different sources can vary.
 
 ### Calling a procedure directly
 

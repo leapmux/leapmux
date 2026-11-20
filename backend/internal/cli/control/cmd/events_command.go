@@ -32,6 +32,7 @@ func newEventsCommand() *cobra.Command {
 			{Comment: "Watch a single terminal as it moves between workspaces.", Command: "leapmux control events --tab 87a19d5f --kind terminal --json"},
 			{Comment: "Resume one terminal's event history across CLI runs.", Command: "leapmux control events --tab 87a19d5f --checkpoint terminal-events.json --json"},
 			{Comment: "Resume permission and question events for one agent.", Command: "leapmux control events --tab 87a19d5f --checkpoint agent-events.json --kind agent.request,agent.request_ended --json"},
+			{Comment: "Resume terminal events from every Worker in the account.", Command: "leapmux control events --checkpoint account-events.json --kind terminal --json"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("workspace", "", `watch only this workspace: an id, a prefix, "title:<title>" or "self" (default: every workspace)`)
@@ -40,7 +41,7 @@ func newEventsCommand() *cobra.Command {
 			cli.SetEnum(fs, "kind", kindFlagValues()...)
 			fs.Int("limit", 0, "end the stream after this many events; 0 runs without a limit")
 			fs.Duration("heartbeat", 0, "print a stream.heartbeat event at this interval, such as 30s; 0 prints none")
-			fs.String("checkpoint", "", "save and resume one exact tab or the Hub's retained layout events")
+			fs.String("checkpoint", "", "save and resume retained events for a tab, workspace, or account")
 		},
 		Run: runEvents,
 	})
@@ -84,12 +85,17 @@ and the same checkpoint. The stream exits after stream.retired confirms
 the final Worker position. Closing a subagent transcript keeps its
 history open. A terminal's shell can also exit while its tab stays open.
 
-Without --tab, --checkpoint resumes the Hub's workspace and tab events.
-Use --workspace to watch one workspace, or omit it for the account.
-Resume with the same scope and kinds. For a deleted workspace, pass its
-full ID. The command exits after it reaches the final layout position.
-The Hub retains tabs that opened, moved, or closed between runs.
-Use an exact tab checkpoint for Worker history.
+Use --checkpoint without --tab or --workspace to resume account events.
+The checkpoint stores a separate position for each selected Worker event
+family and for the Hub layout when selected. A membership change can
+leave a gap in Worker history. The stream reports the gap before
+recording the new inventory.
+
+Use --workspace with --checkpoint to resume that workspace's committed
+Hub events. Resume with the same scope and kinds. For a deleted
+workspace, pass its full ID. The command exits after it reaches the
+final layout position. The Hub retains tabs that opened, moved, or
+closed between runs.
 
 In a stream without --checkpoint, when the Hub or a Worker cannot deliver, it prints
 stream.unavailable and retries. When the source delivers again, it prints
@@ -175,10 +181,13 @@ func runEvents(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 	if opts.checkpoint != "" {
-		if opts.tab == "" {
-			return nil, s.runLayoutCheckpointedEvents(opts)
+		if opts.tab != "" {
+			return nil, s.runCheckpointedEvents(opts)
 		}
-		return nil, s.runCheckpointedEvents(opts)
+		if opts.workspace == "" && len(accountWorkerKinds(opts.filter)) != 0 {
+			return nil, s.runAccountCheckpointedEvents(opts)
+		}
+		return nil, s.runLayoutCheckpointedEvents(opts)
 	}
 	workspaceID, tabID, err := resolveEventScope(s, opts)
 	if err != nil {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -54,7 +55,7 @@ func (s *session) runLayoutCheckpointedEvents(opts eventsOptions) error {
 		}
 		if kind.source == sourceWorker && opts.filter.selected != nil {
 			return cli.Usagef("layout checkpoints only support Hub and stream event kinds").
-				WithHint("use an exact --tab checkpoint for Worker events")
+				WithHint("use an account checkpoint or pass --tab for Worker events")
 		}
 		if kind.source == sourceStream && kind.name != kindStreamRetired {
 			streamSelected = true
@@ -255,8 +256,10 @@ func (r *layoutEventReplay) notice(kind string) streamEvent {
 	return streamEvent{Kind: kind, Time: time.Now().UTC(), Source: "hub", WorkspaceID: r.workspace}
 }
 
+var errInvalidLayoutHistory = errors.New("the Hub sent an inconsistent layout event position")
+
 func inconsistentLayoutPage() error {
-	return cli.Newf(cli.CodeInternal, "the Hub sent an inconsistent layout event position")
+	return cli.Wrap(cli.CodeInternal, errInvalidLayoutHistory, "")
 }
 
 func retainedLayoutEvent(fact *leapmuxv1.LayoutEventFact) (streamEvent, bool) {

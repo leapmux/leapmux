@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -251,7 +252,7 @@ func (r *checkpointedEvents) acceptFrame(frame *leapmuxv1.WatchSemanticEventsRes
 		if sequence <= after || sequence-after != 1 {
 			return after, invalidSemanticEventSequence()
 		}
-		decoded, ok := checkpointFactEvent(record, r.tab)
+		decoded, ok := checkpointFactEvent(record.GetFact(), record.GetCurrentRequestHandle(), r.tab)
 		if !ok {
 			return after, invalidSemanticEventSequence()
 		}
@@ -306,8 +307,10 @@ func (r *checkpointedEvents) notice(kind string) streamEvent {
 	return event
 }
 
+var errInvalidSemanticHistory = errors.New("the Worker sent an inconsistent event history position")
+
 func invalidSemanticEventSequence() error {
-	return cli.Newf(cli.CodeInternal, "the Worker sent an inconsistent event history position")
+	return cli.Wrap(cli.CodeInternal, errInvalidSemanticHistory, "")
 }
 
 func semanticGapDescription(reason leapmuxv1.SemanticWatchGapReason) (string, string) {
@@ -318,6 +321,8 @@ func semanticGapDescription(reason leapmuxv1.SemanticWatchGapReason) (string, st
 		return "unclean_stop", "the Worker stopped before it confirmed all events were recorded"
 	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT:
 		return "source_limit", "the Worker could not retain complete tab event history"
+	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE:
+		return "history_unavailable", "some Worker event history is unavailable"
 	default:
 		return "", ""
 	}
