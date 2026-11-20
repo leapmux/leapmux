@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -32,6 +33,14 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	if op.record != nil {
 		svc.restoreAgentCreation(op, sender)
 		return
+	}
+	var initialSender *inputqueue.AgentSender
+	if r.InitialMessage != nil {
+		var err error
+		initialSender, err = svc.agentMessageSender(caller)
+		if sendQueueError(sender, err) {
+			return
+		}
 	}
 	// Through the PROVIDER, because a resume handle is not one shape.
 	// Claude, Codex and the ACP providers issue an opaque token, and
@@ -155,8 +164,8 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		return
 	}
 	runtime := &agentCreationRuntime{Startup: intent, ResumeSessionID: resumeSessionID, Options: options, DefaultedIDs: launch.DefaultedIDs}
-	if err := op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
-		return svc.createAgentRecordWithTranscriptUsing(ctx, q, db.CreateAgentParams{
+	if err := op.persist(runtime, func(ctx context.Context, q *db.Queries, tx *sql.Tx) error {
+		if err := svc.createAgentRecordWithTranscriptUsing(ctx, q, db.CreateAgentParams{
 			ID:                 agentID,
 			WorkingDir:         plan.PlannedWorkingDir,
 			Title:              title,
@@ -164,11 +173,21 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 			Options:            marshalOptions(options),
 			AgentProvider:      agentProvider,
 			Resumed:            resumed,
-		}, resumeSessionID)
+		}, resumeSessionID); err != nil {
+			return err
+		}
+		if r.InitialMessage == nil {
+			return nil
+		}
+		return svc.InputQueue.StageInitialMessage(ctx, tx, agentID, r.GetInitialMessage(), initialSender)
 	}); err != nil {
 		// The row does not exist, so no startup will ever run for it.
 		if errors.Is(err, errNativeSessionAlreadyOpen) {
 			sendFailedPrecondition(sender, err.Error())
+			return
+		}
+		if errors.Is(err, inputqueue.ErrInvalidInput) || errors.Is(err, inputqueue.ErrItemTooLarge) {
+			sendInvalidArgument(sender, err.Error())
 			return
 		}
 		slog.Error("failed to create agent", "error", err)

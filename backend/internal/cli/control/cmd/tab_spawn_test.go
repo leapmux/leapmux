@@ -21,7 +21,6 @@ type creationPublicationDispatcher struct {
 	mu             sync.Mutex
 	calls          []recordedWorkerCall
 	failOpen       bool
-	initialFailure bool
 	invalidReceipt string
 }
 
@@ -39,8 +38,6 @@ func (d *creationPublicationDispatcher) DispatchWith(_ context.Context, _ channe
 	case leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:
 		request = &leapmuxv1.RegisterTabPayloadRequest{}
 		kind = leapmuxv1.TabType_TAB_TYPE_FILE
-	case leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure:
-		request = &leapmuxv1.EnqueueAgentInputRequest{}
 	default:
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method")
 		return
@@ -59,13 +56,6 @@ func (d *creationPublicationDispatcher) DispatchWith(_ context.Context, _ channe
 		creation = request.GetCreation()
 	case *leapmuxv1.RegisterTabPayloadRequest:
 		creation = request.GetCreation()
-	case *leapmuxv1.EnqueueAgentInputRequest:
-		if d.initialFailure {
-			_ = w.SendError(int32(codes.Internal), "initial input failed")
-			return
-		}
-		_ = w.SendResponse(channelwire.NewPayloadResponse(nil))
-		return
 	}
 	if creation.GetPlacement() == nil {
 		_ = w.SendError(int32(codes.InvalidArgument), "creation intent is required")
@@ -202,29 +192,26 @@ func TestTabCreationCLI_PreservesAnUncertainWorkerOperation(t *testing.T) {
 	}
 }
 
-func TestTabCreationCLI_ReportsInitialInputFailureAfterPublication(t *testing.T) {
+func TestTabCreationCLI_SendsTheInitialMessageWithTheCreation(t *testing.T) {
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
-			dispatcher, hub := &creationPublicationDispatcher{initialFailure: true}, &recordingHub{}
+			dispatcher, hub := &creationPublicationDispatcher{}, &recordingHub{}
 			client, err := control.NewClientFromEnv(transport.start(t, hub, dispatcher))
 			require.NoError(t, err)
 			var result *openAgentResult
 			err = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
 				var openErr error
-				result, openErr = openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", InitialMessage: "inspect the workspace"})
+				result, openErr = openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", InitialMessage: new("inspect the workspace")})
 				return openErr
 			})
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			assert.Contains(t, result.InitialMsgWarn, "initial input failed")
 			assert.Equal(t, "hub-rank", result.Position)
 			calls := dispatcher.recorded()
-			require.Len(t, calls, 2)
-			creation := calls[0].in.(*leapmuxv1.OpenAgentRequest).GetCreation()
-			input := calls[1].in.(*leapmuxv1.EnqueueAgentInputRequest)
-			assert.Equal(t, creation.GetTabId(), input.GetAgentId())
-			assert.Equal(t, "inspect the workspace", input.GetText())
-			assert.NotEmpty(t, input.GetInputId())
+			require.Len(t, calls, 1)
+			open := calls[0].in.(*leapmuxv1.OpenAgentRequest)
+			assert.Equal(t, open.GetCreation().GetTabId(), result.Agent.GetId())
+			assert.Equal(t, "inspect the workspace", open.GetInitialMessage())
 			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
 		})
 	}

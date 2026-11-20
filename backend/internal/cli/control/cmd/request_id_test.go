@@ -20,7 +20,7 @@ func TestRequestScopedID(t *testing.T) {
 
 	for name, other := range map[string]string{
 		"another request id": requestScopedID("nightly-2", requestScopeAgentSend, "agent-1"),
-		"another scope":      requestScopedID("nightly-1", requestScopeAgentOpenMessage, "agent-1"),
+		"another scope":      requestScopedID("nightly-1", requestScopeAgentOpen, "agent-1"),
 		"another target":     requestScopedID("nightly-1", requestScopeAgentSend, "agent-2"),
 		"no target":          requestScopedID("nightly-1", requestScopeAgentSend),
 	} {

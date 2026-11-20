@@ -15,11 +15,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-// A retry of `agent open --request-id` sends the request of the first run
-// again: the same tab id, and the same input id for its first message. The
-// Worker answers a repeated creation of one tab id with the agent that the
-// first creation made, and it queues a repeated input once, so the retry
-// opens no second agent. A run without a request id opens a new one.
+// The initial message travels in the creation request on both transports.
+// A retry with the same request ID sends the same creation request.
 func TestAgentOpenOverIPC_ARetryWithTheRequestIDRepeatsTheFirstRequest(t *testing.T) {
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
@@ -42,15 +39,12 @@ func TestAgentOpenOverIPC_ARetryWithTheRequestIDRepeatsTheFirstRequest(t *testin
 			assert.Equal(t, first, again, "the retry prints the agent of the first run")
 
 			calls := dispatcher.recorded()
-			require.Len(t, calls, 4)
-			firstOpen, retriedOpen := calls[0].in.(*leapmuxv1.OpenAgentRequest), calls[2].in.(*leapmuxv1.OpenAgentRequest)
+			require.Len(t, calls, 2)
+			firstOpen, retriedOpen := calls[0].in.(*leapmuxv1.OpenAgentRequest), calls[1].in.(*leapmuxv1.OpenAgentRequest)
 			assert.Equal(t, wantTab, firstOpen.GetCreation().GetTabId())
 			assert.True(t, proto.Equal(firstOpen, retriedOpen), "the retry repeats the creation exactly:\nfirst %v\nretry %v", firstOpen, retriedOpen)
-			firstMessage, retriedMessage := calls[1].in.(*leapmuxv1.EnqueueAgentInputRequest), calls[3].in.(*leapmuxv1.EnqueueAgentInputRequest)
-			assert.Equal(t, requestScopedID("review-1", requestScopeAgentOpenMessage, "worker-A"), firstMessage.GetInputId())
-			assert.Equal(t, wantTab, firstMessage.GetAgentId())
-			assert.True(t, proto.Equal(firstMessage, retriedMessage), "the retry repeats the first message exactly")
-			assert.NotEqual(t, firstMessage.GetInputId(), firstOpen.GetCreation().GetTabId(), "the tab and its first message take ids of their own")
+			require.NotNil(t, firstOpen.InitialMessage)
+			assert.Equal(t, "Review the diff", firstOpen.GetInitialMessage())
 
 			other := open("--request-id", "review-2")
 			plain := open()
@@ -58,6 +52,20 @@ func TestAgentOpenOverIPC_ARetryWithTheRequestIDRepeatsTheFirstRequest(t *testin
 			distinct := map[any]bool{first["id"]: true, other["id"]: true, plain["id"]: true, again["id"]: true}
 			assert.Len(t, distinct, 4, "another request id, or none, opens another agent")
 		})
+	}
+}
+
+func TestAgentOpenRejectsAnExplicitlyBlankMessage(t *testing.T) {
+	for _, value := range []string{"", " \t\n"} {
+		state := newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st
+		hub, worker := &recordingHub{workers: workerRows("worker-A"), materialized: state}, &creationPublicationDispatcher{}
+		startSpawnIPC(t, hub, worker)
+		out := runControl(t, "agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
+			"--worker", "worker-A", "--dir", "/src/app", "--message", value)
+		failure := out.requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, "--message is empty", failure.Message)
+		assert.Empty(t, hub.called())
+		assert.Empty(t, worker.recorded())
 	}
 }
 
@@ -97,54 +105,4 @@ func TestAgentOpenOverIPC_AConflictStatesTheCauseThatTheRequestIDGives(t *testin
 	for _, hint := range open().Hints {
 		assert.NotContains(t, hint, "--request-id", "without a request id the conflict has another cause")
 	}
-}
-
-// messageRefusingDispatcher refuses every EnqueueAgentInput with code, as the
-// Worker refuses an input id that an earlier request with another message
-// took (a conflict), and serves every other call as
-// creationPublicationDispatcher does.
-type messageRefusingDispatcher struct {
-	*creationPublicationDispatcher
-	code codes.Code
-}
-
-func (d messageRefusingDispatcher) DispatchWith(ctx context.Context, caller channel.Caller, r *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
-	if r.GetMethod() == leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure {
-		_ = w.SendError(int32(d.code), "the input conflicts with an earlier request")
-		return
-	}
-	d.creationPublicationDispatcher.DispatchWith(ctx, caller, r, w)
-}
-
-// A retry of `agent open --request-id` with another --message is another
-// request: the Worker refuses its first message as a conflict, and the open
-// fails with conflict and the cause that the request id gives, as a conflict
-// of the creation does. Any other failure of the first message leaves the
-// agent open, so the open succeeds and states the failure.
-func TestAgentOpenOverIPC_ARetryWithAnotherMessageConflicts(t *testing.T) {
-	open := func(t *testing.T, code codes.Code, extra ...string) cliOutcome {
-		t.Helper()
-		state := newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st
-		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A"), materialized: state},
-			messageRefusingDispatcher{&creationPublicationDispatcher{}, code})
-		return runControl(t, append([]string{
-			"agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
-			"--worker", "worker-A", "--dir", "/src/app", "--message", "Review the other diff",
-		}, extra...)...)
-	}
-
-	t.Run("a conflict with a request id fails", func(t *testing.T) {
-		f := open(t, codes.FailedPrecondition, "--request-id", "review-1").requireFailure(t, cli.CodeConflict)
-		assert.Contains(t, f.Message, "conflicts with an earlier request")
-		require.NotEmpty(t, f.Hints)
-		assert.Contains(t, f.Hints[len(f.Hints)-1], `--request-id "review-1"`)
-	})
-	t.Run("another failure with a request id is a warning", func(t *testing.T) {
-		data := open(t, codes.ResourceExhausted, "--request-id", "review-1").Data(t)
-		assert.Contains(t, data["initial_message_warning"], "conflicts with an earlier request")
-	})
-	t.Run("a refusal without a request id is a warning", func(t *testing.T) {
-		data := open(t, codes.FailedPrecondition).Data(t)
-		assert.Contains(t, data["initial_message_warning"], "conflicts with an earlier request")
-	})
 }

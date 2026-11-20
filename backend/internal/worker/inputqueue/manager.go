@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/util/drain"
 )
@@ -467,6 +468,21 @@ func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) 
 	return m.EnqueueWithMutation(ctx, input, nil)
 }
 
+// StageInitialMessage writes the first input for a root agent created in tx.
+// The new agent is private to tx, so the queue needs no coordinator lock or
+// publication. The caller wakes the queue after it records the startup outcome.
+func (m *Manager) StageInitialMessage(ctx context.Context, tx *sql.Tx, agentID, text string, sender *AgentSender) error {
+	input, err := m.store.prepareNewItem(NewItem{
+		ID: id.Generate(), AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Sender: sender, Text: text, ReclassifyOnEdit: true,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = enqueuePreparedItem(ctx, tx, input, inputIdempotencyKey(input), m.store.now())
+	return err
+}
+
 // EnqueueReportingAdded is Enqueue that also reports whether this call added the
 // item. A repeat of an item that the queue holds, or that it already delivered,
 // adds nothing and reports false. A caller that must act once for each item acts
@@ -486,7 +502,7 @@ func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx
 	// The classifier rewrites a slash command into its own kind, and a sender
 	// turns a user message into an agent message, so the test must see the
 	// kind the store will store, not the one the client sent. The store asks
-	// the same rules again inside its transaction.
+	// the same rules again before writing.
 	admitted, err := m.store.admitNewItem(input)
 	if err != nil {
 		return Snapshot{}, false, err

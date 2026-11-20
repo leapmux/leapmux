@@ -64,7 +64,7 @@ func TestCreationRestart_RecoversInterruptedGitWithoutNewRollbackRights(t *testi
 			request := &leapmuxv1.OpenAgentRequest{Creation: intent, WorkingDir: repository, GitSetup: setup}
 			runtime := &agentCreationRuntime{Startup: startup}
 			op := seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, runtime: runtime, state: creationPublished,
-				write: func(ctx context.Context, q *db.Queries) error {
+				write: func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 					return q.CreateAgent(ctx, db.CreateAgentParams{ID: intent.TabId, WorkingDir: plan.PlannedWorkingDir, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Title: "Interrupted Git", Options: "{}"})
 				},
 			})

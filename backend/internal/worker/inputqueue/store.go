@@ -57,7 +57,7 @@ func (s *Store) now() time.Time {
 // that its caller may not enqueue. It is the one statement of these rules: the
 // Manager asks it BEFORE it calls a mutation, so it can refuse a kind the agent
 // cannot accept without a database read inside the mutation's own write
-// transaction, and enqueue asks it again inside that transaction.
+// transaction, and enqueue applies the same rules before it writes.
 //
 // The classifier first turns an exact slash command into its own kind. An
 // input from an agent tab then follows the rules of provenance:
@@ -213,6 +213,27 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 	return snapshot, err
 }
 
+func (s *Store) prepareNewItem(input NewItem) (NewItem, error) {
+	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
+		return NewItem{}, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
+	}
+	if input.Sender != nil && (!validateIdentity(input.Sender.TabID) ||
+		input.Sender.Provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
+		return NewItem{}, fmt.Errorf("%w: the sender needs a tab ID and a provider", ErrInvalidInput)
+	}
+	input, err := s.admitNewItem(input)
+	if err != nil {
+		return NewItem{}, err
+	}
+	if err := ValidateContent(input.Kind, input.Text, input.Attachments); err != nil {
+		return NewItem{}, err
+	}
+	if err := validateSchedule(input.Kind, input.SourcePayload, input.Attachments); err != nil {
+		return NewItem{}, err
+	}
+	return input, nil
+}
+
 // enqueue queues input, applies the extra database mutation, and commits both
 // with the snapshot. It reports whether this call added the item. A repeat of an
 // item that the queue holds, that it already delivered, or that someone removed
@@ -227,21 +248,8 @@ func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
 // therefore still matches, and a request that sends the edited content under
 // the same input id conflicts.
 func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
-	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
-		return Snapshot{}, false, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
-	}
-	if input.Sender != nil && (!validateIdentity(input.Sender.TabID) ||
-		input.Sender.Provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
-		return Snapshot{}, false, fmt.Errorf("%w: the sender needs a tab ID and a provider", ErrInvalidInput)
-	}
-	input, err := s.admitNewItem(input)
+	input, err := s.prepareNewItem(input)
 	if err != nil {
-		return Snapshot{}, false, err
-	}
-	if err := ValidateContent(input.Kind, input.Text, input.Attachments); err != nil {
-		return Snapshot{}, false, err
-	}
-	if err := validateSchedule(input.Kind, input.SourcePayload, input.Attachments); err != nil {
 		return Snapshot{}, false, err
 	}
 	// The hash reads every attachment byte, so it runs before the transaction
@@ -254,49 +262,55 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := s.now()
-	commit := func() (Snapshot, error) {
-		if apply != nil {
-			if err := apply(tx); err != nil {
-				return Snapshot{}, err
-			}
-		}
-		return commitSnapshot(ctx, tx, input.AgentID, now)
-	}
-	if err := ensureState(ctx, tx, input.AgentID); err != nil {
+	added, err := enqueuePreparedItem(ctx, tx, input, key, now)
+	if err != nil {
 		return Snapshot{}, false, err
+	}
+	if apply != nil {
+		if err := apply(tx); err != nil {
+			return Snapshot{}, false, err
+		}
+	}
+	snapshot, err := commitSnapshot(ctx, tx, input.AgentID, now)
+	return snapshot, added && err == nil, err
+}
+
+// enqueuePreparedItem adds an admitted item to the caller's transaction.
+// A matching request keeps the original queue item or accepted transcript.
+func enqueuePreparedItem(ctx context.Context, tx *sql.Tx, input NewItem, key string, now time.Time) (bool, error) {
+	if err := ensureState(ctx, tx, input.AgentID); err != nil {
+		return false, err
 	}
 
 	storedKey, found, err := storedRequestKey(ctx, tx, input.AgentID, input.ID)
 	if err != nil {
-		return Snapshot{}, false, err
+		return false, err
 	}
 	if found {
 		if storedKey != key {
-			return Snapshot{}, false, ErrConflict
+			return false, ErrConflict
 		}
-		snapshot, err := commit()
-		return snapshot, false, err
+		return false, nil
 	}
 	if input.RequireFutureSchedule && input.ScheduledAt != nil && !input.ScheduledAt.After(now) {
-		return Snapshot{}, false, fmt.Errorf("%w: a new schedule must be in the future", ErrInvalidInput)
+		return false, fmt.Errorf("%w: a new schedule must be in the future", ErrInvalidInput)
 	}
 
 	if err := insertQueuedItem(ctx, tx, input, key); err != nil {
-		return Snapshot{}, false, err
+		return false, err
 	}
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
-		return Snapshot{}, false, err
+		return false, err
 	}
 	if controlReplyKind(input.Kind) {
 		if err := placeControlReply(ctx, tx, input.AgentID, input.ID); err != nil {
-			return Snapshot{}, false, err
+			return false, err
 		}
 	}
 	if err := bumpRevision(ctx, tx, input.AgentID); err != nil {
-		return Snapshot{}, false, err
+		return false, err
 	}
-	snapshot, err := commit()
-	return snapshot, err == nil, err
+	return true, nil
 }
 
 func (s *Store) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -880,6 +894,10 @@ type dispatchGate struct {
 	// Closed reports that the agent closed. A closed agent takes no new
 	// process, so a dispatch would only fail the item and pause the queue.
 	Closed bool
+	// CreationBlocksDispatch holds input until creation records a startup
+	// outcome. A premature reservation can look uncertain after a crash
+	// even when the provider never received input.
+	CreationBlocksDispatch bool
 	// Now is the instant this gate captured. A head scheduled after it is
 	// refused in every dispatch mode, so nothing -- automatic dispatch, retry,
 	// steer, preempt -- delivers early.
@@ -913,7 +931,7 @@ const (
 // allowPaused lets retry and steering dispatch through a pause, and requireActive
 // selects the steering path over the drain path.
 func (g dispatchGate) admits(allowPaused, requireActive bool) dispatchRefusal {
-	if !g.HeadFound || g.Closed {
+	if !g.HeadFound || g.Closed || g.CreationBlocksDispatch {
 		return dispatchRefusedNotReady
 	}
 	// A head whose scheduled instant has not arrived refuses every mode. The
@@ -1002,9 +1020,13 @@ func readDispatchGateFor(ctx context.Context, tx db.DBTX, agentID string, now ti
 	gate := dispatchGate{Now: now, ApprovalsComplete: true}
 	if err := tx.QueryRowContext(ctx, `SELECT pause_reason IS NOT NULL, restarting, active_turn, active_turn_steerable,
 		(SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND removed_at IS NULL AND state = ?),
-		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1), COALESCE(pause_reason, 0)
-		FROM agent_input_queue_state WHERE agent_id = ?`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, agentID, agentID).
-		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable, &gate.AwaitingEcho, &gate.Closed, &gate.PauseReason); err != nil {
+		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1), COALESCE(pause_reason, 0),
+		CASE WHEN ? THEN EXISTS(SELECT 1 FROM tab_creations WHERE tab_id = ? AND tab_type = ? AND state <> ?) ELSE 0 END
+		FROM agent_input_queue_state WHERE agent_id = ?`,
+		agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, agentID,
+		headFound, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabCreationState_TAB_CREATION_STATE_COMMITTED, agentID).
+		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable, &gate.AwaitingEcho,
+			&gate.Closed, &gate.PauseReason, &gate.CreationBlocksDispatch); err != nil {
 		return dispatchGate{}, err
 	}
 	if !headFound {

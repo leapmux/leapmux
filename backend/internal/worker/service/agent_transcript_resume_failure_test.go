@@ -22,25 +22,16 @@ import (
 // TestQueuedInputDoesNotRelaunchARefusedNativeResume pins that a message sent
 // while a native resume starts never launches that refused resume again.
 //
-// The browser sends the message while the tab reads STARTING. The queue
-// dispatch passes the startup check, because the open path did not fail yet,
-// and it joins the startup that is in flight. The provider then refuses
-// session/load, and failStartup records STARTUP_FAILED. The join must report
-// that failure. A join that read only "the startup settled" started the same
-// refused resume a second time, with the session id that the dispatch read
-// before the failure. A provider can damage its stored copy of the session on
-// each launch, so the second launch can make the session impossible to resume.
+// A message arrives while the tab reads STARTING. It stays queued until the
+// Worker records the outcome. The provider refuses session/load, and the
+// queued input must report that failure without attempting a second resume.
+// A provider can damage its stored copy of the session on each launch.
 func TestQueuedInputDoesNotRelaunchARefusedNativeResume(t *testing.T) {
 	t.Parallel()
 
-	// Quartz controls the join timer. The trap proves that the dispatch joined
-	// the open path's startup before that startup failed.
-	clock := testutil.NewQuartzMock(t)
-	svc, dispatcher, _ := setupTestService(t, withClock(clock))
+	svc, dispatcher, _ := setupTestService(t)
 	t.Cleanup(func() { drainAllInFlight(svc) })
 	ctx := testutil.DeadlineContext(t)
-	joinTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
-	defer joinTimer.Close()
 
 	const sessionID = "native-gemini-session"
 	refusal := errors.New(`session/load: could not resume session "native-gemini-session": ` +
@@ -83,35 +74,28 @@ func TestQueuedInputDoesNotRelaunchARefusedNativeResume(t *testing.T) {
 	}
 
 	inputID := newTestAgentInputID()
-	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+	failed := watchFailedQueuedInput(svc, agentID)
+	queued, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
 		ID: inputID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		Text: "Reply after the native picker reopens the session.",
 	})
 	require.NoError(t, err)
-	joinTimer.MustWait(ctx).MustRelease(ctx)
+	require.Len(t, queued.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, queued.Items[0].State)
 
 	// The provider refuses session/load.
 	release()
 
-	var failedItem inputqueue.SnapshotItem
-	require.Eventually(t, func() bool {
-		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
-		if snapshotErr != nil {
-			return false
-		}
-		for _, item := range snapshot.Items {
-			if item.ID == inputID && item.State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED {
-				failedItem = item
-				return true
-			}
-		}
-		return false
-	}, inputQueueWait, 10*time.Millisecond, "the queued input never reached a final state")
+	select {
+	case item := <-failed:
+		assert.Equal(t, inputID, item.GetId())
+		assert.Equal(t, errAgentStartupFailed.Error(), item.GetError())
+	case <-ctx.Done():
+		t.Fatal("the queued input never reported the startup failure")
+	}
 
 	assert.Equal(t, []string{sessionID}, launched(),
 		"the Worker launched the refused resume again; the provider can destroy the session on that launch")
-	assert.Equal(t, errAgentStartupFailed.Error(), failedItem.Error,
-		"the queued input must carry the startup refusal, not the error of a second launch")
 	status, startupError, _, tracked := svc.AgentStartup.status(agentID)
 	assert.True(t, tracked, "the second launch replaced the failed startup record")
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)

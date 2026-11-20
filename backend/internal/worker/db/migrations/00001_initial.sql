@@ -857,6 +857,7 @@ CREATE TABLE tab_creations (
     PRIMARY KEY (user_id, worker_id, tab_id)
 );
 CREATE INDEX idx_tab_creations_pending ON tab_creations(worker_id, state);
+CREATE INDEX idx_tab_creations_tab ON tab_creations(tab_id, tab_type);
 
 -- +goose Down
 DROP TABLE IF EXISTS tab_creations;

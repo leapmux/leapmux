@@ -272,6 +272,8 @@ message OpenAgentRequest {
   // picked that one itself.
   bool title_auto_generated = 7;
   TabCreation creation = 8;
+  // If present, queue this message in the same transaction as the new agent.
+  optional string initial_message = 9;
 }
 
 message OpenAgentResponse {

@@ -208,7 +208,7 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 			return
 		}
 		runtime.Startup = intent
-		persistErr = op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
+		persistErr = op.persist(runtime, func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 			return q.CreateTerminal(ctx, db.CreateTerminalParams(params))
 		})
 	}

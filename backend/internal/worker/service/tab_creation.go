@@ -202,14 +202,14 @@ func (svc *Service) coordinateCreation(ctx context.Context, caller channel.Calle
 }
 
 // persist commits the resource and pending recovery record in one transaction.
-func (op *creationOperation) persist(runtime creationRuntime, write func(context.Context, *db.Queries) error) error {
+func (op *creationOperation) persist(runtime creationRuntime, write func(context.Context, *db.Queries, *sql.Tx) error) error {
 	unlock := op.coordinator.lock(op.key())
 	defer unlock()
 	return op.persistLocked(runtime, write)
 }
 
 // persistLocked requires the creation-key lock through the caller's post-commit work.
-func (op *creationOperation) persistLocked(runtime creationRuntime, write func(context.Context, *db.Queries) error) error {
+func (op *creationOperation) persistLocked(runtime creationRuntime, write func(context.Context, *db.Queries, *sql.Tx) error) error {
 	c := op.coordinator
 	svc := c.svc
 	if err := c.ctx.Err(); err != nil {
@@ -233,7 +233,7 @@ func (op *creationOperation) persistLocked(runtime creationRuntime, write func(c
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := svc.Queries.WithTx(tx)
-	if err := write(c.ctx, q); err != nil {
+	if err := write(c.ctx, q, tx); err != nil {
 		return err
 	}
 	if err := q.InsertTabCreation(c.ctx, db.InsertTabCreationParams{UserID: op.key().owner, WorkerID: svc.WorkerID, TabID: op.key().tabID, TabType: int64(op.publication.GetTabType()), RequestHash: op.hash, RequestPayload: request, PublicationPayload: publication, RuntimePayload: envelope, PublicationResult: []byte{}, State: creationPending}); err != nil {

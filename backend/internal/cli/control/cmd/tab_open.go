@@ -173,14 +173,18 @@ type openedTab struct {
 	TileID      string `json:"tile_id"`
 	Position    string `json:"position"`
 	Path        string `json:"path,omitempty"`
-	// InitialMessageWarning reports an initial message that the agent did
-	// not accept. The agent itself opened.
-	InitialMessageWarning string `json:"initial_message_warning,omitempty"`
 }
 
-// runAgentOpen starts a new agent in a new tab. Provider discovery,
-// creation, and the optional first message share one channel.
+// runAgentOpen starts a new agent in a new tab with an optional first message.
 func runAgentOpen(inv *cli.Invocation) (any, error) {
+	var initialMessage *string
+	if inv.Changed("message") {
+		text := stringFlag(inv, "message")
+		if strings.TrimSpace(text) == "" {
+			return nil, cli.Usagef("--message is empty")
+		}
+		initialMessage = &text
+	}
 	setup, err := gitSetup(inv)
 	if err != nil {
 		return nil, err
@@ -224,7 +228,7 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 			Title:          stringFlag(inv, "title"),
 			PermissionMode: stringFlag(inv, "permission-mode"),
 			WorkingDir:     workingDir(inv),
-			InitialMessage: stringFlag(inv, "message"),
+			InitialMessage: initialMessage,
 			SessionID:      stringFlag(inv, "resume"),
 			GitSetup:       setup,
 			Position:       p.Position,
@@ -236,14 +240,13 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 		return nil, withRequestIDHint(err, requestID)
 	}
 	return openedTab{
-		ID:                    result.Agent.GetId(),
-		Type:                  tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		Title:                 result.Agent.GetTitle(),
-		WorkspaceID:           p.WorkspaceID,
-		WorkerID:              p.WorkerID,
-		TileID:                result.TileID,
-		Position:              result.Position,
-		InitialMessageWarning: result.InitialMsgWarn,
+		ID:          result.Agent.GetId(),
+		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT),
+		Title:       result.Agent.GetTitle(),
+		WorkspaceID: p.WorkspaceID,
+		WorkerID:    p.WorkerID,
+		TileID:      result.TileID,
+		Position:    result.Position,
 	}, nil
 }
 

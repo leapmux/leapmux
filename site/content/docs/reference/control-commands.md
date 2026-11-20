@@ -522,7 +522,7 @@ leapmux control agent open [flags]
 | `--effort string` | reasoning effort |
 | `--permission-mode string` | permission mode |
 | `--title string` | tab title (default: the worker picks one) |
-| `--message string` | a first message that the agent receives once it starts |
+| `--message string` | queue a first message with the agent creation |
 | `--resume string` | resume this earlier session of the provider; "agent sessions" lists them |
 | `--request-id string` | an id of your choice that makes a retry safe: a second run with the same id and the same arguments creates nothing new |
 | `--dir string` | working directory of the agent (default: $LEAPMUX_CONTROL_WORKING_DIR) |

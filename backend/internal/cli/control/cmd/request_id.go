@@ -36,9 +36,6 @@ const (
 	requestScopeAgentSend = "agent send"
 	// requestScopeAgentOpen derives the tab id of `agent open`.
 	requestScopeAgentOpen = "agent open"
-	// requestScopeAgentOpenMessage derives the input id of the first message
-	// of `agent open --message`.
-	requestScopeAgentOpenMessage = "agent open message"
 )
 
 // addRequestIDFlag registers --request-id.

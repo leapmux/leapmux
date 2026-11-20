@@ -371,9 +371,12 @@ func (svc *Service) finishCreationStartup(op *creationOperation, outcome creatio
 	}
 	for {
 		unlock := op.coordinator.lock(op.key())
-		err := svc.checkpointCreationOutcome(op, outcome)
+		wakeQueue, err := svc.checkpointCreationOutcome(op, outcome)
 		unlock()
 		if err == nil {
+			if wakeQueue {
+				svc.InputQueue.NotifyDependencyReady(op.key().tabID)
+			}
 			return
 		}
 		if err := op.coordinator.waitRetry(); err != nil {
@@ -381,52 +384,52 @@ func (svc *Service) finishCreationStartup(op *creationOperation, outcome creatio
 		}
 	}
 }
-func (svc *Service) checkpointCreationOutcome(op *creationOperation, outcome creationStartupOutcome) error {
+func (svc *Service) checkpointCreationOutcome(op *creationOperation, outcome creationStartupOutcome) (bool, error) {
 	validatedOwner, ownerOK := userid.OwnerFilter(op.caller.UserID)
 	if !ownerOK {
-		return errCreationOwnerMissing
+		return false, errCreationOwnerMissing
 	}
 	queryKey := op.dbKey()
 	queryKey.UserID = validatedOwner
 	ctx := op.coordinator.ctx
 	tx, err := svc.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := svc.Queries.WithTx(tx)
 	record, err := q.GetTabCreation(ctx, queryKey)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if record.State != creationPublished {
-		return nil
+		return false, nil
 	}
 	closed, archived := false, false
 	switch op.publication.GetTabType() {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
 		resource, readErr := q.GetAgentByID(ctx, record.TabID)
 		if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
-			return readErr
+			return false, readErr
 		}
 		closed = errors.Is(readErr, sql.ErrNoRows) || resource.ClosedAt.Valid
 		archived = resource.WorkspaceArchived
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		resource, readErr := q.GetTerminal(ctx, record.TabID)
 		if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
-			return readErr
+			return false, readErr
 		}
 		closed = errors.Is(readErr, sql.ErrNoRows) || resource.ClosedAt.Valid
 		archived = resource.WorkspaceArchived
 	default:
-		return errors.New("this tab kind has no startup outcome")
+		return false, errors.New("this tab kind has no startup outcome")
 	}
 	finalState := creationCommitted
 	if closed {
 		finalState = creationCanceled
 	} else {
 		if archived || outcome.kind == creationStartupIncomplete || outcome.kind == creationStartupInterrupted {
-			return nil
+			return false, nil
 		}
 		message := ""
 		switch outcome.kind {
@@ -434,10 +437,10 @@ func (svc *Service) checkpointCreationOutcome(op *creationOperation, outcome cre
 		case creationStartupFailed:
 			message = outcome.message
 			if message == "" {
-				return errors.New("a failed startup has no explanation")
+				return false, errors.New("a failed startup has no explanation")
 			}
 		default:
-			return errors.New("the startup outcome is invalid")
+			return false, errors.New("the startup outcome is invalid")
 		}
 		switch op.publication.GetTabType() {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
@@ -445,20 +448,32 @@ func (svc *Service) checkpointCreationOutcome(op *creationOperation, outcome cre
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 			err = q.SetTerminalStartupError(ctx, db.SetTerminalStartupErrorParams{ID: record.TabID, StartupError: message})
 		default:
-			return errors.New("this tab kind has no startup outcome")
+			return false, errors.New("this tab kind has no startup outcome")
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
 	changed, err := q.CompletePublishedTabCreation(ctx, db.CompletePublishedTabCreationParams{State: finalState, UserID: validatedOwner, WorkerID: record.WorkerID, TabID: record.TabID, State_2: creationPublished})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if changed != 1 {
-		return errors.New("tab creation changed during its outcome checkpoint")
+		return false, errors.New("tab creation changed during its outcome checkpoint")
 	}
-	return tx.Commit()
+	var wakeQueue bool
+	if finalState == creationCommitted && op.publication.GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
+		wakeQueue, err = q.HasQueuedAgentInput(ctx, db.HasQueuedAgentInputParams{
+			AgentID: record.TabID, State: int64(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED),
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return wakeQueue, nil
 }
 
 // finishClosedResource resolves a known closed row without replaying creation.

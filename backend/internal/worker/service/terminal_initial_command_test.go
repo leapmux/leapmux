@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -359,7 +360,7 @@ func TestCreationRestart_KeepsTheInitialCommand(t *testing.T) {
 				Title:   "Saved terminal",
 			}
 			seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}, runtime: runtime, state: state,
-				write: func(ctx context.Context, q *db.Queries) error {
+				write: func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 					return q.CreateTerminal(ctx, db.CreateTerminalParams{ID: intent.TabId, WorkingDir: directory, Shell: runtime.Options.Shell, Title: runtime.Title, Cols: 80, Rows: 25, Screen: []byte{}})
 				},
 			})

@@ -76,7 +76,7 @@ request id and other arguments fails with conflict.`,
 				fs.String("effort", "", "reasoning effort")
 				fs.String("permission-mode", "", "permission mode")
 				fs.String("title", "", "tab title (default: the worker picks one)")
-				fs.String("message", "", "a first message that the agent receives once it starts")
+				fs.String("message", "", "queue a first message with the agent creation")
 				fs.String("resume", "", `resume this earlier session of the provider; "agent sessions" lists them`)
 				addRequestIDFlag(fs)
 				addWorkingDirFlag(fs, "working directory of the agent")

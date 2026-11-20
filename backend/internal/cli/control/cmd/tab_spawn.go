@@ -26,7 +26,7 @@ type openAgentArgs struct {
 	Title          string
 	PermissionMode string
 	WorkingDir     string
-	InitialMessage string
+	InitialMessage *string
 	// SessionID resumes the agent's earlier session (`--resume`).
 	SessionID string
 	// GitSetup prepares the working directory; nil uses it as it is.
@@ -34,9 +34,7 @@ type openAgentArgs struct {
 	// Position spec captures the caller's --first / --last /
 	// --before / --after intent. The Hub resolves its committed rank.
 	Position positionSpec
-	// RequestID, from --request-id, derives the id of the new tab and the
-	// input id of the initial message, so a retry of the same open repeats
-	// the first. Empty generates fresh ids.
+	// RequestID derives the tab ID so the Worker can recognize a retry.
 	RequestID string
 }
 
@@ -63,10 +61,9 @@ func spawnOptions(model, effort, permissionMode string) map[string]string {
 
 // openAgentResult is what openAgentAndAddTab emits on success.
 type openAgentResult struct {
-	Agent          *leapmuxv1.AgentInfo
-	TileID         string
-	Position       string
-	InitialMsgWarn string
+	Agent    *leapmuxv1.AgentInfo
+	TileID   string
+	Position string
 }
 
 // resolveTabCreation captures placement before the Worker admits creation.
@@ -124,12 +121,8 @@ func validateTabPublication(creation *leapmuxv1.TabCreation, kind leapmuxv1.TabT
 }
 
 // openAgentAndAddTab asks the Worker to create and publish an agent. A successful
-// reply supplies the committed placement. The optional initial input uses the
-// same channel and reports a warning if its separate enqueue fails.
-//
-// With a request id, a repeated open takes the ids of the first one. The
-// Worker then answers with the agent that the first open created, and it
-// queues the initial message no second time.
+// reply supplies the committed placement. The Worker commits any initial message
+// with the agent, so a retry cannot change it or queue it twice.
 func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openAgentArgs) (*openAgentResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, cli.Usagef("an agent needs a workspace and a worker")
@@ -146,6 +139,7 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 		WorkingDir:     args.WorkingDir,
 		AgentSessionId: args.SessionID,
 		GitSetup:       args.GitSetup,
+		InitialMessage: args.InitialMessage,
 	}
 	var response leapmuxv1.OpenAgentResponse
 	if err := w.Call(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, &response); err != nil {
@@ -157,21 +151,7 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	if response.GetAgent().GetId() != creation.GetTabId() || response.GetAgent().GetWorkerId() != args.WorkerID {
 		return nil, cli.Newf(cli.CodeInternal, "the Worker returned a different agent identity")
 	}
-	result := &openAgentResult{Agent: response.GetAgent(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}
-	if args.InitialMessage != "" {
-		inputID := requestScopedID(args.RequestID, requestScopeAgentOpenMessage, args.WorkerID)
-		if err := w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{AgentId: creation.GetTabId(), InputId: inputID, Text: args.InitialMessage, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE}, nil); err != nil {
-			// With a request id, a conflict means that an earlier request with
-			// another first message took the id, so this request fails as a
-			// conflict of the creation does. Any other failure leaves the agent
-			// open, so the open succeeds and states the failure.
-			if args.RequestID != "" && cli.FromError(err).Code == cli.CodeConflict {
-				return nil, err
-			}
-			result.InitialMsgWarn = err.Error()
-		}
-	}
-	return result, nil
+	return &openAgentResult{Agent: response.GetAgent(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}, nil
 }
 
 // openTerminalArgs mirrors openAgentArgs for terminal spawns. Shell

@@ -216,7 +216,7 @@ func TestCreationRecoveryInputs_EncodingFailurePrecedesResourceWrite(t *testing.
 		require.NoError(t, err)
 		op := &creationOperation{coordinator: svc.creations, caller: channel.NewCaller(userid.MustNew("user-1"), authscope.NonAdminGrant()), request: request, hash: hash, publication: &leapmuxv1.TabPublication{Creation: request.Creation, TabType: leapmuxv1.TabType_TAB_TYPE_FILE}}
 		called := false
-		err = op.persist(runtime, func(context.Context, *db.Queries) error { called = true; return nil })
+		err = op.persist(runtime, func(context.Context, *db.Queries, *sql.Tx) error { called = true; return nil })
 		require.Error(t, err)
 		assert.False(t, called)
 		_, err = svc.Queries.GetTabCreation(t.Context(), op.dbKey())
