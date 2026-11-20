@@ -53,9 +53,8 @@ export class ChannelInbound<T extends InboundChannel = InboundChannel> {
       })
     }
 
-    // Close sentinel: CLOSE flag. It carries no ciphertext, so it never goes to
-    // the session worker.
-    if (msg.flags === ChannelMessageFlags.CLOSE) {
+    // Only the empty close notification bypasses the session cipher.
+    if (msg.flags === ChannelMessageFlags.CLOSE && msg.correlationId === 0n && msg.ciphertext.length === 0) {
       this.deps.closedByPeer(channelId)
       return
     }

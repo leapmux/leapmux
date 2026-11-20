@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
@@ -65,7 +66,7 @@ func TestSendStreamPreservesCompleteMessagesForOneCorrelation(t *testing.T) {
 				var messages []*leapmuxv1.InnerStreamMessage
 				for _, msg := range collector.messages() {
 					frame := msg.GetChannelMessageResp()
-					plain, err := clientSession.Decrypt(frame.GetCiphertext())
+					plain, err := channelwire.OpenChannelMessage(clientSession, frame)
 					require.NoError(t, err)
 					id := frame.GetCorrelationId()
 					parts[id] = append(parts[id], plain...)

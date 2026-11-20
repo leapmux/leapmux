@@ -4,6 +4,7 @@ import type { SessionEvent } from './channelSessionProtocol'
 import type { CipherStateLike, Session } from './noise'
 import type { HybridHandshakeState } from './noise-hybrid'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_CHUNK_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS, SESSION_VERIFY_TIMEOUT_MS } from '~/generated/contracts/wire'
 import {
@@ -16,7 +17,8 @@ import {
   RekeyRejectSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
-import { unframeBytes } from './channelFraming'
+import { allZero, handshakeStateIsZero } from '~/test-support/noiseVectors'
+import { frameAssociatedData, unframeBytes } from './channelFraming'
 import { FIRST_REKEY_CORRELATION_ID } from './channelSession'
 import { createChannelSessionEndpoint } from './channelSessionEndpoint'
 import { isDebugEnabled, setDebugEnabled } from './logger'
@@ -25,9 +27,10 @@ import { yieldToEventLoop } from './workSlices'
 
 const keys = {
   x25519PublicKey: new Uint8Array(32),
-  mlkemPublicKey: new Uint8Array(1568),
+  mlkemPublicKey: ml_kem1024.keygen().publicKey,
   slhdsaPublicKey: new Uint8Array(64),
 }
+const EMPTY = new Uint8Array(0)
 
 /** A posted event and its transfer list. */
 interface Posted {
@@ -49,18 +52,19 @@ function endpointHarness(options: ChannelSessionEndpointOptions = {}) {
   const closeSelf = vi.fn()
   const pair = createTestSession()
   const states: HybridHandshakeState[] = []
+  const handshake1 = vi.fn(() => {
+    const handshakeState = blankHybridHandshakeState()
+    states.push(handshakeState)
+    return {
+      message1: new Uint8Array(3216),
+      handshakeState,
+    }
+  })
   const endpoint = createChannelSessionEndpoint({
     post: (event, transfer) => posted.push({ event, transfer }),
     closeSelf,
   }, {
-    handshake1: () => {
-      const handshakeState = blankHybridHandshakeState()
-      states.push(handshakeState)
-      return {
-        message1: new Uint8Array(1616),
-        handshakeState,
-      }
-    },
+    handshake1,
     handshake2: async () => pair.initiator,
     idleRekeyIntervalMs: 0,
     ...options,
@@ -72,6 +76,7 @@ function endpointHarness(options: ChannelSessionEndpointOptions = {}) {
     closeSelf,
     pair,
     states,
+    handshake1,
   }
 }
 
@@ -86,6 +91,7 @@ function eventsOf<T extends SessionEvent['type']>(posted: Posted[], type: T): Ar
 async function openSession(h: Harness, channelId = 'ch-1', firstRequestId = 1, maxReassembledMessageSize = 1 << 20): Promise<void> {
   h.endpoint.handleCommand({
     type: 'beginHandshake',
+    workerId: 'worker-1',
     requestId: firstRequestId,
     mode: EncryptionMode.POST_QUANTUM,
     keys,
@@ -114,13 +120,13 @@ function workerReads(h: Harness, frame: Uint8Array) {
   const message = messageOf(frame)
   return {
     message,
-    plaintext: h.pair.responder.receive.decrypt(message.ciphertext),
+    plaintext: h.pair.responder.receive.decrypt(frameAssociatedData(message.channelId, message.correlationId, message.flags), message.ciphertext),
   }
 }
 
 /** Send `envelope` from the Worker under `correlationId`. */
 function workerSends(h: Harness, correlationId: number, envelope: MessageInitShape<typeof InnerMessageSchema>, flags = ChannelMessageFlags.UNSPECIFIED, channelId = 'ch-1'): void {
-  const ciphertext = h.pair.responder.send.encrypt(toBinary(InnerMessageSchema, create(InnerMessageSchema, envelope)))
+  const ciphertext = h.pair.responder.send.encrypt(frameAssociatedData(channelId, BigInt(correlationId), flags), toBinary(InnerMessageSchema, create(InnerMessageSchema, envelope)))
   h.endpoint.handleCommand({
     type: 'inbound',
     channelId,
@@ -137,7 +143,7 @@ function workerSendsChunk(h: Harness, correlationId: number, chunk: Uint8Array, 
     channelId: 'ch-1',
     correlationId: BigInt(correlationId),
     flags,
-    ciphertext: h.pair.responder.send.encrypt(chunk),
+    ciphertext: h.pair.responder.send.encrypt(frameAssociatedData('ch-1', BigInt(correlationId), flags), chunk),
   })
 }
 
@@ -157,12 +163,24 @@ const response: MessageInitShape<typeof InnerMessageSchema> = {
 function workerAcksRekey(h: Harness): void {
   const frames = eventsOf(h.posted, 'wire')
   const { message, plaintext } = workerReads(h, frames.at(-1)!.frame)
-  expect(fromBinary(InnerMessageSchema, plaintext).kind.case).toBe('rekeyRequest')
+  const requestEnvelope = fromBinary(InnerMessageSchema, plaintext)
+  expect(requestEnvelope.kind.case).toBe('rekeyRequest')
+  const request = requestEnvelope.kind.case === 'rekeyRequest'
+    ? requestEnvelope.kind.value
+    : undefined
+  if (!request)
+    throw new Error('expected RekeyRequest')
+  const answer = request.mlkemEphemeralPub.length === 0
+    ? null
+    : ml_kem1024.encapsulate(request.mlkemEphemeralPub)
   h.pair.responder.receive.rekeyWithSecret(new Uint8Array(32), null, true)
-  const ciphertext = h.pair.responder.send.encrypt(toBinary(InnerMessageSchema, create(InnerMessageSchema, {
+  const ciphertext = h.pair.responder.send.encrypt(frameAssociatedData('ch-1', message.correlationId, ChannelMessageFlags.UNSPECIFIED), toBinary(InnerMessageSchema, create(InnerMessageSchema, {
     kind: {
       case: 'rekeyAck',
-      value: create(RekeyAckSchema, { dhPub: generateRekeyEphemeral().publicKey }),
+      value: create(RekeyAckSchema, {
+        dhPub: generateRekeyEphemeral().publicKey,
+        mlkemEphemeralCt: answer?.cipherText ?? new Uint8Array(0),
+      }),
     },
   })))
   h.pair.responder.send.rekeyWithSecret(new Uint8Array(32), null, false)
@@ -185,17 +203,13 @@ function fillSecrets(state: HybridHandshakeState): void {
   state.e.privateKey.fill(1)
   state.ss.ck.fill(2)
   state.ss.k.fill(3)
-  state.mlkemSS.fill(4)
+  state.ss.h.fill(5)
+  state.mlkemEphemeralSecretKey.fill(4)
 }
 
 /** Whether every secret of a hybrid handshake state is zero. */
 function secretsZero(state: HybridHandshakeState): boolean {
-  return [
-    state.e.privateKey,
-    state.ss.ck,
-    state.ss.k,
-    state.mlkemSS,
-  ].every(bytes => bytes.every(byte => byte === 0))
+  return handshakeStateIsZero(state) && allZero(state.mlkemEphemeralSecretKey)
 }
 
 afterEach(() => {
@@ -210,16 +224,18 @@ describe('createChannelSessionEndpoint handshake', () => {
 
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 4,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
     })
 
+    expect(h.handshake1).toHaveBeenCalledExactlyOnceWith('worker-1', keys)
     expect(h.posted).toHaveLength(1)
     const [{ event, transfer }] = h.posted as [Posted]
     expect(event).toMatchObject({ type: 'handshakeBegun', requestId: 4 })
     const message1 = (event as Extract<SessionEvent, { type: 'handshakeBegun' }>).message1
-    expect(message1.byteLength).toBe(1616)
+    expect(message1.byteLength).toBe(3216)
     expect(transfer).toEqual([message1.buffer])
   })
 
@@ -232,6 +248,7 @@ describe('createChannelSessionEndpoint handshake', () => {
 
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 4,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -266,7 +283,7 @@ describe('createChannelSessionEndpoint handshake', () => {
       handshake1: () => {
         fillSecrets(state)
         return {
-          message1: new Uint8Array(1616),
+          message1: new Uint8Array(3216),
           handshakeState: state,
         }
       },
@@ -276,6 +293,7 @@ describe('createChannelSessionEndpoint handshake', () => {
 
     endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 4,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -325,6 +343,7 @@ describe('createChannelSessionEndpoint handshake', () => {
 
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.CLASSIC,
       keys,
@@ -350,6 +369,7 @@ describe('createChannelSessionEndpoint handshake', () => {
     })
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -416,6 +436,7 @@ describe('createChannelSessionEndpoint handshake', () => {
     await openSession(h)
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 3,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -451,6 +472,7 @@ describe('createChannelSessionEndpoint handshake', () => {
     for (const requestId of [1, 2]) {
       h.endpoint.handleCommand({
         type: 'beginHandshake',
+        workerId: 'worker-1',
         requestId,
         mode: EncryptionMode.POST_QUANTUM,
         keys,
@@ -487,14 +509,15 @@ describe('createChannelSessionEndpoint handshake', () => {
       },
     ])
     expect(h.endpoint.sessionState('ch-1')?.session).toBe(established[0]!.initiator)
-    expect(() => established[1]!.initiator.send.encrypt(new Uint8Array(1))).toThrow('noise: cipher state destroyed')
-    expect(() => established[1]!.initiator.receive.decrypt(new Uint8Array(17))).toThrow('noise: cipher state destroyed')
+    expect(() => established[1]!.initiator.send.encrypt(EMPTY, new Uint8Array(1))).toThrow('noise: cipher state destroyed')
+    expect(() => established[1]!.initiator.receive.decrypt(EMPTY, new Uint8Array(17))).toThrow('noise: cipher state destroyed')
   })
 
   it('zeroes the state on abandonHandshake, and ignores an unknown id', () => {
     const h = endpointHarness()
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -806,7 +829,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     expect(h.posted).toHaveLength(before)
     expect(h.endpoint.sessionState('ch-1')).toBeUndefined()
     // The closed session's keys are zero.
-    expect(() => h.pair.initiator.send.encrypt(new Uint8Array(1))).toThrow(/destroyed/)
+    expect(() => h.pair.initiator.send.encrypt(EMPTY, new Uint8Array(1))).toThrow(/destroyed/)
   })
 
   it('starts the idle timer with the first session and stops it after the last close', async () => {
@@ -874,6 +897,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     await openSession(h)
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 3,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -884,13 +908,14 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     h.endpoint.handleCommand({ type: 'shutdown' })
 
     expect(h.closeSelf).toHaveBeenCalledOnce()
-    expect(() => h.pair.initiator.send.encrypt(new Uint8Array(1))).toThrow(/destroyed/)
-    expect(() => h.pair.initiator.receive.decrypt(new Uint8Array(17))).toThrow(/destroyed/)
+    expect(() => h.pair.initiator.send.encrypt(EMPTY, new Uint8Array(1))).toThrow(/destroyed/)
+    expect(() => h.pair.initiator.receive.decrypt(EMPTY, new Uint8Array(17))).toThrow(/destroyed/)
     expect(secretsZero(h.states[1]!)).toBe(true)
     expect(h.endpoint.sessionState('ch-1')).toBeUndefined()
 
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 5,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -916,6 +941,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     })
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -934,7 +960,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     release(pair.initiator)
     await yieldToEventLoop()
 
-    expect(() => pair.initiator.send.encrypt(new Uint8Array(1))).toThrow(/destroyed/)
+    expect(() => pair.initiator.send.encrypt(EMPTY, new Uint8Array(1))).toThrow(/destroyed/)
     expect(h.endpoint.sessionState('ch-1')).toBeUndefined()
     expect(h.posted).toHaveLength(before)
   })
@@ -942,8 +968,8 @@ describe('createChannelSessionEndpoint lifecycle', () => {
   it('ends the session of a channel whose command throws, and tells the main thread', async () => {
     const { send } = createTestSession().initiator
     const broken: CipherStateLike = {
-      encrypt: plaintext => send.encrypt(plaintext),
-      decrypt: ciphertext => send.decrypt(ciphertext),
+      encrypt: (ad, plaintext) => send.encrypt(ad, plaintext),
+      decrypt: (ad, ciphertext) => send.decrypt(ad, ciphertext),
       needsRekey: () => {
         throw new Error('the cipher state broke')
       },
@@ -980,7 +1006,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
       },
     ])
     expect(h.endpoint.sessionState('ch-1')).toBeUndefined()
-    expect(() => send.encrypt(new Uint8Array(1))).toThrow('noise: cipher state destroyed')
+    expect(() => send.encrypt(EMPTY, new Uint8Array(1))).toThrow('noise: cipher state destroyed')
   })
 
   it('logs a command that throws for no request and no channel, and keeps serving', () => {
@@ -988,7 +1014,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     const h = endpointHarness({
       // A state without its secrets, which the zeroing of an abandon cannot read.
       handshake1: () => ({
-        message1: new Uint8Array(1616),
+        message1: new Uint8Array(3216),
         handshakeState: begins++ === 0
           ? {} as HybridHandshakeState
           : blankHybridHandshakeState(),
@@ -997,6 +1023,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 1,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -1010,6 +1037,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
     })
     h.endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 2,
       mode: EncryptionMode.POST_QUANTUM,
       keys,
@@ -1026,7 +1054,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
       closeSelf: () => {},
     }, {
       handshake1: () => ({
-        message1: new Uint8Array(1616),
+        message1: new Uint8Array(3216),
         handshakeState: blankHybridHandshakeState(),
       }),
       idleRekeyIntervalMs: 0,
@@ -1036,6 +1064,7 @@ describe('createChannelSessionEndpoint lifecycle', () => {
 
     expect(() => endpoint.handleCommand({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 4,
       mode: EncryptionMode.POST_QUANTUM,
       keys,

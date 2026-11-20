@@ -11,6 +11,7 @@ import {
   MAX_CONFIGURABLE_MESSAGE_SIZE,
 } from '~/generated/contracts/wire'
 import {
+  ChannelMessageFlags,
   EncryptionMode,
   InnerMessageSchema,
   InnerRpcResponseSchema,
@@ -42,6 +43,7 @@ import {
   simulatePingErrorOnWs,
   waitForPendingChannel,
 } from './channel.test-support'
+import { frameAssociatedData } from './channelFraming'
 import { KeyPinStore } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
 import { procedureOf } from './rpcProcedure'
@@ -68,7 +70,7 @@ describe('ChannelManager openChannel', () => {
     await h.settle()
 
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
-    const envelope = fromBinary(InnerMessageSchema, sessions.get(sentMsg.channelId)!.responder.receive.decrypt(sentMsg.ciphertext))
+    const envelope = fromBinary(InnerMessageSchema, sessions.get(sentMsg.channelId)!.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     if (envelope.kind.case !== 'request')
       throw new Error('the open must send the ping as an inner request')
     expect(envelope.kind.value.method).toBe('/leapmux.v1.WorkerSystemService/Ping')
@@ -410,7 +412,7 @@ describe('ChannelManager openChannel', () => {
   // tag, invalid SLH-DSA signature) otherwise strands a Hub-registered channel
   // and a live Worker session per retry against a misbehaving worker. The Go
   // client covers the same step under its rollback defer
-  // (backend/tunnel/channel.go's handshaker.finish).
+  // (backend/tunnel/channel.go's HandshakeState.Finish).
   it('tells the Hub to close the channel when handshake-2 verification fails', async () => {
     const ws = new MockWebSocket()
     const base = createMockTransport(ws)
@@ -453,15 +455,15 @@ describe('ChannelManager openChannel', () => {
       },
     }
     let state: HybridHandshakeState | undefined
-    const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => {
+    const handshake1 = vi.fn((_workerId: string, _keys: unknown) => {
       state = blankHybridHandshakeState()
       state.e.privateKey.fill(1)
       state.ss.ck.fill(2)
       state.ss.k.fill(3)
-      state.mlkemSS.fill(4)
+      state.mlkemEphemeralSecretKey.fill(4)
       return {
         handshakeState: state,
-        message1: new Uint8Array(1616),
+        message1: new Uint8Array(3216),
       }
     })
     const handshake2 = vi.fn(mockHandshake2)
@@ -480,7 +482,7 @@ describe('ChannelManager openChannel', () => {
         state!.e.privateKey,
         state!.ss.ck,
         state!.ss.k,
-        state!.mlkemSS,
+        state!.mlkemEphemeralSecretKey,
       ])
         expect(secret.every(byte => byte === 0)).toBe(true)
     }
@@ -677,7 +679,7 @@ describe('ChannelManager openChannel', () => {
 describe('ChannelManager encryption modes', () => {
   const h = new ChannelManagerTestHarness()
 
-  it('should open a channel with classic encryption (X25519 only)', async () => {
+  it('should open a channel with classic encryption (X25519 and static ML-KEM)', async () => {
     // Create a transport that returns CLASSIC mode.
     const classicWs = new MockWebSocket()
     const classicSessions = new Map<string, { initiator: Session, responder: Session }>()
@@ -711,10 +713,10 @@ describe('ChannelManager encryption modes', () => {
     }
 
     // Mock classic handshake functions.
-    function mockClassicHS1(_remoteX25519Pub: Uint8Array) {
+    function mockClassicHS1(_workerId: string, _keys: unknown) {
       return {
         handshakeState: blankClassicHandshakeState(),
-        message1: new Uint8Array(48),
+        message1: new Uint8Array(1632),
       }
     }
 
@@ -760,7 +762,7 @@ describe('ChannelManager encryption modes', () => {
       kind: { case: 'response', value: resp },
     })
     const respPt = toBinary(InnerMessageSchema, respEnv)
-    const respCt = pair.responder.send.encrypt(respPt)
+    const respCt = pair.responder.send.encrypt(frameAssociatedData(channelId, 2n, ChannelMessageFlags.UNSPECIFIED), respPt)
     // The open's session-verifying Ping consumed correlation id 1.
     classicWs.simulateMessage(encodeWireMessage(channelId, respCt, { id: 2 }))
 

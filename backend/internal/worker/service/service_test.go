@@ -433,7 +433,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	sqlDB := newServiceTestDB(t)
 
 	cfg := Config{
-		Channels:              channel.NewManager(nil, 0, nil, nil, 0, 0),
+		Channels:              channel.NewManager("worker-test", nil, 0, nil, nil, 0, 0),
 		Send:                  func(*leapmuxv1.ConnectRequest) error { return nil },
 		DB:                    sqlDB,
 		Agents:                agent.NewManager(testRegistry, nil),
@@ -543,7 +543,7 @@ func TestNew_PanicsOnMissingRequiredConfig(t *testing.T) {
 
 	t.Run("missing Send", func(t *testing.T) {
 		assert.PanicsWithValue(t, "service.New: Send must be set", func() {
-			New(Config{DB: sqlDB, Channels: channel.NewManager(nil, 0, nil, nil, 0, 0)})
+			New(Config{DB: sqlDB, Channels: channel.NewManager("worker-test", nil, 0, nil, nil, 0, 0)})
 		})
 	})
 
@@ -551,7 +551,7 @@ func TestNew_PanicsOnMissingRequiredConfig(t *testing.T) {
 		assert.PanicsWithValue(t, "service.New: Agents must be set", func() {
 			New(Config{
 				DB:       sqlDB,
-				Channels: channel.NewManager(nil, 0, nil, nil, 0, 0),
+				Channels: channel.NewManager("worker-test", nil, 0, nil, nil, 0, 0),
 				Send:     func(*leapmuxv1.ConnectRequest) error { return nil },
 			})
 		})
@@ -630,7 +630,7 @@ func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 		ResolveTabPublication: fixtureResolveTabPublication,
 		CancelTabPublication:  fixtureCancelTabPublication,
 		DB:                    sqlDB,
-		Channels:              channel.NewManager(nil, 0, nil, nil, 0, 0),
+		Channels:              channel.NewManager("worker-test", nil, 0, nil, nil, 0, 0),
 		Send:                  func(*leapmuxv1.ConnectRequest) error { return nil },
 		Agents:                agent.NewManager(testRegistry, nil),
 	})

@@ -29,16 +29,13 @@ func setupTestSessions(t *testing.T) (*noiseutil.Session, *noiseutil.Session) {
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
-	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
+	hs, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 
-	hs, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	msg2, workerSession, err := noiseutil.ResponderHandshake(ck, testWorkerID, msg1)
 	require.NoError(t, err)
 
-	msg2, workerSession, err := noiseutil.ResponderHandshake(ck, msg1)
-	require.NoError(t, err)
-
-	initiatorSession, err := noiseutil.InitiatorHandshake2(hs, msg2, slhdsaPub)
+	initiatorSession, err := hs.Finish(msg2)
 	require.NoError(t, err)
 
 	return workerSession, initiatorSession
@@ -84,7 +81,7 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
 
-	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
+	respPt, err := channelwire.OpenChannelMessage(initiatorSession, chMsg)
 	require.NoError(t, err)
 
 	var envelope leapmuxv1.InnerMessage
@@ -130,7 +127,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
 
-	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
+	respPt, err := channelwire.OpenChannelMessage(initiatorSession, chMsg)
 	require.NoError(t, err)
 
 	var envelope leapmuxv1.InnerMessage
@@ -170,7 +167,7 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
 
-	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
+	respPt, err := channelwire.OpenChannelMessage(initiatorSession, chMsg)
 	require.NoError(t, err)
 
 	var envelope leapmuxv1.InnerMessage

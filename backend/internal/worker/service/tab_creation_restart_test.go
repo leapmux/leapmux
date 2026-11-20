@@ -93,7 +93,7 @@ func (h *recoveryPublicationHub) config(database *sql.DB, directory string) Conf
 func newRecoveryService(t *testing.T, cfg Config) (*Service, *channel.Dispatcher) {
 	t.Helper()
 	cfg.Send = func(*leapmuxv1.ConnectRequest) error { return nil }
-	cfg.Channels = channel.NewManager(nil, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, channel.SendFunc(cfg.Send), nil, 0, 0)
+	cfg.Channels = channel.NewManager("worker-test", nil, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, channel.SendFunc(cfg.Send), nil, 0, 0)
 	cfg.Agents = agent.NewManager(testRegistry, nil)
 	cfg.Terminals = terminal.NewManager()
 	svc := New(cfg)

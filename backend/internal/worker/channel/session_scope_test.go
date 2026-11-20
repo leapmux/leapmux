@@ -8,7 +8,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
-	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
 
 // The wire field's two poles, read at the HANDSHAKE.
@@ -26,7 +25,7 @@ func TestHandleOpen_RefusesAnAnnouncedGrantOfNothing(t *testing.T) {
 	t.Parallel()
 
 	mgr, ck, _ := setupTestManagerWith(t, 0, 0)
-	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	_, msg1, err := startTestHandshake(t, ck)
 	require.NoError(t, err)
 
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{

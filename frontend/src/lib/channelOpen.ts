@@ -36,7 +36,7 @@ export interface ChannelOpenTransport {
 export interface ChannelOpenSession {
   /** Start the session worker ahead of the handshake, so that it loads while the open waits for the Hub. */
   prepare: () => void
-  beginHandshake: (mode: EncryptionMode, keys: WorkerKeyBundle) => Promise<SessionHandshake>
+  beginHandshake: (workerId: string, mode: EncryptionMode, keys: WorkerKeyBundle) => Promise<SessionHandshake>
   finishHandshake: (handshake: SessionHandshake, params: FinishHandshakeParams) => Promise<void>
   abandonHandshake: (handshake: SessionHandshake) => void
   close: (channelId: string) => void
@@ -132,10 +132,16 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
     //    the Hub has registered the channel, so a malformed or forged handshake-2
     //    — wrong length, bad AEAD tag, invalid SLH-DSA signature — must roll that
     //    registration back like every later failure.
-    const handshake = await this.deps.session.beginHandshake(mode, keyBundle)
+    const handshake = await this.deps.session.beginHandshake(workerId, mode, keyBundle)
     // Every exit from here either hands the handshake to finishHandshake, which
     // spends it, or abandons it, so that its state never outlives the open.
     let handshakeHeld = true
+    const abandonHandshake = () => {
+      if (!handshakeHeld)
+        return
+      handshakeHeld = false
+      this.deps.session.abandonHandshake(handshake)
+    }
     try {
       const result = await this.deps.transport.openChannel(workerId, handshake.message1)
 
@@ -165,7 +171,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       try {
         // Adopt negotiated limits before handshake-2 crypto, matching the Go
         // tunnel client (backend/tunnel/channel.go validates max_message_size
-        // before handshaker.finish). Missing/out-of-bounds fails closed without
+        // before HandshakeState.Finish). Missing/out-of-bounds fails closed without
         // paying ML-KEM/SLH-DSA verify cost.
         const limits = this.resolveMessageLimits(result)
 
@@ -197,7 +203,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         // channel's session there. Verification of the Worker's handshake-2
         // message throws on tampering or corruption, and the Hub has already
         // registered the channel, so this sits inside the rollback's coverage — the
-        // Go client covers the same step the same way (handshaker.finish runs under
+        // Go client covers the same step the same way (HandshakeState.Finish runs under
         // the rollback defer in backend/tunnel/channel.go). The finish spends the
         // handshake whatever its outcome, and a failed one registers nothing.
         handshakeHeld = false
@@ -239,6 +245,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         commitPin()
       }
       catch (err) {
+        abandonHandshake()
         // A failure AFTER verifySession marked the channel verified (say a future
         // commitPin that can fail) would otherwise leave a verified ghost that
         // getOrOpenChannel serves until its session ends while every RPC on it
@@ -265,8 +272,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       return result.channelId
     }
     finally {
-      if (handshakeHeld)
-        this.deps.session.abandonHandshake(handshake)
+      abandonHandshake()
     }
   }
 

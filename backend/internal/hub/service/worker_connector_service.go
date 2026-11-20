@@ -954,6 +954,14 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	// Route channel messages from worker to frontend.
 	if chMsg := msg.GetChannelMessageResp(); chMsg != nil {
 		if s.channelMgr != nil {
+			if channelwire.IsCloseNotification(chMsg) {
+				// The Worker already retired its session. Channel removal
+				// sends the sentinel to the bound frontend.
+				s.channelMgr.CloseByIDIf(chMsg.GetChannelId(), func(info channelmgr.ChannelInfo) bool {
+					return info.WorkerID == workerID
+				})
+				return nil
+			}
 			matched, connID, err := s.channelMgr.RelayWorkerMessage(chMsg, workerID)
 			if !matched {
 				slog.Warn("channel relay: worker sent message for an unowned channel",

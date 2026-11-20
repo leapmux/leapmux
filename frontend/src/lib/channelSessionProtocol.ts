@@ -44,7 +44,13 @@ export interface SessionError {
 export interface ConfigureCommand { type: 'configure', debug: boolean }
 
 /** Build handshake message 1 for a worker's keys. Answered by `handshakeBegun` or `requestFailed`. */
-export interface BeginHandshakeCommand { type: 'beginHandshake', requestId: number, mode: EncryptionMode, keys: WorkerKeyBundle }
+export interface BeginHandshakeCommand {
+  type: 'beginHandshake'
+  requestId: number
+  workerId: string
+  mode: EncryptionMode
+  keys: WorkerKeyBundle
+}
 
 /**
  * Complete a handshake with the Worker's message 2, and register the session of

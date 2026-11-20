@@ -115,7 +115,7 @@ A per-agent setting that controls when the agent asks before it acts. Examples i
 
 ### Post-quantum encryption
 
-The default E2EE mode (`post-quantum`): a hybrid handshake that combines classical and post-quantum cryptography, so the channel stays secure if one algorithm is later broken. The alternative `classic` mode selects the classical X25519 handshake; the Worker still registers and advertises all three keys, because they are its identity. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+The default E2EE mode (`post-quantum`): a hybrid handshake that combines classical and post-quantum cryptography, so the channel stays secure if one algorithm is later broken. The alternative `classic` mode authenticates the Worker with its static Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM) key. It omits the Stateless Hash-Based Digital Signature Algorithm (SLH-DSA) signature and post-quantum forward secrecy; the Worker still registers and advertises all three keys, because they are its identity. Set it on the Worker with `--encryption-mode`. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Presence
 

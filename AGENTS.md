@@ -72,8 +72,9 @@ runs the semantic cross-checks (derived arithmetic, enum coverage via
   contract entry exists.
 - Out of scope: values one side consumes (Go-only limits in `wire.go`, FE-only
   retry policies in the frontend) and dual-implemented ALGORITHMS, which stay
-  differential — `testdata/*_conformance.json` (and `noise_rekey_vectors.json`)
-  are the executable spec both suites replay.
+  differential — `testdata/*_conformance.json` and the three
+  `noise_handshake_vectors.json`, `noise_rekey_pq_vectors.json`, and
+  `noise_rekey_vectors.json` files are the executable spec both suites replay.
 - Contracts do not decide numbering: a single-side enum still takes a proto
   enum's numbering (see **Enum columns store proto enum ordinals**).
 

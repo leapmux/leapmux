@@ -1,42 +1,57 @@
+import type { WorkerKeyBundle } from './workerKeyBundle'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 /**
- * Noise_NK_25519_ChaChaPoly_BLAKE2b implementation for E2EE channels.
+ * Classic channel Noise implementation for the Frontend initiator.
  *
- * This implements the initiator (Frontend) side of the Noise_NK handshake
- * pattern, compatible with the Go `flynn/noise` responder (Worker).
- *
- * Pattern:
- *   <- s       (Responder's static key is known to Initiator)
- *   ...
- *   -> e, es   (Initiator sends ephemeral, DH with Responder's static)
- *   <- e, ee   (Responder sends ephemeral, DH with Initiator's ephemeral)
+ * The handshake combines ephemeral X25519 exchanges with an encapsulation to
+ * the Worker's static ML-KEM-1024 key. It has no SLH-DSA signature and no
+ * post-quantum forward secrecy.
  */
 import { x25519 } from '@noble/curves/ed25519.js'
 import { blake2b } from '@noble/hashes/blake2.js'
 import { hmac } from '@noble/hashes/hmac.js'
-import { HARD_NONCE_LIMIT, MAX_CHUNK_SIZE, SOFT_NONCE_LIMIT } from '~/generated/contracts/wire'
+import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
+import { randomBytes } from '@noble/post-quantum/utils.js'
+import { AEAD_TAG_SIZE, HARD_NONCE_LIMIT, MAX_CHUNK_SIZE, NOISE_CLASSIC_PROTOCOL_NAME, NOISE_HANDSHAKE_CONTEXT_LABEL, SOFT_NONCE_LIMIT, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
 
 import { monotonicNow } from './monotonicNow'
 
-const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 /**
  * Noise spec transport message size limit minus auth tag -- the same
  * derivation contracts/wire.json single-sources as MAX_CHUNK_SIZE, so
  * retuning the ciphertext cap or the AEAD tag size moves this limit with it.
  */
 const MAX_PLAINTEXT_SIZE = MAX_CHUNK_SIZE
+const CLASSIC_MESSAGE_2_SIZE = X25519_PUBLIC_KEY_SIZE + AEAD_TAG_SIZE
 
 // ---- Low-level crypto primitives ----
 
-function dh(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array {
-  return x25519.getSharedSecret(privateKey, publicKey)
+/** Fresh randomness for one handshake or rekey offer. */
+export interface NoiseEntropy {
+  x25519Seed: () => Uint8Array
+  mlkemKeygenSeed: () => Uint8Array
+  mlkemEncapsulationSeed: () => Uint8Array
 }
 
-function generateKeypair(): { privateKey: Uint8Array, publicKey: Uint8Array } {
-  const privateKey = x25519.utils.randomSecretKey()
-  const publicKey = x25519.getPublicKey(privateKey)
-  return { privateKey, publicKey }
+export const systemEntropy: NoiseEntropy = {
+  x25519Seed: () => x25519.utils.randomSecretKey(),
+  mlkemKeygenSeed: () => randomBytes(64),
+  mlkemEncapsulationSeed: () => randomBytes(32),
+}
+
+/** The versioned label and Worker id that both peers hash before message 1. */
+export function handshakePrologue(workerId: string): Uint8Array {
+  if (workerId.length === 0)
+    throw new Error('noise: Worker id is required for the channel handshake')
+  return concatBytes(new TextEncoder().encode(NOISE_HANDSHAKE_CONTEXT_LABEL), new Uint8Array([0]), new TextEncoder().encode(workerId))
+}
+
+/** Hash the Worker's complete pinned key set in the pre-message order. */
+export function mixStaticKeys(ss: SymmetricState, keys: WorkerKeyBundle): void {
+  ss.mixHash(keys.x25519PublicKey)
+  ss.mixHash(keys.mlkemPublicKey)
+  ss.mixHash(keys.slhdsaPublicKey)
 }
 
 export function hkdf(
@@ -44,9 +59,14 @@ export function hkdf(
   inputKeyMaterial: Uint8Array,
 ): [Uint8Array, Uint8Array] {
   const tempKey = hmac(blake2b, chainingKey, inputKeyMaterial)
-  const out1 = hmac(blake2b, tempKey, new Uint8Array([1]))
-  const out2 = hmac(blake2b, tempKey, concatBytes(out1, new Uint8Array([2])))
-  return [out1, out2]
+  try {
+    const out1 = hmac(blake2b, tempKey, Uint8Array.of(1))
+    const out2 = hmac.create(blake2b, tempKey).update(out1).update(Uint8Array.of(2)).digest()
+    return [out1, out2]
+  }
+  finally {
+    tempKey.fill(0)
+  }
 }
 
 function encrypt(key: Uint8Array, nonce: number, ad: Uint8Array, plaintext: Uint8Array): Uint8Array {
@@ -95,8 +115,10 @@ export class SymmetricState {
 
   mixKey(inputKeyMaterial: Uint8Array) {
     const [ck, tempK] = hkdf(this.ck, inputKeyMaterial)
-    this.ck = ck // 64 bytes
-    this.k = tempK.slice(0, 32) // truncate to 32 for ChaChaPoly
+    this.ck.set(ck)
+    this.k.set(tempK.subarray(0, this.k.length))
+    ck.fill(0)
+    tempK.fill(0)
     this.n = 0
     this.hasK = true
   }
@@ -125,21 +147,11 @@ export class SymmetricState {
 
   split(): [CipherState, CipherState] {
     const [tempK1, tempK2] = hkdf(this.ck, new Uint8Array(0))
-    return [
-      new CipherState(tempK1.slice(0, 32)), // truncate to 32 for ChaChaPoly
-      new CipherState(tempK2.slice(0, 32)),
-    ]
-  }
-
-  /**
-   * hybridSplit mixes extra key material (e.g. ML-KEM shared secret)
-   * into the chaining key before deriving cipher keys.
-   */
-  hybridSplit(extraKeyMaterial: Uint8Array): [CipherState, CipherState] {
-    // Mix extra key material into chaining key.
-    const [ck2] = hkdf(this.ck, extraKeyMaterial)
-    this.ck = ck2
-    return this.split()
+    const c1 = new CipherState(tempK1.slice(0, this.k.length))
+    const c2 = new CipherState(tempK2.slice(0, this.k.length))
+    tempK1.fill(0)
+    tempK2.fill(0)
+    return [c1, c2]
   }
 
   /** Zero all sensitive fields in the symmetric state. */
@@ -167,6 +179,7 @@ export class CipherState {
   private prev: CipherState | null = null
   /** Monotonic deadline (ms, monotonicNow timeline) after which `prev` must be dropped; 0 ⇒ none. */
   private prevExpiresAt = 0
+  private prevTimer: ReturnType<typeof setTimeout> | undefined
   /** Set by `destroy`: the keys are zero, and every later encrypt or decrypt throws. */
   private destroyed = false
 
@@ -175,7 +188,7 @@ export class CipherState {
     this.n = 0
   }
 
-  encrypt(plaintext: Uint8Array): Uint8Array {
+  encrypt(ad: Uint8Array, plaintext: Uint8Array): Uint8Array {
     if (this.destroyed) {
       throw new Error('noise: cipher state destroyed')
     }
@@ -185,12 +198,12 @@ export class CipherState {
     if (this.n > HARD_NONCE_LIMIT) {
       throw new Error('noise: nonce overflow (hard limit)')
     }
-    const ct = encrypt(this.k, this.n, new Uint8Array(0), plaintext)
+    const ct = encrypt(this.k, this.n, ad, plaintext)
     this.n++
     return ct
   }
 
-  decrypt(ciphertext: Uint8Array): Uint8Array {
+  decrypt(ad: Uint8Array, ciphertext: Uint8Array): Uint8Array {
     if (this.destroyed) {
       throw new Error('noise: cipher state destroyed')
     }
@@ -198,7 +211,7 @@ export class CipherState {
       throw new Error('noise: nonce overflow (hard limit)')
     }
     try {
-      const pt = decrypt(this.k, this.n, new Uint8Array(0), ciphertext)
+      const pt = decrypt(this.k, this.n, ad, ciphertext)
       this.n++
       return pt
     }
@@ -212,20 +225,14 @@ export class CipherState {
           // active epoch) rather than swallowing it for prev's — mirrors Go's
           // Decrypt, which returns the captured `err` on prev failure.
           try {
-            return this.prev.decrypt(ciphertext)
+            return this.prev.decrypt(ad, ciphertext)
           }
           catch {
             throw err
           }
         }
         else {
-          // Grace window elapsed: retire prev now so the still-valid
-          // previous-epoch key does not linger in the heap. Delivers the
-          // window's forward-secrecy promise here, not on the next rekey /
-          // close (an idle channel would otherwise keep prev alive).
-          this.prev.k.fill(0)
-          this.prev = null
-          this.prevExpiresAt = 0
+          this.clearPrev()
         }
       }
       throw err
@@ -243,10 +250,10 @@ export class CipherState {
    * window so in-flight frames encrypted under it still decrypt. The nonce
    * resets to 0.
    *
-   * Derivation (mirrors the Noise handshake's mixKey → hybridSplit ratchet):
+   * Derivation (two HKDF stages over the transport key):
    *
    *   ck1 = HKDF(k, dhSecret)      // fresh X25519 ECDH(e_i, e_r)
-   *   k'  = HKDF(ck1, pqSecret)    // fresh ML-KEM shared secret (empty in classic)
+   *   k'  = HKDF(ck1, pqSecret)    // static || ephemeral ML-KEM secret (null in classic)
    *
    * When retainPrev is true (the receive direction) the previous key is moved
    * into prev and marked live for the grace window. When false (the send
@@ -254,10 +261,11 @@ export class CipherState {
    * dropped instead — structurally, not via a follow-up clearPrev the caller
    * must remember.
    *
-   * Forward secrecy: because k' mixes fresh DH + ML-KEM entropy, compromise of
-   * the current epoch key does NOT let an attacker derive the next. The rekey
-   * frames ride inside the AEAD-encrypted channel, so the ephemeral pubkeys /
-   * ML-KEM ciphertext need no signature. See issue #321.
+   * Forward secrecy: because k' mixes fresh DH entropy, and ML-KEM entropy on
+   * post-quantum channels, compromise of the current epoch key does NOT let an
+   * attacker derive the next. The rekey frames ride inside the AEAD-encrypted
+   * channel, so the ephemeral pubkeys / ML-KEM ciphertext need no signature. See
+   * issue #321.
    *
    * Resetting n diverges from Noise §11.3 because LeapMux's transport AEAD
    * nonce is a uint32 in bytes 4–7. Matching the Go implementation.
@@ -270,22 +278,25 @@ export class CipherState {
       pqSecret?.fill(0)
       throw new Error('noise: cipher state destroyed')
     }
-    const [ck1] = hkdf(this.k, dhSecret)
+    const [ck1, unusedFirst] = hkdf(this.k, dhSecret)
+    unusedFirst.fill(0)
     // pqSecret is null on a classical channel; hkdf still runs a second
     // (degenerate, IKM-less) stage keyed only off ck1 — NOT skipped — so the
     // derivation stays a uniform two-stage ratchet on both channel kinds and
     // matches Go's rekeyWithSecret. pqSecret ?? empty is equivalent to null
     // here because hmac of empty bytes == hmac of nothing.
-    const [newK] = hkdf(ck1, pqSecret ?? new Uint8Array(0))
-    if (this.prev !== null) {
-      this.prev.k.fill(0)
-      this.prev = null
-    }
+    const [newK, unusedSecond] = hkdf(ck1, pqSecret ?? new Uint8Array(0))
+    unusedSecond.fill(0)
+    this.clearPrev()
     if (retainPrev) {
-      // Receive direction: promote the current key to prev for the grace window.
-      this.prev = new CipherState(this.k)
-      this.prev.n = this.n
+      const previous = new CipherState(this.k)
+      previous.n = this.n
+      this.prev = previous
       this.prevExpiresAt = monotonicNow() + REKEY_GRACE_WINDOW_MS
+      this.prevTimer = setTimeout(() => {
+        if (this.prev === previous)
+          this.clearPrev()
+      }, REKEY_GRACE_WINDOW_MS)
     }
     else {
       // Send direction: it keeps no grace window, so the replaced key is zeroed
@@ -294,7 +305,8 @@ export class CipherState {
       // key" a structural property — a caller cannot forget the clearPrev.
       this.k.fill(0)
     }
-    this.k = newK.slice(0, 32)
+    this.k = newK.slice(0, this.k.length)
+    newK.fill(0)
     this.n = 0
     ck1.fill(0)
     dhSecret.fill(0)
@@ -302,12 +314,12 @@ export class CipherState {
       pqSecret.fill(0)
   }
 
-  /** Drop the retained previous key immediately (send direction; tests). */
+  /** Retire the previous receive key and stop its grace timer. */
   clearPrev(): void {
-    if (this.prev !== null) {
-      this.prev.k.fill(0)
-      this.prev = null
-    }
+    clearTimeout(this.prevTimer)
+    this.prevTimer = undefined
+    this.prev?.destroy()
+    this.prev = null
     this.prevExpiresAt = 0
   }
 
@@ -337,8 +349,8 @@ export class CipherState {
  * satisfies this interface by construction.
  */
 export interface CipherStateLike {
-  encrypt: (plaintext: Uint8Array) => Uint8Array
-  decrypt: (ciphertext: Uint8Array) => Uint8Array
+  encrypt: (ad: Uint8Array, plaintext: Uint8Array) => Uint8Array
+  decrypt: (ad: Uint8Array, ciphertext: Uint8Array) => Uint8Array
   needsRekey: () => boolean
   rekeyWithSecret: (dhSecret: Uint8Array, pqSecret: Uint8Array | null, retainPrev: boolean) => void
   clearPrev: () => void
@@ -356,54 +368,101 @@ export interface Session {
 export interface HandshakeState {
   ss: SymmetricState
   e: { privateKey: Uint8Array, publicKey: Uint8Array }
-  rs: Uint8Array // remote static public key
 }
 
-/**
- * initiatorHandshake1 creates the first handshake message for the Noise_NK
- * initiator. The caller must know the responder's static public key.
- *
- * Returns the handshake state (needed for step 2) and the first message.
- */
-export function initiatorHandshake1(remoteStaticPubKey: Uint8Array): {
+/** Encapsulate a secret and clear the randomness supplied to ML-KEM. */
+export function encapsulateMlkem(entropy: NoiseEntropy, publicKey: Uint8Array): { cipherText: Uint8Array, sharedSecret: Uint8Array } {
+  const seed = entropy.mlkemEncapsulationSeed()
+  try {
+    return ml_kem1024.encapsulate(publicKey, seed)
+  }
+  finally {
+    seed.fill(0)
+  }
+}
+
+export function mixX25519(ss: SymmetricState, privateKey: Uint8Array, peerKey: Uint8Array): void {
+  const sharedSecret = x25519.getSharedSecret(privateKey, peerKey)
+  try {
+    ss.mixKey(sharedSecret)
+  }
+  finally {
+    sharedSecret.fill(0)
+  }
+}
+
+/** Set up the prologue and first X25519 exchange common to both modes. */
+export function prepareInitiatorHandshake(
+  entropy: NoiseEntropy,
+  workerId: string,
+  keys: WorkerKeyBundle,
+  protocolName: string,
+): HandshakeState {
+  const ss = new SymmetricState(protocolName)
+  let privateKey: Uint8Array | null = null
+  try {
+    ss.mixHash(handshakePrologue(workerId))
+    mixStaticKeys(ss, keys)
+    privateKey = entropy.x25519Seed()
+    const publicKey = x25519.getPublicKey(privateKey)
+    ss.mixHash(publicKey)
+    mixX25519(ss, privateKey, keys.x25519PublicKey)
+    return {
+      ss,
+      e: { privateKey, publicKey },
+    }
+  }
+  catch (err) {
+    ss.clear()
+    privateKey?.fill(0)
+    throw err
+  }
+}
+
+/** Encrypt the static ML-KEM ciphertext and mix the secret into the transcript. */
+export function encryptStaticMlkem(ss: SymmetricState, entropy: NoiseEntropy, publicKey: Uint8Array): Uint8Array {
+  const { cipherText, sharedSecret } = encapsulateMlkem(entropy, publicKey)
+  try {
+    const encryptedCiphertext = ss.encryptAndHash(cipherText)
+    ss.mixKey(sharedSecret)
+    return encryptedCiphertext
+  }
+  finally {
+    sharedSecret.fill(0)
+  }
+}
+
+/** Build classic message 1 with production randomness. */
+export function initiatorHandshake1(workerId: string, keys: WorkerKeyBundle): {
   handshakeState: HandshakeState
   message1: Uint8Array
 } {
-  const ss = new SymmetricState(PROTOCOL_NAME)
+  return initiatorHandshake1WithEntropy(systemEntropy, workerId, keys)
+}
 
-  // Mix empty prologue (required by Noise spec, even when no prologue is used).
-  ss.mixHash(new Uint8Array(0))
-
-  // Pre-message pattern: <- s
-  // Mix the responder's static public key into the handshake hash.
-  ss.mixHash(remoteStaticPubKey)
-
-  // -> e, es
-  // Generate ephemeral keypair.
-  const e = generateKeypair()
-
-  // Write e (send ephemeral public key as cleartext token).
-  ss.mixHash(e.publicKey)
-
-  // es: DH(e, rs)
-  const dhResult = dh(e.privateKey, remoteStaticPubKey)
-  ss.mixKey(dhResult)
-  dhResult.fill(0)
-
-  // Encrypt empty payload (no payload in handshake message 1).
-  const encPayload = ss.encryptAndHash(new Uint8Array(0))
-
-  const message1 = concatBytes(e.publicKey, encPayload)
-
-  return {
-    handshakeState: { ss, e, rs: remoteStaticPubKey },
-    message1,
+export function initiatorHandshake1WithEntropy(entropy: NoiseEntropy, workerId: string, keys: WorkerKeyBundle): {
+  handshakeState: HandshakeState
+  message1: Uint8Array
+} {
+  const handshakeState = prepareInitiatorHandshake(entropy, workerId, keys, NOISE_CLASSIC_PROTOCOL_NAME)
+  const { ss, e } = handshakeState
+  try {
+    const encryptedCiphertext = encryptStaticMlkem(ss, entropy, keys.mlkemPublicKey)
+    const payload = ss.encryptAndHash(new Uint8Array(0))
+    return {
+      handshakeState,
+      message1: concatBytes(e.publicKey, encryptedCiphertext, payload),
+    }
+  }
+  catch (err) {
+    clearClassicalHandshakeState(handshakeState)
+    throw err
   }
 }
 
 /**
  * Zero all sensitive fields in a classical HandshakeState.
- * Only secrets are zeroed — public keys (rs, e.publicKey) are not sensitive.
+ * The public ephemeral key needs no zeroing.
  */
 export function clearClassicalHandshakeState(state: HandshakeState): void {
   state.ss.clear()
@@ -419,21 +478,18 @@ export function clearClassicalHandshakeState(state: HandshakeState): void {
 export function initiatorHandshake2(state: HandshakeState, message2: Uint8Array): Session {
   const { ss, e } = state
   try {
-    // <- e, ee
-    // Read responder's ephemeral public key (first 32 bytes).
-    if (message2.length < 32) {
-      throw new Error('noise: message2 too short')
+    // A classic message 2 is exactly one X25519 key and one empty-payload tag.
+    if (message2.length !== CLASSIC_MESSAGE_2_SIZE) {
+      throw new Error(`noise: message2 wrong size (${message2.length} !== ${CLASSIC_MESSAGE_2_SIZE})`)
     }
-    const re = message2.slice(0, 32)
+    const re = message2.slice(0, X25519_PUBLIC_KEY_SIZE)
     ss.mixHash(re)
 
     // ee: DH(e, re)
-    const dhResult = dh(e.privateKey, re)
-    ss.mixKey(dhResult)
-    dhResult.fill(0)
+    mixX25519(ss, e.privateKey, re)
 
     // Decrypt payload (should be empty).
-    const payload = message2.slice(32)
+    const payload = message2.slice(X25519_PUBLIC_KEY_SIZE)
     ss.decryptAndHash(payload)
 
     // Split into send/receive cipher states.

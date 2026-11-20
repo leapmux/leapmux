@@ -118,74 +118,61 @@ func channelServiceServer(t *testing.T, service leapmuxv1connect.ChannelServiceH
 	return server
 }
 
-// Both halves of an initiator handshake must always come from the SAME encryption
-// mode.
-//
-// noiseutil hands both modes one *HandshakeState type, so a message 1 started
-// classically and finished with the hybrid reader (or the reverse) compiles cleanly
-// and fails only as a decrypt error at the far end -- which is why the pair is
-// selected once, together, rather than re-branched at each message. Round-tripping
-// each mode against its own responder is what pins that: it fails if the two halves
-// ever come from different modes.
-func TestNewInitiatorHandshakerPairsBothHalvesToOneMode(t *testing.T) {
+// HandshakeState carries its mode from message 1 to Finish.
+func TestStartInitiatorHandshakeFinishesInItsOwnMode(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	slhdsaPub, err := key.SlhdsaPublicKeyBytes()
 	require.NoError(t, err)
-
-	classicResponder := func(msg1 []byte) ([]byte, *noiseutil.Session, error) {
-		return noiseutil.ClassicalResponderHandshake(key.X25519Public, key.X25519Private, msg1)
-	}
-	pqResponder := func(msg1 []byte) ([]byte, *noiseutil.Session, error) {
-		return noiseutil.ResponderHandshake(key, msg1)
-	}
-
+	const workerID = "worker-test"
 	for name, tc := range map[string]struct {
-		mode    leapmuxv1.EncryptionMode
-		respond func([]byte) ([]byte, *noiseutil.Session, error)
+		mode        leapmuxv1.EncryptionMode
+		postQuantum bool
 	}{
-		"classic": {
-			mode:    leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
-			respond: classicResponder,
-		},
-		"post-quantum": {
-			mode:    leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-			respond: pqResponder,
-		},
-		// An unknown mode must take the STRONGER handshake, never downgrade to
-		// X25519-only. The hub refuses a WorkerHello with UNSPECIFIED, so no
-		// client receives it from a live worker; this end still reads it as the
-		// stronger handshake rather than pick the classic pair.
-		"unspecified is post-quantum, not a downgrade": {
-			mode:    leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED,
-			respond: pqResponder,
-		},
+		"classic":      {mode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC},
+		"post-quantum": {mode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, postQuantum: true},
+		"unspecified is post-quantum, not a downgrade": {mode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED, postQuantum: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			handshaker := newInitiatorHandshaker(&leapmuxv1.GetWorkerHandshakeParamsResponse{
-				Keys: &leapmuxv1.WorkerPublicKeys{
-					X25519: key.X25519Public,
-					Mlkem:  key.MlkemPublicKeyBytes(),
-					Slhdsa: slhdsaPub,
-				},
+			params := &leapmuxv1.GetWorkerHandshakeParamsResponse{
+				Keys:           &leapmuxv1.WorkerPublicKeys{X25519: key.X25519Public, Mlkem: key.MlkemPublicKeyBytes(), Slhdsa: slhdsaPub},
 				EncryptionMode: tc.mode,
-			})
-
-			hs, msg1, err := handshaker.start()
+			}
+			hs, msg1, err := startInitiatorHandshake(workerID, params)
 			require.NoError(t, err)
-			msg2, workerSession, err := tc.respond(msg1)
-			require.NoError(t, err, "the responder for this mode must accept the message 1 start produced")
-
-			session, err := handshaker.finish(hs, msg2)
-			require.NoError(t, err, "finish must be the half matching the message 1 start sent")
-
-			// Decrypt, not just a nil error: a mismatched pair is only observable by
-			// running the session, which is exactly why the mode is read once.
-			ciphertext, err := session.Encrypt([]byte("ping"))
+			var msg2 []byte
+			var workerSession *noiseutil.Session
+			if tc.postQuantum {
+				msg2, workerSession, err = noiseutil.ResponderHandshake(key, workerID, msg1)
+			} else {
+				msg2, workerSession, err = noiseutil.ClassicalResponderHandshake(key, workerID, msg1)
+			}
 			require.NoError(t, err)
-			plaintext, err := workerSession.Decrypt(ciphertext)
-			require.NoError(t, err, "the paired halves must agree on the session keys")
+			session, err := hs.Finish(msg2)
+			require.NoError(t, err)
+			ciphertext, err := session.Encrypt(nil, []byte("ping"))
+			require.NoError(t, err)
+			plaintext, err := workerSession.Decrypt(nil, ciphertext)
+			require.NoError(t, err)
 			assert.Equal(t, "ping", string(plaintext))
+
+			var otherInitiator *noiseutil.HandshakeState
+			var otherMessage1 []byte
+			if tc.postQuantum {
+				otherInitiator, otherMessage1, err = noiseutil.ClassicalInitiatorHandshake1(workerID, key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+				require.NoError(t, err)
+				msg2, _, err = noiseutil.ClassicalResponderHandshake(key, workerID, otherMessage1)
+			} else {
+				otherInitiator, otherMessage1, err = noiseutil.InitiatorHandshake1(workerID, key.X25519Public, key.MlkemPublicKeyBytes(), slhdsaPub)
+				require.NoError(t, err)
+				msg2, _, err = noiseutil.ResponderHandshake(key, workerID, otherMessage1)
+			}
+			require.NoError(t, err)
+			defer otherInitiator.Clear()
+			otherState, _, err := startInitiatorHandshake(workerID, params)
+			require.NoError(t, err)
+			_, err = otherState.Finish(msg2)
+			require.Error(t, err)
 		})
 	}
 }
@@ -2303,7 +2290,7 @@ func TestReassembleAdmitsChunkedRekeyReplies(t *testing.T) {
 
 func TestRecvLoopDropsRetiredFragmentsBeforeDecoding(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	retired, err := ch.SendRPCNoWait(ctx, "Late", nil, RPCHandlers{Response: make(chan *leapmuxv1.InnerRpcResponse, 1)})
@@ -2313,9 +2300,9 @@ func TestRecvLoopDropsRetiredFragmentsBeforeDecoding(t *testing.T) {
 	live, err := ch.SendRPCNoWait(ctx, "Live", nil, RPCHandlers{Response: responses})
 	require.NoError(t, err)
 	send := func(id uint64, flags leapmuxv1.ChannelMessageFlags, plaintext []byte) {
-		ciphertext, encryptErr := peer.Encrypt(plaintext)
+		frame, encryptErr := channelwire.SealChannelMessage(peer, ch.channelID, id, flags, plaintext)
 		require.NoError(t, encryptErr)
-		require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS, channelwire.NewChannelMessage(ch.channelID, id, flags, ciphertext)))
+		require.NoError(t, channelwire.WriteChannelMessage(ctx, peerWS, frame))
 	}
 	send(retired, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte{0xff})
 	send(retired, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte{0xff})
@@ -2677,7 +2664,7 @@ func TestCancelStreamUnregistersHandler(t *testing.T) {
 // CallRPC returns an error that the worker answers in-band as a
 // *channelwire.RPCError, so a caller keeps the worker's code.
 func TestCallRPCReturnsTheWorkersErrorWithItsCode(t *testing.T) {
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
 	ctx := testutil.DeadlineContext(t)
 	called := make(chan error, 1)
 	go func() {
@@ -2709,4 +2696,34 @@ func failOnRejection(t *testing.T) func(error) {
 	return func(err error) {
 		t.Errorf("unexpected stream rejection: %v", err)
 	}
+}
+
+func TestRecvLoopClosesOnAChangedEnvelope(t *testing.T) {
+	ch, peer, peerWS, _ := pairedRekeyChannel(t)
+	ctx, cancel := context.WithTimeout(context.Background(), eventWaitLimit)
+	defer cancel()
+	callResult := make(chan error, 1)
+	go func() {
+		_, err := ch.CallRPC(ctx, "Test", nil)
+		callResult <- err
+	}()
+	requestFrame, err := channelwire.ReadChannelMessage(ctx, peerWS)
+	require.NoError(t, err)
+	_, err = channelwire.OpenChannelMessage(peer, requestFrame)
+	require.NoError(t, err)
+	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Response{
+		Response: channelwire.NewPayloadResponse([]byte("response")),
+	}})
+	require.NoError(t, err)
+	responseFrame, err := channelwire.SealChannelMessage(peer, ch.channelID, requestFrame.GetCorrelationId(), leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
+	require.NoError(t, err)
+	responseFrame.CorrelationId++
+	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, responseFrame))
+	select {
+	case err := <-callResult:
+		require.Error(t, err, "the pending call must receive the channel error, not the response")
+	case <-ctx.Done():
+		t.Fatal("the changed envelope did not close the pending call")
+	}
+	assert.True(t, ch.Closed())
 }

@@ -40,14 +40,14 @@ func TestStreamStartupRetainsEarlyFramesAndCancellation(t *testing.T) {
 			})
 			manager.SetDispatcher(dispatcher)
 			session := performHandshake(t, manager, key, channelID, "user")
-			opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-			manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
+			opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"}, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+			manager.HandleMessage(opening)
 			<-entered
 			frame, err := encryptInner(t, session, &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_StreamRequest{
 				StreamRequest: map[bool]*leapmuxv1.InnerStreamRequest{false: revisionFrame([]byte("latest interest")), true: cancelFrame()}[cancel],
-			}})
+			}}, channelID, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 			require.NoError(t, err)
-			manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: frame})
+			manager.HandleMessage(frame)
 			continueBinding()
 			if cancel {
 				require.False(t, <-bound, "an early cancellation must prevent a later binding")
@@ -100,15 +100,15 @@ func TestStreamOverflowReportsAnErrorBeforeCancellationEndsTheStream(t *testing.
 	})
 	manager.SetDispatcher(dispatcher)
 	session := performHandshake(t, manager, key, channelID, "user")
-	opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
+	opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"}, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	manager.HandleMessage(opening)
 	<-ready
 	deliver := func() {
 		frame, err := encryptInner(t, session, &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_StreamRequest{
 			StreamRequest: revisionFrame([]byte("revision")),
-		}})
+		}}, channelID, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
 		require.NoError(t, err)
-		manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: frame})
+		manager.HandleMessage(frame)
 	}
 	deliver()
 	continueBinding()
@@ -157,16 +157,16 @@ func TestDispatchAsync_RefusesAStreamItCannotPrepareWithAStreamErrorFrame(t *tes
 
 	// The first request opens the stream on id 7, and its handler holds the
 	// stream until the channel closes.
-	opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
+	opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"}, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	manager.HandleMessage(opening)
 	select {
 	case <-invoked:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the first stream request never reached its handler")
 	}
 
-	reused := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: reused})
+	reused := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"}, 7, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED)
+	manager.HandleMessage(reused)
 
 	messages := sender.waitForMessages(1)
 	require.Len(t, messages, 1)

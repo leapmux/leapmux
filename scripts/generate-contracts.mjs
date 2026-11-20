@@ -110,8 +110,13 @@ export const WIRE_GO_NAMES = {
   hardNonceLimit: 'HardNonceLimit',
   x25519PublicKeySizeBytes: 'X25519PublicKeySize',
   mlkemPublicKeySizeBytes: 'MlkemPublicKeySize',
+  mlkemCiphertextSizeBytes: 'MlkemCiphertextSize',
   slhdsaPublicKeySizeBytes: 'SlhdsaPublicKeySize',
   slhdsaSignatureSizeBytes: 'SlhdsaSignatureSize',
+  classicProtocolName: 'NoiseClassicProtocolName',
+  postQuantumProtocolName: 'NoisePostQuantumProtocolName',
+  handshakeContextLabel: 'NoiseHandshakeContextLabel',
+  handshakeSignatureLabel: 'NoiseHandshakeSignatureLabel',
   lengthPrefixBytes: 'LengthPrefixBytes',
 }
 
@@ -145,8 +150,13 @@ export const WIRE_TS_NAMES = {
   hardNonceLimit: 'HARD_NONCE_LIMIT',
   x25519PublicKeySizeBytes: 'X25519_PUBLIC_KEY_SIZE',
   mlkemPublicKeySizeBytes: 'MLKEM_PUBLIC_KEY_SIZE',
+  mlkemCiphertextSizeBytes: 'MLKEM_CIPHERTEXT_SIZE',
   slhdsaPublicKeySizeBytes: 'SLHDSA_PUBLIC_KEY_SIZE',
   slhdsaSignatureSizeBytes: 'SLHDSA_SIG_SIZE',
+  classicProtocolName: 'NOISE_CLASSIC_PROTOCOL_NAME',
+  postQuantumProtocolName: 'NOISE_POST_QUANTUM_PROTOCOL_NAME',
+  handshakeContextLabel: 'NOISE_HANDSHAKE_CONTEXT_LABEL',
+  handshakeSignatureLabel: 'NOISE_HANDSHAKE_SIGNATURE_LABEL',
   lengthPrefixBytes: 'LENGTH_PREFIX_BYTES',
 }
 
@@ -181,8 +191,13 @@ function flattenWire(w, d) {
     hardNonceLimit: w.noise.hardNonceLimit,
     x25519PublicKeySizeBytes: w.noise.x25519PublicKeySizeBytes,
     mlkemPublicKeySizeBytes: w.noise.mlkemPublicKeySizeBytes,
+    mlkemCiphertextSizeBytes: w.noise.mlkemCiphertextSizeBytes,
     slhdsaPublicKeySizeBytes: w.noise.slhdsaPublicKeySizeBytes,
     slhdsaSignatureSizeBytes: w.noise.slhdsaSignatureSizeBytes,
+    classicProtocolName: w.noise.classicProtocolName,
+    postQuantumProtocolName: w.noise.postQuantumProtocolName,
+    handshakeContextLabel: w.noise.handshakeContextLabel,
+    handshakeSignatureLabel: w.noise.handshakeSignatureLabel,
     lengthPrefixBytes: w.framing.lengthPrefixBytes,
   }
 }
@@ -200,6 +215,8 @@ export function checkWire(w) {
   mustBe(w.noise.softNonceLimit < 2 ** 32, 'wire.json', 'noise.softNonceLimit must stay inside the uint32 nonce space')
   mustBe(w.noise.hardNonceLimit <= 2 ** 32 - 1, 'wire.json', 'noise.hardNonceLimit must stay inside the uint32 nonce space (the counter wraps past 2^32-1)')
   mustBe(w.noise.softNonceLimit < w.noise.hardNonceLimit, 'wire.json', 'noise.softNonceLimit must be < noise.hardNonceLimit (the soft trigger fires before the wrap bound)')
+  mustBe(w.noise.classicProtocolName !== w.noise.postQuantumProtocolName, 'wire.json', 'noise.classicProtocolName and noise.postQuantumProtocolName must differ')
+  mustBe(w.noise.handshakeContextLabel !== w.noise.handshakeSignatureLabel, 'wire.json', 'noise.handshakeContextLabel and noise.handshakeSignatureLabel must differ')
   mustBe(w.framing.lengthPrefixBytes === 4, 'wire.json', 'framing.lengthPrefixBytes must be 4 -- both framers (Go WriteFramedBytes/ReadFramedBytes, TS frameBytes/unframeBytes) write a big-endian uint32; the constant documents the width, it does not parameterize it')
   // Name-table coverage: a key listed in a table but missing from flattenWire
   // renders as the literal "undefined" in generated code, and a flattened key
@@ -7264,10 +7281,25 @@ const (
 \t${WIRE_GO_NAMES.x25519PublicKeySizeBytes} = ${flat.x25519PublicKeySizeBytes}
 \t// ${WIRE_GO_NAMES.mlkemPublicKeySizeBytes} is the size of an ML-KEM-1024 encapsulation key.
 \t${WIRE_GO_NAMES.mlkemPublicKeySizeBytes} = ${flat.mlkemPublicKeySizeBytes}
+\t// ${WIRE_GO_NAMES.mlkemCiphertextSizeBytes} is the size of an ML-KEM-1024 ciphertext.
+\t${WIRE_GO_NAMES.mlkemCiphertextSizeBytes} = ${flat.mlkemCiphertextSizeBytes}
 \t// ${WIRE_GO_NAMES.slhdsaPublicKeySizeBytes} is the size of an SLH-DSA-SHAKE-256f public key.
 \t${WIRE_GO_NAMES.slhdsaPublicKeySizeBytes} = ${flat.slhdsaPublicKeySizeBytes}
 \t// ${WIRE_GO_NAMES.slhdsaSignatureSizeBytes} is the size of an SLH-DSA-SHAKE-256f signature.
 \t${WIRE_GO_NAMES.slhdsaSignatureSizeBytes} = ${flat.slhdsaSignatureSizeBytes}
+)
+
+// Noise protocol names and domain-separation labels for channel handshakes.
+const (
+${goConstBlock([
+  'classicProtocolName',
+  'postQuantumProtocolName',
+  'handshakeContextLabel',
+  'handshakeSignatureLabel',
+].map(k => ({
+  name: WIRE_GO_NAMES[k],
+  value: jsonString(flat[k]),
+})))}
 )
 
 // LengthPrefixBytes is the big-endian length prefix on every multiplexed
@@ -7328,9 +7360,16 @@ ${line('hardNonceLimit')}
 // and of the AEAD tag on each Noise message. The algorithms fix them.
 ${line('x25519PublicKeySizeBytes')}
 ${line('mlkemPublicKeySizeBytes')}
+${line('mlkemCiphertextSizeBytes')}
 ${line('slhdsaPublicKeySizeBytes')}
 ${line('slhdsaSignatureSizeBytes')}
 ${line('noiseAeadTagSizeBytes')}
+
+// Noise protocol names and domain-separation labels for channel handshakes.
+${line('classicProtocolName')}
+${line('postQuantumProtocolName')}
+${line('handshakeContextLabel')}
+${line('handshakeSignatureLabel')}
 
 // Big-endian length prefix on every multiplexed WebSocket frame.
 ${line('lengthPrefixBytes')}

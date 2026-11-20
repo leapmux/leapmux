@@ -278,7 +278,7 @@ export function createChannelSessionEndpoint(
         setDebugEnabled(command.debug)
         return
       case 'beginHandshake': {
-        const pending = session.beginHandshake(command.mode, command.keys)
+        const pending = session.beginHandshake(command.workerId, command.mode, command.keys)
         try {
           const message1 = ownedBytes(pending.message1)
           post({ type: 'handshakeBegun', requestId: command.requestId, message1 }, [message1.buffer])

@@ -335,7 +335,7 @@ The keystore in this chapter protects data **at rest**. Separately, each Worker 
 | Mode | Meaning |
 | --- | --- |
 | `post-quantum` (**default**) | Hybrid classical + post-quantum handshake — secure even if either the classical or the post-quantum algorithm is broken. |
-| `classic` | Classical-only handshake (no post-quantum protection). Smaller handshake messages. |
+| `classic` | Static ML-KEM authentication without the SLH-DSA signature or post-quantum forward secrecy. Smaller handshake messages. |
 
 Unless you have a specific reason to choose `classic`, leave it at the default. The accepted aliases and the fail-safe resolution of unrecognized values are documented in [Configuration](/docs/admin/configuration/).
 

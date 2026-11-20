@@ -18,8 +18,10 @@ import { createTestSession } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelError } from './channelError'
+import { frameAssociatedData } from './channelFraming'
 import { ChannelSession, createSessionChannel, FIRST_REKEY_CORRELATION_ID } from './channelSession'
 import { ChannelSessionInbound } from './channelSessionInbound'
+import { CipherState } from './noise'
 import { generateRekeyEphemeral } from './noise-hybrid'
 import { Reassembler } from './reassembler'
 
@@ -119,6 +121,60 @@ describe('ChannelSessionInbound handleInbound', () => {
     expect(ch.ended).toBe(true)
   })
 
+  it('ends the session when a relay changes the correlation id', () => {
+    const key1 = new Uint8Array(32).fill(1)
+    const key2 = new Uint8Array(32).fill(2)
+    const pair = {
+      initiator: {
+        send: new CipherState(key1),
+        receive: new CipherState(key2),
+      },
+
+      responder: {
+        send: new CipherState(key2),
+        receive: new CipherState(key1),
+      },
+    }
+    const ch = makeChannel({ session: pair.initiator })
+    ch.liveIds.add(7)
+    ch.highestStartedId = 7
+    const { inbound, ended, delivered } = makeInbound()
+    const ciphertext = pair.responder.send.encrypt(frameAssociatedData('ch-1', 7n, ChannelMessageFlags.UNSPECIFIED), responsePlaintext())
+
+    inbound.handleInbound(ch, 8n, ChannelMessageFlags.UNSPECIFIED, ciphertext)
+
+    expect(ended).toHaveLength(1)
+    expect(ended[0]).toMatchObject({ source: 'transport', disconnected: false })
+    expect(ended[0]!.message).toMatch(/^decrypt a channel message:/)
+    expect(delivered).toEqual([])
+    expect(ch.ended).toBe(true)
+  })
+
+  it('ends the session when a relay changes the flags', () => {
+    const key1 = new Uint8Array(32).fill(1)
+    const key2 = new Uint8Array(32).fill(2)
+    const pair = {
+      initiator: {
+        send: new CipherState(key1),
+        receive: new CipherState(key2),
+      },
+      responder: {
+        send: new CipherState(key2),
+        receive: new CipherState(key1),
+      },
+    }
+    const ch = makeChannel({ session: pair.initiator })
+    ch.liveIds.add(7)
+    ch.highestStartedId = 7
+    const { inbound, ended } = makeInbound()
+    const ciphertext = pair.responder.send.encrypt(frameAssociatedData('ch-1', 7n, ChannelMessageFlags.UNSPECIFIED), responsePlaintext())
+
+    inbound.handleInbound(ch, 7n, ChannelMessageFlags.MORE, ciphertext)
+
+    expect(ended).toHaveLength(1)
+    expect(ended[0]).toMatchObject({ source: 'transport', disconnected: false })
+  })
+
   it('does nothing for a session that ended', () => {
     const decrypt = vi.fn((ct: Uint8Array) => ct)
     const identity = makeIdentitySession()
@@ -145,8 +201,9 @@ describe('ChannelSessionInbound handleInbound', () => {
     ch.highestStartedId = 4
     const { inbound, delivered, ended } = makeInbound()
 
-    inbound.handleInbound(ch, BigInt(Number.MAX_SAFE_INTEGER) + 1n, ChannelMessageFlags.UNSPECIFIED, pair.responder.send.encrypt(responsePlaintext()))
-    inbound.handleInbound(ch, 4n, ChannelMessageFlags.UNSPECIFIED, pair.responder.send.encrypt(responsePlaintext()))
+    const wideId = BigInt(Number.MAX_SAFE_INTEGER) + 1n
+    inbound.handleInbound(ch, wideId, ChannelMessageFlags.UNSPECIFIED, pair.responder.send.encrypt(frameAssociatedData('ch-1', wideId, ChannelMessageFlags.UNSPECIFIED), responsePlaintext()))
+    inbound.handleInbound(ch, 4n, ChannelMessageFlags.UNSPECIFIED, pair.responder.send.encrypt(frameAssociatedData('ch-1', 4n, ChannelMessageFlags.UNSPECIFIED), responsePlaintext()))
 
     expect(ended).toEqual([])
     expect(delivered.map(entry => entry.correlationId)).toEqual([4])
@@ -159,8 +216,9 @@ describe('ChannelSessionInbound handleInbound', () => {
     ch.highestStartedId = 4
     const { inbound, delivered, ended } = makeInbound()
 
-    inbound.handleInbound(ch, 4n, ChannelMessageFlags.MORE | ChannelMessageFlags.CLOSE, pair.responder.send.encrypt(responsePlaintext()))
-    inbound.handleInbound(ch, 4n, ChannelMessageFlags.UNSPECIFIED, pair.responder.send.encrypt(responsePlaintext()))
+    const invalidFlags = ChannelMessageFlags.MORE | ChannelMessageFlags.CLOSE
+    inbound.handleInbound(ch, 4n, invalidFlags, pair.responder.send.encrypt(frameAssociatedData('ch-1', 4n, invalidFlags), responsePlaintext()))
+    inbound.handleInbound(ch, 4n, ChannelMessageFlags.UNSPECIFIED, pair.responder.send.encrypt(frameAssociatedData('ch-1', 4n, ChannelMessageFlags.UNSPECIFIED), responsePlaintext()))
 
     expect(ended).toEqual([])
     expect(delivered.map(entry => entry.correlationId)).toEqual([4])
@@ -174,7 +232,7 @@ describe('ChannelSessionInbound handleInbound', () => {
     const ch = makeChannel({
       rekeyWait: wait,
       rekeyRequestId: FIRST_REKEY_CORRELATION_ID,
-      rekeyMaterial: { ePriv: eph.privateKey, mlkemSS: null },
+      rekeyMaterial: { ePriv: eph.privateKey, pq: null },
     })
     const { inbound, delivered } = makeInbound()
 

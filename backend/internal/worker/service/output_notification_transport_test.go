@@ -41,7 +41,7 @@ func (transport *encryptedNotificationTransport) snapshot() []*leapmuxv1.AgentEv
 
 func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTransport {
 	t.Helper()
-	keys := newClassicalServiceTestKeys(t)
+	keys := serviceTestKeys(t)
 	transport := &encryptedNotificationTransport{}
 	var initiator *noiseutil.Session
 	var fragments []byte
@@ -55,7 +55,7 @@ func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTrans
 		if initiator == nil {
 			return fmt.Errorf("the encrypted channel has no initiator session")
 		}
-		plain, err := initiator.Decrypt(frame.Ciphertext)
+		plain, err := channelwire.OpenChannelMessage(initiator, frame)
 		if err != nil {
 			return err
 		}
@@ -79,15 +79,17 @@ func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTrans
 		}
 		return nil
 	}
-	manager := channel.NewManager(keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	manager := channel.NewManager("worker-test", keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 		send, func(request *leapmuxv1.ConnectRequest) bool { return send(request) == nil }, contracts.MaxPlaintextPerChunk, 0)
 	t.Cleanup(manager.CloseAll)
-	handshake, first, err := noiseutil.ClassicalInitiatorHandshake1(keys.X25519Public)
+	slhdsaPub, err := keys.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	handshake, first, err := noiseutil.ClassicalInitiatorHandshake1("worker-test", keys.X25519Public, keys.MlkemPublicKeyBytes(), slhdsaPub)
 	require.NoError(t, err)
 	opened := manager.HandleOpen(&leapmuxv1.ChannelOpenRequest{ChannelId: "notification-transport", UserId: "user-1",
 		HandshakePayload: first, MaxMessageSize: uint64(2 * contracts.MaxPlaintextPerChunk), GrantedScopes: testChannelGrant})
 	require.Empty(t, opened.Error)
-	initiator, err = noiseutil.ClassicalInitiatorHandshake2(handshake, opened.HandshakePayload)
+	initiator, err = handshake.Finish(opened.HandshakePayload)
 	require.NoError(t, err)
 	ready := make(chan channel.ResponseWriter, 1)
 	dispatcher := channel.NewDispatcher()
@@ -97,9 +99,9 @@ func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTrans
 	manager.SetDispatcher(dispatcher)
 	encoded, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Request{Request: &leapmuxv1.InnerRpcRequest{Method: "CaptureNotificationWriter"}}})
 	require.NoError(t, err)
-	ciphertext, err := initiator.Encrypt(encoded)
+	frame, err := channelwire.SealChannelMessage(initiator, "notification-transport", 1, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, encoded)
 	require.NoError(t, err)
-	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "notification-transport", CorrelationId: 1, Ciphertext: ciphertext})
+	manager.HandleMessage(frame)
 	select {
 	case transport.writer = <-ready:
 	case <-time.After(30 * time.Second):

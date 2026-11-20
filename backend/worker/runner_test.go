@@ -110,10 +110,27 @@ func TestRunRefusesAnUnspecifiedEncryptionMode(t *testing.T) {
 		Directory:    lease,
 		AuthToken:    "token",
 		CompositeKey: key,
+		WorkerID:     "worker-1",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "EncryptionMode")
 
+	assertNoWorkerDB(t, lease)
+}
+
+func TestRunRefusesAMissingWorkerID(t *testing.T) {
+	t.Parallel()
+	lease := workerLeaseForTest(t)
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	err = worker.Run(context.Background(), worker.RunConfig{
+		HubURL:         "http://127.0.0.1:1",
+		Directory:      lease,
+		AuthToken:      "token",
+		CompositeKey:   key,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+	})
+	require.ErrorContains(t, err, "RunConfig.WorkerID is required: the channel handshake hashes the Worker id")
 	assertNoWorkerDB(t, lease)
 }
 

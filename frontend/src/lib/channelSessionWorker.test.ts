@@ -1,5 +1,6 @@
 import type { SessionCommand, SessionEvent } from './channelSessionProtocol'
 import { x25519 } from '@noble/curves/ed25519.js'
+import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 
@@ -36,12 +37,13 @@ describe('channelSessionWorker', () => {
 
     worker.send({
       type: 'beginHandshake',
+      workerId: 'worker-1',
       requestId: 3,
       mode: EncryptionMode.CLASSIC,
       keys: {
         x25519PublicKey: x25519.getPublicKey(x25519.utils.randomSecretKey()),
-        mlkemPublicKey: new Uint8Array(0),
-        slhdsaPublicKey: new Uint8Array(0),
+        mlkemPublicKey: ml_kem1024.keygen().publicKey,
+        slhdsaPublicKey: new Uint8Array(64),
       },
     })
 

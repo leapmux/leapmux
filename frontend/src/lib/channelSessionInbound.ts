@@ -60,7 +60,7 @@ export class ChannelSessionInbound {
 
     let decrypted: Uint8Array
     try {
-      decrypted = this.deps.session.decrypt(ch, ciphertext)
+      decrypted = this.deps.session.decrypt(ch, correlationId, flags, ciphertext)
     }
     catch (err) {
       log.error('Failed to decrypt channel message, closing channel', { channel_id: ch.channelId, error: err })
@@ -141,7 +141,7 @@ export class ChannelSessionInbound {
         this.deps.postDeliver(ch, correlationId, plaintext)
         break
       case 'rekeyAck':
-        this.deps.session.handleRekeyOutcome(ch, true, 0, correlationId, envelope.kind.value.dhPub)
+        this.deps.session.handleRekeyOutcome(ch, true, 0, correlationId, envelope.kind.value)
         break
       case 'rekeyReject': {
         const raw = envelope.kind.value.retryAfterMs

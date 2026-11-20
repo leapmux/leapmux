@@ -26,23 +26,23 @@ class TestCipherState {
     this.n = 0
   }
 
-  encrypt(plaintext: Uint8Array): Uint8Array {
+  encrypt(ad: Uint8Array, plaintext: Uint8Array): Uint8Array {
     if (this.destroyed)
       throw new Error('noise: cipher state destroyed')
     const nonceBytes = new Uint8Array(12)
     new DataView(nonceBytes.buffer).setUint32(4, this.n, true)
-    const cipher = chacha20poly1305(this.k, nonceBytes, new Uint8Array(0))
+    const cipher = chacha20poly1305(this.k, nonceBytes, ad)
     const ct = cipher.encrypt(plaintext)
     this.n++
     return ct
   }
 
-  decrypt(ciphertext: Uint8Array): Uint8Array {
+  decrypt(ad: Uint8Array, ciphertext: Uint8Array): Uint8Array {
     if (this.destroyed)
       throw new Error('noise: cipher state destroyed')
     const nonceBytes = new Uint8Array(12)
     new DataView(nonceBytes.buffer).setUint32(4, this.n, true)
-    const cipher = chacha20poly1305(this.k, nonceBytes, new Uint8Array(0))
+    const cipher = chacha20poly1305(this.k, nonceBytes, ad)
     const pt = cipher.decrypt(ciphertext)
     this.n++
     return pt
@@ -99,11 +99,6 @@ export function createTestSession(): { initiator: Session, responder: Session } 
   }
 }
 
-/** The size of an ML-KEM-1024 shared secret (FIPS 203). */
-const MLKEM_SHARED_SECRET_SIZE = 32
-/** The size of an ML-KEM-1024 ciphertext (FIPS 203). */
-const MLKEM_CIPHERTEXT_SIZE = 1568
-
 /**
  * A hybrid handshake state of the real shape. Every secret is zero, except the
  * chaining key and the hash, which hold the padded protocol name 'test'. A mock
@@ -117,9 +112,8 @@ export function blankHybridHandshakeState(): HybridHandshakeState {
       privateKey: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
       publicKey: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
     },
-    rs: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
-    mlkemSS: new Uint8Array(MLKEM_SHARED_SECRET_SIZE),
-    mlkemCT: new Uint8Array(MLKEM_CIPHERTEXT_SIZE),
+    mlkemEphemeralSecretKey: new Uint8Array(3168),
+    slhdsaPublicKey: new Uint8Array(64),
   }
 }
 
@@ -134,6 +128,5 @@ export function blankClassicHandshakeState(): HandshakeState {
       privateKey: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
       publicKey: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
     },
-    rs: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
   }
 }

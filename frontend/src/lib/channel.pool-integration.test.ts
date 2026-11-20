@@ -29,6 +29,7 @@ import {
   simulatePingAcceptOnWs,
   waitForPendingChannel,
 } from './channel.test-support'
+import { frameAssociatedData } from './channelFraming'
 
 describe('ChannelManager getOrOpenChannel', () => {
   const h = new ChannelManagerTestHarness()
@@ -257,7 +258,8 @@ describe('ChannelManager getOrOpenChannel', () => {
     // StreamOpen advanced the initiator send nonce; consume it on the
     // responder so simulateRekeyAck can decrypt the subsequent RekeyRequest.
     const pair = sessions.get(ch1)!
-    pair.responder.receive.decrypt(decodeWireMessage(h.mockWs.sent.at(-1)!).ciphertext)
+    const openingFrame = decodeWireMessage(h.mockWs.sent.at(-1)!)
+    pair.responder.receive.decrypt(frameAssociatedData(openingFrame.channelId, openingFrame.correlationId, openingFrame.flags), openingFrame.ciphertext)
     agePastMaxAge(sessionStateOf(ch1))
     const sentBefore = h.mockWs.sent.length
     handle.send({ updateId: 9n })
@@ -269,7 +271,7 @@ describe('ChannelManager getOrOpenChannel', () => {
     expect(h.mockWs.sent.length).toBe(sentBefore + 2)
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
     expect(Number(sentMsg.correlationId)).toBe(handle.requestId)
-    const update = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
+    const update = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     if (update.kind.case !== 'streamRequest' || update.kind.value.action.case !== 'payload')
       throw new Error('the update must reach the wire as a stream revision')
     expect(fromBinary(WatchEventsRequestSchema, update.kind.value.action.value).updateId).toBe(9n)
@@ -403,7 +405,7 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
 
     const cm = newTestChannelManager(transport, {
       session: {
-        classicHandshake1: (_rs: Uint8Array) => ({
+        classicHandshake1: (_workerId: string, _keys: unknown) => ({
           message1: new Uint8Array(48),
           handshakeState: blankClassicHandshakeState(),
         }),
@@ -447,7 +449,7 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
 
     const cm = newTestChannelManager(transport, {
       session: {
-        classicHandshake1: (_rs: Uint8Array) => ({
+        classicHandshake1: (_workerId: string, _keys: unknown) => ({
           message1: new Uint8Array(48),
           handshakeState: blankClassicHandshakeState(),
         }),

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { makeIdentitySession } from './identitySession'
 
+const EMPTY = new Uint8Array(0)
+
 const cipherMethods = [
   { direction: 'send', method: 'encrypt' },
   { direction: 'send', method: 'decrypt' },
@@ -13,8 +15,8 @@ describe('makeIdentitySession', () => {
     const session = makeIdentitySession()
     const backing = new Uint8Array([0, 1, 2, 255, 0])
     const input = backing.subarray(1, 4)
-    const first = session[direction][method](input)
-    const second = session[direction][method](input)
+    const first = session[direction][method](EMPTY, input)
+    const second = session[direction][method](EMPTY, input)
 
     expect(first).toEqual(new Uint8Array([1, 2, 255]))
     expect(first).not.toBe(input)
@@ -33,8 +35,8 @@ describe('makeIdentitySession', () => {
   it.each(cipherMethods)('allocates fresh empty storage for $direction $method', ({ direction, method }) => {
     const session = makeIdentitySession()
     const input = new Uint8Array()
-    const first = session[direction][method](input)
-    const second = session[direction][method](input)
+    const first = session[direction][method](EMPTY, input)
+    const second = session[direction][method](EMPTY, input)
     expect(first).toEqual(input)
     expect(first.buffer).not.toBe(input.buffer)
     expect(first.buffer).not.toBe(second.buffer)
@@ -44,7 +46,7 @@ describe('makeIdentitySession', () => {
     const input = new Uint8Array(1024 * 1024).fill(0xA5)
     input[0] = 0
     input[input.length - 1] = 255
-    const output = makeIdentitySession()[direction][method](input)
+    const output = makeIdentitySession()[direction][method](EMPTY, input)
     expect(output).toEqual(input)
     input.fill(0)
     expect(output[0]).toBe(0)
@@ -78,8 +80,8 @@ describe('makeIdentitySession', () => {
           cipher.clearPrev()
           expect(dh).toEqual(new Uint8Array([1, 2]))
           expect(pq).toEqual(beforePq)
-          expect(cipher.encrypt(new Uint8Array([0, 255]))).toEqual(new Uint8Array([0, 255]))
-          expect(cipher.decrypt(new Uint8Array())).toEqual(new Uint8Array())
+          expect(cipher.encrypt(EMPTY, new Uint8Array([0, 255]))).toEqual(new Uint8Array([0, 255]))
+          expect(cipher.decrypt(EMPTY, new Uint8Array())).toEqual(new Uint8Array())
           expect(cipher.nonce()).toBe(0)
           expect(cipher.needsRekey()).toBe(false)
         }
@@ -92,8 +94,8 @@ describe('makeIdentitySession', () => {
     for (const cipher of [session.send, session.receive]) {
       cipher.destroy()
       cipher.destroy()
-      expect(cipher.encrypt(new Uint8Array([1, 2]))).toEqual(new Uint8Array([1, 2]))
-      expect(cipher.decrypt(new Uint8Array([3]))).toEqual(new Uint8Array([3]))
+      expect(cipher.encrypt(EMPTY, new Uint8Array([1, 2]))).toEqual(new Uint8Array([1, 2]))
+      expect(cipher.decrypt(EMPTY, new Uint8Array([3]))).toEqual(new Uint8Array([3]))
       expect(cipher.nonce()).toBe(0)
     }
   })

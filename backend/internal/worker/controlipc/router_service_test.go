@@ -33,7 +33,7 @@ func newRouterService(t *testing.T) (*service.Service, *channel.Dispatcher, *con
 	require.NoError(t, workerdb.Migrate(t.Context(), database))
 	send := func(*leapmuxv1.ConnectRequest) error { return nil }
 	// These calls stay inside the local router and never open an encrypted channel.
-	channels := channel.NewManager(nil, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, send, nil, 0, 0)
+	channels := channel.NewManager("worker-test", nil, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, send, nil, 0, 0)
 	svc := service.New(service.Config{DB: database, Channels: channels, Send: send,
 		Agents: agent.NewManager(providers.Registry(), nil), Terminals: terminal.NewManager(),
 		HomeDir: t.TempDir(), DataDir: t.TempDir(), SeedRegisteredBy: "router-owner",

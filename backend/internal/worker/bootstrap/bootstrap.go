@@ -195,7 +195,7 @@ func Wire(p Params) *Wiring {
 	// lookups. Its close callback is attached below, once there is a
 	// service for it to reach.
 	channelMgr := channel.NewManager(
-		p.CompositeKey, p.EncryptionMode, p.Client.Send, p.Client.TrySendOrReset, p.MaxMessageSize, p.MaxIncompleteChunked,
+		p.WorkerID, p.CompositeKey, p.EncryptionMode, p.Client.Send, p.Client.TrySendOrReset, p.MaxMessageSize, p.MaxIncompleteChunked,
 	)
 
 	// Raise producer ceilings with the configured payload budget so a
@@ -296,8 +296,8 @@ func Wire(p Params) *Wiring {
 	// All three keys go out regardless of mode, because they are the
 	// worker's IDENTITY, not this session's cipher choice. What selects
 	// the handshake is EncryptionMode above, read on its own by
-	// newInitiatorHandshaker (backend/tunnel/channel.go), so a classic
-	// worker advertising them still gets the classical handshake.
+	// startInitiatorHandshake (backend/tunnel/channel.go), so a classic
+	// worker advertising them still gets the classic handshake.
 	//
 	// Sending them only in post-quantum mode -- which the CLI did, and which
 	// unifying the two entry points spread to solo/desktop -- makes a classic

@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "noise_handshake_vectors.schema.json",
+  "title": "Noise channel handshake and frame vectors",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "vectors"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "vectors": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/vector" }
+    }
+  },
+  "$defs": {
+    "privateKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x25519Hex", "mlkemSeedHex", "slhdsaHex"],
+      "properties": {
+        "x25519Hex": { "$ref": "#/$defs/hex64" },
+        "mlkemSeedHex": { "$ref": "#/$defs/hex128" },
+        "slhdsaHex": { "type": "string", "pattern": "^[0-9a-f]{256}$" }
+      }
+    },
+    "publicKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x25519Hex", "mlkemHex", "slhdsaHex"],
+      "properties": {
+        "x25519Hex": { "$ref": "#/$defs/hex64" },
+        "mlkemHex": { "type": "string", "pattern": "^[0-9a-f]{3136}$" },
+        "slhdsaHex": { "$ref": "#/$defs/hex128" }
+      }
+    },
+    "entropy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x25519SeedHex": { "$ref": "#/$defs/hex64" },
+        "mlkemKeygenSeedHex": { "$ref": "#/$defs/hex128" },
+        "mlkemEncapsulationSeedHex": { "$ref": "#/$defs/hex64" },
+        "signRandomHex": { "$ref": "#/$defs/hex64" }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correlationId", "flags", "plaintext", "ciphertextHex"],
+      "properties": {
+        "correlationId": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "flags": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "plaintext": { "type": "string" },
+        "ciphertextHex": { "type": "string", "pattern": "^([0-9a-f]{2})+$" }
+      }
+    },
+    "frames": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/frame" },
+      "contains": { "type": "object", "required": ["plaintext"], "properties": { "plaintext": { "const": "" } } }
+    },
+    "vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "mode",
+        "workerId",
+        "channelId",
+        "responderPrivate",
+        "responderPublic",
+        "initiatorEntropy",
+        "responderEntropy",
+        "message1Hex",
+        "message2Hex",
+        "initiatorFrames",
+        "responderFrames"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["classic", "post_quantum"] },
+        "workerId": { "type": "string", "minLength": 1 },
+        "channelId": { "type": "string" },
+        "responderPrivate": { "$ref": "#/$defs/privateKeys" },
+        "responderPublic": { "$ref": "#/$defs/publicKeys" },
+        "initiatorEntropy": { "$ref": "#/$defs/entropy" },
+        "responderEntropy": { "$ref": "#/$defs/entropy" },
+        "message1Hex": { "type": "string" },
+        "message2Hex": { "type": "string" },
+        "initiatorFrames": { "$ref": "#/$defs/frames" },
+        "responderFrames": { "$ref": "#/$defs/frames" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "classic" } } },
+          "then": {
+            "properties": {
+              "initiatorEntropy": {
+                "type": "object",
+                "properties": { "x25519SeedHex": true, "mlkemEncapsulationSeedHex": true },
+                "required": ["x25519SeedHex", "mlkemEncapsulationSeedHex"]
+              },
+              "responderEntropy": {
+                "type": "object",
+                "properties": { "x25519SeedHex": true },
+                "required": ["x25519SeedHex"]
+              },
+              "message1Hex": { "type": "string", "pattern": "^[0-9a-f]{3264}$" },
+              "message2Hex": { "type": "string", "pattern": "^[0-9a-f]{96}$" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "post_quantum" } } },
+          "then": {
+            "properties": {
+              "initiatorEntropy": {
+                "type": "object",
+                "properties": { "x25519SeedHex": true, "mlkemKeygenSeedHex": true, "mlkemEncapsulationSeedHex": true },
+                "required": ["x25519SeedHex", "mlkemKeygenSeedHex", "mlkemEncapsulationSeedHex"]
+              },
+              "responderEntropy": {
+                "type": "object",
+                "properties": { "x25519SeedHex": true, "mlkemEncapsulationSeedHex": true, "signRandomHex": true },
+                "required": ["x25519SeedHex", "mlkemEncapsulationSeedHex", "signRandomHex"]
+              },
+              "message1Hex": { "type": "string", "pattern": "^[0-9a-f]{6432}$" },
+              "message2Hex": { "type": "string", "pattern": "^[0-9a-f]{102976}$" }
+            }
+          }
+        }
+      ]
+    },
+    "hex64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hex128": { "type": "string", "pattern": "^[0-9a-f]{128}$" }
+  }
+}

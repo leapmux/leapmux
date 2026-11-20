@@ -142,12 +142,12 @@ type runCleanup struct {
 // cancelled, and ends shortly after Run returns: the delegation janitor, the
 // clock-jump detector and the goroutines of the Hub connection.
 //
-// It requires a keypair with a complete key set, an auth token and an
-// encryption mode. The Hub pins the keys a Worker registers with and refuses a
-// hello that presents others, so a Worker with no usable keypair could never
-// connect. An empty token, and an unspecified encryption mode, are refused for
-// ever. So Run states all three as errors instead of starting a process that
-// cannot work. Its two callers always pass them: solo.bringUpLocalWorker, which
+// It requires a keypair with a complete key set, an auth token, a Worker id and
+// an encryption mode. The Hub pins the keys a Worker registers with and refuses
+// a hello that presents others, so a Worker with no usable keypair could never
+// connect. An empty token or Worker id, and an unspecified encryption mode, are
+// refused for ever. So Run states all four as errors instead of starting a
+// process that cannot work. Its two callers always pass them: solo.bringUpLocalWorker, which
 // solo, dev and the desktop app all reach, and the `leapmux worker` command.
 func Run(ctx context.Context, cfg RunConfig) error {
 	return run(ctx, cfg, runCleanup{closeDatabase: (*sql.DB).Close, closeDirectory: (*lifecycle.DirectoryLease).Close})
@@ -184,6 +184,9 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 	}
 	if cfg.AuthToken == "" {
 		return errors.New("worker: RunConfig.AuthToken is required: the Hub refuses a Worker with no auth token")
+	}
+	if cfg.WorkerID == "" {
+		return errors.New("worker: RunConfig.WorkerID is required: the channel handshake hashes the Worker id")
 	}
 	if cfg.EncryptionMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
 		return errors.New("worker: RunConfig.EncryptionMode is required: the Hub refuses a Worker hello with no encryption mode")
