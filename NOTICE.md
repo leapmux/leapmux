@@ -707,10 +707,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@tauri-apps/plugin-opener 2.7.3 (MIT OR Apache-2.0)](#tauri-appsplugin-opener-273-mit-or-apache-20)
 - [@thisbeyond/solid-dnd 0.7.5 (MIT)](#thisbeyondsolid-dnd-075-mit)
 - [@vanilla-extract/css 1.21.3 (MIT)](#vanilla-extractcss-1213-mit)
-- [@xterm/addon-fit 0.12.0-beta.333 (MIT)](#xtermaddon-fit-0120-beta333-mit)
-- [@xterm/addon-serialize 0.15.0-beta.331 (MIT)](#xtermaddon-serialize-0150-beta331-mit)
-- [@xterm/addon-webgl 0.20.0-beta.330 (MIT)](#xtermaddon-webgl-0200-beta330-mit)
-- [@xterm/xterm 6.1.0-beta.337 (MIT)](#xtermxterm-610-beta337-mit)
+- [@xterm/addon-fit 0.12.0-beta.334 (MIT)](#xtermaddon-fit-0120-beta334-mit)
+- [@xterm/addon-serialize 0.15.0-beta.332 (MIT)](#xtermaddon-serialize-0150-beta332-mit)
+- [@xterm/addon-webgl 0.20.0-beta.331 (MIT)](#xtermaddon-webgl-0200-beta331-mit)
+- [@xterm/xterm 6.1.0-beta.338 (MIT)](#xtermxterm-610-beta338-mit)
 - [altcha 3.6.0 (MIT)](#altcha-360-mit)
 - [dexie 4.4.7 (Apache-2.0)](#dexie-447-apache-20)
 - [diff 9.0.0 (BSD-3-Clause)](#diff-900-bsd-3-clause)
@@ -102769,7 +102769,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @xterm/addon-fit 0.12.0-beta.333 (MIT)
+### @xterm/addon-fit 0.12.0-beta.334 (MIT)
 
 ```
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -102793,7 +102793,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-serialize 0.15.0-beta.331 (MIT)
+### @xterm/addon-serialize 0.15.0-beta.332 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -102819,7 +102819,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-webgl 0.20.0-beta.330 (MIT)
+### @xterm/addon-webgl 0.20.0-beta.331 (MIT)
 
 ```
 Copyright (c) 2018, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -102843,7 +102843,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/xterm 6.1.0-beta.337 (MIT)
+### @xterm/xterm 6.1.0-beta.338 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
