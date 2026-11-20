@@ -165,12 +165,14 @@ func (svc *Service) FinalizeSemanticEvents(handlersFinished bool) {
 
 func registerSemanticEventsHandler(registrar ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(registrar, leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, dispatchPlain, svc.watchSemanticEvents)
+	registerOwnerGuarded(registrar, leapmuxv1connect.WorkerWatchServiceWatchWorkerSemanticEventsProcedure, dispatchPlain, svc.watchWorkerSemanticEvents)
 }
 
 type semanticWatchControl struct{ cancel context.CancelFunc }
 
-func (c semanticWatchControl) OnClientFrame([]byte) { c.cancel() }
-func (c semanticWatchControl) OnCancel()            { c.cancel() }
+// A history watch keeps the scope and cursor from its opening request.
+func (semanticWatchControl) OnClientFrame([]byte) {}
+func (c semanticWatchControl) OnCancel()          { c.cancel() }
 
 func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Caller, req *leapmuxv1.WatchSemanticEventsRequest, sender channel.ResponseWriter) {
 	tab := eventjournal.Tab{Type: req.GetTab().GetTabType(), ID: req.GetTab().GetTabId()}
@@ -178,10 +180,7 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		sendSemanticWatchError(sender, codes.InvalidArgument, "an agent or terminal tab is required")
 		return
 	}
-	scope, grant := leapmuxv1.Scope_SCOPE_TERMINAL_READ, "terminal:read"
-	if tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
-		scope, grant = leapmuxv1.Scope_SCOPE_AGENT_READ, "agent:read"
-	}
+	scope, grant := semanticHistoryReadGrant(tab.Type)
 	if !caller.Allows(scope) {
 		sendSemanticWatchError(sender, codes.PermissionDenied, "event history requires "+grant)
 		return
@@ -218,7 +217,7 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 	if !checkOwner() {
 		return
 	}
-	if !sendSemanticWatchFrame(sender, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: ready}}) {
+	if !sendSemanticWatchFrame(sender, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: ready}}, false) {
 		return
 	}
 	after := ready.GetAfterSequence()
@@ -241,10 +240,11 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 				}
 				record.CurrentRequestHandle = handle
 			}
-			if !checkOwner() || !sendSemanticWatchFrame(sender, frame) {
+			finished := frame.GetRetired() != nil
+			if !checkOwner() || !sendSemanticWatchFrame(sender, frame, finished) {
 				return
 			}
-			if frame.GetRetired() != nil {
+			if finished {
 				return
 			}
 			if gap := frame.GetGap(); gap != nil {
@@ -274,8 +274,8 @@ func (svc *Service) currentSemanticRequestHandle(ctx context.Context, journal *e
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := db.New(tx)
-	open, err := queries.CanWatchAgentHistory(ctx, agentID)
-	if err != nil || !open {
+	canAnswer, err := queries.CanAnswerSemanticAgentRequest(ctx, agentID)
+	if err != nil || !canAnswer {
 		return "", err
 	}
 	claim, err := queries.GetControlRequestClaim(ctx, db.GetControlRequestClaimParams{AgentID: agentID, RequestID: request.GetRequestId()})
@@ -295,17 +295,24 @@ func (svc *Service) currentSemanticRequestHandle(ctx context.Context, journal *e
 	return claim, nil
 }
 
-func sendSemanticWatchFrame(sender channel.ResponseWriter, frame *leapmuxv1.WatchSemanticEventsResponse) bool {
+func semanticHistoryReadGrant(tabType leapmuxv1.TabType) (leapmuxv1.Scope, string) {
+	if tabType == leapmuxv1.TabType_TAB_TYPE_AGENT {
+		return leapmuxv1.Scope_SCOPE_AGENT_READ, "agent:read"
+	}
+	return leapmuxv1.Scope_SCOPE_TERMINAL_READ, "terminal:read"
+}
+
+func sendSemanticWatchFrame(sender channel.ResponseWriter, frame proto.Message, end bool) bool {
 	raw, err := proto.Marshal(frame)
 	if err != nil {
-		sendSemanticWatchError(sender, codes.Internal, "could not encode a tab event")
+		sendSemanticWatchError(sender, codes.Internal, "could not encode a semantic event")
 		return false
 	}
 	if budget := sender.MaxPayloadBudget(); budget != 0 && len(raw) > budget {
-		sendSemanticWatchError(sender, codes.ResourceExhausted, "a tab event exceeds this connection's payload limit")
+		sendSemanticWatchError(sender, codes.ResourceExhausted, "a semantic event exceeds this connection's payload limit")
 		return false
 	}
-	return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw, End: frame.GetRetired() != nil}) == nil
+	return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw, End: end}) == nil
 }
 
 func reportSemanticWatchError(ctx context.Context, sender channel.ResponseWriter, err error) {
@@ -314,6 +321,10 @@ func reportSemanticWatchError(ctx context.Context, sender channel.ResponseWriter
 	}
 	if errors.Is(err, eventjournal.ErrCursor) {
 		sendSemanticWatchError(sender, codes.FailedPrecondition, eventjournal.ErrCursor.Error())
+		return
+	}
+	if errors.Is(err, eventjournal.ErrFeedCursor) {
+		sendSemanticWatchError(sender, codes.FailedPrecondition, eventjournal.ErrFeedCursor.Error())
 		return
 	}
 	if errors.Is(err, eventjournal.ErrAdmission) {

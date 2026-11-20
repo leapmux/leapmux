@@ -164,7 +164,7 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 			frames = append(frames, r.gap(leapmuxv1.SemanticWatchGapReason(row.GapReason.Int64), after, row.Sequence))
 		} else {
 			var fact leapmuxv1.SemanticTabFact
-			if err := proto.Unmarshal(row.Fact, &fact); err != nil || fact.GetEvent() == nil {
+			if err := proto.Unmarshal(row.Fact, &fact); err != nil || semanticFactTabType(&fact) != r.tab.Type {
 				return nil, nil, fmt.Errorf("%w: invalid stored event", ErrUnavailable)
 			}
 			frames = append(frames, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Record{

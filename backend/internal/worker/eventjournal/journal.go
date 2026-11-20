@@ -30,6 +30,7 @@ const (
 var (
 	ErrUnavailable = errors.New("the Worker's event journal is unavailable")
 	ErrCursor      = errors.New("the event checkpoint does not match retained history for this tab")
+	ErrFeedCursor  = errors.New("the event checkpoint does not match this Worker and tab kind")
 	ErrAdmission   = errors.New("no live tab with event history access")
 )
 
@@ -87,7 +88,7 @@ func (j *Journal) Record(tab Tab, fact *leapmuxv1.SemanticTabFact) {
 	item := observation{tab: tab, observed: j.clock.Now().UnixMilli()}
 	item.requestOpening = bytes.Clone(fact.GetAgentRequest().GetRequestInstance())
 	var err error
-	if proto.Size(fact) <= maxObservationBytes {
+	if semanticFactTabType(fact) == tab.Type && proto.Size(fact) <= maxObservationBytes {
 		item.fact, err = proto.Marshal(fact)
 	}
 	if err != nil || len(item.fact) == 0 {

@@ -16,6 +16,9 @@ service WorkerWatchService {
   rpc WatchSemanticEvents(WatchSemanticEventsRequest) returns (stream WatchSemanticEventsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  rpc WatchWorkerSemanticEvents(WatchWorkerSemanticEventsRequest) returns (stream WatchWorkerSemanticEventsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
 }
 
 // WatchSemanticEvents resumes a tab's journal after a signed cursor. An
@@ -32,6 +35,40 @@ message WatchSemanticEventsResponse {
     SemanticWatchGap gap = 3;
     SemanticWatchRetired retired = 4;
   }
+}
+
+// WatchWorkerSemanticEvents follows every tab of one kind on the Worker.
+// An empty cursor starts at the current committed tail, even with no tabs.
+message WatchWorkerSemanticEventsRequest {
+  TabType tab_type = 1;
+  bytes after_cursor = 2;
+}
+
+message WatchWorkerSemanticEventsResponse {
+  oneof event {
+    SemanticWorkerWatchReady ready = 1;
+    SemanticWorkerWatchRecord record = 2;
+    SemanticWatchGap gap = 3;
+  }
+}
+
+message SemanticWorkerWatchReady {
+  TabType tab_type = 1;
+  string worker_id = 2;
+  string journal_id = 3;
+  int64 after_sequence = 4;
+  int64 high_water_sequence = 5;
+  bytes cursor = 6;
+}
+
+message SemanticWorkerWatchRecord {
+  int64 sequence = 1;
+  int64 observed_unix_millis = 2;
+  TabIdent tab = 3;
+  SemanticTabFact fact = 4;
+  bytes cursor = 5;
+  // Present when this exact request instance still waits for an answer.
+  string current_request_handle = 6;
 }
 
 // Ready confirms the accepted position before any record or gap. The high
@@ -65,6 +102,7 @@ enum SemanticWatchGapReason {
   SEMANTIC_WATCH_GAP_REASON_RETENTION = 1;
   SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP = 2;
   SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT = 3;
+  SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE = 4;
 }
 
 // A gap advances over an interval whose complete history is unavailable.

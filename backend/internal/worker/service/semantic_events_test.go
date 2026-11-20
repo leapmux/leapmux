@@ -241,6 +241,13 @@ func TestSemanticRequestHandleMatchesOnlyTheCurrentClaim(t *testing.T) {
 	handle, err := svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
 	require.NoError(t, err)
 	assert.Equal(t, "old claim", handle)
+	_, err = svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{ID: agentID, WorkspaceArchived: true})
+	require.NoError(t, err)
+	handle, err = svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
+	require.NoError(t, err)
+	assert.Empty(t, handle, "archive already prevents answering the open prompt")
+	_, err = svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{ID: agentID, WorkspaceArchived: false})
+	require.NoError(t, err)
 	request.PromptKind = leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_UNREADABLE
 	handle, err = svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
 	require.NoError(t, err)

@@ -70,6 +70,17 @@ func (s store) initialize(ctx context.Context, workerID string, owner userid.Use
 		if err := s.pruneExpired(ctx, q, now); err != nil {
 			return err
 		}
+		if row.Dirty != 0 {
+			// The set of lost publications can include tabs whose tails were
+			// never created or are no longer retained.
+			for _, tabType := range []leapmuxv1.TabType{
+				leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+			} {
+				if _, err := advanceFeedPosition(ctx, q, tabType); err != nil {
+					return err
+				}
+			}
+		}
 		tails, err := q.ListSemanticEventTails(ctx)
 		if err != nil {
 			return err
@@ -153,7 +164,7 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 	}
 	tail, err := s.ensureTail(ctx, q, item.tab, item.observed)
 	if errors.Is(err, ErrAdmission) {
-		return 0, nil
+		return 0, recordUnverifiableClosedFact(ctx, q, item.tab)
 	}
 	if err != nil {
 		return 0, err
@@ -181,8 +192,13 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 	if err != nil {
 		return 0, err
 	}
+	feedSequence, err := advanceFeedPosition(ctx, q, item.tab.Type)
+	if err != nil {
+		return 0, err
+	}
 	if err := q.InsertSemanticEventEntry(ctx, db.InsertSemanticEventEntryParams{
-		TabType: int64(item.tab.Type), TabID: item.tab.ID, Sequence: sequence, ObservedUnixMillis: item.observed,
+		TabType: int64(item.tab.Type), TabID: item.tab.ID, Sequence: sequence,
+		FeedSequence: feedSequence, ObservedUnixMillis: item.observed,
 		Fact: item.fact, RequestOpenInstance: item.requestOpening,
 		GapReason: sql.NullInt64{Valid: item.gap != 0, Int64: int64(item.gap)},
 	}); err != nil {
@@ -211,10 +227,33 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 	return sequence, nil
 }
 
+func advanceFeedPosition(ctx context.Context, q *db.Queries, tabType leapmuxv1.TabType) (int64, error) {
+	sequence, err := q.AdvanceSemanticEventFeed(ctx, int64(tabType))
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, errors.New("the Worker's event sequence is exhausted")
+	}
+	return sequence, err
+}
+
+// An eligible resource can close before the writer checks whether it has a
+// tail. Reserve a missing feed position when the fact's admission is unknown.
+// An already closed tab cannot start an exact history and evict a live tail.
+func recordUnverifiableClosedFact(ctx context.Context, q *db.Queries, tab Tab) error {
+	closed, err := tab.closed(ctx, q)
+	if err != nil || !closed {
+		return err
+	}
+	_, err = advanceFeedPosition(ctx, q, tab.Type)
+	return err
+}
+
 func (s store) seal(ctx context.Context, q *db.Queries, item observation) error {
 	key := db.GetSemanticEventTailParams{TabType: int64(item.tab.Type), TabID: item.tab.ID}
 	tail, err := q.GetSemanticEventTail(ctx, key)
 	if errors.Is(err, sql.ErrNoRows) {
+		if item.gap != 0 {
+			return recordUnverifiableClosedFact(ctx, q, item.tab)
+		}
 		return nil
 	}
 	if err != nil {

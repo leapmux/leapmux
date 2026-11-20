@@ -7,6 +7,15 @@ SELECT EXISTS (SELECT 1 FROM terminals WHERE id = ? AND closed_at IS NULL AND NO
 -- name: CanWatchAgentHistory :one
 SELECT EXISTS (SELECT 1 FROM agents WHERE id = ? AND closed_at IS NULL);
 
+-- name: CanAnswerSemanticAgentRequest :one
+SELECT EXISTS (SELECT 1 FROM agents WHERE id = ? AND closed_at IS NULL AND NOT workspace_archived);
+
+-- name: IsClosedTerminalHistoryResource :one
+SELECT EXISTS (SELECT 1 FROM terminals WHERE id = ? AND closed_at IS NOT NULL AND NOT is_quake);
+
+-- name: IsClosedAgentHistoryResource :one
+SELECT EXISTS (SELECT 1 FROM agents WHERE id = ? AND closed_at IS NOT NULL);
+
 -- name: CreateSemanticEventJournal :exec
 INSERT INTO semantic_event_journal (singleton, worker_id, owner_user_id, journal_id, cursor_key, dirty, entry_count, payload_bytes)
 VALUES (1, ?, ?, ?, ?, 1, 0, 0);
@@ -16,6 +25,15 @@ DELETE FROM semantic_event_journal WHERE singleton = 1;
 
 -- name: SetSemanticEventJournalDirty :exec
 UPDATE semantic_event_journal SET dirty = ? WHERE singleton = 1;
+
+-- name: GetSemanticEventFeedPosition :one
+SELECT CAST(COALESCE((SELECT high_sequence FROM semantic_event_feed_heads WHERE tab_type = sqlc.arg(tab_type)), 0) AS INTEGER);
+
+-- name: AdvanceSemanticEventFeed :one
+INSERT INTO semantic_event_feed_heads (tab_type, high_sequence) VALUES (sqlc.arg(tab_type), 1)
+ON CONFLICT (tab_type) DO UPDATE SET high_sequence = high_sequence + 1
+WHERE high_sequence < 9223372036854775807
+RETURNING high_sequence;
 
 -- name: ChangeSemanticEventJournalUsage :one
 UPDATE semantic_event_journal
@@ -61,8 +79,8 @@ UPDATE semantic_event_tails SET floor_sequence = sqlc.arg(floor_sequence)
 WHERE tab_type = sqlc.arg(tab_type) AND tab_id = sqlc.arg(tab_id) AND floor_sequence < sqlc.arg(floor_sequence);
 
 -- name: InsertSemanticEventEntry :exec
-INSERT INTO semantic_event_entries (tab_type, tab_id, sequence, observed_unix_millis, fact, request_open_instance, gap_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO semantic_event_entries (tab_type, tab_id, sequence, feed_sequence, observed_unix_millis, fact, request_open_instance, gap_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: HasSemanticEventRequestOpening :one
 SELECT EXISTS (
@@ -76,6 +94,14 @@ ORDER BY sequence LIMIT sqlc.arg(page_size);
 
 -- name: GetOldestSemanticEventEntry :one
 SELECT * FROM semantic_event_entries ORDER BY ingest_order LIMIT 1;
+
+-- name: ListSemanticEventFeedEntriesAfter :many
+SELECT * FROM semantic_event_entries
+WHERE tab_type = sqlc.arg(tab_type) AND feed_sequence > sqlc.arg(after_sequence)
+ORDER BY feed_sequence LIMIT sqlc.arg(page_size);
+
+-- name: HasExpiredSemanticEventEntries :one
+SELECT EXISTS (SELECT 1 FROM semantic_event_entries WHERE observed_unix_millis <= sqlc.arg(expired_at));
 
 -- name: GetExpiredSemanticEventCutoffs :many
 SELECT tab_type, tab_id, CAST(MAX(sequence) AS INTEGER) AS cutoff

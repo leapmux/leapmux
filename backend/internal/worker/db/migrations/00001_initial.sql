@@ -897,6 +897,14 @@ CREATE TABLE semantic_event_journal (
     payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0)
 );
 
+-- A Worker feed keeps its committed position after every entry expires.
+CREATE TABLE semantic_event_feed_heads (
+    -- TabType ordinal. Each kind has its own authorization and sequence.
+    tab_type INTEGER PRIMARY KEY CHECK (typeof(tab_type) = 'integer') CHECK (tab_type BETWEEN 1 AND 2),
+    singleton INTEGER NOT NULL DEFAULT 1 CHECK (singleton = 1) REFERENCES semantic_event_journal(singleton) ON DELETE CASCADE,
+    high_sequence INTEGER NOT NULL CHECK (high_sequence > 0)
+) WITHOUT ROWID;
+
 CREATE TABLE semantic_event_tails (
     -- TabType ordinal. Worker-owned agent and terminal tabs publish facts.
     tab_type INTEGER NOT NULL CHECK (typeof(tab_type) = 'integer') CHECK (tab_type BETWEEN 1 AND 2),
@@ -938,14 +946,16 @@ CREATE TABLE semantic_event_entries (
     tab_type INTEGER NOT NULL,
     tab_id TEXT NOT NULL,
     sequence INTEGER NOT NULL CHECK (sequence > 0),
+    feed_sequence INTEGER NOT NULL CHECK (feed_sequence > 0),
     observed_unix_millis INTEGER NOT NULL,
     fact BLOB NOT NULL,
     -- A request opening has one journal-local identity while it is retained.
     request_open_instance BLOB CHECK (request_open_instance IS NULL OR length(request_open_instance) = 32),
-    -- SemanticWatchGapReason ordinal. The reader derives retention from floor_sequence.
+    -- SemanticWatchGapReason ordinal. Readers derive gaps for missing entries.
     gap_reason INTEGER CHECK (gap_reason IS NULL OR typeof(gap_reason) = 'integer') CHECK (gap_reason BETWEEN 2 AND 3),
     CHECK ((gap_reason IS NULL AND length(fact) > 0) OR (gap_reason IS NOT NULL AND length(fact) = 0)),
     UNIQUE (tab_type, tab_id, sequence),
+    UNIQUE (tab_type, feed_sequence),
     FOREIGN KEY (tab_type, tab_id) REFERENCES semantic_event_tails(tab_type, tab_id) ON DELETE CASCADE
 );
 CREATE INDEX semantic_event_age_idx ON semantic_event_entries (observed_unix_millis, ingest_order);
@@ -957,6 +967,7 @@ CREATE UNIQUE INDEX semantic_event_request_open_idx
 DROP TRIGGER IF EXISTS semantic_event_agent_closed;
 DROP TRIGGER IF EXISTS semantic_event_terminal_closed;
 DROP TABLE IF EXISTS semantic_event_entries;
+DROP TABLE IF EXISTS semantic_event_feed_heads;
 DROP TABLE IF EXISTS semantic_event_tails;
 DROP TABLE IF EXISTS semantic_event_journal;
 DROP TABLE IF EXISTS tab_creations;

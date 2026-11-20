@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -23,10 +24,18 @@ type cursorIdentity struct {
 // The token carries only the version and position. The signature binds the
 // rest to the identity established by this Worker and the tab it admitted.
 func (c cursorIdentity) sign(tab Tab, streamID string, sequence int64) []byte {
+	return c.signPosition(sequence, "leapmux semantic tab cursor", strconv.FormatInt(int64(tab.Type), 10), tab.ID, streamID)
+}
+
+func (c cursorIdentity) signFeedPosition(tabType leapmuxv1.TabType, sequence int64) []byte {
+	return c.signPosition(sequence, "leapmux semantic Worker cursor", strconv.FormatInt(int64(tabType), 10))
+}
+
+func (c cursorIdentity) signPosition(sequence int64, purpose string, scope ...string) []byte {
 	position := make([]byte, cursorPositionSize, cursorPositionSize+sha256.Size)
 	position[0] = cursorVersion
 	binary.BigEndian.PutUint64(position[1:], uint64(sequence))
-	sum := c.digest("leapmux semantic tab cursor", strconv.FormatInt(int64(tab.Type), 10), tab.ID, streamID, string(position))
+	sum := c.digest(purpose, append(scope, string(position))...)
 	return append(position, sum...)
 }
 
@@ -51,12 +60,25 @@ func (c cursorIdentity) digest(purpose string, fields ...string) []byte {
 }
 
 func (c cursorIdentity) position(tab Tab, streamID string, cursor []byte) (int64, error) {
-	if len(cursor) != cursorPositionSize+sha256.Size || cursor[0] != cursorVersion {
+	sequence, ok := decodePosition(cursor)
+	if !ok || !hmac.Equal(cursor, c.sign(tab, streamID, sequence)) {
 		return 0, ErrCursor
+	}
+	return sequence, nil
+}
+
+func (c cursorIdentity) feedPosition(tabType leapmuxv1.TabType, cursor []byte) (int64, error) {
+	sequence, ok := decodePosition(cursor)
+	if !ok || !hmac.Equal(cursor, c.signFeedPosition(tabType, sequence)) {
+		return 0, ErrFeedCursor
+	}
+	return sequence, nil
+}
+
+func decodePosition(cursor []byte) (int64, bool) {
+	if len(cursor) != cursorPositionSize+sha256.Size || cursor[0] != cursorVersion {
+		return 0, false
 	}
 	sequence := binary.BigEndian.Uint64(cursor[1:cursorPositionSize])
-	if sequence > math.MaxInt64 || !hmac.Equal(cursor, c.sign(tab, streamID, int64(sequence))) {
-		return 0, ErrCursor
-	}
-	return int64(sequence), nil
+	return int64(sequence), sequence <= math.MaxInt64
 }

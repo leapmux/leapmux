@@ -390,6 +390,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, func() proto.Message {
 			return &leapmuxv1.WatchSemanticEventsRequest{Tab: terminalTabIdent("term-1")}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerWatchServiceWatchWorkerSemanticEventsProcedure, leapmuxv1connect.WorkerWatchServiceWatchWorkerSemanticEventsProcedure, func() proto.Message {
+			return &leapmuxv1.WatchWorkerSemanticEventsRequest{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, func() proto.Message {
 			return &leapmuxv1.ListAgentSessionsRequest{
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
