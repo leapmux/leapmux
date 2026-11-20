@@ -94,9 +94,9 @@ func assertRepeatAddsNothing(t *testing.T, store *Store, request NewItem) Snapsh
 	t.Helper()
 	before, err := store.Snapshot(t.Context(), request.AgentID)
 	require.NoError(t, err)
-	after, added, err := store.enqueue(t.Context(), request, nil)
+	after, receipt, err := store.enqueue(t.Context(), request, nil)
 	require.NoError(t, err, "a retry of the request that queued the input matches it")
-	assert.False(t, added, "a retry adds nothing")
+	assert.False(t, receipt.Added, "a retry adds nothing")
 	assert.Equal(t, before, after, "a retry changes nothing")
 	return after
 }
@@ -107,9 +107,9 @@ func assertRepeatConflicts(t *testing.T, store *Store, request NewItem) {
 	t.Helper()
 	before, err := store.Snapshot(t.Context(), request.AgentID)
 	require.NoError(t, err)
-	_, added, err := store.enqueue(t.Context(), request, nil)
+	_, receipt, err := store.enqueue(t.Context(), request, nil)
 	require.ErrorIs(t, err, ErrConflict)
-	assert.False(t, added)
+	assert.False(t, receipt.Added)
 	after, err := store.Snapshot(t.Context(), request.AgentID)
 	require.NoError(t, err)
 	assert.Equal(t, before, after, "a refused request changes nothing")

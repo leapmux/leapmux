@@ -488,6 +488,13 @@ func (m *Manager) StageInitialMessage(ctx context.Context, tx *sql.Tx, agentID, 
 // adds nothing and reports false. A caller that must act once for each item acts
 // only on true.
 func (m *Manager) EnqueueReportingAdded(ctx context.Context, input NewItem) (Snapshot, bool, error) {
+	snapshot, receipt, err := m.EnqueueWithReceipt(ctx, input)
+	return snapshot, receipt.Added, err
+}
+
+// EnqueueWithReceipt returns the queue snapshot and the verified outcome
+// of the enqueue, including an accepted input's transcript sequence.
+func (m *Manager) EnqueueWithReceipt(ctx context.Context, input NewItem) (Snapshot, EnqueueReceipt, error) {
 	return m.enqueue(ctx, input, nil)
 }
 
@@ -498,27 +505,27 @@ func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply 
 	return snapshot, err
 }
 
-func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
+func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, EnqueueReceipt, error) {
 	// The classifier rewrites a slash command into its own kind, and a sender
 	// turns a user message into an agent message, so the test must see the
 	// kind the store will store, not the one the client sent. The store asks
 	// the same rules again before writing.
 	admitted, err := m.store.admitNewItem(input)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	if err := m.refuseUnacceptedKind(input.AgentID, admitted.Kind); err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	// mutateAndDrain can refuse before it calls the store, and then nothing was
 	// added.
-	added := false
+	var receipt EnqueueReceipt
 	snapshot, err := m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
-		inner, innerAdded, innerErr := m.store.enqueue(ctx, input, apply)
-		added = innerAdded
+		inner, innerReceipt, innerErr := m.store.enqueue(ctx, input, apply)
+		receipt = innerReceipt
 		return inner, innerErr
 	}))
-	return snapshot, added && err == nil, err
+	return snapshot, receipt, err
 }
 
 func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {

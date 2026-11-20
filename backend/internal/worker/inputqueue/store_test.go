@@ -540,35 +540,35 @@ func TestStoreEnqueueReportsWhetherItAddedTheItem(t *testing.T) {
 	ctx := context.Background()
 	input := NewItem{ID: "input-1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"}
 
-	snapshot, added, err := store.enqueue(ctx, input, nil)
+	snapshot, receipt, err := store.enqueue(ctx, input, nil)
 	require.NoError(t, err)
-	assert.True(t, added)
+	assert.True(t, receipt.Added)
 	require.Len(t, snapshot.Items, 1)
 
-	snapshot, added, err = store.enqueue(ctx, input, nil)
+	snapshot, receipt, err = store.enqueue(ctx, input, nil)
 	require.NoError(t, err)
-	assert.False(t, added, "a repeat of a queued item adds nothing")
+	assert.False(t, receipt.Added, "a repeat of a queued item adds nothing")
 	assert.Len(t, snapshot.Items, 1)
 
 	conflicting := input
 	conflicting.Text = "different"
-	_, added, err = store.enqueue(ctx, conflicting, nil)
+	_, receipt, err = store.enqueue(ctx, conflicting, nil)
 	require.ErrorIs(t, err, ErrConflict)
-	assert.False(t, added)
+	assert.False(t, receipt.Added)
 
 	mutationFailed := errors.New("the mutation failed")
 	failing := NewItem{ID: "input-2", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "second"}
-	_, added, err = store.enqueue(ctx, failing, func(*sql.Tx) error { return mutationFailed })
+	_, receipt, err = store.enqueue(ctx, failing, func(*sql.Tx) error { return mutationFailed })
 	require.ErrorIs(t, err, mutationFailed)
-	assert.False(t, added, "a failed mutation rolls the insert back")
+	assert.False(t, receipt.Added, "a failed mutation rolls the insert back")
 	snapshot, err = store.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, "input-1", snapshot.Items[0].ID)
 
-	_, added, err = store.enqueue(ctx, failing, nil)
+	_, receipt, err = store.enqueue(ctx, failing, nil)
 	require.NoError(t, err)
-	assert.True(t, added, "the item that the failed mutation rolled back is new")
+	assert.True(t, receipt.Added, "the item that the failed mutation rolled back is new")
 }
 
 func TestControlFeedbackPrecedesFutureInput(t *testing.T) {

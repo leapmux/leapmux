@@ -636,7 +636,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
 				return
 			}
-			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
+			snapshot, receipt, err := svc.InputQueue.EnqueueWithReceipt(bgCtx(), inputqueue.NewItem{
 				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Sender: from, Text: r.GetText(),
 				Attachments:           queueAttachments(r.GetAttachments()),
 				ReclassifyOnEdit:      r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
@@ -646,7 +646,9 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{
+				Snapshot: svc.queueSnapshotProto(snapshot), AcceptedSeq: receipt.AcceptedSeq,
+			})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, dispatchPlain,

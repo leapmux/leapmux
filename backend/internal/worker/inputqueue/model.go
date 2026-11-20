@@ -375,6 +375,13 @@ type NewItem struct {
 	SourcePayload []byte
 }
 
+// EnqueueReceipt reports whether an enqueue added an input or matched an
+// accepted input. AcceptedSeq is zero until there is an accepted row.
+type EnqueueReceipt struct {
+	Added       bool
+	AcceptedSeq int64
+}
+
 type PreparedDispatch struct {
 	Item        DispatchItem
 	ReservedSeq int64

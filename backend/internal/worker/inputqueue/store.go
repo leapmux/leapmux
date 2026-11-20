@@ -235,22 +235,22 @@ func (s *Store) prepareNewItem(input NewItem) (NewItem, error) {
 }
 
 // enqueue queues input, applies the extra database mutation, and commits both
-// with the snapshot. It reports whether this call added the item. A repeat of an
-// item that the queue holds, that it already delivered, or that someone removed
-// from it, adds nothing: it answers the current snapshot and false. A removed
+// with the snapshot. The receipt reports whether this call added the item
+// and gives its transcript sequence if it already reached the agent.
+// A repeat leaves a queued, delivered, or removed input in place. A removed
 // item stays out of the queue, so the snapshot of such a repeat does not hold
 // it. Until PurgeRemoved deletes the row of a removed item, a retry of the
 // request that queued it cannot queue it again.
 //
 // A repeat is the request that queued the item, so it compares its key with
-// the key that the Worker stored for the item (storedRequestKey), not with the
+// the key that the Worker stored for the item (storedRequest), not with the
 // content that the item holds now. A repeat after someone edited the item
 // therefore still matches, and a request that sends the edited content under
 // the same input id conflicts.
-func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, bool, error) {
+func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, EnqueueReceipt, error) {
 	input, err := s.prepareNewItem(input)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	// The hash reads every attachment byte, so it runs before the transaction
 	// takes the write lock.
@@ -258,59 +258,62 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := s.now()
-	added, err := enqueuePreparedItem(ctx, tx, input, key, now)
+	receipt, err := enqueuePreparedItem(ctx, tx, input, key, now)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	if apply != nil {
 		if err := apply(tx); err != nil {
-			return Snapshot{}, false, err
+			return Snapshot{}, EnqueueReceipt{}, err
 		}
 	}
 	snapshot, err := commitSnapshot(ctx, tx, input.AgentID, now)
-	return snapshot, added && err == nil, err
+	if err != nil {
+		return snapshot, EnqueueReceipt{}, err
+	}
+	return snapshot, receipt, nil
 }
 
 // enqueuePreparedItem adds an admitted item to the caller's transaction.
 // A matching request keeps the original queue item or accepted transcript.
-func enqueuePreparedItem(ctx context.Context, tx *sql.Tx, input NewItem, key string, now time.Time) (bool, error) {
+func enqueuePreparedItem(ctx context.Context, tx *sql.Tx, input NewItem, key string, now time.Time) (EnqueueReceipt, error) {
 	if err := ensureState(ctx, tx, input.AgentID); err != nil {
-		return false, err
+		return EnqueueReceipt{}, err
 	}
 
-	storedKey, found, err := storedRequestKey(ctx, tx, input.AgentID, input.ID)
+	stored, found, err := storedRequest(ctx, tx, input.AgentID, input.ID)
 	if err != nil {
-		return false, err
+		return EnqueueReceipt{}, err
 	}
 	if found {
-		if storedKey != key {
-			return false, ErrConflict
+		if stored.key != key {
+			return EnqueueReceipt{}, ErrConflict
 		}
-		return false, nil
+		return EnqueueReceipt{AcceptedSeq: stored.acceptedSeq}, nil
 	}
 	if input.RequireFutureSchedule && input.ScheduledAt != nil && !input.ScheduledAt.After(now) {
-		return false, fmt.Errorf("%w: a new schedule must be in the future", ErrInvalidInput)
+		return EnqueueReceipt{}, fmt.Errorf("%w: a new schedule must be in the future", ErrInvalidInput)
 	}
 
 	if err := insertQueuedItem(ctx, tx, input, key); err != nil {
-		return false, err
+		return EnqueueReceipt{}, err
 	}
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
-		return false, err
+		return EnqueueReceipt{}, err
 	}
 	if controlReplyKind(input.Kind) {
 		if err := placeControlReply(ctx, tx, input.AgentID, input.ID); err != nil {
-			return false, err
+			return EnqueueReceipt{}, err
 		}
 	}
 	if err := bumpRevision(ctx, tx, input.AgentID); err != nil {
-		return false, err
+		return EnqueueReceipt{}, err
 	}
-	return true, nil
+	return EnqueueReceipt{Added: true}, nil
 }
 
 func (s *Store) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -2460,7 +2463,7 @@ func replaceAttachments(ctx context.Context, tx *sql.Tx, itemID string, attachme
 
 // getItem reads one input that the queue holds. It does not find an input
 // that someone removed: only the repeat check of enqueue reads a removed
-// input, and it reads the key alone (see storedRequestKey).
+// input, and it reads the request receipt (see storedRequest).
 func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
 	var item StoredItem
 	var kind, state int32

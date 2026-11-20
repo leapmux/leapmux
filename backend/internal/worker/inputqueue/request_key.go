@@ -28,7 +28,7 @@ import (
 //   - The transcript row of the accepted input takes it over
 //     (insertInputTranscript).
 //
-// A retry compares its own key with the stored key (storedRequestKey), never
+// A retry compares its own key with the stored key (storedRequest), never
 // with the content that the input holds now.
 
 const inputIdempotencyKeyPrefix = "input:"
@@ -104,34 +104,38 @@ func inputIdempotencyKey(input NewItem) string {
 	return inputIdempotencyKeyPrefix + hex.EncodeToString(sum[:])
 }
 
-// storedRequestKey reads the key of the request that took the input id
-// inputID: from its queue row, or else from the transcript row of the
-// accepted input. The Boolean is false when no row holds the id. An input id
-// identifies one input across the Worker, as the message id that it becomes
-// does, so a row of another agent fails with ErrConflict.
-func storedRequestKey(ctx context.Context, tx db.DBTX, agentID, inputID string) (string, bool, error) {
+type storedInputRequest struct {
+	key         string
+	acceptedSeq int64
+}
+
+// storedRequest reads a queued or accepted input's request key. It reads the
+// sequence with the key when the input already has a transcript row. Input
+// IDs are unique across the Worker, so a row of another agent conflicts.
+func storedRequest(ctx context.Context, tx db.DBTX, agentID, inputID string) (storedInputRequest, bool, error) {
 	statements := [...]string{
 		// The queue row, whether the queue holds the input or someone removed
 		// it: a retry of the request that queued a removed input matches it
 		// too, so the statement takes both values of removed_at on purpose.
-		`SELECT agent_id, idempotency_key FROM agent_input_queue_items WHERE id = ? AND (removed_at IS NULL OR removed_at IS NOT NULL)`,
+		`SELECT agent_id, idempotency_key, 0 FROM agent_input_queue_items WHERE id = ? AND (removed_at IS NULL OR removed_at IS NOT NULL)`,
 		// The transcript row of the accepted input, whose message id is the
 		// input id.
-		`SELECT agent_id, idempotency_key FROM messages WHERE id = ?`,
+		`SELECT agent_id, idempotency_key, seq FROM messages WHERE id = ?`,
 	}
 	for _, statement := range statements {
-		var owner, key string
-		err := tx.QueryRowContext(ctx, statement, inputID).Scan(&owner, &key)
+		var owner string
+		var request storedInputRequest
+		err := tx.QueryRowContext(ctx, statement, inputID).Scan(&owner, &request.key, &request.acceptedSeq)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return "", false, err
+			return storedInputRequest{}, false, err
 		}
 		if owner != agentID {
-			return "", false, ErrConflict
+			return storedInputRequest{}, false, ErrConflict
 		}
-		return key, true, nil
+		return request, true, nil
 	}
-	return "", false, nil
+	return storedInputRequest{}, false, nil
 }

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -12,7 +11,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
@@ -26,6 +24,7 @@ import (
 // pages of at most the requested limit, with has_more, in each direction.
 type retryWorker struct {
 	*activityWorker
+	transcriptRequests []*leapmuxv1.ListAgentMessagesRequest
 }
 
 func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
@@ -37,14 +36,18 @@ func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, r
 			return
 		}
 		w.mu.Lock()
+		var acceptedSeq int64
+		if index := slices.IndexFunc(w.rows, func(row *leapmuxv1.AgentChatMessage) bool { return row.GetId() == in.GetInputId() }); index >= 0 {
+			acceptedSeq = w.rows[index].GetSeq()
+		}
 		held := slices.ContainsFunc(w.queue.GetItems(), func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == in.GetInputId() }) ||
-			slices.ContainsFunc(w.rows, func(row *leapmuxv1.AgentChatMessage) bool { return row.GetId() == in.GetInputId() })
+			acceptedSeq > 0
 		if !held {
 			w.queue.Items = append(w.queue.Items, &leapmuxv1.QueuedAgentInput{Id: in.GetInputId(), State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED})
 		}
 		snapshot := proto.CloneOf(w.queue)
 		w.mu.Unlock()
-		writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: snapshot})
+		writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: snapshot, AcceptedSeq: acceptedSeq})
 		if !held {
 			w.enqueued <- &in
 		}
@@ -52,6 +55,7 @@ func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, r
 		var in leapmuxv1.ListAgentMessagesRequest
 		_ = proto.Unmarshal(req.GetPayload(), &in)
 		w.mu.Lock()
+		w.transcriptRequests = append(w.transcriptRequests, &in)
 		resp := transcriptPage(w.rows, &in)
 		w.mu.Unlock()
 		writeProtoResponse(rw, resp)
@@ -108,7 +112,7 @@ func transcriptPage(rows []*leapmuxv1.AgentChatMessage, in *leapmuxv1.ListAgentM
 func TestAgentSendWaitOverIPC_ARetryPrintsTheReplyOfTheFirstRun(t *testing.T) {
 	id := fullTestID("ag-2")
 	inputID := requestScopedID("tests-1", requestScopeAgentSend, id)
-	w := &retryWorker{newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})}
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})}
 	w.rows = []*leapmuxv1.AgentChatMessage{replyRow(1, "An answer to an earlier message."), userMessageRow(2, inputID)}
 	for seq := int64(3); seq <= 122; seq++ {
 		w.rows = append(w.rows, replyRow(seq, fmt.Sprintf("Step %d.", seq)))
@@ -123,6 +127,19 @@ func TestAgentSendWaitOverIPC_ARetryPrintsTheReplyOfTheFirstRun(t *testing.T) {
 	assert.Equal(t, "idle", data["state"])
 	assert.Equal(t, []any{"All 12 tests pass."}, data["replies"])
 	assert.Empty(t, w.enqueued, "the retry queued no second message")
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var firstReplyRead *leapmuxv1.ListAgentMessagesRequest
+	for _, request := range w.transcriptRequests {
+		assert.NotEqual(t, leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_BEFORE, request.GetAnchor(),
+			"the Worker acknowledges the accepted input by its exact sequence")
+		if request.GetIncludeReplyText() && firstReplyRead == nil {
+			firstReplyRead = request
+		}
+	}
+	require.NotNil(t, firstReplyRead)
+	assert.Equal(t, leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, firstReplyRead.GetAnchor())
+	assert.EqualValues(t, 1, firstReplyRead.GetCursorSeq())
 }
 
 // A retry while the first run's message still waits in the queue waits for
@@ -130,7 +147,7 @@ func TestAgentSendWaitOverIPC_ARetryPrintsTheReplyOfTheFirstRun(t *testing.T) {
 func TestAgentSendWaitOverIPC_ARetryWaitsForTheQueuedMessage(t *testing.T) {
 	id := fullTestID("ag-2")
 	inputID := requestScopedID("tests-1", requestScopeAgentSend, id)
-	w := &retryWorker{newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})}
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})}
 	w.queue = &leapmuxv1.AgentInputQueueSnapshot{ActiveTurn: true, Items: []*leapmuxv1.QueuedAgentInput{{Id: inputID, State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}}}
 	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
@@ -153,7 +170,7 @@ func TestAgentSendWaitOverIPC_ARetryWaitsForTheQueuedMessage(t *testing.T) {
 func TestAgentSendWaitOverIPC_ARetryOfARemovedMessageFails(t *testing.T) {
 	id := fullTestID("ag-2")
 	inputID := requestScopedID("tests-1", requestScopeAgentSend, id)
-	w := &retryWorker{newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})}
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})}
 	w.queue = &leapmuxv1.AgentInputQueueSnapshot{}
 	w.rows = []*leapmuxv1.AgentChatMessage{replyRow(1, "An answer to an earlier message.")}
 	startAgentWorker(t, id, &removedInputWorker{w})
@@ -181,69 +198,4 @@ func (w *removedInputWorker) DispatchWith(ctx context.Context, caller channel.Ca
 		return
 	}
 	w.retryWorker.DispatchWith(ctx, caller, req, rw)
-}
-
-func TestFindRowSeqBackward(t *testing.T) {
-	var rows []*leapmuxv1.AgentChatMessage
-	for seq := int64(1); seq <= 2*int64(contracts.MessagePageLimit)+5; seq++ {
-		rows = append(rows, replyRow(seq, "r"))
-	}
-	pager := func(asked *[]*leapmuxv1.ListAgentMessagesRequest) func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
-		return func(req *leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
-			*asked = append(*asked, proto.CloneOf(req))
-			return transcriptPage(rows, req), nil
-		}
-	}
-
-	t.Run("finds a row on the newest page with one read", func(t *testing.T) {
-		var asked []*leapmuxv1.ListAgentMessagesRequest
-		seq, found, err := findRowSeqBackward("reply-100", pager(&asked))
-		require.NoError(t, err)
-		assert.True(t, found)
-		assert.Equal(t, int64(100), seq)
-		require.Len(t, asked, 1)
-		assert.Equal(t, leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, asked[0].GetAnchor())
-		assert.Equal(t, int32(contracts.MessagePageLimit), asked[0].GetLimit())
-	})
-	t.Run("reads back page by page", func(t *testing.T) {
-		var asked []*leapmuxv1.ListAgentMessagesRequest
-		seq, found, err := findRowSeqBackward("reply-1", pager(&asked))
-		require.NoError(t, err)
-		assert.True(t, found)
-		assert.Equal(t, int64(1), seq)
-		require.Len(t, asked, 3)
-		assert.Equal(t, leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_BEFORE, asked[1].GetAnchor())
-		assert.Equal(t, asked[1].GetCursorSeq()-int64(contracts.MessagePageLimit), asked[2].GetCursorSeq(), "each page starts before the oldest row of the last one")
-	})
-	t.Run("reports a missing row after the oldest page", func(t *testing.T) {
-		var asked []*leapmuxv1.ListAgentMessagesRequest
-		_, found, err := findRowSeqBackward("no-such-row", pager(&asked))
-		require.NoError(t, err)
-		assert.False(t, found)
-		assert.Len(t, asked, 3, "the read ends at the page without more")
-	})
-	t.Run("ends at a page that does not move", func(t *testing.T) {
-		calls := 0
-		_, found, err := findRowSeqBackward("no-such-row", func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
-			calls++
-			return &leapmuxv1.ListAgentMessagesResponse{Messages: []*leapmuxv1.AgentChatMessage{replyRow(7, "r")}, HasMore: true}, nil
-		})
-		require.NoError(t, err)
-		assert.False(t, found)
-		assert.Equal(t, 2, calls, "a Worker that answers the same page again cannot loop the read")
-	})
-	t.Run("ends at an empty page", func(t *testing.T) {
-		_, found, err := findRowSeqBackward("no-such-row", func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
-			return &leapmuxv1.ListAgentMessagesResponse{HasMore: true}, nil
-		})
-		require.NoError(t, err)
-		assert.False(t, found)
-	})
-	t.Run("returns a failed read", func(t *testing.T) {
-		boom := errors.New("worker offline")
-		_, _, err := findRowSeqBackward("reply-1", func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
-			return nil, boom
-		})
-		assert.ErrorIs(t, err, boom)
-	})
 }

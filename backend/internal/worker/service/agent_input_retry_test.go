@@ -38,6 +38,7 @@ func TestEnqueueAgentInput_ARepeatedRequestIsOneInput(t *testing.T) {
 		response := decodeQueueResponse(t, writer, &leapmuxv1.EnqueueAgentInputResponse{})
 		require.Len(t, response.GetSnapshot().GetItems(), 1, "each answer holds the one input")
 		assert.Equal(t, "request-derived-id", response.GetSnapshot().GetItems()[0].GetId())
+		assert.Zero(t, response.GetAcceptedSeq(), "the input is still queued")
 		revisions = append(revisions, response.GetSnapshot().GetRevision())
 	}
 	assert.Equal(t, revisions[0], revisions[1], "a repeat changes nothing")

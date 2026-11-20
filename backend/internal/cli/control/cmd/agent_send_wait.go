@@ -26,15 +26,13 @@ const (
 	// messageDelivered is a message that the agent received: its row is in
 	// the transcript.
 	messageDelivered = "delivered"
-	// messageUnknown is a retry whose earlier delivery the wait could not verify.
-	messageUnknown = "unknown"
 )
 
 // agentReplyResult is the result of `agent send --wait`.
 type agentReplyResult struct {
 	ID      string `json:"id"`
 	InputID string `json:"input_id"`
-	// Message is "queued", "delivered", or "unknown".
+	// Message is "queued" or "delivered".
 	Message string `json:"message"`
 	// State is the agent's activity when the wait ended: a token of
 	// AgentActivityState, or "unknown".
@@ -87,9 +85,6 @@ type replyReader struct {
 	// latestSeq reads the seq of the agent's last row, or 0 when the Worker
 	// cannot tell.
 	latestSeq func(ctx context.Context) (int64, error)
-	// rowSeq reads the seq of the row whose id is rowID, from the newest row
-	// back, and reports false when the transcript holds no such row.
-	rowSeq func(ctx context.Context, rowID string) (int64, bool, error)
 }
 
 // workerReplyReader reads the queue and the transcript of agentID on
@@ -128,45 +123,6 @@ func workerReplyReader(c *control.Client, workerID, agentID string) replyReader 
 			}
 			return latestSeqOf(&resp), nil
 		},
-		rowSeq: func(ctx context.Context, rowID string) (int64, bool, error) {
-			return findRowSeqBackward(rowID, func(req *leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
-				req.AgentId = agentID
-				var resp leapmuxv1.ListAgentMessagesResponse
-				if err := call(ctx, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
-					return nil, err
-				}
-				return &resp, nil
-			})
-		},
-	}
-}
-
-// findRowSeqBackward reads the pages of the transcript through list from the
-// newest row back until it finds the row rowID, and returns its seq. It
-// reports false when no page holds the row. A page that does not move before
-// its cursor ends the read, so a Worker that answers the same page again
-// cannot loop it forever.
-func findRowSeqBackward(rowID string, list func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error)) (int64, bool, error) {
-	req := &leapmuxv1.ListAgentMessagesRequest{Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, Limit: contracts.MessagePageLimit}
-	for {
-		resp, err := list(req)
-		if err != nil {
-			return 0, false, err
-		}
-		rows := resp.GetMessages()
-		if i := slices.IndexFunc(rows, func(row *leapmuxv1.AgentChatMessage) bool { return row.GetId() == rowID }); i >= 0 {
-			return rows[i].GetSeq(), true, nil
-		}
-		if !resp.GetHasMore() || len(rows) == 0 {
-			return 0, false, nil
-		}
-		// A page lists its rows in ascending seq, so the first row is the
-		// oldest one that the read reached.
-		oldest := rows[0].GetSeq()
-		if req.Anchor == leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_BEFORE && oldest >= req.GetCursorSeq() {
-			return 0, false, nil
-		}
-		req = &leapmuxv1.ListAgentMessagesRequest{Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_BEFORE, CursorSeq: oldest, Limit: contracts.MessagePageLimit}
 	}
 }
 
@@ -284,10 +240,9 @@ type replyWaitSpec struct {
 	// baseline is the agent's last seq before the send. The message's row
 	// lands after it.
 	baseline int64
-	// lookupExisting is true when the enqueue acknowledgement omitted the
-	// input, so a retry must look for its original row.
-	lookupExisting bool
-	all            bool
+	// acceptedSeq is the input sequence reported on an accepted retry.
+	acceptedSeq int64
+	all         bool
 	// timeout ends the wait after this long. Zero waits without a limit.
 	timeout time.Duration
 }
@@ -355,23 +310,9 @@ func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityE
 		return agentReplyResult{ID: spec.agentID, InputID: spec.inputID, Message: v.message, State: agentStateToken(state), Replies: replies}
 	}
 	last := replyVerdict{message: messageQueued}
-	if spec.lookupExisting {
-		last.message = messageUnknown
-		seq, found, err := evaluator.reader.rowSeq(ctx, spec.inputID)
-		if ctx.Err() == nil {
-			if err != nil {
-				return agentReplyResult{}, 0, err
-			}
-			if !found {
-				// A transaction removes the queue item and writes its row.
-				// An absent row means the item was removed before delivery.
-				return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "someone removed the message %s from the input queue of agent %s before the agent received it, so this retry queued nothing", spec.inputID, spec.agentID).
-					WithHint("send the message again with a new --request-id").
-					WithExitCode(cli.ExitWaitEnded)
-			}
-			last.message = messageDelivered
-			evaluator.spec.baseline = seq - 1
-		}
+	if spec.acceptedSeq > 0 {
+		last.message = messageDelivered
+		evaluator.spec.baseline = spec.acceptedSeq - 1
 	}
 wait:
 	for ctx.Err() == nil {
@@ -467,9 +408,9 @@ func awaitFirstLevel(ctx context.Context, events <-chan activityEvent, agentID s
 //
 // A run that repeats a request (--request-id) can find that the Worker
 // already holds the message. When the message left the queue before this
-// run, its row is older than the last seq, so the wait reads the replies
-// after that row instead: the run prints the reply of the first run. When
-// someone removed the message from the queue instead, the Worker queues
+// run, the Worker returns the sequence of the accepted row. The wait reads
+// the replies after that row. If someone removed the message from the queue,
+// the Worker queues
 // nothing for the repeat, and the transcript holds no row of the message. The
 // run then fails as the first run fails when someone removes the message
 // while it waits: with not_found, and exit status 6.
@@ -494,15 +435,20 @@ func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, a
 	if err != nil {
 		return agentReplyResult{}, 0, err
 	}
-	queue, err := enqueueUserMessage(ctx, s.c, t, inputID, message)
+	ack, err := enqueueUserMessage(ctx, s.c, t, inputID, message)
 	if err != nil {
 		return agentReplyResult{}, 0, err
+	}
+	if ack.GetAcceptedSeq() <= 0 && !queueHolds(ack.GetSnapshot(), inputID) {
+		return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "someone removed the message %s from the input queue of agent %s before the agent received it, so this retry queued nothing", inputID, t.ID).
+			WithHint("send the message again with a new --request-id").
+			WithExitCode(cli.ExitWaitEnded)
 	}
 	evaluator := &replyEvaluator{
 		reader: reader,
 		spec: replyWaitSpec{
 			agentID: t.ID, inputID: inputID, baseline: baseline, all: all, timeout: timeout,
-			lookupExisting: !queueHolds(queue, inputID),
+			acceptedSeq: ack.GetAcceptedSeq(),
 		},
 		notice: s.inv.Printer.Notice,
 	}
@@ -510,21 +456,21 @@ func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, a
 }
 
 // enqueueUserMessage puts message in the input queue of the agent t as the
-// input inputID, and returns the queue that the Worker answers with.
-func enqueueUserMessage(ctx context.Context, c *control.Client, t tabTarget, inputID string, message userMessage) (*leapmuxv1.AgentInputQueueSnapshot, error) {
+// input inputID and returns the Worker acknowledgment.
+func enqueueUserMessage(ctx context.Context, c *control.Client, t tabTarget, inputID string, message userMessage) (*leapmuxv1.EnqueueAgentInputResponse, error) {
 	return enqueueAgentInput(ctx, c, t, message.request(t.ID, inputID))
 }
 
 // enqueueAgentInput sends one EnqueueAgentInput request for the agent t,
-// and returns the queue that the Worker answers with.
-func enqueueAgentInput(ctx context.Context, c *control.Client, t tabTarget, request *leapmuxv1.EnqueueAgentInputRequest) (*leapmuxv1.AgentInputQueueSnapshot, error) {
+// and returns the Worker acknowledgment.
+func enqueueAgentInput(ctx context.Context, c *control.Client, t tabTarget, request *leapmuxv1.EnqueueAgentInputRequest) (*leapmuxv1.EnqueueAgentInputResponse, error) {
 	ctx, cancel := rpcDeadline(ctx)
 	defer cancel()
 	var resp leapmuxv1.EnqueueAgentInputResponse
 	if err := callInnerRPC(ctx, c, t.WorkerID, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, request, &resp); err != nil {
 		return nil, err
 	}
-	return resp.GetSnapshot(), nil
+	return &resp, nil
 }
 
 // queueHolds reports whether queue holds the input inputID.
@@ -543,8 +489,6 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 		p.Notice("agent %s waits for an answer to a permission prompt; list it with \"leapmux control agent requests %s\"", result.ID, result.ID)
 	case result.Message == messageQueued:
 		p.Notice("the wait ended after %s. The last queue snapshot for agent %s still held the message", timeout, result.ID)
-	case result.Message == messageUnknown:
-		p.Notice("the wait ended after %s. The CLI could not verify delivery to agent %s", timeout, result.ID)
 	default:
 		p.Notice("the wait ended after %s. Agent %s received the message and the CLI did not observe it settle", timeout, result.ID)
 	}

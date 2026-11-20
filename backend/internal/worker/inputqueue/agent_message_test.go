@@ -135,9 +135,9 @@ func TestStoreAgentMessageRepeatComparesTheSender(t *testing.T) {
 			t.Parallel()
 			_, store := newStoreFixture(t)
 			input := NewItem{ID: "repeat", AgentID: "agent-1", Kind: userMessageKind, Sender: claudeSender(), Text: "Run the tests", ReclassifyOnEdit: true}
-			_, added, err := store.enqueue(t.Context(), input, nil)
+			_, receipt, err := store.enqueue(t.Context(), input, nil)
 			require.NoError(t, err)
-			require.True(t, added)
+			require.True(t, receipt.Added)
 			moveInputTo(t, store, input.ID, place)
 
 			assertRepeatAddsNothing(t, store, input)
@@ -247,14 +247,17 @@ func TestStoreAcceptRecordsTheSenderOfAnAgentMessage(t *testing.T) {
 
 	// The delivered row answers a repeat from the same tab, and refuses one
 	// from another tab.
-	again, added, err := store.enqueue(t.Context(), input, nil)
+	again, receipt, err := store.enqueue(t.Context(), input, nil)
 	require.NoError(t, err)
-	assert.False(t, added)
+	assert.False(t, receipt.Added)
+	require.Positive(t, transcript.Seq)
+	assert.Equal(t, transcript.Seq, receipt.AcceptedSeq)
 	assert.Empty(t, again.Items)
 	other := input
 	other.Sender = &AgentSender{TabID: "other-tab", Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}
-	_, err = store.Enqueue(t.Context(), other)
+	_, receipt, err = store.enqueue(t.Context(), other, nil)
 	assert.ErrorIs(t, err, ErrConflict)
+	assert.Empty(t, receipt)
 }
 
 func TestStoreAcceptKeepsTheDispatcherSupplementBesideTheSender(t *testing.T) {

@@ -416,12 +416,12 @@ func TestPriorityRepeatedEnqueueComparesTheSchedule(t *testing.T) {
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{})
 	require.NoError(t, err)
 
-	_, added, err := store.enqueue(ctx, NewItem{
+	_, receipt, err := store.enqueue(ctx, NewItem{
 		ID: "scheduled", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Continue.",
 		ScheduledAt: at,
 	}, nil)
 	require.NoError(t, err)
-	assert.False(t, added)
+	assert.False(t, receipt.Added)
 	later := at.Add(time.Hour)
 	_, _, err = store.enqueue(ctx, NewItem{
 		ID: "scheduled", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Continue.",

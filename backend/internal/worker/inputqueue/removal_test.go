@@ -54,16 +54,17 @@ func TestStoreEnqueueRepeatOfARemovedInputAddsNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, removed.Items)
 
-	repeated, added, err := store.enqueue(ctx, input, nil)
+	repeated, receipt, err := store.enqueue(ctx, input, nil)
 	require.NoError(t, err)
-	assert.False(t, added, "a repeat of a removed input adds nothing")
+	assert.False(t, receipt.Added, "a repeat of a removed input adds nothing")
+	assert.Zero(t, receipt.AcceptedSeq)
 	assert.Empty(t, repeated.Items, "the removed input stays out of the queue")
 	assert.Equal(t, removed.Revision, repeated.Revision, "a repeat changes nothing, so the revision stays")
 
 	applied := false
-	_, added, err = store.enqueue(ctx, input, func(*sql.Tx) error { applied = true; return nil })
+	_, receipt, err = store.enqueue(ctx, input, func(*sql.Tx) error { applied = true; return nil })
 	require.NoError(t, err)
-	assert.False(t, added)
+	assert.False(t, receipt.Added)
 	assert.True(t, applied, "a repeat still commits the caller's mutation, as for a repeat of a queued input")
 }
 
@@ -520,9 +521,9 @@ func TestStorePurgeRemovedDeletesARowOnlyAfterTheRetention(t *testing.T) {
 	for _, offset := range []time.Duration{RemovedInputRetention - time.Millisecond, RemovedInputRetention} {
 		clock.Set(removedAt.Add(offset)).MustWait(ctx)
 		assert.Zero(t, purgeRemoved(t, store), "a row removed %s ago stays", offset)
-		_, added, err := store.enqueue(ctx, input, nil)
+		_, receipt, err := store.enqueue(ctx, input, nil)
 		require.NoError(t, err)
-		assert.False(t, added, "a retry %s after the removal queues nothing", offset)
+		assert.False(t, receipt.Added, "a retry %s after the removal queues nothing", offset)
 	}
 
 	clock.Set(removedAt.Add(RemovedInputRetention + time.Millisecond)).MustWait(ctx)
@@ -532,9 +533,9 @@ func TestStorePurgeRemovedDeletesARowOnlyAfterTheRetention(t *testing.T) {
 		"the attachments of the row go with it")
 	assert.Zero(t, purgeRemoved(t, store), "a second pass finds nothing")
 
-	snapshot, added, err := store.enqueue(ctx, input, nil)
+	snapshot, receipt, err := store.enqueue(ctx, input, nil)
 	require.NoError(t, err)
-	assert.True(t, added, "after the purge, the input is a new one")
+	assert.True(t, receipt.Added, "after the purge, the input is a new one")
 	assert.Equal(t, []string{input.ID}, queueSnapshotIDs(snapshot))
 }
 

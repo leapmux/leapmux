@@ -647,7 +647,12 @@ message EnqueueAgentInputRequest {
   bool require_future_schedule = 7;
 }
 
-message EnqueueAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+message EnqueueAgentInputResponse {
+  AgentInputQueueSnapshot snapshot = 1;
+  // The transcript sequence when this request matches an accepted input.
+  // Zero means that the input has no accepted transcript row.
+  int64 accepted_seq = 2;
+}
 
 message ListAgentInputQueueRequest { string agent_id = 1; }
 message ListAgentInputQueueResponse { AgentInputQueueSnapshot snapshot = 1; }

@@ -17,18 +17,22 @@ import { assistantBubbles, tabById, userBubbles, waitForAgentIdle } from '../hel
 const ANSWER = 'The release checklist has three open items.'
 
 claudeTest.describe('control CLI waits for an agent', () => {
-  claudeTest('send --wait prints the reply that the transcript shows, and wait then ends at once', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
+  claudeTest('send --wait and an exact retry print the same transcript reply', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
     const { agentId } = authenticatedWorkspace
     const cli = await mintCLITokenForAdmin(leapmuxServer)
 
     const step = await modelScript.queue({ text: ANSWER })
-    const sent = await runCLI(cli, [
+    const question = 'How many items of the release checklist are open?'
+    const send = [
       'agent',
       'send',
       agentId,
-      modelScript.prompt('How many items of the release checklist are open?'),
+      modelScript.prompt(question),
       '--wait',
-    ]) as Record<string, unknown>
+      '--request-id',
+      'release-checklist-reply',
+    ]
+    const sent = await runCLI(cli, send) as Record<string, unknown>
     await modelScript.waitForSteps(step + 1)
 
     expect(sent).toMatchObject({
@@ -41,6 +45,9 @@ claudeTest.describe('control CLI waits for an agent', () => {
     // The browser draws the same text from the same row.
     await expect(assistantBubbles(page).filter({ hasText: ANSWER })).toHaveCount(1)
     await waitForAgentIdle(page)
+    expect(await runCLI(cli, send)).toEqual(sent)
+    await expect(userBubbles(page).filter({ hasText: question })).toHaveCount(1)
+    await expect(assistantBubbles(page).filter({ hasText: ANSWER })).toHaveCount(1)
 
     const waited = await runCLI(cli, ['agent', 'wait', agentId]) as Record<string, unknown>
     expect(waited).toEqual({

@@ -406,29 +406,34 @@ func TestAwaitReply_EndsWhenTheTimeoutPasses(t *testing.T) {
 	assert.Equal(t, agentReplyResult{ID: "a-1", InputID: "in-1", Message: messageQueued, State: "working", Replies: []string{}}, got.result)
 }
 
-func TestAwaitReply_DeadlineCancelsTheRetryLookup(t *testing.T) {
+func TestAwaitReply_DeadlineCancelsTheAcceptedReplyRead(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
-	lookupStarted := make(chan string, 1)
-	reader := replyReader{rowSeq: func(ctx context.Context, inputID string) (int64, bool, error) {
-		lookupStarted <- inputID
-		<-ctx.Done()
-		return 0, false, context.Cause(ctx)
-	}}
+	readStarted := make(chan int64, 1)
+	reader := replyReader{
+		readQueue: func(context.Context) (*leapmuxv1.AgentInputQueueSnapshot, error) {
+			return &leapmuxv1.AgentInputQueueSnapshot{}, nil
+		},
+		readRowsAfter: func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, error) {
+			readStarted <- afterSeq
+			<-ctx.Done()
+			return nil, context.Cause(ctx)
+		},
+	}
 	verdicts := make(chan replyWaitRun, 1)
 	go func() {
 		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{
-			agentID: "a-1", inputID: "in-1", timeout: time.Minute, lookupExisting: true,
+			agentID: "a-1", inputID: "in-1", timeout: time.Minute, acceptedSeq: 42,
 		}}
 		result, outcome, err := awaitReply(ctx, clock, make(chan activityEvent), e, working)
 		verdicts <- replyWaitRun{result: result, outcome: outcome, err: err}
 	}()
-	assert.Equal(t, "in-1", receive(t, ctx, lookupStarted))
+	assert.EqualValues(t, 41, receive(t, ctx, readStarted))
 	clock.Advance(time.Minute).MustWait(ctx)
 	got := receive(t, ctx, verdicts)
 	require.NoError(t, got.err)
 	assert.Equal(t, replyWaitTimedOut, got.outcome)
-	assert.Equal(t, agentReplyResult{ID: "a-1", InputID: "in-1", Message: messageUnknown, State: "working", Replies: []string{}}, got.result)
+	assert.Equal(t, agentReplyResult{ID: "a-1", InputID: "in-1", Message: messageDelivered, State: "working", Replies: []string{}}, got.result)
 }
 
 func TestAwaitReply_EndsWhenTheAgentCloses(t *testing.T) {
@@ -489,7 +494,6 @@ func TestAgentReplyEnded(t *testing.T) {
 		"waiting":          {agentReplyResult{ID: "a-1", Message: messageDelivered, State: "waiting_for_user"}, replyWaitWaiting, "agent a-1 waits for an answer to a permission prompt; list it with \"leapmux control agent requests a-1\"\n"},
 		"timeout, queued":  {agentReplyResult{ID: "a-1", Message: messageQueued, State: "working"}, replyWaitTimedOut, "the wait ended after 2m0s. The last queue snapshot for agent a-1 still held the message\n"},
 		"timeout, working": {agentReplyResult{ID: "a-1", Message: messageDelivered, State: "working"}, replyWaitTimedOut, "the wait ended after 2m0s. Agent a-1 received the message and the CLI did not observe it settle\n"},
-		"timeout, unknown": {agentReplyResult{ID: "a-1", Message: messageUnknown, State: "working"}, replyWaitTimedOut, "the wait ended after 2m0s. The CLI could not verify delivery to agent a-1\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
