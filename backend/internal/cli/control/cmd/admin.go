@@ -57,7 +57,7 @@ func requireAdminClient(inv *cli.Invocation) (*control.Client, error) {
 	// An empty address is not a hub. hubURLFor reports a *NoHubError, whose
 	// hints state the flag and the variable that supply one; building a
 	// client for the empty URL answered `hub url missing hostname` instead.
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if err != nil {
 		return nil, err
 	}

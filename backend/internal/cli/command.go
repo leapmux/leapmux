@@ -241,6 +241,7 @@ func NewLeaf(l Leaf) *cobra.Command {
 	if l.Flags != nil {
 		l.Flags(cmd.Flags())
 	}
+	registerEnumCompletions(cmd)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if err := validateRequiredFlags(cmd); err != nil {
 			return err
@@ -281,6 +282,33 @@ func NewLeaf(l Leaf) *cobra.Command {
 		}
 	}
 	return cmd
+}
+
+func registerEnumCompletions(cmd *cobra.Command) {
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		values := flag.Annotations[annotationEnum]
+		if len(values) == 0 {
+			return
+		}
+		err := cmd.RegisterFlagCompletionFunc(flag.Name, func(_ *cobra.Command, _ []string, word string) ([]string, cobra.ShellCompDirective) {
+			prefix := ""
+			if flag.Value.Type() == "stringSlice" {
+				if comma := strings.LastIndexByte(word, ','); comma >= 0 {
+					prefix, word = word[:comma+1], word[comma+1:]
+				}
+			}
+			var matches []string
+			for _, value := range values {
+				if strings.HasPrefix(value, word) {
+					matches = append(matches, prefix+value)
+				}
+			}
+			return matches, cobra.ShellCompDirectiveNoFileComp
+		})
+		if err != nil {
+			panic(fmt.Sprintf("cli: complete flag %q of %q: %v", flag.Name, cmd.Use, err))
+		}
+	})
 }
 
 // specAt returns the declaration of the positional argument at index i.

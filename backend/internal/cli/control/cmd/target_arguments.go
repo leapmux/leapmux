@@ -28,10 +28,14 @@ func configureTargetArguments(root *cobra.Command) {
 		help[name] = kind.Help()
 	}
 	cli.DescribeArgs(root, help)
-	configureTargetValidation(root)
+	configureControlTree(root)
 }
 
-func configureTargetValidation(cmd *cobra.Command) {
+func configureControlTree(cmd *cobra.Command) {
+	if cmd.HasSubCommands() {
+		cli.SetFooter(cmd, guideFooter)
+	}
+	registerScopeCompletions(cmd)
 	if validate := cmd.Args; validate != nil {
 		specs := cli.ParseArgSpecs(cmd.Use)
 		cmd.Args = func(cmd *cobra.Command, args []string) error {
@@ -42,7 +46,7 @@ func configureTargetValidation(cmd *cobra.Command) {
 		}
 	}
 	for _, child := range cmd.Commands() {
-		configureTargetValidation(child)
+		configureControlTree(child)
 	}
 }
 
@@ -58,9 +62,14 @@ func rejectBlankTargets(cmd *cobra.Command, specs []cli.ArgSpec, args []string) 
 		}
 	}
 	for _, name := range scopeTargetFlags {
-		if flag := cmd.Flag(name); flag != nil && flag.Changed && strings.TrimSpace(flag.Value.String()) == "" {
+		if blankTargetFlag(cmd, name) {
 			return cli.Usagef("--%s is empty", name)
 		}
 	}
 	return nil
+}
+
+func blankTargetFlag(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flag(name)
+	return flag != nil && flag.Changed && strings.TrimSpace(flag.Value.String()) == ""
 }

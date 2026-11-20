@@ -73,7 +73,8 @@ func newWorkerCommand() *cobra.Command {
 				Examples: []cli.Example{
 					{Command: "leapmux control worker pins get 5f2c9a1d"},
 				},
-				Run: runWorkerPinsGet,
+				Complete: completePinnedWorkers,
+				Run:      runWorkerPinsGet,
 			}),
 			cli.NewLeaf(cli.Leaf{
 				Use:     "remove <worker>",
@@ -83,7 +84,8 @@ func newWorkerCommand() *cobra.Command {
 				Examples: []cli.Example{
 					{Comment: "Forget the key of a worker that was reinstalled.", Command: "leapmux control worker pins remove 5f2c9a1d"},
 				},
-				Run: runWorkerPinsRemove,
+				Complete: completePinnedWorkers,
+				Run:      runWorkerPinsRemove,
 			}),
 		),
 	)
@@ -224,7 +226,7 @@ type registrationKey struct {
 // scope, which the bridge of a tab's socket does not carry, so the command
 // always talks to the hub directly.
 func runWorkerKeyCreate(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -268,8 +270,8 @@ func pinRowOf(p control.PinListEntry) pinRow {
 }
 
 // openPinStore opens the pin store of the invocation's hub.
-func openPinStore(inv *cli.Invocation) (*control.PinStore, error) {
-	hub, err := hubURLFor(inv)
+func openPinStore(cmd *cobra.Command) (*control.PinStore, error) {
+	hub, err := hubURLFor(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +284,7 @@ type pinList struct {
 }
 
 func runWorkerPinsList(inv *cli.Invocation) (any, error) {
-	pins, err := openPinStore(inv)
+	pins, err := openPinStore(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +336,7 @@ func findPin(ctx context.Context, pins *control.PinStore, input string) (control
 }
 
 func runWorkerPinsGet(inv *cli.Invocation) (any, error) {
-	pins, err := openPinStore(inv)
+	pins, err := openPinStore(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +357,7 @@ type pinRemoveResult struct {
 
 // runWorkerPinsRemove drops a pin so the next verified channel can pin its key.
 func runWorkerPinsRemove(inv *cli.Invocation) (any, error) {
-	pins, err := openPinStore(inv)
+	pins, err := openPinStore(inv.Command)
 	if err != nil {
 		return nil, err
 	}

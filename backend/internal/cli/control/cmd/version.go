@@ -58,7 +58,7 @@ type versionResult struct {
 // the hub.
 func runVersion(inv *cli.Invocation) (any, error) {
 	out := versionResult{CLI: cliBuildInfo()}
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if err != nil {
 		// No hub is selected, which is not a failure of this command.
 		return out, nil

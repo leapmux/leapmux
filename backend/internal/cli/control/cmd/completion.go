@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +23,21 @@ import (
 // freeze the prompt.
 const completionTimeout = 2 * time.Second
 
+func registerScopeCompletions(cmd *cobra.Command) {
+	for _, name := range []string{"workspace", "worker", "tile"} {
+		if cmd.Flags().Lookup(name) == nil {
+			continue
+		}
+		kind := targetArguments[name]
+		err := cmd.RegisterFlagCompletionFunc(name, func(cmd *cobra.Command, _ []string, word string) ([]string, cobra.ShellCompDirective) {
+			return completeTargetsOfKind(cmd, kind, word, true)
+		})
+		if err != nil {
+			panic(fmt.Sprintf("complete scope flag %q of %q: %v", name, cmd.Use, err))
+		}
+	}
+}
+
 // completeTargets completes a positional target with "self" and the ids of
 // the live objects of its kind. Each candidate carries its title as the
 // description that zsh and fish show.
@@ -28,24 +46,41 @@ func completeTargets(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([
 	if !ok {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	hub := ""
-	if f := cmd.Flag("hub"); f != nil && f.Changed {
-		hub = f.Value.String()
-	}
-	c, err := control.NewClientFromEnv(hub)
-	if err != nil {
+	return completeTargetsOfKind(cmd, kind, toComplete, true)
+}
+
+func completeOtherAgents(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return completeTargetsOfKind(cmd, resolve.KindAgent, toComplete, false)
+}
+
+func completeTargetsOfKind(cmd *cobra.Command, kind resolve.Kind, toComplete string, allowSelf bool) ([]string, cobra.ShellCompDirective) {
+	// Cobra completes flags and arguments without running Args validation.
+	if blankTargetFlag(cmd, "hub") {
 		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	self := completionSelfID(kind)
+	var candidates []string
+	if allowSelf && self != "" && strings.HasPrefix(resolve.SelfTarget, toComplete) {
+		candidates = append(candidates, resolve.SelfTarget)
+	}
+	c, err := control.NewClientFromEnv(explicitHub(cmd))
+	if err != nil {
+		return candidates, cobra.ShellCompDirectiveNoFileComp
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), completionTimeout)
 	defer cancel()
 	listing := targetListing(c, resolveDeps(c))
-	candidates := []string{resolve.SelfTarget}
 	add := func(id, title string) {
-		if !strings.HasPrefix(id, toComplete) {
+		if !strings.HasPrefix(id, toComplete) || (!allowSelf && id == self) {
 			return
 		}
 		if title != "" {
-			id += "\t" + title
+			id += "\t" + strings.Map(func(r rune) rune {
+				if unicode.IsControl(r) {
+					return ' '
+				}
+				return r
+			}, title)
 		}
 		candidates = append(candidates, id)
 	}
@@ -92,9 +127,30 @@ func completeTargets(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([
 			add(w.GetId(), names[w.GetId()])
 		}
 	}
-	if os.Getenv(controlenv.TabIDVariable) == "" && kind != resolve.KindWorker {
-		// "self" works only inside a LeapMux tab.
-		candidates = candidates[1:]
-	}
+	slices.Sort(candidates)
 	return candidates, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completionSelfID(kind resolve.Kind) string {
+	if kind == resolve.KindWorker {
+		return strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
+	}
+	return (resolve.Listing{}).SelfTabID(kind)
+}
+
+func completePinnedWorkers(cmd *cobra.Command, _ cli.ArgSpec, word string) ([]string, cobra.ShellCompDirective) {
+	if blankTargetFlag(cmd, "hub") {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	pins, err := openPinStore(cmd)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var ids []string
+	for _, pin := range pins.List() {
+		if strings.HasPrefix(pin.WorkerID, word) {
+			ids = append(ids, pin.WorkerID)
+		}
+	}
+	return ids, cobra.ShellCompDirectiveNoFileComp
 }

@@ -61,12 +61,6 @@ the stored credentials.`
 	flags := root.PersistentFlags()
 	flags.String("hub", "", "hub URL (default: the socket of this tab, else $LEAPMUX_HUB, else the default hub of the stored credentials)")
 	cli.AddOutputFlags(root)
-	for _, group := range root.Commands() {
-		if group.HasSubCommands() {
-			cli.SetFooter(group, guideFooter)
-		}
-	}
-	cli.SetFooter(root, guideFooter)
 	configureTargetArguments(root)
 	addHubHints(root)
 	return root
@@ -74,18 +68,18 @@ the stored credentials.`
 
 // explicitHub returns the --hub value when the user typed it, and "" when
 // the flag kept its default.
-func explicitHub(inv *cli.Invocation) string {
-	if !inv.Changed("hub") {
-		return ""
+func explicitHub(cmd *cobra.Command) string {
+	if flag := cmd.Flag("hub"); flag != nil && flag.Changed {
+		return strings.TrimSpace(flag.Value.String())
 	}
-	return strings.TrimSpace(inv.Command.Flag("hub").Value.String())
+	return ""
 }
 
 // hubURLFor returns the hub of a command that always talks to a hub
 // directly, never through a tab's socket: an explicit --hub, else the
 // default hub (see control.DefaultHub).
-func hubURLFor(inv *cli.Invocation) (string, error) {
-	if hub := explicitHub(inv); hub != "" {
+func hubURLFor(cmd *cobra.Command) (string, error) {
+	if hub := explicitHub(cmd); hub != "" {
 		return hub, nil
 	}
 	return control.DefaultHub()
@@ -94,7 +88,7 @@ func hubURLFor(inv *cli.Invocation) (string, error) {
 // newClient builds the client of an invocation, with the precedence that
 // control.NewClientFromEnv states.
 func newClient(inv *cli.Invocation) (*control.Client, error) {
-	return control.NewClientFromEnv(explicitHub(inv))
+	return control.NewClientFromEnv(explicitHub(inv.Command))
 }
 
 // session is one invocation's connection: the client, the context that

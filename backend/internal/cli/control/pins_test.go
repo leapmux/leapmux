@@ -61,7 +61,7 @@ func TestPins_MismatchAborts(t *testing.T) {
 	assert.Contains(t, err.Error(), "key mismatch")
 	// The mismatch hint points the user at the control command to clear
 	// the pin, so a rename that forgets the production template fails here.
-	assert.Contains(t, err.Error(), "leapmux control worker pins remove --worker-id=worker-1")
+	assert.Contains(t, err.Error(), "leapmux control worker pins remove worker-1")
 	assert.NotContains(t, err.Error(), "leapmux remote")
 }
 

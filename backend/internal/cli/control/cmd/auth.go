@@ -113,7 +113,7 @@ func newAuthCommand() *cobra.Command {
 // rung yields to a presented lmx_ bearer, so a credential minted here binds
 // its scope there.
 func runAuthLogin(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if noHub := (*control.NoHubError)(nil); errors.As(err, &noHub) {
 		// The no-hub hint suggests a login, which is this command.
 		return nil, cli.Usagef("no hub selected").WithHint("pass --hub <url> to choose the hub to sign in to")
@@ -385,7 +385,7 @@ type authResult struct {
 }
 
 func runAuthLogout(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +469,7 @@ func runAuthUse(inv *cli.Invocation) (any, error) {
 // the caller's own credential -- so a browser session, which is what every
 // other caller is, always reads false.
 func runAuthCredentials(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -560,7 +560,7 @@ type authStatus struct {
 // deleted the file), and an unreachable hub keeps the local answer useful
 // with a warning that states exactly what was not verified.
 func runAuthStatus(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv)
+	hub, err := hubURLFor(inv.Command)
 	if err != nil {
 		return nil, err
 	}

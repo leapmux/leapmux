@@ -189,7 +189,7 @@ It prints the state of each agent in both cases.`,
 				fs.Bool("any", false, "end the wait when one agent reaches the state, not every agent")
 				fs.Duration("timeout", 0, "stop waiting after this long, such as 90s or 10m; 0 waits without a limit")
 			},
-			Complete: completeTargets,
+			Complete: completeOtherAgents,
 			Run:      runAgentWait,
 		}),
 		cli.NewLeaf(cli.Leaf{
