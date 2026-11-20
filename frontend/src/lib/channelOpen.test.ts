@@ -3,6 +3,7 @@ import type { SessionHandshake } from './channelSessionClient'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { ChannelError } from './channelError'
 import { ChannelOpen } from './channelOpen'
 import { ChannelPool } from './channelPool'
@@ -127,6 +128,10 @@ function makeOpen(opts?: {
 }): ChannelOpen {
   return openHarness(opts).open
 }
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('channelOpen', () => {
   it('adopts a negotiated budget within the allowed range in resolveMessageLimits', () => {

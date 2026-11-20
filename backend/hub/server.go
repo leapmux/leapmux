@@ -357,10 +357,12 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 			fmt.Errorf("resolve listen addresses: %w", err))
 	}
 	tcpEntries, localEntries := config.SplitListen(entries)
-	// resolvedByEntry maps each entry to the address it resolved to, in the
-	// DIAL form a client connects to: a `--listen :0` request shows the port
-	// the operating system chose. It feeds the state file below.
-	resolvedByEntry := make(map[string]string, len(entries))
+	// resolvedTCP[i] is what tcpEntries[i] resolved to, in the DIAL form a
+	// client connects to: a `--listen :0` request shows the port the operating
+	// system chose. One entry per OCCURRENCE, not per spelling: two identical
+	// port-zero requests bind two sockets and resolve to two ports, and each
+	// occurrence keeps its own report.
+	resolvedTCP := make([]string, 0, len(tcpEntries))
 	var bound []baseBinding
 	for _, e := range tcpEntries {
 		parsed, parseErr := listenset.Parse(e)
@@ -375,7 +377,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		}
 		bound = append(bound, baseBinding{ln: ln, addr: parsed})
 		acquired.tcpLns = append(acquired.tcpLns, ln)
-		resolvedByEntry[e] = resolvePort(parsed, ln).DialAddr()
+		resolvedTCP = append(resolvedTCP, resolvePort(parsed, ln).DialAddr())
 	}
 	// The local IPC URLs come from the same list. The default factory uses
 	// locallisten so each gets the platform socket. Unix listeners check native
@@ -392,7 +394,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		localLns = append(localLns, ln)
 		localListenURLs = append(localListenURLs, e)
 		acquired.localLns = localLns
-		resolvedByEntry[e] = e
 	}
 
 	// The state file, written only now that every listener is bound and every
@@ -401,9 +402,21 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// serverTeardownErrors and acquiredResources.close), so a failed start
 	// leaves no file claiming a hub that is not running. A crash leaves it;
 	// the pid is what tells a reader it is stale.
+	//
+	// The resolutions replay in the ORIGINAL bind order, local URLs at their
+	// own positions: each occurrence keeps the address its own listener
+	// resolved to. locallisten.IsLocal is the predicate config.SplitListen
+	// classifies with, so the replay and the split cannot disagree.
 	stateListen := make([]string, 0, len(entries))
+	tcpAt, localAt := 0, 0
 	for _, e := range entries {
-		stateListen = append(stateListen, resolvedByEntry[e])
+		if locallisten.IsLocal(e) {
+			stateListen = append(stateListen, localEntries[localAt])
+			localAt++
+			continue
+		}
+		stateListen = append(stateListen, resolvedTCP[tcpAt])
+		tcpAt++
 	}
 	statePath, stateErr := writeStateFile(cfg.DataDir, stateListen)
 	if stateErr != nil {
@@ -413,8 +426,8 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	acquired.statePath = statePath
 	// Services that build browser origins must use the assigned port. Keep the
 	// configured bind request intact for a later start with the same config.
-	if len(tcpEntries) > 0 {
-		cfg = cfg.WithResolvedPrimaryTCPListen(resolvedByEntry[tcpEntries[0]])
+	if len(resolvedTCP) > 0 {
+		cfg = cfg.WithResolvedPrimaryTCPListen(resolvedTCP[0])
 	}
 
 	// The listener set takes over the base listeners HERE, so the failure paths
@@ -439,8 +452,10 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// The REPORTER owns the fallback to cfg.Listen, so the rule has one home
 	// and no consumer repeats it. Extra addresses are hidden_in_hub, so only a
 	// solo hub has any, and in `leapmux hub` and `leapmux dev` this returns
-	// exactly what it always did.
-	listenReports := listenReporter{set: listeners, configured: tcpEntries}
+	// exactly what it always did. The local IPC URLs travel beside the TCP
+	// bases: they bind on their own startup path and are reported separately,
+	// never as part of the TCP merge input.
+	listenReports := listenReporter{set: listeners, configured: tcpEntries, local: localListenURLs}
 
 	st, err := storeopen.Open(context.Background(), cfg)
 	if err != nil {

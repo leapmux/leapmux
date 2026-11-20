@@ -11,7 +11,8 @@
  *
  * The DATABASE: one table keyed by the whole composed storage key, with an index
  * on the expiration so the sweep can select what to delete without reading a
- * single value.
+ * single value. `updateKvTransaction` runs a caller's read-modify-write as ONE
+ * transaction, for the rows that cannot tolerate the write-behind queue.
  *
  * The WRITE-BEHIND QUEUE. The gateway's synchronous accessors cannot await a
  * commit, so a write updates the caller's view immediately and lands here to be
@@ -143,6 +144,49 @@ export async function readKvPrefix(prefix: string): Promise<KvRow[]> {
 /** One row, or undefined. */
 export async function readKvRow(key: string): Promise<KvRow | undefined> {
   return readOrEmpty<KvRow | undefined>(db => db[TABLE].get(key), undefined)
+}
+
+// ---------------------------------------------------------------------------
+// Strict transactions
+// ---------------------------------------------------------------------------
+
+/** Row access inside one strict transaction. */
+export interface KvRowTransaction {
+  get(key: string): Promise<KvRow | undefined>
+  put(row: KvRow): Promise<void>
+  delete(key: string): Promise<void>
+}
+
+/**
+ * Run `body` as ONE read-write transaction over the rows it names.
+ *
+ * Strict where `readOrEmpty` is forgiving: an unavailable database, a failed
+ * open and a failed request all REJECT, because the callers here decide trust
+ * and must not read a failure as an empty store. A `get` that finds no row
+ * resolves undefined, which is a confirmed absence and not a failure -- the
+ * distinction those callers draw.
+ *
+ * The body may await only this transaction's own `get` / `put` / `delete`.
+ * Dexie commits a transaction while its promise chain leaves the database, so
+ * an unrelated await between two row operations loses the transaction -- and
+ * with it the atomicity the caller asked for.
+ *
+ * A thrown error aborts the transaction and propagates: nothing the body wrote
+ * survives, which is what makes a compare-and-swap check inside `body` a real
+ * check rather than a hopeful one.
+ */
+export async function updateKvTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>): Promise<T> {
+  const db = await openKv()
+  if (db === null)
+    throw new Error('browser storage is unavailable; nothing can be persisted here')
+  return db.transaction('rw', db[TABLE], async () => {
+    const tx: KvRowTransaction = {
+      get: key => db[TABLE].get(key),
+      put: row => db[TABLE].put(row).then(() => undefined),
+      delete: key => db[TABLE].delete(key).then(() => undefined),
+    }
+    return await body(tx)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -476,11 +520,18 @@ export async function flushKvWrites(): Promise<void> {
  * needs. What it looks for only changes when a deploy changes the registry, so
  * the gateway runs it ONCE per page and leaves the hourly timer on the
  * index-bounded expiry arm.
+ *
+ * `isExemptFromExpiry` shields a row the expiry arm must never take even when
+ * its expiration has passed. The gateway keeps exactly one such row -- the key
+ * pin removal revision, which is nonexpiring by policy -- so a corrupted or
+ * foreign expiration on it cannot reset a revision that pending pin commits
+ * validate against. Nothing else is exempt: the pin map itself expires on its
+ * registered policy like every other row.
  */
 export async function sweepKv(
   now: number,
   isRegistered: (key: string) => boolean,
-  opts: { checkRegistrations: boolean },
+  opts: { checkRegistrations: boolean, isExemptFromExpiry?: (key: string) => boolean },
 ): Promise<string[]> {
   const db = await openKv()
   if (!db)
@@ -488,7 +539,8 @@ export async function sweepKv(
   const deleted: string[] = []
   try {
     await db.transaction('rw', db[TABLE], async () => {
-      const expired = await db[TABLE].where(EXPIRES_INDEX).below(now).primaryKeys()
+      const expired = (await db[TABLE].where(EXPIRES_INDEX).below(now).primaryKeys())
+        .filter(key => opts.isExemptFromExpiry?.(key) !== true)
       const unregistered = opts.checkRegistrations
         ? (await db[TABLE].toCollection().primaryKeys()).filter(key => !isRegistered(key))
         : []
@@ -519,10 +571,20 @@ export async function sweepKv(
 
 const CHANNEL_NAME = 'leapmux:browser-storage'
 
+/**
+ * A key-only change: the named row changed, and the receiver must re-read it
+ * rather than trust a value in the message.
+ *
+ * For the pin rows, whose values never travel on the channel: a hint names the
+ * stored key and carries no pin bytes. See `publishKvInvalidations`.
+ */
+export type KeyInvalidationChange = { readonly k: string, readonly invalidate: true }
+
 /** One committed change, as another tab receives it. */
 export type StorageChange
   = | { readonly k: string, readonly v: unknown, readonly e: number }
     | { readonly k: string, readonly removed: true }
+    | KeyInvalidationChange
 
 /**
  * One tab's committed change set.
@@ -608,6 +670,23 @@ export function publishKvRemovals(keys: readonly string[]): void {
   channel?.postMessage({
     from: instanceId,
     changes: keys.map(k => ({ k, removed: true as const })),
+  } satisfies StorageBroadcast)
+}
+
+/**
+ * Tell the other tabs that some rows changed and must be re-read.
+ *
+ * The key-only counterpart of `publishKvRemovals`, for rows whose values never
+ * travel on the channel -- the pin rows carry key material, so a receiver gets
+ * the stored key and reads the state itself. Published AFTER the transaction
+ * committed, like every other publish.
+ */
+export function publishKvInvalidations(keys: readonly string[]): void {
+  if (keys.length === 0)
+    return
+  channel?.postMessage({
+    from: instanceId,
+    changes: keys.map(k => ({ k, invalidate: true as const })),
   } satisfies StorageBroadcast)
 }
 

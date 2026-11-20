@@ -129,7 +129,7 @@ The exchange travels inside the already-encrypted channel, so the current cipher
 
 Hub credential expiry still limits bearer-token channels from the outside: CLI access tokens and delegation tokens live one hour. Desktop tunnels authorized by a sliding session cookie can stay open for days, and rekey is what limits their *key epoch* without resetting multiplexed TCP connections. Hard nonce exhaustion remains fail-closed. The Frontend re-checks key age the next time it uses a channel, on a one-minute idle timer, and again when the page wakes from suspend — so a frozen clock cannot hide an over-age key. A rekey refused for being too early tells the initiator how long to wait rather than leaving it to guess.
 
-The desktop app's tunnels keep no key pin. Each tunnel trusts the Worker key that the Hub reports whenever it opens a channel. In remote-Hub mode, a Hub that substitutes a Worker key can therefore read tunneled traffic.
+A desktop tunnel admits one Worker identity: the user that owns the tunnel, and the exact Worker key set the Hub must announce. That key set is the pin the browser already holds for the Worker, so a tunnel and a browser channel share one trust decision. See [Tunnel key trust](#tunnel-key-trust).
 
 Identity drift — the page's expected user no longer matching the Hub-authenticated channel user — still closes the channel and re-handshakes; that needs a new open, not a rekey. Rekey does **not** re-run the Hub's channel authorization: revoked credentials are torn down by the Hub's revocation watcher, not by the rekey path.
 
@@ -249,12 +249,25 @@ The fingerprints are **4 dash-joined English words** derived from a hash of the 
 
 The desktop app writes its Worker's line to standard error, prefixed with `desktop-sidecar: `. To see it, start the app from a terminal: on macOS, run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"`; on Linux, run the AppImage, or `leapmux-desktop`, the program the `.deb` package installs. A Windows release build has no console. In solo mode, the desktop app's own local Worker runs in the same process as its Hub. A key change for that local Worker cannot come from the network: it means the app's stored pins or data changed.
 
-In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/). The desktop app's tunnels keep no pin.
+In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Its tunnels share that record; see [Tunnel key trust](#tunnel-key-trust). Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/).
 
 - Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove --target-worker-id=<id>`.
 - `leapmux control` CLI pins, cleared with `leapmux control worker pins remove --worker-id=<id>`.
 
 Both follow the same rule: first contact auto-pins, any later mismatch aborts the connection until you explicitly clear the pin.
+
+### Tunnel key trust
+
+A tunnel does not keep a pin of its own. Each create submits the Worker key expectation it admits against, and that expectation is the browser's pin for the Worker — the same record a channel uses, and the one **Preferences → Advanced → Trusted worker keys** lists and removes. A tunnel also names the user the expectation belongs to, so a form that outlived its account cannot create a tunnel for the wrong one.
+
+Four stages describe what a tunnel does with that trust.
+
+- **First contact.** The first channel a client opens to a Worker records the Worker's composite public key once the session proves. A tunnel created afterwards carries that exact key. Creating a tunnel to a Worker with no trusted key yet asks you to verify the Worker key first, which opens that first channel and records what it proves.
+- **Shared trust.** The expectation is the stored pin, never a key the create reply reports. One record governs both surfaces, so a key you accepted for a browser channel is the key a tunnel admits, and a pin you remove stops the next create until you verify again.
+- **Mismatch on reconnect.** When the keys the Hub announces differ from the expectation, the tunnel stops instead of carrying traffic. Its row keeps its place and records the reason and both fingerprints, so a hint delivered early or lost is recoverable from the list.
+- **Exact-key confirmation before recreation.** A recreation admits the key the pin holds at that moment. Confirm a change before you recreate: **Verify Worker key** opens the browser channel, whose *Worker public key changed* dialog shows the two fingerprints for Accept or Reject. Only an accepted key becomes the expectation a recreation carries.
+
+A Hub that substitutes a Worker key therefore stops a tunnel rather than read it. What pinning still cannot stop is a Hub opening its own channel as you, or serving modified Frontend code.
 
 ## Solo mode: a reduced threat model
 

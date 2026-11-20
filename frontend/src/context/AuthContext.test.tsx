@@ -1082,6 +1082,139 @@ describe('AuthContext', () => {
 
     expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
   })
+
+  describe('workerTrustScope', () => {
+    /** Hold the session restore open so the pre-adoption scope can be captured. */
+    function renderHoldingRestore(): {
+      auth: () => AuthState
+      releaseRestore: (user: { id: string, username: string, isAdmin: boolean } | null) => void
+    } {
+      const session = deferred<{ sessionReport: { user: { id: string, username: string, isAdmin: boolean } | undefined } }>()
+      mockGetCurrentUser.mockReturnValue(session.promise)
+      const { auth } = renderWithAuthCapture()
+      return {
+        auth,
+        releaseRestore: (user) => {
+          session.resolve({ sessionReport: { user: user ?? undefined } })
+        },
+      }
+    }
+
+    it('exposes a signed-out scope before any identity is adopted', async () => {
+      const { auth, releaseRestore } = renderHoldingRestore()
+      const initial = auth().workerTrustScope()
+      expect(initial.userId).toBeNull()
+      expect(initial.signal.aborted).toBe(false)
+
+      releaseRestore(null)
+      await untilTrue(() => !auth().loading())
+      // Nothing adopted: the same signed-out lifetime stands.
+      expect(auth().workerTrustScope()).toBe(initial)
+    })
+
+    it('retires the previous scope when a restore adopts the user', async () => {
+      const { auth, releaseRestore } = renderHoldingRestore()
+      const initial = auth().workerTrustScope()
+
+      releaseRestore({ id: 'u1', username: 'alice', isAdmin: false })
+      await untilTrue(() => auth().user() !== null)
+
+      const adopted = auth().workerTrustScope()
+      expect(adopted.userId).toBe('u1')
+      expect(adopted.generation).toBeGreaterThan(initial.generation)
+      expect(initial.signal.aborted).toBe(true)
+      expect(adopted.signal.aborted).toBe(false)
+    })
+
+    it('does not advance on a same-user refresh', async () => {
+      mockGetCurrentUser.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      const { auth } = renderWithAuthCapture()
+      await untilTrue(() => auth().user() !== null)
+      const adopted = auth().workerTrustScope()
+
+      await auth().refreshUser()
+
+      expect(auth().user()?.id).toBe('u1')
+      // A refresh re-reads the same identity: same lifetime, same scope.
+      expect(auth().workerTrustScope()).toBe(adopted)
+      expect(adopted.signal.aborted).toBe(false)
+    })
+
+    it('advances on sign-out and on sign-in as the same user', async () => {
+      mockGetCurrentUser.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      const { auth } = renderWithAuthCapture()
+      await untilTrue(() => auth().user() !== null)
+      const before = auth().workerTrustScope()
+
+      await auth().logout()
+      const signedOut = auth().workerTrustScope()
+      expect(signedOut.userId).toBeNull()
+      expect(signedOut.generation).toBeGreaterThan(before.generation)
+      expect(before.signal.aborted).toBe(true)
+
+      // Sign-in as the SAME user starts a new lifetime: a decision captured
+      // before the logout must not survive into it.
+      mockLogin.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      await auth().login('alice', 'pw')
+      const after = auth().workerTrustScope()
+      expect(after.userId).toBe('u1')
+      expect(after.generation).toBeGreaterThan(signedOut.generation)
+      expect(signedOut.signal.aborted).toBe(true)
+    })
+
+    it('advances on a sign-in over a live session as the same user', async () => {
+      mockGetCurrentUser.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      const { auth } = renderWithAuthCapture()
+      await untilTrue(() => auth().user() !== null)
+      const before = auth().workerTrustScope()
+
+      // A bookmarked /login over a still-authenticated session: the id is
+      // unchanged, but the identity lifetime is new.
+      mockLogin.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      await auth().login('alice', 'pw')
+
+      const after = auth().workerTrustScope()
+      expect(after.userId).toBe('u1')
+      expect(after.generation).toBeGreaterThan(before.generation)
+      expect(before.signal.aborted).toBe(true)
+    })
+
+    it('does not advance on an elevation change', async () => {
+      mockGetCurrentUser.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      const { auth } = renderWithAuthCapture()
+      await untilTrue(() => auth().user() !== null)
+      const adopted = auth().workerTrustScope()
+
+      mockElevateWithPassword.mockResolvedValue(timestampFromDate(new Date(1_700_000_000_000)))
+      await auth().elevateWithPassword('pw')
+      expect(auth().elevationExpiresAt()).toBeDefined()
+      expect(auth().workerTrustScope()).toBe(adopted)
+    })
+  })
 })
 
 // The storage namespace moves with the identity, and this provider is the one

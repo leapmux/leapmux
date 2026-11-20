@@ -391,6 +391,13 @@ struct BuildInfoResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TunnelKeyMismatchResponse {
+    expected_fingerprint: String,
+    presented_fingerprint: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TunnelInfoResponse {
     id: String,
     worker_id: String,
@@ -399,6 +406,31 @@ struct TunnelInfoResponse {
     bind_port: i32,
     target_addr: String,
     target_port: i32,
+    /// Set only on a stopped row: the Worker key mismatch that stopped the tunnel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_mismatch: Option<TunnelKeyMismatchResponse>,
+}
+
+/// A create's outcome: the created row, or the Worker key mismatch that
+/// refused it. Mirrors the CreateTunnelResponse oneof.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum CreateTunnelOutcome {
+    Info {
+        info: TunnelInfoResponse,
+    },
+    KeyMismatch {
+        #[serde(rename = "keyMismatch")]
+        key_mismatch: TunnelKeyMismatchResponse,
+    },
+}
+
+/// One tunnel listing: the rows and the channel epoch they were read under.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListTunnelsResult {
+    tunnels: Vec<TunnelInfoResponse>,
+    channel_epoch: String,
 }
 
 #[derive(Deserialize)]
@@ -410,6 +442,9 @@ struct TunnelConfigInput {
     target_port: i32,
     bind_addr: String,
     bind_port: i32,
+    expected_worker_keys_hex: String,
+    expected_user_id: String,
+    channel_epoch: String,
 }
 
 // --- Sidecar process ---
@@ -861,6 +896,9 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
               "attrs": log.attrs,
             });
             let _ = app_handle.emit(contracts_generated::EVENT_SIDECAR_LOG, payload);
+        }
+        proto::event::Payload::TunnelsChanged(_) => {
+            let _ = app_handle.emit(contracts_generated::EVENT_TUNNELS_CHANGED, ());
         }
     }
 }
@@ -1700,7 +1738,7 @@ async fn close_userevents_relay(
 async fn create_tunnel(
     shell: State<'_, Arc<DesktopShell>>,
     config: TunnelConfigInput,
-) -> Result<TunnelInfoResponse, String> {
+) -> Result<CreateTunnelOutcome, String> {
     let cfg = proto::TunnelConfig {
         worker_id: config.worker_id,
         r#type: config.r#type,
@@ -1708,6 +1746,9 @@ async fn create_tunnel(
         target_port: config.target_port,
         bind_addr: config.bind_addr,
         bind_port: config.bind_port,
+        expected_worker_keys_hex: config.expected_worker_keys_hex,
+        expected_user_id: config.expected_user_id,
+        channel_epoch: config.channel_epoch,
     };
 
     let resp = check_response(
@@ -1719,13 +1760,22 @@ async fn create_tunnel(
     )?;
 
     match resp.result {
-        Some(proto::response::Result::CreateTunnel(r)) => {
-            if let Some(info) = r.info {
-                Ok(proto_to_tunnel_info(&info))
-            } else {
-                Err("missing tunnel info in response".to_string())
+        Some(proto::response::Result::CreateTunnel(r)) => match r.result {
+            Some(proto::create_tunnel_response::Result::Info(info)) => {
+                Ok(CreateTunnelOutcome::Info {
+                    info: proto_to_tunnel_info(&info),
+                })
             }
-        }
+            Some(proto::create_tunnel_response::Result::KeyMismatch(m)) => {
+                Ok(CreateTunnelOutcome::KeyMismatch {
+                    key_mismatch: TunnelKeyMismatchResponse {
+                        expected_fingerprint: m.expected_fingerprint,
+                        presented_fingerprint: m.presented_fingerprint,
+                    },
+                })
+            }
+            None => Err("missing result in create_tunnel response".to_string()),
+        },
         _ => Err("unexpected response for create_tunnel".to_string()),
     }
 }
@@ -1734,11 +1784,15 @@ async fn create_tunnel(
 async fn delete_tunnel(
     shell: State<'_, Arc<DesktopShell>>,
     tunnel_id: String,
+    channel_epoch: String,
 ) -> Result<(), String> {
     check_response(
         shell
             .send_request_async(proto::request::Method::DeleteTunnel(
-                proto::DeleteTunnelRequest { tunnel_id },
+                proto::DeleteTunnelRequest {
+                    tunnel_id,
+                    channel_epoch,
+                },
             ))
             .await?,
     )?;
@@ -1746,11 +1800,14 @@ async fn delete_tunnel(
 }
 
 #[tauri::command]
-async fn reset_tunnels(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+async fn reset_tunnels(
+    shell: State<'_, Arc<DesktopShell>>,
+    channel_epoch: String,
+) -> Result<(), String> {
     check_response(
         shell
             .send_request_async(proto::request::Method::ResetTunnels(
-                proto::ResetTunnelsRequest {},
+                proto::ResetTunnelsRequest { channel_epoch },
             ))
             .await?,
     )?;
@@ -1760,18 +1817,20 @@ async fn reset_tunnels(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String
 #[tauri::command]
 async fn list_tunnels(
     shell: State<'_, Arc<DesktopShell>>,
-) -> Result<Vec<TunnelInfoResponse>, String> {
+    expected_user_id: String,
+) -> Result<ListTunnelsResult, String> {
     let resp = check_response(
         shell
             .send_request_async(proto::request::Method::ListTunnels(
-                proto::ListTunnelsRequest {},
+                proto::ListTunnelsRequest { expected_user_id },
             ))
             .await?,
     )?;
     match resp.result {
-        Some(proto::response::Result::ListTunnels(r)) => {
-            Ok(r.tunnels.iter().map(proto_to_tunnel_info).collect())
-        }
+        Some(proto::response::Result::ListTunnels(r)) => Ok(ListTunnelsResult {
+            tunnels: r.tunnels.iter().map(proto_to_tunnel_info).collect(),
+            channel_epoch: r.channel_epoch,
+        }),
         _ => Err("unexpected response for list_tunnels".to_string()),
     }
 }
@@ -1785,6 +1844,13 @@ fn proto_to_tunnel_info(info: &proto::TunnelInfo) -> TunnelInfoResponse {
         bind_port: info.bind_port,
         target_addr: info.target_addr.clone(),
         target_port: info.target_port,
+        key_mismatch: info
+            .key_mismatch
+            .as_ref()
+            .map(|m| TunnelKeyMismatchResponse {
+                expected_fingerprint: m.expected_fingerprint.clone(),
+                presented_fingerprint: m.presented_fingerprint.clone(),
+            }),
     }
 }
 

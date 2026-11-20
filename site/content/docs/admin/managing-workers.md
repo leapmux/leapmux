@@ -247,7 +247,7 @@ leapmux worker deregister
 
 ## Tunnels (desktop app)
 
-A **tunnel** gives you local access to a service the Worker can reach — a dev server, a database, or any TCP endpoint on the Worker's machine or private network. The traffic uses the Worker's existing end-to-end-encrypted channel. While the Hub only relays ciphertext, it cannot read the tunneled traffic. In remote-Hub mode a tunnel uses the same Hub session as the rest of the desktop app. Signing out ends the tunnels. The desktop app's tunnels keep no key pin. In remote-Hub mode, a Hub that substitutes a Worker key can read tunneled traffic.
+A **tunnel** gives you local access to a service the Worker can reach — a dev server, a database, or any TCP endpoint on the Worker's machine or private network. The traffic uses the Worker's existing end-to-end-encrypted channel. While the Hub only relays ciphertext, it cannot read the tunneled traffic. In remote-Hub mode a tunnel uses the same Hub session as the rest of the desktop app, and signing out ends the tunnels. A tunnel keeps no pin of its own. It carries the Worker key the desktop app already trusts as its admission expectation, so a Hub that substitutes a Worker key stops the tunnel instead of reading it. See [Tunnel key trust](#tunnel-key-trust) below.
 
 Tunnels are a **desktop-app feature**. They are available in both solo and distributed desktop modes, but not in a plain browser (the browser cannot open the local listening sockets a tunnel needs). You manage them from a Worker's sidebar context menu, where — **when tunnels are available and you own the Worker** — these items appear:
 
@@ -276,6 +276,19 @@ A tunnel's configuration has these fields:
 So a port-forward needs a `targetAddr` and `targetPort` (the service the Worker should reach) and, by default, binds the same port locally on loopback. A SOCKS5 tunnel needs no target — it binds `127.0.0.1:1080` by default and dials each destination from the Worker.
 
 In both cases you can override `bindAddr`/`bindPort` if the default port is taken. The bind address must be loopback, because the tunnel listener is unauthenticated. The dialog reports the IP and port the tunnel actually bound to once it is running.
+
+### Tunnel key trust
+
+A tunnel keeps no pin of its own. Each one names the user it belongs to and the exact Worker key set it admits, and that key set is the pin your browser holds for the Worker — the same record a channel uses, listed under **Preferences → Advanced → Trusted worker keys**. The trust story has four stages.
+
+- **First contact.** The first channel to a Worker records its composite public key once the session proves. A tunnel created afterwards carries that key. With no trusted key yet, the **Add tunnel** dialog asks you to verify the Worker key first, which opens that first channel.
+- **Shared trust.** One record governs tunnels and browser channels, so a key you accepted for a channel is the key a tunnel admits. Removing the pin stops the next create until you verify again.
+- **Mismatch on reconnect.** When the keys the Hub announces differ from the expectation, the tunnel stops. Its row keeps its place and states the reason and both fingerprints.
+- **Exact-key confirmation before recreation.** A recreation admits the key the pin holds at that moment. Confirm a change first: **Verify Worker key** on the stopped row, or in the **Add tunnel** dialog, opens the browser channel and its *Worker public key changed* dialog, where you accept or reject the two fingerprints. Only an accepted key becomes the expectation.
+
+{{< callout type="warning" >}}
+Every key mismatch is a serious signal. Do not accept a changed key to make it work. Reject it, and confirm the fingerprint with whoever runs the Worker. See [Security & Threat Model](/docs/admin/security/#tunnel-key-trust) for the reasoning.
+{{< /callout >}}
 
 ## TOFU key pinning
 
@@ -312,7 +325,7 @@ Later connection (key changed):
    └─────────────────────────────────────┘
 ```
 
-There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep no pin. The
+There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep none of their own: they admit the browser's pin (see [Tunnel key trust](#tunnel-key-trust)). The
 browser store is per account: two people who sign in to LeapMux from the same
 browser pin workers independently, and neither sees the other's pins.
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +30,8 @@ const (
 // TestHelperProcessFileLock is the helper process; it does nothing in
 // the test process itself. It takes the lock, starts a child that
 // outlives it, and exits without releasing, so the parent test can ask
-// whether the child kept a copy.
+// whether the child kept a copy. The hold-until-release mode instead
+// takes the lock and holds it until the parent sends "release".
 func TestHelperProcessFileLock(t *testing.T) {
 	switch os.Getenv(helperModeEnv) {
 	case "outlive":
@@ -40,6 +43,22 @@ func TestHelperProcessFileLock(t *testing.T) {
 			_ = connection.Close()
 		}
 		_ = listener.Close()
+		return
+	case "hold-until-release":
+		file, err := Open(os.Getenv(helperLockEnv), false)
+		require.NoError(t, err)
+		held, err := TryLock(file)
+		require.NoError(t, err)
+		require.True(t, held)
+		fmt.Println("ready")
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			if scanner.Text() == "release" {
+				break
+			}
+		}
+		require.NoError(t, Unlock(file))
+		require.NoError(t, file.Close())
 		return
 	case "hold-with-child":
 	default:
@@ -138,4 +157,107 @@ func TestTryLockIsExclusiveAndReacquirable(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, taken, "a released lock is acquirable again")
 	require.NoError(t, third.Close())
+}
+
+// startLockHolder runs the helper process that takes the lock at path
+// and holds it. The returned release function signals the holder to
+// unlock and waits for its exit.
+func startLockHolder(t *testing.T, path string) (release func()) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcessFileLock$")
+	command.Env = append(os.Environ(), helperModeEnv+"=hold-until-release", helperLockEnv+"="+path)
+	stdin, err := command.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := command.StdoutPipe()
+	require.NoError(t, err)
+	command.Stderr = os.Stderr
+	require.NoError(t, command.Start())
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+		cancel()
+	})
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "ready\n", line, "the holder reports the lock only after taking it")
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_, _ = io.WriteString(stdin, "release\n")
+			_ = stdin.Close()
+			require.NoError(t, command.Wait())
+		})
+	}
+}
+
+func TestLockHonorsCancellationWhileHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.lock")
+	release := startLockHolder(t, path)
+	defer release()
+
+	second, err := Open(path, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+
+	// The 30s deadline is a hang guard: a Lock that ignored the
+	// cancellation would surface DeadlineExceeded instead of
+	// context.Canceled.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- Lock(ctx, second) }()
+	cancel()
+	assert.ErrorIs(t, <-errCh, context.Canceled)
+
+	third, err := Open(path, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = third.Close() })
+	taken, err := TryLock(third)
+	require.NoError(t, err)
+	assert.False(t, taken, "a canceled waiter must leave the holder's lock alone")
+}
+
+func TestLockAcquiresAfterTheHolderReleases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.lock")
+	release := startLockHolder(t, path)
+
+	second, err := Open(path, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- Lock(ctx, second) }()
+	release()
+	require.NoError(t, <-errCh)
+
+	third, err := Open(path, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = third.Close() })
+	taken, err := TryLock(third)
+	require.NoError(t, err)
+	assert.False(t, taken, "the successful caller owns the lock")
+	require.NoError(t, Unlock(second))
+}
+
+func TestLockPropagatesAClosedHandleFailureWithoutRetrying(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.lock")
+	file, err := Open(path, true)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, tryErr := TryLock(file)
+	require.Error(t, tryErr, "TryLock on a closed handle reports a native failure")
+
+	// The 30s deadline is a hang guard: a Lock that retried the native
+	// failure as contention would surface DeadlineExceeded instead of
+	// TryLock's own cause.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	lockErr := Lock(ctx, file)
+	require.Error(t, lockErr)
+	assert.EqualError(t, lockErr, tryErr.Error(),
+		"Lock must propagate TryLock's native cause unchanged instead of retrying")
 }

@@ -1,6 +1,7 @@
 import type { ChannelTransport } from './channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkerWatchService } from '../generated/proto/leapmux/v1/watch_pb'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { ChannelError } from './channel'
 import {
   acceptingKeyPins,
@@ -10,6 +11,7 @@ import {
   encodeCloseMessage,
   encodeWireMessage,
   failChannelSessionWorker,
+  MAX_SETTLE_ROUNDS,
   mockHandshake1,
   mockHandshake2,
   MockWebSocket,
@@ -17,6 +19,11 @@ import {
   sessionHostOf,
   settleChannelSessions,
 } from './channel.test-support'
+import { yieldToEventLoop } from './workSlices'
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('ChannelManager closeChannel', () => {
   const h = new ChannelManagerTestHarness()
@@ -63,7 +70,7 @@ describe('ChannelManager closeChannel', () => {
   it('rejects the pending openChannel when closeChannel races the open', async () => {
     const openPromise = h.mgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     // The Ping is now in flight; the worker has not answered it.
     const channelId = decodeWireMessage(h.mockWs.sent.at(-1)!).channelId
@@ -75,7 +82,7 @@ describe('ChannelManager closeChannel', () => {
   it('rejects the pending openChannel when the server sends CLOSE during the open', async () => {
     const openPromise = h.mgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     const channelId = decodeWireMessage(h.mockWs.sent.at(-1)!).channelId
     h.mockWs.simulateMessage(encodeCloseMessage(channelId))
@@ -86,7 +93,7 @@ describe('ChannelManager closeChannel', () => {
   it('rejects the pending openChannel when the WebSocket closes during the open', async () => {
     const openPromise = h.mgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     h.mockWs.simulateClose()
     await expect(openPromise).rejects.toThrow(ChannelError)
@@ -259,7 +266,7 @@ describe('ChannelManager webSocket close', () => {
       // 1. Open a channel on wsA so this.ws === wsA and its close listener is attached.
       const open1 = mgr2.openChannel('w1')
       await h.settle()
-      wsA.simulateOpen()
+      await wsA.waitForOpenListener(); wsA.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(wsA)
       await open1
@@ -312,7 +319,7 @@ describe('ChannelManager webSocket close', () => {
       // 1. Open ch1 on wsA.
       const open1 = mgr2.openChannel('w1')
       await h.settle()
-      wsA.simulateOpen()
+      await wsA.waitForOpenListener(); wsA.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(wsA)
       const ch1 = await open1
@@ -322,7 +329,7 @@ describe('ChannelManager webSocket close', () => {
       wsA.readyState = MockWebSocket.CLOSING
       const open2 = mgr2.openChannel('w2')
       await h.settle()
-      wsB.simulateOpen()
+      await wsB.waitForOpenListener(); wsB.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(wsB)
       await open2
@@ -365,7 +372,7 @@ describe('ChannelManager closeAll', () => {
     const rejected = expect(openPromise).rejects.toThrow(ChannelError) // without the guard: resolves
     await h.settle() // parked at ensureWebSocket, before channels.set
     h.mgr.closeAll() // eager identity release; snapshot misses the unregistered channel
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     if (h.mockWs.sent.length > 0) // without the guard the open sent + must answer its verify ping
       await h.simulatePingAccept()
@@ -422,7 +429,7 @@ describe('ChannelManager session worker', () => {
     await h.settle()
 
     failChannelSessionWorker('boom')
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
 
     await opened
@@ -451,8 +458,11 @@ describe('ChannelManager session worker', () => {
     const openOnFreshSocket = async (workerId: string) => {
       const opened = mgr.openChannel(workerId)
       await settleChannelSessions()
+      // The pin read's IndexedDB round trip delays the WebSocket dial.
+      for (let i = 0; i < MAX_SETTLE_ROUNDS && sockets.length === 0; i++)
+        await yieldToEventLoop()
       const ws = sockets.at(-1)!
-      ws.simulateOpen()
+      await ws.waitForOpenListener(); ws.simulateOpen()
       await settleChannelSessions()
       await h.simulatePingAccept(ws)
       return opened
@@ -487,8 +497,8 @@ describe('ChannelManager webSocket connection failure', () => {
 
   it('should reject openChannel if WebSocket fails to connect', async () => {
     const openPromise = h.mgr.openChannel('w1')
-    await h.settle()
-    h.mockWs.simulateError()
+    await h.mockWs.waitForOpenListener()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateError()
     await expect(openPromise).rejects.toThrow('WebSocket connection failed')
   })
 

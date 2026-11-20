@@ -19,7 +19,8 @@ import {
 import { WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
-import { KEY_KEY_PINS, localStorageGet } from './browserStorage'
+import { useTestStorage } from '~/test-support/persistentStorage'
+import { readKeyPinState } from './browserStorage'
 import { ChannelError } from './channel'
 import {
   acceptingKeyPins,
@@ -48,6 +49,10 @@ import { KeyPinStore } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
 import { procedureOf } from './rpcProcedure'
 
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
+
 describe('ChannelManager openChannel', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
@@ -66,7 +71,7 @@ describe('ChannelManager openChannel', () => {
   it('proves the session with the ping procedure the worker registers', async () => {
     const openPromise = h.mgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
 
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
@@ -169,7 +174,7 @@ describe('ChannelManager openChannel', () => {
         `RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`,
       )
       await h.settle()
-      brokenWs.simulateOpen()
+      await brokenWs.waitForOpenListener(); brokenWs.simulateOpen()
       await h.settle()
       // The worker never answers the ping.
       await pingFailure
@@ -324,7 +329,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = customMgr.openChannel('w1')
       await h.settle()
-      customWs.simulateOpen()
+      await customWs.waitForOpenListener(); customWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(customWs)
       const channelId = await openPromise
@@ -346,7 +351,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = floorMgr.openChannel('w1')
       await h.settle()
-      floorWs.simulateOpen()
+      await floorWs.waitForOpenListener(); floorWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(floorWs)
       const channelId = await openPromise
@@ -369,7 +374,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = omitMgr.openChannel('w1')
       await h.settle()
-      omitWs.simulateOpen()
+      await omitWs.waitForOpenListener(); omitWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(omitWs)
       const channelId = await openPromise
@@ -393,7 +398,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = ceilMgr.openChannel('w1')
       await h.settle()
-      ceilWs.simulateOpen()
+      await ceilWs.waitForOpenListener(); ceilWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(ceilWs)
       const channelId = await openPromise
@@ -518,7 +523,7 @@ describe('ChannelManager openChannel', () => {
       const openPromise = throwingMgr.openChannel('w1')
       const rejected = expect(openPromise).rejects.toThrow(/pin store rejected the write/)
       await h.settle()
-      ws.simulateOpen()
+      await ws.waitForOpenListener(); ws.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(ws)
       await rejected
@@ -547,7 +552,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = brokenMgr.openChannel('w1')
       await h.settle()
-      brokenWs.simulateOpen()
+      await brokenWs.waitForOpenListener(); brokenWs.simulateOpen()
       await h.settle()
       // The worker never answers the ping: the session is dead in at least one
       // direction. The open must fail rather than cache a broken channel.
@@ -645,7 +650,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = mgr.openChannel('w1')
       await h.settle()
-      h.mockWs.simulateOpen()
+      await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept()
       await expect(openPromise).resolves.toBeTruthy()
@@ -665,7 +670,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = mgr.openChannel('w1')
       await h.settle()
-      h.mockWs.simulateOpen()
+      await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept()
       await expect(openPromise).resolves.toBeTruthy()
@@ -741,7 +746,7 @@ describe('ChannelManager encryption modes', () => {
     const openPromise = classicMgr.openChannel('w-classic')
     await h.settle()
     classicWs.readyState = MockWebSocket.OPEN
-    classicWs.simulateOpen()
+    await classicWs.waitForOpenListener(); classicWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept(classicWs, classicSessions)
 
@@ -901,12 +906,12 @@ describe('ChannelManager open-time verification', () => {
 })
 
 describe('ChannelManager key pinning across concurrent opens', () => {
-  beforeEach(() => {
-    clearAllKeyPins()
+  beforeEach(async () => {
+    await clearAllKeyPins()
   })
 
-  afterEach(() => {
-    clearAllKeyPins()
+  afterEach(async () => {
+    await clearAllKeyPins()
   })
 
   /** A transport whose worker keys are per-worker and mutable, so a key can be rotated mid-test. */
@@ -944,7 +949,7 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       await simulatePingAcceptOnWs(ws!, 'ch-2')
       await Promise.all([p1, p2])
 
-      expect(Object.keys(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).sort()).toEqual(['w1', 'w2'])
+      expect(Object.keys((await readKeyPinState()).pins).sort()).toEqual(['w1', 'w2'])
     }
     finally {
       cm.closeAll()
@@ -989,7 +994,7 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       expect(confirmKeyPin).toHaveBeenCalledOnce()
       expect(confirmKeyPin).toHaveBeenCalledWith('w1', expect.any(String), expect.any(String))
       // The accepted key replaced the old pin, and w2's is still there.
-      expect(Object.keys(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).sort()).toEqual(['w1', 'w2'])
+      expect(Object.keys((await readKeyPinState()).pins).sort()).toEqual(['w1', 'w2'])
     }
     finally {
       cm.closeAll()
@@ -1013,7 +1018,7 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       await simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
       await rejected
 
-      expect(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).toEqual({})
+      expect((await readKeyPinState()).pins).toEqual({})
     }
     finally {
       cm.closeAll()

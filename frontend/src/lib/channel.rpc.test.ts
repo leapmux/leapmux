@@ -15,6 +15,7 @@ import {
 import { StatFileRequestSchema, StatFileResponseSchema, WorkerFileService } from '~/generated/proto/leapmux/v1/file_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import {
   agePastMaxAge,
   channelInternals,
@@ -42,6 +43,10 @@ function sealWorker(session: Session, channelId: string, correlationId: bigint, 
 function openWorker(session: Pick<Session, 'receive'>, frame: ChannelMessage): Uint8Array {
   return session.receive.decrypt(frameAssociatedData(frame.channelId, frame.correlationId, frame.flags), frame.ciphertext)
 }
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('ChannelManager call', () => {
   const h = new ChannelManagerTestHarness()
@@ -201,10 +206,13 @@ describe('ChannelManager call', () => {
     expect(resp2).toEqual(new Uint8Array([20]))
   })
 
+  // The open is kept OUTSIDE the fake clock: the pin decision commits through
+  // fake-indexeddb, whose requests complete on `setImmediate` -- a timer the
+  // default fake clock owns, so an open under it never settles.
   it('should timeout after default rpcTimeout (15s)', async () => {
+    const channelId = await h.openTestChannel('w1')
     vi.useFakeTimers()
     try {
-      const channelId = await h.openTestChannel('w1')
       const callPromise = h.mgr.call(channelId, 'SlowMethod', new Uint8Array())
 
       vi.advanceTimersByTime(15_000)
@@ -217,9 +225,9 @@ describe('ChannelManager call', () => {
   })
 
   it('should honor a per-call timeout override', async () => {
+    const channelId = await h.openTestChannel('w1')
     vi.useFakeTimers()
     try {
-      const channelId = await h.openTestChannel('w1')
       const callPromise = h.mgr.call(channelId, 'SlowMethod', new Uint8Array(), 40_000)
 
       vi.advanceTimersByTime(39_999)
@@ -266,9 +274,9 @@ describe('ChannelManager call', () => {
   })
 
   it('clears the timeout timer when aborted so it cannot fire later and double-reject', async () => {
+    const channelId = await h.openTestChannel('w1')
     vi.useFakeTimers()
     try {
-      const channelId = await h.openTestChannel('w1')
       const controller = new AbortController()
       const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
       controller.abort(new Error('aborted'))
@@ -842,9 +850,9 @@ describe('ChannelManager late frames', () => {
   })
 
   it('logs the late response to a timed-out call at debug level instead of warning', async () => {
+    const channelId = await h.openTestChannel('w1')
     vi.useFakeTimers()
     try {
-      const channelId = await h.openTestChannel('w1')
       const callPromise = h.mgr.call(channelId, 'SlowMethod', new Uint8Array(), 1_000)
       vi.advanceTimersByTime(1_000)
       await expect(callPromise).rejects.toThrow('timed out after 1s')
@@ -1132,7 +1140,7 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1171,7 +1179,7 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1226,7 +1234,7 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1248,7 +1256,7 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1280,7 +1288,7 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1333,7 +1341,7 @@ describe('ChannelManager chunking', () => {
     const openPromise = cm.openChannel(workerId)
     await h.settle()
     if (h.mockWs.readyState !== MockWebSocket.OPEN) {
-      h.mockWs.simulateOpen()
+      await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
       await h.settle()
     }
     await h.simulatePingAccept()
@@ -1481,7 +1489,7 @@ describe('ChannelManager reassembly lifetime', () => {
     const openPromise = cm.openChannel('w1')
     await h.settle()
     if (h.mockWs.readyState !== MockWebSocket.OPEN) {
-      h.mockWs.simulateOpen()
+      await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
       await h.settle()
     }
     await h.simulatePingAccept()

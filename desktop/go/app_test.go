@@ -728,12 +728,12 @@ func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
 	app.connection = &desktopConnection{ctx: connectionCtx, stop: connectionStop, hubURL: "https://hub.example"}
 	app.lifecycleMu.Unlock()
 
-	before := app.tunnels.currentRevision()
+	before := app.tunnels.currentEpoch()
 	require.NoError(t, app.ResetTunnels())
 
-	assert.Greater(t, app.tunnels.currentRevision(), before,
+	assert.NotEqual(t, before, app.tunnels.currentEpoch(),
 		"ResetTunnels must rotate the channel epoch so no cached channel survives the identity change")
-	assert.Empty(t, app.ListTunnels(), "no tunnel may survive the reset")
+	assert.Empty(t, listTunnelRows(t, app.tunnels, testTunnelOwner), "no tunnel may survive the reset")
 	app.lifecycleMu.RLock()
 	defer app.lifecycleMu.RUnlock()
 	require.NotNil(t, app.connection, "ResetTunnels must not drop the sidecar<->Hub connection")

@@ -33,6 +33,15 @@ type ListenReporter interface {
 	// is the address -listen was given, which is by definition not in a report
 	// of what is bound.
 	PrimaryListenAddr() string
+	// BaseTCPAddresses reports the full TCP merge input in bind order, each
+	// address with the port its own listener resolved to. It is the base list
+	// a stored extra address folds into, and what the panel seeds and
+	// previews against.
+	BaseTCPAddresses() []string
+	// LocalIPCAddresses reports the local IPC endpoints the hub opened at
+	// startup, in bind order: the unix sockets and Windows named pipes a
+	// co-located CLI discovers. They are never part of the TCP merge input.
+	LocalIPCAddresses() []string
 }
 
 // ConfiguredListen is the reporter for a hub that has no listener set to ask.
@@ -47,10 +56,62 @@ type ConfiguredListen struct {
 	// Listen is the primary TCP address --listen gave, or "" for a hub that
 	// binds no TCP address.
 	Listen string
+	// Entries is the configured bind set --listen named, in bind order,
+	// exactly as the launcher holds it. The TCP half is derived from it; see
+	// ConfiguredTCPListenAddresses.
+	Entries []string
 }
 
 func (c ConfiguredListen) Bound() []listenset.Bound  { return nil }
 func (c ConfiguredListen) PrimaryListenAddr() string { return c.Listen }
+
+// ConfiguredTCPListenAddresses is the TCP merge input of a reporter with no
+// live sockets: every TCP address the bind set names, in bind order. Nothing
+// is bound, so no port has resolved; the addresses are the configured
+// requests themselves.
+//
+// It reuses the split and launcher defaults of the bind path: the same
+// classification config.SplitListen applies, and the launcher's TCP address
+// when the set names none at all. A bind set of local URLs alone names no TCP
+// address and reports none.
+func (c ConfiguredListen) ConfiguredTCPListenAddresses() []string {
+	tcp, _ := config.SplitListen(c.Entries)
+	if len(tcp) > 0 {
+		return append([]string(nil), tcp...)
+	}
+	if len(c.Entries) > 0 {
+		return nil
+	}
+	// An empty set takes the launcher's TCP address, which is the primary
+	// this reporter already carries.
+	if c.Listen == "" {
+		return nil
+	}
+	return []string{c.Listen}
+}
+
+// BaseTCPAddresses answers the merge input. With no live sockets bound, that
+// is the configured set; see ConfiguredTCPListenAddresses.
+func (c ConfiguredListen) BaseTCPAddresses() []string {
+	return c.ConfiguredTCPListenAddresses()
+}
+
+// LocalIPCAddresses is empty: local endpoints are startup facts -- which
+// sockets the hub actually opened -- and a reporter with no live sockets
+// knows none.
+func (c ConfiguredListen) LocalIPCAddresses() []string { return nil }
+
+// configuredListenFrom builds the fallback reporter from the configured bind
+// set. Nil answers as a hub with no TCP address at all.
+func configuredListenFrom(cfg *config.Config) ConfiguredListen {
+	if cfg == nil {
+		return ConfiguredListen{}
+	}
+	return ConfiguredListen{
+		Listen:  cfg.PrimaryTCPListen(),
+		Entries: append([]string(nil), cfg.Listen...),
+	}
+}
 
 // AdminNetworkService reports which addresses the hub answers on.
 //
@@ -95,7 +156,7 @@ type AdminNetworkServiceDeps struct {
 func NewAdminNetworkService(deps AdminNetworkServiceDeps) *AdminNetworkService {
 	listen := deps.Listen
 	if listen == nil {
-		listen = ConfiguredListen{Listen: deps.Config.PrimaryTCPListen()}
+		listen = configuredListenFrom(deps.Config)
 	}
 	interfaces := deps.Interfaces
 	if interfaces == nil {
@@ -135,9 +196,14 @@ func (s *AdminNetworkService) GetListenStatus(
 	}
 
 	out := &leapmuxv1.GetListenStatusResponse{
-		Interfaces:     ifaces,
-		DefaultAddress: s.cfg.PrimaryTCPListen(),
-		Configured:     configured,
+		Interfaces: ifaces,
+		// The two lists are INDEPENDENT answers: the TCP merge input and the
+		// local endpoints a co-located CLI discovers. Each list is COMPLETE --
+		// one address per bind occurrence, in bind order -- because a panel
+		// merging an incomplete set folds the wrong entries.
+		BaseTcpAddresses:  s.listen.BaseTCPAddresses(),
+		Configured:        configured,
+		LocalIpcAddresses: s.listen.LocalIPCAddresses(),
 	}
 	for _, b := range s.listen.Bound() {
 		out.Bound = append(out.Bound, &leapmuxv1.BoundAddress{

@@ -44,9 +44,27 @@ vi.mock('~/stores/workerChannelStatus.store', () => ({
     getStatus: vi.fn(),
   }),
 }))
+const mockTunnelRefresh = vi.fn()
+const mockOnEvent = vi.fn()
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    platformBridge: {
+      ...actual.platformBridge,
+      onEvent: (...a: unknown[]) => mockOnEvent(...a),
+    },
+  }
+})
 vi.mock('~/stores/tunnel.store', () => ({
   createTunnelStore: () => ({
-    tunnels: vi.fn(),
+    tunnels: vi.fn(() => []),
+    tunnelsForWorker: vi.fn(() => []),
+    channelEpoch: vi.fn(() => ''),
+    refresh: (...a: unknown[]) => mockTunnelRefresh(...a),
+    add: vi.fn(),
+    remove: vi.fn(),
+    removeAllForWorker: vi.fn(),
   }),
 }))
 
@@ -72,6 +90,10 @@ beforeEach(() => {
   mockFetchWorkerInfo.mockReset()
   mockSetConfirmKeyPin.mockReset()
   mockUnregisterKeyPin.mockReset()
+  mockTunnelRefresh.mockReset()
+  mockTunnelRefresh.mockResolvedValue(undefined)
+  mockOnEvent.mockReset()
+  mockOnEvent.mockResolvedValue(() => {})
 })
 
 /**
@@ -93,6 +115,37 @@ describe('useWorkerSection', () => {
       await flush()
       expect(mockListWorkers).toHaveBeenCalledTimes(1)
       expect(s.workers().map(w => w.id)).toEqual(['w1'])
+      dispose()
+    })
+  })
+
+  // The tunnel list is the sidecar's, and it answers only the rows one
+  // identity owns — so the listing names that identity, and it is read as
+  // soon as the identity is known.
+  it('lists the tunnels for the identity', async () => {
+    await createRoot(async (dispose) => {
+      mount(() => 'u9')
+      await flush()
+      expect(mockTunnelRefresh).toHaveBeenCalledWith('u9')
+      dispose()
+    })
+  })
+
+  // The native hint carries no tunnel data: re-reading the list is how the
+  // page learns that a tunnel stopped on a Worker key mismatch.
+  it('re-reads the tunnels when the sidecar announces a change', async () => {
+    await createRoot(async (dispose) => {
+      let announce: (() => void) | undefined
+      mockOnEvent.mockImplementation((_event: string, handler: () => void) => {
+        announce = handler
+        return Promise.resolve(() => {})
+      })
+      mount()
+      await flush()
+      mockTunnelRefresh.mockClear()
+
+      announce?.()
+      expect(mockTunnelRefresh).toHaveBeenCalledWith('u1')
       dispose()
     })
   })

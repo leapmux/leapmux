@@ -56,7 +56,10 @@
  * reload can be lost where the synchronous `setItem` it replaces could not be.
  * `App` flushes on `pagehide`, which narrows that window to what an unload can
  * interrupt rather than closing it. A caller that must know whether its value
- * reached disk reads `StorageWrite.durable`; `persistedSeq` is the one that does.
+ * reached disk reads `StorageWrite.durable`; `persistedSeq` is the one that
+ * does. The pin rows are the one family that never takes this path at all:
+ * their gateway commits a transaction and awaits it (see the pin gateway
+ * below).
  *
  * `sessionStorage` STAYS on the Web Storage API. IndexedDB is per-origin and
  * shared by every tab, while sessionStorage is per-tab and dies with the tab --
@@ -66,7 +69,7 @@
  * IndexedDB needs a tab id plus a collector for dead tabs, and the tab id itself
  * would have to live in sessionStorage.
  */
-import type { KvRow, StorageWrite } from './browserStorageDb'
+import type { KeyInvalidationChange, KvRow, KvRowTransaction, StorageWrite } from './browserStorageDb'
 import { browserPrefBatchOpen } from './browserPreferences'
 import {
   enqueueKvDelete,
@@ -75,6 +78,7 @@ import {
   kvWriteEpoch,
   onKvBroadcast,
   peekKvPending,
+  publishKvInvalidations,
   publishKvRemovals,
   readKvPrefix,
   readKvRow,
@@ -82,13 +86,14 @@ import {
   REFUSED_WRITE,
   resetKvForTests,
   sweepKv,
+  updateKvTransaction,
 } from './browserStorageDb'
 import { cancelIdle, requestIdle } from './idleCallback'
 import { createLogger } from './logger'
 
 const log = createLogger('browserStorage')
 
-export type { StorageWrite } from './browserStorageDb'
+export type { KeyInvalidationChange, StorageWrite } from './browserStorageDb'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,6 +112,16 @@ export type { StorageWrite } from './browserStorageDb'
 export const KEY_BROWSER_PREFS = 'browser-prefs'
 export const KEY_MRU_AGENT_PROVIDERS = 'mru-agent-providers'
 export const KEY_KEY_PINS = 'key-pins'
+/**
+ * The key pin store's removal revision: a counter that every pin removal
+ * advances, so a decision taken against an older revision is refused at commit.
+ *
+ * Stored beside the pin map and read or changed in the SAME transaction as it
+ * (see `readKeyPinState` / `updateKeyPinState`). Nonexpiring: a revision that
+ * expired would reset to zero, and a stale commit would then sail through the
+ * very check it exists to fail.
+ */
+export const KEY_KEY_PINS_REMOVAL_REVISION = 'key-pins-removal-revision'
 export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'directory-selector-show-hidden'
 export const KEY_PREFERRED_EXTERNAL_APP = 'preferred-external-app'
 export const KEY_ACTIVE_WORKSPACE = 'active-workspace'
@@ -301,14 +316,29 @@ export const LOCAL_KEY_SPECS = {
     ttlMs: YEAR_MS,
     access: 'sync',
   },
-  // `sync`: `KeyPinStore.resolve` hands back a `commit` closure that re-reads
-  // and rewrites the map with NO await between, which is what closes the
-  // intra-tab pin-clobber race.
+  // The worker key pin map. `async`: the pin gateway (readKeyPinState /
+  // updateKeyPinState) reads and writes it in strict transactions -- no
+  // mirror, no write-behind queue -- so a value a caller sees is a value that
+  // reached the database, which is the property a trust decision rests on.
+  // The year TTL with the on-read refresh is kept: a year of total inactivity
+  // expires the pins, anything less does not.
   [KEY_KEY_PINS]: {
     match: 'exact',
     scope: 'account',
     ttlMs: YEAR_MS,
-    access: 'sync',
+    access: 'async',
+  },
+  // The removal revision that guards pin commits (see the constant's doc).
+  // `async`, pin-gateway-only, like the map beside it. The TTL is the
+  // NONEXPIRING one: the pin gateway stores this row with an infinite
+  // expiration and the sweep never selects it, so the revision cannot silently
+  // restart at zero. Only this row is exempt from expiry; the pin map expires
+  // on its registered year like every other row.
+  [KEY_KEY_PINS_REMOVAL_REVISION]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: Number.POSITIVE_INFINITY,
+    access: 'async',
   },
   // Unacknowledged CRDT batches staged before unload. The exact account
   // namespace prevents a Hub or user switch from replaying another identity's
@@ -595,8 +625,18 @@ type PrefixNamesOf<A extends KeyAccess> = {
  */
 export type SyncLocalKey = ExactNamesOf<'sync'> | `${PrefixNamesOf<'sync'>}${string}`
 
+/**
+ * The names the PIN GATEWAY alone reads and writes.
+ *
+ * Excluded from both accessor tiers, so `localStorageLoad(KEY_KEY_PINS)` is a
+ * compile error rather than a read that treats a failed transaction as an
+ * empty pin map. `resolveLocalKey` enforces the same rule at runtime, for a
+ * caller the types cannot see.
+ */
+type PinGatewayName = typeof KEY_KEY_PINS | typeof KEY_KEY_PINS_REMOVAL_REVISION
+
 /** A name the ASYNCHRONOUS accessors take. See {@link SyncLocalKey}. */
-export type AsyncLocalKey = ExactNamesOf<'async'> | `${PrefixNamesOf<'async'>}${string}`
+export type AsyncLocalKey = Exclude<ExactNamesOf<'async'>, PinGatewayName> | `${PrefixNamesOf<'async'>}${string}`
 
 /** Returns the TTL in ms for a registered localStorage name, or null if unknown. */
 export function getTtlForKey(name: string): number | null {
@@ -912,8 +952,18 @@ function resolveKey<S extends KeySpec>(name: string, index: SpecIndex<S>): { key
  * cannot reach a key composed from a runtime `string`, a JavaScript caller, or
  * an E2E helper. The message identifies the accessor to use, so a mismatch reads
  * as an instruction rather than a puzzle.
+ *
+ * The PIN GATEWAY names get their own refusal first: their rows are read and
+ * written only by `readKeyPinState` / `updateKeyPinState`, because those are
+ * the paths that validate the record and commit atomically. A generic accessor
+ * over a pin row would read a failed transaction as an empty pin map.
  */
 function resolveLocalKey(name: string, access: KeyAccess): { key: string, ttl: number, spec: LocalKeySpec } {
+  if (isPinGatewayName(name)) {
+    throw new Error(
+      `Storage key "${name}" holds key pins. Use readKeyPinState / updateKeyPinState.`,
+    )
+  }
   const resolved = resolveKey(name, LOCAL_INDEX)
   if (resolved.spec.access !== access) {
     const use = resolved.spec.access === 'sync'
@@ -924,6 +974,11 @@ function resolveLocalKey(name: string, access: KeyAccess): { key: string, ttl: n
     )
   }
   return resolved
+}
+
+/** Whether `name` is one of the two pin rows the pin gateway owns. */
+function isPinGatewayName(name: string): name is PinGatewayName {
+  return name === KEY_KEY_PINS || name === KEY_KEY_PINS_REMOVAL_REVISION
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,10 +1349,9 @@ function readMirror(key: string, spec: LocalKeySpec): unknown | undefined {
  *
  * The synchronous tier used to answer from `JSON.parse`, which produced a fresh
  * object per read by construction. The mirror holds ONE object, and several
- * callers do a read-modify-write in place -- `KeyPinStore.resolve`'s `commit`
- * assigns into the map it read, `updateBrowserPref` deletes a field of the
- * document it read. Without this they would mutate the mirror, and the queued
- * row beside it, before their own write validated anything.
+ * callers do a read-modify-write in place -- `updateBrowserPref` deletes a field
+ * of the document it read. Without this they would mutate the mirror, and the
+ * queued row beside it, before their own write validated anything.
  *
  * A primitive cannot be mutated, so it is returned as it is. Everything else is
  * already structured-cloneable, because `snapshotValue` cloned it on the way in.
@@ -1388,8 +1442,8 @@ export function localStorageGet<T>(name: SyncLocalKey): T | undefined {
  *
  * The mirror moves SYNCHRONOUSLY and the row is queued, so a read-after-write in
  * the same turn already sees the new value. That total ordering against the
- * mirror is what keeps `KeyPinStore.resolve`'s no-await read-modify-write
- * correct.
+ * mirror is what keeps a same-turn read-modify-write -- a preference document
+ * updated in place -- from writing back what it never changed.
  */
 export function localStorageSet(name: SyncLocalKey, value: unknown): StorageWrite {
   const { key, ttl, spec } = resolveLocalKey(name, 'sync')
@@ -1554,6 +1608,305 @@ export async function localStorageDropPrefix(prefix: AsyncLocalKey): Promise<voi
   for (const row of rows)
     enqueueKvDelete(row.k, { publish: false })
   await flushKvWrites()
+}
+
+// ---------------------------------------------------------------------------
+// The key pin rows (the pin gateway)
+// ---------------------------------------------------------------------------
+//
+// Two account-scoped rows read and changed in ONE transaction: the pin map
+// (`KEY_KEY_PINS`) and the removal revision (`KEY_KEY_PINS_REMOVAL_REVISION`).
+// These are the only reads and writes of those rows anywhere; the generic
+// tiers refuse the names (see `resolveLocalKey`).
+//
+// The access is STRICT, and that is the security property. The mirror and the
+// write-behind queue answer a read from memory and settle a write later, so a
+// pin decision could read a value that never reached the database and commit a
+// map that never was. Here a missing record is CONFIRMED EMPTY state (first
+// contact is allowed), a failed read is a failure (trust cannot be
+// established, so the open fails), and a stored record that does not parse is
+// a failure too -- never a silent "no pins".
+//
+// The EXPIRY POLICY of each row lives here. The map keeps its registered year
+// with the on-read refresh, so active use keeps pins alive and a year of
+// inactivity expires them. The revision row is nonexpiring: it is stored with
+// an infinite expiration and its stored expiration is not consulted, because a
+// revision that silently restarted at zero would re-validate every stale
+// decision the counter exists to refuse.
+
+/** One worker's stored key pin. */
+export interface WorkerKeyPinRecord {
+  publicKeyHex: string
+  firstSeen: number
+}
+
+/** The pin row: every pinned worker by ID. */
+export type WorkerKeyPinMap = Record<string, WorkerKeyPinRecord>
+
+/** Both pin rows as one state. A missing row reads as its empty state. */
+export interface KeyPinState {
+  pins: WorkerKeyPinMap
+  removalRevision: number
+}
+
+/**
+ * One pin-state mutation for `updateKeyPinState`.
+ *
+ * The `record` and `revalidate` kinds carry the expectation captured when the
+ * trust decision was TAKEN, and the transaction validates it before anything
+ * changes. That compare-and-swap is what stops a decision from committing over
+ * a removal or a replacement that landed in the meantime -- in this tab or
+ * another -- including for `revalidate`, which writes nothing at all.
+ */
+export type KeyPinStateChange
+  = | {
+      /**
+       * Record `pin` for `workerId`. A first contact passes `expectPin: null`
+       * and commits when the worker is still unpinned; if a concurrent first
+       * contact installed the SAME keys meanwhile, the commit keeps that
+       * record's `firstSeen` and changes nothing. A different key already
+       * installed fails the commit.
+       */
+      kind: 'record'
+      workerId: string
+      pin: WorkerKeyPinRecord
+      expectRevision: number
+      expectPin: WorkerKeyPinRecord | null
+    }
+    | {
+      /** Revalidate a decision whose key already matches; writes nothing. */
+      kind: 'revalidate'
+      workerId: string
+      expectRevision: number
+      expectPin: WorkerKeyPinRecord
+    }
+    | { kind: 'remove', workerId: string }
+    | { kind: 'removeAll' }
+
+/** The stored keys of the two pin rows under the current account. */
+function resolvePinKeys(): { pins: string, revision: string, pinsTtl: number } {
+  return {
+    pins: resolveKey(KEY_KEY_PINS, LOCAL_INDEX).key,
+    revision: resolveKey(KEY_KEY_PINS_REMOVAL_REVISION, LOCAL_INDEX).key,
+    pinsTtl: resolveKey(KEY_KEY_PINS, LOCAL_INDEX).ttl,
+  }
+}
+
+function isWorkerKeyPinRecord(value: unknown): value is WorkerKeyPinRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return false
+  const rec = value as Record<string, unknown>
+  return typeof rec.publicKeyHex === 'string'
+    && typeof rec.firstSeen === 'number'
+    && Number.isFinite(rec.firstSeen)
+}
+
+function parseKeyPinMap(raw: unknown): WorkerKeyPinMap {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error('Stored key pin map is corrupt; it must be a map of worker id to pin records.')
+  }
+  for (const value of Object.values(raw)) {
+    if (!isWorkerKeyPinRecord(value))
+      throw new Error('Stored key pin map is corrupt; it must be a map of worker id to pin records.')
+  }
+  return raw as WorkerKeyPinMap
+}
+
+function parseRemovalRevision(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) {
+    throw new Error('Stored key pin removal revision is corrupt; it must be a nonnegative safe integer.')
+  }
+  return raw
+}
+
+function sameKeyPinRecord(a: WorkerKeyPinRecord, b: WorkerKeyPinRecord): boolean {
+  return a.publicKeyHex === b.publicKeyHex && a.firstSeen === b.firstSeen
+}
+
+/**
+ * Read both pin rows in the open transaction, applying the expiry policy.
+ *
+ * An expired map row is CONFIRMED ABSENCE, and the transaction deletes it --
+ * `expiredPins` tells the caller to publish the hint that the pins went away.
+ * The revision row's expiration is deliberately not consulted (nonexpiring).
+ */
+async function loadKeyPinState(
+  tx: KvRowTransaction,
+  keys: { pins: string, revision: string },
+  now: number,
+): Promise<{ state: KeyPinState, expiredPins: boolean, freshMapRow: KvRow | undefined }> {
+  const [mapRow, revisionRow] = await Promise.all([
+    tx.get(keys.pins),
+    tx.get(keys.revision),
+  ])
+  let expiredPins = false
+  let pins: WorkerKeyPinMap = {}
+  let freshMapRow: KvRow | undefined
+  if (mapRow !== undefined) {
+    if (mapRow.e <= now) {
+      await tx.delete(keys.pins)
+      expiredPins = true
+    }
+    else {
+      pins = parseKeyPinMap(mapRow.v)
+      freshMapRow = mapRow
+    }
+  }
+  // A missing revision row is confirmed zero; a present one is validated, and
+  // its stored expiration means nothing (see the policy note above).
+  const removalRevision = revisionRow === undefined ? 0 : parseRemovalRevision(revisionRow.v)
+  return { state: { pins, removalRevision }, expiredPins, freshMapRow }
+}
+
+/**
+ * Read both pin rows in one transaction.
+ *
+ * Resolves with the CONFIRMED state: a missing map row is an empty pin map and
+ * a missing revision row is zero. It rejects when storage cannot answer (no
+ * database, a failed request) and when a stored record does not parse -- the
+ * caller cannot tell those from "no pins", and treating them as empty is how a
+ * failed read becomes a silent first contact.
+ *
+ * Keeps the map's expiry policy: a read that finds the expiration within the
+ * refresh window extends it in the same transaction, so active use keeps pins
+ * alive. The refresh is part of the transaction, so a refused write fails the
+ * read rather than quietly dropping the extension; the stored rows survive
+ * untouched either way.
+ */
+export async function readKeyPinState(): Promise<KeyPinState> {
+  const keys = resolvePinKeys()
+  const now = Date.now()
+  const { state, hint } = await updateKvTransaction(async (tx) => {
+    const loaded = await loadKeyPinState(tx, keys, now)
+    if (loaded.freshMapRow !== undefined && shouldRefreshExpiration(loaded.freshMapRow.e, keys.pinsTtl))
+      await tx.put({ ...loaded.freshMapRow, e: now + keys.pinsTtl })
+    return {
+      state: loaded.state,
+      hint: loaded.expiredPins ? { k: keys.pins, invalidate: true as const } : undefined,
+    }
+  })
+  if (hint !== undefined)
+    commitPinInvalidations([hint])
+  return state
+}
+
+/**
+ * Change both pin rows in one transaction, validating the caller's expectation
+ * before anything is written.
+ *
+ * Rejects when a `record` or `revalidate` expectation no longer holds (the
+ * removal revision moved, or the observed pin disappeared or differs), when a
+ * first contact finds a different key already installed, and when the removal
+ * revision would overflow. A failure writes NOTHING, so the previous trust
+ * decision stands and a repaired document serves a later attempt.
+ *
+ * The removal revision advances only when a removal actually removes a pin,
+ * and that advance is what invalidates any pending first-contact decision that
+ * observed the older revision -- for the removed worker or any other. Removing
+ * an absent pin is idempotent: it succeeds and changes nothing.
+ */
+export async function updateKeyPinState(change: KeyPinStateChange): Promise<void> {
+  const keys = resolvePinKeys()
+  const now = Date.now()
+  const hint = await updateKvTransaction(async (tx) => {
+    const { state, expiredPins } = await loadKeyPinState(tx, keys, now)
+    const map = applyKeyPinMap(state.pins, change)
+    const bumpRevision = changeRemovalRevision(state, change, map)
+    if (map.kind === 'write')
+      await tx.put({ k: keys.pins, v: map.pins, e: now + keys.pinsTtl })
+    else if (map.kind === 'delete')
+      await tx.delete(keys.pins)
+    if (bumpRevision) {
+      await tx.put({
+        k: keys.revision,
+        v: state.removalRevision + 1,
+        e: Number.POSITIVE_INFINITY,
+      })
+    }
+    const changed = map.kind !== 'unchanged' || bumpRevision || expiredPins
+    return changed ? { k: keys.pins, invalidate: true as const } : undefined
+  })
+  if (hint !== undefined)
+    commitPinInvalidations([hint])
+}
+
+/** What the transaction does to the pin map row. */
+type PinMapAction
+  = | { kind: 'unchanged' }
+  | { kind: 'write', pins: WorkerKeyPinMap }
+  | { kind: 'delete' }
+
+/**
+ * The map row action one committed change takes. Throws on every refused case,
+ * so the transaction aborts and nothing partial lands.
+ */
+function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMapAction {
+  if (change.kind === 'remove') {
+    if (!(change.workerId in pins))
+      return { kind: 'unchanged' }
+    const { [change.workerId]: _removed, ...rest } = pins
+    return Object.keys(rest).length === 0
+      ? { kind: 'delete' }
+      : { kind: 'write', pins: rest }
+  }
+  if (change.kind === 'removeAll') {
+    return Object.keys(pins).length === 0
+      ? { kind: 'unchanged' }
+      : { kind: 'delete' }
+  }
+  const current = pins[change.workerId] ?? null
+  if (change.kind === 'revalidate') {
+    if (current === null || !sameKeyPinRecord(current, change.expectPin)) {
+      throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
+    }
+    return { kind: 'unchanged' }
+  }
+  // `record`
+  if (change.expectPin === null) {
+    if (current === null)
+      return { kind: 'write', pins: { ...pins, [change.workerId]: change.pin } }
+    if (current.publicKeyHex === change.pin.publicKeyHex) {
+      // A concurrent first contact installed the same keys. Its `firstSeen`
+      // stands, and this commit is the idempotent one.
+      return { kind: 'unchanged' }
+    }
+    throw new Error('A different key was already recorded for this worker; the update is refused.')
+  }
+  if (current === null || !sameKeyPinRecord(current, change.expectPin)) {
+    throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
+  }
+  return { kind: 'write', pins: { ...pins, [change.workerId]: change.pin } }
+}
+
+/**
+ * Whether the removal revision advances for this change: only a removal that
+ * actually removed a pin advances it. Validates the captured expectation for
+ * the write kinds first, and refuses overflow before anything is written.
+ */
+function changeRemovalRevision(state: KeyPinState, change: KeyPinStateChange, map: PinMapAction): boolean {
+  if (change.kind === 'remove' || change.kind === 'removeAll') {
+    if (map.kind === 'unchanged')
+      return false
+    if (state.removalRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('The key pin removal revision cannot advance past its maximum; the update is refused.')
+    }
+    return true
+  }
+  if (state.removalRevision !== change.expectRevision) {
+    throw new Error('The key pin removal revision changed since the decision was taken; the update is refused.')
+  }
+  return false
+}
+
+/**
+ * Publish a committed pin change: a key-only hint to the other tabs and to this
+ * tab's own subscribers. No pin bytes travel either way.
+ */
+function commitPinInvalidations(changes: readonly KeyInvalidationChange[]): void {
+  if (changes.length === 0)
+    return
+  publishKvInvalidations(changes.map(change => change.k))
+  deliverPinInvalidations(changes)
 }
 
 /** Wait for every queued write to reach disk. For a teardown, and for tests. */
@@ -1733,21 +2086,32 @@ export async function runCleanup(opts: { checkRegistrations: boolean } = { check
   // re-earned on the next load, and carrying them would mean maintaining a
   // translation between two layouts for the sake of one release.
   sweepStorage(() => localStorage, () => false)
-  const deleted = await sweepKv(Date.now(), isRegisteredLocalKey, opts)
+  const deleted = await sweepKv(Date.now(), isRegisteredLocalKey, {
+    ...opts,
+    // The one nonexpiring row: expiry may not take the removal revision, or a
+    // stale pin commit would re-validate against a revision that restarted.
+    isExemptFromExpiry: isPinRemovalRevisionStoredKey,
+  })
   if (deleted.length === 0)
     return
   // Drop what the sweep deleted from the mirror, so a synchronous read cannot
-  // serve a value that is no longer on disk.
+  // serve a value that is no longer on disk. Pin rows are never mirrored.
   for (const key of deleted)
     mirror.delete(key)
-  // Tell the other tabs about EVERY deletion, not only the ones this tab
+  // A PIN ROW goes through the pin notification path even here, so a pin map
+  // the sweep expired is announced exactly like a committed removal -- and
+  // including when this tab is the one sweeping it.
+  const pinKeys = deleted.filter(isPinStoredKey)
+  const otherKeys = deleted.filter(key => !isPinStoredKey(key))
+  commitPinInvalidations(pinKeys.map(k => ({ k, invalidate: true as const })))
+  // Tell the other tabs about EVERY OTHER deletion, not only the ones this tab
   // mirrored. The sweep's expiry arm reaches across accounts, so a peer signed
   // in as somebody else is exactly the tab that still holds the row this one
   // just reclaimed -- and it would serve it from memory, then refresh it back
   // onto disk. A removal carries no value, so the reason the unmirrored tier
   // publishes nothing (a user's draft prose on a channel every tab receives)
   // does not apply, and the receiver already drops what it does not mirror.
-  publishKvRemovals(deleted)
+  publishKvRemovals(otherKeys)
 }
 
 // ---------------------------------------------------------------------------
@@ -1756,6 +2120,63 @@ export async function runCleanup(opts: { checkRegistrations: boolean } = { check
 
 /** Subscribers to another tab's committed changes. */
 const changeListeners = new Set<(storedKeys: ReadonlySet<string> | null) => void>()
+
+/**
+ * Subscribers to pin-only invalidation hints.
+ *
+ * A pin hint says "a pin row changed; re-read it" and names the stored row --
+ * it carries no pin bytes, so key material never reaches the BroadcastChannel
+ * every tab receives. Both this tab's own commits and another tab's broadcast
+ * arrive here through the same shape.
+ */
+const pinInvalidationListeners = new Set<(change: KeyInvalidationChange) => void>()
+
+/**
+ * Run `listener` when a pin row changes -- a committed update or removal in any
+ * tab, or an expiry the sweep or a read noticed. Returns the unsubscribe.
+ */
+export function onKeyPinsInvalidated(listener: (change: KeyInvalidationChange) => void): () => void {
+  pinInvalidationListeners.add(listener)
+  return () => pinInvalidationListeners.delete(listener)
+}
+
+/** Whether `stored` is one of the two pin rows, under any account. */
+function isPinStoredKey(stored: string): boolean {
+  const parsed = parseStoredKey(stored)
+  return parsed !== null && parsed.scope === 'account' && isPinGatewayName(parsed.name)
+}
+
+/** Whether `stored` is the nonexpiring removal revision row, under any account. */
+function isPinRemovalRevisionStoredKey(stored: string): boolean {
+  const parsed = parseStoredKey(stored)
+  return parsed !== null && parsed.scope === 'account' && parsed.name === KEY_KEY_PINS_REMOVAL_REVISION
+}
+
+/** Whether `stored` is one of the CURRENT account's two pin rows. */
+function isActiveAccountPinKey(stored: string): boolean {
+  if (!isPinStoredKey(stored))
+    return false
+  const parsed = parseStoredKey(stored)
+  return parsed !== null
+    && storageAccount !== null
+    && stored === accountStorageKey(storageAccount, parsed.name)
+}
+
+/**
+ * Deliver pin hints to this tab's subscribers, for the ACTIVE account's rows
+ * only. Another account's pin change is nobody's business in this tab, and the
+ * mirror never holds a pin row to update.
+ */
+function deliverPinInvalidations(changes: readonly KeyInvalidationChange[]): void {
+  if (pinInvalidationListeners.size === 0)
+    return
+  for (const change of changes) {
+    if (!isActiveAccountPinKey(change.k))
+      continue
+    for (const listener of pinInvalidationListeners)
+      listener(change)
+  }
+}
 
 /**
  * Run `listener` when ANOTHER tab changes a mirrored key.
@@ -1779,10 +2200,32 @@ onKvBroadcast((changes) => {
   if (changes === null) {
     for (const listener of changeListeners)
       listener(null)
+    // A whole-store change leaves the pin rows as unknown as everything else;
+    // the answer is the same -- re-read. Another account's rows are not ours to
+    // announce, so only the active account's two keys are hinted.
+    if (storageAccount !== null) {
+      deliverPinInvalidations([
+        { k: accountStorageKey(storageAccount, KEY_KEY_PINS), invalidate: true },
+        { k: accountStorageKey(storageAccount, KEY_KEY_PINS_REMOVAL_REVISION), invalidate: true },
+      ])
+    }
     return
   }
   const touched = new Set<string>()
+  const pinHints: KeyInvalidationChange[] = []
   for (const change of changes) {
+    // PIN ROWS never enter the mirror and their values never travel on the
+    // channel: whatever variant names one, the meaning here is "re-read". A
+    // value or removal variant can only come from an older build's mirror-era
+    // write, and re-reading is the correct answer to that too.
+    if (isPinStoredKey(change.k)) {
+      pinHints.push({ k: change.k, invalidate: true })
+      continue
+    }
+    // A key-only variant for any other row is not something this build reads
+    // into the mirror; skip rather than install a value-less entry.
+    if ('invalidate' in change)
+      continue
     // Only rows THIS tab mirrors. An unmirrored key, an unregistered key and
     // another ACCOUNT's key all fall out here -- matched on the key as stored,
     // which is the same rule a subscriber matches on.
@@ -1794,6 +2237,7 @@ onKvBroadcast((changes) => {
       mirror.set(change.k, { v: change.v, e: change.e })
     touched.add(change.k)
   }
+  deliverPinInvalidations(pinHints)
   if (touched.size > 0) {
     for (const listener of changeListeners)
       listener(touched)

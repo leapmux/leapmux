@@ -20,7 +20,7 @@ export interface SoloServerFixtures {
    * `0.0.0.0` with `test.use`, and reaches it over loopback, which the wildcard listener also serves.
    */
   soloListenHost: string
-  /** A solo hub for this test alone. The fixture stops it and removes its data after the test. */
+  /** A solo hub for this test alone. The fixture stops it and removes its data after the test. Its handle carries the resolved ordered endpoints: `listen` for the primary TCP address a browser reaches, and `tcp` / `local` for the full bind set the startup state file names. */
   soloServer: SoloServerHandle
 }
 

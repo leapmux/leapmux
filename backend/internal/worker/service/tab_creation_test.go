@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -116,6 +117,40 @@ func TestTabCreation_PreservesEveryResourceWhilePublicationWaits(t *testing.T) {
 			require.Len(t, repeated.responsesSnapshot(), 1)
 		})
 	}
+}
+
+func TestTabCreation_ReplaysASharedRequestOnceAndRejectsAnAlteredRequest(t *testing.T) {
+	generated := id.Generate()
+	require.Regexp(t, `^[A-Za-z0-9]{48}$`, generated)
+	svc, dispatcher, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		return nil, errors.New("test prevents agent startup")
+	}
+	var publishCount atomic.Int32
+	svc.PublishTab = func(ctx context.Context, r *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+		publishCount.Add(1)
+		return fixturePublishTab(ctx, r)
+	}
+	workingDir := t.TempDir()
+	_, request := testProcessCreation(leapmuxv1.TabType_TAB_TYPE_AGENT, generated, workingDir)
+	first := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, first)
+	require.Empty(t, first.rejections())
+	require.Len(t, first.responsesSnapshot(), 1)
+	assert.Equal(t, int32(1), publishCount.Load(), "the first dispatch publishes once")
+	_, err := svc.Queries.GetAgentByID(t.Context(), generated)
+	require.NoError(t, err, "one resource exists for the generated ID")
+	second := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, second)
+	require.Empty(t, second.rejections())
+	require.Len(t, second.responsesSnapshot(), 1, "the repeated dispatch replays the same result")
+	assert.Equal(t, int32(1), publishCount.Load(), "the repeated dispatch publishes no second tab")
+	altered := &leapmuxv1.OpenAgentRequest{Creation: creationIntent(generated), WorkingDir: t.TempDir()}
+	alteredWriter := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, altered, alteredWriter)
+	require.Len(t, alteredWriter.rejections(), 1, "an altered request with the same ID fails")
+	assert.Contains(t, alteredWriter.rejections()[0].message, "different creation request")
 }
 
 func TestTabCreation_PreservesTerminalResizeAcrossPublication(t *testing.T) {

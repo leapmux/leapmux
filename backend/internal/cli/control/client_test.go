@@ -5,25 +5,35 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
@@ -261,6 +271,186 @@ func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Cli
 	return c
 }
 
+// workerSideHubUser is the identity workerSideChannelHub authenticates a
+// channel as.
+const workerSideHubUser = "u-hub"
+
+// workerSideChannelHub is a local Hub test fixture that completes an E2EE
+// channel open end to end: ChannelService answers the handshake with a real
+// composite key pair, and the /ws/channel relay drives a real
+// channel.Manager — the worker side of the Noise handshake — so the open's
+// verification Ping is answered and the pin commit runs. fakeChannelHub
+// deliberately fails past the identity cross-check; this fixture exists for
+// the paths that must reach a handed-out channel.
+type workerSideChannelHub struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+
+	ctx        context.Context
+	key        *noiseutil.CompositeKeypair
+	keys       *leapmuxv1.WorkerPublicKeys
+	dispatcher *channel.Dispatcher
+	opens      atomic.Int32
+
+	mu       sync.Mutex
+	relays   map[string]*websocket.Conn
+	managers map[string]*channel.Manager
+	channels map[string]*channel.Manager
+}
+
+// startWorkerSideChannelHub serves workerSideChannelHub over httptest and
+// returns the server. The test points its own client at the server URL.
+func startWorkerSideChannelHub(t *testing.T) *httptest.Server {
+	t.Helper()
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	keys, err := workerkeys.Of(key)
+	require.NoError(t, err)
+	dispatcher := channel.NewDispatcher()
+	dispatcher.Handle(leapmuxv1connect.WorkerSystemServicePingProcedure, channel.Registration{},
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+			_ = w.SendResponse(channelwire.NewPayloadResponse(nil))
+		})
+	h := &workerSideChannelHub{
+		ctx: t.Context(), key: key, keys: keys, dispatcher: dispatcher,
+		relays: map[string]*websocket.Conn{}, managers: map[string]*channel.Manager{}, channels: map[string]*channel.Manager{},
+	}
+	t.Cleanup(h.closeWorkers)
+
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, h)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+	mux.HandleFunc(contracts.WSRouteChannel, h.relayFrames)
+	return hubtransporttest.NewServer(t, mux)
+}
+
+func (h *workerSideChannelHub) managerForWorker(workerID string) *channel.Manager {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if manager := h.managers[workerID]; manager != nil {
+		return manager
+	}
+	manager := channel.NewManager(workerID, h.key, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, h.sendToClient, h.trySendToClient, 0, 0)
+	manager.SetDispatcher(h.dispatcher)
+	h.managers[workerID] = manager
+	return manager
+}
+
+func (h *workerSideChannelHub) closeWorkers() {
+	h.mu.Lock()
+	managers := make([]*channel.Manager, 0, len(h.managers))
+	for _, manager := range h.managers {
+		managers = append(managers, manager)
+	}
+	h.mu.Unlock()
+	for _, manager := range managers {
+		manager.CloseAll()
+	}
+}
+
+// sendToClient relays one frame from the worker to the client's socket.
+func (h *workerSideChannelHub) sendToClient(msg *leapmuxv1.ConnectRequest) error {
+	frame := msg.GetChannelMessageResp()
+	if frame == nil {
+		return nil
+	}
+	h.mu.Lock()
+	ws := h.relays[frame.GetChannelId()]
+	h.mu.Unlock()
+	if ws == nil {
+		return fmt.Errorf("no relay socket for channel %q", frame.GetChannelId())
+	}
+	return channelwire.WriteChannelMessage(h.ctx, ws, frame)
+}
+
+func (h *workerSideChannelHub) trySendToClient(msg *leapmuxv1.ConnectRequest) bool {
+	return h.sendToClient(msg) == nil
+}
+
+// relayFrames serves /ws/channel: every frame of one socket goes to the
+// worker, and the worker's session closes when the socket ends.
+func (h *workerSideChannelHub) relayFrames(w http.ResponseWriter, r *http.Request) {
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{contracts.WSSubprotocolChannelRelay}})
+	if err != nil {
+		return
+	}
+	defer func() { _ = ws.CloseNow() }()
+	ws.SetReadLimit(channelwire.WSReadLimit)
+
+	var channelID string
+	var manager *channel.Manager
+	defer func() {
+		if manager != nil {
+			manager.HandleClose(channelID)
+		}
+	}()
+	for {
+		frame, err := channelwire.ReadChannelMessage(h.ctx, ws)
+		if err != nil {
+			return
+		}
+		if channelID == "" {
+			channelID = frame.GetChannelId()
+			h.mu.Lock()
+			h.relays[channelID] = ws
+			manager = h.channels[channelID]
+			h.mu.Unlock()
+			if manager == nil {
+				return
+			}
+		}
+		manager.HandleMessage(frame)
+	}
+}
+
+func (h *workerSideChannelHub) GetWorkerHandshakeParams(
+	context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest,
+) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
+		Keys:           h.keys,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}, nil
+}
+
+func (h *workerSideChannelHub) OpenChannel(
+	_ context.Context, req *leapmuxv1.OpenChannelRequest,
+) (*leapmuxv1.OpenChannelResponse, error) {
+	channelID := "channel-" + strconv.Itoa(int(h.opens.Add(1)))
+	manager := h.managerForWorker(req.GetWorkerId())
+	opened := manager.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        channelID,
+		UserId:           workerSideHubUser,
+		HandshakePayload: req.GetHandshakePayload(),
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
+		GrantedScopes:    []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_ALL},
+	})
+	if reason := opened.GetError(); reason != "" {
+		return nil, connect.NewError(connect.CodeInternal, reason)
+	}
+	h.mu.Lock()
+	h.channels[channelID] = manager
+	h.mu.Unlock()
+	return &leapmuxv1.OpenChannelResponse{
+		ChannelId:        channelID,
+		HandshakePayload: opened.GetHandshakePayload(),
+		UserId:           workerSideHubUser,
+		MaxMessageSize:   opened.GetMaxMessageSize(),
+	}, nil
+}
+
+func (h *workerSideChannelHub) CloseChannel(
+	_ context.Context, req *leapmuxv1.CloseChannelRequest,
+) (*leapmuxv1.CloseChannelResponse, error) {
+	h.mu.Lock()
+	manager := h.channels[req.GetChannelId()]
+	delete(h.channels, req.GetChannelId())
+	h.mu.Unlock()
+	if manager != nil {
+		manager.HandleClose(req.GetChannelId())
+	}
+	return &leapmuxv1.CloseChannelResponse{}, nil
+}
+
 // TestNewClientFromEnv_NoHubErrorMentionsControlCommand locks the
 // guidance a user sees when the caller supplies no transport input: neither the
 // --hub flag, LEAPMUX_HUB, nor LEAPMUX_CONTROL_SOCK. The message points
@@ -369,34 +559,58 @@ func TestWorkerIPCClientSendsIPCHeader(t *testing.T) {
 	assert.Empty(t, header.Get("Authorization"), "the worker IPC server does not read the Bearer header")
 }
 
-// The TOFU pin store opens on FIRST USE, so a pins.json that cannot be
-// parsed refuses the one caller that needs a pin and nothing else.
+// The TOFU pin store opens on FIRST USE, and every operation reads its
+// file again, so a pins.json that cannot be parsed refuses the one caller
+// that needs a pin — at resolve time — and nothing else.
 //
 // Opening it in the constructor made a corrupt file refuse every verb --
 // `control workspace list` and each `control admin ...` verb alike, none of
 // which touches a pin. The admin verbs reported it as `not_logged_in`,
 // which states neither the file nor the cause.
+//
+// A repair must recover the SAME client: the lazy store handle is not
+// stuck with the failure its first read saw.
 func TestPinStore_ACorruptFileRefusesOnlyTheChannel(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
-	host, err := control.HubHost(testHub)
+	hub := startWorkerSideChannelHub(t)
+	host, err := control.HubHost(hub.URL)
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, host), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, host, "pins.json"), []byte("{ not json"), 0o644))
+	pinsPath := filepath.Join(dir, host, "pins.json")
+	require.NoError(t, os.WriteFile(pinsPath, []byte("{ not json"), 0o644))
 
-	c, err := control.NewClientOrAnonymous(testHub)
+	c, err := control.NewClientOrAnonymous(hub.URL)
 	require.NoError(t, err, "a verb that never opens a channel must not fail on a pin file")
 
-	require.NoError(t, control.SaveCredentials(testHub, control.CredentialFile{
-		HubURL: testHub, AccessToken: "lmx_a_test",
+	require.NoError(t, control.SaveCredentials(hub.URL, control.CredentialFile{
+		HubURL: hub.URL, AccessToken: "lmx_a_test",
 	}))
-	_, err = control.NewClient(testHub)
+	_, err = control.NewClient(hub.URL)
 	require.NoError(t, err, "the credentialed constructor behaves the same way")
+	c.HTTPClient = hub.Client()
+	c.WSClient = hub.Client()
 
-	_, err = c.OpenE2EEChannel(context.Background(), context.Background(), "worker-1")
+	ctx := context.Background()
+	_, err = c.OpenE2EEChannel(ctx, ctx, "worker-1")
 	require.Error(t, err, "the E2EE channel is the one caller that needs a pin")
-	assert.Contains(t, err.Error(), "open TOFU pin store",
-		"the refusal must name the store, not fail somewhere in the handshake")
+	assert.Contains(t, err.Error(), "worker key pin: parse pins",
+		"the refusal must be the pin resolve naming the unreadable document, not a failure elsewhere in the handshake")
+
+	// Repair the document; the same client must recover, because every
+	// store operation reads the file again.
+	require.NoError(t, os.WriteFile(pinsPath, []byte(`{"pins":{}}`), 0o644))
+	ch, err := c.OpenE2EEChannel(ctx, ctx, "worker-1")
+	require.NoError(t, err, "the same client recovers once the pin file is repaired")
+	t.Cleanup(ch.Close)
+
+	// The verified open records the pin the repair left absent.
+	after, err := control.NewPinStore(hub.URL)
+	require.NoError(t, err)
+	pins, err := after.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, pins, 1)
+	assert.Equal(t, "worker-1", pins[0].WorkerID)
 }
 
 // A credential file that exists but cannot be read is a fault the operator

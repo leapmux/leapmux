@@ -5,6 +5,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { WorkerPrivateEventSchema } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { channelInternals, ChannelManagerTestHarness } from './channel.test-support'
 import { STREAM_HEALTHY_AFTER_MS } from './retry'
+import { useTestStorage } from '~/test-support/persistentStorage'
 
 // These tests run the subscriber on a real ChannelManager, because the decision
 // that they pin spans both: the manager decodes each frame, and the subscriber
@@ -39,6 +40,10 @@ function tabRenamedFrame(tabId: string): Uint8Array {
     },
   }))
 }
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('openWorkerPrivateEventStream on a real channel', () => {
   const h = new ChannelManagerTestHarness()

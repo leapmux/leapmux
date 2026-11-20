@@ -33,6 +33,7 @@ vi.mock('./server', async (importOriginal) => {
       return {
         hubUrl,
         listen: actual.resolvedHubTCPFromStateJson(raw),
+        ...actual.resolvedHubListenAddresses(raw),
       }
     },
   }

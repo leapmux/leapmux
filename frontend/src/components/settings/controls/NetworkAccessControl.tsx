@@ -95,7 +95,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       // back after it writes, and writing the failure there let the success
       // message that follows overwrite it -- the panel then showed a green
       // "Network access updated." beside a "The hub did not report its
-      // listeners." it had just replaced. The Serving-now list states this
+      // listeners." it had just replaced. The TCP listeners list states this
       // failure, which is the one place it belongs.
       setLoadFailed(true)
     }
@@ -133,7 +133,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
     // Seeded with the port -listen already uses, because publishing the hub on
     // the port it already answers on is the common case and the merge handles
     // the overlap.
-    const defaultPort = portOf(status()?.defaultAddress ?? '')
+    const defaultPort = portOf(status()?.baseTcpAddresses[0] ?? '')
     setDirty(true)
     setState('rows', state.rows.length, newRow(ANY_HOST, isValidPort(defaultPort)
       ? defaultPort
@@ -273,17 +273,39 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       <Alert variant="warning">{warning()}</Alert>
 
       <div class="vstack gap-2">
-        <div class={styles.sectionHeading}>Serving now</div>
+        <div class={styles.sectionHeading}>TCP listeners</div>
         <Show when={loading()} fallback={<ServingList status={status()} failed={loadFailed()} />}>
           <Spinner />
         </Show>
       </div>
 
+      {/*
+        The local endpoints are a READ-ONLY inventory of what startup opened:
+        they bind on their own path, take no part in the merge the editor
+        previews, and no settings row can add or remove one. The list appears
+        only when a successful report carries any, so a hub with none shows no
+        empty section and a failed read invents none.
+      */}
+      <Show when={!loading() && !loadFailed() && (status()?.localIpcAddresses.length ?? 0) > 0}>
+        <div class="vstack gap-2">
+          <div class={styles.sectionHeading}>Local access</div>
+          <ul class={styles.servingList}>
+            <For each={status()?.localIpcAddresses ?? []}>
+              {url => (
+                <li class={styles.servingRow}>
+                  <span class={styles.servingAddress}>{url}</span>
+                </li>
+              )}
+            </For>
+          </ul>
+        </div>
+      </Show>
+
       <div class="vstack gap-2">
         <div class={styles.sectionHeading}>Additional addresses</div>
         <Show
           when={rows().length > 0}
-          fallback={<div class={styles.servingNote}>No additional addresses. This hub answers on the address -listen gives it.</div>}
+          fallback={<div class={styles.servingNote}>No additional addresses. This hub answers on the addresses -listen gives it.</div>}
         >
           <For each={rows()}>
             {row => (
@@ -336,7 +358,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
             {' '}
             <span class={styles.previewAddresses}>{rows().map(toAddress).join(', ')}</span>
           </div>
-          <MergeNotes defaultAddress={status()?.defaultAddress ?? ''} rows={rows()} />
+          <MergeNotes baseAddresses={status()?.baseTcpAddresses ?? []} rows={rows()} />
         </div>
       </Show>
 
@@ -374,7 +396,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
   )
 }
 
-/** The read-only list of what the hub answers on right now. */
+/** The read-only list of the TCP addresses the hub answers on right now. */
 function ServingList(props: { status: GetListenStatusResponse | null, failed: boolean }) {
   // The tokens come from the contract the hub generates its own from, so the
   // two sides cannot drift on three words the proto carries as a plain string.
@@ -397,7 +419,7 @@ function ServingList(props: { status: GetListenStatusResponse | null, failed: bo
     >
       <Show
         when={(props.status?.bound.length ?? 0) > 0}
-        fallback={<div class={styles.servingNote}>This hub answers on its local socket only.</div>}
+        fallback={<div class={styles.servingNote}>No TCP listeners</div>}
       >
         <ul class={styles.servingList}>
           <For each={props.status?.bound ?? []}>
@@ -422,14 +444,14 @@ function ServingList(props: { status: GetListenStatusResponse | null, failed: bo
 /**
  * States which address the hub will absorb into which.
  *
- * Without it "Serving now" shows 127.0.0.1:4327 before Apply and only *:4327
+ * Without it "TCP listeners" shows 127.0.0.1:4327 before Apply and only *:4327
  * after, which reads as an address that disappeared.
  *
  * `mergeNotes` is the browser's copy of the hub's merge rule, and
  * `testdata/listen_merge_conformance.json` keeps the two from drifting.
  */
-function MergeNotes(props: { defaultAddress: string, rows: AddressRow[] }) {
-  const notes = () => mergeNotes(props.defaultAddress, props.rows)
+function MergeNotes(props: { baseAddresses: string[], rows: AddressRow[] }) {
+  const notes = () => mergeNotes(props.baseAddresses, props.rows)
   return (
     <For each={notes()}>
       {note => <div>{`${note.absorbed} merges into ${note.into}.`}</div>}

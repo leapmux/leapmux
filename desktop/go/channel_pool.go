@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 )
 
@@ -64,9 +65,35 @@ func wrapChannel(ch *tunnelpkg.Channel) *managedChannel {
 }
 
 type channelKey struct {
-	hubURL   string
-	workerID string
-	revision uint64
+	hubURL         string
+	workerID       string
+	expectedUserID string
+	expectedKeys   string // the composite hex identifying the expected Worker key set
+	epoch          string
+}
+
+// channelExpectation is the Worker identity one admitted tunnel proves on
+// every channel open: the user the Hub must authenticate the channel as, and
+// the exact Worker key set the Hub must announce. Two opens share a cached
+// channel only when their expectations are equal.
+type channelExpectation struct {
+	userID string
+	// keysHex is the composite encoding NewExpectedWorkerKeyPin decodes. It is
+	// both the cache identity of the key set and the input the per-open pin is
+	// derived from, so the two can never disagree. Empty means no expectation:
+	// the pool is internal and a production create never admits one (see
+	// TunnelConfig.validateAndNormalize).
+	keysHex string
+}
+
+// buildPin derives the per-open KeyPin from the expectation. A nil pin for an
+// empty expectation means the open trusts whatever the Hub announces -- the
+// pre-expectation behaviour, reachable only from internal callers.
+func (e channelExpectation) buildPin() (tunnelpkg.KeyPinStore, error) {
+	if e.keysHex == "" {
+		return nil, nil
+	}
+	return tunnelpkg.NewExpectedWorkerKeyPin(e.keysHex)
 }
 
 type channelOpen struct {
@@ -79,20 +106,25 @@ type channelOpen struct {
 }
 
 // channelEpoch is the single invalidation epoch for cached E2EE channels: the
-// revision, the channel lifetime context derived channels/opens bind to, and
+// opaque id, the channel lifetime context derived channels/opens bind to, and
 // its cancel all move together. reset replaces the whole value so the three can
-// never drift (e.g. bumping the revision without rotating the lifetime context,
+// never drift (e.g. rotating the id without rotating the lifetime context,
 // which would let a tunnel reuse a torn-down transport).
 type channelEpoch struct {
-	revision uint64
-	ctx      context.Context
-	cancel   context.CancelFunc
+	// id is a nonempty opaque identifier, regenerated at construction and at
+	// every reset (so it is unique across sidecar process replacement). It is
+	// the single invalidation authority: the cache revision, the channel_epoch
+	// ListTunnels reports, and the admitted epoch a tunnel retains and
+	// re-compares in live.
+	id     string
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // channelPool caches and revalidates E2EE channels keyed by (hubURL, workerID,
-// revision). Extracted from TunnelManager so the open/cache/evict/epoch state
-// machine is unit-testable without a listener harness. See
-// https://github.com/leapmux/leapmux/issues/283.
+// expected user, expected keys, epoch). Extracted from TunnelManager so the
+// open/cache/evict/epoch state machine is unit-testable without a listener
+// harness. See https://github.com/leapmux/leapmux/issues/283.
 type channelPool struct {
 	mu       sync.Mutex
 	channels map[channelKey]*managedChannel
@@ -103,13 +135,17 @@ type channelPool struct {
 }
 
 func newChannelPool(openCh openChannelFunc) *channelPool {
-	channelCtx, cancelChannels := context.WithCancel(context.Background())
 	return &channelPool{
 		channels: make(map[channelKey]*managedChannel),
 		inflight: make(map[channelKey]*channelOpen),
-		epoch:    channelEpoch{revision: 1, ctx: channelCtx, cancel: cancelChannels},
+		epoch:    newChannelEpoch(),
 		openCh:   openCh,
 	}
+}
+
+func newChannelEpoch() channelEpoch {
+	ctx, cancel := context.WithCancel(context.Background())
+	return channelEpoch{id: uuid.New().String(), ctx: ctx, cancel: cancel}
 }
 
 // setOptions sets transport options for opening E2EE channels and resets the
@@ -126,19 +162,17 @@ func (p *channelPool) setOptions(opts *tunnelpkg.OpenChannelOptions) {
 	p.reset()
 }
 
-// reset is the single invalidation epoch for cached E2EE channels: it bumps the
-// revision, rotates channel lifetimeCtx (so every channel/open derived from the
-// old lifetime unwinds), and drops the cached maps. Both a transport change
-// (setOptions) and a full reset (CloseAll) route through here so one revision
-// comparison fences every caller.
+// reset is the single invalidation epoch for cached E2EE channels: it rotates
+// the epoch (a fresh opaque id, a fresh channel lifetime context), and drops
+// the cached maps. Both a transport change (setOptions) and a full reset
+// (CloseAll) route through here so one epoch comparison fences every caller.
 func (p *channelPool) reset() {
 	p.mu.Lock()
 	// Rotate the whole epoch atomically: cancel the old lifetime (so every
-	// channel/open derived from it unwinds), then replace revision+ctx+cancel
+	// channel/open derived from it unwinds), then replace id+ctx+cancel
 	// together.
 	p.epoch.cancel()
-	nextCtx, nextCancel := context.WithCancel(context.Background())
-	p.epoch = channelEpoch{revision: p.epoch.revision + 1, ctx: nextCtx, cancel: nextCancel}
+	p.epoch = newChannelEpoch()
 	channels := p.channels
 	p.channels = make(map[channelKey]*managedChannel)
 	inflight := p.inflight
@@ -153,32 +187,45 @@ func (p *channelPool) reset() {
 	}
 }
 
-func (p *channelPool) currentRevision() uint64 {
+// currentEpoch returns the pool's current invalidation epoch id. Tests and
+// CreateTunnel capture it before awaiting an open so a concurrent reset can
+// fence registration, and a tunnel retains it as the epoch it was admitted
+// under.
+func (p *channelPool) currentEpoch() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.epoch.revision
+	return p.epoch.id
 }
 
 // getOrOpen and runChannelOpen are single-flighted by {hubURL, workerID,
-// revision}. This skeleton is structurally duplicated in
-// crossworker.Client.channelFor/runChannelOpen. The divergences (epoch
-// invalidation + eager eviction here, delegation ExpectedUserID pinning + lazy
-// eviction there) are load-bearing; a shared generic opener was rejected — see
-// https://github.com/leapmux/leapmux/issues/281.
+// expected user, expected keys, epoch}. This skeleton is structurally
+// duplicated in crossworker.Client.channelFor/runChannelOpen. The divergences
+// (epoch invalidation + eager eviction here, delegation ExpectedUserID pinning
+// + lazy eviction there) are load-bearing; a shared generic opener was
+// rejected — see https://github.com/leapmux/leapmux/issues/281.
 func (p *channelPool) getOrOpen(
 	operationCtx context.Context,
-	revision uint64,
+	epoch string,
 	hubURL, workerID string,
+	expect channelExpectation,
 ) (*managedChannel, error) {
+	// The pin is derived from the expectation; build it before the lock so a
+	// malformed expectation fails without occupying an in-flight slot.
+	pin, err := expect.buildPin()
+	if err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
-	if revision != p.epoch.revision {
+	if epoch != p.epoch.id {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("tunnel manager reset while opening channel")
 	}
 	key := channelKey{
-		hubURL:   hubURL,
-		workerID: workerID,
-		revision: p.epoch.revision,
+		hubURL:         hubURL,
+		workerID:       workerID,
+		expectedUserID: expect.userID,
+		expectedKeys:   expect.keysHex,
+		epoch:          p.epoch.id,
 	}
 	if ch := p.channels[key]; ch != nil {
 		if !ch.closed() {
@@ -197,15 +244,18 @@ func (p *channelPool) getOrOpen(
 			key:    key,
 		}
 		p.inflight[key] = open
-		// Neither branch sets KeyPin, so a tunnel channel has no
-		// trust-on-first-use key pin. Each open trusts the Worker keys that
-		// the Hub reports at that moment, and a Hub that substitutes a key can
-		// read tunneled traffic. https://github.com/leapmux/leapmux/issues/660
 		opts := tunnelpkg.OpenChannelOptions{LifetimeContext: p.epoch.ctx}
 		if p.chanOpts != nil {
 			opts = *p.chanOpts
 			opts.LifetimeContext = p.epoch.ctx
 		}
+		// Per-open identity: the channel must authenticate as the expected
+		// user and the Hub must announce exactly the expected Worker keys
+		// (https://github.com/leapmux/leapmux/issues/660). An empty
+		// expectation (internal callers) opens with neither, which is the
+		// pre-expectation behaviour.
+		opts.ExpectedUserID = expect.userID
+		opts.KeyPin = pin
 		go p.runChannelOpen(open, hubURL, workerID, opts)
 	}
 	p.mu.Unlock()
@@ -246,7 +296,7 @@ func (p *channelPool) runChannelOpen(
 	}
 
 	p.mu.Lock()
-	if err == nil && open.key.revision != p.epoch.revision {
+	if err == nil && open.key.epoch != p.epoch.id {
 		err = fmt.Errorf("tunnel manager reset while opening channel")
 	}
 	if current := p.inflight[open.key]; current == open {
@@ -289,14 +339,22 @@ func (p *channelPool) removeClosedChannel(key channelKey, ch *managedChannel) {
 // future opens; it never notified the running tunnel). A nil ch (test injection /
 // no captured channel) is returned as-is so injected dial seams that ignore the
 // channel keep working.
-func (p *channelPool) live(ctx context.Context, ch *managedChannel, hubURL, workerID string) (*managedChannel, error) {
+//
+// The admitted epoch is compared even on a cache hit, and is what gets passed
+// into getOrOpen: a tunnel is admitted under one epoch and never rebased onto a
+// later one, so a reset (an identity change) retires its re-resolves instead of
+// handing it a channel opened under different transport options or trust.
+func (p *channelPool) live(ctx context.Context, ch *managedChannel, admittedEpoch string, hubURL, workerID string, expect channelExpectation) (*managedChannel, error) {
 	if ch == nil {
 		return nil, nil
+	}
+	if admittedEpoch != p.currentEpoch() {
+		return nil, fmt.Errorf("tunnel manager reset while the tunnel was open")
 	}
 	if !ch.closed() {
 		return ch, nil
 	}
-	opened, err := p.getOrOpen(ctx, p.currentRevision(), hubURL, workerID)
+	opened, err := p.getOrOpen(ctx, admittedEpoch, hubURL, workerID, expect)
 	if err != nil {
 		return nil, err
 	}

@@ -10,12 +10,16 @@ import { createMemo, createSignal, For, Show } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
+import { Spinner } from '~/components/common/Spinner'
 import { StatusDot } from '~/components/common/StatusDot'
 import * as shared from '~/components/tree/sharedTree.css'
 import { actionSlot, actionSlotResting, sidebarActions } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
 import { useTunnel } from '~/context/TunnelContext'
+import { formatErrorMessage } from '~/lib/errors'
+import { errorText } from '~/styles/shared.css'
 import { TunnelContextMenu } from './TunnelContextMenu'
+import { verifyWorkerKey } from './verifyWorkerKey'
 import { WorkerContextMenu } from './WorkerContextMenu'
 import * as styles from './workerSection.css'
 
@@ -43,6 +47,16 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
   const [collapsedIds, setCollapsedIds] = createSignal<Set<string>>(new Set())
   const [deleteTunnelTarget, setDeleteTunnelTarget] = createSignal<TunnelInfo | null>(null)
   const [deleteAllTunnelsWorkerId, setDeleteAllTunnelsWorkerId] = createSignal<string | null>(null)
+  // The delete confirmation stays mounted across the removal, so it owns the
+  // removal's error and busy state rather than closing on the click and
+  // swallowing the outcome.
+  const [deleteError, setDeleteError] = createSignal<string | null>(null)
+  const [deleting, setDeleting] = createSignal(false)
+  // Per-tunnel verification state for stopped rows: one busy flag, and one
+  // error attributed to the row that asked — two stopped rows may show their
+  // own blocks at once, and one failure must not appear in both.
+  const [verifyingTunnelId, setVerifyingTunnelId] = createSignal<string | null>(null)
+  const [verifyError, setVerifyError] = createSignal<{ id: string, message: string } | null>(null)
 
   function isExpanded(id: string): boolean {
     return !collapsedIds().has(id)
@@ -63,6 +77,62 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
     return t.type === 'socks5'
       ? `SOCKS5 ${t.bindAddr}:${t.bindPort}`
       : `${t.bindAddr}:${t.bindPort} \u2192 ${t.targetAddr}:${t.targetPort}`
+  }
+
+  async function confirmDeleteTunnel() {
+    const target = deleteTunnelTarget()
+    if (!target || deleting())
+      return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await tunnel!.remove(target.id)
+      setDeleteTunnelTarget(null)
+    }
+    catch (err) {
+      setDeleteError(formatErrorMessage(err, 'Could not delete the tunnel. Try again.'))
+    }
+    finally {
+      setDeleting(false)
+    }
+  }
+
+  async function confirmDeleteAllTunnels() {
+    const workerId = deleteAllTunnelsWorkerId()
+    if (!workerId || deleting())
+      return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await tunnel!.removeAllForWorker(workerId)
+      setDeleteAllTunnelsWorkerId(null)
+    }
+    catch (err) {
+      setDeleteError(formatErrorMessage(err, 'Could not delete the tunnels. Try again.'))
+    }
+    finally {
+      setDeleting(false)
+    }
+  }
+
+  // The verification is the browser channel path: it prompts for a changed
+  // key and records the accepted one, which is what a recreation admits
+  // against. The outcome is shown beside the row that asked for it.
+  function verify(t: TunnelInfo) {
+    if (verifyingTunnelId())
+      return
+    setVerifyingTunnelId(t.id)
+    setVerifyError(null)
+    void verifyWorkerKey(t.workerId)
+      .catch((err: unknown) => {
+        setVerifyError({
+          id: t.id,
+          message: formatErrorMessage(err, 'Could not verify the Worker key.'),
+        })
+      })
+      .finally(() => {
+        setVerifyingTunnelId(null)
+      })
   }
 
   return (
@@ -134,18 +204,79 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                           const label = tunnelLabel(t)
                           const [tunnelRowEl, setTunnelRowEl] = createContextMenuAnchor()
                           return (
-                            <div ref={setTunnelRowEl} class={`${shared.node} ${styles.tunnelItem}`}>
-                              {t.type === 'socks5'
-                                ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
-                                : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
-                              <ClippedText text={label} class={listStyles.itemTitle} />
-                              <div class={sidebarActions}>
-                                <TunnelContextMenu
-                                  contextMenuFor={tunnelRowEl}
-                                  onDelete={() => setDeleteTunnelTarget(t)}
-                                />
+                            <>
+                              <div ref={setTunnelRowEl} class={`${shared.node} ${styles.tunnelItem}`}>
+                                {t.type === 'socks5'
+                                  ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
+                                  : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
+                                <ClippedText text={label} class={listStyles.itemTitle} />
+                                <div class={sidebarActions}>
+                                  <TunnelContextMenu
+                                    contextMenuFor={tunnelRowEl}
+                                    onDelete={() => {
+                                      setDeleteError(null)
+                                      setDeleteTunnelTarget(t)
+                                    }}
+                                  />
+                                </div>
                               </div>
-                            </div>
+                              {/* A stopped row keeps its place in the list so the
+                                  mismatch that stopped it stays recoverable: the
+                                  reason, both fingerprints, and the two ways out. */}
+                              <Show when={t.keyMismatch}>
+                                {mismatch => (
+                                  <div class={styles.tunnelStopped} data-testid="tunnel-stopped">
+                                    <div class={styles.tunnelStoppedReason} data-testid="tunnel-stopped-reason">
+                                      Stopped: the Worker keys the Hub announced do not match the key this tunnel admits against.
+                                    </div>
+                                    <div class={styles.tunnelFingerprints}>
+                                      <div>
+                                        <strong>Expected:</strong>
+                                        {' '}
+                                        <code data-testid="tunnel-expected-fingerprint">{mismatch().expectedFingerprint}</code>
+                                      </div>
+                                      <div>
+                                        <strong>Presented:</strong>
+                                        {' '}
+                                        <code data-testid="tunnel-presented-fingerprint">{mismatch().presentedFingerprint}</code>
+                                      </div>
+                                    </div>
+                                    <Show when={verifyError()?.id === t.id
+                                      ? verifyError()!.message
+                                      : null}
+                                    >
+                                      {message => (
+                                        <div class={errorText} role="alert" data-testid="tunnel-verify-error">{message()}</div>
+                                      )}
+                                    </Show>
+                                    <div class={styles.tunnelStoppedActions}>
+                                      <button
+                                        type="button"
+                                        class="outline"
+                                        disabled={verifyingTunnelId() !== null}
+                                        onClick={() => verify(t)}
+                                        data-testid="tunnel-verify-key"
+                                      >
+                                        <Show when={verifyingTunnelId() === t.id}><Spinner /></Show>
+                                        Verify Worker key
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="outline"
+                                        data-variant="danger"
+                                        onClick={() => {
+                                          setDeleteError(null)
+                                          setDeleteTunnelTarget(t)
+                                        }}
+                                        data-testid="tunnel-remove"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </Show>
+                            </>
                           )
                         }}
                       </For>
@@ -163,18 +294,23 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
           <ConfirmDialog
             title="Delete tunnel"
             danger
+            busy={deleting()}
             confirmLabel="Delete"
-            onConfirm={() => {
-              tunnel!.remove(target().id).catch(() => {})
+            confirmTestId="confirm-delete-tunnel"
+            onConfirm={confirmDeleteTunnel}
+            onCancel={() => {
               setDeleteTunnelTarget(null)
+              setDeleteError(null)
             }}
-            onCancel={() => setDeleteTunnelTarget(null)}
           >
             <p>
               {'Delete tunnel '}
               <strong>{tunnelLabel(target())}</strong>
               ?
             </p>
+            <Show when={deleteError()}>
+              <p class={errorText} role="alert" data-testid="tunnel-delete-error">{deleteError()}</p>
+            </Show>
           </ConfirmDialog>
         )}
       </Show>
@@ -184,18 +320,23 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
           <ConfirmDialog
             title="Delete all tunnels"
             danger
+            busy={deleting()}
             confirmLabel="Delete all"
-            onConfirm={() => {
-              tunnel!.removeAllForWorker(workerId()).catch(() => {})
+            confirmTestId="confirm-delete-all-tunnels"
+            onConfirm={confirmDeleteAllTunnels}
+            onCancel={() => {
               setDeleteAllTunnelsWorkerId(null)
+              setDeleteError(null)
             }}
-            onCancel={() => setDeleteAllTunnelsWorkerId(null)}
           >
             <p>
               {'Delete all tunnels for worker '}
               <strong>{props.workerInfo(workerId())?.name ?? workerId()}</strong>
               ?
             </p>
+            <Show when={deleteError()}>
+              <p class={errorText} role="alert" data-testid="tunnel-delete-error">{deleteError()}</p>
+            </Show>
           </ConfirmDialog>
         )}
       </Show>

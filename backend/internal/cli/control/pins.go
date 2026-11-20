@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"path/filepath"
 	"sort"
 
@@ -41,15 +42,15 @@ func NewPinStore(hubURL string) (*PinStore, error) {
 	return &PinStore{inner: inner}, nil
 }
 
-// Verify implements tunnel.KeyPinStore.
-func (s *PinStore) Verify(workerID string, public, mlkem, slhdsa []byte) error {
-	return s.inner.Verify(workerID, public, mlkem, slhdsa)
+// Resolve implements tunnel.KeyPinStore.
+func (s *PinStore) Resolve(ctx context.Context, workerID string, public, mlkem, slhdsa []byte) (func(context.Context) error, error) {
+	return s.inner.Resolve(ctx, workerID, public, mlkem, slhdsa)
 }
 
 // Remove clears a pin so the next OpenChannel records a new TOFU pin.
 // Idempotent.
-func (s *PinStore) Remove(workerID string) error {
-	return s.inner.Remove(workerID)
+func (s *PinStore) Remove(ctx context.Context, workerID string) error {
+	return s.inner.Remove(ctx, workerID)
 }
 
 // PinListEntry is one row of the sorted List result.
@@ -60,8 +61,11 @@ type PinListEntry struct {
 
 // List returns a snapshot of pins, sorted by worker_id for stable
 // JSON output.
-func (s *PinStore) List() []PinListEntry {
-	snap := s.inner.Snapshot()
+func (s *PinStore) List(ctx context.Context) ([]PinListEntry, error) {
+	snap, err := s.inner.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]string, 0, len(snap))
 	for id := range snap {
 		ids = append(ids, id)
@@ -71,5 +75,5 @@ func (s *PinStore) List() []PinListEntry {
 	for i, id := range ids {
 		out[i] = PinListEntry{WorkerID: id, Entry: snap[id]}
 	}
-	return out
+	return out, nil
 }

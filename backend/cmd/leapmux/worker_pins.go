@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
+
+// crossWorkerPinsOpTimeout bounds pin-store file transactions.
+const crossWorkerPinsOpTimeout = 10 * time.Second
 
 // runWorkerCrossWorkerPins implements `leapmux worker cross-worker-pins
 // list|remove [--target-worker-id <id>] [--data-dir <dir>]`.
@@ -30,8 +35,6 @@ func runWorkerCrossWorkerPins(args []string) error {
 		return err
 	}
 	if dataDir == "" {
-		// Reuse the standard config loader so the resolved data dir
-		// matches what `leapmux worker run` would use.
 		cfg, _, err := config.Load([]string{})
 		if err != nil {
 			return fmt.Errorf("resolve data dir: %w", err)
@@ -42,14 +45,23 @@ func runWorkerCrossWorkerPins(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open pin store: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), crossWorkerPinsOpTimeout)
+	defer cancel()
 	switch sub {
 	case "list":
-		return printJSON(store.List())
+		pins, err := store.List(ctx)
+		if err != nil {
+			return fmt.Errorf("list: %w", err)
+		}
+		return printJSON(pins)
 	case "show":
 		if targetWorkerID == "" {
 			return fmt.Errorf("--target-worker-id is required for show")
 		}
-		pins := store.List()
+		pins, err := store.List(ctx)
+		if err != nil {
+			return fmt.Errorf("list: %w", err)
+		}
 		entry, ok := pins[targetWorkerID]
 		if !ok {
 			return fmt.Errorf("no pin recorded for target_worker_id=%s", targetWorkerID)
@@ -59,7 +71,7 @@ func runWorkerCrossWorkerPins(args []string) error {
 		if targetWorkerID == "" {
 			return fmt.Errorf("--target-worker-id is required for remove")
 		}
-		if err := store.Remove(targetWorkerID); err != nil {
+		if err := store.Remove(ctx, targetWorkerID); err != nil {
 			return fmt.Errorf("remove: %w", err)
 		}
 		return printJSON(map[string]string{"removed_target_worker_id": targetWorkerID})

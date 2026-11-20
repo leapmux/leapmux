@@ -4,6 +4,7 @@
 package crossworker
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 
@@ -40,18 +41,18 @@ func NewPinStore(dataDir string) (*PinStore, error) {
 	return &PinStore{inner: inner}, nil
 }
 
-// Verify implements tunnel.KeyPinStore.
-func (s *PinStore) Verify(workerID string, public, mlkem, slhdsa []byte) error {
-	return s.inner.Verify(workerID, public, mlkem, slhdsa)
+// Resolve implements tunnel.KeyPinStore.
+func (s *PinStore) Resolve(ctx context.Context, workerID string, public, mlkem, slhdsa []byte) (func(context.Context) error, error) {
+	return s.inner.Resolve(ctx, workerID, public, mlkem, slhdsa)
 }
 
 // Remove clears a pin so the next call records a new TOFU pin.
 // Idempotent.
-func (s *PinStore) Remove(workerID string) error {
-	return s.inner.Remove(workerID)
+func (s *PinStore) Remove(ctx context.Context, workerID string) error {
+	return s.inner.Remove(ctx, workerID)
 }
 
 // List returns a snapshot of pin metadata, keyed by target worker id.
-func (s *PinStore) List() map[string]PinEntry {
-	return s.inner.Snapshot()
+func (s *PinStore) List(ctx context.Context) (map[string]PinEntry, error) {
+	return s.inner.Snapshot(ctx)
 }

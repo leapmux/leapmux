@@ -6,10 +6,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { createProcessStub } from '~/test-support/childProcess'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromStateJson, waitForHubStart, waitForServer } from './server'
+import { hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubListenAddresses, resolvedHubTCPFromStateJson, waitForHubStart, waitForServer } from './server'
 
 describe('hubUrlFromStateJson', () => {
-  it('takes the assigned port from the one TCP entry', () => {
+  it('takes the assigned port from the primary TCP entry', () => {
     const state = JSON.stringify({
       pid: 7,
       listen: ['127.0.0.1:44321', 'unix:/tmp/hub.sock'],
@@ -23,14 +23,7 @@ describe('hubUrlFromStateJson', () => {
     expect(() => hubUrlFromStateJson(JSON.stringify({
       listen: ['unix:/tmp/hub.sock'],
     })))
-      .toThrow(/expected one TCP address/)
-  })
-
-  it('rejects a bind set with more than one TCP entry', () => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({
-      listen: ['127.0.0.1:1', '127.0.0.1:2'],
-    })))
-      .toThrow(/expected one TCP address/)
+      .toThrow(/expected at least one TCP address/)
   })
 
   it.each([
@@ -46,9 +39,50 @@ describe('hubUrlFromStateJson', () => {
   })
 
   it('rejects an unreadable listen set', () => {
-    expect(() => hubUrlFromStateJson('{}')).toThrow(/expected one TCP address/)
-    expect(() => hubUrlFromStateJson('{"listen":[7]}')).toThrow(/expected one TCP address/)
-    expect(() => hubUrlFromStateJson('null')).toThrow(/expected one TCP address/)
+    expect(() => hubUrlFromStateJson('{}')).toThrow(/expected a listen list/)
+    expect(() => hubUrlFromStateJson('{"listen":[7]}')).toThrow(/expected a listen list/)
+    expect(() => hubUrlFromStateJson('null')).toThrow(/expected a listen list/)
+  })
+})
+
+describe('resolvedHubListenAddresses', () => {
+  it('splits the ordered TCP and local arrays', () => {
+    const state = JSON.stringify({
+      pid: 7,
+      listen: [
+        '127.0.0.1:44321',
+        'unix:/tmp/hub.sock',
+        '127.0.0.1:44322',
+        'npipe:leapmux-hub',
+      ],
+    })
+    expect(resolvedHubListenAddresses(state)).toEqual({
+      tcp: ['127.0.0.1:44321', '127.0.0.1:44322'],
+      local: ['unix:/tmp/hub.sock', 'npipe:leapmux-hub'],
+    })
+  })
+
+  // Two identical port-zero requests bind two sockets and resolve to two
+  // ports. Each occurrence keeps its own entry, in bind order, and the browser
+  // URL stays on the FIRST one.
+  it('keeps one entry per request occurrence and leaves the browser URL on the first', () => {
+    const state = JSON.stringify({
+      pid: 7,
+      listen: ['127.0.0.1:44321', '127.0.0.1:44322', 'unix:/tmp/hub.sock'],
+    })
+    expect(resolvedHubListenAddresses(state)).toEqual({
+      tcp: ['127.0.0.1:44321', '127.0.0.1:44322'],
+      local: ['unix:/tmp/hub.sock'],
+    })
+    expect(resolvedHubTCPFromStateJson(state)).toBe('127.0.0.1:44321')
+    expect(hubUrlFromStateJson(state)).toBe('http://localhost:44321')
+  })
+
+  it('rejects a TCP address without a usable port anywhere in the list', () => {
+    expect(() => resolvedHubListenAddresses(JSON.stringify({
+      listen: ['127.0.0.1:44321', '127.0.0.1:0'],
+    })))
+      .toThrow(/names no usable port/)
   })
 })
 
@@ -303,9 +337,21 @@ describe('waitForHubStart', () => {
     const request = vi.fn(async () => new Response('ready'))
     vi.stubGlobal('fetch', request)
     const { proc } = createProcessStub()
-    await expect(waitForHubStart(statePath, proc)).resolves.toEqual({ hubUrl: 'http://localhost:43210', listen: '127.0.0.1:43210' })
+    const endpoints = {
+      tcp: ['127.0.0.1:43210'],
+      local: ['unix:/run/hub.sock'],
+    }
+    await expect(waitForHubStart(statePath, proc)).resolves.toEqual({
+      hubUrl: 'http://localhost:43210',
+      listen: '127.0.0.1:43210',
+      ...endpoints,
+    })
     expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:43210/', expect.anything())
-    await expect(waitForHubStart(statePath, proc, '127.0.0.1')).resolves.toEqual({ hubUrl: 'http://127.0.0.1:43210', listen: '127.0.0.1:43210' })
+    await expect(waitForHubStart(statePath, proc, '127.0.0.1')).resolves.toEqual({
+      hubUrl: 'http://127.0.0.1:43210',
+      listen: '127.0.0.1:43210',
+      ...endpoints,
+    })
     expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:43210', expect.anything())
     expect(proc.listenerCount('exit')).toBe(0)
     expect(proc.listenerCount('error')).toBe(0)
@@ -324,7 +370,7 @@ describe('waitForHubStart', () => {
     }))
     const request = vi.fn()
     vi.stubGlobal('fetch', request)
-    await expect(waitForHubStart(statePath, createProcessStub().proc)).rejects.toThrow('expected one TCP address')
+    await expect(waitForHubStart(statePath, createProcessStub().proc)).rejects.toThrow('expected at least one TCP address')
     expect(request).not.toHaveBeenCalled()
   })
 

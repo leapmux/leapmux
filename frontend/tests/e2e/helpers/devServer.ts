@@ -132,6 +132,10 @@ export interface SoloServerHandle {
   hubUrl: string
   /** The resolved primary TCP address, which the network panel shows. */
   listen: string
+  /** Every resolved TCP address in bind order. */
+  tcp: string[]
+  /** Every local IPC endpoint URL in bind order. */
+  local: string[]
   proc: ChildProcess
   dataDir: string
 }
@@ -173,13 +177,17 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
   const handle = {
     hubUrl: '',
     listen: '',
+    tcp: [] as string[],
+    local: [] as string[],
     proc,
     dataDir,
   }
   return cleanupOnFailure(async () => {
-    const { hubUrl, listen } = await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc, '127.0.0.1')
+    const { hubUrl, listen, tcp, local } = await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc, '127.0.0.1')
     handle.hubUrl = hubUrl
     handle.listen = listen
+    handle.tcp = tcp
+    handle.local = local
     return handle
   }, () => stopSoloServer(handle))
 }

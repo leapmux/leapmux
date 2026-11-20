@@ -210,6 +210,31 @@ export function decodeProxyResponse(bytes: ArrayBuffer | Uint8Array): ProxyHttpR
   }
 }
 
+/**
+ * The Worker keys the Hub announced differ from the expectation the caller
+ * pinned. The two fingerprints are the human-comparison form of the key sets
+ * (the same four-word fingerprint the Worker logs); the Worker's log is the
+ * comparison source. Mirrors TunnelWorkerKeyMismatch in
+ * proto/leapmux/desktop/v1/frame.proto.
+ */
+export interface TunnelKeyMismatch {
+  expectedFingerprint: string
+  presentedFingerprint: string
+}
+
+/**
+ * The tunnel definition a create submits. The last three fields are the
+ * Worker identity the tunnel admits, and all three are required: the sidecar
+ * refuses a request that omits any of them.
+ *
+ * `expectedWorkerKeysHex` is the exact composite hex (x25519 || mlkem ||
+ * slhdsa public keys) — the shared TOFU pin for that Worker, never a key set
+ * read from the create's own reply. `expectedUserId` is the user the
+ * expectation belongs to, captured with the form rather than read at send
+ * time, so a submission that outlived its identity carries the retired id and
+ * is refused. `channelEpoch` is the epoch the caller admits against, taken
+ * from the listing the form was opened on.
+ */
 export interface TunnelConfig {
   workerId: string
   type: 'port_forward' | 'socks5'
@@ -217,6 +242,9 @@ export interface TunnelConfig {
   targetPort: number
   bindAddr: string
   bindPort: number
+  expectedWorkerKeysHex: string
+  expectedUserId: string
+  channelEpoch: string
 }
 
 export interface TunnelInfo {
@@ -227,6 +255,24 @@ export interface TunnelInfo {
   bindPort: number
   targetAddr: string
   targetPort: number
+  /** Set only on a stopped row: the Worker key mismatch that stopped the tunnel. */
+  keyMismatch?: TunnelKeyMismatch
+}
+
+/**
+ * A create's outcome: the created row, or the Worker key mismatch that
+ * refused it. A mismatch is a RESULT, not a failure — it carries the two
+ * fingerprints the caller compares and acts on. Any other refusal rejects.
+ * Mirrors the CreateTunnelResponse oneof.
+ */
+export type CreateTunnelResult
+  = | { info: TunnelInfo }
+    | { keyMismatch: TunnelKeyMismatch }
+
+/** One tunnel listing: the rows and the channel epoch they were read under. */
+export interface ListTunnelsResult {
+  tunnels: TunnelInfo[]
+  channelEpoch: string
 }
 
 /**
@@ -1135,7 +1181,7 @@ export const platformBridge = {
     await tauriInvoke('switch_mode')
     await refreshRuntimeState()
   },
-  async createTunnel(config: TunnelConfig): Promise<TunnelInfo> {
+  async createTunnel(config: TunnelConfig): Promise<CreateTunnelResult> {
     return tauriInvoke('create_tunnel', { config })
   },
   async deleteTunnel(tunnelId: string): Promise<void> {
@@ -1149,8 +1195,8 @@ export const platformBridge = {
       return
     await tauriInvoke('reset_tunnels')
   },
-  async listTunnels(): Promise<TunnelInfo[]> {
-    return (await tauriInvoke<TunnelInfo[]>('list_tunnels')) ?? []
+  async listTunnels(expectedUserId: string): Promise<ListTunnelsResult> {
+    return (await tauriInvoke<ListTunnelsResult>('list_tunnels', { expectedUserId })) ?? { tunnels: [], channelEpoch: '' }
   },
   async listExternalApps(refresh = false): Promise<ExternalApp[]> {
     if (!isTauriApp())

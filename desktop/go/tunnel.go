@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -56,6 +57,13 @@ type TunnelConfig struct {
 	BindAddr   string
 	BindPort   int
 	HubURL     string
+	// The Worker identity this tunnel admits: the user every channel must
+	// authenticate as and the exact Worker keys the Hub must announce (the
+	// composite hex NewExpectedWorkerKeyPin decodes). Both come from the
+	// request; a create that omits either, or carries an unusable
+	// expectation, fails before a listener is bound or a channel opened.
+	ExpectedUserID        string
+	ExpectedWorkerKeysHex string
 }
 
 // validateAndNormalize checks the config's required fields and fills in the
@@ -94,6 +102,15 @@ func (cfg *TunnelConfig) validateAndNormalize() error {
 	if cfg.BindPort < 1 || cfg.BindPort > 65535 {
 		return fmt.Errorf("bindPort must be 1-65535")
 	}
+	if cfg.ExpectedUserID == "" {
+		return fmt.Errorf("expectedUserId is required")
+	}
+	if cfg.ExpectedWorkerKeysHex == "" {
+		return fmt.Errorf("expectedWorkerKeysHex is required")
+	}
+	if _, err := tunnelpkg.NewExpectedWorkerKeyPin(cfg.ExpectedWorkerKeysHex); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -106,6 +123,35 @@ type TunnelInfo struct {
 	BindPort   int    `json:"bindPort"`
 	TargetAddr string `json:"targetAddr"`
 	TargetPort int    `json:"targetPort"`
+	// KeyMismatch is set only on a stopped row: the Worker key mismatch that
+	// stopped the tunnel. The record survives (until delete or reset) so a
+	// hint delivered early or lost still recovers through a listing.
+	KeyMismatch *TunnelKeyMismatch `json:"keyMismatch,omitempty"`
+}
+
+// TunnelKeyMismatch is the Worker key mismatch that refused a create or
+// stopped a tunnel: the fingerprints of the expected key set and of the set
+// the Hub announced. The fingerprints are the human-comparison form (the same
+// four-word fingerprint the Worker logs); the Worker's log is the comparison
+// source.
+type TunnelKeyMismatch struct {
+	ExpectedFingerprint  string `json:"expectedFingerprint"`
+	PresentedFingerprint string `json:"presentedFingerprint"`
+}
+
+// keyMismatchOf returns the Worker key mismatch err reports, or nil when err
+// is an ordinary failure. It is the one conversion from the tunnel package's
+// typed mismatch to the wire-shaped detail both the create result and a
+// stopped list row carry.
+func keyMismatchOf(err error) *TunnelKeyMismatch {
+	var mismatch *tunnelpkg.WorkerKeyMismatchError
+	if !errors.As(err, &mismatch) {
+		return nil
+	}
+	return &TunnelKeyMismatch{
+		ExpectedFingerprint:  mismatch.ExpectedFingerprint,
+		PresentedFingerprint: mismatch.PresentedFingerprint,
+	}
 }
 
 // tunnel represents a single active tunnel.
@@ -117,6 +163,17 @@ type tunnel struct {
 	cancel      context.CancelFunc
 	connections map[net.Conn]struct{}
 	closed      bool
+	// expect and admittedEpoch are the identity this tunnel was admitted
+	// under: every channel re-resolve must present the same expectation, and
+	// live refuses one from a later epoch rather than rebasing the tunnel.
+	expect        channelExpectation
+	admittedEpoch string
+	// stopping claims the mismatch transition. Guarded by TunnelManager.mu
+	// (the manager owns state transitions), unlike the fields above (t.mu).
+	// A record with stopping set is no longer live: a late accept failure must
+	// not evict it (see failTunnel), and a second mismatch must not re-claim
+	// it. The published detail lands in info.KeyMismatch.
+	stopping bool
 }
 
 // tunnelListener adapts a tunnel's listener for go-socks5's Server.Serve: it
@@ -215,6 +272,10 @@ type TunnelManager struct {
 	tunnels map[string]*tunnel
 	pool    *channelPool
 	dial    dialTunnelFunc
+	// onChanged publishes a native tunnel status change (a mismatch
+	// transition) so the webview re-reads the tunnel list. Set by NewApp
+	// before any tunnel exists; nil in a bare manager (tests).
+	onChanged func()
 }
 
 // NewTunnelManager creates a new TunnelManager.
@@ -247,11 +308,11 @@ func (m *TunnelManager) SetChannelOptions(opts *tunnelpkg.OpenChannelOptions) {
 	m.pool.setOptions(opts)
 }
 
-// currentRevision returns the pool's invalidation epoch revision. Tests and
-// CreateTunnel capture it before awaiting an open so a concurrent reset can
-// fence registration.
-func (m *TunnelManager) currentRevision() uint64 {
-	return m.pool.currentRevision()
+// currentEpoch returns the pool's invalidation epoch id -- the value
+// ListTunnels reports as channel_epoch. Tests and CreateTunnel capture it
+// before awaiting an open so a concurrent reset can fence registration.
+func (m *TunnelManager) currentEpoch() string {
+	return m.pool.currentEpoch()
 }
 
 // CreateTunnel creates and starts a new tunnel.
@@ -262,14 +323,18 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	if lifetimeCtx == nil {
 		return nil, fmt.Errorf("lifetime context is required")
 	}
-	revision := m.pool.currentRevision()
+	admittedEpoch := m.pool.currentEpoch()
 
 	if err := cfg.validateAndNormalize(); err != nil {
 		return nil, err
 	}
+	expect := channelExpectation{
+		userID:  cfg.ExpectedUserID,
+		keysHex: cfg.ExpectedWorkerKeysHex,
+	}
 
 	// Ensure we have an E2EE channel to the worker.
-	opened, err := m.pool.getOrOpen(operationCtx, revision, cfg.HubURL, cfg.WorkerID)
+	opened, err := m.pool.getOrOpen(operationCtx, admittedEpoch, cfg.HubURL, cfg.WorkerID, expect)
 	if err != nil {
 		slog.Error("failed to open channel to worker", "worker_id", cfg.WorkerID, "error", err)
 		return nil, fmt.Errorf("open channel to worker: %w", err)
@@ -297,11 +362,13 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 
 	ctx, cancel := context.WithCancel(lifetimeCtx)
 	t := &tunnel{
-		info:        info,
-		hubURL:      cfg.HubURL,
-		listener:    listener,
-		cancel:      cancel,
-		connections: make(map[net.Conn]struct{}),
+		info:          info,
+		hubURL:        cfg.HubURL,
+		listener:      listener,
+		cancel:        cancel,
+		connections:   make(map[net.Conn]struct{}),
+		expect:        expect,
+		admittedEpoch: admittedEpoch,
 	}
 
 	m.mu.Lock()
@@ -311,7 +378,7 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	if startErr == nil {
 		startErr = lifetimeCtx.Err()
 	}
-	if startErr == nil && revision != m.pool.currentRevision() {
+	if startErr == nil && admittedEpoch != m.pool.currentEpoch() {
 		startErr = fmt.Errorf("tunnel manager reset while creating tunnel")
 	}
 	if startErr != nil {
@@ -382,15 +449,28 @@ func (m *TunnelManager) DeleteTunnel(tunnelID string) error {
 	return nil
 }
 
-// ListTunnels returns info about all active tunnels.
-func (m *TunnelManager) ListTunnels() []TunnelInfo {
+// ListTunnels returns the current channel epoch and the tunnels owned by
+// expectedUser -- active rows and stopped rows alike -- from one manager
+// snapshot. The epoch and the rows are read under one lock (every epoch
+// rotation holds it too), so a caller can fence its next mutation against
+// exactly the listing it saw.
+//
+// The owner is the expected user a create was admitted under; a listing that
+// names no user is refused rather than silently answered for one owner.
+func (m *TunnelManager) ListTunnels(expectedUser string) (string, []TunnelInfo, error) {
+	if expectedUser == "" {
+		return "", nil, fmt.Errorf("expectedUserId is required")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make([]TunnelInfo, 0, len(m.tunnels))
 	for _, t := range m.tunnels {
+		if t.expect.userID != expectedUser {
+			continue
+		}
 		result = append(result, t.info)
 	}
-	return result
+	return m.pool.currentEpoch(), result, nil
 }
 
 // CloseAll closes all tunnels and channels.
@@ -429,8 +509,13 @@ func (m *TunnelManager) serveSocks5(ctx context.Context, t *tunnel, ch *managedC
 		port := uint32(p)
 		dialCtx, cancelDial := ctxutil.WithLinkedCancel(ctx, requestCtx)
 		defer cancelDial()
-		live, err := m.pool.live(dialCtx, ch, t.hubURL, t.info.WorkerID)
+		// Resolve the channel BEFORE the target dial: a Worker key mismatch
+		// stops the tunnel instead of being discovered mid-connection.
+		live, err := m.pool.live(dialCtx, ch, t.admittedEpoch, t.hubURL, t.info.WorkerID, t.expect)
 		if err != nil {
+			if mismatch := keyMismatchOf(err); mismatch != nil {
+				m.stopWithKeyMismatch(t, mismatch)
+			}
 			return nil, err
 		}
 		openCtx, cancelOpen := context.WithTimeout(dialCtx, dialTunnelOpenTimeout)
@@ -509,12 +594,65 @@ func backoffAfterTemporaryAccept(delay time.Duration, cancel <-chan struct{}) (n
 // reporting it, the UI would keep showing it active, and every new local
 // connection would be refused with nothing to explain why. Removing it makes the
 // death observable -- the tunnel disappears -- instead of silently inert.
+//
+// The eviction claims the record only when THAT exact entry is still live: a
+// late accept failure arriving after a mismatch transition claimed the record
+// must not delete the recorded mismatch (the row is what the UI recovers from),
+// and a concurrent delete/reset leaves nothing to reclaim.
 func (m *TunnelManager) failTunnel(t *tunnel, reason error) {
 	slog.Error("tunnel listener failed; removing the tunnel",
 		"tunnel_id", t.info.ID, "error", reason)
-	if err := m.DeleteTunnel(t.info.ID); err != nil {
-		// Already gone (a concurrent DeleteTunnel/CloseAll): nothing to reclaim.
-		slog.Debug("tunnel already removed", "tunnel_id", t.info.ID, "error", err)
+	m.mu.Lock()
+	if m.tunnels[t.info.ID] != t || t.stopping {
+		m.mu.Unlock()
+		// Already gone (a concurrent DeleteTunnel/CloseAll), or a mismatch
+		// transition owns this record now.
+		slog.Debug("tunnel already removed or stopping", "tunnel_id", t.info.ID)
+		return
+	}
+	delete(m.tunnels, t.info.ID)
+	m.mu.Unlock()
+	t.close()
+}
+
+// stopWithKeyMismatch tears a tunnel down after the Hub announced Worker keys
+// other than the expected set, and records the stopped outcome on the same
+// manager row so ListTunnels keeps reporting it (with the mismatch detail)
+// until the row is deleted or reset. It is the reconnect-side counterpart of
+// the create-time refusal: a tunnel's expectation is immutable, so an
+// announcement that breaks it can only stop the tunnel.
+//
+// The transition is claimed only when that exact entry is still live. Under
+// the manager lock the record moves to stopping (a second mismatch, or a late
+// accept failure, must not re-claim it); the listener and owned connections
+// close outside the lock; the stopped detail is then published only if the
+// same record still exists (a concurrent delete/reset wins instead). The
+// change hint fires only after the stopped result is visible.
+func (m *TunnelManager) stopWithKeyMismatch(t *tunnel, mismatch *TunnelKeyMismatch) {
+	m.mu.Lock()
+	if m.tunnels[t.info.ID] != t || t.stopping {
+		m.mu.Unlock()
+		return
+	}
+	t.stopping = true
+	m.mu.Unlock()
+
+	t.close()
+
+	m.mu.Lock()
+	if m.tunnels[t.info.ID] != t {
+		m.mu.Unlock()
+		return
+	}
+	t.info.KeyMismatch = mismatch
+	m.mu.Unlock()
+
+	slog.Error("tunnel stopped: the hub announced unexpected worker keys",
+		"tunnel_id", t.info.ID,
+		"expected_fingerprint", mismatch.ExpectedFingerprint,
+		"presented_fingerprint", mismatch.PresentedFingerprint)
+	if m.onChanged != nil {
+		m.onChanged()
 	}
 }
 
@@ -555,8 +693,13 @@ func (m *TunnelManager) handlePortForward(ctx context.Context, conn net.Conn, t 
 	}
 	defer func() { _ = local.Close() }()
 
-	live, err := m.pool.live(ctx, ch, t.hubURL, t.info.WorkerID)
+	// Resolve the channel BEFORE the target dial: a Worker key mismatch stops
+	// the tunnel instead of being discovered mid-connection.
+	live, err := m.pool.live(ctx, ch, t.admittedEpoch, t.hubURL, t.info.WorkerID, t.expect)
 	if err != nil {
+		if mismatch := keyMismatchOf(err); mismatch != nil {
+			m.stopWithKeyMismatch(t, mismatch)
+		}
 		slog.Error("resolve tunnel channel failed", "tunnel_id", t.info.ID, "error", err)
 		return
 	}

@@ -138,21 +138,46 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
   })
 }
 
-/** Read the one resolved TCP address from the hub's state file. */
-export function resolvedHubTCPFromStateJson(raw: string): string {
+/** The ordered listen endpoints a hub's state file names. */
+export interface ResolvedListenAddresses {
+  /** TCP addresses in bind order, each carrying the port its listener resolved to. */
+  tcp: string[]
+  /** Local IPC endpoint URLs in bind order (`unix:`, `npipe:`). */
+  local: string[]
+}
+
+/**
+ * Read the resolved bind set from the hub's state file: the TCP addresses and the local IPC endpoint URLs, each in bind
+ * order. Two identical port-zero requests resolve to two ports, so the answer is per request occurrence rather than per
+ * spelling.
+ */
+export function resolvedHubListenAddresses(raw: string): ResolvedListenAddresses {
   const state = JSON.parse(raw) as { listen?: unknown } | null
   const listen = state?.listen
   if (!Array.isArray(listen) || !listen.every(entry => typeof entry === 'string'))
-    throw new Error('expected one TCP address in the hub state file\'s listen list')
-  const tcp = listen.filter(entry => !entry.startsWith('unix:') && !entry.startsWith('npipe:'))
-  const entry = tcp[0]
-  if (tcp.length !== 1 || entry === undefined)
-    throw new Error(`expected one TCP address in the hub state file's listen list, got ${JSON.stringify(listen)}`)
-  const separator = entry.lastIndexOf(':')
-  const portText = entry.slice(separator + 1)
-  const port = Number(portText)
-  if (separator < 0 || !/^\d+$/.test(portText) || !Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error(`the TCP address ${entry} names no usable port`)
+    throw new Error('expected a listen list of address strings in the hub state file')
+  const tcp: string[] = []
+  const local: string[] = []
+  for (const entry of listen) {
+    if (entry.startsWith('unix:') || entry.startsWith('npipe:')) {
+      local.push(entry)
+      continue
+    }
+    const separator = entry.lastIndexOf(':')
+    const portText = entry.slice(separator + 1)
+    const port = Number(portText)
+    if (separator < 0 || !/^\d+$/.test(portText) || !Number.isInteger(port) || port < 1 || port > 65535)
+      throw new Error(`the TCP address ${entry} names no usable port`)
+    tcp.push(entry)
+  }
+  return { tcp, local }
+}
+
+/** Read the primary (first) resolved TCP address from the hub's state file. */
+export function resolvedHubTCPFromStateJson(raw: string): string {
+  const entry = resolvedHubListenAddresses(raw).tcp[0]
+  if (entry === undefined)
+    throw new Error('expected at least one TCP address in the hub state file\'s listen list')
   return entry
 }
 
@@ -209,9 +234,10 @@ export function waitForHubStateFile(statePath: string, proc: ChildProcess, timeo
   })
 }
 
-/** The addresses of a hub that started: the URL that a browser reaches, and the one TCP address that the hub bound. */
-export interface StartedHub {
+/** The addresses of a hub that started: the URL that a browser reaches, the primary TCP address, and the resolved endpoints in bind order. */
+export interface StartedHub extends ResolvedListenAddresses {
   hubUrl: string
+  /** The primary (first) resolved TCP address: what a browser connects to. */
   listen: string
 }
 
@@ -219,13 +245,15 @@ export interface StartedHub {
  * Wait for a spawned hub to write its state file and to answer HTTP, or fail when its process exits.
  * A hub that listens on port 0 gets its port from the operating system, and the state file is the only record of it.
  * `browserHost` replaces the bound host in `hubUrl`, so the URL matches the domain of the session cookies.
+ * The browser URL follows the FIRST TCP address; the full ordered endpoints stay on the result.
  */
 export async function waitForHubStart(statePath: string, proc: ChildProcess, browserHost = E2E_BROWSER_HOST): Promise<StartedHub> {
   const state = await waitForHubStateFile(statePath, proc)
+  const { tcp, local } = resolvedHubListenAddresses(state)
   const listen = resolvedHubTCPFromStateJson(state)
   const hubUrl = hubUrlFromStateJson(state, browserHost)
   await waitForHubReady(hubUrl, proc)
-  return { hubUrl, listen }
+  return { hubUrl, listen, tcp, local }
 }
 
 /** Wait until the hub responds or its process exits. */

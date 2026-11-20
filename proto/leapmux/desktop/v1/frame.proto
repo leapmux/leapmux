@@ -120,8 +120,12 @@ message CloseChannelRelayRequest {
   uint64 relay_id = 1;
 }
 message SwitchModeRequest {}
-message ListTunnelsRequest {}
-message ResetTunnelsRequest {}
+message ListTunnelsRequest {
+  string expected_user_id = 1;
+}
+message ResetTunnelsRequest {
+  string channel_epoch = 1;
+}
 message ShutdownRequest {}
 message CliPathStatusRequest {}
 
@@ -237,6 +241,7 @@ message CreateTunnelRequest {
 
 message DeleteTunnelRequest {
   string tunnel_id = 1;
+  string channel_epoch = 2;
 }
 
 message OpenInExternalAppRequest {
@@ -350,11 +355,15 @@ message ProxyHttpResponse {
 }
 
 message CreateTunnelResponse {
-  TunnelInfo info = 1;
+  oneof result {
+    TunnelInfo info = 1;
+    TunnelWorkerKeyMismatch key_mismatch = 2;
+  }
 }
 
 message ListTunnelsResponse {
   repeated TunnelInfo tunnels = 1;
+  string channel_epoch = 2;
 }
 
 message ListExternalAppsResponse {
@@ -413,10 +422,14 @@ message Event {
     UserEventsCloseEvent user_events_close = 5;
     // One ceremony ended. The sidecar emits exactly one for each ceremony.
     BrowserAuthResultEvent browser_auth_result = 6;
+    // TunnelsChanged is a lightweight hint that native tunnel status changed
+    // (a tunnel stopped with a Worker key mismatch). It carries no tunnel or
+    // account data; the webview re-reads the tunnel list to learn what changed.
+    TunnelsChangedEvent tunnels_changed = 7;
   }
   // The owner at emission time for a relay frame or close. Zero identifies
   // an event unrelated to a relay.
-  uint64 relay_id = 7;
+  uint64 relay_id = 8;
 }
 
 message BrowserAuthResultEvent {
@@ -451,6 +464,20 @@ message SidecarLogEvent {
   string time = 2;
   string message = 3;
   repeated string attrs = 4;
+}
+
+// TunnelsChangedEvent is a hint that native tunnel status changed (a tunnel
+// stopped with a Worker key mismatch). It carries no data; the webview re-reads
+// the tunnel list to learn what changed.
+message TunnelsChangedEvent {}
+
+// TunnelWorkerKeyMismatch reports that the Worker keys the Hub announced differ
+// from the expectation the caller pinned. The two fingerprints are the
+// human-comparison form of the key sets; the Worker's log is the comparison
+// source.
+message TunnelWorkerKeyMismatch {
+  string expected_fingerprint = 1;
+  string presented_fingerprint = 2;
 }
 
 // --- Shared types ---
@@ -507,6 +534,15 @@ message TunnelConfig {
   int32 target_port = 4;
   string bind_addr = 5;
   int32 bind_port = 6;
+  // The Worker identity this create admits. expected_worker_keys_hex is the
+  // exact composite hex (x25519 || mlkem || slhdsa public keys) the Hub must
+  // announce for the worker; expected_user_id is the user the channel must
+  // authenticate as. The sidecar refuses a create that omits either or whose
+  // expectation is unusable. channel_epoch is the native-issued epoch the
+  // caller read from a tunnel listing.
+  string expected_worker_keys_hex = 7;
+  string expected_user_id = 8;
+  string channel_epoch = 9;
 }
 
 message TunnelInfo {
@@ -517,4 +553,6 @@ message TunnelInfo {
   int32 bind_port = 5;
   string target_addr = 6;
   int32 target_port = 7;
+  // Set only on a stopped row: the Worker key mismatch that stopped the tunnel.
+  TunnelWorkerKeyMismatch key_mismatch = 8;
 }

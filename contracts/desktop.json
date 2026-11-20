@@ -11,7 +11,8 @@
     "sidecarLog": "sidecar:log",
     "browserAuthResult": "browser-auth:result",
     "menuShowAbout": "menu:show-about",
-    "menuShowPreferences": "menu:show-preferences"
+    "menuShowPreferences": "menu:show-preferences",
+    "tunnelsChanged": "tunnel:changed"
   },
   "ipcHeaders": {
     "method": "method",

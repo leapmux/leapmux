@@ -2230,6 +2230,7 @@ export const DESKTOP_RS_EVENT_NAMES = {
   browserAuthResult: 'EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'EVENT_MENU_SHOW_PREFERENCES',
+  tunnelsChanged: 'EVENT_TUNNELS_CHANGED',
 }
 
 // Tauri events whose only Rust emission sites sit inside
@@ -2243,6 +2244,7 @@ export const DESKTOP_TS_EVENT_NAMES = {
   browserAuthResult: 'TAURI_EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'TAURI_EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
+  tunnelsChanged: 'TAURI_EVENT_TUNNELS_CHANGED',
 }
 
 export const DESKTOP_RS_IPC_HEADER_NAMES = {

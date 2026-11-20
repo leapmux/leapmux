@@ -9,7 +9,7 @@ import type { HandshakeState, Session } from './noise'
 import type { HybridHandshakeState } from './noise-hybrid'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
-import { afterEach, beforeEach, expect, vi } from 'vitest'
+import { afterEach, expect, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE, MLKEM_PUBLIC_KEY_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import {
   ChannelMessageFlags,
@@ -40,10 +40,12 @@ export function acceptingKeyPins(confirmKeyPin?: KeyPinConfirmFn): KeyPinStore {
 
 // Isolate TOFU pins across suites: managers that omit keyPins use the fail-closed
 // default store, and a leftover pin from another test would reject opens that used
-// to auto-accept via transport.confirmKeyPin.
-beforeEach(() => {
-  clearAllKeyPins()
-})
+// to auto-accept via transport.confirmKeyPin. The isolation IS the per-test
+// database `useTestStorage()` installs: every file that opens channels calls it,
+// and each test then starts from an empty pin store. A clear here would be both
+// redundant and misordered -- a module-level `beforeEach` registers before the
+// test file's own, so it would run before `useTestStorage` stubs the database
+// the strict pin gateway then refuses to live without.
 
 export { clearAllKeyPins }
 
@@ -241,6 +243,23 @@ export function decodeWireMessage(buf: ArrayBuffer) {
 }
 
 /**
+ * `decodeWireMessage`, answering null for anything that is not yet a complete
+ * framed message. For a waiter that must see a frame the client has not sent
+ * yet -- the open-time Ping trails the pin decision's IndexedDB commit, which a
+ * session settle cannot observe.
+ */
+function tryDecodeWireMessage(buf: ArrayBuffer | undefined): ReturnType<typeof decodeWireMessage> | null {
+  if (buf === undefined)
+    return null
+  try {
+    return decodeWireMessage(buf)
+  }
+  catch {
+    return null
+  }
+}
+
+/**
  * A channel's private per-request registries on the main thread.
  *
  * Tests assert on their contents because a leak here has no public surface: a stranded
@@ -318,6 +337,17 @@ export class MockWebSocket {
   simulateOpen() {
     this.readyState = MockWebSocket.OPEN
     this.emit('open')
+  }
+
+  /** Wait until at least one 'open' listener is registered (the relay reached ensureWebSocket). */
+  async waitForOpenListener(rounds = MAX_SETTLE_ROUNDS): Promise<void> {
+    // Already open: the relay consumed the listener and the socket is live.
+    if (this.readyState === MockWebSocket.OPEN) return
+    for (let i = 0; i < rounds; i++) {
+      if ((this.listeners.get('open')?.size ?? 0) > 0) return
+      await yieldToEventLoop()
+    }
+    throw new Error('no open listener registered on the mock WebSocket')
   }
 
   simulateMessage(data: ArrayBuffer) {
@@ -442,7 +472,10 @@ export class ChannelManagerTestHarness {
   mgr!: ChannelManager
 
   setup(): void {
-    clearAllKeyPins()
+    // No pin clear here: `useTestStorage` gives each test a fresh database, so
+    // there are no leftover pins to clear. The pins a test's OWN earlier opens
+    // wrote stay -- they belong to this test's state, and a matching pin
+    // revalidates cleanly.
     sessions.clear()
     this.mockWs = new MockWebSocket()
     this.transport = createMockTransport(this.mockWs)
@@ -466,6 +499,9 @@ export class ChannelManagerTestHarness {
     return settleChannelSessions()
   }
 
+  /** Count of Pings answered per MockWebSocket, so a second open skips the first one. */
+  private answeredPings = new WeakMap<MockWebSocket, number>()
+
   /**
    * Answer the open-time Ping. openChannel round-trips a no-op Ping to prove the
    * E2EE session decrypts in both directions before it resolves, so a test worker
@@ -474,7 +510,22 @@ export class ChannelManagerTestHarness {
    */
   async simulatePingAccept(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
     await settleChannelSessions()
-    const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
+    // The open's pin decision commits through IndexedDB BEFORE the handshake
+    // reaches the wire, and the session settle above cannot see that work. Wait
+    // for the Ping's frame itself rather than assuming it is already sent.
+    const answered = this.answeredPings.get(ws) ?? 0
+    let sentMsg: ReturnType<typeof decodeWireMessage> | null = null
+    for (let round = 0; round < MAX_SETTLE_ROUNDS && sentMsg === null; round++) {
+      // Skip frames a prior simulatePingAccept already consumed (nonce advanced).
+      if (ws.sent.length > answered) {
+        sentMsg = tryDecodeWireMessage(ws.sent.at(-1))
+      }
+      if (sentMsg === null)
+        await yieldToEventLoop()
+    }
+    if (sentMsg === null)
+      throw new Error('the open-time Ping never reached the wire')
+    this.answeredPings.set(ws, answered + 1)
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     expect(inner.kind.case).toBe('request')
@@ -554,13 +605,19 @@ export class ChannelManagerTestHarness {
 
   async openTestChannel(workerId = 'w1'): Promise<string> {
     const openPromise = this.mgr.openChannel(workerId)
-    // Let the open run its handshake in the session worker, until
-    // ensureWebSocket() registers the 'open' listener.
-    await settleChannelSessions()
+    // An open that fails before its Ping (a refused pin decision, a dead
+    // session) must fail HERE, not leave the ping waiter below counting out
+    // rounds for a frame that will never come. `openFailure` never resolves on
+    // success -- the race is only over the failure.
+    const openFailure = openPromise.then(() => new Promise<never>(() => {}), (err: unknown) => Promise.reject(err))
+    // Let the open run its handshake in the session worker and the pin
+    // decision through IndexedDB, until ensureWebSocket() registers the
+    // 'open' listener.
+    await this.mockWs.waitForOpenListener()
     this.mockWs.simulateOpen()
     await settleChannelSessions()
     // The open completes once the worker answers the session-verifying Ping.
-    await this.simulatePingAccept()
+    await Promise.race([this.simulatePingAccept(), openFailure])
     return openPromise
   }
 

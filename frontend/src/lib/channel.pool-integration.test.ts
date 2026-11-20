@@ -6,6 +6,7 @@ import { InnerMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { WatchEventsRequestSchema } from '~/generated/proto/leapmux/v1/watch_pb'
 import { blankClassicHandshakeState } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { WorkerWatchService } from '../generated/proto/leapmux/v1/watch_pb'
 import {
   acceptingKeyPins,
@@ -30,6 +31,10 @@ import {
   waitForPendingChannel,
 } from './channel.test-support'
 import { frameAssociatedData } from './channelFraming'
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('ChannelManager getOrOpenChannel', () => {
   const h = new ChannelManagerTestHarness()
@@ -355,7 +360,7 @@ describe('ChannelManager getOrOpenChannel', () => {
       // Open the pooled channel as user-a (expectation matches).
       const openPromise = driftMgr.openChannel('w1')
       await h.settle()
-      driftWs.simulateOpen()
+      await driftWs.waitForOpenListener(); driftWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(driftWs)
       const ch1 = await openPromise
@@ -418,8 +423,10 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
     const p1 = cm.getOrOpenChannel('worker-1')
     const p2 = cm.getOrOpenChannel('worker-1')
 
-    // Let the handshake + WebSocket open progress.
+    // Let the handshake + pin read + WebSocket open progress.
     await settleChannelSessions()
+    for (let i = 0; i < 1000 && ws === null; i++)
+      await new Promise(resolve => setTimeout(resolve, 0))
     // The single deduplicated open still verifies its session with a Ping.
     await simulatePingAcceptOnWs(ws!, 'ch-1')
 
@@ -463,6 +470,8 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
     const p2 = cm.getOrOpenChannel('worker-2')
 
     await settleChannelSessions()
+    for (let i = 0; i < 1000 && ws === null; i++)
+      await new Promise(resolve => setTimeout(resolve, 0))
     // Each open verifies its own session with a Ping.
     await simulatePingAcceptOnWs(ws!, 'ch-1')
     await simulatePingAcceptOnWs(ws!, 'ch-2')

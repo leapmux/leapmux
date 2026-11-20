@@ -3,11 +3,13 @@ import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import { equals } from '@bufbuild/protobuf'
-import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
+import { createEffect, createSignal, getOwner, onCleanup, runWithOwner, Show } from 'solid-js'
+import { platformBridge } from '~/api/platformBridge'
 import { channelManager, setConfirmKeyPin } from '~/api/workerRpc'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
+import { TAURI_EVENT_TUNNELS_CHANGED } from '~/generated/contracts/desktop'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createIdentityCache } from '~/lib/identityCache'
 import { listAllWorkers } from '~/lib/listAllWorkers'
@@ -131,6 +133,40 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
     opts.getUserId() // track
     refetchWorkers()
   })
+
+  // The tunnel list is the sidecar's, and it changes behind the page's back: a
+  // tunnel stops on a Worker key mismatch with no request from here. A listing
+  // is also the only thing that reports the channel epoch a create is admitted
+  // against, so the list is read whenever the identity is known.
+  function refreshTunnels(): void {
+    const userId = opts.getUserId()
+    if (!userId)
+      return
+    void tunnelStore.refresh(userId).catch(err => log.warn('Failed to list the tunnels', err))
+  }
+
+  createEffect(() => {
+    opts.getUserId() // track
+    refreshTunnels()
+  })
+
+  // The native hint carries no tunnel data; re-reading is how the page learns
+  // what changed.
+  {
+    let disposed = false
+    onCleanup(() => {
+      disposed = true
+    })
+    const owner = getOwner()
+    platformBridge.onEvent(TAURI_EVENT_TUNNELS_CHANGED, refreshTunnels)
+      .then((unlisten) => {
+        if (disposed)
+          unlisten()
+        else if (owner)
+          runWithOwner(owner, () => onCleanup(unlisten))
+      })
+      .catch(err => log.warn('onEvent(tunnelsChanged) failed', err))
+  }
 
   // Register the E2EE channel callback (a module-level singleton in workerRpc).
   //

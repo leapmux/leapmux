@@ -149,6 +149,12 @@ describe('storageCleanup', () => {
       // The stored form is not a logical name.
       expect(getTtlForKey('leapmux:browser-prefs')).toBeNull()
     })
+
+    // The odd row out: the pin removal revision never expires, so its
+    // registered TTL says so rather than borrowing the pin map's year.
+    it('reports the key pin removal revision row as nonexpiring', async () => {
+      expect(getTtlForKey('key-pins-removal-revision')).toBe(Number.POSITIVE_INFINITY)
+    })
   })
 
   describe('isWrappedValue', () => {
@@ -317,10 +323,27 @@ describe('storageCleanup', () => {
     })
 
     it('keeps a registered row that has not expired', async () => {
-      localStorageSet('key-pins', { w1: 'pin' })
+      localStorageSet('preferred-external-app', 'vscode')
       await flushStorageWrites()
       await runCleanup()
-      expect(await readKvRow(storedKeyFor('key-pins')!)).toBeDefined()
+      expect(await readKvRow(storedKeyFor('preferred-external-app')!)).toBeDefined()
+    })
+
+    // The two pin rows carry DIFFERENT expiry policies, and the sweep is where
+    // they are enforced: the map expires like every other row, while the
+    // removal revision is exempt however stale its stored expiration looks --
+    // losing it would reset a counter that pending pin commits validate
+    // against.
+    it('expires a pin map and keeps the removal revision beside it', async () => {
+      const mapKey = accountStorageKey(ACCOUNT, 'key-pins')
+      const revisionKey = accountStorageKey(ACCOUNT, 'key-pins-removal-revision')
+      await seedRow(mapKey, { w1: { publicKeyHex: 'aa', firstSeen: 1 } }, -DAY_MS)
+      await seedRow(revisionKey, 7, -DAY_MS)
+
+      await runCleanup()
+
+      expect(await readKvRow(mapKey)).toBeUndefined()
+      expect((await readKvRow(revisionKey))?.v).toBe(7)
     })
 
     // The migration, such as it is: the move to scoped keys retires every flat

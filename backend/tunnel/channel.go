@@ -24,6 +24,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
 // sessionVerifyTimeout bounds the open-time Ping round trip (see OpenChannel). It
@@ -306,11 +307,16 @@ type OpenChannelOptions struct {
 // persistence (CLI: ~/.config/leapmux/control/<hub-host>/pins.json;
 // worker: <datadir>/cross_worker_pins.json).
 type KeyPinStore interface {
-	// Verify is called with the worker's freshly-fetched public keys.
-	// On first contact (no pin yet) the implementation records the
-	// pin (TOFU) and returns nil. On a mismatch it returns a non-nil
-	// error and OpenChannel aborts.
-	Verify(workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) error
+	// Resolve checks the presented keys against the durable pin and
+	// returns a commit function that publishes the result after the
+	// channel proves the session (after Ping). On first contact the
+	// commit records the pin. On a match the commit bumps LastUsedAt.
+	// On a mismatch Resolve returns an error and OpenChannel aborts.
+	//
+	// Only a stateless immutable pin policy may return a nil commit.
+	// A matching stateful resolve returns a revalidation callback even
+	// inside a timestamp throttle.
+	Resolve(ctx context.Context, workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (commit func(context.Context) error, err error)
 }
 
 // OpenChannel opens a new E2EE channel to the specified worker via Hub.
@@ -417,18 +423,20 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		return nil, fmt.Errorf("get worker handshake params: the hub announced an unusable key set: %w", err)
 	}
 
-	// TOFU key pinning — abort if the hub returns keys that don't match
-	// the recorded pin. First contact records the pin.
+	// TOFU key pinning — resolve the pin decision now, commit it after
+	// Ping proves the session. On first contact the commit records the
+	// pin. On a mismatch Resolve returns an error and we abort.
 	//
-	// The pin is recorded here, before any handshake proves the keys. When the
-	// hub announces keys that the worker does not hold, the handshake below
-	// fails and the pin stays, so every later open fails with a mismatch until
-	// the user removes the pin. https://github.com/leapmux/leapmux/issues/661
+	// The commit runs only after the encrypted Ping, so a handshake or
+	// Ping failure records no pin. https://github.com/leapmux/leapmux/issues/661
+	var pinCommit func(context.Context) error
 	if pinStore != nil {
 		keys := paramsResp.GetKeys()
-		if err := pinStore.Verify(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa()); err != nil {
+		commit, err := pinStore.Resolve(ctx, workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa())
+		if err != nil {
 			return nil, fmt.Errorf("worker key pin: %w", err)
 		}
+		pinCommit = commit
 	}
 
 	// 2. Perform Noise_NK handshake (message 1).
@@ -575,8 +583,31 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		return nil, fmt.Errorf("verify channel session: %w", err)
 	}
 
+	// Pin publication is an independent outcome once Ping has proved the
+	// session. A handshake or Ping failure records no pin.
+	// https://github.com/leapmux/leapmux/issues/661
+	if pinCommit != nil {
+		if err := checkOpenCanceled(ctx, lifetimeCtx, ch.Close); err != nil {
+			return nil, err
+		}
+		if ch.Closed() {
+			return nil, errors.New("open channel: channel closed during pin commit")
+		}
+		commitCtx, cancelCommit := ctxutil.WithLinkedCancel(ctx, ch.Context())
+		commitErr := pinCommit(commitCtx)
+		cancelCommit()
+		// A committed pin survives concurrent cancellation that prevents
+		// channel handout. Pin failure does not prevent handout either.
+		if commitErr != nil {
+			slog.Warn("tunnel pin commit failed", "channel_id", channelID, "worker_id", workerID, "error", commitErr)
+		}
+	}
+
 	if err := checkOpenCanceled(ctx, lifetimeCtx, ch.Close); err != nil {
 		return nil, err
+	}
+	if ch.Closed() {
+		return nil, errors.New("open channel: channel closed before handout")
 	}
 
 	slog.Info("tunnel E2EE channel opened", "channel_id", channelID, "worker_id", workerID)

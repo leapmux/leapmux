@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 	"sync"
 	"testing"
@@ -148,7 +149,7 @@ func TestTabCreationCLI_PassesPlacementAndUsesTheWorkerReceipt(t *testing.T) {
 						creation = calls[0].in.(*leapmuxv1.OpenTerminalRequest).GetCreation()
 					}
 					require.NotNil(t, creation)
-					assert.NotEmpty(t, creation.GetTabId())
+					assert.Regexp(t, regexp.MustCompile(`^[A-Za-z0-9]{48}$`), creation.GetTabId())
 					assert.Equal(t, creation.GetTabId(), resultID)
 					assert.Equal(t, "ws-1", creation.GetPlacement().GetWorkspaceId())
 					assert.Equal(t, "root-1", creation.GetPlacement().GetTileId())
@@ -210,7 +211,7 @@ func TestTabCreationCLI_PreservesAnUncertainWorkerOperation(t *testing.T) {
 			calls := dispatcher.recorded()
 			require.Len(t, calls, 1)
 			assert.Equal(t, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, calls[0].method)
-			assert.NotEmpty(t, calls[0].in.(*leapmuxv1.OpenAgentRequest).GetCreation().GetTabId())
+			assert.Regexp(t, regexp.MustCompile(`^[A-Za-z0-9]{48}$`), calls[0].in.(*leapmuxv1.OpenAgentRequest).GetCreation().GetTabId())
 			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
 		})
 	}

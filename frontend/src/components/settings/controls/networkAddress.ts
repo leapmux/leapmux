@@ -5,8 +5,8 @@
  * The hub's `internal/hub/listenset` owns both and is the enforcement point.
  * This mirrors them so the panel can tell the operator, BEFORE Apply, which of
  * the addresses they typed will fold into another one — without the preview,
- * an address they asked for is simply absent from "Serving now" a second later
- * and reads as one the hub dropped.
+ * an address they asked for is simply absent from "TCP listeners" a second
+ * later and reads as one the hub dropped.
  *
  * A mirror nobody checks stops matching silently, so the merge rule is pinned
  * by `testdata/listen_merge_conformance.json`, which both suites replay.
@@ -298,11 +298,12 @@ export interface MergeNote {
  * Every fold the hub will perform on this list, so the panel can state it
  * BEFORE Apply.
  *
- * The `-listen` address takes part as an ordinary entry, in both directions: a
- * wildcard row absorbs it, and it absorbs a row that it already covers. Only
+ * The `-listen` addresses take part as ordinary entries, in both directions: a
+ * wildcard row absorbs one, and one absorbs a row that it already covers. Only
  * the second half was reported before, and only for a literal `*` row, so an
  * operator who typed `0.0.0.0:4327` beside a `-listen` of `127.0.0.1:4327` saw
- * no note and then one address where they expected two.
+ * no note and then one address where they expected two. The bases are the
+ * WHOLE ordered list, so every `-listen` entry folds, not only the first.
  *
  * An entry folds into the FINAL absorber, never an intermediate one. With
  * `0.0.0.0:4327`, `*:4327` and `127.0.0.1:4327` on the list, the third folds
@@ -312,11 +313,9 @@ export interface MergeNote {
  * Two identical addresses cover each other, so the EARLIER one wins and the
  * later one reads as absorbed. That is the note a duplicated row deserves.
  */
-export function mergeNotes(defaultAddress: string, rows: AddressRow[]): MergeNote[] {
+export function mergeNotes(baseAddresses: string[], rows: AddressRow[]): MergeNote[] {
   const addresses = [
-    ...(defaultAddress === ''
-      ? []
-      : [defaultAddress]),
+    ...baseAddresses,
     ...rows.map(toAddress),
   ]
   // A half-typed row has no port to compare, and every one of them would then

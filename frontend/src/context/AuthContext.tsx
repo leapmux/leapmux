@@ -114,6 +114,30 @@ export interface AuthLoginResult {
  */
 export type UserAdoption = (user: User | undefined, verification?: EmailVerificationStatus) => Promise<void>
 
+/**
+ * One adopted identity's LIFETIME, as the scope a worker trust decision
+ * captures.
+ *
+ * Distinct from the `authGeneration` write fence, which moves on every local
+ * write. This scope advances only when the document adopts a different
+ * identity: a sign-out, a sign-in (including a sign-in as the same user, which
+ * is a new lifetime), or an adopted user id that changed. A same-user refresh,
+ * an elevation window and a verification cooldown leave it alone.
+ *
+ * A consumer captures one `WorkerTrustScope` before it acts and revalidates
+ * `generation` (and `signal.aborted`) after every wait: a scope that retired
+ * mid-operation cancelled its `signal` and must not have its decision
+ * published into the successor's world.
+ */
+export interface WorkerTrustScope {
+  /** The adopted user, or null while signed out. */
+  userId: string | null
+  /** Monotonic identity generation; one per lifetime. */
+  generation: number
+  /** Aborted when this scope retires. */
+  signal: AbortSignal
+}
+
 export interface AuthState {
   user: () => User | null
   /** The hydrated browser-storage identity published with `user`. */
@@ -235,6 +259,12 @@ export interface AuthState {
   reloadUser: () => Promise<boolean>
   refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
+  /**
+   * The current identity-lifetime scope, from one snapshot: the adopted user
+   * ID, the identity generation and the cancellation signal together. See
+   * {@link WorkerTrustScope} for what advances it and what must not.
+   */
+  workerTrustScope: () => WorkerTrustScope
 }
 
 const AuthContext = createStableContext<AuthState>('context/AuthContext')
@@ -362,6 +392,39 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /**
+   * The identity-lifetime scope: a distinct counter from `authGeneration`,
+   * which is a write fence over the ACCOUNT STATE. This one marks IDENTITY
+   * LIFETIMES only -- see {@link WorkerTrustScope}. `setUser` is the single
+   * writer: it retires the previous scope before the storage namespace moves
+   * or the identity signal publishes, and installs the successor in the same
+   * synchronous step.
+   */
+  let trustGeneration = 0
+  let trustController = new AbortController()
+  const initialTrustScope: WorkerTrustScope = {
+    userId: null,
+    generation: 0,
+    signal: trustController.signal,
+  }
+  const [trustScope, setTrustScopeSignal] = createSignal<WorkerTrustScope>(initialTrustScope)
+
+  /** Abort the live scope's signal. Its decisions are now cancellations. */
+  const retireWorkerTrustScope = () => {
+    trustController.abort()
+  }
+
+  /** Install the next lifetime. The caller retires the previous scope first. */
+  const installWorkerTrustScope = (userId: string | null) => {
+    trustGeneration++
+    trustController = new AbortController()
+    setTrustScopeSignal({
+      userId,
+      generation: trustGeneration,
+      signal: trustController.signal,
+    })
+  }
+
+  /**
    * The one writer of the identity, and the one place the storage namespace
    * moves with it.
    *
@@ -370,6 +433,14 @@ export const AuthProvider: ParentComponent = (props) => {
    * An effect would be too late: `AuthGuard`'s `Show` is a render effect, and a
    * render effect runs ahead of a user effect in the same flush, so `AppShell`
    * could mount and read the previous account's tab state.
+   *
+   * The identity-lifetime scope moves in the same step: the previous scope
+   * retires BEFORE the namespace switches or the identity publishes, and the
+   * successor installs before the signal notifies. `opts.identityTransition`
+   * marks the calls that are an identity CHANGE whatever the user IDs say --
+   * a sign-out and a sign-in, including a sign-in as the same user -- because
+   * each is a new lifetime. Everything else advances the scope only when the
+   * adopted user ID actually differs.
    *
    * ASYNCHRONOUS, and only for a non-null user. The synchronous storage tier is
    * an in-memory mirror of an IndexedDB-backed store, so the rows have to be
@@ -396,7 +467,7 @@ export const AuthProvider: ParentComponent = (props) => {
    * of a User the app cannot key anything by, and it routes to `/login` -- with
    * the fault recorded, because a hub that answers this way has a real bug.
    */
-  const setUser = async (next: User | null): Promise<boolean> => {
+  const setUser = async (next: User | null, opts: { identityTransition?: boolean } = {}): Promise<boolean> => {
     const generation = ++authGeneration
     const outgoingAccount = identity()?.storageAccount ?? null
     if (next && !next.id) {
@@ -404,6 +475,14 @@ export const AuthProvider: ParentComponent = (props) => {
       next = null
     }
     let account: StorageAccount | null = null
+    // A flagged adoption of a USER is a new lifetime whatever the ids say -- a
+    // sign-in as the same user (a bookmarked `/login` over a live session)
+    // starts one. A flagged adoption of nobody is a sign-out, which is already
+    // an id change when there was somebody to sign out, and a no-op when there
+    // was not. Everything else advances only when the adopted user changed.
+    const nextId = next?.id ?? null
+    const advanceScope = nextId !== trustScope().userId
+      || (opts.identityTransition === true && next !== null)
     if (next) {
       account = storageAccountFor(hubOrigin(), next.id)
       const prepared = await prepareStorageAccount(account)
@@ -415,8 +494,12 @@ export const AuthProvider: ParentComponent = (props) => {
         return false
       if (!prepared.commit())
         return false
-      setStorageAccount(account)
     }
+    // Retire the old trust lifetime before the namespace or identity moves.
+    if (advanceScope)
+      retireWorkerTrustScope()
+    if (next && account)
+      setStorageAccount(account)
     if (!next && outgoingAccount) {
       for (const listener of [...accountEndListeners]) {
         try {
@@ -427,6 +510,8 @@ export const AuthProvider: ParentComponent = (props) => {
         }
       }
     }
+    if (advanceScope)
+      installWorkerTrustScope(nextId)
     setIdentity(next && account
       ? { user: next, storageAccount: account }
       : null)
@@ -479,8 +564,9 @@ export const AuthProvider: ParentComponent = (props) => {
   const clearAuthUser = () => {
     advanceAuthSessionEpoch()
     // No await: the null branch takes none, so the signal still moves in this
-    // turn. See `setUser`.
-    void setUser(null)
+    // turn. See `setUser`. A sign-out is an identity transition: the scope the
+    // previous identity held retires even when nobody adopts the successor.
+    void setUser(null, { identityTransition: true })
     // A recovery reads the account of a session, and this session has ended.
     setSignInRecovery(null)
     setVerificationResendAvailableAt(undefined)
@@ -613,8 +699,11 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const adoptSignedInUser = async (u: User): Promise<boolean> => {
     // See `adoptCurrentUser`: nothing below may run for an identity a newer one
-    // superseded during the hydration await.
-    if (!await setUser(u))
+    // superseded during the hydration await. A sign-in is an identity
+    // transition even when the user id is the one already adopted -- a
+    // bookmarked `/login` over a live session starts a NEW lifetime -- so the
+    // scope advances and the previous one retires.
+    if (!await setUser(u, { identityTransition: true }))
       return false
     setElevationExpiresAt(undefined)
     enterShell()
@@ -726,7 +815,9 @@ export const AuthProvider: ParentComponent = (props) => {
       // below, as a report without one does.
     }
     setElevationExpiresAt(undefined)
-    void setUser(null)
+    // The identity transition happens at once -- the previous identity and its
+    // lifetime scope go -- and sign-in recovery starts.
+    void setUser(null, { identityTransition: true })
     setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
     setBootstrapError(null)
     setSignInRecovery({
@@ -1083,6 +1174,7 @@ export const AuthProvider: ParentComponent = (props) => {
     bootstrapError,
     retryBootstrap,
     isAuthenticated: () => user() !== null,
+    workerTrustScope: () => trustScope(),
   }
 
   return (

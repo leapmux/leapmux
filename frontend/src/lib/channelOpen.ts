@@ -113,7 +113,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
 
     // 2. Key pinning (TOFU model) — resolve the pin now, record it once the channel
     //    is proven (see commitPin below).
-    let commitPin: () => void
+    let commitPin: () => Promise<void>
     try {
       commitPin = await this.deps.keyPins.resolve(workerId, keyBundle)
     }
@@ -241,8 +241,11 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         // 5. Prove the session decrypts both ways before publishing as verified.
         await this.deps.verifySession(channel)
 
-        // Pin only after the session is proven — never pin an unproven key.
-        commitPin()
+        // Pin only after the session is proven — never pin an unproven key. The
+        // commit is awaited and can fail (a pin decision overtaken by a removal
+        // or a replacement, or a refused write); the catch below then rolls the
+        // channel back rather than handing out a channel whose pin never landed.
+        await commitPin()
       }
       catch (err) {
         abandonHandshake()

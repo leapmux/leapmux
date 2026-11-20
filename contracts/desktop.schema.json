@@ -37,12 +37,13 @@
     "tauriEvents": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences"],
+      "required": ["sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences", "tunnelsChanged"],
       "properties": {
         "sidecarLog": { "$ref": "#/$defs/tauriEvent" },
         "browserAuthResult": { "$ref": "#/$defs/tauriEvent" },
         "menuShowAbout": { "$ref": "#/$defs/tauriEvent" },
-        "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" }
+        "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" },
+        "tunnelsChanged": { "$ref": "#/$defs/tauriEvent" }
       }
     },
     "ipcHeaders": {

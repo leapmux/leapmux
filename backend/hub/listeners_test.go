@@ -132,9 +132,9 @@ func TestFreePorts_ReturnsDistinctWildcardBindablePortsOutsideTheEphemeralRange(
 }
 
 // newTestSet builds a listener set over a server that answers "ok", with the
-// base already bound. It returns the set and the channel a listener that dies
-// unasked reports on.
-func newTestSet(t *testing.T, baseAddr string) (*listenerSet, chan error) {
+// given base addresses already bound, in order. It returns the set and the
+// channel a listener that dies unasked reports on.
+func newTestSet(t *testing.T, baseAddrs ...string) (*listenerSet, chan error) {
 	t.Helper()
 	server := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
@@ -144,9 +144,8 @@ func newTestSet(t *testing.T, baseAddr string) (*listenerSet, chan error) {
 	}
 
 	var bound []baseBinding
-	if baseAddr != "" {
+	for _, baseAddr := range baseAddrs {
 		parsed := listenset.MustParse(baseAddr)
-		var err error
 		ln, err := net.Listen("tcp", parsed.DialAddr())
 		require.NoError(t, err)
 		bound = append(bound, baseBinding{ln: ln, addr: parsed})
@@ -262,22 +261,42 @@ func TestListenerSet_RemovingAnExtraStopsItServing(t *testing.T) {
 
 // The requirement's own example: an operator asks for every interface on the
 // port -listen already holds, so the specific socket must be released before
-// the wildcard can take it.
+// the wildcard can take it. A second base on its own port keeps its socket,
+// and the base report keeps both in bind order with their ports through the
+// merge.
 func TestListenerSet_AWildcardMergesTheBaseAddress(t *testing.T) {
-	port := freePort(t)
-	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(port))
+	ports := freePorts(t, 2)
+	port, otherPort := ports[0], ports[1]
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(port), "127.0.0.1:"+strconv.Itoa(otherPort))
 	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(port))
+	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(otherPort))
 
 	require.NoError(t, set.Apply([]listenset.Addr{listenset.MustParse("*:" + strconv.Itoa(port))}))
 
-	// ONE socket now, and it still answers on the address -listen gave.
-	assert.Equal(t, []string{"*:" + strconv.Itoa(port)}, boundStrings(set))
+	// ONE socket on the merged port now, and it still answers on the address
+	// -listen gave. The other base keeps its own socket.
+	assert.ElementsMatch(t, []string{
+		"*:" + strconv.Itoa(port),
+		"127.0.0.1:" + strconv.Itoa(otherPort),
+	}, boundStrings(set))
 	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(port))
+	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(otherPort))
 
-	bound := set.Bound()
-	require.Len(t, bound, 1)
-	assert.Equal(t, SourceMerged, bound[0].Source,
+	sources := map[string]AddressSource{}
+	for _, b := range set.Bound() {
+		sources[b.Addr.String()] = b.Source
+	}
+	assert.Equal(t, SourceMerged, sources["*:"+strconv.Itoa(port)],
 		"the panel must be able to say the -listen address is served by this one, not that it is gone")
+	assert.Equal(t, SourceListen, sources["127.0.0.1:"+strconv.Itoa(otherPort)],
+		"the untouched base keeps its own report")
+
+	// The base list is the merge INPUT, not the live set: folding one base
+	// into the wildcard must not move, drop or renumber either entry.
+	assert.Equal(t, []string{
+		"127.0.0.1:" + strconv.Itoa(port),
+		"127.0.0.1:" + strconv.Itoa(otherPort),
+	}, set.BaseTCPAddresses(), "stable base order and assigned ports after a merge")
 }
 
 // A failure must leave the hub exactly as it was. The base is what this
@@ -485,7 +504,7 @@ func TestListenerSet_PrimaryListenAddr(t *testing.T) {
 	t.Run("a desktop hub gains an address from its extras", func(t *testing.T) {
 		port := freePort(t)
 		// No base at all: the NoTCP desktop.
-		set, _ := newTestSet(t, "")
+		set, _ := newTestSet(t)
 		assert.Equal(t, "", set.PrimaryListenAddr(), "no TCP address is the desktop's ordinary state")
 
 		require.NoError(t, set.Apply([]listenset.Addr{
@@ -541,9 +560,11 @@ func TestListenerSet_UnservedAsksCoverageNotIdentity(t *testing.T) {
 }
 
 // -listen may ask for port 0 (a harness picking a free port). Every surface
-// must then report the port a client can actually connect to, not ":0".
+// must then report the port a client can actually connect to, not ":0". Two
+// identical requests bind two sockets and keep their own assigned ports, in
+// bind order.
 func TestListenerSet_ResolvesAnEphemeralPort(t *testing.T) {
-	set, _ := newTestSet(t, "127.0.0.1:0")
+	set, _ := newTestSet(t, "127.0.0.1:0", "127.0.0.1:0")
 
 	addr := set.PrimaryListenAddr()
 	host, port, err := net.SplitHostPort(addr)
@@ -551,12 +572,23 @@ func TestListenerSet_ResolvesAnEphemeralPort(t *testing.T) {
 	assert.Equal(t, "127.0.0.1", host)
 	assert.NotEqual(t, "0", port, "the chosen port must replace the request for one")
 	requireAnswers(t, addr)
-	assert.Equal(t, []string{addr}, boundStrings(set))
 
-	// And the resolved address is the set's identity, so a later apply
-	// recognises it as already bound rather than binding it twice.
+	bases := set.BaseTCPAddresses()
+	require.Len(t, bases, 2, "one entry per request occurrence")
+	assert.Equal(t, addr, bases[0], "the first base is the primary, in bind order")
+	otherHost, otherPort, err := net.SplitHostPort(bases[1])
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", otherHost)
+	assert.NotEqual(t, "0", otherPort)
+	assert.NotEqual(t, bases[0], bases[1], "each occurrence keeps its own assigned port")
+	requireAnswers(t, bases[1])
+	assert.ElementsMatch(t, bases, boundStrings(set))
+
+	// And the resolved addresses are the set's identity, so a later apply
+	// recognises them as already bound rather than binding them twice.
 	require.NoError(t, set.Apply(nil))
-	assert.Equal(t, []string{addr}, boundStrings(set))
+	assert.Equal(t, bases, set.BaseTCPAddresses(), "the base list is stable across an apply")
+	assert.ElementsMatch(t, bases, boundStrings(set))
 	requireAnswers(t, addr)
 }
 

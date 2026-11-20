@@ -94,9 +94,23 @@ func NewApp(binaryHash string) *App {
 		binaryHash:       binaryHash,
 		browserAuthClock: quartz.NewReal(),
 	}
+	// A mismatch transition stops a tunnel inside the manager; the hint that
+	// tells the webview to re-read the tunnel list rides the app's event sink.
+	app.tunnels.onChanged = app.emitTunnelsChanged
 	app.startSolo = app.defaultStartSolo
 	app.startup()
 	return app
+}
+
+// emitTunnelsChanged publishes the TunnelsChangedEvent hint: a native tunnel
+// status changed (a tunnel stopped with a Worker key mismatch). It carries no
+// data -- the webview re-reads the tunnel list to learn what changed.
+func (a *App) emitTunnelsChanged() {
+	a.EmitEvent(&desktoppb.Event{
+		Payload: &desktoppb.Event_TunnelsChanged{
+			TunnelsChanged: &desktoppb.TunnelsChangedEvent{},
+		},
+	})
 }
 
 func (a *App) startup() {
@@ -946,8 +960,11 @@ func (a *App) DeleteTunnel(tunnelID string) error {
 	return a.tunnels.DeleteTunnel(tunnelID)
 }
 
-func (a *App) ListTunnels() []TunnelInfo {
-	return a.tunnels.ListTunnels()
+// ListTunnels reports the current channel epoch and the tunnels owned by
+// expectedUserID from one manager snapshot. See TunnelManager.ListTunnels for
+// the ownership and snapshot rules.
+func (a *App) ListTunnels(expectedUserID string) (string, []TunnelInfo, error) {
+	return a.tunnels.ListTunnels(expectedUserID)
 }
 
 // ResetTunnels tears down every tunnel and invalidates the pooled E2EE channels

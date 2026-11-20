@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { startMultiWorkerHarness } from './multiWorker'
 import { spawnTestProcess } from './processRegistry'
-import { findFreePort, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubStart } from './server'
+import { findFreePort, hubUrlFromStateJson, resolvedHubListenAddresses, resolvedHubTCPFromStateJson, waitForHubStart } from './server'
 import { reportStartupFailure } from './serverOutput'
 
 let root: string
@@ -62,6 +62,7 @@ beforeEach(() => {
     return {
       hubUrl: hubUrlFromStateJson(state),
       listen: resolvedHubTCPFromStateJson(state),
+      ...resolvedHubListenAddresses(state),
     }
   })
   vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
