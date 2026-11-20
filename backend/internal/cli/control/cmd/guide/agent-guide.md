@@ -17,10 +17,10 @@ to list the Worker's.
 
 ## Rules that keep you safe
 
-- A command that changes or removes an object needs that object as its first
-  argument. Nothing changes your own tab unless you write `self`.
-- `tab close`, `tile close` and `workspace delete` refuse to remove the tab
-  that runs the command. `--allow-self` overrides that.
+- A command that changes or removes an object needs an explicit target. Use
+  `self` to select your own tab.
+- `tab close`, `tile close`, `tile remove-grid` and `workspace delete` refuse
+  to remove the tab that runs the command. `--allow-self` overrides that.
 - `tab close` refuses to close a tab whose agent works or whose terminal runs a
   process. `--allow-busy` overrides that.
 - Write a text that starts with `-` after `--`, so that a misspelled flag never
@@ -35,6 +35,7 @@ An argument such as `<agent>`, `<tab>` or `<workspace>` takes one of these:
 - A full id.
 - A unique prefix of an id, at least 4 characters long. A table prints the
   first 8 characters of each id, and they work as a prefix.
+- `id:<id>` selects a literal id, including a short id or the literal `self`.
 - `title:<exact title>` for a tab or a workspace.
 - `name:<name>` for a worker.
 - `self` for the tab, tile, workspace or worker that runs the command.

@@ -80,17 +80,19 @@ The first argument of most commands selects the object it acts on. A target take
 
 | Form | Example | Selects |
 | --- | --- | --- |
-| A full id | `87a19d5f-4838-4e34-9f0f-56130f0a62b1` | That object. It costs no extra request. |
+| A full id | `Q0vNx01dbAo1BL3bTGB4uK6gGI3FmtgV6OlhMGB4YY6PRMhh` | That object. It needs no list to resolve the id. |
 | A unique id prefix of 4 or more characters | `87a1` | The one object whose id starts with it. |
+| `id:<id>` | `id:self` | The object with the literal id, even when the id is short or has the same spelling as `self`. |
 | `title:<title>` | `"title:Release 1.4"` | The tab or workspace with exactly that title. |
 | `name:<name>` | `name:build-box` | The Worker with exactly that name. |
 | `self` | `self` | The tab, tile, workspace or Worker of the LeapMux tab that runs the command. |
 
-Each form other than a full id costs one request that lists the objects of its kind. A form that matches nothing fails with `not_found`. A form that matches more than one object fails with `ambiguous_target`, and the error lists every candidate with its full id and its title:
+A prefix lists visible objects of its kind. An exact id in that list takes precedence. Title and name searches can also read metadata from the Workers. A form that matches nothing fails with `not_found`. A form that matches more than one object fails with `ambiguous_target` and lists the candidates with their full ids and titles.
 
 ```text
 $ leapmux control tab get 87
-error: usage: "87" is too short for a tab id; type at least 4 characters
+error: usage: "87" is too short for a tab id prefix; type at least 4 characters
+hint: use "id:<id>" to select a literal id
 hint: use "self" for your own tab, or "title:<title>"
 $ leapmux control agent get title:Review
 error: ambiguous_target: 2 agents match the title "Review"
@@ -101,7 +103,7 @@ candidates:
 hint: type more characters of the id, or the full id
 ```
 
-**A command that only reads defaults to `self`.** Inside an agent tab, `leapmux control agent get` shows that agent. **A command that changes or removes an object needs its target**, so a bare command never acts on the tab that runs it: `leapmux control tab close` fails, and `leapmux control tab close self` closes the calling tab.
+**A command that only reads defaults to `self`.** Inside an agent tab, `leapmux control agent get` shows that agent. **A command that changes or removes an object needs an explicit target.** Use `leapmux control tab close self --allow-self` to authorize closing the calling tab.
 
 `self` follows the kind of the command. `agent ...` commands see the calling tab only when it is an agent tab, and `terminal ...` commands only when it is a terminal. Inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), `self` on a `terminal` command is the panel's terminal.
 

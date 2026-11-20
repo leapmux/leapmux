@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // cliOutcome is what one run of `leapmux control ...` printed, and its exit
@@ -166,8 +167,8 @@ func failureOf(t *testing.T, err error) failureEnvelope {
 
 // fullTestID pads a readable test id to the length of a full id, so a
 // command takes it as a full id and lists nothing to resolve it.
-func fullTestID(id string) string {
-	return id + strings.Repeat("0", 40-len(id))
+func fullTestID(prefix string) string {
+	return prefix + strings.Repeat("0", id.GeneratedLength-len(prefix))
 }
 
 // captureEmit runs fn and returns the code and the message of the envelope

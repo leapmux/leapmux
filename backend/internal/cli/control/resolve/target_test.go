@@ -119,6 +119,57 @@ func TestCanonical_AFullIDCostsNoCall(t *testing.T) {
 	assert.Zero(t, f.calls)
 }
 
+func TestCanonical_ResolvesLongPrefixes(t *testing.T) {
+	const generatedID = "Q0vNx01dbAo1BL3bTGB4uK6gGI3FmtgV6OlhMGB4YY6PRMhh"
+	const uuid = "87a19d5f-4838-4e34-9f0f-56130f0a62b1"
+	for _, tc := range []struct {
+		name    string
+		id      string
+		lengths []int
+	}{
+		{name: "generated", id: generatedID, lengths: []int{31, 32, 35, 36, 47}},
+		{name: "UUID", id: uuid, lengths: []int{31, 32, 35}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, length := range tc.lengths {
+				f := &fakeListing{tabs: []*leapmuxv1.WorkspaceTab{tab(tc.id, leapmuxv1.TabType_TAB_TYPE_AGENT)}}
+				input := tc.id[:length]
+				got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, input)
+				require.NoError(t, err, "%d-character prefix", length)
+				assert.Equal(t, tc.id, got.ID, "%d-character prefix", length)
+				assert.Equal(t, 1, f.calls, "%d-character prefix", length)
+			}
+		})
+	}
+}
+
+func TestCanonical_ExactCustomIDWinsOverALongerMatch(t *testing.T) {
+	f := &fakeListing{tabs: []*leapmuxv1.WorkspaceTab{
+		tab("build-2", leapmuxv1.TabType_TAB_TYPE_AGENT),
+		tab("build", leapmuxv1.TabType_TAB_TYPE_AGENT),
+	}}
+	target, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "build")
+	require.NoError(t, err)
+	assert.Equal(t, "build", target.ID)
+	assert.Equal(t, 1, f.calls)
+	assert.Zero(t, f.titleCalls)
+}
+
+func TestCanonical_LiteralIDCanDisambiguateReservedWords(t *testing.T) {
+	for _, literal := range []string{"a", "self"} {
+		f := sampleListing()
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id:"+literal)
+		require.NoError(t, err)
+		assert.Equal(t, literal, got.ID)
+		assert.False(t, got.Self)
+		assert.Zero(t, f.calls)
+	}
+	f := sampleListing()
+	_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id:")
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	assert.Zero(t, f.calls)
+}
+
 func TestCanonical_AUniquePrefixResolvesWithItsRow(t *testing.T) {
 	f := sampleListing()
 	got, err := resolve.Canonical(context.Background(), f.listing(), resolve.KindTab, "4cbb")
@@ -181,34 +232,34 @@ func TestCanonical_AShortPrefixHintsTheFormsOfItsKind(t *testing.T) {
 		_, err := resolve.Canonical(context.Background(), f.listing(), kind, "87")
 		e := cli.FromError(err)
 		assert.Equal(t, cli.CodeUsage, e.Code, "%s", kind)
-		assert.Equal(t, []string{want}, e.Hints, "%s", kind)
+		assert.Equal(t, []string{`use "id:<id>" to select a literal id`, want}, e.Hints, "%s", kind)
 	}
 }
 
 // Kind.Help states exactly the forms that Canonical reads, for the help of a
 // target argument.
 func TestKind_HelpStatesTheFormsThatCanonicalReads(t *testing.T) {
-	assert.Equal(t, `A tab id, a unique prefix of 4 or more characters of one, "title:<title>", or "self" for the tab that runs this command.`,
+	assert.Equal(t, `A tab id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>", or "self" for the tab that runs this command.`,
 		resolve.KindTab.Help())
-	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "title:<title>", or "self" for the agent tab that runs this command.`,
+	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>", or "self" for the agent tab that runs this command.`,
 		resolve.KindAgent.Help())
-	assert.Equal(t, `A terminal id, a unique prefix of 4 or more characters of one, "title:<title>", or "self" for the terminal that runs this command.`,
+	assert.Equal(t, `A terminal id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>", or "self" for the terminal that runs this command.`,
 		resolve.KindTerminal.Help())
-	assert.Equal(t, `A workspace id, a unique prefix of 4 or more characters of one, "title:<title>", or "self" for the workspace of the tab that runs this command.`,
+	assert.Equal(t, `A workspace id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>", or "self" for the workspace of the tab that runs this command.`,
 		resolve.KindWorkspace.Help())
-	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command.`,
+	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, or "self" for the tile of the tab that runs this command.`,
 		resolve.KindTile.Help(), "a tile has no title, so its help offers none")
-	assert.Equal(t, `A worker id, a unique prefix of 4 or more characters of one, "name:<name>", or "self" for the worker of the tab that runs this command.`,
+	assert.Equal(t, `A worker id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "name:<name>", or "self" for the worker of the tab that runs this command.`,
 		resolve.KindWorker.Help())
 }
 
 // Kind.HelpWithoutSelf states the same forms as Help except "self", for a
 // command that refuses the caller's own object.
 func TestKind_HelpWithoutSelfOffersNoSelf(t *testing.T) {
-	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, or "title:<title>".`,
+	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, or "title:<title>".`,
 		resolve.KindAgent.HelpWithoutSelf())
-	assert.Equal(t, `A tile id or a unique prefix of 4 or more characters of one.`,
-		resolve.KindTile.HelpWithoutSelf(), "two forms join with a bare \"or\"")
+	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, or "id:<id>" for a literal id.`,
+		resolve.KindTile.HelpWithoutSelf())
 }
 
 func TestCanonical_AnEmptyTargetIsAUsageError(t *testing.T) {

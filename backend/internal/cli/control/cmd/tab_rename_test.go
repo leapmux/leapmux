@@ -227,6 +227,11 @@ func TestControlRejectsExplicitBlankTargetsBeforeCalling(t *testing.T) {
 		{name: "placement", args: []string{"terminal", "open", "--workspace="}},
 		{name: "hub empty", args: []string{"tab", "rename", "self", "Changed", "--hub="}},
 		{name: "hub whitespace", args: []string{"tab", "get", "--hub", " \t"}},
+		{name: "relative open", args: []string{"terminal", "open", "--before="}},
+		{name: "empty relative move", args: []string{"tab", "move", "self", "--tile", "other", "--after="}},
+		{name: "relative move", args: []string{"tab", "move", "self", "--tile", "other", "--after= \t"}},
+		{name: "queue relative", args: []string{"agent", "queue", "move", "self", "queued", "--before="}},
+		{name: "queue target", args: []string{"agent", "queue", "remove", "self", ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hub, disp := startSelfRenameIPC(t)

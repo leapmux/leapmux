@@ -20,7 +20,7 @@ var targetArguments = map[string]resolve.Kind{
 	"worker":    resolve.KindWorker,
 }
 
-var scopeTargetFlags = []string{"hub", "workspace", "worker", "tile"}
+var scopeTargetFlags = []string{"hub", "workspace", "worker", "tile", "before", "after"}
 
 func configureTargetArguments(root *cobra.Command) {
 	help := map[string]string{"text": `The text, or "-" to read it from standard input.`}
@@ -53,7 +53,7 @@ func rejectBlankTargets(cmd *cobra.Command, specs []cli.ArgSpec, args []string) 
 		// The argument count was validated. Extra values belong to the last
 		// argument, which is variadic in that case.
 		spec := specs[min(i, len(specs)-1)]
-		if _, isTarget := targetArguments[spec.Name]; isTarget && strings.TrimSpace(value) == "" {
+		if _, isTarget := targetArguments[spec.Name]; (isTarget || spec.Name == "input") && strings.TrimSpace(value) == "" {
 			return cli.Usagef("the %s is empty", spec.Name)
 		}
 	}

@@ -48,11 +48,12 @@ func NewCommand() *cobra.Command {
 	)
 	root.Long = `Control LeapMux from a script or from an agent.
 
-A command acts on the object that its first argument gives. An object is a
-full id, a unique id prefix of at least 4 characters, "title:<title>" for a
-tab or a workspace, "name:<name>" for a worker, or "self" for the tab, tile,
-workspace or worker that runs the command. A command that only reads defaults
-to "self"; a command that changes or removes an object needs it explicitly.
+A command acts on the object that its first argument gives. Use a full id, a
+unique id prefix of at least 4 characters, or "id:<id>" for a literal id.
+"title:<title>" selects a tab or workspace. "name:<name>" selects a worker.
+"self" selects the tab, tile, workspace or worker that runs the command.
+A command that only reads defaults to "self". A command that changes or
+removes an object needs an explicit target.
 
 Without --hub, the CLI reaches the hub through the socket of the LeapMux tab
 that runs it. Outside a tab, it uses $LEAPMUX_HUB, then the default hub of

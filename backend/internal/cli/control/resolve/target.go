@@ -7,8 +7,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
@@ -101,6 +104,7 @@ func (k Kind) forms() []string {
 	forms := []string{
 		fmt.Sprintf("%s %s id", article, k),
 		fmt.Sprintf("a unique prefix of %d or more characters of one", MinPrefixLength),
+		`"id:<id>" for a literal id`,
 	}
 	if named := k.namedForm(); named != "" {
 		forms = append(forms, fmt.Sprintf("%q", named))
@@ -108,12 +112,9 @@ func (k Kind) forms() []string {
 	return forms
 }
 
-// joinWithOr joins two items as "a or b", and more as "a, b, or c".
+// joinWithOr joins the available selector forms with commas and a final "or".
 func joinWithOr(items []string) string {
 	last := len(items) - 1
-	if last == 1 {
-		return items[0] + " or " + items[1]
-	}
 	return strings.Join(items[:last], ", ") + ", or " + items[last]
 }
 
@@ -136,6 +137,8 @@ const (
 	// SelfTarget selects the caller's own object: the tab, tile, workspace
 	// or Worker of the LeapMux tab that runs the command.
 	SelfTarget = "self"
+	// literalIDPrefix selects a full id, including one that spells a reserved word.
+	literalIDPrefix = "id:"
 	// titlePrefix selects a tab or a workspace by its exact title.
 	titlePrefix = "title:"
 	// namePrefix selects a Worker by its exact name.
@@ -145,11 +148,6 @@ const (
 // MinPrefixLength is the shortest id prefix that a target accepts. A shorter
 // one matches too many ids to be useful.
 const MinPrefixLength = 4
-
-// fullIDLength is the length from which a target is taken as a full id. The
-// ids are 48-character nanoids or 36-character UUIDs, and a full id costs
-// no list call.
-const fullIDLength = 32
 
 // Target is a target that Canonical resolved to a full id.
 type Target struct {
@@ -224,6 +222,7 @@ func (l Listing) SelfTabID(kind Kind) string {
 //   - A full id. It costs no call; the command that uses it reports an id
 //     that does not exist.
 //   - A unique prefix of an id, of at least MinPrefixLength characters.
+//   - "id:<id>" for a literal id that may be short or spell a reserved word.
 //   - "title:<exact title>" for a tab or a workspace.
 //   - "name:<exact name>" for a Worker.
 //   - "self" for the caller's own object.
@@ -238,20 +237,36 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 		return Target{}, cli.Usagef("the %s is empty", kind)
 	case input == SelfTarget:
 		return l.self(ctx, kind)
+	case strings.HasPrefix(input, literalIDPrefix):
+		literalID := strings.TrimSpace(strings.TrimPrefix(input, literalIDPrefix))
+		if literalID == "" {
+			return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
+		}
+		return Target{ID: literalID}, nil
 	case strings.HasPrefix(input, titlePrefix):
 		return l.byTitle(ctx, kind, strings.TrimPrefix(input, titlePrefix))
 	case strings.HasPrefix(input, namePrefix):
 		return l.byName(ctx, kind, strings.TrimPrefix(input, namePrefix))
-	case len(input) >= fullIDLength:
+	case isCompleteTargetID(kind, input):
 		return Target{ID: input}, nil
 	case len(input) < MinPrefixLength:
-		e := cli.Usagef("%q is too short for a %s id; type at least %d characters", input, kind, MinPrefixLength)
+		e := cli.Usagef("%q is too short for a %s id prefix; type at least %d characters", input, kind, MinPrefixLength).
+			WithHint(`use "id:<id>" to select a literal id`)
 		if named := kind.namedForm(); named != "" {
 			return Target{}, e.WithHint(`use "self" for your own %s, or %q`, kind, named)
 		}
 		return Target{}, e.WithHint(`use "self" for your own %s`, kind)
 	}
 	return l.byPrefix(ctx, kind, input)
+}
+
+// isCompleteTargetID recognizes the direct forms. A UUID-shaped tab id is
+// distinct from a 36-character prefix of a generated id.
+func isCompleteTargetID(kind Kind, input string) bool {
+	if len(input) == id.GeneratedLength {
+		return true
+	}
+	return kind.IsTab() && len(input) == 36 && uuid.Validate(input) == nil
 }
 
 func (l Listing) self(ctx context.Context, kind Kind) (Target, error) {
@@ -310,6 +325,9 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 		}
 		var matches []*leapmuxv1.WorkspaceTab
 		for _, t := range tabs {
+			if t.GetTab().GetTabId() == prefix {
+				return Target{ID: prefix, Tab: t}, nil
+			}
 			if strings.HasPrefix(t.GetTab().GetTabId(), prefix) {
 				matches = append(matches, t)
 			}
@@ -325,6 +343,9 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 		}
 		var matches []cli.Candidate
 		for _, w := range workspaces {
+			if w.GetId() == prefix {
+				return Target{ID: prefix}, nil
+			}
 			if strings.HasPrefix(w.GetId(), prefix) {
 				matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "workspace", Title: w.GetTitle()})
 			}
@@ -334,6 +355,9 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 		tiles, err := l.Tiles(ctx)
 		if err != nil {
 			return Target{}, err
+		}
+		if _, exists := tiles[prefix]; exists {
+			return Target{ID: prefix}, nil
 		}
 		var matches []cli.Candidate
 		for id, nodeKind := range tiles {
@@ -349,6 +373,9 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 		}
 		var matches []cli.Candidate
 		for _, w := range workers {
+			if w.GetId() == prefix {
+				return Target{ID: prefix}, nil
+			}
 			if strings.HasPrefix(w.GetId(), prefix) {
 				matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker"})
 			}

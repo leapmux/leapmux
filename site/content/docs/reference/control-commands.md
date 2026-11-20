@@ -181,7 +181,7 @@ leapmux control workspace get [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 ```sh
 leapmux control workspace get
@@ -215,7 +215,7 @@ leapmux control workspace rename <workspace> <title> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 ```sh
 leapmux control workspace rename self "Release 1.5"
@@ -233,7 +233,7 @@ leapmux control workspace delete <workspace> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -277,7 +277,7 @@ leapmux control tab get [tab] [flags]
 
 | Argument | Description |
 |---|---|
-| `[tab]` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `[tab]` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
 ```sh
 leapmux control tab get
@@ -296,7 +296,7 @@ leapmux control tab close <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -323,7 +323,7 @@ leapmux control tab rename <tab> <title> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
 ```sh
 leapmux control tab rename self "Release notes"
@@ -341,7 +341,7 @@ leapmux control tab move <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -378,7 +378,7 @@ leapmux control tab reveal <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
 ```sh
 leapmux control tab reveal 87a19d5f
@@ -413,7 +413,7 @@ leapmux control tab status set <tab> <text> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 | `<text>` | A short text, such as "Running the tests", or "-" to read it from standard input. |
 
 | Flag | Description |
@@ -443,7 +443,7 @@ leapmux control tab status clear <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
 ```sh
 leapmux control tab status clear self
@@ -483,7 +483,7 @@ leapmux control agent get [agent] [flags]
 
 | Argument | Description |
 |---|---|
-| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -615,7 +615,7 @@ leapmux control agent send <agent> [text] [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 | `[text]` | The text, or "-" to read it from standard input. |
 
 | Flag | Description |
@@ -671,7 +671,7 @@ leapmux control agent wait <agent>... [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>...` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<agent>...` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "title:&lt;title&gt;". |
 
 | Flag | Description |
 |---|---|
@@ -705,7 +705,7 @@ leapmux control agent requests [agent]... [flags]
 
 | Argument | Description |
 |---|---|
-| `[agent]...` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. Without one, the command lists the requests of every agent. |
+| `[agent]...` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. Without one, the command lists the requests of every agent. |
 
 | Flag | Description |
 |---|---|
@@ -740,7 +740,7 @@ leapmux control agent approve <agent> <request> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "title:&lt;title&gt;". |
 | `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
 
 | Flag | Description |
@@ -775,7 +775,7 @@ leapmux control agent deny <agent> <request> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "title:&lt;title&gt;". |
 | `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
 
 | Flag | Description |
@@ -820,7 +820,7 @@ leapmux control agent answer <agent> <request> [text]... [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, or "title:&lt;title&gt;". |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "title:&lt;title&gt;". |
 | `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
 | `[text]...` | A typed answer, or "-" to read it from standard input. With several questions, write "&lt;question&gt;:&lt;text&gt;". |
 
@@ -861,7 +861,7 @@ leapmux control agent interrupt <agent> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -892,7 +892,7 @@ leapmux control agent clear <agent> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 ```sh
 leapmux control agent clear 87a19d5f
@@ -922,7 +922,7 @@ leapmux control agent compact <agent> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 ```sh
 leapmux control agent compact 87a19d5f
@@ -940,7 +940,7 @@ leapmux control agent set <agent> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -969,7 +969,7 @@ leapmux control agent messages [agent] [flags]
 
 | Argument | Description |
 |---|---|
-| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -1018,7 +1018,7 @@ leapmux control agent queue list [agent] [flags]
 
 | Argument | Description |
 |---|---|
-| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `[agent]` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 ```sh
 leapmux control agent queue list 87a19d5f
@@ -1045,7 +1045,7 @@ leapmux control agent queue remove <agent> <input> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 | `<input>` | A queued input's id, as "agent queue list" prints it, or a unique prefix of it. |
 
 ```sh
@@ -1077,7 +1077,7 @@ leapmux control agent queue move <agent> <input> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 | `<input>` | A queued input's id, as "agent queue list" prints it, or a unique prefix of it. |
 
 | Flag | Description |
@@ -1112,7 +1112,7 @@ leapmux control agent queue pause <agent> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 ```sh
 leapmux control agent queue pause 87a19d5f
@@ -1136,7 +1136,7 @@ leapmux control agent queue resume <agent> [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the agent tab that runs this command. |
 
 ```sh
 leapmux control agent queue resume 87a19d5f
@@ -1224,7 +1224,7 @@ leapmux control terminal get [terminal] [flags]
 
 | Argument | Description |
 |---|---|
-| `[terminal]` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `[terminal]` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
 ```sh
 leapmux control terminal get
@@ -1317,7 +1317,7 @@ leapmux control terminal send <terminal> [text] [flags]
 
 | Argument | Description |
 |---|---|
-| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 | `[text]` | The text, or "-" to read it from standard input. |
 
 | Flag | Description |
@@ -1367,7 +1367,7 @@ leapmux control terminal run <terminal> <command> [flags]
 
 | Argument | Description |
 |---|---|
-| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 | `<command>` | The command line, or "-" to read it from standard input. |
 
 ```sh
@@ -1404,7 +1404,7 @@ leapmux control terminal read [terminal] [flags]
 
 | Argument | Description |
 |---|---|
-| `[terminal]` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `[terminal]` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -1470,7 +1470,7 @@ leapmux control terminal wait <terminal> [flags]
 
 | Argument | Description |
 |---|---|
-| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -1502,7 +1502,7 @@ leapmux control terminal resize <terminal> <cols> <rows> [flags]
 
 | Argument | Description |
 |---|---|
-| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
 ```sh
 leapmux control terminal resize 4cbb3f34 120 40
@@ -1520,7 +1520,7 @@ leapmux control terminal restart <terminal> [flags]
 
 | Argument | Description |
 |---|---|
-| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
 ```sh
 leapmux control terminal restart 4cbb3f34
@@ -1890,7 +1890,7 @@ leapmux control tile list [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 ```sh
 leapmux control tile list
@@ -1908,7 +1908,7 @@ leapmux control tile split <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -1934,7 +1934,7 @@ leapmux control tile close <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -1962,7 +1962,7 @@ leapmux control tile make-grid <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -1985,7 +1985,7 @@ leapmux control tile remove-grid <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -2010,7 +2010,7 @@ leapmux control tile set-ratios <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -2032,7 +2032,7 @@ leapmux control tile set-grid-ratios <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
 
 | Flag | Description |
 |---|---|
@@ -2057,7 +2057,7 @@ leapmux control layout get [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 ```sh
 # Save a layout, and restore it later.
@@ -2078,7 +2078,7 @@ leapmux control layout set <workspace> [file] [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 ```sh
 leapmux control layout set self layout.json
@@ -2098,7 +2098,7 @@ leapmux control layout watch [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the workspace of the tab that runs this command. |
 
 ```sh
 leapmux control layout watch --json
@@ -2130,7 +2130,7 @@ leapmux control worker get [worker] [flags]
 
 | Argument | Description |
 |---|---|
-| `[worker]` | A worker id, a unique prefix of 4 or more characters of one, "name:&lt;name&gt;", or "self" for the worker of the tab that runs this command. |
+| `[worker]` | A worker id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "name:&lt;name&gt;", or "self" for the worker of the tab that runs this command. |
 
 ```sh
 leapmux control worker get
@@ -2147,7 +2147,7 @@ leapmux control worker info [worker] [flags]
 
 | Argument | Description |
 |---|---|
-| `[worker]` | A worker id, a unique prefix of 4 or more characters of one, "name:&lt;name&gt;", or "self" for the worker of the tab that runs this command. |
+| `[worker]` | A worker id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "name:&lt;name&gt;", or "self" for the worker of the tab that runs this command. |
 
 ```sh
 leapmux control worker info

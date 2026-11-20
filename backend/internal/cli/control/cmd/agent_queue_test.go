@@ -434,7 +434,7 @@ func TestAgentQueueMoveOverIPC_Refusals(t *testing.T) {
 		"a locked source":          {[]string{inputAlpha, "--last"}, cli.CodeConflict, "already reads input " + inputAlpha},
 		"a locked place":           {[]string{inputBeta, "--before", inputAlpha}, cli.CodeConflict, "already reads input " + inputAlpha},
 		"an unknown place":         {[]string{inputBeta, "--before", "nope"}, cli.CodeNotFound, "holds no input nope"},
-		"an empty place":           {[]string{inputBeta, "--before", ""}, cli.CodeUsage, "the input id is empty"},
+		"an empty place":           {[]string{inputBeta, "--before", ""}, cli.CodeUsage, "--before is empty"},
 		"an unknown input to move": {[]string{"nope", "--first"}, cli.CodeNotFound, "holds no input nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
