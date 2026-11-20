@@ -951,13 +951,13 @@ func (a *App) applyProxyToTunnels(proxy *HubProxy) {
 	})
 }
 
-func (a *App) DeleteTunnel(tunnelID string) error {
+func (a *App) DeleteTunnel(tunnelID string, channelEpoch string) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	return a.tunnels.DeleteTunnel(tunnelID)
+	return a.tunnels.DeleteTunnel(tunnelID, channelEpoch)
 }
 
 // ListTunnels reports the current channel epoch and the tunnels owned by
@@ -973,16 +973,21 @@ func (a *App) ListTunnels(expectedUserID string) (string, []TunnelInfo, error) {
 // authenticates to the Hub purely by the proxy's cookie jar and has no user
 // identity of its own, so a distributed-mode user switch would otherwise leave
 // the previous user's tunnels relaying (and their cached channels reusable)
-// under the old identity until the Hub revokes the session. CloseAll is
-// idempotent -- a no-op when there are no tunnels (e.g. solo mode, where logout
-// never happens) -- so this needs no connection guard beyond the shutdown gate.
-func (a *App) ResetTunnels() error {
+// under the old identity until the Hub revokes the session.
+//
+// channelEpoch is the epoch the caller's teardown retires (read from its tunnel
+// listing). A request naming an already-retired epoch is a replay and succeeds
+// without touching the successor state; see TunnelManager.ResetTunnels. The
+// reset is idempotent -- a no-op when there are no tunnels (e.g. solo mode,
+// where logout never happens) -- so this needs no connection guard beyond the
+// shutdown gate.
+func (a *App) ResetTunnels(channelEpoch string) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	a.tunnels.CloseAll()
+	a.tunnels.ResetTunnels(channelEpoch)
 	return nil
 }
 

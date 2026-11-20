@@ -591,6 +591,7 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			BindPort:              int(cfg.BindPort),
 			ExpectedUserID:        cfg.ExpectedUserId,
 			ExpectedWorkerKeysHex: cfg.ExpectedWorkerKeysHex,
+			ChannelEpoch:          cfg.ChannelEpoch,
 		})
 		if err != nil {
 			// A typed Worker key mismatch is a RESULT, not an error response:
@@ -623,10 +624,10 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 		})
 
 	case *desktoppb.Request_DeleteTunnel:
-		s.writeErrOrOK(id, s.app.DeleteTunnel(m.DeleteTunnel.TunnelId))
+		s.writeErrOrOK(id, s.app.DeleteTunnel(m.DeleteTunnel.TunnelId, m.DeleteTunnel.ChannelEpoch))
 
 	case *desktoppb.Request_ResetTunnels:
-		s.writeErrOrOK(id, s.app.ResetTunnels())
+		s.writeErrOrOK(id, s.app.ResetTunnels(m.ResetTunnels.ChannelEpoch))
 
 	case *desktoppb.Request_ListTunnels:
 		epoch, tunnels, err := s.app.ListTunnels(m.ListTunnels.GetExpectedUserId())

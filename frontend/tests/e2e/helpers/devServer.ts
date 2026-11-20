@@ -147,6 +147,11 @@ export interface StartSoloServerOptions extends StartDevServerOptions {
    * The test then needs no separate interface address, which a CI host might not provide.
    */
   listenHost?: string
+  /**
+   * A second -listen request beside the primary one. The hub binds both,
+   * and the startup state file lists both in bind order.
+   */
+  extraListen?: string | undefined
 }
 
 /**
@@ -165,6 +170,7 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     'run',
     '-listen',
     requestedListen,
+    ...(opts.extraListen ? ['-listen', opts.extraListen] : []),
     '-data-dir',
     dataDir,
   ], {

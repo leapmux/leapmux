@@ -20,6 +20,8 @@ export interface SoloServerFixtures {
    * `0.0.0.0` with `test.use`, and reaches it over loopback, which the wildcard listener also serves.
    */
   soloListenHost: string
+  /** A second `-listen` request beside the primary one, for a spec that needs two TCP binds. */
+  soloExtraListen: string | undefined
   /** A solo hub for this test alone. The fixture stops it and removes its data after the test. Its handle carries the resolved ordered endpoints: `listen` for the primary TCP address a browser reaches, and `tcp` / `local` for the full bind set the startup state file names. */
   soloServer: SoloServerHandle
 }
@@ -30,8 +32,12 @@ export const soloServerFixtures: Fixtures<SoloServerFixtures> = {
     '127.0.0.1',
     { option: true },
   ],
-  soloServer: async ({ soloListenHost }, use) => {
-    const solo = await startSoloServer({ listenHost: soloListenHost })
+  soloExtraListen: [
+    undefined,
+    { option: true },
+  ],
+  soloServer: async ({ soloListenHost, soloExtraListen }, use) => {
+    const solo = await startSoloServer({ listenHost: soloListenHost, extraListen: soloExtraListen })
     await withCleanup(() => use(solo), () => stopSoloServer(solo))
   },
 }

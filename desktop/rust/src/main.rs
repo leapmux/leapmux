@@ -414,11 +414,11 @@ struct TunnelInfoResponse {
 /// A create's outcome: the created row, or the Worker key mismatch that
 /// refused it. Mirrors the CreateTunnelResponse oneof.
 #[derive(Serialize)]
-#[serde(untagged)]
+#[serde(tag = "kind")]
 enum CreateTunnelOutcome {
-    Info {
-        info: TunnelInfoResponse,
-    },
+    #[serde(rename = "created")]
+    Info { info: TunnelInfoResponse },
+    #[serde(rename = "workerKeyMismatch")]
     KeyMismatch {
         #[serde(rename = "keyMismatch")]
         key_mismatch: TunnelKeyMismatchResponse,
@@ -1734,12 +1734,13 @@ async fn close_userevents_relay(
     Ok(())
 }
 
-#[tauri::command]
-async fn create_tunnel(
-    shell: State<'_, Arc<DesktopShell>>,
-    config: TunnelConfigInput,
-) -> Result<CreateTunnelOutcome, String> {
-    let cfg = proto::TunnelConfig {
+/// Maps the webview's tunnel create request onto the sidecar's TunnelConfig.
+///
+/// Split from `create_tunnel` so the trust fields the create admits on -- the
+/// exact Worker keys, the expected user, and the channel epoch -- can be pinned
+/// by a mapping test rather than only by an end-to-end round trip.
+fn tunnel_config_input_to_proto(config: TunnelConfigInput) -> proto::TunnelConfig {
+    proto::TunnelConfig {
         worker_id: config.worker_id,
         r#type: config.r#type,
         target_addr: config.target_addr,
@@ -1749,7 +1750,15 @@ async fn create_tunnel(
         expected_worker_keys_hex: config.expected_worker_keys_hex,
         expected_user_id: config.expected_user_id,
         channel_epoch: config.channel_epoch,
-    };
+    }
+}
+
+#[tauri::command]
+async fn create_tunnel(
+    shell: State<'_, Arc<DesktopShell>>,
+    config: TunnelConfigInput,
+) -> Result<CreateTunnelOutcome, String> {
+    let cfg = tunnel_config_input_to_proto(config);
 
     let resp = check_response(
         shell
@@ -3272,6 +3281,42 @@ mod tests {
             })
         );
         assert_eq!(json["build_info"]["version"], "");
+    }
+
+    #[test]
+    fn create_tunnel_outcome_serializes_with_kind_discriminants() {
+        let info = CreateTunnelOutcome::Info {
+            info: TunnelInfoResponse {
+                id: "tunnel-a".to_string(),
+                worker_id: "worker-a".to_string(),
+                r#type: "port_forward".to_string(),
+                bind_addr: "127.0.0.1".to_string(),
+                bind_port: 3000,
+                target_addr: "127.0.0.1".to_string(),
+                target_port: 3000,
+                key_mismatch: None,
+            },
+        };
+        let json = serde_json::to_value(&info).expect("serialize the created outcome");
+        assert_eq!(json["kind"], "created");
+        assert_eq!(json["info"]["id"], "tunnel-a");
+
+        let mismatch = CreateTunnelOutcome::KeyMismatch {
+            key_mismatch: TunnelKeyMismatchResponse {
+                expected_fingerprint: "able-arch-bird-clay".to_string(),
+                presented_fingerprint: "fern-golf-harp-iris".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&mismatch).expect("serialize the mismatch outcome");
+        assert_eq!(json["kind"], "workerKeyMismatch");
+        assert_eq!(
+            json["keyMismatch"]["expectedFingerprint"],
+            "able-arch-bird-clay"
+        );
+        assert_eq!(
+            json["keyMismatch"]["presentedFingerprint"],
+            "fern-golf-harp-iris"
+        );
     }
 
     #[cfg(target_os = "macos")]

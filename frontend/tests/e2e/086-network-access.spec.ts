@@ -165,6 +165,51 @@ test.describe('Network access', () => {
     await expect(reopened.locator('[data-setting-id="trusted_proxy_ranges"]')
       .getByLabel('Trusted proxy selector')).toHaveValue('cloudfront')
   })
+
+  // Two -listen requests: the primary `127.0.0.1:0` and the empty-port spelling
+  // `127.0.0.1:`, which net.Listen reads as port zero. The two resolve to
+  // distinct ports, so the state file carries two TCP addresses and the panel
+  // shows a fold for the secondary one.
+  test.describe('with a secondary -listen bind', () => {
+    test.use({ soloExtraListen: '127.0.0.1:' })
+
+    test('states the secondary fold and keeps the local URL visible after Apply', async ({ page, soloServer: solo }) => {
+      expect(solo.tcp.length, 'the startup state file carries two TCP addresses').toBe(2)
+      const secondaryTcp = solo.tcp[1]!
+      const secondaryPort = secondaryTcp.slice(secondaryTcp.lastIndexOf(':') + 1)
+      expect(secondaryPort, 'the secondary bind resolved to a port').toMatch(/^\d+$/)
+      const localUrl = solo.local[0]
+      expect(localUrl, 'the startup state file carries a local IPC endpoint').toBeTruthy()
+
+      await page.goto(`${solo.hubUrl}/`)
+      await completeSoloPasswordSetup(page)
+      const dialog = await openSettingsAt(page, 'admin-network')
+      const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
+      await expect(row).toBeVisible()
+
+      // Both base addresses are listed read-only.
+      await expect(row.getByText(solo.tcp[0]!)).toBeVisible()
+      await expect(row.getByText(secondaryTcp)).toBeVisible()
+
+      // The Local access section names the local endpoint the startup opened.
+      await expect(dialog.getByText('Local access')).toBeVisible()
+      await expect(dialog.getByText(localUrl!)).toBeVisible()
+
+      // Add a wildcard row on the secondary port. The browser's merge rule
+      // folds the secondary base into it and states that fold beside the rows.
+      await row.getByRole('button', { name: '+ Add address' }).click()
+      await row.getByLabel('Port').fill(secondaryPort)
+      await expect(row.getByText(`${secondaryTcp} merges into *:${secondaryPort}.`)).toBeVisible()
+
+      await row.getByRole('button', { name: 'Apply' }).click()
+      await expect(row.getByText('Network access updated.')).toBeVisible()
+
+      // The local URL stays visible after Apply: local endpoints bind on their
+      // own path and take no part in the TCP merge the editor performs.
+      await expect(dialog.getByText('Local access')).toBeVisible()
+      await expect(dialog.getByText(localUrl!)).toBeVisible()
+    })
+  })
 })
 
 /**

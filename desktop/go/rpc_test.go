@@ -160,7 +160,7 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id: 1,
 		Method: &desktoppb.Request_ResetTunnels{
-			ResetTunnels: &desktoppb.ResetTunnelsRequest{},
+			ResetTunnels: &desktoppb.ResetTunnelsRequest{ChannelEpoch: before},
 		},
 	}, nil)
 	frame, err := ReadFrame(&output)
@@ -170,6 +170,23 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 	require.True(t, response.GetBoolValue().GetValue(), "a successful reset acks with the shared void-method OK")
 	require.NotEqual(t, before, app.tunnels.currentEpoch(),
 		"the dispatch arm must actually route to App.ResetTunnels")
+	successor := app.tunnels.currentEpoch()
+
+	// A replay naming the epoch the reset above retired is a REPLAY: it acks OK
+	// without touching the successor state.
+	session.handleRequest(context.Background(), &desktoppb.Request{
+		Id: 2,
+		Method: &desktoppb.Request_ResetTunnels{
+			ResetTunnels: &desktoppb.ResetTunnelsRequest{ChannelEpoch: before},
+		},
+	}, nil)
+	frame, err = ReadFrame(&output)
+	require.NoError(t, err)
+	response = frame.GetResponse()
+	require.Empty(t, response.GetError())
+	require.True(t, response.GetBoolValue().GetValue(), "a replay of a retired epoch acks OK")
+	require.Equal(t, successor, app.tunnels.currentEpoch(),
+		"a replay must not rotate the successor epoch")
 }
 
 // The ListTunnels dispatch arm must map the manager's listing through
@@ -1054,6 +1071,7 @@ func TestRPCSessionDisconnectCancelsTunnelHandshake(t *testing.T) {
 					TargetAddr: "127.0.0.1", TargetPort: 80,
 					ExpectedUserId:        testTunnelOwner,
 					ExpectedWorkerKeysHex: testExpectedWorkerKeysHex,
+					ChannelEpoch:          app.tunnels.currentEpoch(),
 				},
 			}},
 		}},

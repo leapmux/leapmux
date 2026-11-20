@@ -39,7 +39,7 @@ export function createTunnelStore(): TunnelStore {
       const result = await platformBridge.createTunnel(config)
       // A mismatch refused the create, so there is no row to append. The
       // caller shows the two fingerprints and decides what to do next.
-      if ('keyMismatch' in result)
+      if (result.kind === 'workerKeyMismatch')
         return result
       setTunnels(prev => [...prev, result.info])
       return result

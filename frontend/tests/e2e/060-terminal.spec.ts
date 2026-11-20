@@ -28,6 +28,7 @@ test.describe('Terminal', () => {
     expect(terminalId).toBeTruthy()
     if (!terminalId)
       throw new Error('The terminal tab has no ID.')
+    expect(terminalId).toMatch(/^[A-Za-z0-9]{48}$/)
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     // Input echo precedes execution. The child can still be zsh before exec starts sleep.
     const sleepProcess = await retryUntilPass(async () => {

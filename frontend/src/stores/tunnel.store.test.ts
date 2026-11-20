@@ -63,8 +63,8 @@ describe('tunnel store', () => {
     const { platformBridge } = await import('~/api/platformBridge')
     const store = createTunnelStore()
 
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ info: mockTunnel1 })
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ info: mockTunnel2 })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel2 })
 
     await store.add(tunnelConfig())
     await store.add(tunnelConfig({
@@ -82,12 +82,12 @@ describe('tunnel store', () => {
 
   it('add appends to tunnel list', async () => {
     const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ info: mockTunnel1 })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
 
     const store = createTunnelStore()
     const result = await store.add(tunnelConfig())
 
-    expect(result).toEqual({ info: mockTunnel1 })
+    expect(result).toEqual({ kind: 'created', info: mockTunnel1 })
     expect(store.tunnels()).toEqual([mockTunnel1])
   })
 
@@ -99,19 +99,19 @@ describe('tunnel store', () => {
       expectedFingerprint: 'deep-idea-obey-tack',
       presentedFingerprint: 'calm-lion-fern-arch',
     }
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ keyMismatch: mismatch })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'workerKeyMismatch', keyMismatch: mismatch })
 
     const store = createTunnelStore()
     const result = await store.add(tunnelConfig())
 
-    expect(result).toEqual({ keyMismatch: mismatch })
+    expect(result).toEqual({ kind: 'workerKeyMismatch', keyMismatch: mismatch })
     expect(store.tunnels()).toEqual([])
   })
 
   it('remove filters from tunnel list', async () => {
     const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ info: mockTunnel1 })
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ info: mockTunnel2 })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel2 })
     vi.mocked(platformBridge.deleteTunnel).mockResolvedValueOnce(undefined)
 
     const store = createTunnelStore()
@@ -141,7 +141,7 @@ describe('tunnel store', () => {
 
   it('remove propagates API errors', async () => {
     const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ info: mockTunnel1 })
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
     vi.mocked(platformBridge.deleteTunnel).mockRejectedValueOnce(new Error('not found'))
 
     const store = createTunnelStore()

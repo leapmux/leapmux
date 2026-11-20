@@ -64,6 +64,11 @@ type TunnelConfig struct {
 	// expectation, fails before a listener is bound or a channel opened.
 	ExpectedUserID        string
 	ExpectedWorkerKeysHex string
+	// ChannelEpoch is the channel epoch the caller read from a tunnel
+	// listing. The create is admitted against that exact epoch: a submission
+	// fenced on a listing that a reset has since invalidated is refused before
+	// a listener is bound or a channel opened.
+	ChannelEpoch string
 }
 
 // validateAndNormalize checks the config's required fields and fills in the
@@ -110,6 +115,9 @@ func (cfg *TunnelConfig) validateAndNormalize() error {
 	}
 	if _, err := tunnelpkg.NewExpectedWorkerKeyPin(cfg.ExpectedWorkerKeysHex); err != nil {
 		return err
+	}
+	if cfg.ChannelEpoch == "" {
+		return fmt.Errorf("channelEpoch is required")
 	}
 	return nil
 }
@@ -328,6 +336,13 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	if err := cfg.validateAndNormalize(); err != nil {
 		return nil, err
 	}
+	// The request names the epoch its listing reported; a reset between that
+	// listing and this submit means the caller's view is stale and the create
+	// must not be admitted under the successor epoch. Checked before any
+	// channel work so a stale submit opens nothing.
+	if cfg.ChannelEpoch != admittedEpoch {
+		return nil, fmt.Errorf("stale channel epoch: the tunnel listing the create was opened on has been reset")
+	}
 	expect := channelExpectation{
 		userID:  cfg.ExpectedUserID,
 		keysHex: cfg.ExpectedWorkerKeysHex,
@@ -434,8 +449,16 @@ func validateTunnelBindAddr(bindAddr string) error {
 }
 
 // DeleteTunnel stops and removes a tunnel.
-func (m *TunnelManager) DeleteTunnel(tunnelID string) error {
+//
+// channelEpoch is the epoch the caller's listing reported. A delete fenced on
+// a listing a reset has since invalidated is refused before the lookup: the
+// caller's row set is stale and it must re-read before mutating.
+func (m *TunnelManager) DeleteTunnel(tunnelID string, channelEpoch string) error {
 	m.mu.Lock()
+	if channelEpoch != m.pool.currentEpoch() {
+		m.mu.Unlock()
+		return fmt.Errorf("stale channel epoch: the tunnel listing has been reset")
+	}
 	t, ok := m.tunnels[tunnelID]
 	if !ok {
 		m.mu.Unlock()
@@ -473,16 +496,49 @@ func (m *TunnelManager) ListTunnels(expectedUser string) (string, []TunnelInfo, 
 	return m.pool.currentEpoch(), result, nil
 }
 
-// CloseAll closes all tunnels and channels.
+// CloseAll closes all tunnels and channels, whatever channel epoch they were
+// admitted under: it is the unconditional teardown a disconnect or shutdown
+// runs, not a request a listing fenced.
 func (m *TunnelManager) CloseAll() {
 	m.mu.Lock()
+	tunnels := m.retireAllLocked()
+	m.mu.Unlock()
+	m.closeRetired(tunnels)
+}
+
+// ResetTunnels retires the channel epoch channelEpoch names, and only that
+// epoch: it drops the tunnels admitted under it and rotates the epoch, so no
+// cached channel of the retiring identity survives.
+//
+// A request that names an epoch that is no longer current is a REPLAY of a
+// reset that already happened. It succeeds without touching the successor
+// state, so an identity-change teardown can never clear the next user's
+// tunnels and a retry after an uncertain delivery is harmless.
+func (m *TunnelManager) ResetTunnels(channelEpoch string) {
+	m.mu.Lock()
+	if channelEpoch != m.pool.currentEpoch() {
+		m.mu.Unlock()
+		slog.Info("tunnels already reset for a retired channel epoch",
+			"channel_epoch", channelEpoch)
+		return
+	}
+	tunnels := m.retireAllLocked()
+	m.mu.Unlock()
+	m.closeRetired(tunnels)
+}
+
+// retireAllLocked clears every registered tunnel and rotates the pool epoch,
+// returning the retired rows for the caller to close outside the lock. The
+// reset runs while m.mu is held so CreateTunnel cannot pass its revision check
+// and insert between the map clear and the epoch bump.
+func (m *TunnelManager) retireAllLocked() map[string]*tunnel {
 	tunnels := m.tunnels
 	m.tunnels = make(map[string]*tunnel)
-	// Reset the pool while holding m.mu so CreateTunnel cannot pass its
-	// revision check and insert between the map clear and the epoch bump.
 	m.pool.reset()
-	m.mu.Unlock()
+	return tunnels
+}
 
+func (m *TunnelManager) closeRetired(tunnels map[string]*tunnel) {
 	for _, t := range tunnels {
 		t.close()
 	}

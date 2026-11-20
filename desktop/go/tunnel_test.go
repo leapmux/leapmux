@@ -43,10 +43,18 @@ func listTunnelRows(t *testing.T, m *TunnelManager, user string) []TunnelInfo {
 	return rows
 }
 
-// withTestExpectation fills the Worker identity fields a valid create carries.
+// testChannelEpoch stands in for the channel epoch a valid create carries.
+// A create admitted through TunnelManager.CreateTunnel must present the
+// MANAGER's current epoch instead; see the call sites that stamp
+// cfg.ChannelEpoch = m.currentEpoch().
+const testChannelEpoch = "epoch-test"
+
+// withTestExpectation fills the admission fields a valid create carries: the
+// Worker identity and a channel epoch.
 func withTestExpectation(cfg TunnelConfig) TunnelConfig {
 	cfg.ExpectedUserID = testTunnelOwner
 	cfg.ExpectedWorkerKeysHex = testExpectedWorkerKeysHex
+	cfg.ChannelEpoch = testChannelEpoch
 	return cfg
 }
 
@@ -169,7 +177,7 @@ func TestTunnelManager_ListAndDelete(t *testing.T) {
 	assert.Equal(t, tunnelTypePortForward, tunnels[0].Type)
 
 	// Delete should succeed.
-	err = m.DeleteTunnel("test-t1")
+	err = m.DeleteTunnel("test-t1", m.currentEpoch())
 	require.NoError(t, err)
 	assert.Empty(t, listTunnelRows(t, m, testTunnelOwner))
 
@@ -396,9 +404,36 @@ func TestTunnelManager_AcceptFailureRemovesTunnel(t *testing.T) {
 
 func TestTunnelManager_DeleteNonExistent(t *testing.T) {
 	m := NewTunnelManager()
-	err := m.DeleteTunnel("nonexistent")
+	err := m.DeleteTunnel("nonexistent", m.currentEpoch())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tunnel not found")
+}
+
+// TestTunnelManager_StaleChannelEpochRefusesCreateAndDelete pins the fencing
+// the request's channel_epoch performs: a mutation fenced on a listing a reset
+// has since invalidated must be refused before it touches state, so a stale
+// caller re-reads instead of mutating under the successor epoch.
+func TestTunnelManager_StaleChannelEpochRefusesCreateAndDelete(t *testing.T) {
+	m := NewTunnelManager()
+	defer m.CloseAll()
+
+	retired := m.currentEpoch()
+	m.CloseAll() // rotates the epoch; every listing of `retired` is now stale
+	require.NotEqual(t, retired, m.currentEpoch())
+
+	cfg := withTestExpectation(TunnelConfig{
+		HubURL: "http://hub", WorkerID: "worker",
+		Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
+		BindAddr: "127.0.0.1", BindPort: 18080,
+	})
+	cfg.ChannelEpoch = retired
+	_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stale channel epoch")
+
+	err = m.DeleteTunnel("any-tunnel", retired)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stale channel epoch")
 }
 
 func TestTunnelManager_CloseAll(t *testing.T) {
@@ -443,12 +478,14 @@ func TestTunnelManager_CloseAllFencesInflightTunnelCreation(t *testing.T) {
 	}
 
 	result := make(chan error, 1)
+	cfg := withTestExpectation(TunnelConfig{
+		HubURL: "http://hub", WorkerID: "worker",
+		Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
+		BindAddr: "127.0.0.1", BindPort: 18080,
+	})
+	cfg.ChannelEpoch = m.currentEpoch()
 	go func() {
-		_, err := m.CreateTunnel(context.Background(), context.Background(), withTestExpectation(TunnelConfig{
-			HubURL: "http://hub", WorkerID: "worker",
-			Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
-			BindAddr: "127.0.0.1", BindPort: 18080,
-		}))
+		_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
 		result <- err
 	}()
 	<-started
@@ -473,7 +510,7 @@ func TestTunnelManager_TeardownClosesPortForwardConnections(t *testing.T) {
 		{
 			name: "DeleteTunnel",
 			close: func(m *TunnelManager, id string) error {
-				return m.DeleteTunnel(id)
+				return m.DeleteTunnel(id, m.currentEpoch())
 			},
 		},
 		{
@@ -552,7 +589,7 @@ func TestTunnelManager_DeleteCancelsInFlightPortForwardDial(t *testing.T) {
 		close(handlerDone)
 	}()
 	<-dialStarted
-	require.NoError(t, m.DeleteTunnel(tun.info.ID))
+	require.NoError(t, m.DeleteTunnel(tun.info.ID, m.currentEpoch()))
 
 	completed := false
 	select {
@@ -619,7 +656,7 @@ func TestTunnelManager_DeleteClosesSocks5Connections(t *testing.T) {
 	<-dialed
 	require.NoError(t, client.SetDeadline(time.Time{}))
 
-	require.NoError(t, m.DeleteTunnel(tun.info.ID))
+	require.NoError(t, m.DeleteTunnel(tun.info.ID, m.currentEpoch()))
 	assertConnectionClosed(t, client, "SOCKS5 client connection remained open")
 	assertConnectionClosed(t, targetPeer, "SOCKS5 remote tunnel connection remained open")
 }
@@ -731,6 +768,7 @@ func TestTunnelManager_DefaultBindPort_PortForward(t *testing.T) {
 		BindAddr:   "127.0.0.1",
 		// BindPort: 0 — should default to 3000
 	})
+	cfg.ChannelEpoch = m.currentEpoch()
 
 	// This will fail at getOrOpenChannel (no Hub), but the validation should pass.
 	ctx := context.Background()
@@ -750,6 +788,7 @@ func TestTunnelManager_DefaultBindPort_Socks5(t *testing.T) {
 		BindAddr: "127.0.0.1",
 		// BindPort: 0 — should default to 1080
 	})
+	cfg.ChannelEpoch = m.currentEpoch()
 
 	ctx := context.Background()
 	_, err := m.CreateTunnel(ctx, ctx, cfg)
@@ -768,6 +807,7 @@ func TestTunnelManager_DefaultBindAddr(t *testing.T) {
 		TargetPort: 3000,
 		// BindAddr: "" — should default to 127.0.0.1
 	})
+	cfg.ChannelEpoch = m.currentEpoch()
 
 	ctx := context.Background()
 	_, err := m.CreateTunnel(ctx, ctx, cfg)
@@ -836,6 +876,7 @@ func TestTunnelConfig_ValidateAndNormalize(t *testing.T) {
 			{"port_forward target port out of range", TunnelConfig{WorkerID: "w1", Type: tunnelTypePortForward, TargetAddr: "10.0.0.1", TargetPort: 70000, BindAddr: "127.0.0.1"}, "targetPort must be 1-65535"},
 			{"non-loopback bind addr", TunnelConfig{WorkerID: "w1", Type: tunnelTypeSocks5, BindAddr: "0.0.0.0"}, "loopback"},
 			{"bind port out of range", TunnelConfig{WorkerID: "w1", Type: tunnelTypeSocks5, BindAddr: "127.0.0.1", BindPort: 70000}, "bindPort must be 1-65535"},
+			{"missing channel epoch", TunnelConfig{WorkerID: "w1", Type: tunnelTypeSocks5, BindAddr: "127.0.0.1", ExpectedUserID: testTunnelOwner, ExpectedWorkerKeysHex: testExpectedWorkerKeysHex}, "channelEpoch is required"},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1341,4 +1382,320 @@ func TestBackoffAfterTemporaryAccept(t *testing.T) {
 		assert.True(t, cancelled, "a fired cancel must report cancellation")
 		assert.Equal(t, time.Hour, next, "a cancelled wait must not advance the backoff")
 	})
+}
+
+// A create and a reconnect both succeed when the Hub announces the expected
+// Worker keys: a matching announcement is accepted and never stops a tunnel.
+// This is the happy-path control for the mismatch scenarios below. It drives
+// the channel layer (the open and the live re-resolve), which is where the key
+// is checked, so no listener bind is involved.
+func TestTunnelManager_CreateAndReconnectSucceedOnExpectedKey(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	openCalls := 0
+	var opened []*managedChannel
+	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		openCalls++
+		ch, _ := newTestManagedChannel()
+		opened = append(opened, ch)
+		return ch, nil
+	}
+
+	expect := channelExpectation{userID: testTunnelOwner, keysHex: testExpectedWorkerKeysHex}
+	ctx := context.Background()
+
+	created, err := m.pool.getOrOpen(ctx, m.pool.currentEpoch(), "http://hub", "worker", expect)
+	require.NoError(t, err, "creation must succeed on the expected key")
+	require.Same(t, opened[0], created)
+
+	// The captured channel dies; a reconnect re-opens on the same expected key
+	// and succeeds instead of surfacing a mismatch.
+	opened[0].close()
+	require.Eventually(t, func() bool {
+		m.pool.mu.Lock()
+		defer m.pool.mu.Unlock()
+		return len(m.pool.channels) == 0
+	}, time.Second, time.Millisecond, "the dead channel must leave the cache")
+
+	reconnected, err := m.pool.live(ctx, opened[0], m.pool.currentEpoch(), "http://hub", "worker", expect)
+	require.NoError(t, err, "reconnect must succeed on the expected key")
+	require.Same(t, opened[1], reconnected)
+	assert.False(t, reconnected.closed())
+	assert.Equal(t, 2, openCalls, "the reconnect re-opens exactly one channel")
+}
+
+// A Worker key mismatch on a reconnect stops a port-forward tunnel BEFORE the
+// target dial: the channel is resolved first, so a mismatch can never be
+// discovered mid-connection.
+func TestTunnelManager_MismatchStopsPortForwardBeforeTargetDial(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		return nil, &tunnelpkg.WorkerKeyMismatchError{
+			ExpectedFingerprint:  "expected-fp",
+			PresentedFingerprint: "presented-fp",
+		}
+	}
+	dialed := false
+	m.dial = func(_ context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("must not dial after a key mismatch")
+	}
+
+	// A closed captured channel forces a re-resolve, which hits the mismatch.
+	closedCh, _ := newTestManagedChannel()
+	closedCh.close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tun := &tunnel{
+		info: TunnelInfo{
+			ID: "t-mismatch-pf", WorkerID: "w", Type: tunnelTypePortForward,
+			TargetAddr: "target", TargetPort: 80,
+		},
+		hubURL:        "http://hub",
+		listener:      ln,
+		cancel:        cancel,
+		connections:   make(map[net.Conn]struct{}),
+		expect:        channelExpectation{userID: testTunnelOwner, keysHex: testExpectedWorkerKeysHex},
+		admittedEpoch: m.pool.currentEpoch(),
+	}
+	m.mu.Lock()
+	m.tunnels[tun.info.ID] = tun
+	m.mu.Unlock()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	local, err := ln.Accept()
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() { defer close(done); m.handlePortForward(ctx, local, tun, closedCh) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handlePortForward did not finish after the key mismatch")
+	}
+
+	assert.False(t, dialed, "a key mismatch must stop the tunnel before the target dial")
+	rows := listTunnelRows(t, m, testTunnelOwner)
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].KeyMismatch, "the mismatch must be recorded on the stopped row")
+	assert.Equal(t, "expected-fp", rows[0].KeyMismatch.ExpectedFingerprint)
+	assert.Equal(t, "presented-fp", rows[0].KeyMismatch.PresentedFingerprint)
+}
+
+// A Worker key mismatch on a reconnect stops a SOCKS5 tunnel BEFORE the target
+// dial too: the dial handler resolves the channel first, so the mismatch stops
+// the tunnel instead of being found mid-connection.
+func TestTunnelManager_MismatchStopsSocks5BeforeTargetDial(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		return nil, &tunnelpkg.WorkerKeyMismatchError{
+			ExpectedFingerprint:  "expected-fp",
+			PresentedFingerprint: "presented-fp",
+		}
+	}
+	dialed := false
+	m.dial = func(_ context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("must not dial after a key mismatch")
+	}
+
+	closedCh, _ := newTestManagedChannel()
+	closedCh.close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tun := &tunnel{
+		info:          TunnelInfo{ID: "t-mismatch-socks", WorkerID: "w", Type: tunnelTypeSocks5},
+		hubURL:        "http://hub",
+		listener:      ln,
+		cancel:        cancel,
+		connections:   make(map[net.Conn]struct{}),
+		expect:        channelExpectation{userID: testTunnelOwner, keysHex: testExpectedWorkerKeysHex},
+		admittedEpoch: m.pool.currentEpoch(),
+	}
+	m.mu.Lock()
+	m.tunnels[tun.info.ID] = tun
+	m.mu.Unlock()
+
+	go m.serveSocks5(ctx, tun, closedCh)
+
+	// Drive a SOCKS5 CONNECT so the dial handler runs, resolves the channel,
+	// hits the mismatch, and stops the tunnel before the target dial.
+	client, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
+	_, err = client.Write([]byte{5, 1, 0}) // greeting: no-auth
+	require.NoError(t, err)
+	greeting := make([]byte, 2)
+	_, err = io.ReadFull(client, greeting)
+	require.NoError(t, err)
+	_, err = client.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 0, 80}) // CONNECT 127.0.0.1:80
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		rows := listTunnelRows(t, m, testTunnelOwner)
+		return len(rows) == 1 && rows[0].KeyMismatch != nil
+	}, 2*time.Second, 10*time.Millisecond, "the key mismatch must stop the SOCKS5 tunnel")
+
+	assert.False(t, dialed, "a key mismatch must stop the SOCKS5 tunnel before the target dial")
+	rows := listTunnelRows(t, m, testTunnelOwner)
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].KeyMismatch)
+	assert.Equal(t, "expected-fp", rows[0].KeyMismatch.ExpectedFingerprint)
+	assert.Equal(t, "presented-fp", rows[0].KeyMismatch.PresentedFingerprint)
+}
+
+// A Worker key mismatch transition happens exactly once: a second, stale
+// announcement must not re-claim the stopped record or overwrite its detail,
+// and the change hint fires only once. A late accept failure after the
+// transition must not evict the recorded mismatch either -- the row is what the
+// UI recovers from.
+func TestTunnelManager_StopWithKeyMismatch_IsExactOnce(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	changed := 0
+	m.onChanged = func() { changed++ }
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	tun, _ := installTestTunnel(t, m, "t-exact-once", ln)
+
+	first := &TunnelKeyMismatch{ExpectedFingerprint: "exp-1", PresentedFingerprint: "pres-1"}
+	second := &TunnelKeyMismatch{ExpectedFingerprint: "exp-2", PresentedFingerprint: "pres-2"}
+
+	m.stopWithKeyMismatch(tun, first)
+	// A stale, second announcement must not re-claim the stopped record.
+	m.stopWithKeyMismatch(tun, second)
+
+	rows := listTunnelRows(t, m, testTunnelOwner)
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].KeyMismatch)
+	assert.Equal(t, "exp-1", rows[0].KeyMismatch.ExpectedFingerprint,
+		"the first mismatch detail must be preserved, not overwritten by a stale one")
+	assert.Equal(t, "pres-1", rows[0].KeyMismatch.PresentedFingerprint)
+	assert.Equal(t, 1, changed, "the transition must fire the change hint exactly once")
+	assert.True(t, tun.stopping)
+
+	// A late accept failure after the transition must not evict the record.
+	m.failTunnel(tun, errors.New("late accept failure"))
+	rows = listTunnelRows(t, m, testTunnelOwner)
+	require.Len(t, rows, 1, "a late accept failure must not evict the mismatch record")
+	assert.NotNil(t, rows[0].KeyMismatch)
+}
+
+// A mismatch announcement that arrives after the record is gone (deleted or
+// reset) is a no-op: it must not resurrect a row or fire the change hint.
+func TestTunnelManager_StopWithKeyMismatch_AfterDeleteIsNoOp(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	changed := 0
+	m.onChanged = func() { changed++ }
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	tun, _ := installTestTunnel(t, m, "t-stale", ln)
+	require.NoError(t, m.DeleteTunnel("t-stale", m.currentEpoch()))
+
+	m.stopWithKeyMismatch(tun, &TunnelKeyMismatch{ExpectedFingerprint: "exp", PresentedFingerprint: "pres"})
+
+	assert.Empty(t, listTunnelRows(t, m, testTunnelOwner),
+		"a stale mismatch must not resurrect a deleted row")
+	assert.Zero(t, changed, "a stale mismatch must not fire the change hint")
+}
+
+// A create held before native admission, then raced by an identity reset, must
+// be fenced: released after the reset it opens no cached channel and registers
+// no listener. The reset is an identity change (a transport-option rotation),
+// not a teardown, so this exercises the epoch fence on its own.
+func TestTunnelManager_HeldCreateBeforeAdmissionIsFencedByReset(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	stale, staleClosed := newTestManagedChannel()
+	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		close(started)
+		<-release
+		return stale, nil
+	}
+
+	result := make(chan error, 1)
+	cfg := withTestExpectation(TunnelConfig{
+		HubURL: "http://hub", WorkerID: "worker",
+		Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
+		BindAddr: "127.0.0.1", BindPort: 18082,
+	})
+	cfg.ChannelEpoch = m.currentEpoch()
+	go func() {
+		_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
+		result <- err
+	}()
+	<-started // held at the channel open, before native admission
+
+	// An identity change rotates the epoch while the create is held.
+	m.SetChannelOptions(&tunnelpkg.OpenChannelOptions{BearerToken: "rotated"})
+	close(release)
+
+	err := <-result
+	require.Error(t, err, "a create held before admission must be fenced by the reset")
+	assert.Contains(t, err.Error(), "reset", "the fence must report the reset, not a random failure")
+	assert.True(t, staleClosed.Load(), "the stale channel must be closed, not left open")
+	m.mu.Lock()
+	assert.Empty(t, m.tunnels, "the fenced create must register no tunnel (no listener admitted)")
+	m.mu.Unlock()
+	m.pool.mu.Lock()
+	assert.Empty(t, m.pool.channels, "the fenced create must leave no cached channel")
+	m.pool.mu.Unlock()
+}
+
+// A create that carries a channel epoch a reset has already retired is refused
+// BEFORE any channel or listener opens: the caller's view is stale, so the
+// create must open nothing and force a re-read. This is the "hold an old create,
+// reset, release it" case at its sharpest -- the released request opens no
+// channel and binds no listener.
+func TestTunnelManager_StaleCreateOpensNoChannelOrListener(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		t.Error("a stale create must not open a channel")
+		return nil, errors.New("unreachable")
+	}
+
+	stale := m.currentEpoch()
+	// The reset retires `stale`; the create below still names it.
+	m.ResetTunnels(stale)
+
+	cfg := withTestExpectation(TunnelConfig{
+		HubURL: "http://hub", WorkerID: "worker",
+		Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
+		BindAddr: "127.0.0.1", BindPort: 18083,
+	})
+	cfg.ChannelEpoch = stale
+	_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
+	require.Error(t, err, "a create carrying a retired epoch must be refused")
+	assert.Contains(t, err.Error(), "stale channel epoch", "the refusal must name the stale epoch")
+	m.mu.Lock()
+	assert.Empty(t, m.tunnels, "a stale create must register no tunnel (no listener admitted)")
+	m.mu.Unlock()
 }

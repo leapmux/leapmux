@@ -47,6 +47,22 @@ describe('createInflightCache', () => {
     expect(cache.has('k')).toBe(false)
   })
 
+  it('preserves a synchronous factory throw and lets a retry run immediately', async () => {
+    const cache = createInflightCache<string, number>()
+    const err = new Error('sync boom')
+    // The factory throws before it returns any promise, so the flight settles
+    // inside run() itself. The original error must still surface, the entry
+    // must not stay stuck on that settled promise, and a retry must invoke the
+    // factory again at once rather than replaying the stale rejection.
+    await expect(cache.run('k', () => {
+      throw err
+    })).rejects.toBe(err)
+    expect(cache.has('k')).toBe(false)
+    const factory = vi.fn(async () => 5)
+    await expect(cache.run('k', factory)).resolves.toBe(5)
+    expect(factory).toHaveBeenCalledTimes(1)
+  })
+
   it('exposes has() for callers that want a pre-check', async () => {
     const cache = createInflightCache<string, number>()
     expect(cache.has('k')).toBe(false)

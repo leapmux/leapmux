@@ -62,6 +62,7 @@ function createMockTunnelStore(overrides?: Partial<TunnelStore>): TunnelStore {
     channelEpoch: () => 'epoch-1',
     refresh: vi.fn().mockResolvedValue(undefined),
     add: vi.fn().mockResolvedValue({
+      kind: 'created',
       info: {
         id: 't1',
         workerId: 'w1',
@@ -562,6 +563,7 @@ describe('AddTunnelDialog key trust', () => {
     const { store, onCreated } = renderDialog({
       store: {
         add: vi.fn().mockResolvedValue({
+          kind: 'workerKeyMismatch',
           keyMismatch: {
             expectedFingerprint: 'deep-idea-obey-tack',
             presentedFingerprint: 'calm-lion-fern-arch',
@@ -586,6 +588,7 @@ describe('AddTunnelDialog key trust', () => {
     renderDialog({
       store: {
         add: vi.fn().mockResolvedValue({
+          kind: 'workerKeyMismatch',
           keyMismatch: {
             expectedFingerprint: 'deep-idea-obey-tack',
             presentedFingerprint: 'calm-lion-fern-arch',
@@ -680,6 +683,7 @@ describe('AddTunnelDialog identity scope', () => {
     })
     authState.setUserId?.('user-2')
     resolveCreate({
+      kind: 'created',
       info: {
         id: 't1',
         workerId: 'w1',

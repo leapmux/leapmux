@@ -214,7 +214,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
         props.onClose()
         return
       }
-      if ('keyMismatch' in result) {
+      if (result.kind === 'workerKeyMismatch') {
         setMismatch(result.keyMismatch)
         return
       }

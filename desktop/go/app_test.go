@@ -729,7 +729,7 @@ func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
 	app.lifecycleMu.Unlock()
 
 	before := app.tunnels.currentEpoch()
-	require.NoError(t, app.ResetTunnels())
+	require.NoError(t, app.ResetTunnels(before))
 
 	assert.NotEqual(t, before, app.tunnels.currentEpoch(),
 		"ResetTunnels must rotate the channel epoch so no cached channel survives the identity change")
@@ -740,6 +740,27 @@ func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
 	assert.NoError(t, app.connection.ctx.Err(), "the connection lifetime must survive the reset")
 }
 
+// TestResetTunnelsReplayOfRetiredEpochIsANoOp pins the reset's fencing: a
+// request naming an epoch an earlier reset already retired is a replay of that
+// reset. It must succeed WITHOUT touching the successor state, so a late
+// identity-change teardown can never clear the next identity's tunnels and a
+// retry after an uncertain delivery is harmless.
+func TestResetTunnelsReplayOfRetiredEpochIsANoOp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	retired := app.tunnels.currentEpoch()
+	require.NoError(t, app.ResetTunnels(retired))
+	successor := app.tunnels.currentEpoch()
+	require.NotEqual(t, retired, successor)
+
+	require.NoError(t, app.ResetTunnels(retired),
+		"a replay of a retired epoch succeeds")
+	assert.Equal(t, successor, app.tunnels.currentEpoch(),
+		"a replay must not rotate the successor epoch")
+}
+
 // TestResetTunnelsRejectedDuringShutdown confirms the reset rides the same
 // operation gate as every other RPC: once shutdown begins it is refused
 // instead of racing the teardown.
@@ -748,7 +769,7 @@ func TestResetTunnelsRejectedDuringShutdown(t *testing.T) {
 	app := NewApp("")
 	require.NoError(t, app.Shutdown())
 
-	err := app.ResetTunnels()
+	err := app.ResetTunnels(app.tunnels.currentEpoch())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shutting down")
 }

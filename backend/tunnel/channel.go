@@ -596,10 +596,14 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		commitCtx, cancelCommit := ctxutil.WithLinkedCancel(ctx, ch.Context())
 		commitErr := pinCommit(commitCtx)
 		cancelCommit()
-		// A committed pin survives concurrent cancellation that prevents
-		// channel handout. Pin failure does not prevent handout either.
+		// A commit failure (a removal or replacement of the pin during the
+		// open, or a read/write failure) refuses the channel: the trust
+		// decision is no longer valid. A committed pin survives concurrent
+		// cancellation that prevents channel handout.
+		// https://github.com/leapmux/leapmux/issues/661
 		if commitErr != nil {
-			slog.Warn("tunnel pin commit failed", "channel_id", channelID, "worker_id", workerID, "error", commitErr)
+			ch.Close()
+			return nil, fmt.Errorf("commit worker key pin: %w", commitErr)
 		}
 	}
 

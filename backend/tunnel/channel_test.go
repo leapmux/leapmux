@@ -716,7 +716,7 @@ func awaitSignal(t *testing.T, reached <-chan struct{}, what string) {
 // after a passed Ping, its failure does not hold the channel back, and
 // cancellation that prevents the handout never rolls a published pin back.
 func TestOpenChannelPinPublicationIsIndependentOfHandout(t *testing.T) {
-	t.Run("a commit failure still hands the channel out", func(t *testing.T) {
+	t.Run("a commit failure refuses the channel", func(t *testing.T) {
 		hub, hubURL := startPinFlowHub(t)
 		pin := &recordingKeyPin{commitErr: errors.New("pin store unavailable")}
 		results := startOpenChannel(testutil.DeadlineContext(t), testutil.DeadlineContext(t), hubURL, pin)
@@ -727,13 +727,11 @@ func TestOpenChannelPinPublicationIsIndependentOfHandout(t *testing.T) {
 		hub.answerPing(t, correlationID)
 
 		got := awaitOpen(t, results)
-		require.NoError(t, got.err)
-		require.NotNil(t, got.ch,
-			"pin publication is independent: a failing commit does not hold the channel back")
-		t.Cleanup(got.ch.Close)
+		require.Error(t, got.err, "a commit failure refuses the channel")
+		assert.Nil(t, got.ch, "no channel is handed out on commit failure")
 		assert.True(t, pin.wasCommitted())
 		assert.False(t, pin.wasPublished(), "the failed commit persisted nothing")
-		assert.Empty(t, hub.closedChannelID())
+		assert.NotEmpty(t, hub.closedChannelID(), "the channel registration is rolled back")
 	})
 
 	t.Run("cancellation before the write persists no pin", func(t *testing.T) {

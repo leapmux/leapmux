@@ -266,8 +266,8 @@ export interface TunnelInfo {
  * Mirrors the CreateTunnelResponse oneof.
  */
 export type CreateTunnelResult
-  = | { info: TunnelInfo }
-    | { keyMismatch: TunnelKeyMismatch }
+  = | { kind: 'created', info: TunnelInfo }
+    | { kind: 'workerKeyMismatch', keyMismatch: TunnelKeyMismatch }
 
 /** One tunnel listing: the rows and the channel epoch they were read under. */
 export interface ListTunnelsResult {

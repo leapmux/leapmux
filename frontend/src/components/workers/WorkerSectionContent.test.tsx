@@ -52,6 +52,23 @@ vi.mock('./verifyWorkerKey', () => ({
   verifyWorkerKey: (workerId: string) => verifyWorkerKey(workerId),
 }))
 
+// The identity scope the delete confirmations capture and the retirement
+// they react to. The signal lives in the mock so the retirement effect tracks
+// it.
+const authState = vi.hoisted(() => ({
+  setUserId: undefined as undefined | ((id: string | undefined) => void),
+}))
+vi.mock('~/context/AuthContext', async () => {
+  const { createSignal } = await import('solid-js')
+  const [user, setUser] = createSignal<{ id: string } | null>({ id: 'user-1' })
+  authState.setUserId = id => setUser(id === undefined
+    ? null
+    : { id })
+  return {
+    useAuth: () => ({ user }),
+  }
+})
+
 function makeWorker(id: string, registeredBy = 'user-1'): Worker {
   return create(WorkerSchema, { id, registeredBy, online: true })
 }
