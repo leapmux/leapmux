@@ -239,6 +239,15 @@ func (s *elevationMetadataStream) Send(msg any) error {
 	return s.ServerStream.Send(msg)
 }
 
+// SendHeaders flushes the response headers eagerly. Stamp the deadline
+// first: connect may ignore later mutations to the headers once they are
+// flushed, so a handler that flushes before its first Send would put the
+// response on the wire without the deadline.
+func (s *elevationMetadataStream) SendHeaders() error {
+	s.writeDeadline()
+	return s.ServerStream.SendHeaders()
+}
+
 // verifyElevationPassword checks the password presented to ElevateSession.
 // Wrong password returns ErrInvalidCurrentPassword so the rate-limit
 // interceptor can count the failure.

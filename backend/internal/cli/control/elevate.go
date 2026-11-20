@@ -262,7 +262,17 @@ func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string)
 // is on THIS machine, so the redirect comes back to a loopback listener here.
 func (c *Client) elevateViaLoopback(ctx context.Context) error {
 	creds, err := LoadCredentials(c.HubURL)
-	if err != nil || creds.TokenID == "" {
+	if err != nil {
+		// Only a missing credential means "sign in again". A file that
+		// will not parse is a different problem with a different remedy,
+		// and the parse error must reach the user instead of the
+		// sign-in message.
+		if errors.Is(err, ErrNotLoggedIn) {
+			return errStepUpNeedsSignIn
+		}
+		return err
+	}
+	if creds.TokenID == "" {
 		return errStepUpNeedsSignIn
 	}
 	flow, err := loopbackauth.Start(loopbackauth.Request{

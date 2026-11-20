@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -782,4 +783,35 @@ func TestElevate_ReportsTheHubsRefusalOfTheCode(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid_grant")
 	assert.Contains(t, err.Error(), "code expired or already consumed")
 	assert.Equal(t, 1, stub.callsMade())
+}
+
+// TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt
+// separates the two reasons LoadCredentials can fail. A missing file means
+// "sign in again", because there is no credential to verify. A file that will
+// not parse is a different problem with a different remedy: the credential
+// may only need repair, and mapping it to the sign-in message hides that.
+func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt(t *testing.T) {
+	hubURL := "https://hub.example"
+	c := &Client{HubURL: hubURL}
+
+	t.Run("a missing credential file says sign in again", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		err := c.elevateViaLoopback(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sign in again with `leapmux control auth login`")
+	})
+
+	t.Run("a corrupt credential file surfaces the parse error", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+		path, err := CredentialsPath(hubURL)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
+
+		err = c.elevateViaLoopback(context.Background())
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errStepUpNeedsSignIn,
+			"a corrupt file is not a credential without a token id")
+		assert.Contains(t, err.Error(), "parse credentials")
+	})
 }
