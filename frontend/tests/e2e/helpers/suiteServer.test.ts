@@ -153,7 +153,10 @@ if [ "$1" = "dev" ]; then
     // The state file is the ready signal the suite waits for, so the record
     // lands first: a reader that wakes on the state file must find the record.
     fs.writeFileSync(recorded, JSON.stringify({ argv: args, listenEnv: process.env.LEAPMUX_HUB_LISTEN ?? null, localListenEnv: process.env.LEAPMUX_HUB_LOCAL_LISTEN ?? null }));
-    fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    const statePath = path.join(stateDir, "state.json");
+    const pendingState = statePath + ".tmp";
+    fs.writeFileSync(pendingState, JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    fs.renameSync(pendingState, statePath);
   ' ${JSON.stringify(recorded)} "$@"
   exit 1
 fi
