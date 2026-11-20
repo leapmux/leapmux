@@ -91,48 +91,35 @@ func opSetNodeColRatios(bs *CRDTBootstrap, nodeID string, values []float64) *lea
 	return op
 }
 
-// buildTreeJSON projects the live subtree rooted at nodeID into a
-// nested JSON shape suitable for `tile list` / `layout get`.
-func buildTreeJSON(state *leapmuxv1.UserMaterialized, nodeID string) any {
-	return buildTreeJSONWith(state, crdt.LiveChildrenByParent(state), nodeID)
-}
-
-func buildTreeJSONWith(state *leapmuxv1.UserMaterialized, children map[string][]string, nodeID string) any {
+// projectLayoutNode reads the live subtree in display order.
+func projectLayoutNode(state *leapmuxv1.UserMaterialized, children map[string][]string, nodeID string) *layoutNode {
 	if nodeID == "" {
 		return nil
 	}
-	rec := state.GetNodes()[nodeID]
-	if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
+	record := state.GetNodes()[nodeID]
+	if record == nil || !crdt.HLCIsZero(record.GetTombstoneAt()) {
 		return nil
 	}
-	kind := rec.GetKind().GetValue()
-	out := map[string]any{
-		"node_id": nodeID,
-		"kind":    enumToken(kind),
-	}
+	kind := record.GetKind().GetValue()
+	node := &layoutNode{NodeID: nodeID, Kind: enumToken(kind)}
 	switch kind {
 	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
-		out["direction"] = enumToken(rec.GetDirection().GetValue())
-		out["ratios"] = rec.GetRatios().GetValue().GetValues()
+		node.Direction = enumToken(record.GetDirection().GetValue())
+		node.Ratios = record.GetRatios().GetValue().GetValues()
 	case leapmuxv1.NodeKind_NODE_KIND_GRID:
-		out["rows"] = rec.GetRows().GetValue()
-		out["cols"] = rec.GetCols().GetValue()
-		out["row_ratios"] = rec.GetRowRatios().GetValue().GetValues()
-		out["col_ratios"] = rec.GetColRatios().GetValue().GetValues()
-	default:
-		// LEAF carries no shape fields of its own, and a live node never holds
-		// UNSPECIFIED, so neither contributes keys beyond node_id/kind.
+		node.Rows = record.GetRows().GetValue()
+		node.Cols = record.GetCols().GetValue()
+		node.RowRatios = record.GetRowRatios().GetValue().GetValues()
+		node.ColRatios = record.GetColRatios().GetValue().GetValues()
+	case leapmuxv1.NodeKind_NODE_KIND_LEAF, leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED:
+		// These nodes carry no container fields.
 	}
-	childJSON := []any{}
 	for _, childID := range children[nodeID] {
-		if c := buildTreeJSONWith(state, children, childID); c != nil {
-			childJSON = append(childJSON, c)
+		if child := projectLayoutNode(state, children, childID); child != nil {
+			node.Children = append(node.Children, child)
 		}
 	}
-	if len(childJSON) > 0 {
-		out["children"] = childJSON
-	}
-	return out
+	return node
 }
 
 // firstLiveLeaf walks the subtree rooted at rootNodeID and returns the

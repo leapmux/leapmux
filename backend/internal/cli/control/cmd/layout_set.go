@@ -88,7 +88,7 @@ const layoutSetMaxAttempts = 2
 // that raced in between bootstrap and submit appears in the next
 // snapshot, so the rebuilt batch includes a tile_id update for it.
 // Every other error is fatal on the first attempt.
-func (s *session) submitLayoutSetWithRetry(workspaceID string, target *targetNode) (*layoutSetResult, error) {
+func (s *session) submitLayoutSetWithRetry(workspaceID string, target *layoutNode) (*layoutSetResult, error) {
 	var lastErr error
 	for attempt := 0; attempt < layoutSetMaxAttempts; attempt++ {
 		cc, err := s.openCRDT(workspaceID)
@@ -128,7 +128,7 @@ func (s *session) submitLayoutSetWithRetry(workspaceID string, target *targetNod
 // leaf of the new tree (where every live tab lands), and an error.
 // Extracted from runLayoutSet so the retry loop can rebuild the batch
 // against a fresh snapshot without duplicating the step logic.
-func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode) ([]*leapmuxv1.CrdtOp, string, string, error) {
+func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *layoutNode) ([]*leapmuxv1.CrdtOp, string, string, error) {
 	rec := bs.State.GetWorkspaces()[workspaceID]
 	if rec == nil || rec.GetRootNodeId() == "" {
 		return nil, "", "", cli.Newf(cli.CodeConflict, "workspace has no root node yet")
@@ -177,23 +177,11 @@ func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *targetNode
 	return ops, rootID, firstLeaf, nil
 }
 
-// targetNode is the parsed shape of a tree that `layout set` reads.
-type targetNode struct {
-	Kind      string        `json:"kind"`
-	Direction string        `json:"direction,omitempty"`
-	Ratios    []float64     `json:"ratios,omitempty"`
-	Rows      uint32        `json:"rows,omitempty"`
-	Cols      uint32        `json:"cols,omitempty"`
-	RowRatios []float64     `json:"row_ratios,omitempty"`
-	ColRatios []float64     `json:"col_ratios,omitempty"`
-	Children  []*targetNode `json:"children,omitempty"`
-}
-
-func (t *targetNode) isLeaf() bool {
+func (t *layoutNode) isLeaf() bool {
 	return t != nil && t.parsedKind() == leapmuxv1.NodeKind_NODE_KIND_LEAF
 }
 
-func (t *targetNode) parsedKind() leapmuxv1.NodeKind {
+func (t *layoutNode) parsedKind() leapmuxv1.NodeKind {
 	if t == nil {
 		return leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED
 	}
@@ -208,7 +196,7 @@ func (t *targetNode) parsedKind() leapmuxv1.NodeKind {
 	return leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED
 }
 
-func (t *targetNode) parsedDirection() leapmuxv1.SplitDirection {
+func (t *layoutNode) parsedDirection() leapmuxv1.SplitDirection {
 	switch t.Direction {
 	case "SPLIT_DIRECTION_HORIZONTAL", "horizontal", "h":
 		return leapmuxv1.SplitDirection_SPLIT_DIRECTION_HORIZONTAL
@@ -220,7 +208,7 @@ func (t *targetNode) parsedDirection() leapmuxv1.SplitDirection {
 
 // readTargetTree reads the tree from path, or from stdin when path is "" or
 // "-", then validates and normalizes it.
-func readTargetTree(path string, stdin io.Reader) (*targetNode, error) {
+func readTargetTree(path string, stdin io.Reader) (*layoutNode, error) {
 	reader := stdin
 	if path != "" && path != "-" {
 		f, err := os.Open(path)
@@ -233,7 +221,7 @@ func readTargetTree(path string, stdin io.Reader) (*targetNode, error) {
 	return decodeTargetTree(reader)
 }
 
-// decodeTargetTree decodes JSON from r into a targetNode, then runs
+// decodeTargetTree decodes JSON from r into a layoutNode, then runs
 // the structural + ratio validator. Kept separate from readTargetTree
 // so unit tests can feed bytes directly without touching the
 // filesystem.
@@ -242,7 +230,7 @@ func readTargetTree(path string, stdin io.Reader) (*targetNode, error) {
 // the whole --json envelope ({"data": {"tree": ...}}), its data
 // ({"tree": ...}), or the tree alone. A saved layout therefore restores
 // without an extraction step.
-func decodeTargetTree(r io.Reader) (*targetNode, error) {
+func decodeTargetTree(r io.Reader) (*layoutNode, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("read tree: %w", err)
@@ -254,7 +242,7 @@ func decodeTargetTree(r io.Reader) (*targetNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	var t targetNode
+	var t layoutNode
 	if err := json.Unmarshal(data, &t); err != nil {
 		return nil, fmt.Errorf("decode tree JSON: %w", err)
 	}
@@ -301,7 +289,7 @@ func unwrapLayoutTree(data []byte) ([]byte, error) {
 //
 // path is a dotted breadcrumb ("root", "root.children[2]") so the
 // error message tells the user exactly which subtree is wrong.
-func validateAndNormalizeTree(t *targetNode, path string) error {
+func validateAndNormalizeTree(t *layoutNode, path string) error {
 	if t == nil {
 		return fmt.Errorf("%s: node is null", path)
 	}
@@ -406,7 +394,7 @@ func validateAndNormalizeTree(t *targetNode, path string) error {
 // appendNodeShapeOps emits the register writes needed to make
 // `nodeID`'s shape match `target`'s kind+attributes. The kind switch
 // rewrites in place even when the previous kind differed.
-func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID string, target *targetNode) []*leapmuxv1.CrdtOp {
+func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID string, target *layoutNode) []*leapmuxv1.CrdtOp {
 	kind := target.parsedKind()
 	ops = append(ops, opSetNodeKind(bs, nodeID, kind))
 	switch kind {
@@ -442,7 +430,7 @@ func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID strin
 // encountered (depth-first, left-to-right) — that's where tabs are
 // migrated to so they pass the "tile_id resolves to a live leaf"
 // validator rule.
-func synthesizeSubtree(bs *CRDTBootstrap, parentID string, children []*targetNode) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
+func synthesizeSubtree(bs *CRDTBootstrap, parentID string, children []*layoutNode) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
 	pos := lexorank.First()
 	for _, child := range children {
 		childID := id.Generate()

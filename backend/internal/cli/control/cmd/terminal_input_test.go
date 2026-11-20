@@ -141,7 +141,7 @@ func TestTerminalRunOverIPC_SendsThePasteAndEnterInOneRequest(t *testing.T) {
 
 	o := runControlText(t, "terminal", "run", id, "ls")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Equal(t, "id:      "+id+"\ncommand: ls\n", o.Stdout)
+	assert.Equal(t, "id: "+id+"  command: ls\n", o.Stdout)
 }
 
 // The line endings at the end of the command go, because run presses Enter

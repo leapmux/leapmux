@@ -129,9 +129,7 @@ func TestTabStatusSetOverIPC_PrintsTheStatusAsText(t *testing.T) {
 
 	o := runControlText(t, "tab", "status", "set", "agent-2", "Running the tests", "--progress", "75")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Contains(t, o.Stdout, "text:             Running the tests")
-	assert.Contains(t, o.Stdout, "progress_percent: 75")
-	assert.Contains(t, o.Stdout, "tone:             neutral")
+	assert.Equal(t, "id: agent-2  status: {text: \"Running the tests\", progress_percent: 75, tone: neutral}\n", o.Stdout)
 }
 
 // What the CLI can check, it refuses before it sends anything.

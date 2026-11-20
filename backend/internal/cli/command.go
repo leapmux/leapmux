@@ -246,6 +246,10 @@ func NewLeaf(l Leaf) *cobra.Command {
 		if err := validateRequiredFlags(cmd); err != nil {
 			return err
 		}
+		printer := PrinterFor(cmd)
+		if printer.Format == FormatJSON && printer.Quiet {
+			return Usagef("--json and --quiet cannot be used together")
+		}
 		ctx := cmd.Context()
 		if !l.HandlesSignals {
 			var stop func()
@@ -256,7 +260,7 @@ func NewLeaf(l Leaf) *cobra.Command {
 			Context: ctx,
 			Command: cmd,
 			Args:    args,
-			Printer: PrinterFor(cmd),
+			Printer: printer,
 			Stdin:   cmd.InOrStdin(),
 			specs:   specs,
 		}
@@ -519,7 +523,7 @@ func formatExamples(examples []Example) string {
 // PrinterFor returns the printer for an invocation of cmd: JSON when --json
 // is set, ids only when --quiet is set, and text otherwise.
 func PrinterFor(cmd *cobra.Command) *Printer {
-	p := &Printer{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
+	p := &Printer{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), oneLineResult: IsMutating(cmd)}
 	if f := cmd.Flags().Lookup("json"); f != nil && f.Value.String() == "true" {
 		p.Format = FormatJSON
 	}

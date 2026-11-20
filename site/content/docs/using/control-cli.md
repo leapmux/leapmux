@@ -113,7 +113,7 @@ The commands that open a tab (`agent open`, `terminal open`, `file open`) place 
 
 ## Output
 
-**Text is the default.** A list prints as a table and one object as aligned `key: value` lines. A table shows the first eight characters of each id; a `key: value` view prints the whole id.
+**Text is the default.** A list prints as a table and a record prints as aligned `key: value` lines. A mutation prints its result on one line. Commands that return content, such as `agent send --wait` and `rpc`, use their own text format. Tables can show a shortened ID. A record prints the full ID.
 
 **`--json` prints one JSON envelope per line** on stdout:
 
@@ -126,6 +126,8 @@ The commands that open a tab (`agent open`, `terminal open`, `file open`) place 
 A=$(leapmux control agent open --provider claude --message "Run the tests" -q)
 leapmux control agent get "$A" --json | jq -r .data.state
 ```
+
+Use either `--json` or `--quiet` in one invocation. The CLI refuses the combination before sending a request.
 
 **A stream prints one line per event**: `agent messages --follow` and `layout watch`. With `--json`, each line is a `{"data": ...}` envelope, so a consumer reads every line alike.
 

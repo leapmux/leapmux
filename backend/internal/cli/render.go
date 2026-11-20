@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -376,6 +377,55 @@ func renderText(w io.Writer, v any) error {
 		return writeObject(w, n)
 	}
 	return fmt.Errorf("cli: no text form for node kind %d", n.kind)
+}
+
+// renderSingleLine keeps the fields and ordering of the ordinary text
+// renderer. A result with its own text form still controls its formatting.
+func renderSingleLine(w io.Writer, v any) error {
+	if r, ok := v.(TextRenderer); ok {
+		return r.RenderText(w)
+	}
+	value := toNode(reflect.ValueOf(v))
+	if value.kind == nodeObject {
+		_, err := fmt.Fprintln(w, strings.Join(singleLineFields(value.fields), "  "))
+		return err
+	}
+	_, err := fmt.Fprintln(w, singleLineValue(value))
+	return err
+}
+
+func singleLineFields(fields []nodeField) []string {
+	items := make([]string, len(fields))
+	for i, field := range fields {
+		items[i] = singleLineString(field.key) + ": " + singleLineValue(field.value)
+	}
+	return items
+}
+
+func singleLineValue(value node) string {
+	switch value.kind {
+	case nodeScalar:
+		return singleLineString(value.scalar)
+	case nodeObject:
+		return "{" + strings.Join(singleLineFields(value.fields), ", ") + "}"
+	case nodeList:
+		items := make([]string, len(value.items))
+		for i, item := range value.items {
+			items[i] = singleLineValue(item)
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	default:
+		return "null"
+	}
+}
+
+func singleLineString(value string) string {
+	if value == "" || strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		return strconv.Quote(value)
+	}
+	return value
 }
 
 func writeList(w io.Writer, n node) error {

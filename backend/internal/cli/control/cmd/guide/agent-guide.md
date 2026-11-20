@@ -51,6 +51,7 @@ your own agent. A prefix that matches more than one object fails with the code
 - `--json` prints one envelope per line: `{"data": ...}` for a result and
   `{"error": {"code": ..., "message": ..., "hints": [...]}}` for a failure.
 - `-q` prints only ids, one per line: `A=$(leapmux control agent open -q)`.
+- Use one of `--json` and `--quiet` per invocation.
 
 ## Exit codes <!-- topic: exit-codes -->
 

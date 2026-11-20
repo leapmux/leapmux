@@ -220,11 +220,25 @@ func parseSplitDirection(s string) (leapmuxv1.SplitDirection, bool) {
 	return leapmuxv1.SplitDirection_SPLIT_DIRECTION_UNSPECIFIED, false
 }
 
+// layoutNode is one node of a layout read or submitted to the CLI.
+type layoutNode struct {
+	// NodeID identifies the source node. layout set retains the workspace root ID.
+	NodeID    string        `json:"node_id,omitempty"`
+	Kind      string        `json:"kind"`
+	Direction string        `json:"direction,omitempty"`
+	Ratios    []float64     `json:"ratios,omitempty"`
+	Rows      uint32        `json:"rows,omitempty"`
+	Cols      uint32        `json:"cols,omitempty"`
+	RowRatios []float64     `json:"row_ratios,omitempty"`
+	ColRatios []float64     `json:"col_ratios,omitempty"`
+	Children  []*layoutNode `json:"children,omitempty"`
+}
+
 // layoutTree is the result of `tile list` and `layout get`.
 type layoutTree struct {
-	WorkspaceID string `json:"workspace_id"`
-	RootNodeID  string `json:"root_node_id"`
-	Tree        any    `json:"tree"`
+	WorkspaceID string      `json:"workspace_id"`
+	RootNodeID  string      `json:"root_node_id"`
+	Tree        *layoutNode `json:"tree"`
 	// TabsByTile maps each leaf tile to its live tabs. Only `layout get`
 	// prints it.
 	TabsByTile map[string][]layoutTab `json:"tabs_by_tile,omitempty"`
@@ -239,27 +253,24 @@ func (l layoutTree) RenderText(w io.Writer) error {
 	return l.renderNode(w, l.Tree, "  ")
 }
 
-func (l layoutTree) renderNode(w io.Writer, node any, indent string) error {
-	n, ok := node.(map[string]any)
-	if !ok {
+func (l layoutTree) renderNode(w io.Writer, node *layoutNode, indent string) error {
+	if node == nil {
 		return nil
 	}
-	id, _ := n["node_id"].(string)
-	line := fmt.Sprintf("%s%v %s", indent, n["kind"], id)
-	switch n["kind"] {
+	line := fmt.Sprintf("%s%s %s", indent, node.Kind, node.NodeID)
+	switch node.Kind {
 	case "split":
-		line += fmt.Sprintf(" %v %v", n["direction"], n["ratios"])
+		line += fmt.Sprintf(" %v %v", node.Direction, node.Ratios)
 	case "grid":
-		line += fmt.Sprintf(" %vx%v", n["rows"], n["cols"])
+		line += fmt.Sprintf(" %vx%v", node.Rows, node.Cols)
 	}
-	if tabs := l.TabsByTile[id]; len(tabs) > 0 {
+	if tabs := l.TabsByTile[node.NodeID]; len(tabs) > 0 {
 		line += " " + pluralize(len(tabs), "tab")
 	}
 	if _, err := fmt.Fprintln(w, line); err != nil {
 		return err
 	}
-	children, _ := n["children"].([]any)
-	for _, child := range children {
+	for _, child := range node.Children {
 		if err := l.renderNode(w, child, indent+"  "); err != nil {
 			return err
 		}
@@ -296,7 +307,7 @@ func runLayoutTree(inv *cli.Invocation, includeTabs bool) (any, error) {
 	out := layoutTree{
 		WorkspaceID: ws.ID,
 		RootNodeID:  rec.GetRootNodeId(),
-		Tree:        buildTreeJSON(cc.bs.State, rec.GetRootNodeId()),
+		Tree:        projectLayoutNode(cc.bs.State, crdt.LiveChildrenByParent(cc.bs.State), rec.GetRootNodeId()),
 	}
 	if includeTabs {
 		out.TabsByTile = map[string][]layoutTab{}

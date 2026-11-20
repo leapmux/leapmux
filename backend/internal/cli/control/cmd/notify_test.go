@@ -114,9 +114,7 @@ func TestNotifyOverIPC_PrintsTheNotificationAsText(t *testing.T) {
 
 	o := runControlText(t, "notify", "Tests passed", "--body", "All green")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Contains(t, o.Stdout, "worker_id: worker-A")
-	assert.Contains(t, o.Stdout, "title:     Tests passed")
-	assert.Contains(t, o.Stdout, "body:      All green")
+	assert.Equal(t, "worker_id: worker-A  title: \"Tests passed\"  body: \"All green\"\n", o.Stdout)
 }
 
 // What the CLI refuses, it refuses before it sends anything.

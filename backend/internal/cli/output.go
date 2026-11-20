@@ -27,6 +27,8 @@ type Printer struct {
 	Format Format
 	// Quiet prints only the ids of a result, one per line.
 	Quiet bool
+	// oneLineResult is the default text form for an ordinary mutation.
+	oneLineResult bool
 }
 
 // Result prints the result of a command. A nil result prints nothing.
@@ -43,6 +45,9 @@ func (p *Printer) Result(v any) error {
 	}
 	if p.Format == FormatJSON {
 		return writeEnvelope(p.Out, "data", v)
+	}
+	if p.oneLineResult {
+		return renderSingleLine(p.Out, v)
 	}
 	return renderText(p.Out, v)
 }

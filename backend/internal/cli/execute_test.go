@@ -221,7 +221,7 @@ func TestExecute_RunsALeafAndPrintsItsResult(t *testing.T) {
 	require.Equal(t, ExitOK, code, "stderr: %s", stderr)
 	require.Len(t, seen, 1)
 	assert.Equal(t, testInvocation{path: "tool workspace rename", args: []string{"w-1", "New title"}}, seen[0])
-	assert.Equal(t, "w-1\nNew title\n", stdout, "an object that holds one list prints the bare list")
+	assert.Equal(t, "args: [w-1, \"New title\"]\n", stdout)
 
 	code, stdout, _ = execute(t, testTree(&seen), "workspace", "rename", "w-1", "x", "--json")
 	require.Equal(t, ExitOK, code)
@@ -392,7 +392,7 @@ func TestRun_ReturnsTheErrorUnprinted(t *testing.T) {
 		"Run expands an abbreviation as Execute does")
 	require.Len(t, seen, 1)
 	assert.Equal(t, "tool workspace rename", seen[0].path)
-	assert.Equal(t, "w-1\nx\n", stdout.String())
+	assert.Equal(t, "args: [w-1, x]\n", stdout.String())
 }
 
 // A leaf runs under a context that an interrupt ends, and it reports an

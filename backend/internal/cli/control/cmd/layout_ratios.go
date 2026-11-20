@@ -11,6 +11,17 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
+type splitRatiosResult struct {
+	SplitTileID string    `json:"split_tile_id"`
+	Ratios      []float64 `json:"ratios"`
+}
+
+type gridRatiosResult struct {
+	GridTileID string    `json:"grid_tile_id"`
+	RowRatios  []float64 `json:"row_ratios,omitempty"`
+	ColRatios  []float64 `json:"col_ratios,omitempty"`
+}
+
 // runTileSetRatios writes a fresh `ratios` slice on a SPLIT node. The
 // <tile> argument takes every target form, as every other tile command's
 // does. The handler rejects a target that is not a SPLIT explicitly —
@@ -42,7 +53,7 @@ func runTileSetRatios(inv *cli.Invocation) (any, error) {
 	if err := cc.submitOps([]*leapmuxv1.CrdtOp{opSetNodeRatios(cc.bs, splitID, ratios)}); err != nil {
 		return nil, err
 	}
-	return map[string]any{"split_tile_id": splitID, "ratios": ratios}, nil
+	return splitRatiosResult{SplitTileID: splitID, Ratios: ratios}, nil
 }
 
 // runTileSetGridRatios writes rowRatios and/or colRatios on a GRID
@@ -96,14 +107,7 @@ func runTileSetGridRatios(inv *cli.Invocation) (any, error) {
 	if err := cc.submitOps(ops); err != nil {
 		return nil, err
 	}
-	out := map[string]any{"grid_tile_id": gridID}
-	if rowRatios != nil {
-		out["row_ratios"] = rowRatios
-	}
-	if colRatios != nil {
-		out["col_ratios"] = colRatios
-	}
-	return out, nil
+	return gridRatiosResult{GridTileID: gridID, RowRatios: rowRatios, ColRatios: colRatios}, nil
 }
 
 // parseRatiosCSV parses a comma-separated float list and normalizes
