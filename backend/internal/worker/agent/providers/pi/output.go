@@ -1,7 +1,6 @@
 package pi
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -97,17 +96,10 @@ type piToolState struct {
 // frontend through PublishControlRequest / PersistLeapMuxNotification so renderers
 // can read every method-specific field.
 type piExtensionUIRequestHeader struct {
-	ID         string          `json:"id"`
-	Method     string          `json:"method"`
-	StatusKey  string          `json:"statusKey"`
-	StatusText *string         `json:"statusText"`
-	WidgetKey  string          `json:"widgetKey"`
-	NotifyType string          `json:"notifyType"`
-	Message    string          `json:"message"`
-	Title      string          `json:"title"`
-	Text       string          `json:"text"`
-	Lines      json.RawMessage `json:"widgetLines"`
-	Placement  string          `json:"widgetPlacement"`
+	ID        string `json:"id"`
+	Method    string `json:"method"`
+	StatusKey string `json:"statusKey"`
+	WidgetKey string `json:"widgetKey"`
 	// Timeout is the wait in milliseconds after which Pi answers a dialog itself,
 	// with its default. Zero states no limit.
 	Timeout float64 `json:"timeout"`
@@ -125,12 +117,6 @@ func (h piExtensionUIRequestHeader) deadline() time.Duration {
 		return 0
 	}
 	return time.Duration(h.Timeout * float64(time.Millisecond))
-}
-
-// piQueueUpdateEnvelope captures the queue depths we surface as session info.
-type piQueueUpdateEnvelope struct {
-	Steering []json.RawMessage `json:"steering"`
-	FollowUp []json.RawMessage `json:"followUp"`
 }
 
 // piAgentEndMessage holds the native outcome fields of one assistant message.
@@ -232,8 +218,10 @@ func handlePiOutputObserved(a *Agent, line *providerkit.ParsedLine, observedAt t
 		a.handlePiToolExecutionUpdate(line.Raw)
 	case contracts.PiEventToolExecutionEnd:
 		a.handlePiToolExecutionEnd(line.Raw)
-	case contracts.PiEventQueueUpdate:
-		a.handlePiQueueUpdate(line.Raw)
+	case piEventQueueUpdate:
+		// Queue depth values are unused by the browser. Consume the native
+		// event so the unknown-event route never persists it.
+		// https://github.com/leapmux/leapmux/issues/433
 	case contracts.PiEventCompactionStart:
 		a.Mu.Lock()
 		a.compactionLive = true
@@ -1102,23 +1090,6 @@ func (a *Agent) handlePiModelChangeEntry(provider, modelID string) {
 	})
 }
 
-func (a *Agent) handlePiQueueUpdate(raw []byte) {
-	var env piQueueUpdateEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		slog.Warn("pi queue_update unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	// No browser code reads these keys, nor any other pi_* session-info key, so
-	// they stay out of contracts/session-info.json (which holds only the tokens
-	// both sides read). Render them or delete the broadcasts:
-	// https://github.com/leapmux/leapmux/issues/433
-	a.sink.BroadcastSessionInfo(map[string]any{
-		"pi_queue_depth":     len(env.Steering) + len(env.FollowUp),
-		"pi_steering_depth":  len(env.Steering),
-		"pi_follow_up_depth": len(env.FollowUp),
-	})
-}
-
 // withdrawTimedOutPiDialog withdraws the card of a dialog that Pi answered itself
 // when its deadline passed. It forgets the dialog's question state, as a
 // cancellation does, so a late answer with its id starts no exchange.
@@ -1191,43 +1162,21 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		if _, err := a.orderedSink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
 			slog.Error("pi persist notify", "agent_id", a.AgentID(), "error", err)
 		}
-	// No browser code reads pi_status, pi_widget, pi_terminal_title or
-	// pi_editor_text, so they stay out of contracts/session-info.json. Render them
-	// or delete the broadcasts: https://github.com/leapmux/leapmux/issues/433
-	case contracts.PiExtensionMethodSetStatus:
+	case piExtensionMethodSetStatus:
 		if head.StatusKey == piGoalDisplayKey {
 			a.schedulePiGoalRefresh(false)
 		}
-		statusValue := any(nil)
-		if head.StatusText != nil {
-			statusValue = *head.StatusText
-		}
-		a.sink.BroadcastSessionInfo(map[string]any{
-			"pi_status": map[string]any{head.StatusKey: statusValue},
-		})
-	case contracts.PiExtensionMethodSetWidget:
+		// Display-only: no browser reads pi_status. Consume without broadcast.
+		// https://github.com/leapmux/leapmux/issues/433
+	case piExtensionMethodSetWidget:
 		if head.WidgetKey == piGoalDisplayKey {
 			a.schedulePiGoalRefresh(false)
 		}
-		widget := map[string]any{
-			"placement": cmp.Or(head.Placement, "aboveEditor"),
-		}
-		if len(head.Lines) > 0 {
-			widget["lines"] = head.Lines
-		} else {
-			widget["lines"] = nil
-		}
-		a.sink.BroadcastSessionInfo(map[string]any{
-			"pi_widget": map[string]any{head.WidgetKey: widget},
-		})
-	case contracts.PiExtensionMethodSetTitle:
-		a.sink.BroadcastSessionInfo(map[string]any{
-			"pi_terminal_title": head.Title,
-		})
-	case contracts.PiExtensionMethodSetEditorText:
-		a.sink.BroadcastSessionInfo(map[string]any{
-			"pi_editor_text": head.Text,
-		})
+		// Display-only: no browser reads pi_widget. Consume without broadcast.
+	case piExtensionMethodSetTitle:
+		// Display-only: no browser reads pi_terminal_title. Consume without broadcast.
+	case piExtensionMethodSetEditorText:
+		// Display-only: no browser reads pi_editor_text. Consume without broadcast.
 	default:
 		// Store an unknown extension method so the user can inspect it.
 		// Pi sent the frame, so its source is AGENT.

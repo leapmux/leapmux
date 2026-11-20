@@ -312,7 +312,7 @@ func TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree(t *testing.T) {
 // session values, live tool progress, and generation-progress values.
 //
 // The contract holds the keys the BROWSER reads. A Go-only ephemeral key (the
-// pi_* family, zcode_api_retry) is outside it and outside this guard, which is
+// zcode_api_retry family) is outside it and outside this guard, which is
 // the right boundary: a key that drives a badge or a counter is browser-read by
 // definition, so it is in the contract.
 func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
@@ -337,6 +337,10 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		contracts.SessionInfoKeyTurnRetryOffer: {},
 		// A compaction can outlive its turn. Cache it until an explicit null ends it.
 		contracts.SessionInfoKeyCompaction: {},
+		// The live retry identifies one foreground request. An identical
+		// repeat is nothing new. The clear broadcasts `null`, which the dedup
+		// lets through against the cached value.
+		contracts.SessionInfoKeyModelAPIRetry: {},
 		// An identical suggestion repeat offers the same text twice; the
 		// withdrawal broadcasts null, which the dedup lets through against the
 		// cached suggestion.

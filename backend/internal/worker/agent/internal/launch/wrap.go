@@ -46,6 +46,21 @@ type WrapSpec struct {
 	// metadata line.
 	EnvGated   *EnvGatedArgs
 	WorkingDir string // cmd.Dir for the launched process
+	// ObserveEnvironment requests an environment observation record in the
+	// preamble. The probe runs after profile and environment pins, before
+	// provider exec. The observation is the launch-specific metadata prefix
+	// followed by `environment=<base64url JSON Snapshot>`.
+	ObserveEnvironment *ObservationRequest
+}
+
+// ObservationRequest configures the environment observation emitted in the
+// launch preamble. Dirac uses this to discover the effective profile root.
+type ObservationRequest struct {
+	// Variables are the environment variable names to capture.
+	Variables []string
+	// PathVariables maps an environment variable to trim characters for
+	// resolved path output.
+	PathVariables map[string]string
 }
 
 // EnvGatedArgs makes arguments depend on the environment that the user's shell

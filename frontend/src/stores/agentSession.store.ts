@@ -12,6 +12,16 @@ export interface AgentSessionInfo {
   planFilePath?: string
 }
 
+/** Live foreground model API retry state. */
+export interface ModelAPIRetry {
+  phase: 'waiting' | 'running'
+  attempt: number
+  maxAttempts?: number
+  retryDelayMs?: number
+  errorStatus?: number
+  error?: string
+}
+
 export interface LiveGenerationProgress {
   revision: number
   thinkingTokens?: number
@@ -26,7 +36,7 @@ export interface SessionMetadataDelivery {
 }
 
 type SessionField = keyof AgentSessionInfo
-type ReceiptField = SessionField | `goalProgress:${keyof GoalProgress}`
+type ReceiptField = SessionField | `goalProgress:${keyof GoalProgress}` | `modelApiRetry:${keyof ModelAPIRetry}`
 
 // A new progress field must supply a clear rule.
 const GOAL_PROGRESS_FIELDS = {

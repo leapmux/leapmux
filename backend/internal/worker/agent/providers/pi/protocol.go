@@ -65,6 +65,17 @@ const (
 // The key stays on the Go side: no browser code reads it.
 const piGoalDisplayKey = "goal"
 
+// Go-only native event and extension method names. The browser does not
+// dispatch on these, so they stay out of contracts/pi-protocol.json.
+// https://github.com/leapmux/leapmux/issues/433
+const (
+	piEventQueueUpdate           = "queue_update"
+	piExtensionMethodSetStatus   = "setStatus"
+	piExtensionMethodSetWidget   = "setWidget"
+	piExtensionMethodSetTitle    = "setTitle"
+	piExtensionMethodSetEditorText = "set_editor_text"
+)
+
 // Pi steers into the current turn or queues a regular prompt after that turn.
 const (
 	StreamingBehaviorSteer    = "steer"

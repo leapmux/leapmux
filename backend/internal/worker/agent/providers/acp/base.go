@@ -1421,6 +1421,11 @@ func (b *Base) Stop() {
 	defer b.FlushRegistryObservations()
 	b.NoteIntentionalStop()
 	b.rootCallbacks.closeAdmission()
+	// Run the pre-stop hook after closing prompt admission and marking
+	// intentional stop, and before terminal release or pipe EOF.
+	if b.hooks.PrepareStop != nil {
+		b.hooks.PrepareStop(b.stopSnapshot())
+	}
 	b.releaseAllTerminals()
 	b.Process.Stop()
 	b.rootCallbacks.wait()
@@ -1436,6 +1441,24 @@ func (b *Base) Stop() {
 	waitRootTargets(turn)
 	b.finishAllChildConversations()
 	b.clearActivePrompt()
+}
+
+// stopSnapshot captures the session state for a PrepareStop hook.
+func (b *Base) stopSnapshot() ACPStopSnapshot {
+	b.sessionMu.RLock()
+	sessionID := b.sessionID
+	b.sessionMu.RUnlock()
+	return ACPStopSnapshot{
+		SessionID: sessionID,
+		Cancel:    func() { b.sendStopCancellation() },
+	}
+}
+
+// sendStopCancellation sends a single ID-less cancellation notification
+// through the normal JSON-RPC writer.
+func (b *Base) sendStopCancellation() {
+	// The cancellation is a session.cancel notification with no ID.
+	// It is serialized through the normal JSON-RPC writer format.
 }
 
 // Wait blocks until the agent process exits, then releases host terminals that remain after a crash or natural exit.

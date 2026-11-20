@@ -97,6 +97,44 @@ func TestPiGoalSnapshotUsesTheCurrentNativeBranch(t *testing.T) {
 	assert.Nil(t, record)
 }
 
+func TestPiGoalDisplayEventsTriggerGoalRefresh(t *testing.T) {
+	t.Parallel()
+	rig, sink, goalPath := piGoalSyncRig(t)
+	a := rig.agent
+	a.Mu.Lock()
+	a.extensionCommands = map[string]bool{"goal-direct": true}
+	a.Mu.Unlock()
+	rig.setResponder(func(request piRecordedRequest) (json.RawMessage, bool, string) {
+		if request.Type != CommandGetEntries {
+			return nil, false, "unexpected command"
+		}
+		return json.RawMessage(`{"entries":[{"type":"custom","id":"focus","parentId":null,"customType":"pi-goal-focus","data":{"version":1,"focusedGoalId":"goal"}}],"leafId":"focus"}`), true, ""
+	})
+
+	// setStatus with key "goal" triggers a goal read.
+	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Updated","status":"active"}`), 0o600))
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"goal","statusText":"running"}`))
+	require.Eventually(t, func() bool {
+		goal, ok := sink.LastGoal()
+		return ok && goal.Objective == "Updated"
+	}, 2*time.Second, time.Millisecond, "setStatus with goal key must trigger goal refresh")
+
+	// setWidget with key "goal" triggers a goal read.
+	require.NoError(t, os.WriteFile(goalPath, []byte(`{"version":3,"id":"goal","objective":"Widget updated","status":"active"}`), 0o600))
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"x","method":"setWidget","widgetKey":"goal"}`))
+	require.Eventually(t, func() bool {
+		goal, ok := sink.LastGoal()
+		return ok && goal.Objective == "Widget updated"
+	}, 2*time.Second, time.Millisecond, "setWidget with goal key must trigger goal refresh")
+
+	// A different key leaves the goal reader idle.
+	beforeGoal, _ := sink.LastGoal()
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"other","statusText":"ignored"}`))
+	time.Sleep(50 * time.Millisecond)
+	afterGoal, _ := sink.LastGoal()
+	assert.Equal(t, beforeGoal, afterGoal, "setStatus with a non-goal key must not trigger a goal refresh")
+}
+
 func TestPiGoalCommandRefreshesConfirmedState(t *testing.T) {
 	t.Parallel()
 	rig, sink, goalPath := piGoalSyncRig(t)

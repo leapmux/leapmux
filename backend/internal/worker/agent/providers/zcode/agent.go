@@ -337,6 +337,38 @@ type zcodeTurnState struct {
 	// read from the tool-call records themselves (see dropZCodeTurnLocked).
 	toolInvocationIDs     map[string]struct{}
 	invocationsByNativeID map[string]map[string]*zcodeToolInvocation
+	// modelAPIRetry carries the live foreground retry state. It is published
+	// through the dispatch path and cleared on owner retirement.
+	modelAPIRetry *zcodeModelAPIRetryState
+}
+
+// zcodeModelAPIRetryState tracks the live foreground model API retry for a
+// turn's current physical request. The state is published as session-info
+// under the model_api_retry key.
+type zcodeModelAPIRetryState struct {
+	// LogicalCallID is the native modelCall.logicalCallId that links attempts.
+	LogicalCallID string
+	// PhysicalRequestID is the current physical request ID. The installed
+	// runtime assigns a new request ID to later attempts.
+	PhysicalRequestID string
+	// Phase is "waiting" or "running".
+	Phase string
+	// Attempt is the current attempt number (positive).
+	Attempt int
+	// MaxAttempts is the total attempt budget (positive, optional).
+	MaxAttempts int
+	// RetryDelayMs is the scheduled delay in milliseconds (optional, nonnegative).
+	RetryDelayMs int64
+	// ErrorStatus is the HTTP status of the last failure (optional).
+	ErrorStatus int
+	// Error is the error text of the last failure (optional).
+	Error string
+	// LastFailedPhysicalID retains the last failed physical request ID after
+	// terminal failure clears the indicator.
+	LastFailedPhysicalID string
+	// StreamRecoveryProof is the predecessor request ID proven by a linked
+	// native stream-recovery successor.
+	StreamRecoveryProof string
 }
 
 // zcodeScopeContent separates observed bytes from immutable queued output.

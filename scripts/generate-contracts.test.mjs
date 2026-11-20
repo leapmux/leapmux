@@ -3304,6 +3304,8 @@ describe('checkSessionInfo', () => {
       turnRetryOfferFields: { TurnId: 'turn_id' },
       compactionFields: { Trigger: 'trigger' },
       promptSuggestionFields: { Text: 'text' },
+      modelApiRetryFields: { Phase: 'phase', Attempt: 'attempt' },
+      modelApiRetryPhases: { Waiting: 'waiting', Running: 'running' },
       ...overrides,
     }
   }

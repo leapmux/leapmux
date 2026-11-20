@@ -27,6 +27,11 @@ type Request struct {
 	// PathVariables maps an environment variable to the characters its consumer trims.
 	// Resolved paths preserve dot segments for the operating system's file lookup.
 	PathVariables map[string]string `json:"pathVariables,omitempty"`
+	// ObservationPrefix, when non-empty, makes the probe write a leading
+	// newline and a single observation record followed by a newline. The
+	// record is `<prefix>environment=<unpadded base64url JSON Snapshot>`.
+	// The prefix is the launch-specific metadata prefix from Wrap.
+	ObservationPrefix string `json:"observationPrefix,omitempty"`
 }
 
 type Snapshot struct {
@@ -107,19 +112,35 @@ func Run(args []string, stdout, stderr io.Writer) (exitCode int, handled bool) {
 	}
 	snapshot, err := capture(request)
 	if err == nil {
-		_, err = io.WriteString(stdout, responsePrefix)
-	}
-	if err == nil {
-		err = json.NewEncoder(stdout).Encode(snapshot)
-	}
-	if err == nil {
-		_, err = io.WriteString(stdout, "\x00")
+		if request.ObservationPrefix != "" {
+			// Observation record: a leading newline, then the prefixed record,
+			// then a trailing newline. The consumer parses this before the
+			// ready delimiter.
+			encoded := requestEncoding.EncodeToString(mustJSON(snapshot))
+			_, err = fmt.Fprintf(stdout, "\n%senvironment=%s\n", request.ObservationPrefix, encoded)
+		} else {
+			_, err = io.WriteString(stdout, responsePrefix)
+			if err == nil {
+				err = json.NewEncoder(stdout).Encode(snapshot)
+			}
+			if err == nil {
+				_, err = io.WriteString(stdout, "\x00")
+			}
+		}
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "the internal environment probe could not complete")
 		return 1, true
 	}
 	return 0, true
+}
+
+func mustJSON(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return data
 }
 
 func capture(request Request) (Snapshot, error) {
