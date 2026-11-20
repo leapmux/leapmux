@@ -48,46 +48,63 @@ func newAdminAppList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetApps()))
+			rows := make([]AppRegistrationRow, 0, len(resp.GetApps()))
 			for _, app := range resp.GetApps() {
-				rows = append(rows, adminAppJSON(app))
+				rows = append(rows, appRegistrationRowOf(app))
 			}
-			return a.Result(map[string]any{
-				"apps":                      rows,
-				"next_cursor":               resp.GetPage().GetNextCursor(),
-				"open_registration_enabled": resp.GetOpenRegistrationEnabled(),
-			})
+			return a.Result(struct {
+				Apps                    []AppRegistrationRow `json:"apps"`
+				NextCursor              string               `json:"next_cursor"`
+				OpenRegistrationEnabled bool                 `json:"open_registration_enabled"`
+			}{Apps: rows, NextCursor: resp.GetPage().GetNextCursor(), OpenRegistrationEnabled: resp.GetOpenRegistrationEnabled()})
 		},
 	})
 }
 
-// adminAppJSON renders one registration.
-//
-// It carries no secret and no hash, because the App message holds neither: the
-// client secret crosses once, in the registration response, and the hub keeps
-// only its hash.
-func adminAppJSON(app *leapmuxv1.App) map[string]any {
-	row := map[string]any{
-		"client_id":             app.GetClientId(),
-		"client_name":           app.GetClientName(),
-		"client_uri":            app.GetClientUri(),
-		"visibility":            app.GetVisibility().String(),
-		"client_type":           app.GetClientType().String(),
-		"redirect_uris":         app.GetRedirectUris(),
-		"scopes":                scopeTokensOf(app.GetScopes()),
-		"grant_types":           app.GetGrantTypes(),
-		"elevation_allowed":     app.GetElevationAllowed(),
-		"registration_source":   app.GetRegistrationSource(),
-		"verified":              app.GetVerifiedAt() != nil,
-		"verified_by":           app.GetVerifiedByUsername(),
-		"has_icon":              app.GetHasIcon(),
-		"live_credential_count": app.GetLiveCredentialCount(),
+// AppRegistrationRow contains the fields an admin can read repeatedly.
+// The Hub returns a client secret once at registration and stores its hash.
+type AppRegistrationRow struct {
+	ClientID            string   `json:"client_id"`
+	ClientName          string   `json:"client_name"`
+	ClientURI           string   `json:"client_uri"`
+	Visibility          string   `json:"visibility"`
+	ClientType          string   `json:"client_type"`
+	RedirectURIs        []string `json:"redirect_uris"`
+	Scopes              []string `json:"scopes"`
+	GrantTypes          []string `json:"grant_types"`
+	ElevationAllowed    bool     `json:"elevation_allowed"`
+	RegistrationSource  string   `json:"registration_source"`
+	Verified            bool     `json:"verified"`
+	VerifiedBy          string   `json:"verified_by"`
+	HasIcon             bool     `json:"has_icon"`
+	LiveCredentialCount int64    `json:"live_credential_count"`
+	CreatedAt           string   `json:"created_at,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+	VerifiedAt          string   `json:"verified_at,omitempty"`
+	RevokedAt           string   `json:"revoked_at,omitempty"`
+}
+
+func appRegistrationRowOf(app *leapmuxv1.App) AppRegistrationRow {
+	return AppRegistrationRow{
+		ClientID:            app.GetClientId(),
+		ClientName:          app.GetClientName(),
+		ClientURI:           app.GetClientUri(),
+		Visibility:          enumToken(app.GetVisibility()),
+		ClientType:          enumToken(app.GetClientType()),
+		RedirectURIs:        app.GetRedirectUris(),
+		Scopes:              scopeTokensOf(app.GetScopes()),
+		GrantTypes:          app.GetGrantTypes(),
+		ElevationAllowed:    app.GetElevationAllowed(),
+		RegistrationSource:  app.GetRegistrationSource(),
+		Verified:            app.GetVerified(),
+		VerifiedBy:          app.GetVerifiedByUsername(),
+		HasIcon:             app.GetHasIcon(),
+		LiveCredentialCount: app.GetLiveCredentialCount(),
+		CreatedAt:           formatTime(app.GetCreatedAt()),
+		UpdatedAt:           formatTime(app.GetUpdatedAt()),
+		VerifiedAt:          formatTime(app.GetVerifiedAt()),
+		RevokedAt:           formatTime(app.GetRevokedAt()),
 	}
-	putTime(row, "created_at", app.GetCreatedAt())
-	putTime(row, "updated_at", app.GetUpdatedAt())
-	putTime(row, "verified_at", app.GetVerifiedAt())
-	putTime(row, "revoked_at", app.GetRevokedAt())
-	return row
 }
 
 // scopeTokensOf renders a wire scope list as its RFC 6749 section 3.3 tokens.
@@ -154,12 +171,16 @@ func newAdminAppRegister() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := adminAppJSON(resp.GetApp())
+			out := struct {
+				AppRegistrationRow
+				ClientSecret     string `json:"client_secret,omitempty"`
+				ClientSecretNote string `json:"client_secret_note,omitempty"`
+			}{AppRegistrationRow: appRegistrationRowOf(resp.GetApp())}
 			// The ONLY time the hub emits this, so the envelope carries it and
 			// says so. A public client has none at all.
 			if secret := resp.GetClientSecret(); secret != "" {
-				out["client_secret"] = secret
-				out["client_secret_note"] = "copy this now; the hub stores only its hash and cannot show it again"
+				out.ClientSecret = secret
+				out.ClientSecretNote = "Copy this now. The Hub stores only its hash and shows the secret once."
 			}
 			return a.Result(out)
 		},
@@ -218,7 +239,7 @@ func newAdminAppUpdate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(adminAppJSON(resp.GetApp()))
+			return a.Result(appRegistrationRowOf(resp.GetApp()))
 		},
 	})
 }
@@ -242,7 +263,7 @@ func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Exa
 			if err != nil {
 				return err
 			}
-			return a.Result(adminAppJSON(resp.GetApp()))
+			return a.Result(appRegistrationRowOf(resp.GetApp()))
 		},
 	})
 }
@@ -261,7 +282,7 @@ func newAdminAppSetVerified(verified bool, use, short string, examples []cli.Exa
 			if err != nil {
 				return err
 			}
-			return a.Result(adminAppJSON(resp.GetApp()))
+			return a.Result(appRegistrationRowOf(resp.GetApp()))
 		},
 	})
 }
@@ -282,10 +303,10 @@ func newAdminAppRevoke() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{
-				"revoked":                  clientID,
-				"revoked_credential_count": resp.GetRevokedCredentialCount(),
-			})
+			return a.Result(struct {
+				Revoked                string `json:"revoked"`
+				RevokedCredentialCount int64  `json:"revoked_credential_count"`
+			}{Revoked: clientID, RevokedCredentialCount: resp.GetRevokedCredentialCount()})
 		},
 	})
 }
@@ -305,7 +326,9 @@ func newAdminAppDelete() *cobra.Command {
 				&leapmuxv1.DeleteAppRequest{ClientId: clientID}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"deleted": clientID})
+			return a.Result(struct {
+				Deleted string `json:"deleted"`
+			}{Deleted: clientID})
 		},
 	})
 }

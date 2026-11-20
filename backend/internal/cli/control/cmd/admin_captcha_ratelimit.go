@@ -150,10 +150,10 @@ func newAdminCaptchaShow() *cobra.Command {
 				return err
 			}
 			wanted := captchaSettingKeys()
-			values := map[string]any{}
+			values := make(map[string]adminSettingRow)
 			for _, v := range resp.GetValues() {
 				if slices.Contains(wanted, v.GetKey()) {
-					values[v.GetKey()] = settingValueJSON(v)
+					values[v.GetKey()] = adminSettingRowOf(v)
 				}
 			}
 			return a.Result(values)
@@ -506,11 +506,11 @@ func newAdminCaptchaSet() *cobra.Command {
 				&leapmuxv1.UpdateSettingsRequest{Writes: writes}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{
-				"updated":   true,
-				"provider":  captcha.ProviderAlias(target),
-				"activated": switching,
-			})
+			return a.Result(struct {
+				Updated   bool   `json:"updated"`
+				Provider  string `json:"provider"`
+				Activated bool   `json:"activated"`
+			}{Updated: true, Provider: captcha.ProviderAlias(target), Activated: switching})
 		},
 	})
 }
@@ -526,7 +526,7 @@ func newAdminCaptchaSetEnabled(enabled bool, use, short string, examples []cli.E
 			if _, err := adminUpdateSettingScalar(a.Context(), c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{captcha.CaptchaEnabledKey.Name(): enabled})
+			return a.Result(map[string]bool{captcha.CaptchaEnabledKey.Name(): enabled})
 		},
 	})
 }
@@ -589,7 +589,9 @@ func newAdminCaptchaReset() *cobra.Command {
 			for _, v := range resp.GetValues() {
 				reset = append(reset, v.GetKey())
 			}
-			return a.Result(map[string]any{"reset": reset})
+			return a.Result(struct {
+				Reset []string `json:"reset"`
+			}{Reset: reset})
 		},
 	})
 }
@@ -651,13 +653,15 @@ func newAdminRateLimitList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0)
+			rows := make([]adminSettingRow, 0)
 			for _, v := range resp.GetValues() {
 				if strings.HasPrefix(v.GetKey(), ratelimit.SettingKeyPrefix) {
-					rows = append(rows, settingValueJSON(v))
+					rows = append(rows, adminSettingRowOf(v))
 				}
 			}
-			return a.Result(map[string]any{"rate_limits": rows})
+			return a.Result(struct {
+				RateLimits []adminSettingRow `json:"rate_limits"`
+			}{RateLimits: rows})
 		},
 	})
 }
@@ -706,7 +710,7 @@ func newAdminRateLimitSet() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(settingValueJSON(value))
+			return a.Result(adminSettingRowOf(value))
 		},
 	})
 }
@@ -724,7 +728,7 @@ func newAdminRateLimitSetEnabled(enabled bool, use, short string, examples []cli
 			if err != nil {
 				return err
 			}
-			return a.Result(settingValueJSON(value))
+			return a.Result(adminSettingRowOf(value))
 		},
 	})
 }
@@ -744,7 +748,7 @@ func newAdminRateLimitReset() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(settingValueJSON(value))
+			return a.Result(adminSettingRowOf(value))
 		},
 	})
 }

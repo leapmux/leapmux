@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -164,26 +165,20 @@ func TestParseSettingValue_DigitsStayNumbers(t *testing.T) {
 	}
 }
 
-// Every optional timestamp in an admin row goes through putTime. A row
-// that printed a nil stamp would show 1970-01-01, which reads as a real
-// event: an API token "last used" before it existed, a worker "last seen"
-// at the epoch.
-func TestPutTime_OmitsAnAbsentTimestampAndFormatsAPresentOneInUTC(t *testing.T) {
-	row := map[string]any{}
-	putTime(row, "deleted_at", nil)
-	assert.NotContains(t, row, "deleted_at", "an absent stamp leaves no field at all")
+func TestFormatTime_FormatsAnOptionalTimestampInUTC(t *testing.T) {
+	assert.Empty(t, formatTime(nil))
 
 	// A non-UTC zone must render as UTC, so two rows from two hubs compare.
 	zone := time.FixedZone("UTC+9", 9*60*60)
-	putTime(row, "created_at", timestamppb.New(time.Date(2026, 8, 18, 12, 0, 0, 0, zone)))
-	assert.Equal(t, "2026-08-18T03:00:00.000Z", row["created_at"])
+	stamp := timestamppb.New(time.Date(2026, 8, 18, 12, 0, 0, 0, zone))
+	assert.Equal(t, "2026-08-18T03:00:00.000Z", formatTime(stamp))
 }
 
-func TestAdminUserJSON_OmitsTheTimestampsThatAreAbsent(t *testing.T) {
+func TestAdminUserRowOf_OmitsTheTimestampsThatAreAbsent(t *testing.T) {
 	created := timestamppb.New(time.Date(2026, 8, 18, 3, 0, 0, 0, time.UTC))
-	row := adminUserJSON(&leapmuxv1.AdminUser{
+	row := rowJSONFields(t, adminUserRowOf(&leapmuxv1.AdminUser{
 		Id: "u1", Username: "amy", CreatedAt: created,
-	})
+	}))
 
 	assert.Equal(t, "u1", row["id"])
 	assert.Equal(t, "2026-08-18T03:00:00.000Z", row["created_at"])
@@ -196,23 +191,21 @@ func TestAdminUserJSON_OmitsTheTimestampsThatAreAbsent(t *testing.T) {
 	assert.Equal(t, false, row["password_set"])
 }
 
-func TestAdminWorkerJSON_OmitsAnUnseenWorkersLastSeen(t *testing.T) {
+func TestAdminWorkerRowOf_OmitsAnUnseenWorkersLastSeen(t *testing.T) {
 	created := timestamppb.New(time.Date(2026, 8, 18, 3, 0, 0, 0, time.UTC))
-	row := adminWorkerJSON(&leapmuxv1.AdminWorker{Id: "w1", CreatedAt: created})
+	row := rowJSONFields(t, adminWorkerRowOf(&leapmuxv1.AdminWorker{Id: "w1", CreatedAt: created}))
 	assert.NotContains(t, row, "last_seen_at", "a worker that never connected has no last-seen time")
 
 	seen := timestamppb.New(time.Date(2026, 8, 18, 4, 30, 0, 0, time.UTC))
-	row = adminWorkerJSON(&leapmuxv1.AdminWorker{Id: "w1", CreatedAt: created, LastSeenAt: seen})
+	row = rowJSONFields(t, adminWorkerRowOf(&leapmuxv1.AdminWorker{Id: "w1", CreatedAt: created, LastSeenAt: seen}))
 	assert.Equal(t, "2026-08-18T04:30:00.000Z", row["last_seen_at"])
 }
 
 // The CLI's JSON envelope is a public contract: an operator's script reads
 // these keys by name. A rename or a dropped key is a silent break — the
-// script sees an absent field, not an error. These two mappers had no test,
-// so nothing pinned their key set. Every stamp goes through putTime, so a
-// hub that omits one leaves the field out rather than printing the epoch.
-func TestAdminOAuthProviderJSON_CarriesEveryKeyAScriptReads(t *testing.T) {
-	row := adminOAuthProviderJSON(&leapmuxv1.AdminOAuthProvider{
+// script sees an absent field, not an error.
+func TestAdminOAuthProviderRowOf_CarriesEveryKeyAScriptReads(t *testing.T) {
+	row := rowJSONFields(t, adminOAuthProviderRowOf(&leapmuxv1.AdminOAuthProvider{
 		Id:           "p1",
 		ProviderType: "oidc",
 		Name:         "Corp SSO",
@@ -222,7 +215,7 @@ func TestAdminOAuthProviderJSON_CarriesEveryKeyAScriptReads(t *testing.T) {
 		TrustEmail:   true,
 		Enabled:      false,
 		CreatedAt:    timestamppb.New(time.Date(2026, 8, 18, 3, 0, 0, 0, time.UTC)),
-	})
+	}))
 
 	assert.Equal(t, map[string]any{
 		"id":          "p1",
@@ -244,15 +237,15 @@ func TestAdminOAuthProviderJSON_CarriesEveryKeyAScriptReads(t *testing.T) {
 	assert.Contains(t, row, "enabled")
 }
 
-func TestAdminSessionJSON_CarriesEveryKeyAScriptReads(t *testing.T) {
+func TestAdminSessionRowOf_CarriesEveryKeyAScriptReads(t *testing.T) {
 	at := func(h int) *timestamppb.Timestamp {
 		return timestamppb.New(time.Date(2026, 8, 18, h, 0, 0, 0, time.UTC))
 	}
-	row := adminSessionJSON(&leapmuxv1.AdminSession{
+	row := rowJSONFields(t, adminSessionRowOf(&leapmuxv1.AdminSession{
 		Id: "s1", UserId: "u1", Username: "alice", UserDeleted: true,
 		CreatedAt: at(3), LastActiveAt: at(4), ExpiresAt: at(5),
 		IpAddress: "203.0.113.7", UserAgent: "curl/8",
-	})
+	}))
 
 	assert.Equal(t, map[string]any{
 		"id":             "s1",
@@ -405,10 +398,10 @@ func TestSettingDescriptionText_PointsAtTheVerbThatCanWriteTheKey(t *testing.T) 
 func TestTokenRowsCarryTheOwnerDeletedFlag(t *testing.T) {
 	created := timestamppb.New(time.Unix(1_700_000_000, 0))
 
-	api := adminAPITokenJSON(&leapmuxv1.AdminAPIToken{
+	api := rowJSONFields(t, adminAPITokenRowOf(&leapmuxv1.AdminAPIToken{
 		Id: "t-1", UserId: "u-1", Username: "alice", OwnerDeleted: true,
 		ClientId: oauthapp.ControlCLIClientID, InstallationName: "laptop", GrantedScopes: []string{"account:read", "account:write", "agent:read", "agent:write", "file:read", "git:read", "git:write", "terminal:read", "terminal:write", "tunnel:open", "worker:admin", "worker:read", "workspace:read", "workspace:write"}, CreatedAt: created,
-	})
+	}))
 	assert.Equal(t, true, api["owner_deleted"])
 	assert.Equal(t, oauthapp.ControlCLIClientID, api["client_id"])
 	assert.Equal(t, "laptop", api["installation_name"])
@@ -416,11 +409,11 @@ func TestTokenRowsCarryTheOwnerDeletedFlag(t *testing.T) {
 		"the grant always appears, so a reader can tell a narrow credential from a wide one")
 	assert.NotContains(t, api, "revoked_at", "an absent stamp leaves no field")
 
-	del := adminDelegationTokenJSON(&leapmuxv1.AdminDelegationToken{
+	del := rowJSONFields(t, adminDelegationTokenRowOf(&leapmuxv1.AdminDelegationToken{
 		Id: "d-1", UserId: "u-1", Username: "alice", OwnerDeleted: false,
 		WorkerId: "w-1", CreatedAt: created,
 		RevokedAt: created,
-	})
+	}))
 	assert.Equal(t, false, del["owner_deleted"])
 	assert.Equal(t, "w-1", del["worker_id"])
 	assert.Contains(t, del, "revoked_at", "a present stamp renders")
@@ -733,7 +726,7 @@ func TestRequireAdminClient_RefusesAnEmptyHubAddress(t *testing.T) {
 type rowMapper struct {
 	name   string
 	msg    proto.Message
-	render func() map[string]any
+	render func() any
 	// keys maps every proto field name to its JSON key. The two differ
 	// wherever the wire name would read badly in a row an operator greps
 	// (owner_username -> username), so the table states the mapping instead
@@ -786,43 +779,43 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 
 	mappers := []rowMapper{
 		{
-			name: "adminUserJSON", msg: user,
-			render: func() map[string]any { return adminUserJSON(user) },
+			name: "adminUserRowOf", msg: user,
+			render: func() any { return adminUserRowOf(user) },
 			keys: identity("id", "username", "display_name", "email", "email_verified",
 				"pending_email", "password_set", "is_admin", "created_at", "updated_at"),
 		},
 		{
-			name: "adminSessionJSON", msg: session,
-			render: func() map[string]any { return adminSessionJSON(session) },
+			name: "adminSessionRowOf", msg: session,
+			render: func() any { return adminSessionRowOf(session) },
 			keys: identity("id", "user_id", "username", "user_deleted", "created_at",
 				"last_active_at", "expires_at", "ip_address", "user_agent"),
 		},
 		{
-			name: "adminAPITokenJSON", msg: apiToken,
-			render: func() map[string]any { return adminAPITokenJSON(apiToken) },
+			name: "adminAPITokenRowOf", msg: apiToken,
+			render: func() any { return adminAPITokenRowOf(apiToken) },
 			keys:   merge(tokenFields(), identity("client_id", "client_name", "installation_name", "granted_scopes")),
 		},
 		{
-			name: "adminDelegationTokenJSON", msg: delegation,
-			render: func() map[string]any { return adminDelegationTokenJSON(delegation) },
+			name: "adminDelegationTokenRowOf", msg: delegation,
+			render: func() any { return adminDelegationTokenRowOf(delegation) },
 			keys:   merge(tokenFields(), identity("worker_id")),
 		},
 		{
-			name: "adminWorkerJSON", msg: worker,
-			render: func() map[string]any { return adminWorkerJSON(worker) },
+			name: "adminWorkerRowOf", msg: worker,
+			render: func() any { return adminWorkerRowOf(worker) },
 			keys: merge(identity("id", "registered_by", "owner_deleted", "status",
 				"auto_registered", "created_at", "last_seen_at"),
 				map[string]string{"owner_username": "username"}),
 		},
 		{
-			name: "adminRegistrationKeyJSON", msg: regKey,
-			render: func() map[string]any { return adminRegistrationKeyJSON(regKey) },
+			name: "adminRegistrationKeyRowOf", msg: regKey,
+			render: func() any { return adminRegistrationKeyRowOf(regKey) },
 			keys: merge(identity("id", "created_by", "creator_deleted", "created_at", "expires_at"),
 				map[string]string{"creator_username": "username"}),
 		},
 		{
-			name: "adminOAuthProviderJSON", msg: provider,
-			render: func() map[string]any { return adminOAuthProviderJSON(provider) },
+			name: "adminOAuthProviderRowOf", msg: provider,
+			render: func() any { return adminOAuthProviderRowOf(provider) },
 			keys: merge(identity("id", "name", "issuer_url", "client_id", "scopes",
 				"trust_email", "enabled", "created_at"),
 				map[string]string{"provider_type": "type"}),
@@ -836,6 +829,17 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 	}
 }
 
+func rowJSONFields(t *testing.T, row any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(row)
+	require.NoError(t, err)
+	var fields map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&fields))
+	return fields
+}
+
 // assertRowMapperCarriesEveryField fails when mapper drops a field of its
 // proto message, prints a field under the wrong key, or prints a key that no
 // field declares. TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage
@@ -843,7 +847,7 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 func assertRowMapperCarriesEveryField(t *testing.T, mapper rowMapper) {
 	t.Helper()
 	populateEveryField(t, mapper.msg)
-	row := mapper.render()
+	row := rowJSONFields(t, mapper.render())
 
 	want := map[string]bool{}
 	fields := mapper.msg.ProtoReflect().Descriptor().Fields()
@@ -861,9 +865,11 @@ func assertRowMapperCarriesEveryField(t *testing.T, mapper rowMapper) {
 			"proto field %q reaches no operator: %s prints no %q", name, mapper.name, key) {
 			continue
 		}
-		assert.Equalf(t, expectedPrintedValue(t, mapper.msg, f), row[key],
-			"%s prints the wrong source under %q; that key must carry proto field %q",
-			mapper.name, key, name)
+		expected, err := json.Marshal(expectedPrintedValue(t, mapper.msg, f))
+		require.NoError(t, err)
+		actual, err := json.Marshal(row[key])
+		require.NoError(t, err)
+		assert.Equal(t, string(expected), string(actual), "%s must print proto field %q under %q", mapper.name, name, key)
 	}
 	for key := range row {
 		assert.Truef(t, want[key],
@@ -875,10 +881,9 @@ func assertRowMapperCarriesEveryField(t *testing.T, mapper rowMapper) {
 
 // expectedPrintedValue is the form proto field f must reach the envelope
 // in. Three kinds do not print raw, so each one is stated here rather than
-// left out: putTime renders a timestamp as a UTC string (the format itself
-// is pinned by TestPutTime_OmitsAnAbsentTimestampAndFormatsAPresentOneInUTC),
-// an enum prints its value name, and a string, boolean, or int64 prints
-// itself.
+// left out: formatTime renders a timestamp as a UTC string (the format itself
+// is pinned by TestFormatTime_FormatsAnOptionalTimestampInUTC), an enum
+// prints its lowercase token, and a string, boolean, or int64 prints itself.
 func expectedPrintedValue(t *testing.T, m proto.Message, f protoreflect.FieldDescriptor) any {
 	t.Helper()
 	v := m.ProtoReflect().Get(f)
@@ -903,9 +908,9 @@ func expectedPrintedValue(t *testing.T, m proto.Message, f protoreflect.FieldDes
 	case protoreflect.Int64Kind:
 		return v.Int()
 	case protoreflect.EnumKind:
-		// The generated String() returns the proto value NAME, which is
-		// what the mappers print.
-		return string(f.Enum().Values().ByNumber(v.Enum()).Name())
+		values := f.Enum().Values()
+		prefix := strings.TrimSuffix(string(values.ByNumber(0).Name()), "UNSPECIFIED")
+		return strings.ToLower(strings.TrimPrefix(string(values.ByNumber(v.Enum()).Name()), prefix))
 	case protoreflect.MessageKind:
 		require.Equalf(t, "google.protobuf.Timestamp", string(f.Message().FullName()),
 			"field %s is a message this expectation has no rule for", f.Name())
@@ -945,7 +950,7 @@ func assertBoolFieldsAreNotInterchanged(t *testing.T, mapper rowMapper) {
 		for k, f := range bools {
 			r.Set(f, protoreflect.ValueOfBool(k == state))
 		}
-		row := mapper.render()
+		row := rowJSONFields(t, mapper.render())
 		for k, f := range bools {
 			key := mapper.keys[string(f.Name())]
 			assert.Equalf(t, k == state, row[key],

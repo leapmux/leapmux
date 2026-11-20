@@ -57,33 +57,43 @@ func newAdminWorkerList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetWorkers()))
+			rows := make([]adminWorkerRow, 0, len(resp.GetWorkers()))
 			for _, w := range resp.GetWorkers() {
-				rows = append(rows, adminWorkerJSON(w))
+				rows = append(rows, adminWorkerRowOf(w))
 			}
-			return a.Result(map[string]any{"workers": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return a.Result(struct {
+				Workers    []adminWorkerRow `json:"workers"`
+				NextCursor string           `json:"next_cursor"`
+			}{Workers: rows, NextCursor: resp.GetPage().GetNextCursor()})
 		},
 	})
 }
 
-// adminWorkerJSON renders one worker row.
-//
-// owner_deleted is what tells an operator that `username` is empty because
-// the account is gone, rather than because the worker has no owner: the
-// hub blanks the name for a soft-deleted owner and reports the fact in
-// this flag alone.
-func adminWorkerJSON(w *leapmuxv1.AdminWorker) map[string]any {
-	row := map[string]any{
-		"id":              w.GetId(),
-		"registered_by":   w.GetRegisteredBy(),
-		"username":        w.GetOwnerUsername(),
-		"owner_deleted":   w.GetOwnerDeleted(),
-		"status":          w.GetStatus().String(),
-		"auto_registered": w.GetAutoRegistered(),
+// adminWorkerRow reports a soft-deleted owner in OwnerDeleted. The Hub
+// clears Username in that case, so the flag distinguishes deletion from
+// a worker without an owner.
+type adminWorkerRow struct {
+	ID             string `json:"id"`
+	RegisteredBy   string `json:"registered_by"`
+	Username       string `json:"username"`
+	OwnerDeleted   bool   `json:"owner_deleted"`
+	Status         string `json:"status"`
+	AutoRegistered bool   `json:"auto_registered"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	LastSeenAt     string `json:"last_seen_at,omitempty"`
+}
+
+func adminWorkerRowOf(w *leapmuxv1.AdminWorker) adminWorkerRow {
+	return adminWorkerRow{
+		ID:             w.GetId(),
+		RegisteredBy:   w.GetRegisteredBy(),
+		Username:       w.GetOwnerUsername(),
+		OwnerDeleted:   w.GetOwnerDeleted(),
+		Status:         enumToken(w.GetStatus()),
+		AutoRegistered: w.GetAutoRegistered(),
+		CreatedAt:      formatTime(w.GetCreatedAt()),
+		LastSeenAt:     formatTime(w.GetLastSeenAt()),
 	}
-	putTime(row, "created_at", w.GetCreatedAt())
-	putTime(row, "last_seen_at", w.GetLastSeenAt())
-	return row
 }
 
 func newAdminWorkerGet() *cobra.Command {
@@ -100,7 +110,7 @@ func newAdminWorkerGet() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(adminWorkerJSON(resp.GetWorker()))
+			return a.Result(adminWorkerRowOf(resp.GetWorker()))
 		},
 	})
 }
@@ -119,7 +129,9 @@ func newAdminWorkerDeregister() *cobra.Command {
 			if _, err := c.AdminWorkerService().DeregisterWorker(a.Context(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"deregistered": id})
+			return a.Result(struct {
+				Deregistered string `json:"deregistered"`
+			}{Deregistered: id})
 		},
 	})
 }
@@ -144,32 +156,39 @@ func newAdminWorkerRegKeyList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetKeys()))
+			rows := make([]adminRegistrationKeyRow, 0, len(resp.GetKeys()))
 			for _, k := range resp.GetKeys() {
-				rows = append(rows, adminRegistrationKeyJSON(k))
+				rows = append(rows, adminRegistrationKeyRowOf(k))
 			}
-			return a.Result(map[string]any{"keys": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return a.Result(struct {
+				Keys       []adminRegistrationKeyRow `json:"keys"`
+				NextCursor string                    `json:"next_cursor"`
+			}{Keys: rows, NextCursor: resp.GetPage().GetNextCursor()})
 		},
 	})
 }
 
-// adminRegistrationKeyJSON renders one worker registration-key row.
-//
-// The owner column is spelled `username`, as it is on every other admin
-// row, so one filter or script reads them all. creator_deleted is what
-// tells an operator that the name is empty because the account is gone
-// rather than because the key has no creator. Both stamps go through
-// putTime for the reason tokenLifecycleJSON states.
-func adminRegistrationKeyJSON(k *leapmuxv1.AdminRegistrationKey) map[string]any {
-	row := map[string]any{
-		"id":              k.GetId(),
-		"created_by":      k.GetCreatedBy(),
-		"username":        k.GetCreatorUsername(),
-		"creator_deleted": k.GetCreatorDeleted(),
+// adminRegistrationKeyRow uses Username for the creator, matching the
+// other admin rows. CreatorDeleted distinguishes a deleted creator
+// from a key without a creator.
+type adminRegistrationKeyRow struct {
+	ID             string `json:"id"`
+	CreatedBy      string `json:"created_by"`
+	Username       string `json:"username"`
+	CreatorDeleted bool   `json:"creator_deleted"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	ExpiresAt      string `json:"expires_at,omitempty"`
+}
+
+func adminRegistrationKeyRowOf(k *leapmuxv1.AdminRegistrationKey) adminRegistrationKeyRow {
+	return adminRegistrationKeyRow{
+		ID:             k.GetId(),
+		CreatedBy:      k.GetCreatedBy(),
+		Username:       k.GetCreatorUsername(),
+		CreatorDeleted: k.GetCreatorDeleted(),
+		CreatedAt:      formatTime(k.GetCreatedAt()),
+		ExpiresAt:      formatTime(k.GetExpiresAt()),
 	}
-	putTime(row, "created_at", k.GetCreatedAt())
-	putTime(row, "expires_at", k.GetExpiresAt())
-	return row
 }
 
 func newAdminWorkerRegKeyRevoke() *cobra.Command {
@@ -186,7 +205,7 @@ func newAdminWorkerRegKeyRevoke() *cobra.Command {
 			if _, err := c.AdminWorkerService().RevokeRegistrationKey(a.Context(), &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: id}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"revoked": id})
+			return a.Result(adminRevocationResult{Revoked: id})
 		},
 	})
 }
@@ -204,26 +223,35 @@ func newAdminWorkerRegKeyPurgeExpired() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"purged": resp.GetPurged()})
+			return a.Result(adminPurgeResult{Purged: resp.GetPurged()})
 		},
 	})
 }
 
-// adminOAuthProviderJSON renders one OAuth provider row. Its stamp goes
-// through putTime for the reason tokenLifecycleJSON states.
-func adminOAuthProviderJSON(p *leapmuxv1.AdminOAuthProvider) map[string]any {
-	row := map[string]any{
-		"id":          p.GetId(),
-		"type":        p.GetProviderType(),
-		"name":        p.GetName(),
-		"issuer_url":  p.GetIssuerUrl(),
-		"client_id":   p.GetClientId(),
-		"scopes":      p.GetScopes(),
-		"trust_email": p.GetTrustEmail(),
-		"enabled":     p.GetEnabled(),
+type adminOAuthProviderRow struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Name       string `json:"name"`
+	IssuerURL  string `json:"issuer_url"`
+	ClientID   string `json:"client_id"`
+	Scopes     string `json:"scopes"`
+	TrustEmail bool   `json:"trust_email"`
+	Enabled    bool   `json:"enabled"`
+	CreatedAt  string `json:"created_at,omitempty"`
+}
+
+func adminOAuthProviderRowOf(p *leapmuxv1.AdminOAuthProvider) adminOAuthProviderRow {
+	return adminOAuthProviderRow{
+		ID:         p.GetId(),
+		Type:       p.GetProviderType(),
+		Name:       p.GetName(),
+		IssuerURL:  p.GetIssuerUrl(),
+		ClientID:   p.GetClientId(),
+		Scopes:     p.GetScopes(),
+		TrustEmail: p.GetTrustEmail(),
+		Enabled:    p.GetEnabled(),
+		CreatedAt:  formatTime(p.GetCreatedAt()),
 	}
-	putTime(row, "created_at", p.GetCreatedAt())
-	return row
 }
 
 func newAdminOAuthProviderAdd() *cobra.Command {
@@ -265,7 +293,7 @@ func newAdminOAuthProviderAdd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(adminOAuthProviderJSON(resp.GetProvider()))
+			return a.Result(adminOAuthProviderRowOf(resp.GetProvider()))
 		},
 	})
 }
@@ -282,11 +310,13 @@ func newAdminOAuthProviderList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			providers := make([]map[string]any, 0, len(resp.GetProviders()))
+			providers := make([]adminOAuthProviderRow, 0, len(resp.GetProviders()))
 			for _, p := range resp.GetProviders() {
-				providers = append(providers, adminOAuthProviderJSON(p))
+				providers = append(providers, adminOAuthProviderRowOf(p))
 			}
-			return a.Result(map[string]any{"providers": providers})
+			return a.Result(struct {
+				Providers []adminOAuthProviderRow `json:"providers"`
+			}{Providers: providers})
 		},
 	})
 }
@@ -323,7 +353,10 @@ func newAdminOAuthProviderRemove() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"removed": id, "locked_out_users": resp.GetLockedOutUsers()})
+			return a.Result(struct {
+				Removed        string `json:"removed"`
+				LockedOutUsers int64  `json:"locked_out_users"`
+			}{Removed: id, LockedOutUsers: resp.GetLockedOutUsers()})
 		},
 	})
 }
@@ -344,7 +377,10 @@ func newAdminOAuthProviderSetEnabled(enabled bool, use, short string, examples [
 			}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"id": id, "enabled": enabled})
+			return a.Result(struct {
+				ID      string `json:"id"`
+				Enabled bool   `json:"enabled"`
+			}{ID: id, Enabled: enabled})
 		},
 	})
 }

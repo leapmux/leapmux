@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/spf13/cobra"
 )
@@ -107,32 +108,53 @@ func validateListLimit(limit int64) error {
 	return nil
 }
 
-// settingValueJSON renders one SettingValue for the envelope.
-func settingValueJSON(v *leapmuxv1.SettingValue) map[string]any {
-	out := map[string]any{
-		"key":            v.GetKey(),
-		"customized":     v.GetCustomized(),
-		"effective_json": jsonOrNull(v.GetEffectiveJson()),
-	}
-	if v.GetValueJson() != "" {
-		out["value_json"] = jsonOrNull(v.GetValueJson())
-	}
-	putTime(out, "updated_at", v.GetUpdatedAt())
-	if len(v.GetSecretSet()) > 0 {
-		out["secret_set"] = v.GetSecretSet()
-	}
-	return out
+type adminRevocationResult struct {
+	Revoked string `json:"revoked"`
 }
 
-func jsonOrNull(s string) any {
-	if s == "" {
-		return nil
+type adminPurgeResult struct {
+	Purged int64 `json:"purged"`
+}
+
+type adminSettingRow struct {
+	Key           string          `json:"key"`
+	Customized    bool            `json:"customized"`
+	EffectiveJSON json.RawMessage `json:"effective_json"`
+	ValueJSON     json.RawMessage `json:"value_json,omitempty"`
+	UpdatedAt     string          `json:"updated_at,omitempty"`
+	SecretSet     map[string]bool `json:"secret_set,omitempty"`
+	Propagation   string          `json:"propagation,omitempty"`
+	Description   *string         `json:"description,omitempty"`
+	ValueSchema   *string         `json:"value_schema,omitempty"`
+	Note          string          `json:"note,omitempty"`
+	NoteRestart   string          `json:"note_restart,omitempty"`
+	NoteHot       string          `json:"note_hot,omitempty"`
+}
+
+func adminSettingRowOf(value *leapmuxv1.SettingValue) adminSettingRow {
+	row := adminSettingRow{
+		Key: value.GetKey(), Customized: value.GetCustomized(),
+		EffectiveJSON: settingJSONValue(value.GetEffectiveJson()),
+		UpdatedAt:     formatTime(value.GetUpdatedAt()), SecretSet: value.GetSecretSet(),
 	}
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return s
+	if stored := value.GetValueJson(); stored != "" {
+		row.ValueJSON = settingJSONValue(stored)
 	}
-	return v
+	return row
+}
+
+// settingJSONValue retains exact numbers and distinguishes an absent stored
+// value from an explicit null. An invalid document appears as plain text.
+func settingJSONValue(value string) json.RawMessage {
+	if value == "" {
+		return json.RawMessage("null")
+	}
+	raw := json.RawMessage(value)
+	if json.Valid(raw) {
+		return raw
+	}
+	quoted, _ := json.Marshal(value)
+	return quoted
 }
 
 // propagationName renders a key's propagation class for the operator.
@@ -153,12 +175,12 @@ func propagationName(restart bool) string {
 // already applies the written value. `settings set`, `settings set-secret` and
 // `settings reset` all call it, because a reset of a restart-class key also waits
 // for a restart.
-func addPropagation(out map[string]any, restart bool) {
-	out["propagation"] = propagationName(restart)
+func addPropagation(out *adminSettingRow, restart bool) {
+	out.Propagation = propagationName(restart)
 	if restart {
-		out["note_restart"] = "this setting applies after a hub restart"
+		out.NoteRestart = "this setting applies after a hub restart"
 	} else {
-		out["note_hot"] = "the hub that stored this setting applies it at once; a value written to the shared database outside the hub reaches it within its 30-second settings snapshot"
+		out.NoteHot = "The Hub that stored this setting applies it at once. The Hub picks up a value written directly to the shared database within its 30-second settings snapshot interval."
 	}
 }
 
@@ -194,20 +216,22 @@ func newAdminSettingsList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetValues()))
+			rows := make([]adminSettingRow, 0, len(resp.GetValues()))
 			byDescr := map[string]*leapmuxv1.SettingDescriptor{}
 			for _, d := range resp.GetDescriptors() {
 				byDescr[d.GetKey()] = d
 			}
 			for _, v := range resp.GetValues() {
-				row := settingValueJSON(v)
+				row := adminSettingRowOf(v)
 				if d := byDescr[v.GetKey()]; d != nil {
-					row["propagation"] = propagationName(d.GetRestart())
-					row["description"] = settingDescriptionText(d.GetKey(), d.GetSummary())
+					row.Propagation = propagationName(d.GetRestart())
+					row.Description = ptrconv.Ptr(settingDescriptionText(d.GetKey(), d.GetSummary()))
 				}
 				rows = append(rows, row)
 			}
-			return a.Result(map[string]any{"settings": rows})
+			return a.Result(struct {
+				Settings []adminSettingRow `json:"settings"`
+			}{Settings: rows})
 		},
 	})
 }
@@ -280,17 +304,18 @@ func newAdminSettingsGet() *cobra.Command {
 				if v.GetKey() != key {
 					continue
 				}
-				out := settingValueJSON(v)
+				out := adminSettingRowOf(v)
 				for _, d := range resp.GetDescriptors() {
 					if d.GetKey() == key {
-						out["propagation"] = propagationName(d.GetRestart())
-						out["description"] = settingDescriptionText(d.GetKey(), d.GetSummary())
-						out["value_schema"] = settingShapeFromDescriptor(d)
+						out.Propagation = propagationName(d.GetRestart())
+						out.Description = ptrconv.Ptr(settingDescriptionText(d.GetKey(), d.GetSummary()))
+						out.ValueSchema = ptrconv.Ptr(settingShapeFromDescriptor(d))
 					}
 				}
 				return a.Result(out)
 			}
-			return cli.Usagef("unknown setting key %q (see `leapmux control admin settings list`)", key)
+			return cli.Newf(cli.CodeNotFound, "unknown setting key %q", key).
+				WithHint("run leapmux control admin settings list to list setting keys")
 		},
 	})
 }
@@ -367,15 +392,15 @@ func newAdminSettingsSet() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := settingValueJSON(updated)
+			out := adminSettingRowOf(updated)
 			if updated.GetEffectiveJson() != updated.GetValueJson() {
-				out["note"] = "the effective value differs from the stored value; see effective_json"
+				out.Note = "The effective value differs from the stored value. See effective_json."
 			}
 			// The write itself reports the propagation class, so this reply
 			// already says whether the running hub applies the new value.
 			// Reading it back through a second ListSettings serialized
 			// every registered key to learn one boolean.
-			addPropagation(out, restart)
+			addPropagation(&out, restart)
 			return a.Result(out)
 		},
 	})
@@ -411,8 +436,8 @@ func newAdminSettingsSetSecret() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := settingValueJSON(updated)
-			addPropagation(out, restart)
+			out := adminSettingRowOf(updated)
+			addPropagation(&out, restart)
 			return a.Result(out)
 		},
 	})
@@ -432,8 +457,8 @@ func newAdminSettingsReset() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := settingValueJSON(value)
-			addPropagation(out, restart)
+			out := adminSettingRowOf(value)
+			addPropagation(&out, restart)
 			return a.Result(out)
 		},
 	})

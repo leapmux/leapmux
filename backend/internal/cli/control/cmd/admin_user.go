@@ -16,20 +16,32 @@ import (
 // the old offline admin verbs; --data-dir/--config are gone (these are
 // RPC calls now) and output uses the control JSON envelope.
 
-func adminUserJSON(u *leapmuxv1.AdminUser) map[string]any {
-	out := map[string]any{
-		"id":             u.GetId(),
-		"username":       u.GetUsername(),
-		"display_name":   u.GetDisplayName(),
-		"email":          u.GetEmail(),
-		"email_verified": u.GetEmailVerified(),
-		"pending_email":  u.GetPendingEmail(),
-		"password_set":   u.GetPasswordSet(),
-		"is_admin":       u.GetIsAdmin(),
+type adminUserRow struct {
+	ID            string `json:"id"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"display_name"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	PendingEmail  string `json:"pending_email"`
+	PasswordSet   bool   `json:"password_set"`
+	IsAdmin       bool   `json:"is_admin"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+}
+
+func adminUserRowOf(u *leapmuxv1.AdminUser) adminUserRow {
+	return adminUserRow{
+		ID:            u.GetId(),
+		Username:      u.GetUsername(),
+		DisplayName:   u.GetDisplayName(),
+		Email:         u.GetEmail(),
+		EmailVerified: u.GetEmailVerified(),
+		PendingEmail:  u.GetPendingEmail(),
+		PasswordSet:   u.GetPasswordSet(),
+		IsAdmin:       u.GetIsAdmin(),
+		CreatedAt:     formatTime(u.GetCreatedAt()),
+		UpdatedAt:     formatTime(u.GetUpdatedAt()),
 	}
-	putTime(out, "created_at", u.GetCreatedAt())
-	putTime(out, "updated_at", u.GetUpdatedAt())
-	return out
 }
 
 // newAdminUserList builds `control admin user list`.
@@ -54,11 +66,14 @@ func newAdminUserList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			users := make([]map[string]any, 0, len(resp.GetUsers()))
+			users := make([]adminUserRow, 0, len(resp.GetUsers()))
 			for _, u := range resp.GetUsers() {
-				users = append(users, adminUserJSON(u))
+				users = append(users, adminUserRowOf(u))
 			}
-			return a.Result(map[string]any{"users": users, "next_cursor": resp.GetPage().GetNextCursor()})
+			return a.Result(struct {
+				Users      []adminUserRow `json:"users"`
+				NextCursor string         `json:"next_cursor"`
+			}{Users: users, NextCursor: resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -144,7 +159,7 @@ func newAdminUserGet() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(adminUserJSON(resp.GetUser()))
+			return a.Result(adminUserRowOf(resp.GetUser()))
 		},
 	})
 }
@@ -193,7 +208,7 @@ func newAdminUserCreate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(adminUserJSON(resp.GetUser()))
+			return a.Result(adminUserRowOf(resp.GetUser()))
 		},
 	})
 }
@@ -254,7 +269,7 @@ func newAdminUserUpdate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(adminUserJSON(resp.GetUser()))
+			return a.Result(adminUserRowOf(resp.GetUser()))
 		},
 	})
 }
@@ -280,7 +295,9 @@ func newAdminUserDelete() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"deleted": true})
+			return a.Result(struct {
+				Deleted bool `json:"deleted"`
+			}{Deleted: true})
 		},
 	})
 }
@@ -315,7 +332,7 @@ func newAdminUserSetAdmin(admin bool, use, short string, examples []cli.Example)
 			if err != nil {
 				return err
 			}
-			return a.Result(adminUserJSON(resp.GetUser()))
+			return a.Result(adminUserRowOf(resp.GetUser()))
 		},
 	})
 }
@@ -364,11 +381,14 @@ func newAdminUserResetPassword() *cobra.Command {
 			}
 			// The subject comes back from the hub, so the envelope carries
 			// both handles whichever one the operator addressed the user by.
-			return a.Result(map[string]any{
-				"user_id":                   resp.GetUserId(),
-				"username":                  resp.GetUsername(),
-				"api_tokens_revoked":        resp.GetApiTokensRevoked(),
-				"delegation_tokens_revoked": resp.GetDelegationTokensRevoked(),
+			return a.Result(struct {
+				UserID                  string `json:"user_id"`
+				Username                string `json:"username"`
+				APITokensRevoked        int64  `json:"api_tokens_revoked"`
+				DelegationTokensRevoked int64  `json:"delegation_tokens_revoked"`
+			}{
+				UserID: resp.GetUserId(), Username: resp.GetUsername(),
+				APITokensRevoked: resp.GetApiTokensRevoked(), DelegationTokensRevoked: resp.GetDelegationTokensRevoked(),
 			})
 		},
 	})
@@ -393,89 +413,105 @@ func newAdminUserListSessions() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{
-				"sessions":    adminSessionsJSON(resp.GetSessions()),
-				"next_cursor": resp.GetPage().GetNextCursor(),
+			return a.Result(adminSessionPage{
+				Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
 			})
 		},
 	})
 }
 
-// tokenLifecycleJSON renders the fields every bearer-token row shares:
-// its identity, its owner, and the three lifecycle stamps.
-//
-// The two token verbs differ only in the two fields their own kind adds,
-// so the shared half lives here beside the other row mappers. Building it
-// inline twice already cost a field: `owner_deleted` reached both
-// rows on the wire and neither loop printed it, so an operator
-// enumerating a soft-deleted account's outstanding tokens — which is what
-// the user-id filter exists for — could not see that the owner was gone.
-func tokenLifecycleJSON(
+// CredentialLifetime holds the identity, owner, and timestamps of each
+// bearer token. Both token listings report whether the owner was deleted.
+type CredentialLifetime struct {
+	ID           string `json:"id"`
+	UserID       string `json:"user_id"`
+	Username     string `json:"username"`
+	OwnerDeleted bool   `json:"owner_deleted"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	LastUsedAt   string `json:"last_used_at,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty"`
+	RevokedAt    string `json:"revoked_at,omitempty"`
+}
+
+func tokenLifecycle(
 	id, userID, username string,
 	ownerDeleted bool,
 	createdAt, lastUsedAt, expiresAt, revokedAt *timestamppb.Timestamp,
-) map[string]any {
-	row := map[string]any{
-		"id":            id,
-		"user_id":       userID,
-		"username":      username,
-		"owner_deleted": ownerDeleted,
+) CredentialLifetime {
+	return CredentialLifetime{
+		ID: id, UserID: userID, Username: username, OwnerDeleted: ownerDeleted,
+		CreatedAt: formatTime(createdAt), LastUsedAt: formatTime(lastUsedAt),
+		ExpiresAt: formatTime(expiresAt), RevokedAt: formatTime(revokedAt),
 	}
-	// EVERY stamp goes through putTime, which omits an absent one instead
-	// of printing the epoch. A lifecycle stamp is absent until it happens;
-	// a stamp the hub always sets reads no differently here, and a hub that
-	// somehow omits one must not answer with a 1970 event.
-	putTime(row, "created_at", createdAt)
-	putTime(row, "last_used_at", lastUsedAt)
-	putTime(row, "expires_at", expiresAt)
-	putTime(row, "revoked_at", revokedAt)
-	return row
 }
 
-// adminAPITokenJSON renders one API-token row.
-func adminAPITokenJSON(t *leapmuxv1.AdminAPIToken) map[string]any {
-	row := tokenLifecycleJSON(t.GetId(), t.GetUserId(), t.GetUsername(), t.GetOwnerDeleted(),
-		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
-	row["client_id"] = t.GetClientId()
-	row["client_name"] = t.GetClientName()
-	row["installation_name"] = t.GetInstallationName()
-	// This field always appears, including when it is empty: "what can this
-	// credential do" is the question the listing exists to answer, and an
-	// omitted key reads as "unknown" rather than "nothing". An audit of "which
-	// credentials administer the hub" reads it for an "admin:" prefix.
-	row["granted_scopes"] = t.GetGrantedScopes()
-	return row
+type adminAPITokenRow struct {
+	CredentialLifetime
+	ClientID         string `json:"client_id"`
+	ClientName       string `json:"client_name"`
+	InstallationName string `json:"installation_name"`
+	// Always report the scopes so an audit can distinguish an empty grant
+	// from a missing field.
+	GrantedScopes []string `json:"granted_scopes"`
 }
 
-// adminDelegationTokenJSON renders one delegation-token row.
-func adminDelegationTokenJSON(t *leapmuxv1.AdminDelegationToken) map[string]any {
-	row := tokenLifecycleJSON(t.GetId(), t.GetUserId(), t.GetUsername(), t.GetOwnerDeleted(),
-		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
-	row["worker_id"] = t.GetWorkerId()
-	return row
-}
-
-// adminSessionJSON renders one session row. Its stamps go through putTime
-// for the reason tokenLifecycleJSON states.
-func adminSessionJSON(s *leapmuxv1.AdminSession) map[string]any {
-	row := map[string]any{
-		"id":           s.GetId(),
-		"user_id":      s.GetUserId(),
-		"username":     s.GetUsername(),
-		"user_deleted": s.GetUserDeleted(),
-		"ip_address":   s.GetIpAddress(),
-		"user_agent":   s.GetUserAgent(),
+func adminAPITokenRowOf(token *leapmuxv1.AdminAPIToken) adminAPITokenRow {
+	return adminAPITokenRow{
+		CredentialLifetime: tokenLifecycle(token.GetId(), token.GetUserId(), token.GetUsername(), token.GetOwnerDeleted(),
+			token.GetCreatedAt(), token.GetLastUsedAt(), token.GetExpiresAt(), token.GetRevokedAt()),
+		ClientID: token.GetClientId(), ClientName: token.GetClientName(),
+		InstallationName: token.GetInstallationName(), GrantedScopes: token.GetGrantedScopes(),
 	}
-	putTime(row, "created_at", s.GetCreatedAt())
-	putTime(row, "last_active_at", s.GetLastActiveAt())
-	putTime(row, "expires_at", s.GetExpiresAt())
-	return row
 }
 
-func adminSessionsJSON(sessions []*leapmuxv1.AdminSession) []map[string]any {
-	rows := make([]map[string]any, 0, len(sessions))
+type adminDelegationTokenRow struct {
+	CredentialLifetime
+	WorkerID string `json:"worker_id"`
+}
+
+func adminDelegationTokenRowOf(token *leapmuxv1.AdminDelegationToken) adminDelegationTokenRow {
+	return adminDelegationTokenRow{
+		CredentialLifetime: tokenLifecycle(token.GetId(), token.GetUserId(), token.GetUsername(), token.GetOwnerDeleted(),
+			token.GetCreatedAt(), token.GetLastUsedAt(), token.GetExpiresAt(), token.GetRevokedAt()),
+		WorkerID: token.GetWorkerId(),
+	}
+}
+
+type adminSessionPage struct {
+	Sessions   []adminSessionRow `json:"sessions"`
+	NextCursor string            `json:"next_cursor"`
+}
+
+type adminSessionRow struct {
+	ID           string `json:"id"`
+	UserID       string `json:"user_id"`
+	Username     string `json:"username"`
+	UserDeleted  bool   `json:"user_deleted"`
+	IPAddress    string `json:"ip_address"`
+	UserAgent    string `json:"user_agent"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	LastActiveAt string `json:"last_active_at,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty"`
+}
+
+func adminSessionRowOf(s *leapmuxv1.AdminSession) adminSessionRow {
+	return adminSessionRow{
+		ID:           s.GetId(),
+		UserID:       s.GetUserId(),
+		Username:     s.GetUsername(),
+		UserDeleted:  s.GetUserDeleted(),
+		IPAddress:    s.GetIpAddress(),
+		UserAgent:    s.GetUserAgent(),
+		CreatedAt:    formatTime(s.GetCreatedAt()),
+		LastActiveAt: formatTime(s.GetLastActiveAt()),
+		ExpiresAt:    formatTime(s.GetExpiresAt()),
+	}
+}
+
+func adminSessionRowsOf(sessions []*leapmuxv1.AdminSession) []adminSessionRow {
+	rows := make([]adminSessionRow, 0, len(sessions))
 	for _, s := range sessions {
-		rows = append(rows, adminSessionJSON(s))
+		rows = append(rows, adminSessionRowOf(s))
 	}
 	return rows
 }
@@ -497,9 +533,8 @@ func newAdminSessionList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{
-				"sessions":    adminSessionsJSON(resp.GetSessions()),
-				"next_cursor": resp.GetPage().GetNextCursor(),
+			return a.Result(adminSessionPage{
+				Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
 			})
 		},
 	})
@@ -520,7 +555,7 @@ func newAdminSessionRevoke() *cobra.Command {
 			if _, err := c.AdminUserService().RevokeSession(a.Context(), &leapmuxv1.RevokeSessionRequest{Id: id}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"revoked": id})
+			return a.Result(adminRevocationResult{Revoked: id})
 		},
 	})
 }
@@ -543,9 +578,11 @@ func newAdminSessionRevokeUser() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{
-				"api_tokens_revoked":        resp.GetApiTokensRevoked(),
-				"delegation_tokens_revoked": resp.GetDelegationTokensRevoked(),
+			return a.Result(struct {
+				APITokensRevoked        int64 `json:"api_tokens_revoked"`
+				DelegationTokensRevoked int64 `json:"delegation_tokens_revoked"`
+			}{
+				APITokensRevoked: resp.GetApiTokensRevoked(), DelegationTokensRevoked: resp.GetDelegationTokensRevoked(),
 			})
 		},
 	})
@@ -565,7 +602,7 @@ func newAdminSessionPurgeExpired() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"purged": resp.GetPurged()})
+			return a.Result(adminPurgeResult{Purged: resp.GetPurged()})
 		},
 	})
 }
@@ -598,11 +635,14 @@ func newAdminAPITokenList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetTokens()))
+			rows := make([]adminAPITokenRow, 0, len(resp.GetTokens()))
 			for _, t := range resp.GetTokens() {
-				rows = append(rows, adminAPITokenJSON(t))
+				rows = append(rows, adminAPITokenRowOf(t))
 			}
-			return a.Result(map[string]any{"tokens": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return a.Result(struct {
+				Tokens     []adminAPITokenRow `json:"tokens"`
+				NextCursor string             `json:"next_cursor"`
+			}{Tokens: rows, NextCursor: resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -669,13 +709,17 @@ func newAdminAPITokenIssue() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Result(map[string]any{
-				"token_id":       resp.GetTokenId(),
-				"access_token":   resp.GetAccessToken(),
-				"refresh_token":  resp.GetRefreshToken(),
-				"client_id":      resp.GetClientId(),
-				"granted_scopes": resp.GetGrantedScopes(),
-				"note":           "capture the tokens now; they cannot be retrieved later",
+			return a.Result(struct {
+				TokenID       string   `json:"token_id"`
+				AccessToken   string   `json:"access_token"`
+				RefreshToken  string   `json:"refresh_token"`
+				ClientID      string   `json:"client_id"`
+				GrantedScopes []string `json:"granted_scopes"`
+				Note          string   `json:"note"`
+			}{
+				TokenID: resp.GetTokenId(), AccessToken: resp.GetAccessToken(), RefreshToken: resp.GetRefreshToken(),
+				ClientID: resp.GetClientId(), GrantedScopes: resp.GetGrantedScopes(),
+				Note: "Capture the tokens now. They cannot be retrieved later.",
 			})
 		},
 	})
@@ -696,7 +740,7 @@ func newAdminAPITokenRevoke() *cobra.Command {
 			if _, err := c.AdminUserService().RevokeAPIToken(a.Context(), &leapmuxv1.RevokeAPITokenRequest{Id: id}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"revoked": id})
+			return a.Result(adminRevocationResult{Revoked: id})
 		},
 	})
 }
@@ -725,11 +769,14 @@ func newAdminDelegationTokenList() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetTokens()))
+			rows := make([]adminDelegationTokenRow, 0, len(resp.GetTokens()))
 			for _, t := range resp.GetTokens() {
-				rows = append(rows, adminDelegationTokenJSON(t))
+				rows = append(rows, adminDelegationTokenRowOf(t))
 			}
-			return a.Result(map[string]any{"tokens": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return a.Result(struct {
+				Tokens     []adminDelegationTokenRow `json:"tokens"`
+				NextCursor string                    `json:"next_cursor"`
+			}{Tokens: rows, NextCursor: resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -749,7 +796,7 @@ func newAdminDelegationTokenRevoke() *cobra.Command {
 			if _, err := c.AdminUserService().RevokeDelegationToken(a.Context(), &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id}); err != nil {
 				return err
 			}
-			return a.Result(map[string]any{"revoked": id})
+			return a.Result(adminRevocationResult{Revoked: id})
 		},
 	})
 }

@@ -234,7 +234,7 @@ func TestWorkerRowOf_CarriesEveryFieldOfWorker(t *testing.T) {
 	assertRowMapperCarriesEveryField(t, rowMapper{
 		name:   "workerRowOf",
 		msg:    worker,
-		render: func() map[string]any { return jsonMap(t, workerRowOf(worker, "")) },
+		render: func() any { return workerRowOf(worker, "") },
 		keys: map[string]string{
 			"id":              "id",
 			"online":          "online",

@@ -36,15 +36,6 @@ func formatWallTime(ts time.Time) string {
 	return ts.UTC().Format(timeFormat)
 }
 
-// putTime writes one optional timestamp into an output row, omitting the
-// field when the hub sent none.
-func putTime(row map[string]any, key string, ts *timestamppb.Timestamp) {
-	if ts == nil {
-		return
-	}
-	row[key] = ts.AsTime().UTC().Format(timeFormat)
-}
-
 // jsonObject encodes {key: value}.
 func jsonObject(key string, value any) ([]byte, error) {
 	return json.Marshal(map[string]any{key: value})

@@ -336,7 +336,7 @@ func TestWorkspaceRowOf_CarriesEveryFieldOfWorkspace(t *testing.T) {
 	assertRowMapperCarriesEveryField(t, rowMapper{
 		name:   "workspaceRowOf",
 		msg:    workspace,
-		render: func() map[string]any { return jsonMap(t, workspaceRowOf(workspace)) },
+		render: func() any { return workspaceRowOf(workspace) },
 		keys: map[string]string{
 			"id":         "id",
 			"created_by": "created_by",
