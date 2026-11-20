@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -204,9 +205,8 @@ type crdtCall struct {
 	workspaceID string
 }
 
-// openCRDT bootstraps the CRDT of one workspace for a mutation. The call
-// shares the session's client and context. Tenancy is the authenticated
-// session, so no user-id resolution is needed.
+// openCRDT bootstraps the CRDT for a mutation. Include other affected
+// workspaces when an operation crosses workspace boundaries.
 //
 // This preamble does NOT validate workspaceID, and the bootstrap does not
 // double as a check. GetMaterialized resolves through
@@ -215,14 +215,20 @@ type crdtCall struct {
 // against an empty projection and every subsequent op is emitted into
 // nothing. Any command that must REJECT a bogus workspace id has to check
 // existence itself, before or after this call.
-func (s *session) openCRDT(workspaceID string) (*crdtCall, error) {
-	return openCRDTCallOn(s.ctx, s.c, workspaceID)
+func (s *session) openCRDT(workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
+	return openCRDTCallOn(s.ctx, s.c, workspaceID, otherWorkspaceIDs...)
 }
 
 // openCRDTCallOn is openCRDT for a caller that holds a client and a context
 // without a session.
-func openCRDTCallOn(ctx context.Context, c *control.Client, workspaceID string) (*crdtCall, error) {
-	bs, err := crdtBootstrap(ctx, c, []string{workspaceID})
+func openCRDTCallOn(ctx context.Context, c *control.Client, workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
+	workspaceIDs := []string{workspaceID}
+	for _, otherWorkspaceID := range otherWorkspaceIDs {
+		if otherWorkspaceID != "" && !slices.Contains(workspaceIDs, otherWorkspaceID) {
+			workspaceIDs = append(workspaceIDs, otherWorkspaceID)
+		}
+	}
+	bs, err := crdtBootstrap(ctx, c, workspaceIDs)
 	if err != nil {
 		return nil, err
 	}

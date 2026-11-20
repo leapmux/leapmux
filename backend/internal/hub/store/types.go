@@ -366,11 +366,12 @@ type UserRecentBatchIDRow struct {
 
 // LifecycleOutboxRow is the persisted outbox payload.
 type LifecycleOutboxRow struct {
-	ID         int64
-	UserID     string
-	OpType     leapmuxv1.WorkspaceLifecycleOp
-	Payload    []byte
-	ConsumedAt *time.Time
+	ID                int64
+	UserID            string
+	OpType            leapmuxv1.WorkspaceLifecycleOp
+	Payload           []byte
+	ConsumedAt        *time.Time
+	LayoutFactWritten bool
 }
 
 // WorkspaceSection represents a sidebar section for a user.

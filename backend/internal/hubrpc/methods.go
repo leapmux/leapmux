@@ -58,6 +58,7 @@ var Registry = registry(
 	entry[leapmuxv1.GetSystemInfoRequest, leapmuxv1.GetSystemInfoResponse](leapmuxv1connect.SystemServiceGetSystemInfoProcedure),
 	entry[leapmuxv1.LocateTabRequest, leapmuxv1.LocateTabResponse](leapmuxv1connect.WorkspaceServiceLocateTabProcedure),
 	entry[leapmuxv1.LocateTileRequest, leapmuxv1.LocateTileResponse](leapmuxv1connect.WorkspaceServiceLocateTileProcedure),
+	entry[leapmuxv1.ReadLayoutEventsRequest, leapmuxv1.ReadLayoutEventsResponse](leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure),
 	entry[leapmuxv1.ListTabsRequest, leapmuxv1.ListTabsResponse](leapmuxv1connect.WorkspaceServiceListTabsProcedure),
 	entry[leapmuxv1.SubmitOpsRequest, leapmuxv1.SubmitOpsResponse](leapmuxv1connect.UserCRDTSubmitOpsProcedure),
 	entry[leapmuxv1.UpdatePresenceRequest, leapmuxv1.UpdatePresenceResponse](leapmuxv1connect.UserCRDTUpdatePresenceProcedure),

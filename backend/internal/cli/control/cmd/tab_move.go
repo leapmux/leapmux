@@ -64,7 +64,22 @@ func runTabMove(inv *cli.Invocation) (any, error) {
 	if tt == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
 		return nil, cli.Newf(cli.CodeNotFound, "the hub reports no type for tab %s", got.ID)
 	}
-	cc, err := s.openCRDT(got.WorkspaceID)
+	workspaceIDs := []string{destWorkspaceID}
+	if destTileID != "" {
+		tileWorkspaceID, err := s.deps().LocateTile(s.ctx, destTileID)
+		if err != nil {
+			return nil, err
+		}
+		workspaceIDs = append(workspaceIDs, tileWorkspaceID)
+	}
+	if specReferencesTile {
+		ref, err := s.resolveTab(resolve.KindTab, spec.refID, resolve.Need{WorkspaceID: true})
+		if err != nil {
+			return nil, err
+		}
+		workspaceIDs = append(workspaceIDs, ref.WorkspaceID)
+	}
+	cc, err := s.openCRDT(got.WorkspaceID, workspaceIDs...)
 	if err != nil {
 		return nil, err
 	}

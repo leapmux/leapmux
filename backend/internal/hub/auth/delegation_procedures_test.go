@@ -119,6 +119,8 @@ var newlyDelegationReachable = map[string]string{
 	leapmuxv1connect.WorkerManagementServiceListWorkersProcedure: "worker:read is the scope that opens a channel, which a delegation bearer must do; the listing shares it and no narrower scope splits them",
 	leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure:   "shares worker:read with OpenChannel; see ListWorkers above",
 
+	leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure: "reads only the authenticated owner's layout journal and validates the signed scope on every resume",
+
 	// The workspace and sidebar lifecycle. SubmitOps was already admitted, and
 	// it mutates the whole layout document -- closing tabs, moving them, and
 	// rewriting every tile -- so these verbs are the same authority reached

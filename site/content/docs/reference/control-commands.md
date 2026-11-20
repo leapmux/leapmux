@@ -2297,7 +2297,14 @@ and the same checkpoint. The stream exits after stream.retired confirms
 the final Worker position. Closing a subagent transcript keeps its
 history open. A terminal's shell can also exit while its tab stays open.
 
-When the hub or a Worker cannot deliver, the stream prints
+Without --tab, --checkpoint resumes the Hub's workspace and tab events.
+Use --workspace to watch one workspace, or omit it for the account.
+Resume with the same scope and kinds. For a deleted workspace, pass its
+full ID. The command exits after it reaches the final layout position.
+The Hub retains tabs that opened, moved, or closed between runs.
+Use an exact tab checkpoint for Worker history.
+
+In a stream without --checkpoint, when the Hub or a Worker cannot deliver, it prints
 stream.unavailable and retries. When the source delivers again, it prints
 stream.gap with the kinds that it may have lost, then each change of an
 agent's activity and status, and of the tabs and workspaces, that happened
@@ -2341,7 +2348,7 @@ leapmux control events [flags]
 | `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, stream.ready, stream.unavailable, stream.gap, stream.heartbeat, stream.retired; repeatable) |
 | `--limit int` | end the stream after this many events; 0 runs without a limit |
 | `--heartbeat duration` | print a stream.heartbeat event at this interval, such as 30s; 0 prints none (default: 0s) |
-| `--checkpoint string` | save and resume the event position for the agent or terminal selected by --tab |
+| `--checkpoint string` | save and resume one exact tab or the Hub's retained layout events |
 
 ```sh
 leapmux control events
@@ -2444,6 +2451,7 @@ alone:
   - leapmux.v1.WorkspaceService/ListWorkspaces
   - leapmux.v1.WorkspaceService/LocateTab
   - leapmux.v1.WorkspaceService/LocateTile
+  - leapmux.v1.WorkspaceService/ReadLayoutEvents
   - leapmux.v1.WorkspaceService/RenameWorkspace
 
 Pass --hub &lt;url&gt; to call another hub procedure with your own login.

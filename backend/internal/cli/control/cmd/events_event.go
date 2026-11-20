@@ -104,7 +104,7 @@ type streamEvent struct {
 	JournalID   string `json:"journal_id,omitempty"`
 	TabStreamID string `json:"tab_stream_id,omitempty"`
 	Sequence    *int64 `json:"sequence,omitempty"`
-	// Replayed reports whether the Worker had committed the record when the stream opened.
+	// Replayed reports whether the source had committed the record when the stream opened.
 	Replayed *bool `json:"replayed,omitempty"`
 	// GapReason and AfterSequence describe the interval that a journal gap advances over.
 	GapReason     string `json:"gap_reason,omitempty"`

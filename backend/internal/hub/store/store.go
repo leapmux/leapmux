@@ -22,6 +22,7 @@ type Store interface {
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceTabIndex() WorkspaceTabIndexStore
+	LayoutEvents() LayoutEventStore
 	UserOpBatches() UserOpBatchesStore
 	UserState() UserStateStore
 	UserRecentBatchIDs() UserRecentBatchIDStore

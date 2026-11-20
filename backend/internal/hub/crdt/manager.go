@@ -186,9 +186,10 @@ type SubmitInput struct {
 	// because CanUseWorker only asks "may this USER use this worker". That is
 	// the same cross-machine reach service.WorkerReachAuthorizer refuses one
 	// layer over.
-	WorkerScope func(workerID string) bool
-	Internal    bool
-	publication *PublicationReceipt
+	WorkerScope     func(workerID string) bool
+	Internal        bool
+	publication     *PublicationReceipt
+	layoutLifecycle *LayoutLifecycleCommit
 }
 
 // Manager owns one user's CRDT state and its journal, and coordinates
@@ -214,8 +215,9 @@ type Manager struct {
 	clock       *Clock
 	hubClientID string
 
-	mu    sync.RWMutex
-	state *leapmuxv1.UserCrdtState
+	mu              sync.RWMutex
+	state           *leapmuxv1.UserCrdtState
+	layoutEventWake chan struct{}
 	// The manager goroutine (Start's select loop) is the SOLE writer of
 	// m.state: every mutation -- including workspace lifecycle create/delete,
 	// which flows through SubmitInternal as CreateWorkspaceOp /
@@ -1553,7 +1555,7 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 	// full Project + Diff. The latter is at most as expensive as the
 	// pre-existing path (which projected both states unconditionally), so
 	// this is a strict improvement.
-	diff := DiffProjectionForBatch(m.state, working, batch.GetOps())
+	diff, layoutFacts := projectionDiffAndLayoutFacts(m.state, working, batch.GetOps())
 
 	hash, err := BatchBodyHash(batch)
 	if err != nil {
@@ -1577,14 +1579,19 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 			OpCount:           int64(len(batch.GetOps())),
 			ExpiresAt:         m.now().Add(DedupTTL),
 		},
-		IndexDiff:   diff,
-		Transitions: transitions,
-		Publication: in.publication,
+		IndexDiff:       diff,
+		Transitions:     transitions,
+		Publication:     in.publication,
+		LayoutFacts:     layoutFacts,
+		LayoutLifecycle: in.layoutLifecycle,
 	}); err != nil {
 		return fmt.Errorf("commit batch: %w", err)
 	}
 
 	m.commitState(working)
+	if len(layoutFacts) != 0 || in.layoutLifecycle != nil {
+		m.signalLayoutEvents()
+	}
 	return nil
 }
 

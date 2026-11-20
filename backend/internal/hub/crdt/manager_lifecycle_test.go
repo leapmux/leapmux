@@ -60,7 +60,8 @@ func (o *controllableOutbox) ListPendingLifecycleOutbox(_ context.Context, userI
 	return out, nil
 }
 
-func (o *controllableOutbox) MarkLifecycleOutboxConsumed(_ context.Context, id int64, _ time.Time) error {
+func (o *controllableOutbox) MarkLifecycleOutboxConsumed(_ context.Context, row crdt.LifecycleOutboxRow, _ time.Time, _ *leapmuxv1.LayoutEventFact) error {
+	id := row.ID
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.consumeErr != nil {
@@ -1594,7 +1595,7 @@ func (o *gatedOutbox) ListPendingLifecycleOutbox(context.Context, string) ([]crd
 	return nil, nil
 }
 
-func (o *gatedOutbox) MarkLifecycleOutboxConsumed(context.Context, int64, time.Time) error {
+func (o *gatedOutbox) MarkLifecycleOutboxConsumed(context.Context, crdt.LifecycleOutboxRow, time.Time, *leapmuxv1.LayoutEventFact) error {
 	return nil
 }
 

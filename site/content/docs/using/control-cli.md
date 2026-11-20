@@ -596,6 +596,24 @@ between those steps, the next run can print the event again. Deduplicate by
 `journal_id`, `tab_stream_id`, and `sequence`. Records already committed
 when the stream opened carry `replayed: true`.
 
+#### Resume Hub layout events
+
+```bash
+leapmux control events --workspace "$WS" --checkpoint workspace-events.json --kind workspace,tab --json
+```
+
+Omit `--workspace` to use the account's layout scope. Resume with the
+same scope and event kinds. The Hub retains workspace and tab changes,
+including tabs that opened, moved, or closed between runs. When retained
+history expires, the stream reports the lost interval and advances to
+the first available position. Pass the full workspace ID to resume a
+checkpoint after that workspace is deleted. The command replays
+through its final position and exits with status `0`.
+
+Use an exact tab checkpoint to resume events that originate on a
+Worker. A layout checkpoint follows the Hub's committed lifecycle
+events.
+
 ### Calling a procedure directly
 
 `rpc <procedure> [request]` calls one procedure of the Hub or of a Worker by its name, for a call that no other command makes. It reads the request as protobuf JSON and prints the response the same way.

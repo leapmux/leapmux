@@ -33,6 +33,7 @@ func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 		// WorkspaceService surface.
 		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
+		leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure,
 		leapmuxv1connect.WorkspaceServiceListTabsProcedure,
 		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 		leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,

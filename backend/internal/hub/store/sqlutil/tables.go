@@ -16,6 +16,7 @@ var SQLTruncateTableOrder = []string{
 	"altcha_used_salts", "hub_settings",
 	"hub_runtime_lease", "revocation_events", "revocation_event_sequence",
 	"lifecycle_outbox", "user_recent_batch_ids", "workspace_tab_owned",
+	"layout_event_entries", "layout_workspace_ends", "layout_event_heads",
 	"user_state", "user_op_batches",
 	"workspace_section_items", "workspace_sections",
 	"delegation_tokens", "api_tokens",

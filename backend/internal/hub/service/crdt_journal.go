@@ -461,6 +461,17 @@ func (j *crdtJournal) CommitBatch(ctx context.Context, c crdt.CommitBatch) error
 	if err != nil {
 		return fmt.Errorf("marshal transitions %s: %w", c.Batch.GetBatchId(), err)
 	}
+	layoutPayloads, err := marshalLayoutFacts(c.LayoutFacts)
+	if err != nil {
+		return err
+	}
+	var lifecyclePayload []byte
+	if c.LayoutLifecycle != nil {
+		lifecyclePayload, err = proto.Marshal(c.LayoutLifecycle.Fact)
+		if err != nil {
+			return fmt.Errorf("encode the workspace lifecycle event: %w", err)
+		}
+	}
 	// The journal stores no client id and rebuilds every canonical HLC with
 	// crdt.CanonicalClockID, so an op stamped by any other clock would change
 	// identity on the next read. Every op, not only the first: a dedup hit
@@ -510,6 +521,29 @@ func (j *crdtJournal) CommitBatch(ctx context.Context, c crdt.CommitBatch) error
 		idx := txTabIndexWriter{tx: tx, owner: owner}
 		if err := crdt.ApplyDiff(ctx, idx, c.IndexDiff); err != nil {
 			return err
+		}
+		events := tx.LayoutEvents()
+		payloads := layoutPayloads
+		var closedWorkspace string
+		if c.LayoutLifecycle != nil {
+			claimed, err := events.ClaimLifecycle(ctx, owner, c.LayoutLifecycle.OutboxID)
+			if err != nil {
+				return fmt.Errorf("claim the workspace lifecycle event: %w", err)
+			}
+			if claimed {
+				workspace := c.LayoutLifecycle.Fact.GetWorkspace()
+				if workspace.GetOperation() == leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE {
+					payloads = append([][]byte{lifecyclePayload}, payloads...)
+				} else {
+					payloads = append(payloads, lifecyclePayload)
+					if workspace.GetOperation() == leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_DELETE {
+						closedWorkspace = workspace.GetWorkspaceId()
+					}
+				}
+			}
+		}
+		if err := appendLayoutEvents(ctx, events, owner, first.GetPhysical(), payloads, closedWorkspace); err != nil {
+			return fmt.Errorf("append committed layout events: %w", err)
 		}
 		if c.Publication != nil {
 			return insertTabPublication(ctx, tx, owner, *c.Publication)

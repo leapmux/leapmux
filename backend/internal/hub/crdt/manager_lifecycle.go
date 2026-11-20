@@ -142,12 +142,16 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 			m.logRowFaultOnce(&m.undecodableLogged, row.ID,
 				"discarding undecodable lifecycle row",
 				"undecodable lifecycle row still pending after a failed consume", err)
-			if cerr := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); cerr != nil {
+			loss := &leapmuxv1.LayoutEventFact{Event: &leapmuxv1.LayoutEventFact_Loss{
+				Loss: &leapmuxv1.LayoutEventLoss{},
+			}}
+			if cerr := reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), loss); cerr != nil {
 				// Consumption failing is a transient store fault: leave the row
 				// for the next drain to discard.
 				m.logger.Error("consume undecodable lifecycle row", "id", row.ID, "err", cerr)
 			} else {
 				delete(m.undecodableLogged, row.ID)
+				m.signalLayoutEvents()
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -241,6 +245,9 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		m.contractSubscribersForWorkspace(wsID)
 		return fmt.Errorf("expand subscribers for workspace %s: %w", wsID, err)
 	}
+	if row.LayoutFactWritten {
+		return m.finishLifecycleCreate(ctx, row, p, reader)
+	}
 
 	// The seed batch is the payload's ops as they stand: SetNodeRegister
 	// creates the root node, then CreateWorkspace creates the
@@ -253,10 +260,12 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		Ops:     ops,
 	}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
-
 		Batches:      []*leapmuxv1.OpBatch{batch},
 		PrincipalID:  HubReservedPrincipal,
 		OriginClient: m.hubClientID,
+		layoutLifecycle: &LayoutLifecycleCommit{
+			OutboxID: row.ID, Fact: workspaceLayoutFact(wsID, p.Title, LifecycleOpCreate),
+		},
 	})
 	if err != nil {
 		// SubmitInternal surfaces a transient error (e.g. a journal store
@@ -319,19 +328,14 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 			return fmt.Errorf("seed batch rejected: %v", rj.GetReason())
 		}
 	}
-	// Broadcast the Created event BEFORE consuming the outbox row, mirroring
-	// applyLifecycleDelete's order: a consume-then-broadcast window that a
-	// process crash lands in would leave the row consumed -- so no later drain
-	// retries it -- while no subscriber ever saw the Created event, and the
-	// workspace would be invisible in live subscriptions until a reconnect. The
-	// retry the order exists to make reachable is now SAFE because the
-	// ROOT_IMMUTABLE arm above treats a re-seed as idempotent success rather than
-	// a contraction that would drop live subscribers.
-	m.broadcastWorkspaceCreatedEvent(wsID, p.Title, p.RootNodeID)
-	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
-		return err
-	}
-	return nil
+	return m.finishLifecycleCreate(ctx, row, p, reader)
+}
+
+func (m *Manager) finishLifecycleCreate(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, reader LifecycleOutboxReader) error {
+	// Broadcast before acknowledging the row so a retry can notify subscribers
+	// if consumption fails.
+	m.broadcastWorkspaceCreatedEvent(p.WorkspaceID, p.Title, p.RootNodeID)
+	return reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), nil)
 }
 
 func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, reader LifecycleOutboxReader) error {
@@ -345,13 +349,20 @@ func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxR
 	// subscribers, and no seed batch re-validates), so broadcasting first costs
 	// nothing on the retry path the order exists to make reachable.
 	m.BroadcastWorkspaceRenamed(p.WorkspaceID, p.NewTitle)
-	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
+	if err := reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), workspaceLayoutFact(p.WorkspaceID, p.NewTitle, LifecycleOpRename)); err != nil {
 		return err
 	}
+	m.signalLayoutEvents()
 	return nil
 }
 
 func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, ops []*leapmuxv1.CrdtOp, reader LifecycleOutboxReader) error {
+	if row.LayoutFactWritten {
+		// The receipt and the tombstones committed together. The workspace's
+		// original descendants are gone, so enumerating again would submit a
+		// different batch with the same ID.
+		return m.finishLifecycleDelete(ctx, row, p, reader)
+	}
 	// The workspace_service writes the outbox row with no ops — the
 	// manager owns the in-memory enumeration so we capture EVERY live
 	// entity even ones projection repair has hidden. Without this the
@@ -394,10 +405,12 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	})
 	batch := &leapmuxv1.OpBatch{BatchId: lifecycleDeleteBatchIDPrefix + p.WorkspaceID, Ops: combined}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
-
 		Batches:      []*leapmuxv1.OpBatch{batch},
 		PrincipalID:  HubReservedPrincipal,
 		OriginClient: m.hubClientID,
+		layoutLifecycle: &LayoutLifecycleCommit{
+			OutboxID: row.ID, Fact: workspaceLayoutFact(wsID, "", LifecycleOpDelete),
+		},
 	})
 	if err != nil {
 		return err
@@ -407,6 +420,10 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 			return fmt.Errorf("delete batch rejected: %v", rj.GetReason())
 		}
 	}
+	return m.finishLifecycleDelete(ctx, row, p, reader)
+}
+
+func (m *Manager) finishLifecycleDelete(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, reader LifecycleOutboxReader) error {
 	// Broadcast the deletion and contract subscriber filters BEFORE marking the
 	// outbox row consumed. The in-memory state already reflects the delete (the
 	// tombstone batch above committed and the Workspaces map entry is gone), so
@@ -427,10 +444,7 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// across the manager's lifetime. Mirrors the contraction on a failed
 	// create in applyLifecycleCreate.
 	m.contractSubscribersForWorkspace(p.WorkspaceID)
-	if err := reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now()); err != nil {
-		return err
-	}
-	return nil
+	return reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), nil)
 }
 
 // enumerateWorkspaceDeleteOps walks the in-memory state and produces

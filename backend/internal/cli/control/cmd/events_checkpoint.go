@@ -19,17 +19,20 @@ import (
 const eventCheckpointVersion = 1
 const maxEventCheckpointBytes = 8 << 10
 const eventCheckpointLockDirectory = ".leapmux-event-locks"
+const layoutCheckpointScope = "layout"
 
 type eventCheckpoint struct {
 	Version     int      `json:"version"`
-	WorkerID    string   `json:"worker_id"`
-	TabType     string   `json:"tab_type"`
-	TabID       string   `json:"tab_id"`
+	WorkerID    string   `json:"worker_id,omitempty"`
+	TabType     string   `json:"tab_type,omitempty"`
+	TabID       string   `json:"tab_id,omitempty"`
 	JournalID   string   `json:"journal_id"`
-	TabStreamID string   `json:"tab_stream_id"`
+	TabStreamID string   `json:"tab_stream_id,omitempty"`
 	Filter      []string `json:"kinds"`
 	Sequence    int64    `json:"sequence"`
 	Cursor      []byte   `json:"cursor"`
+	Scope       string   `json:"scope,omitempty"`
+	WorkspaceID string   `json:"workspace_id,omitempty"`
 }
 
 type eventCheckpointFile struct {
@@ -121,12 +124,27 @@ func (f *eventCheckpointFile) read() (*eventCheckpoint, error) {
 	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		return nil, cli.Usagef("the event checkpoint must contain one JSON object")
 	}
-	if state.Version != eventCheckpointVersion || (state.TabType != "agent" && state.TabType != "terminal") ||
-		state.WorkerID == "" || state.TabID == "" || state.JournalID == "" || state.TabStreamID == "" ||
-		state.Sequence < 0 || len(state.Cursor) == 0 || state.Filter == nil {
+	if !state.valid() {
 		return nil, cli.Usagef("the event checkpoint has an invalid version, source, filter or position")
 	}
 	return &state, nil
+}
+
+func (state eventCheckpoint) valid() bool {
+	if state.Version != eventCheckpointVersion || state.JournalID == "" ||
+		state.Sequence < 0 || len(state.Cursor) == 0 || state.Filter == nil {
+		return false
+	}
+	switch state.Scope {
+	case "":
+		return (state.TabType == "agent" || state.TabType == "terminal") &&
+			state.WorkerID != "" && state.TabID != "" && state.TabStreamID != "" &&
+			state.WorkspaceID == ""
+	case layoutCheckpointScope:
+		return state.WorkerID == "" && state.TabID == "" && state.TabType == "" && state.TabStreamID == ""
+	default:
+		return false
+	}
 }
 
 func (f *eventCheckpointFile) save(state *eventCheckpoint) error {

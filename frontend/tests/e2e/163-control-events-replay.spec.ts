@@ -191,3 +191,152 @@ test('replays a closed tab to its final Worker position', async ({ authenticated
     await completed.finished
   }
 })
+
+test('replays a tab opened, moved out and back, and closed while disconnected', async ({ authenticatedWorkspace, leapmuxServer, page }) => {
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const directory = createTestDirectory('leapmux-workspace-events-')
+  const checkpoint = join(directory, 'workspace.json')
+  const accountCheckpoint = join(directory, 'account.json')
+  const { workspaceId } = authenticatedWorkspace
+  const anchor = await runCLI(cli, [
+    'terminal',
+    'open',
+    '--workspace',
+    workspaceId,
+    '--worker',
+    leapmuxServer.workerId,
+  ]) as { id: string, tile_id: string }
+  const args = [
+    '--workspace',
+    workspaceId,
+    '--checkpoint',
+    checkpoint,
+    '--kind',
+    'stream,tab.opened,tab.moved,tab.closed',
+  ]
+  const accountArgs = [
+    '--checkpoint',
+    accountCheckpoint,
+    '--kind',
+    'stream.ready,tab.moved,workspace.deleted,tab.closed',
+  ]
+  for (const [startArgs, path] of [
+    [args, checkpoint],
+    [accountArgs, accountCheckpoint],
+  ] as const) {
+    const initial = startControlEventStream(cli, startArgs)
+    try {
+      await expect.poll(() => initial.events().map(event => event.kind)).toContain('stream.ready')
+      await expect.poll(() => existsSync(path)).toBe(true)
+    }
+    finally {
+      initial.child.kill('SIGINT')
+      await initial.finished
+    }
+  }
+
+  const other = await runCLI(cli, ['workspace', 'create', 'Replay move destination']) as { id: string }
+  const terminal = await runCLI(cli, [
+    'terminal',
+    'open',
+    '--workspace',
+    workspaceId,
+    '--worker',
+    leapmuxServer.workerId,
+  ]) as { id: string }
+  await expect(tabById(page, terminal.id)).toBeVisible()
+  for (const [flag, destination] of [
+    ['--workspace', other.id],
+    ['--tile', anchor.tile_id],
+    ['--workspace', other.id],
+    ['--before', anchor.id],
+  ] as const) {
+    await runCLI(cli, [
+      'tab',
+      'move',
+      terminal.id,
+      flag,
+      destination,
+    ])
+  }
+  await runCLI(cli, ['workspace', 'delete', other.id])
+  const closed = await runCLI(cli, [
+    'tab',
+    'close',
+    terminal.id,
+    '--worktree',
+    'keep',
+    '--allow-busy',
+  ]) as { tombstoned: boolean, worker_close_error?: string }
+  expect(closed.tombstoned).toBe(true)
+  expect(closed.worker_close_error).toBeUndefined()
+  await expect(tabById(page, terminal.id)).toHaveCount(0)
+
+  const resumed = startControlEventStream(cli, [...args, '--limit', '6'])
+  try {
+    expect(await resumed.finished, resumed.diagnostic()).toEqual({ code: 0, signal: null })
+    const facts = resumed.events().filter(event => event.kind.startsWith('tab.'))
+    const entered = expect.objectContaining({
+      kind: 'tab.opened',
+      tab_id: terminal.id,
+      workspace_id: workspaceId,
+      replayed: true,
+    })
+    const left = expect.objectContaining({
+      kind: 'tab.moved',
+      tab_id: terminal.id,
+      from_workspace_id: workspaceId,
+      replayed: true,
+    })
+    expect(facts).toEqual([
+      entered,
+      left,
+      entered,
+      left,
+      entered,
+      expect.objectContaining({
+        kind: 'tab.closed',
+        tab_id: terminal.id,
+        workspace_id: workspaceId,
+        replayed: true,
+      }),
+    ])
+    for (const index of [1, 3])
+      expect(facts[index]).not.toHaveProperty('workspace_id')
+    for (const index of [2, 4])
+      expect(facts[index]).not.toHaveProperty('from_workspace_id')
+  }
+  finally {
+    resumed.child.kill()
+    await resumed.finished
+  }
+
+  const account = startControlEventStream(cli, [...accountArgs, '--limit', '6'])
+  try {
+    expect(await account.finished, account.diagnostic()).toEqual({ code: 0, signal: null })
+    const moved = (from: string, to: string) => expect.objectContaining({
+      kind: 'tab.moved',
+      tab_id: terminal.id,
+      from_workspace_id: from,
+      workspace_id: to,
+      replayed: true,
+    })
+    expect(account.events().filter(event => !event.kind.startsWith('stream.'))).toEqual([
+      moved(workspaceId, other.id),
+      moved(other.id, workspaceId),
+      moved(workspaceId, other.id),
+      moved(other.id, workspaceId),
+      expect.objectContaining({ kind: 'workspace.deleted', workspace_id: other.id, replayed: true }),
+      expect.objectContaining({
+        kind: 'tab.closed',
+        tab_id: terminal.id,
+        workspace_id: workspaceId,
+        replayed: true,
+      }),
+    ])
+  }
+  finally {
+    account.child.kill()
+    await account.finished
+  }
+})

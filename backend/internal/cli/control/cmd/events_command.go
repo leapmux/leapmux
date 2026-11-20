@@ -40,7 +40,7 @@ func newEventsCommand() *cobra.Command {
 			cli.SetEnum(fs, "kind", kindFlagValues()...)
 			fs.Int("limit", 0, "end the stream after this many events; 0 runs without a limit")
 			fs.Duration("heartbeat", 0, "print a stream.heartbeat event at this interval, such as 30s; 0 prints none")
-			fs.String("checkpoint", "", "save and resume the event position for the agent or terminal selected by --tab")
+			fs.String("checkpoint", "", "save and resume one exact tab or the Hub's retained layout events")
 		},
 		Run: runEvents,
 	})
@@ -84,7 +84,14 @@ and the same checkpoint. The stream exits after stream.retired confirms
 the final Worker position. Closing a subagent transcript keeps its
 history open. A terminal's shell can also exit while its tab stays open.
 
-When the hub or a Worker cannot deliver, the stream prints
+Without --tab, --checkpoint resumes the Hub's workspace and tab events.
+Use --workspace to watch one workspace, or omit it for the account.
+Resume with the same scope and kinds. For a deleted workspace, pass its
+full ID. The command exits after it reaches the final layout position.
+The Hub retains tabs that opened, moved, or closed between runs.
+Use an exact tab checkpoint for Worker history.
+
+In a stream without --checkpoint, when the Hub or a Worker cannot deliver, it prints
 stream.unavailable and retries. When the source delivers again, it prints
 stream.gap with the kinds that it may have lost, then each change of an
 agent's activity and status, and of the tabs and workspaces, that happened
@@ -149,8 +156,8 @@ func eventsOptionsOf(inv *cli.Invocation) (eventsOptions, error) {
 	opts := eventsOptions{filter: filter, limit: limit, heartbeat: heartbeat, workspace: stringFlag(inv, "workspace"), tab: stringFlag(inv, "tab")}
 	if inv.Changed("checkpoint") {
 		opts.checkpoint = inv.Command.Flag("checkpoint").Value.String()
-		if opts.checkpoint == "" || opts.tab == "" || opts.workspace != "" {
-			return eventsOptions{}, cli.Usagef("--checkpoint requires a file and --tab, without --workspace")
+		if opts.checkpoint == "" || opts.tab != "" && opts.workspace != "" {
+			return eventsOptions{}, cli.Usagef("--checkpoint requires a file and accepts one scope")
 		}
 	}
 	return opts, nil
@@ -168,6 +175,9 @@ func runEvents(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 	if opts.checkpoint != "" {
+		if opts.tab == "" {
+			return nil, s.runLayoutCheckpointedEvents(opts)
+		}
 		return nil, s.runCheckpointedEvents(opts)
 	}
 	workspaceID, tabID, err := resolveEventScope(s, opts)

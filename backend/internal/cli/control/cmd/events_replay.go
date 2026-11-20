@@ -33,6 +33,9 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 	if err != nil {
 		return err
 	}
+	if state != nil && state.Scope != "" {
+		return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a layout stream")
+	}
 	bounded := s.bounded()
 	target, err := bounded.resolveCheckpointTab(opts.tab, state)
 	bounded.Close()
