@@ -3,9 +3,9 @@ SELECT input.seq AS accepted_seq, CAST(COALESCE((
     SELECT reply.input_turn_outcome FROM messages AS reply
     WHERE reply.agent_id = input.agent_id
       AND reply.agent_session_id = input.agent_session_id
-      AND reply.native_input_id = input.native_input_id
       AND reply.native_turn_id = binding.native_turn_id
-      AND reply.native_input_id <> ''
+      AND reply.native_turn_id <> ''
+      AND (reply.native_input_id = input.native_input_id OR reply.native_input_id = '')
       AND reply.seq > input.seq
       AND reply.input_turn_outcome IS NOT NULL
     ORDER BY reply.seq
@@ -45,9 +45,9 @@ JOIN native_agent_inputs AS binding ON binding.agent_id = input.agent_id
     AND binding.native_turn_id <> ''
 JOIN messages AS reply ON reply.agent_id = input.agent_id
     AND reply.agent_session_id = input.agent_session_id
-    AND reply.native_input_id = input.native_input_id
     AND reply.native_turn_id = binding.native_turn_id
-    AND reply.native_input_id <> ''
+    AND reply.native_turn_id <> ''
+    AND (reply.native_input_id = input.native_input_id OR reply.native_input_id = '')
 WHERE input.agent_id = sqlc.arg(agent_id)
   AND input.id = sqlc.arg(input_id)
   AND input.source = sqlc.arg(user_source)
@@ -59,9 +59,9 @@ WHERE input.agent_id = sqlc.arg(agent_id)
       SELECT MIN(ended.seq) FROM messages AS ended
       WHERE ended.agent_id = input.agent_id
         AND ended.agent_session_id = input.agent_session_id
-        AND ended.native_input_id = input.native_input_id
         AND ended.native_turn_id = binding.native_turn_id
-        AND ended.native_input_id <> ''
+        AND ended.native_turn_id <> ''
+        AND (ended.native_input_id = input.native_input_id OR ended.native_input_id = '')
         AND ended.seq > input.seq
         AND ended.input_turn_outcome IS NOT NULL
   ), 9223372036854775807)
@@ -202,12 +202,12 @@ WHERE input.native_input_id <> ''
       SELECT 1 FROM messages AS ended
       JOIN native_agent_inputs AS expected ON expected.agent_id = ended.agent_id
           AND expected.agent_session_id = ended.agent_session_id
-          AND expected.native_input_id = ended.native_input_id
+          AND expected.native_input_id = input.native_input_id
           AND expected.native_turn_id = ended.native_turn_id
       WHERE ended.agent_id = input.agent_id
         AND ended.agent_session_id = input.agent_session_id
-        AND ended.native_input_id = input.native_input_id
-        AND ended.native_input_id <> ''
+        AND ended.native_turn_id <> ''
+        AND (ended.native_input_id = input.native_input_id OR ended.native_input_id = '')
         AND ended.seq > input.seq
         AND ended.input_turn_outcome IS NOT NULL
   )

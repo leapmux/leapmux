@@ -48,7 +48,8 @@ func TestInputReplyReadsOnlyTheAcceptedInputsTurn(t *testing.T) {
 	write("another-session", "session-b", nativeID, "own-turn", assistant, "Other session's reply", nil)
 	outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
 	write("wrong-turn", sessionID, nativeID, "another-turn", assistant, "Other turn's completion", &outcome)
-	write("second-reply", sessionID, nativeID, "own-turn", assistant, "Second reply", nil)
+	write("same-turn-other-input", sessionID, "another-native-input", "own-turn", assistant, "Another input's completion", &outcome)
+	write("second-reply", sessionID, "", "own-turn", assistant, "Second reply", nil)
 
 	read := func(id string) *leapmuxv1.AgentInputTurnReply {
 		t.Helper()
@@ -84,7 +85,7 @@ func TestInputReplyReadsOnlyTheAcceptedInputsTurn(t *testing.T) {
 	assert.Equal(t, unproved, read(inputID).GetOutcome())
 
 	// A historical completion can commit after later input started.
-	write("native-end", sessionID, nativeID, "own-turn", assistant, "Completion marker", &outcome)
+	write("native-end", sessionID, "", "own-turn", assistant, "Completion marker", &outcome)
 	write("too-late", sessionID, nativeID, "own-turn", assistant, "Arrived after the end", nil)
 	terminal := read(inputID)
 	assert.Equal(t, outcome, terminal.GetOutcome())

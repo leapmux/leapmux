@@ -169,6 +169,9 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 	clear(a.incompleteTools)
 	a.incompleteToolOrder = 0
 	a.Mu.Unlock()
+	if oldThreadID != "" {
+		a.retireCodexReplyStarts(oldThreadID)
+	}
 	a.generationBuffer.Reset()
 	// New-thread output must observe the new transcript identity.
 	a.sink.UpdateSessionID(thread.ID)

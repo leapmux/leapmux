@@ -309,7 +309,7 @@ func TestHandleCodexOutput_ASteerPersistsTheDroppedPartialBeforeTheFollowUp(t *t
 	feedCodexLines(a,
 		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
 		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"Reading the launch notes"}}`,
-		`{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","itemId":"msg-a","delta":"The launch is "}}`,
+		`{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"msg-a","delta":"The launch is "}}`,
 	)
 	require.NotZero(t, sink.ProgressSnapshot().ThinkingTokens, "the partial response counts its tokens")
 
@@ -319,9 +319,12 @@ func TestHandleCodexOutput_ASteerPersistsTheDroppedPartialBeforeTheFollowUp(t *t
 	partial := messageIndexContaining(messages, "The launch is ")
 	require.NotEqual(t, -1, partial, "the steer's user message persists the dropped partial text")
 	assert.JSONEq(t, `{"type":"assembled_message","kind":"text","text":"The launch is ","completion":"interrupted"}`, string(messages[partial].Content))
+	assert.Equal(t, "main-thread", messages[partial].AgentSessionID)
+	assert.Equal(t, "turn-1", messages[partial].NativeTurnID)
 	reasoning := messageIndexContaining(messages, "Reading the launch notes")
 	require.NotEqual(t, -1, reasoning, "the steer's user message persists the dropped partial reasoning")
 	assert.Contains(t, string(messages[reasoning].Content), `"completion":"interrupted"`)
+	assert.Empty(t, messages[reasoning].NativeTurnID)
 	assert.Less(t, reasoning, partial, "the partial rows keep the order of their first delta")
 	assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot(), "the dropped items count no more tokens")
 
@@ -336,6 +339,7 @@ func TestHandleCodexOutput_ASteerPersistsTheDroppedPartialBeforeTheFollowUp(t *t
 	assert.Equal(t, 1, countMessagesContaining(messages, "Reading the launch notes"))
 	followUp := messageIndexContaining(messages, "Soon.")
 	require.NotEqual(t, -1, followUp)
+	assert.Equal(t, "turn-1", messages[followUp].NativeTurnID)
 	assert.Less(t, messageIndexContaining(messages, "The launch is "), followUp, "the dropped text stays before the follow-up answer")
 }
 

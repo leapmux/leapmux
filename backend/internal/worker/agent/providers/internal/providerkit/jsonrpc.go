@@ -196,6 +196,12 @@ func (b *JSONRPCProcess) sendRequest(ctx context.Context, method string, params 
 }
 
 func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
+	return b.SendDetachedRequestWithTimeout(method, params, 0, handle)
+}
+
+// SendDetachedRequestWithTimeout limits how long the detached callback waits
+// for the correlated reply. Zero leaves the request open until process exit.
+func (b *JSONRPCProcess) SendDetachedRequestWithTimeout(method string, params json.RawMessage, timeout time.Duration, handle func(json.RawMessage, error)) error {
 	reqID := b.nextReqID.Add(1)
 	ch, release, err := b.Register(reqID)
 	if err != nil {
@@ -212,7 +218,7 @@ func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessa
 	}
 	go func() {
 		defer release()
-		resp, err := b.AwaitResponse(ch, method, 0)
+		resp, err := b.AwaitResponse(ch, method, timeout)
 		if err == nil {
 			resp, err = decodeJSONRPCResponse(resp)
 		}

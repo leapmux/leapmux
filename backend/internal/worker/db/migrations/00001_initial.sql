@@ -155,7 +155,7 @@ CREATE TABLE messages (
     seq                 INTEGER NOT NULL CHECK (seq >= 1),
     agent_session_id    TEXT NOT NULL DEFAULT '',
     native_input_id     TEXT NOT NULL DEFAULT '' CHECK (native_input_id = '' OR agent_session_id <> ''),
-    native_turn_id      TEXT NOT NULL DEFAULT '' CHECK (native_turn_id = '' OR native_input_id <> ''),
+    native_turn_id      TEXT NOT NULL DEFAULT '' CHECK (native_turn_id = '' OR agent_session_id <> ''),
     -- AgentInputTurnOutcome is present only on a verified turn's final row.
     input_turn_outcome  INTEGER CHECK (input_turn_outcome IS NULL OR typeof(input_turn_outcome) = 'integer')
         CHECK (input_turn_outcome BETWEEN 1 AND 4)
@@ -245,8 +245,8 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type IS NOT NULL;
 CREATE UNIQUE INDEX idx_messages_idempotency_key
     ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
-CREATE INDEX idx_messages_native_input
-    ON messages(agent_id, agent_session_id, native_input_id, native_turn_id, seq) WHERE native_input_id <> '';
+CREATE INDEX idx_messages_native_turn
+    ON messages(agent_id, agent_session_id, native_turn_id, seq) WHERE native_turn_id <> '';
 
 -- A native start can follow a prompt and precede acceptance of the input row.
 -- Keep the binding independent of either row. A retirement records the local

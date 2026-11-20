@@ -194,6 +194,7 @@ type Message struct {
 	Source               leapmuxv1.MessageSource
 	AgentSessionID       string
 	NativeInputID        string
+	NativeTurnID         string
 	InputTurnOutcome     leapmuxv1.AgentInputTurnOutcome
 	IdempotencyKey       string
 	Content              []byte
@@ -295,7 +296,7 @@ func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agen
 		spans = slices.Clone(owner.spans)
 	}
 	s.messages = append(s.messages, Message{Source: source, AgentSessionID: identity.sessionID, IdempotencyKey: identity.key, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
-		NativeInputID: content.NativeInputID, InputTurnOutcome: content.InputTurnOutcome,
+		NativeInputID: content.NativeInputID, NativeTurnID: content.NativeTurnID, InputTurnOutcome: content.InputTurnOutcome,
 		stored:   s.PersistErr == nil,
 		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans,
 		TranscriptOnly: owner != nil && !owner.currentLocked()})

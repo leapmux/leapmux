@@ -81,7 +81,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		},
 		{
 			name:  "GetInputReplyState",
-			index: "idx_messages_native_input",
+			index: "idx_messages_native_turn",
 			run: func(t *testing.T) {
 				_, err := q.GetInputReplyState(t.Context(), queries.GetInputReplyStateParams{
 					AgentID: "agent", InputID: "input", InputKeyPattern: "input:*",
@@ -92,7 +92,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		},
 		{
 			name:  "ListInputReplyMessages",
-			index: "idx_messages_native_input",
+			index: "idx_messages_native_turn",
 			run: func(t *testing.T) {
 				rows, err := q.ListInputReplyMessages(t.Context(), queries.ListInputReplyMessagesParams{
 					AgentID: "agent", InputID: "input", InputKeyPattern: "input:*",

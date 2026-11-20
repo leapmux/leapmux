@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -32,6 +33,12 @@ type codexPendingTurnStart struct {
 	failureReported  bool
 	modelObserved    bool
 	effortObserved   bool
+	receipt          agent.NativeInputReceipt
+	replyDone        chan struct{}
+	replyErr         error
+	replySettled     bool
+	replyTurnID      string
+	endedBeforeAck   map[string]bool
 }
 
 func newCodexTurnStart(threadID string, input []map[string]interface{}, settings turnSettings) *codexPendingTurnStart {
@@ -73,7 +80,7 @@ func errCodexInputRecoveryRequired() error {
 
 // dispatchInputForSession captures settings and sends the request under one dispatch lock.
 // The caller waits for acceptance after this method releases that lock.
-func (a *Agent) dispatchInputForSession(expected *string, input []map[string]interface{}) (*codexPendingTurnStart, error) {
+func (a *Agent) dispatchInputForSession(expected *string, input []map[string]interface{}, tracked bool) (*codexPendingTurnStart, error) {
 	a.turnDispatchMu.Lock()
 	defer a.turnDispatchMu.Unlock()
 	a.Mu.Lock()
@@ -83,7 +90,7 @@ func (a *Agent) dispatchInputForSession(expected *string, input []map[string]int
 	}
 	threadID, settings := a.threadID, a.turnSettingsLocked()
 	a.Mu.Unlock()
-	return a.beginCodexTurnStart(threadID, input, settings, nil)
+	return a.beginCodexTurnStartWithTracking(threadID, input, settings, nil, tracked)
 }
 
 // sendTurnStart sends explicit settings. Runtime input dispatch captures current settings separately.
@@ -104,6 +111,10 @@ func (a *Agent) sendTurnStart(threadID string, input []map[string]interface{}, s
 // SendDetachedRequest writes synchronously, then waits for its response separately.
 // Do not hold Mu during the write, because the process transport acquires it.
 func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interface{}, settings turnSettings, retry *codexTurnRetry) (*codexPendingTurnStart, error) {
+	return a.beginCodexTurnStartWithTracking(threadID, input, settings, retry, false)
+}
+
+func (a *Agent) beginCodexTurnStartWithTracking(threadID string, input []map[string]interface{}, settings turnSettings, retry *codexTurnRetry, tracked bool) (*codexPendingTurnStart, error) {
 	params := map[string]interface{}{"threadId": threadID, "input": input}
 	addCodexTurnSettingsParams(params, settings)
 	raw, err := json.Marshal(params)
@@ -131,6 +142,15 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 		return nil, err
 	}
 	pending := newCodexTurnStart(threadID, input, settings)
+	if tracked {
+		pending.receipt = agent.NativeInputReceipt{SessionID: threadID, InputID: id.Generate()}
+		pending.replyDone = make(chan struct{})
+		pending.endedBeforeAck = make(map[string]bool)
+		if a.replyStarts == nil {
+			a.replyStarts = make(map[string]*codexPendingTurnStart)
+		}
+		a.replyStarts[pending.receipt.InputID] = pending
+	}
 	pending.settingRevisions = maps.Clone(a.settingRevisions)
 	pending.retry = retry
 	a.pendingStart = pending
@@ -139,11 +159,17 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 		retry.input = nil
 	}
 	a.Mu.Unlock()
-	err = a.SendDetachedRequest("turn/start", raw, func(_ json.RawMessage, responseErr error) {
+	var replyTimeout time.Duration
+	if tracked {
+		replyTimeout = turnStartAckTimeout
+	}
+	err = a.SendDetachedRequestWithTimeout("turn/start", raw, replyTimeout, func(result json.RawMessage, responseErr error) {
 		a.handleCodexTurnStartResponse(pending, responseErr)
+		a.bindCodexInputReply(pending, result, responseErr)
 	})
 	if err != nil {
 		a.handleCodexTurnStartResponse(pending, err)
+		a.bindCodexInputReply(pending, nil, err)
 		return pending, classifyCodexTurnStartRequestError("turn/start", err)
 	}
 	return pending, nil
@@ -189,7 +215,8 @@ func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, res
 		a.Mu.Unlock()
 		return
 	}
-	if errors.Is(err, agent.ErrDeliveryUncertain) && !processEnded {
+	if errors.Is(err, agent.ErrDeliveryUncertain) && !processEnded &&
+		(pending.replyDone == nil || !errors.Is(responseErr, providerkit.ErrAwaitTimeout)) {
 		pending.responseError <- err
 		a.Mu.Unlock()
 		return
@@ -207,6 +234,10 @@ func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, res
 
 // awaitCodexTurnStart limits the caller's wait, not the request's lifetime.
 func (a *Agent) awaitCodexTurnStart(pending *codexPendingTurnStart) error {
+	if pending.replyDone != nil {
+		<-pending.replyDone
+		return pending.replyErr
+	}
 	timer := a.Clock().NewTimer(turnStartAckTimeout, codexTurnStartAckTimerTag)
 	defer timer.Stop(codexTurnStartAckTimerTag)
 	var err error

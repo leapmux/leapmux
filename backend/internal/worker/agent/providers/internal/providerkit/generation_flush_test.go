@@ -251,13 +251,44 @@ func TestGenerationRetryDoesNotRequireFreshAdmission(t *testing.T) {
 	raw := &agenttest.Sink{PersistErr: errors.New("storage unavailable")}
 	sink := &rejectingGenerationReservation{ProviderServices: agent.NewProviderServices(raw)}
 	var buffer GenerationBuffer
-	buffer.Append("scope", agent.AssembledMessageKindText, "kept", JoinVerbatim)
+	buffer.AppendForNativeTurn("scope", agent.AssembledMessageKindText, "kept", JoinVerbatim, "original-session", "original-turn")
 	require.True(t, agent.OutputRetained(FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false)))
+	attempt := raw.Messages()
+	require.Len(t, attempt, 1)
+	require.False(t, attempt[0].Stored())
 	raw.PersistErr = nil
 	sink.refusal = errors.New("fresh admission closed")
 	require.NoError(t, FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false))
+	messages := raw.Messages()
+	require.Len(t, messages, 2)
+	assert.True(t, messages[1].Stored())
+	assert.Equal(t, "original-session", messages[1].AgentSessionID)
+	assert.Equal(t, "original-turn", messages[1].NativeTurnID)
 	assert.False(t, buffer.OutputQueue().HasPending())
 	assert.False(t, buffer.HasPendingWrites())
+}
+
+func TestGenerationKeepsOnlyNativeTurnIdentityThatEveryFragmentProves(t *testing.T) {
+	t.Parallel()
+	var source, destination GenerationBuffer
+	const text = agent.AssembledMessageKindText
+	source.AppendForNativeTurn("confirmed", text, "one", JoinVerbatim, "session", "turn")
+	source.AppendForNativeTurn("confirmed", text, " two", JoinVerbatim, "session", "turn")
+	source.AppendForNativeTurn("mixed", text, "one", JoinVerbatim, "session", "turn")
+	source.AppendForNativeTurn("mixed", text, " two", JoinVerbatim, "session", "other-turn")
+	source.AppendForNativeTurn("mixed", text, " three", JoinVerbatim, "session", "other-turn")
+	source.AppendForNativeTurn("missing", text, "one", JoinVerbatim, "session", "turn")
+	source.AppendForNativeTurn("missing", text, " two", JoinVerbatim, "session", "")
+	source.MoveAllTo(&destination)
+	sink := &generationFlushSink{}
+	require.NoError(t, FlushGeneration(&destination, sink, agent.MessageCompletionInterrupted, false))
+	require.Len(t, sink.rows, 3)
+	assert.Equal(t, "session", sink.rows[0].AgentSessionID)
+	assert.Equal(t, "turn", sink.rows[0].NativeTurnID)
+	assert.Empty(t, sink.rows[1].NativeTurnID)
+	assert.Empty(t, sink.rows[2].NativeTurnID)
+	assert.Contains(t, string(sink.rows[1].Original), "one two three")
+	assert.Contains(t, string(sink.rows[2].Original), "one two")
 }
 
 func (s *generationFlushSink) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {

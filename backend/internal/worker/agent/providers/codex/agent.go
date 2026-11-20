@@ -80,6 +80,7 @@ type Agent struct {
 	replayingSteerOutput bool
 	// pendingStart keeps delivery ownership after a caller stops waiting.
 	pendingStart     *codexPendingTurnStart
+	replyStarts      map[string]*codexPendingTurnStart
 	settingRevisions map[string]uint64
 	// A contextCompaction item can confirm a compact request before its JSON-RPC
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
@@ -513,6 +514,7 @@ func (a *Agent) Stop() {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
+	a.retireCodexReplyStarts("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
@@ -528,6 +530,7 @@ func (a *Agent) Wait() error {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
+	a.retireCodexReplyStarts("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
@@ -571,26 +574,40 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 }
 
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.sendInputWithTracking(expected, content, attachments, false)
+	return err
+}
+
+var _ agent.InputReceiptSender = (*Agent)(nil)
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(nil, content, attachments, true)
+}
+
+func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment, tracked bool) (agent.NativeInputReceipt, error) {
 	// Refuse known busy state before waiting for a context transition.
 	// Dispatch checks again under its lock before it writes any bytes.
 	a.Mu.Lock()
 	err := a.checkCodexInputLocked(expected)
 	a.Mu.Unlock()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	pending, err := a.dispatchInputForSession(expected, input)
+	pending, err := a.dispatchInputForSession(expected, input, tracked)
 	if pending != nil {
 		a.PublishTurnActive()
 	}
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.awaitCodexTurnStart(pending)
+	if err := a.awaitCodexTurnStart(pending); err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return pending.receipt, nil
 }
 
 func (a *Agent) CompactContext() error {

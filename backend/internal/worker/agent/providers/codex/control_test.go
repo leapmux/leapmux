@@ -419,7 +419,7 @@ func TestCodexStandingApprovalRereadsAfterRegistration(t *testing.T) {
 	a.approveOutstandingForBypass()
 	require.Empty(t, sink.Notifications(), "the sweep found no record")
 
-	a.registerApprovalRequest([]byte(codexCommandApprovalLine), nil, answer)
+	a.registerApprovalRequest(a.sink, []byte(codexCommandApprovalLine), nil, answer)
 
 	assert.JSONEq(t, `{"decision":"accept"}`, string(stdinResponse(t, stdin, "7")))
 	require.Eventually(t, func() bool { return len(sink.CanceledControls()) > 0 }, 30*time.Second, time.Millisecond)
