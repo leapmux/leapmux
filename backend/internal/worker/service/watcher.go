@@ -262,6 +262,7 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 		*leapmuxv1.AgentEvent_TurnEnd,
 		*leapmuxv1.AgentEvent_TodosChanged,
 		*leapmuxv1.AgentEvent_BackgroundTasksChanged,
+		*leapmuxv1.AgentEvent_InputQueueRevision,
 		*leapmuxv1.AgentEvent_ActivityChanged:
 		return classNotify
 	// Queue snapshots contain text previews for the composer. A NOTIFY subscription does not display them.

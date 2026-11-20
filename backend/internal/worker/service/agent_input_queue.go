@@ -541,12 +541,17 @@ func (svc *Service) queueHeadDispatch(dbAgent *db.Agent, running bool) leapmuxv1
 }
 
 func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
-	a.svc.Watchers.BroadcastAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
+	a.svc.Watchers.EnqueueAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
 		AgentId: snapshot.AgentID,
 		Event: &leapmuxv1.AgentEvent_InputQueueChanged{
 			InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: a.svc.queueSnapshotProto(snapshot)},
 		},
 	})
+	a.svc.Watchers.EnqueueAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
+		AgentId: snapshot.AgentID,
+		Event:   &leapmuxv1.AgentEvent_InputQueueRevision{InputQueueRevision: snapshot.Revision},
+	})
+	a.svc.Watchers.DrainAgentEvents(snapshot.AgentID)
 }
 
 func (a *agentInputQueueAdapter) InputAccepted(message inputqueue.AcceptedTranscript) {

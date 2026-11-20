@@ -49,7 +49,7 @@ func TestWaitUntilHolds(t *testing.T) {
 		{"waiting_for_user", idle, false},
 		{"idle", unspecified, false},
 	} {
-		assert.Equal(t, tc.want, tc.until.holds(tc.state), "%s holds for %s", tc.until, tc.state)
+		assert.Equal(t, tc.want, tc.until.holds(agentStateToken(tc.state)), "%s holds for %s", tc.until, tc.state)
 	}
 }
 
@@ -99,8 +99,8 @@ func change(agentID string, state leapmuxv1.AgentActivityState) activityEvent {
 	return activityEvent{kind: activityChange, agentID: agentID, state: state}
 }
 
-// noQueuedInput is a queuedInputFunc for agents whose queues are empty.
-func noQueuedInput(context.Context, string) (bool, error) { return false, nil }
+// noQueuedInput is a queueWaitProbe for agents whose queues are empty.
+func noQueuedInput(context.Context, string, bool) (bool, error) { return false, nil }
 
 func TestAwaitAgents_AnAgentInTheStateEndsTheWaitAtOnce(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
@@ -226,7 +226,7 @@ func TestAwaitAgents_DeadlineCancelsAnInFlightQueueRead(t *testing.T) {
 	clock := testutil.NewQuartzMock(t)
 	readStarted := make(chan context.Context, 1)
 	releaseRead := make(chan struct{})
-	queued := func(ctx context.Context, _ string) (bool, error) {
+	queued := func(ctx context.Context, _ string, _ bool) (bool, error) {
 		readStarted <- ctx
 		select {
 		case <-ctx.Done():
@@ -311,7 +311,7 @@ func TestAwaitAgents_EndsWithItsContext(t *testing.T) {
 func TestAwaitAgents_AQueuedMessageKeepsAnIdleAgentFromSettling(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	var asked []string
-	queued := func(_ context.Context, agentID string) (bool, error) {
+	queued := func(_ context.Context, agentID string, _ bool) (bool, error) {
 		asked = append(asked, agentID)
 		return len(asked) == 1, nil
 	}
@@ -323,9 +323,30 @@ func TestAwaitAgents_AQueuedMessageKeepsAnIdleAgentFromSettling(t *testing.T) {
 	assert.Equal(t, []string{"a-1", "a-1"}, asked, "the queue is asked only when the state holds")
 }
 
+func TestAwaitAgents_RechecksTheQueueWithoutAnActivityChange(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	var reads []string
+	queued := func(_ context.Context, agentID string, _ bool) (bool, error) {
+		reads = append(reads, agentID)
+		return len(reads) == 1, nil
+	}
+	events := feedEvents(
+		level("a-1", idle),
+		activityEvent{kind: activityQueueChanged, agentID: "outside"},
+		activityEvent{kind: activityQueueChanged, agentID: "a-1"},
+		activityEvent{kind: activityClosed, agentID: "a-1"},
+	)
+	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, queued, agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
+	require.NoError(t, err)
+	assert.Equal(t, agentWaitHeld, outcome)
+	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "idle", Reached: true}}, result.Agents)
+	assert.Equal(t, []string{"a-1", "a-1"}, reads)
+	assert.Len(t, events, 1, "the wait ends before the close")
+}
+
 func TestAwaitAgents_AsksTheQueueOnlyForIdleAndSettled(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
-	refuse := func(context.Context, string) (bool, error) {
+	refuse := func(context.Context, string, bool) (bool, error) {
 		t.Error("a wait for working or waiting_for_user asked the queue")
 		return true, nil
 	}
@@ -342,7 +363,7 @@ func TestAwaitAgents_ReturnsTheFailureOfAQueueRead(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	refused := errors.New("the worker refused")
 	_, _, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", idle)),
-		func(context.Context, string) (bool, error) { return false, refused },
+		func(context.Context, string, bool) (bool, error) { return false, refused },
 		agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
 	assert.ErrorIs(t, err, refused)
 }
@@ -391,18 +412,18 @@ func TestQueueWatch_SaysOnceWhyAPausedQueueKeepsTheWaitGoing(t *testing.T) {
 		now:    time.Now,
 	}
 	for range 2 {
-		busy, err := q.queuedInput(ctx, "a-1")
+		busy, err := q.blocksWait(ctx, "a-1", true)
 		require.NoError(t, err)
 		assert.True(t, busy)
 	}
-	busy, err := q.queuedInput(ctx, "a-2")
+	busy, err := q.blocksWait(ctx, "a-2", true)
 	require.NoError(t, err)
 	assert.False(t, busy, "a paused queue with nothing in it holds nothing back")
 	assert.Equal(t, []string{"the input queue of agent a-1 is paused (manual); the wait goes on until the agent reads its messages"}, notices)
 
 	refused := errors.New("the worker refused")
 	q.read = func(context.Context, string) (*leapmuxv1.AgentInputQueueSnapshot, error) { return nil, refused }
-	_, err = q.queuedInput(ctx, "a-1")
+	_, err = q.blocksWait(ctx, "a-1", true)
 	assert.ErrorIs(t, err, refused)
 }
 

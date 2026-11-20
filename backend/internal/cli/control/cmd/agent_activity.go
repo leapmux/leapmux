@@ -30,6 +30,8 @@ const (
 	activityTurnEnd
 	// activityStatusChange is a change of the status of the agent's process.
 	activityStatusChange
+	// activityQueueChanged reports a new queue revision without its contents.
+	activityQueueChanged
 	// activityClosed reports that the Worker holds no open agent with the id.
 	activityClosed
 	// activityFailed ends the feed, because it cannot observe the agents.
@@ -309,13 +311,15 @@ func (f *activityFeed) subscribeOnce(ctx context.Context, delivered *atomic.Bool
 	defer release()
 	onAgent := func(ae *leapmuxv1.AgentEvent) {
 		ev := activityEvent{agentID: ae.GetAgentId()}
-		switch {
-		case ae.GetActivityChanged() != nil:
-			ev.kind, ev.state = activityChange, ae.GetActivityChanged().GetState()
-		case ae.GetTurnEnd() != nil:
+		switch frame := ae.GetEvent().(type) {
+		case *leapmuxv1.AgentEvent_ActivityChanged:
+			ev.kind, ev.state = activityChange, frame.ActivityChanged.GetState()
+		case *leapmuxv1.AgentEvent_TurnEnd:
 			ev.kind = activityTurnEnd
-		case ae.GetStatusChange() != nil:
+		case *leapmuxv1.AgentEvent_StatusChange:
 			ev.kind = activityStatusChange
+		case *leapmuxv1.AgentEvent_InputQueueRevision:
+			ev.kind = activityQueueChanged
 		default:
 			return
 		}

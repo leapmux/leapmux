@@ -216,6 +216,9 @@ message AgentEvent {
     // Worker response state updates do not establish that the provider process is active.
     AgentControlRequest control_response_changed = 22;
     AgentMessagesRetracted messages_retracted = 23;
+    // The revision lets NOTIFY clients re-read the queue without receiving
+    // the input previews in input_queue_changed.
+    uint64 input_queue_revision = 24;
   }
 }
 

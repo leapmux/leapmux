@@ -181,6 +181,19 @@ func (w *activityWorker) setState(agentID string, state leapmuxv1.AgentActivityS
 	}
 }
 
+func (w *activityWorker) publishQueue(agentID string, snapshot *leapmuxv1.AgentInputQueueSnapshot) {
+	w.mu.Lock()
+	w.queue = snapshot
+	streams := slices.Clone(w.streams)
+	w.mu.Unlock()
+	for _, frames := range streams {
+		frames <- &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: agentID,
+			Event:   &leapmuxv1.AgentEvent_InputQueueRevision{InputQueueRevision: snapshot.GetRevision()},
+		}}}
+	}
+}
+
 // deliver accepts the queued message as the Worker does, in one step: it
 // leaves the queue, its row joins the transcript followed by rows, and
 // activeTurn states whether its turn still runs.
@@ -228,6 +241,33 @@ func TestAgentWaitOverIPC_AnIdleAgentEndsTheWaitAtOnce(t *testing.T) {
 
 	data := runControl(t, "agent", "wait", id).Data(t)
 	assert.Equal(t, []any{map[string]any{"id": id, "state": "idle", "reached": true}}, data["agents"])
+}
+
+func TestAgentWaitOverIPC_WakesWhenOnlyTheQueueChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		snapshot *leapmuxv1.AgentInputQueueSnapshot
+	}{
+		{name: "due input removed", snapshot: &leapmuxv1.AgentInputQueueSnapshot{
+			Revision: 1, PauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL,
+			Items: []*leapmuxv1.QueuedAgentInput{{Id: "in-1", State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}},
+		}},
+		{name: "active turn ended", snapshot: &leapmuxv1.AgentInputQueueSnapshot{Revision: 1, ActiveTurn: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := fullTestID("ag-2")
+			w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
+			w.queue = tc.snapshot
+			startActivityWorker(t, w, id)
+			ctx := testutil.DeadlineContext(t)
+			run := runControlLive(t, "agent", "wait", id, "--until", "idle", "--json")
+			receive(t, ctx, w.queueRead)
+			w.publishQueue(id, &leapmuxv1.AgentInputQueueSnapshot{Revision: 2})
+			receive(t, ctx, w.queueRead)
+			o := cliOutcome{Code: receive(t, ctx, run.code), Stdout: receive(t, ctx, run.out.lines)}
+			assert.Equal(t, []any{map[string]any{"id": id, "state": "idle", "reached": true}}, o.Data(t)["agents"])
+		})
+	}
 }
 
 func TestAgentWaitOverIPC_WaitsForTheChange(t *testing.T) {
@@ -358,6 +398,44 @@ func TestAgentSendWaitOverIPC_ExitsSixWhenTheAgentStopsAtAPrompt(t *testing.T) {
 	assert.Contains(t, lines[0], `"state":"waiting_for_user"`)
 	assert.Contains(t, lines[0], `"replies":["May I delete the build directory?"]`)
 	assert.Contains(t, o.Stderr, "waits for an answer to a permission prompt")
+}
+
+func TestAgentSendWaitOverIPC_WakesWhenItsQueuedInputEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail bool
+		code int
+	}{
+		{name: "input removed", code: cli.ExitWaitEnded},
+		{name: "dispatch failed", fail: true, code: cli.ExitFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := fullTestID("ag-2")
+			w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
+			startActivityWorker(t, w, id)
+			ctx := testutil.DeadlineContext(t)
+			run := runControlLive(t, "agent", "send", id, "Run the tests", "--wait", "--json")
+			input := receive(t, ctx, w.enqueued)
+			receive(t, ctx, w.queueRead)
+			snapshot := &leapmuxv1.AgentInputQueueSnapshot{Revision: 2}
+			if tc.fail {
+				snapshot.Items = []*leapmuxv1.QueuedAgentInput{{
+					Id: input.GetInputId(), State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED, Error: "provider closed its input",
+				}}
+			}
+			w.publishQueue(id, snapshot)
+			o := cliOutcome{Code: receive(t, ctx, run.code), Stdout: receive(t, ctx, run.out.lines)}
+			assert.Equal(t, tc.code, o.Code)
+			failure := o.Failure(t)
+			if tc.fail {
+				assert.Equal(t, cli.CodeInternal, failure.Code)
+				assert.Contains(t, failure.Message, "provider closed its input")
+			} else {
+				assert.Equal(t, cli.CodeNotFound, failure.Code)
+				assert.Contains(t, failure.Message, input.GetInputId())
+			}
+		})
+	}
 }
 
 func TestAgentSend_WaitFlagsNeedWait(t *testing.T) {

@@ -406,8 +406,8 @@ wait:
 					WithExitCode(cli.ExitWaitEnded)
 			case activityLevel, activityChange:
 				state = ev.state
-			case activityTurnEnd, activityStatusChange:
-				// The turn or process changed. Recheck the queue and transcript.
+			case activityTurnEnd, activityStatusChange, activityQueueChanged:
+				// Recheck the queue and transcript without changing the activity.
 			}
 		}
 	}
@@ -447,7 +447,7 @@ func awaitFirstLevel(ctx context.Context, events <-chan activityEvent, agentID s
 				return 0, cli.Newf(cli.CodeNotFound, "agent %s is closed", agentID)
 			case activityLevel:
 				return ev.state, nil
-			case activityChange, activityTurnEnd, activityStatusChange:
+			case activityChange, activityTurnEnd, activityStatusChange, activityQueueChanged:
 				// The level read began after this event, so the level
 				// replaces it.
 			}

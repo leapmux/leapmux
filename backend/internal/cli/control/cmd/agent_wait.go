@@ -47,14 +47,14 @@ func (u waitUntil) needsEmptyQueue() bool {
 }
 
 // holds reports whether an agent in state meets the condition.
-func (u waitUntil) holds(state leapmuxv1.AgentActivityState) bool {
-	if state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED {
+func (u waitUntil) holds(state string) bool {
+	if state == agentStateUnknown || state == agentStateClosed {
 		return false
 	}
 	if u == waitUntilSettled {
-		return state != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
+		return state != enumToken(leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING)
 	}
-	return enumToken(state) == string(u)
+	return state == string(u)
 }
 
 // agentStateClosed is the state of an agent that closed. agentStateUnknown is
@@ -103,9 +103,9 @@ type agentWaitSpec struct {
 	timeout time.Duration
 }
 
-// queuedInputFunc reports whether the input queue of an agent holds a
-// message that the agent will read by itself.
-type queuedInputFunc func(ctx context.Context, agentID string) (bool, error)
+// queueWaitProbe reports whether a due input or, when requireInactive is set,
+// an active turn prevents the wait from completing.
+type queueWaitProbe func(ctx context.Context, agentID string, requireInactive bool) (bool, error)
 
 var errAgentWaitExpired = errors.New("the agent wait deadline passed")
 
@@ -123,14 +123,12 @@ func agentWaitContext(ctx context.Context, clock quartz.Clock, timeout time.Dura
 	}
 }
 
-// awaitAgents reads events until the condition of spec holds, the timeout
-// passes, or the condition can no longer hold. An agent reaches the state
-// when an event reports it at any moment after the wait began, so the order
-// of a level and a change does not matter here. For a condition that needs
-// an empty queue, queued asks the queue at that moment, and a message that
-// the agent will read keeps the wait going: its turn sends a new change. The
-// error is the cause of an activityFailed, a failed read, or the end of ctx.
-func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activityEvent, queued queuedInputFunc, spec agentWaitSpec) (agentWaitResult, agentWaitOutcome, error) {
+// awaitAgents reads events until the condition holds, the timeout passes, or
+// the condition can no longer hold. Once an agent reaches the condition, a
+// later event cannot undo it. An idle report must also survive a queue probe,
+// which checks for due inputs and an active turn. A queue revision can allow
+// the wait to finish even when published activity stays the same.
+func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activityEvent, queueBlocksWait queueWaitProbe, spec agentWaitSpec) (agentWaitResult, agentWaitOutcome, error) {
 	ctx, stop := agentWaitContext(ctx, clock, spec.timeout, agentWaitTimerTag)
 	defer stop()
 	rows := make([]agentWaitRow, len(spec.agentIDs))
@@ -140,6 +138,7 @@ func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activity
 		index[id] = i
 	}
 	result := func() agentWaitResult { return agentWaitResult{Agents: slices.Clone(rows)} }
+	idleState := enumToken(leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE)
 wait:
 	for ctx.Err() == nil {
 		if outcome, done := agentWaitVerdict(rows, spec.anyAgent); done {
@@ -164,27 +163,32 @@ wait:
 					continue
 				}
 				rows[i].State = agentStateToken(ev.state)
-				if rows[i].Reached || !spec.until.holds(ev.state) {
+			case activityQueueChanged:
+				if !spec.until.needsEmptyQueue() {
 					continue
 				}
-				if spec.until.needsEmptyQueue() {
-					busy, err := queued(ctx, ev.agentID)
-					if ctx.Err() != nil {
-						break wait
-					}
-					if err != nil {
-						return result(), 0, err
-					}
-					if busy {
-						continue
-					}
-				}
-				rows[i].Reached = true
 			case activityClosed:
 				rows[i].State = agentStateClosed
+				continue
 			case activityTurnEnd, activityStatusChange:
-				// A state wait reads the published state alone.
+				continue
 			}
+			if rows[i].Reached || !spec.until.holds(rows[i].State) {
+				continue
+			}
+			if spec.until.needsEmptyQueue() {
+				busy, err := queueBlocksWait(ctx, ev.agentID, rows[i].State == idleState)
+				if ctx.Err() != nil {
+					break wait
+				}
+				if err != nil {
+					return result(), 0, err
+				}
+				if busy {
+					continue
+				}
+			}
+			rows[i].Reached = true
 		}
 	}
 	cause := context.Cause(ctx)
@@ -255,7 +259,7 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 		notice: inv.Printer.Notice,
 		now:    time.Now,
 	}
-	result, outcome, err := awaitAgents(ctx, quartz.NewReal(), events, queues.queuedInput, spec)
+	result, outcome, err := awaitAgents(ctx, quartz.NewReal(), events, queues.blocksWait, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +269,7 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 	return nil, agentWaitEnded(inv.Printer, result, outcome, spec)
 }
 
-// queueWatch answers queuedInputFunc from the input queue of each agent, and
+// queueWatch answers queueWaitProbe from the input queue of each agent, and
 // says once on stderr why a paused queue keeps the wait going.
 type queueWatch struct {
 	read   func(ctx context.Context, agentID string) (*leapmuxv1.AgentInputQueueSnapshot, error)
@@ -275,7 +279,7 @@ type queueWatch struct {
 	noticed map[string]leapmuxv1.AgentInputQueuePauseReason
 }
 
-func (q *queueWatch) queuedInput(ctx context.Context, agentID string) (bool, error) {
+func (q *queueWatch) blocksWait(ctx context.Context, agentID string, requireInactive bool) (bool, error) {
 	snapshot, err := q.read(ctx, agentID)
 	if err != nil {
 		return false, err
@@ -294,7 +298,7 @@ func (q *queueWatch) queuedInput(ctx context.Context, agentID string) (bool, err
 			q.notice("the input queue of agent %s is paused (%s); the wait goes on until the agent reads its messages", agentID, enumToken(pause))
 		}
 	}
-	return pending, nil
+	return pending || (requireInactive && snapshot.GetActiveTurn()), nil
 }
 
 // queuedForDispatch reports whether the queue holds a message that the agent

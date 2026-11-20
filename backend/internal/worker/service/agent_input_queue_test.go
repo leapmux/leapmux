@@ -790,6 +790,37 @@ func TestAgentInputQueueBroadcastsSnapshotToTwoClients(t *testing.T) {
 	}
 }
 
+func TestAgentInputQueuePublishesARevisionWithoutThePreviewToNotifyClients(t *testing.T) {
+	t.Parallel()
+	const agentID = "agent-1"
+	svc, _, _ := setupTestService(t)
+	full, notify := newTestWriter(), newTestWriter()
+	registerAgentWatch(svc, "browser", agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, full)
+	registerAgentWatch(svc, "cli", agentID, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, notify)
+	adapter := &agentInputQueueAdapter{svc: svc}
+	adapter.QueueChanged(inputqueue.Snapshot{
+		AgentID: agentID, Revision: 7,
+		Items: []inputqueue.SnapshotItem{{TextPreview: "A queued message that requires a full subscription"}},
+	})
+
+	notifyStreams := notify.streamsSnapshot()
+	require.Len(t, notifyStreams, 1)
+	event := decodeWatchAgentEvent(t, notifyStreams[0])
+	assert.Equal(t, agentID, event.GetAgentId())
+	assert.Equal(t, uint64(7), event.GetInputQueueRevision())
+	assert.Nil(t, event.GetInputQueueChanged())
+
+	var fullSnapshot *leapmuxv1.AgentInputQueueSnapshot
+	for _, stream := range full.streamsSnapshot() {
+		if changed := decodeWatchAgentEvent(t, stream).GetInputQueueChanged(); changed != nil {
+			fullSnapshot = changed.GetSnapshot()
+		}
+	}
+	require.Len(t, fullSnapshot.GetItems(), 1)
+	assert.Equal(t, uint64(7), fullSnapshot.GetRevision())
+	assert.Equal(t, "A queued message that requires a full subscription", fullSnapshot.GetItems()[0].GetText())
+}
+
 func TestQueuedClearStartsColdAgentOnlyOnce(t *testing.T) {
 	t.Parallel()
 
