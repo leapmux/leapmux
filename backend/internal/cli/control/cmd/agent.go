@@ -137,8 +137,9 @@ With --wait, the command first refuses to send to an agent that waits for an
 answer to a permission prompt, and exits 5. Otherwise it sends the message,
 waits until the agent settles after it, and prints the agent's last reply as
 the transcript shows it, or every reply with --all. It exits 6 when the agent
-stops at a prompt after the message, or when --timeout passes. The output
-then says whether the message is still queued.`, contracts.MaxAgentInputItemBytes/(1024*1024)),
+stops at a prompt after the message, or when --timeout passes. The timeout
+counts from the Worker's enqueue acknowledgement. The output reports the
+last confirmed delivery state.`, contracts.MaxAgentInputItemBytes/(1024*1024)),
 			Examples: []cli.Example{
 				{Command: `leapmux control agent send 87a19d5f "Run the tests"`},
 				{Comment: "Send the contents of a file.", Command: "leapmux control agent send 87a19d5f --file prompt.md"},

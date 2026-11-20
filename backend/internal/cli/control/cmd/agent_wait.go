@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -106,6 +107,22 @@ type agentWaitSpec struct {
 // message that the agent will read by itself.
 type queuedInputFunc func(ctx context.Context, agentID string) (bool, error)
 
+var errAgentWaitExpired = errors.New("the agent wait deadline passed")
+
+// agentWaitContext cancels an event wait and any reads it starts. The cause
+// distinguishes this deadline from cancellation of the parent command.
+func agentWaitContext(ctx context.Context, clock quartz.Clock, timeout time.Duration, timerTag string) (context.Context, func()) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	timer := clock.AfterFunc(timeout, func() { cancel(errAgentWaitExpired) }, timerTag)
+	return ctx, func() {
+		timer.Stop()
+		cancel(nil)
+	}
+}
+
 // awaitAgents reads events until the condition of spec holds, the timeout
 // passes, or the condition can no longer hold. An agent reaches the state
 // when an event reports it at any moment after the wait began, so the order
@@ -114,6 +131,8 @@ type queuedInputFunc func(ctx context.Context, agentID string) (bool, error)
 // the agent will read keeps the wait going: its turn sends a new change. The
 // error is the cause of an activityFailed, a failed read, or the end of ctx.
 func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activityEvent, queued queuedInputFunc, spec agentWaitSpec) (agentWaitResult, agentWaitOutcome, error) {
+	ctx, stop := agentWaitContext(ctx, clock, spec.timeout, agentWaitTimerTag)
+	defer stop()
 	rows := make([]agentWaitRow, len(spec.agentIDs))
 	index := make(map[string]int, len(spec.agentIDs))
 	for i, id := range spec.agentIDs {
@@ -121,22 +140,18 @@ func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activity
 		index[id] = i
 	}
 	result := func() agentWaitResult { return agentWaitResult{Agents: slices.Clone(rows)} }
-	var deadline <-chan time.Time
-	if spec.timeout > 0 {
-		timer := clock.NewTimer(spec.timeout, agentWaitTimerTag)
-		defer timer.Stop(agentWaitTimerTag)
-		deadline = timer.C
-	}
-	for {
+wait:
+	for ctx.Err() == nil {
 		if outcome, done := agentWaitVerdict(rows, spec.anyAgent); done {
 			return result(), outcome, nil
 		}
 		select {
 		case <-ctx.Done():
-			return result(), 0, context.Cause(ctx)
-		case <-deadline:
-			return result(), agentWaitTimedOut, nil
+			break wait
 		case ev := <-events:
+			if ctx.Err() != nil {
+				break wait
+			}
 			i, watched := index[ev.agentID]
 			if !watched && ev.kind != activityFailed {
 				continue
@@ -154,6 +169,9 @@ func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activity
 				}
 				if spec.until.needsEmptyQueue() {
 					busy, err := queued(ctx, ev.agentID)
+					if ctx.Err() != nil {
+						break wait
+					}
 					if err != nil {
 						return result(), 0, err
 					}
@@ -169,6 +187,11 @@ func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activity
 			}
 		}
 	}
+	cause := context.Cause(ctx)
+	if errors.Is(cause, errAgentWaitExpired) {
+		return result(), agentWaitTimedOut, nil
+	}
+	return result(), 0, cause
 }
 
 // agentWaitTimerTag identifies the timeout of a wait to a test clock.

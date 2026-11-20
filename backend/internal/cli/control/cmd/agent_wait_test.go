@@ -221,10 +221,45 @@ func TestAwaitAgents_PrintsAnUnstatedStateAsUnknown(t *testing.T) {
 	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: agentStateUnknown}}, receive(t, testutil.DeadlineContext(t), done).Agents)
 }
 
+func TestAwaitAgents_DeadlineCancelsAnInFlightQueueRead(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	readStarted := make(chan context.Context, 1)
+	releaseRead := make(chan struct{})
+	queued := func(ctx context.Context, _ string) (bool, error) {
+		readStarted <- ctx
+		select {
+		case <-ctx.Done():
+			return false, context.Cause(ctx)
+		case <-releaseRead:
+			return false, nil
+		}
+	}
+	type ended struct {
+		result  agentWaitResult
+		outcome agentWaitOutcome
+		err     error
+	}
+	done := make(chan ended, 1)
+	go func() {
+		result, outcome, err := awaitAgents(ctx, clock, feedEvents(level("a-1", idle)), queued,
+			agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle", timeout: time.Minute})
+		done <- ended{result: result, outcome: outcome, err: err}
+	}()
+	readCtx := receive(t, ctx, readStarted)
+	clock.Advance(time.Minute).MustWait(ctx)
+	assert.ErrorIs(t, readCtx.Err(), context.Canceled)
+	close(releaseRead)
+	got := receive(t, ctx, done)
+	require.NoError(t, got.err)
+	assert.Equal(t, agentWaitTimedOut, got.outcome)
+	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "idle"}}, got.result.Agents)
+}
+
 func TestAwaitAgents_EndsWhenTheTimeoutPasses(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
-	newTimer := clock.Trap().NewTimer(agentWaitTimerTag)
+	newTimer := clock.Trap().AfterFunc(agentWaitTimerTag)
 	defer newTimer.Close()
 	events := feedEvents(level("a-1", working))
 	type ended struct {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -25,13 +26,15 @@ const (
 	// messageDelivered is a message that the agent received: its row is in
 	// the transcript.
 	messageDelivered = "delivered"
+	// messageUnknown is a retry whose earlier delivery the wait could not verify.
+	messageUnknown = "unknown"
 )
 
 // agentReplyResult is the result of `agent send --wait`.
 type agentReplyResult struct {
 	ID      string `json:"id"`
 	InputID string `json:"input_id"`
-	// Message is "queued" or "delivered".
+	// Message is "queued", "delivered", or "unknown".
 	Message string `json:"message"`
 	// State is the agent's activity when the wait ended: a token of
 	// AgentActivityState, or "unknown".
@@ -281,7 +284,10 @@ type replyWaitSpec struct {
 	// baseline is the agent's last seq before the send. The message's row
 	// lands after it.
 	baseline int64
-	all      bool
+	// lookupExisting is true when the enqueue acknowledgement omitted the
+	// input, so a retry must look for its original row.
+	lookupExisting bool
+	all            bool
 	// timeout ends the wait after this long. Zero waits without a limit.
 	timeout time.Duration
 }
@@ -339,6 +345,8 @@ func (e *replyEvaluator) evaluate(ctx context.Context, state leapmuxv1.AgentActi
 // is the agent's published state when the wait began.
 func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityEvent, evaluator *replyEvaluator, state leapmuxv1.AgentActivityState) (agentReplyResult, replyWaitOutcome, error) {
 	spec := evaluator.spec
+	ctx, stop := agentWaitContext(ctx, clock, spec.timeout, replyWaitTimerTag)
+	defer stop()
 	result := func(v replyVerdict) agentReplyResult {
 		replies := v.replies
 		if replies == nil {
@@ -346,17 +354,35 @@ func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityE
 		}
 		return agentReplyResult{ID: spec.agentID, InputID: spec.inputID, Message: v.message, State: agentStateToken(state), Replies: replies}
 	}
-	var deadline <-chan time.Time
-	if spec.timeout > 0 {
-		timer := clock.NewTimer(spec.timeout, replyWaitTimerTag)
-		defer timer.Stop(replyWaitTimerTag)
-		deadline = timer.C
+	last := replyVerdict{message: messageQueued}
+	if spec.lookupExisting {
+		last.message = messageUnknown
+		seq, found, err := evaluator.reader.rowSeq(ctx, spec.inputID)
+		if ctx.Err() == nil {
+			if err != nil {
+				return agentReplyResult{}, 0, err
+			}
+			if !found {
+				// A transaction removes the queue item and writes its row.
+				// An absent row means the item was removed before delivery.
+				return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "someone removed the message %s from the input queue of agent %s before the agent received it, so this retry queued nothing", spec.inputID, spec.agentID).
+					WithHint("send the message again with a new --request-id").
+					WithExitCode(cli.ExitWaitEnded)
+			}
+			last.message = messageDelivered
+			evaluator.spec.baseline = seq - 1
+		}
 	}
-	for {
+wait:
+	for ctx.Err() == nil {
 		verdict, err := evaluator.evaluate(ctx, state)
+		if ctx.Err() != nil {
+			break
+		}
 		if err != nil {
 			return agentReplyResult{}, 0, err
 		}
+		last = verdict
 		switch verdict.step {
 		case replySettled:
 			return result(verdict), replyWaitSettled, nil
@@ -365,32 +391,31 @@ func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityE
 		case replyPending:
 			// The next event of the agent wakes the next evaluation.
 		}
-		for wake := false; !wake; {
-			select {
-			case <-ctx.Done():
-				return agentReplyResult{}, 0, context.Cause(ctx)
-			case <-deadline:
-				// The verdict of the last evaluation states where the message
-				// stood. A fresh read could fail on a Worker that the timeout
-				// was about.
-				return result(verdict), replyWaitTimedOut, nil
-			case ev := <-events:
-				switch ev.kind {
-				case activityFailed:
-					return agentReplyResult{}, 0, ev.err
-				case activityClosed:
-					return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "agent %s closed before it settled after the message", spec.agentID).
-						WithExitCode(cli.ExitWaitEnded)
-				case activityLevel, activityChange:
-					state = ev.state
-				case activityTurnEnd, activityStatusChange:
-					// The state stays, but the turn or the process changed,
-					// so the queue and the transcript can say more now.
-				}
-				wake = true
+		select {
+		case <-ctx.Done():
+			break wait
+		case ev := <-events:
+			if ctx.Err() != nil {
+				break wait
+			}
+			switch ev.kind {
+			case activityFailed:
+				return agentReplyResult{}, 0, ev.err
+			case activityClosed:
+				return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "agent %s closed before it settled after the message", spec.agentID).
+					WithExitCode(cli.ExitWaitEnded)
+			case activityLevel, activityChange:
+				state = ev.state
+			case activityTurnEnd, activityStatusChange:
+				// The turn or process changed. Recheck the queue and transcript.
 			}
 		}
 	}
+	cause := context.Cause(ctx)
+	if errors.Is(cause, errAgentWaitExpired) {
+		return result(last), replyWaitTimedOut, nil
+	}
+	return agentReplyResult{}, 0, cause
 }
 
 // replyWaitTimerTag identifies the timeout of a wait for a reply to a test
@@ -473,26 +498,12 @@ func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, a
 	if err != nil {
 		return agentReplyResult{}, 0, err
 	}
-	if !queueHolds(queue, inputID) {
-		// The Worker answers a new input with the queue that holds it, so
-		// only a repeated request reaches here.
-		seq, found, err := reader.rowSeq(ctx, inputID)
-		if err != nil {
-			return agentReplyResult{}, 0, err
-		}
-		if !found {
-			// The Worker writes the transcript row in the transaction that
-			// takes the message out of the queue, so a message that left the
-			// queue without a row is one that someone removed.
-			return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "someone removed the message %s from the input queue of agent %s before the agent received it, so this retry queued nothing", inputID, t.ID).
-				WithHint("send the message again with a new --request-id").
-				WithExitCode(cli.ExitWaitEnded)
-		}
-		baseline = seq - 1
-	}
 	evaluator := &replyEvaluator{
 		reader: reader,
-		spec:   replyWaitSpec{agentID: t.ID, inputID: inputID, baseline: baseline, all: all, timeout: timeout},
+		spec: replyWaitSpec{
+			agentID: t.ID, inputID: inputID, baseline: baseline, all: all, timeout: timeout,
+			lookupExisting: !queueHolds(queue, inputID),
+		},
 		notice: s.inv.Printer.Notice,
 	}
 	return awaitReply(ctx, quartz.NewReal(), events, evaluator, state)
@@ -531,9 +542,11 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 	case outcome == replyWaitWaiting:
 		p.Notice("agent %s waits for an answer to a permission prompt; list it with \"leapmux control agent requests %s\"", result.ID, result.ID)
 	case result.Message == messageQueued:
-		p.Notice("the wait ended after %s; the message is still in the input queue of agent %s", timeout, result.ID)
+		p.Notice("the wait ended after %s. The last queue snapshot for agent %s still held the message", timeout, result.ID)
+	case result.Message == messageUnknown:
+		p.Notice("the wait ended after %s. The CLI could not verify delivery to agent %s", timeout, result.ID)
 	default:
-		p.Notice("the wait ended after %s; agent %s is still working on the message", timeout, result.ID)
+		p.Notice("the wait ended after %s. Agent %s received the message and the CLI did not observe it settle", timeout, result.ID)
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
 }
