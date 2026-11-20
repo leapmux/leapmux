@@ -583,7 +583,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [urlpattern 0.6.0 (MIT)](#urlpattern-060-mit)
 - [utf_types 1.0.0 (Apache-2.0 OR MIT)](#utf_types-100-apache-20-or-mit)
 - [utf8_iter 1.1.0 (Apache-2.0 OR MIT)](#utf8_iter-110-apache-20-or-mit)
-- [uuid 1.29.2 (Apache-2.0 OR MIT)](#uuid-1292-apache-20-or-mit)
+- [uuid 1.29.3 (Apache-2.0 OR MIT)](#uuid-1293-apache-20-or-mit)
 - [version_check 0.9.5 (MIT/Apache-2.0)](#version_check-095-mitapache-20)
 - [version-compare 0.2.1 (MIT)](#version-compare-021-mit)
 - [vswhom 0.1.0 (MIT)](#vswhom-010-mit)
@@ -87433,7 +87433,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### uuid 1.29.2 (Apache-2.0 OR MIT)
+### uuid 1.29.3 (Apache-2.0 OR MIT)
 
 ```
                               Apache License
