@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +15,11 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // Extra coverage for the git-mode validate/execute split. These tests
@@ -243,30 +247,273 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 	t.Parallel()
 
 	repoDir := initRepo(t)
-	// Create an existing worktree with a branch containing deep slashes
-	// and validate that useWorktreePath resolves symlinks correctly.
-	run(t, repoDir, "git", "worktree", "add", "-b", "feature/deep/nest", filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"))
-	sym := filepath.Join(t.TempDir(), "symlink")
-	require.NoError(t, osSymlink(filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"), sym))
+	worktreeDir := filepath.Join(t.TempDir(), "feature", "deep", "nest")
+	run(t, repoDir, "git", "worktree", "add", "-b", "feature/deep/nest", worktreeDir)
+	alias := filepath.Join(t.TempDir(), "symlink")
+	require.NoError(t, os.Symlink(worktreeDir, alias))
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, useWorktreePathSetup(sym))
+	plan, err := svc.validateGitMode(t.Context(), repoDir, useWorktreePathSetup(alias))
 	require.NoError(t, err)
 	assert.Equal(t, gitModeUseWorktreePath, plan.Mode)
-	// The validated path is the sanitized input (the helper evals
-	// symlinks for comparison against `git worktree list` but returns
-	// the user-provided path so the later UpsertTerminal stores what
-	// the user actually referenced).
-	// Normalize to forward slashes so the nested-branch suffix matches
-	// on Windows where the resolved path uses backslashes.
-	planned := filepath.ToSlash(plan.PlannedWorkingDir)
-	assert.True(t, strings.HasSuffix(planned, "symlink") || strings.HasSuffix(planned, "feature/deep/nest"),
-		"plan should keep either the symlinked path or its target: got %s", plan.PlannedWorkingDir)
+	assert.Equal(t, pathutil.Canonicalize(worktreeDir), plan.PlannedWorkingDir)
+	assert.Equal(t, plan.PlannedWorkingDir, plan.WorktreePath)
+
+	replacement := filepath.Join(t.TempDir(), "other")
+	run(t, repoDir, "git", "worktree", "add", "-b", "other", replacement)
+	require.NoError(t, os.Remove(alias))
+	require.NoError(t, os.Symlink(replacement, alias))
+	result, err := svc.executeGitMode(t.Context(), plan)
+	require.NoError(t, err)
+	tracked, err := svc.Queries.GetWorktreeByID(t.Context(), result.WorktreeID)
+	require.NoError(t, err)
+	assert.Equal(t, pathutil.Canonicalize(worktreeDir), result.WorkingDir)
+	assert.Equal(t, result.WorkingDir, tracked.WorktreePath)
 }
 
-// ---------- helpers ----------
+func TestExecuteGitModeRejectsMovedTrackedWorktree(t *testing.T) {
+	t.Parallel()
+	repoDir := initRepo(t)
+	worktreeParent := t.TempDir()
+	worktreeDir := filepath.Join(worktreeParent, "original")
+	movedDir := filepath.Join(worktreeParent, "moved")
+	run(t, repoDir, "git", "worktree", "add", "-b", "feature/move", worktreeDir)
+	svc, _, _ := setupTestService(t)
+	plan, err := svc.validateGitMode(t.Context(), repoDir, useWorktreePathSetup(worktreeDir))
+	require.NoError(t, err)
+	first, err := svc.executeGitMode(t.Context(), plan)
+	require.NoError(t, err)
+	require.NotEmpty(t, first.WorktreeID)
 
-func osSymlink(target, link string) error { return os.Symlink(target, link) }
+	run(t, repoDir, "git", "worktree", "move", worktreeDir, movedDir)
+	result, err := svc.executeGitMode(t.Context(), plan)
+	require.ErrorIs(t, err, errSelectedWorktreeChanged)
+	assert.Empty(t, result.WorktreeID)
+	assert.DirExists(t, movedDir)
+	assert.NoDirExists(t, worktreeDir)
+}
+
+func TestSavedWorktreeRejectsADifferentCheckoutAtTheSamePath(t *testing.T) {
+	t.Parallel()
+	repoDir := initRepo(t)
+	parent := t.TempDir()
+	originalDir := filepath.Join(parent, "original")
+	replacementDir := filepath.Join(parent, "replacement")
+	movedDir := filepath.Join(parent, "moved")
+	run(t, repoDir, "git", "worktree", "add", "-b", "original", originalDir)
+	run(t, repoDir, "git", "worktree", "add", "-b", "replacement", replacementDir)
+	svc, _, _ := setupTestService(t)
+	plan, err := svc.validateUseWorktreePath(t.Context(), repoDir, originalDir)
+	require.NoError(t, err)
+	result, err := svc.executeGitMode(t.Context(), plan)
+	require.NoError(t, err)
+	op := &creationOperation{coordinator: &tabCreationCoordinator{svc: svc}}
+	intent := &creationStartupIntent{Plan: plan, Result: &result}
+	require.NoError(t, op.validateSavedCheckpoint(t.Context(), intent, result))
+	_, err = plan.readSelectedWorktree(t.Context())
+	require.NoError(t, err)
+
+	run(t, repoDir, "git", "worktree", "move", originalDir, movedDir)
+	run(t, repoDir, "git", "worktree", "move", replacementDir, originalDir)
+	require.ErrorIs(t, op.validateSavedCheckpoint(t.Context(), intent, result), errSelectedWorktreeChanged)
+	_, err = plan.readSelectedWorktree(t.Context())
+	require.ErrorIs(t, err, errSelectedWorktreeChanged)
+	assert.DirExists(t, originalDir)
+	assert.DirExists(t, movedDir)
+}
+
+func TestSavedWorktreeRejectsARecreatedCheckout(t *testing.T) {
+	t.Parallel()
+	repoDir := initRepo(t)
+	worktreeDir := filepath.Join(t.TempDir(), "checkout")
+	run(t, repoDir, "git", "worktree", "add", "-b", "recreated", worktreeDir)
+	svc, _, _ := setupTestService(t)
+	plan, err := svc.validateUseWorktreePath(t.Context(), repoDir, worktreeDir)
+	require.NoError(t, err)
+	if !plan.SelectedWorktree.CheckoutID.known() || !plan.SelectedWorktree.GitDirID.known() {
+		t.Skip("the filesystem reports no creation identity for the test directories")
+	}
+	_, err = plan.readSelectedWorktree(t.Context())
+	require.NoError(t, err)
+	result, err := svc.executeGitMode(t.Context(), plan)
+	require.NoError(t, err)
+	tracked, err := svc.Queries.GetWorktreeByID(t.Context(), result.WorktreeID)
+	require.NoError(t, err)
+	unlock := svc.lockGitIndex(tracked.RepoGitDir)
+	identity, err := svc.captureWorktreeRemovalIdentityLocked(t.Context(), tracked,
+		newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "terminal", "user-1"), plan.SelectedWorktree)
+	unlock()
+	require.NoError(t, err)
+	t.Cleanup(func() { releaseRemovalIdentityBestEffort(identity) })
+	_, err = readVerifiedRemovalWorktree(t.Context(), tracked, identity)
+	require.NoError(t, err)
+
+	run(t, repoDir, "git", "worktree", "remove", worktreeDir)
+	run(t, repoDir, "git", "worktree", "add", worktreeDir, "recreated")
+	info, err := queryGitPathInfo(t.Context(), worktreeDir)
+	require.NoError(t, err)
+	require.Equal(t, plan.SelectedWorktree.GitDir, info.GitDir)
+	_, err = plan.readSelectedWorktree(t.Context())
+	require.ErrorIs(t, err, errSelectedWorktreeChanged)
+	// Model a replacement arriving before the marker write reaches Git's directory.
+	require.NoError(t, os.WriteFile(filepath.Join(info.GitDir, identity.MarkerName), []byte(identity.Token), 0o600))
+	_, err = readVerifiedRemovalWorktree(t.Context(), tracked, identity)
+	require.ErrorIs(t, err, errSelectedWorktreeChanged)
+	assert.DirExists(t, worktreeDir)
+}
+
+func TestValidateGitModePreservesSignificantWorktreePathSpace(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows path normalization does not preserve a trailing space")
+	}
+	repoDir := initRepo(t)
+	parent := t.TempDir()
+	ordinary := filepath.Join(parent, "checkout")
+	withSpace := filepath.Join(parent, "checkout ")
+	run(t, repoDir, "git", "worktree", "add", "-b", "ordinary", ordinary)
+	run(t, repoDir, "git", "worktree", "add", "-b", "with-space", withSpace)
+	svc, _, _ := setupTestService(t)
+	plan, err := svc.validateUseWorktreePath(t.Context(), repoDir, withSpace)
+	require.NoError(t, err)
+	assert.Equal(t, pathutil.Canonicalize(withSpace), plan.WorktreePath)
+}
+
+func TestCloseTerminalKeepsTheReplacementForASelectedWorktree(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		dropLink bool
+		archived bool
+	}{
+		{name: "stored link"},
+		{name: "path fallback", dropLink: true},
+		{name: "persisted archive", archived: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := testutil.DeadlineContext(t)
+			clock := testutil.NewQuartzMock(t)
+			resizeStart, resizeStop := testutil.NewTimerTraps(t, clock, startupPendingResizeTimerTag)
+			svc, dispatcher, writer := setupTestService(t, withClock(clock))
+			spawned := make(chan struct{}, 1)
+			svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+				spawned <- struct{}{}
+				return nil
+			}
+			repoDir := initRepo(t)
+			parent := t.TempDir()
+			original := filepath.Join(parent, "original")
+			moved := filepath.Join(parent, "moved")
+			replacement := filepath.Join(parent, "replacement")
+			run(t, repoDir, "git", "worktree", "add", "-b", "original", original)
+			run(t, repoDir, "git", "worktree", "add", "-b", "replacement", replacement)
+			dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+				WorkingDir: repoDir, Shell: testutil.TestShell(), Cols: 80, Rows: 24, GitSetup: useWorktreePathSetup(original),
+			}, writer)
+			require.Empty(t, writer.errors)
+			require.Len(t, writer.responses, 1)
+			var opened leapmuxv1.OpenTerminalResponse
+			require.NoError(t, proto.Unmarshal(writer.responses[0].GetPayload(), &opened))
+			terminalID := opened.GetTerminalId()
+			delay := testutil.WaitForTimer(t, ctx, resizeStart)
+			run(t, repoDir, "git", "worktree", "move", original, moved)
+			run(t, repoDir, "git", "worktree", "move", replacement, original)
+			if test.archived {
+				// The archive row commits before the startup registry gets its stamp.
+				_, err := svc.DB.ExecContext(ctx, "UPDATE terminals SET workspace_archived = 1 WHERE id = ?", terminalID)
+				require.NoError(t, err)
+			}
+			testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, resizeStop)
+			drainAllInFlight(svc)
+			require.Empty(t, spawned, "the selected checkout changed before spawn")
+			row, err := svc.Queries.GetTerminal(ctx, terminalID)
+			require.NoError(t, err)
+			if test.archived {
+				require.Empty(t, row.StartupError)
+				return
+			}
+			require.Contains(t, row.StartupError, errSelectedWorktreeChanged.Error())
+			testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
+			restarted := newTestWriter()
+			dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+				TerminalId: terminalID, Cols: 80, Rows: 24,
+			}, restarted)
+			require.Empty(t, restarted.errors)
+			drainAllInFlight(svc)
+			assert.False(t, svc.Terminals.IsRunning(terminalID), "restart must keep the selected checkout identity")
+			row, err = svc.Queries.GetTerminal(ctx, terminalID)
+			require.NoError(t, err)
+			assert.Contains(t, row.StartupError, errSelectedWorktreeChanged.Error())
+			if test.dropLink {
+				require.NoError(t, svc.unregisterTabContext(ctx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, ""))
+			}
+			closed := newTestWriter()
+			dispatch(dispatcher, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+				Tab: terminalTabIdent(terminalID), WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
+			}, closed)
+			require.Empty(t, closed.errors)
+			require.Len(t, closed.responses, 1)
+			var result leapmuxv1.CloseTabResponse
+			require.NoError(t, proto.Unmarshal(closed.responses[0].GetPayload(), &result))
+			assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, result.GetWorktreeRemoval())
+			assert.Contains(t, result.GetFailureDetail(), "selected Git worktree changed")
+			assert.DirExists(t, original)
+			assert.True(t, localBranchExists(t, repoDir, "replacement"))
+			row, err = svc.Queries.GetTerminal(ctx, terminalID)
+			require.NoError(t, err)
+			assert.True(t, row.ClosedAt.Valid)
+		})
+	}
+}
+
+func TestPendingSelectedWorktreeCloseRefusesForeignTracking(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, dispatcher, _ := setupTestService(t)
+	originalRepo, selectedRepo := initRepo(t), initRepo(t)
+	parent := t.TempDir()
+	path, moved := filepath.Join(parent, "checkout"), filepath.Join(parent, "moved")
+	run(t, originalRepo, "git", "worktree", "add", "-b", "original", path)
+	_, err := svc.ensureTrackedWorktree(ctx, path)
+	require.NoError(t, err)
+	run(t, originalRepo, "git", "worktree", "move", path, moved)
+	run(t, selectedRepo, "git", "worktree", "add", "-b", "selected", path)
+
+	const terminalID = "pending-selected-worktree"
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	svc.PublishTab = func(ctx context.Context, publication *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+		close(entered)
+		select {
+		case <-release:
+			return fixturePublishTab(ctx, publication)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	writer := newTestWriter()
+	go func() {
+		defer close(done)
+		dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+			Target:     &leapmuxv1.OpenTerminalRequest_Creation{Creation: creationIntent(terminalID)},
+			WorkingDir: selectedRepo, Shell: testutil.TestShell(), GitSetup: useWorktreePathSetup(path),
+		}, writer)
+	}()
+	t.Cleanup(func() { close(release); <-done; drainAllInFlight(svc) })
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the Worker did not reach publication")
+	}
+	snapshot := svc.prepareTabClose(ctx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, "user-1",
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink, func() {})
+	assert.False(t, snapshot.LookupFailed, "a different tracked checkout is a definitive refusal")
+	assert.Equal(t, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, snapshot.Action)
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, snapshot.Result.GetWorktreeRemoval())
+	assert.Nil(t, snapshot.RemovalIdentity)
+	assert.DirExists(t, path)
+	assert.DirExists(t, moved)
+}
 
 // ---------- End-to-end happy paths ----------
 //

@@ -120,6 +120,8 @@ type gitModePlan struct {
 	// WorktreePath is the on-disk path — planned (createWorktree) or
 	// validated existing (useWorktreePath).
 	WorktreePath string
+	// SelectedWorktree identifies the checkout chosen by the existing-worktree mode.
+	SelectedWorktree *selectedWorktreeIdentity
 }
 
 // PhaseLabel returns the user-visible "now doing X" label for this plan's
@@ -357,7 +359,7 @@ func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, bran
 }
 
 func (svc *Service) validateUseWorktreePath(ctx context.Context, workingDir, worktreePath string) (gitModePlan, error) {
-	sanitized, err := validate.SanitizePath(worktreePath, svc.HomeDir)
+	sanitized, err := validate.ResolveLiteralPath(worktreePath, svc.HomeDir)
 	if err != nil {
 		return gitModePlan{}, fmt.Errorf("invalid worktree path: %w", err)
 	}
@@ -368,7 +370,11 @@ func (svc *Service) validateUseWorktreePath(ctx context.Context, workingDir, wor
 	if err != nil {
 		return gitModePlan{}, fmt.Errorf(`path "%s" does not exist`, sanitized)
 	}
-	worktrees, err := listGitWorktrees(ctx, workingDir)
+	repo, err := gitutil.QueryWorktreePaths(ctx, workingDir)
+	if err != nil {
+		return gitModePlan{}, fmt.Errorf("read the selected repository: %w", err)
+	}
+	worktrees, err := listRepositoryWorktrees(ctx, gitutil.Repository{GitDir: repo.CommonDir})
 	if err != nil {
 		return gitModePlan{}, fmt.Errorf("failed to list worktrees: %w", err)
 	}
@@ -410,13 +416,34 @@ func (svc *Service) validateUseWorktreePath(ctx context.Context, workingDir, wor
 	if !found {
 		return gitModePlan{}, fmt.Errorf(`path "%s" is not a known worktree`, sanitized)
 	}
+	checkout, err := queryGitPathInfo(ctx, canonSanitized)
+	if err != nil {
+		return gitModePlan{}, fmt.Errorf("read the selected Git worktree: %w", err)
+	}
+	if !checkout.IsWorktree || !pathutil.SamePath(checkout.TopLevel, canonSanitized) || !pathutil.SamePath(checkout.CommonDir, repo.CommonDir) {
+		return gitModePlan{}, errSelectedWorktreeChanged
+	}
+	selection, err := captureSelectedWorktree(checkout)
+	if err != nil {
+		return gitModePlan{}, err
+	}
 
 	return gitModePlan{
 		Mode:              gitModeUseWorktreePath,
 		WorkingDir:        workingDir,
-		PlannedWorkingDir: sanitized,
-		WorktreePath:      sanitized,
+		PlannedWorkingDir: checkout.TopLevel,
+		RepoRoot:          checkout.RepoRoot,
+		RepoGitDir:        checkout.CommonDir,
+		WorktreePath:      checkout.TopLevel,
+		SelectedWorktree:  &selection,
 	}, nil
+}
+
+func (plan gitModePlan) readSelectedWorktree(ctx context.Context) (*gitPathInfo, error) {
+	if plan.SelectedWorktree == nil {
+		return nil, errSelectedWorktreeChanged
+	}
+	return plan.SelectedWorktree.read(ctx)
 }
 
 func (svc *Service) validateCreateBranch(ctx context.Context, workingDir, branch, base string) (gitModePlan, error) {
@@ -645,15 +672,31 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 }
 
 func (svc *Service) executeUseWorktreePath(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
-	wtID, err := svc.ensureTrackedWorktree(ctx, plan.WorktreePath)
-	if err != nil {
-		return gitModeResult{}, err
+	var result gitModeResult
+	var inserted *db.Worktree
+	err := svc.withGitIndexLock(plan.RepoGitDir, func() error {
+		info, err := plan.readSelectedWorktree(ctx)
+		if err != nil {
+			return err
+		}
+		tracked, err := svc.Queries.GetWorktreeByPath(ctx, info.TopLevel)
+		if errors.Is(err, sql.ErrNoRows) {
+			tracked, err = svc.storeTrackedWorktree(ctx, info.TopLevel, info.RepoRoot, info.CommonDir, info.BranchName)
+			inserted = &tracked
+		}
+		if err != nil {
+			return err
+		}
+		if tracked.DeletedAt.Valid || !pathutil.SamePath(tracked.WorktreePath, plan.WorktreePath) || !pathutil.SamePath(tracked.RepoGitDir, plan.RepoGitDir) {
+			return errSelectedWorktreeChanged
+		}
+		result = gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: tracked.ID, RepoRoot: tracked.RepoRoot, RepoGitDir: tracked.RepoGitDir}
+		return nil
+	})
+	if err == nil && inserted != nil {
+		svc.backfillWorktreeLinks(ctx, *inserted)
 	}
-	tracked, err := svc.Queries.GetWorktreeByID(ctx, wtID)
-	if err != nil {
-		return gitModeResult{}, err
-	}
-	return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: wtID, RepoRoot: tracked.RepoRoot, RepoGitDir: tracked.RepoGitDir}, nil
+	return result, err
 }
 
 func (svc *Service) executeCreateBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
@@ -906,25 +949,29 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 		}
 	}
 
-	// CreateWorktree RETURNs the stored row rather than reporting success, so
-	// the id below is the one that actually won. The lookup above and this
-	// insert are two statements, and a concurrent caller can slip between them
-	// -- opening two agents on one worktree ("use existing worktree") starts
-	// two async startups that both miss, and both insert -- so the insert
-	// completing is NOT proof that our minted id is the stored one.
-	stored, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID:           id.Generate(),
-		WorktreePath: canonicalPath,
-		RepoRoot:     repoRoot,
-		RepoGitDir:   repoGitDir,
-		BranchName:   branchName,
-	})
+	stored, err := svc.storeTrackedWorktree(ctx, canonicalPath, repoRoot, repoGitDir, branchName)
 	if err != nil {
 		return "", err
 	}
 	// Tracking succeeded. A failed backfill must not lose the stored ID or abort startup.
 	svc.backfillWorktreeLinks(bgCtx(), stored)
 	return stored.ID, nil
+}
+
+func (svc *Service) storeTrackedWorktree(ctx context.Context, canonicalPath, repoRoot, repoGitDir, branchName string) (db.Worktree, error) {
+	// CreateWorktree RETURNs the stored row rather than reporting success, so
+	// the id below is the one that actually won. The lookup above and this
+	// insert are two statements, and a concurrent caller can slip between them
+	// -- opening two agents on one worktree ("use existing worktree") starts
+	// two async startups that both miss, and both insert -- so the insert
+	// completing is NOT proof that our minted id is the stored one.
+	return svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID:           id.Generate(),
+		WorktreePath: canonicalPath,
+		RepoRoot:     repoRoot,
+		RepoGitDir:   repoGitDir,
+		BranchName:   branchName,
+	})
 }
 
 // worktreeRemoveArgs builds the argv for `git worktree remove`. It is the one
@@ -1012,10 +1059,7 @@ func (svc *Service) removeWorktreeFromDiskRecordedLocked(ctx context.Context, wt
 		}
 		var removeErr error
 		if !removed {
-			if err := validateWorktreeRemovalIdentity(ctx, wt, journal.TargetIdentity()); err != nil {
-				return err
-			}
-			info, err := queryGitPathInfo(ctx, wt.WorktreePath)
+			info, err := readVerifiedRemovalWorktree(ctx, wt, journal.TargetIdentity())
 			if err != nil {
 				return err
 			}
@@ -1219,7 +1263,7 @@ func (svc *Service) rollbackCreatedWorktree(r rollbackWorktree) {
 		preserve("the tracking record changed or cannot be read", err)
 		return
 	}
-	identity, err := svc.captureWorktreeRemovalIdentityLocked(ctx, wt, r.startup.key)
+	identity, err := svc.captureWorktreeRemovalIdentityLocked(ctx, wt, r.startup.key, nil)
 	if err != nil {
 		preserve("worktree identity cannot be captured", err)
 		return

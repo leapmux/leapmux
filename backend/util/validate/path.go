@@ -59,7 +59,29 @@ func SanitizePath(value, homeDir string) (string, error) {
 		}
 		s = b.String()
 	}
-	s = strings.TrimSpace(s)
+	return resolveAbsolutePath(strings.TrimSpace(s), homeDir)
+}
+
+// ResolveLiteralPath validates a path without discarding spaces or changing characters.
+func ResolveLiteralPath(value, homeDir string) (string, error) {
+	if WireString(value) != value || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return "", errors.New("the path contains an invalid character")
+	}
+	path, err := resolveAbsolutePath(value, homeDir)
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS == "windows" && !strings.HasPrefix(path, `\\?\`) {
+		for _, component := range splitPathComponents(path) {
+			if strings.TrimRight(component, " .") != component {
+				return "", errors.New("a Windows path component cannot end in a dot or space")
+			}
+		}
+	}
+	return path, nil
+}
+
+func resolveAbsolutePath(s, homeDir string) (string, error) {
 	if s == "" {
 		return "", ErrEmptyPath
 	}
@@ -71,14 +93,18 @@ func SanitizePath(value, homeDir string) (string, error) {
 		if s == "~" {
 			s = homeDir
 		} else {
-			rest := strings.TrimLeft(s[2:], `/\`)
+			separators := "/"
+			if runtime.GOOS == "windows" {
+				separators = `/\`
+			}
+			rest := strings.TrimLeft(s[2:], separators)
 			if rest == "" {
 				s = homeDir
 			} else {
 				// Plain concatenation, not filepath.Join: Join would Clean the
 				// result and collapse ".." components before the traversal
 				// check below has a chance to reject them.
-				s = strings.TrimRight(homeDir, `/\`) + string(filepath.Separator) + rest
+				s = strings.TrimRight(homeDir, separators) + string(filepath.Separator) + rest
 			}
 		}
 	}

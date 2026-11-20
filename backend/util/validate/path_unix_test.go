@@ -4,6 +4,13 @@ package validate
 
 import "testing"
 
+func TestResolveLiteralPathPreservesBackslashAfterTilde(t *testing.T) {
+	path, err := ResolveLiteralPath(`~/\checkout`, "/home/user")
+	if err != nil || path != `/home/user/\checkout` {
+		t.Fatalf("ResolveLiteralPath returned %q, %v", path, err)
+	}
+}
+
 func TestSanitizePath_Unix(t *testing.T) {
 	cases := []sanitizeCase{
 		// Absolute paths (homeDir irrelevant).

@@ -24,17 +24,20 @@ type worktreeRemovalIdentity struct {
 	GitDir     string
 	MarkerName string
 	Token      string
+	// Selection ties the marker to the originally selected checkout even if
+	// an external Git operation replaces it while the marker is written.
+	Selection *selectedWorktreeIdentity `json:",omitempty"`
 }
 
-func removalGitDir(ctx context.Context, wt db.Worktree) (string, error) {
+func readRemovalWorktree(ctx context.Context, wt db.Worktree) (*gitPathInfo, error) {
 	info, err := queryGitPathInfo(ctx, wt.WorktreePath)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !info.IsWorktree || !pathutil.SamePath(info.TopLevel, pathutil.Canonicalize(wt.WorktreePath)) || !pathutil.SamePath(info.CommonDir, pathutil.Canonicalize(wt.RepoGitDir)) {
-		return "", errors.New("the removal target is no longer the tracked linked worktree")
+		return nil, errors.New("the removal target is no longer the tracked linked worktree")
 	}
-	return info.GitDir, nil
+	return info, nil
 }
 
 func readRemovalMarker(path string) (string, error) {
@@ -56,15 +59,24 @@ func readRemovalMarker(path string) (string, error) {
 // a saved snapshot only validates this identity and never creates a new marker.
 func (svc *Service) captureWorktreeRemovalIdentity(ctx context.Context, wt db.Worktree, key ownedTabKey) (*worktreeRemovalIdentity, error) {
 	defer svc.lockGitIndex(wt.RepoGitDir)()
-	return svc.captureWorktreeRemovalIdentityLocked(ctx, wt, key)
+	return svc.captureWorktreeRemovalIdentityLocked(ctx, wt, key, nil)
 }
 
 // The caller holds the repository index lock.
-func (svc *Service) captureWorktreeRemovalIdentityLocked(ctx context.Context, wt db.Worktree, key ownedTabKey) (*worktreeRemovalIdentity, error) {
-	directory, err := removalGitDir(ctx, wt)
+func (svc *Service) captureWorktreeRemovalIdentityLocked(ctx context.Context, wt db.Worktree, key ownedTabKey, selection *selectedWorktreeIdentity) (*worktreeRemovalIdentity, error) {
+	if selection != nil && (!pathutil.SamePath(selection.Path, wt.WorktreePath) || !pathutil.SamePath(selection.CommonDir, wt.RepoGitDir)) {
+		return nil, errSelectedWorktreeChanged
+	}
+	info, err := readRemovalWorktree(ctx, wt)
 	if err != nil {
 		return nil, err
 	}
+	if selection != nil {
+		if err := selection.verify(info, true); err != nil {
+			return nil, err
+		}
+	}
+	directory := info.GitDir
 	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%s\x00%s", wt.ID, key.tabType, key.tabID, key.userID))
 	marker := "leapmux-removal-" + hex.EncodeToString(digest[:]) + "-" + id.Generate()
 	path := filepath.Join(directory, marker)
@@ -78,7 +90,7 @@ func (svc *Service) captureWorktreeRemovalIdentityLocked(ctx context.Context, wt
 		_ = os.Remove(path)
 		return nil, err
 	}
-	return &worktreeRemovalIdentity{GitDir: directory, MarkerName: marker, Token: token}, nil
+	return &worktreeRemovalIdentity{GitDir: directory, MarkerName: marker, Token: token, Selection: selection}, nil
 }
 
 // releaseWorktreeRemovalIdentity deletes only the marker this snapshot owns.
@@ -144,23 +156,28 @@ func releaseRemovalIdentityBestEffort(identity *worktreeRemovalIdentity) {
 	}
 }
 
-func validateWorktreeRemovalIdentity(ctx context.Context, wt db.Worktree, identity *worktreeRemovalIdentity) error {
+func readVerifiedRemovalWorktree(ctx context.Context, wt db.Worktree, identity *worktreeRemovalIdentity) (*gitPathInfo, error) {
 	if identity == nil || len(identity.Token) != 48 || filepath.Base(identity.MarkerName) != identity.MarkerName || !strings.HasPrefix(identity.MarkerName, "leapmux-removal-") {
-		return errors.New("the worktree removal has no valid saved identity")
+		return nil, errors.New("the worktree removal has no valid saved identity")
 	}
-	directory, err := removalGitDir(ctx, wt)
+	info, err := readRemovalWorktree(ctx, wt)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !pathutil.SamePath(directory, identity.GitDir) {
-		return errors.New("the worktree administrative directory changed before removal")
+	if identity.Selection != nil {
+		if err := identity.Selection.verify(info, true); err != nil {
+			return nil, err
+		}
 	}
-	token, err := readRemovalMarker(filepath.Join(directory, identity.MarkerName))
+	if !pathutil.SamePath(info.GitDir, identity.GitDir) {
+		return nil, errors.New("the worktree administrative directory changed before removal")
+	}
+	token, err := readRemovalMarker(filepath.Join(info.GitDir, identity.MarkerName))
 	if err != nil {
-		return fmt.Errorf("validate the original worktree removal marker: %w", err)
+		return nil, fmt.Errorf("validate the original worktree removal marker: %w", err)
 	}
 	if token != identity.Token {
-		return errors.New("the worktree removal marker changed")
+		return nil, errors.New("the worktree removal marker changed")
 	}
-	return nil
+	return info, nil
 }

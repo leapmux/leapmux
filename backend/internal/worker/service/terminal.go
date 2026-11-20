@@ -923,8 +923,11 @@ func (svc *Service) runTerminalRestart(
 	svc.TerminalStartup.setMessage(terminalID, shellMsg)
 	svc.broadcastTerminalStarting(terminalID, shellMsg, gs)
 
-	svc.forgetTerminalExitCode(terminalID)
-	startErr := svc.Terminals.RestartTerminal(ctx, opts, fallbackOffset, outputFn, exitFn)
+	startErr := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, opts.WorkingDir)
+	if startErr == nil {
+		svc.forgetTerminalExitCode(terminalID)
+		startErr = svc.Terminals.RestartTerminal(ctx, opts, fallbackOffset, outputFn, exitFn)
+	}
 
 	// Detect a CloseTab that landed during the PTY spawn: if
 	// closed_at is set we must neither broadcast READY nor leave a

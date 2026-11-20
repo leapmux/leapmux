@@ -76,6 +76,17 @@ func TestTerminalOpenOverIPC_WithoutACommandSendsNone(t *testing.T) {
 	assert.Empty(t, requireOpenTerminalRequest(t, calls).GetInitialCommand())
 }
 
+func TestTerminalOpenPreservesTheLiteralWorktreePath(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			const path = "/src/worktrees/selected "
+			result, _, calls := openTerminalOnFakeWorker(t, transport.start, "", "--use-worktree", path)
+			_ = result.Data(t)
+			assert.Equal(t, path, requireOpenTerminalRequest(t, calls).GetGitSetup().GetUseWorktreePath())
+		})
+	}
+}
+
 // --command reads stdin for "-", and it drops the line endings at the end as
 // `terminal run` does, because the Worker presses Enter itself. The line
 // endings inside the command stay.

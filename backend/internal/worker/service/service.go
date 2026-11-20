@@ -793,6 +793,9 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 // startAgentWithTurnReset retires stopped-process controls and reconciles queue
 // activity around a process startup. The caller owns its lifecycle or startup.
 func (svc *Service) startAgentWithTurnReset(ctx context.Context, opts agent.Options, sink agent.ProviderServices, start agentLauncher) (map[string]string, error) {
+	if err := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_AGENT, opts.AgentID, opts.WorkingDir); err != nil {
+		return nil, err
+	}
 	if err := svc.retireStoppedProcessControls(opts.AgentID); err != nil {
 		return nil, fmt.Errorf("%w: %w", errAgentProcessStartBlocked, notReadyStoreFault(err))
 	}
@@ -842,6 +845,9 @@ func (svc *Service) restartAgentLocked(ctx context.Context, opts agent.Options, 
 }
 
 func (svc *Service) startTerminal(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+	if err := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, opts.ID, opts.WorkingDir); err != nil {
+		return err
+	}
 	if svc.startTerminalFn != nil {
 		return svc.startTerminalFn(ctx, opts, outputFn, exitFn)
 	}

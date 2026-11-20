@@ -11,7 +11,7 @@ import {
 import { test } from './fixtures'
 import { getTestChannel } from './helpers/api'
 import { agentTabs, chooseGitMode, fillWorkspaceTitle, loginViaToken, openNewWorkspaceDialogAt, openWorkspace, submitNewWorkspaceDialog, waitForWorkspaceReady } from './helpers/ui'
-import { closeAgentViaAPI, closeTerminalViaAPI, inspectLastTabCloseViaAPI, pushBranchViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'
+import { closeAgentViaAPI, closeTerminalViaAPI, inspectLastTabCloseViaAPI, pushBranchViaAPI, waitForAgentStartupViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, createWorkspaceWithWorktreeViaAPI, managedWorktreePath, waitForPathDeleted, waitForPathExists } from './helpers/worktree'
 
@@ -150,15 +150,16 @@ test.describe('Worktree Lifecycle', () => {
     // Create a workspace and open an agent directly in the manual worktree.
     const { workspaceId } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Existing WT WS', { workingDir: manualWorktreeDir })
 
-    // Get the auto-created agent
+    // Wait for the Worker to track the checkout before closing the agent.
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
     const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
 
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.branchName).toBe('manual-branch')
 
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id, WorktreeAction.REMOVE)
-
+    const close = await closeAgentViaAPI(hubUrl, adminToken, workerId, agent.id, WorktreeAction.REMOVE)
+    expect(close).toMatchObject({ failureMessage: '', failureDetail: '' })
     await waitForPathDeleted(manualWorktreeDir)
     expect(branchExists(repoDir, 'manual-branch')).toBe(false)
   })

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -219,6 +220,13 @@ func (op *creationOperation) persistLocked(runtime creationRuntime, write func(c
 	if err != nil {
 		return err
 	}
+	var selectedWorktree []byte
+	if startup := runtime.startupIntent(); startup != nil && startup.Plan.SelectedWorktree != nil {
+		selectedWorktree, err = json.Marshal(startup.Plan.SelectedWorktree)
+		if err != nil {
+			return fmt.Errorf("encode the selected worktree: %w", err)
+		}
+	}
 	request, err := proto.Marshal(op.request)
 	if err != nil {
 		return err
@@ -236,7 +244,11 @@ func (op *creationOperation) persistLocked(runtime creationRuntime, write func(c
 	if err := write(c.ctx, q, tx); err != nil {
 		return err
 	}
-	if err := q.InsertTabCreation(c.ctx, db.InsertTabCreationParams{UserID: op.key().owner, WorkerID: svc.WorkerID, TabID: op.key().tabID, TabType: int64(op.publication.GetTabType()), RequestHash: op.hash, RequestPayload: request, PublicationPayload: publication, RuntimePayload: envelope, PublicationResult: []byte{}, State: creationPending}); err != nil {
+	if err := q.InsertTabCreation(c.ctx, db.InsertTabCreationParams{
+		UserID: op.key().owner, WorkerID: svc.WorkerID, TabID: op.key().tabID, TabType: int64(op.publication.GetTabType()),
+		RequestHash: op.hash, RequestPayload: request, PublicationPayload: publication, RuntimePayload: envelope,
+		SelectedWorktreeIdentity: selectedWorktree, PublicationResult: []byte{}, State: creationPending,
+	}); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

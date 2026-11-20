@@ -1,10 +1,13 @@
 -- name: GetTabCreation :one
 SELECT * FROM tab_creations WHERE user_id = ? AND worker_id = ? AND tab_id = ?;
 
+-- name: GetTabCreationSelectedWorktree :one
+SELECT selected_worktree_identity FROM tab_creations WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND tab_type = ?;
+
 -- name: InsertTabCreation :exec
 INSERT INTO tab_creations(user_id, worker_id, tab_id, tab_type, request_hash, request_payload,
-    publication_payload, runtime_payload, publication_result, state)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    publication_payload, runtime_payload, selected_worktree_identity, publication_result, state)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListPendingTabCreations :many
 SELECT * FROM tab_creations

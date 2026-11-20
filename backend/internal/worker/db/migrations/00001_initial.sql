@@ -865,6 +865,8 @@ CREATE TABLE tab_creations (
     request_payload BLOB NOT NULL,
     publication_payload BLOB NOT NULL,
     runtime_payload BLOB NOT NULL,
+    -- The checkout selected at creation, retained after the runtime payload is cleared.
+    selected_worktree_identity BLOB,
     publication_result BLOB NOT NULL DEFAULT X'',
     -- TabCreationState ordinal. TestTabCreationEnumColumnsMatchProto pins the range.
     state INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 6),

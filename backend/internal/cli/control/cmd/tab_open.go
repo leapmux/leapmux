@@ -144,7 +144,8 @@ func gitSetup(inv *cli.Invocation) (*leapmuxv1.GitSetup, error) {
 	case len(set) == 0:
 		return nil, nil
 	}
-	value := strings.TrimSpace(stringFlag(inv, strings.TrimPrefix(set[0], "--")))
+	rawValue := stringFlag(inv, strings.TrimPrefix(set[0], "--"))
+	value := strings.TrimSpace(rawValue)
 	if value == "" {
 		return nil, cli.Usagef("%s is empty", set[0])
 	}
@@ -155,7 +156,7 @@ func gitSetup(inv *cli.Invocation) (*leapmuxv1.GitSetup, error) {
 	case "--worktree":
 		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateWorktree{CreateWorktree: &leapmuxv1.GitCreateWorktree{Branch: value, BaseBranch: base}}}, nil
 	case "--use-worktree":
-		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktreePath{UseWorktreePath: value}}, nil
+		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktreePath{UseWorktreePath: rawValue}}, nil
 	case "--checkout":
 		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CheckoutBranch{CheckoutBranch: value}}, nil
 	default:

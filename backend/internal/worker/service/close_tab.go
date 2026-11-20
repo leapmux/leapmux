@@ -337,6 +337,33 @@ func (svc *Service) prepareTabClose(ctx context.Context, tabType leapmuxv1.TabTy
 	stopProcess()
 
 	result := &leapmuxv1.CloseTabResponse{}
+	snapshot := &tabCloseSnapshot{
+		TabType: tabType, TabID: tabID, UserID: userID, Action: action, LinkPolicy: linkPolicy,
+		WorkingDir: workingDir, RootEligible: rootEligible, RemovalInfo: removalInfo, Result: result,
+	}
+	const selectionRefusalMessage = "The Worker kept the worktree because it could not verify the selected checkout"
+	var selection *selectedWorktreeIdentity
+	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE &&
+		(tabType == leapmuxv1.TabType_TAB_TYPE_AGENT || tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL) {
+		var err error
+		selection, err = svc.readTabWorktreeSelection(ctx, tabType, tabID, userID)
+		if err != nil {
+			setWorktreeRemovalFailed(result, &db.Worktree{WorktreePath: workingDir}, err)
+			snapshot.LookupFailed = true
+			return snapshot
+		}
+		if selection != nil {
+			err = errSelectedWorktreeUnproved
+			if rootEligible {
+				err = selection.verify(removalInfo, true)
+			}
+			if err != nil {
+				setWorktreeRemovalRefused(result, &db.Worktree{WorktreePath: selection.Path}, selectionRefusalMessage, err.Error())
+				snapshot.Action = leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP
+				return snapshot
+			}
+		}
+	}
 
 	// When REMOVE is requested, look up the worktree BEFORE the
 	// tab-worktree association is dropped, so we still see the link.
@@ -375,16 +402,26 @@ func (svc *Service) prepareTabClose(ctx context.Context, tabType leapmuxv1.TabTy
 		}
 	}
 
-	var identity *worktreeRemovalIdentity
+	snapshot.Worktree = wtForRemoval
+	snapshot.LookupFailed = worktreeLookupFailed
 	if wtForRemoval != nil && rootEligible && !worktreeLookupFailed {
-		var err error
-		identity, err = svc.captureWorktreeRemovalIdentity(ctx, *wtForRemoval, newOwnedTabKey(tabType, tabID, userID))
+		err := svc.withGitIndexLock(wtForRemoval.RepoGitDir, func() error {
+			var captureErr error
+			snapshot.RemovalIdentity, captureErr = svc.captureWorktreeRemovalIdentityLocked(ctx, *wtForRemoval, newOwnedTabKey(tabType, tabID, userID), selection)
+			return captureErr
+		})
+		if errors.Is(err, errSelectedWorktreeChanged) || errors.Is(err, errSelectedWorktreeUnproved) {
+			setWorktreeRemovalRefused(result, wtForRemoval, selectionRefusalMessage, err.Error())
+			snapshot.Action = leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP
+			snapshot.Worktree = nil
+			return snapshot
+		}
 		if err != nil {
 			setWorktreeRemovalFailed(result, wtForRemoval, err)
-			worktreeLookupFailed = true
+			snapshot.LookupFailed = true
 		}
 	}
-	return &tabCloseSnapshot{TabType: tabType, TabID: tabID, UserID: userID, Action: action, LinkPolicy: linkPolicy, WorkingDir: workingDir, RootEligible: rootEligible, RemovalInfo: removalInfo, Worktree: wtForRemoval, RemovalIdentity: identity, LookupFailed: worktreeLookupFailed, Result: result}
+	return snapshot
 }
 
 func (svc *Service) continueTabClose(ctx context.Context, snapshot *tabCloseSnapshot, retiredLiveRow bool, journal worktreeRemovalJournal) (*leapmuxv1.CloseTabResponse, error) {
