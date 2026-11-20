@@ -1,11 +1,6 @@
-// The Go sidecar's channel relay is a process-wide singleton that
-// OpenChannelRelay REUSES when it is still live, and CloseChannelRelay tears down
-// whichever relay is currently installed -- it has no notion of which wrapper
-// opened it. So only the most recent wrapper may close it: otherwise an earlier
-// wrapper whose close raced its own open lands afterwards and tears down the
-// relay a successor already adopted, leaving the successor silently wedged (the
-// sidecar cancels the relay context before emitting, so no `channel:close` ever
-// arrives and every send fails into `dispatchSend`'s catch).
+// The Go sidecar can transfer a live channel relay to a newer wrapper.
+// JavaScript checks the current claim before sending a close. The sidecar
+// checks the relay id again because open and close run concurrently there.
 //
 // A wrapper claims ownership synchronously in its constructor, before any await, so
 // a successor constructed at any point during a predecessor's async teardown has

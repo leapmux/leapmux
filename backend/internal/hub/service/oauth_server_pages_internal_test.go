@@ -44,7 +44,6 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 			CodeChallenge:    payload,
 			Scope:            payload,
 			InstallationName: payload,
-			StepUpRaw:        payload,
 		}, "")
 		assertNoInjection(t, w.Body.String())
 		// The value still reaches the page -- escaped, not dropped. A page that

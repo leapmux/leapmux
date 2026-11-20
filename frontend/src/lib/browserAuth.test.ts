@@ -1,3 +1,4 @@
+import type { BrowserAuthKind } from '~/api/platformBridge'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred, settle } from '~/test-support/async'
 import { runBrowserAuth } from './browserAuth'
@@ -10,8 +11,9 @@ import { runBrowserAuth } from './browserAuth'
  */
 const bridgeMocks = vi.hoisted(() => ({
   openExternalUrl: vi.fn<(url: string) => Promise<void>>(),
-  startBrowserAuth: vi.fn<() => Promise<{ ceremonyId: string, authorizeUrl: string }>>(),
+  startBrowserAuth: vi.fn<(kind: BrowserAuthKind) => Promise<{ ceremonyId: string, authorizeUrl: string }>>(),
   cancelBrowserAuth: vi.fn<(ceremonyId: string) => Promise<void>>(),
+  waitForListener: vi.fn<() => Promise<void> | undefined>(),
   handlers: [] as ((...args: unknown[]) => void)[],
   unlistens: [] as ReturnType<typeof vi.fn>[],
   emit(payload: { ceremonyId: string, ok: boolean, failure: string }): void {
@@ -23,7 +25,7 @@ const bridgeMocks = vi.hoisted(() => ({
 vi.mock('~/api/platformBridge', () => ({
   openExternalUrl: (url: string) => bridgeMocks.openExternalUrl(url),
   platformBridge: {
-    startBrowserAuth: () => bridgeMocks.startBrowserAuth(),
+    startBrowserAuth: (kind: BrowserAuthKind) => bridgeMocks.startBrowserAuth(kind),
     cancelBrowserAuth: (ceremonyId: string) => bridgeMocks.cancelBrowserAuth(ceremonyId),
     onEvent: (_event: string, handler: (...args: unknown[]) => void): Promise<() => void> => {
       bridgeMocks.handlers.push(handler)
@@ -33,7 +35,10 @@ vi.mock('~/api/platformBridge', () => ({
           bridgeMocks.handlers.splice(index, 1)
       })
       bridgeMocks.unlistens.push(unlisten)
-      return Promise.resolve(unlisten)
+      const pending = bridgeMocks.waitForListener()
+      return pending
+        ? pending.then(() => unlisten)
+        : Promise.resolve(unlisten)
     },
   },
 }))
@@ -50,6 +55,7 @@ beforeEach(() => {
   bridgeMocks.startBrowserAuth.mockResolvedValue(START)
   bridgeMocks.cancelBrowserAuth.mockReset()
   bridgeMocks.cancelBrowserAuth.mockResolvedValue(undefined)
+  bridgeMocks.waitForListener.mockReset()
   bridgeMocks.handlers.length = 0
   bridgeMocks.unlistens.length = 0
 })
@@ -193,15 +199,104 @@ describe('runBrowserAuth', () => {
     const start = deferred<{ ceremonyId: string, authorizeUrl: string }>()
     bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
     const controller = new AbortController()
-    controller.abort()
     const flowPromise = runBrowserAuth('sign-in', controller.signal)
     await settle()
+    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledOnce()
 
+    controller.abort()
     start.resolve(START)
-    await flowPromise
+    const flow = await flowPromise
 
     expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
     expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    expect(bridgeMocks.handlers).toHaveLength(1)
+
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    await expect(flow.result).resolves.toEqual({ ok: true, failure: '' })
+    expect(bridgeMocks.handlers).toHaveLength(0)
+  })
+
+  it('settles as cancelled when the cancel command rejects after the start is issued', async () => {
+    const start = deferred<typeof START>()
+    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    bridgeMocks.cancelBrowserAuth.mockRejectedValue(new Error('ipc down'))
+    const controller = new AbortController()
+    const flowPromise = runBrowserAuth('sign-in', controller.signal)
+    await settle()
+    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledOnce()
+
+    controller.abort()
+    start.resolve(START)
+    const flow = await flowPromise
+
+    await expect(flow.result).resolves.toEqual({ ok: false, failure: '' })
+    expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
+    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    expect(bridgeMocks.handlers).toHaveLength(0)
+  })
+
+  it('skips the listener and commands for an already aborted signal', async () => {
+    await expect(runBrowserAuth('sign-in', AbortSignal.abort())).rejects.toHaveProperty('name', 'AbortError')
+
+    expect(bridgeMocks.unlistens).toHaveLength(0)
+    expect(bridgeMocks.startBrowserAuth).not.toHaveBeenCalled()
+    expect(bridgeMocks.cancelBrowserAuth).not.toHaveBeenCalled()
+    expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
+  })
+
+  it('removes a late listener without starting over the live ceremony', async () => {
+    const registration = deferred<void>()
+    bridgeMocks.waitForListener.mockReturnValueOnce(registration.promise)
+    const controller = new AbortController()
+    const abandoned = runBrowserAuth('step-up', controller.signal)
+      .then(() => 'started', (err: Error) => err.name)
+    expect(bridgeMocks.startBrowserAuth).not.toHaveBeenCalled()
+
+    controller.abort()
+    const live = await runBrowserAuth('sign-in')
+    registration.resolve()
+    await settle()
+
+    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledExactlyOnceWith('sign-in')
+    expect(bridgeMocks.cancelBrowserAuth).not.toHaveBeenCalled()
+    expect(bridgeMocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(START.authorizeUrl)
+    expect(await abandoned).toBe('AbortError')
+    expect(bridgeMocks.unlistens[0]).toHaveBeenCalledOnce()
+    expect(bridgeMocks.unlistens[1]).not.toHaveBeenCalled()
+
+    bridgeMocks.emit({ ceremonyId: START.ceremonyId, ok: true, failure: '' })
+
+    await expect(live.result).resolves.toEqual({ ok: true, failure: '' })
+    expect(bridgeMocks.unlistens[1]).toHaveBeenCalledOnce()
+  })
+
+  it('removes the abort hook after a result while the browser is opening', async () => {
+    const controller = new AbortController()
+    const open = deferred<void>()
+    bridgeMocks.openExternalUrl.mockReturnValue(open.promise)
+
+    const pending = runBrowserAuth('sign-in', controller.signal)
+    await settle()
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    await settle()
+    controller.abort()
+    open.resolve()
+    const flow = await pending
+
+    await expect(flow.result).resolves.toEqual({ ok: true, failure: '' })
+    expect(bridgeMocks.cancelBrowserAuth).not.toHaveBeenCalled()
+    expect(bridgeMocks.unlistens[0]).toHaveBeenCalledOnce()
+  })
+
+  it('removes both listeners when opening the browser fails', async () => {
+    const controller = new AbortController()
+    bridgeMocks.openExternalUrl.mockRejectedValue(new Error('no browser'))
+
+    await expect(runBrowserAuth('sign-in', controller.signal)).rejects.toThrow('no browser')
+    controller.abort()
+
+    expect(bridgeMocks.cancelBrowserAuth).not.toHaveBeenCalled()
+    expect(bridgeMocks.unlistens[0]).toHaveBeenCalledOnce()
   })
 
   // The abort listener must be up before the URL opens: an abort during the

@@ -212,10 +212,13 @@ func TestAdminGate_AdminReadLeavesTheWindowUnchanged(t *testing.T) {
 
 func TestAdminGate_NonAdminCookieDenied(t *testing.T) {
 	f := setupAdminGateServer(t)
-	_, err := f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, f.plainUserCookie(t)))
+	callCtx, info := connect.NewClientContext(t.Context())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+f.plainUserCookie(t))
+	_, err := f.adminClient.ListSettings(callCtx, &leapmuxv1.ListSettingsRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "administrator privileges are required")
+	assert.False(t, info.ResponseHeader().Has(service.ElevationRequiredHeader))
 }
 
 func TestAdminGate_Unauthenticated(t *testing.T) {

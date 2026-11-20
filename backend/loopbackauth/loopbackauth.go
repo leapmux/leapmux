@@ -86,6 +86,14 @@ var ErrTimeout = errors.New("the browser did not answer in time")
 // timeoutTag labels the timeout timer for the clock's traps.
 const timeoutTag = "loopbackauth.Timeout"
 
+// closeGracePeriod gives an active callback time to finish its browser reply.
+const closeGracePeriod = time.Second
+
+type callbackResult struct {
+	code string
+	err  error
+}
+
 // Flow is one ceremony, from Start to Close. Its zero value is not usable.
 type Flow struct {
 	app          App
@@ -94,8 +102,12 @@ type Flow struct {
 	redirectURI  string
 	authorizeURL string
 
-	codeCh chan string
-	errCh  chan error
+	clock    quartz.Clock
+	deadline time.Time
+	// callbackMu orders publication between the callback and the timeout.
+	callbackMu sync.Mutex
+	result     callbackResult
+	ready      chan struct{}
 
 	srv       *http.Server
 	timer     *quartz.Timer
@@ -123,8 +135,8 @@ func Start(req Request) (*Flow, error) {
 		verifier:    verifier,
 		state:       state,
 		redirectURI: redirectURI,
-		codeCh:      make(chan string, 1),
-		errCh:       make(chan error, 1),
+		clock:       clock,
+		ready:       make(chan struct{}),
 	}
 	params := url.Values{
 		"client_id":             {req.App.ClientID},
@@ -141,12 +153,15 @@ func Start(req Request) (*Flow, error) {
 	}
 	f.authorizeURL = locallisten.JoinPath(req.HubBaseURL, "/oauth/authorize?"+params.Encode())
 
+	// The callback and the waiter share the deadline established at Start.
+	f.deadline = clock.Now().Add(Timeout)
+	f.timer = clock.AfterFunc(clock.Until(f.deadline), func() {
+		f.callbackMu.Lock()
+		defer f.callbackMu.Unlock()
+		f.publishResultLocked(callbackResult{err: ErrTimeout})
+	}, timeoutTag)
 	f.srv = &http.Server{Handler: f.callbackHandler()}
 	go func() { _ = f.srv.Serve(ln) }()
-	// The timeout runs from Start, not from Wait: a caller that prints the
-	// URL and only then waits must still meet the same deadline the person
-	// at the browser sees.
-	f.timer = clock.NewTimer(Timeout, timeoutTag)
 	return f, nil
 }
 
@@ -155,19 +170,14 @@ func (f *Flow) AuthorizeURL() string { return f.authorizeURL }
 
 // Wait returns the authorization code the callback delivered.
 //
-// It returns ErrTimeout when Timeout passed since Start, and ctx.Err() when
-// the caller gives up first. A callback with the wrong state ends nothing:
-// see callbackHandler.
+// It returns ErrTimeout when no matching callback arrives within Timeout.
+// It returns ctx.Err() when the caller cancels the wait.
 func (f *Flow) Wait(ctx context.Context) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case code := <-f.codeCh:
-		return code, nil
-	case err := <-f.errCh:
-		return "", err
-	case <-f.timer.C:
-		return "", ErrTimeout
+	case <-f.ready:
+		return f.result.code, f.result.err
 	}
 }
 
@@ -243,21 +253,43 @@ func ReadOAuthError(resp *http.Response) OAuthErrorBody {
 	return body
 }
 
-// Close releases the listener and the timeout timer. It is idempotent.
+// Close releases the listener and the timeout timer. It gives active HTTP
+// requests time to finish, then closes their connections. It is idempotent.
 func (f *Flow) Close() {
 	f.closeOnce.Do(func() {
 		f.timer.Stop(timeoutTag)
-		_ = f.srv.Shutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), closeGracePeriod)
+		defer cancel()
+		if err := f.srv.Shutdown(ctx); err != nil {
+			_ = f.srv.Close()
+		}
 	})
 }
 
-// callbackHandler serves /callback. Its channel sends are NON-BLOCKING: the
-// success page is a plain 200, and a user reload re-GETs this address with
-// the same valid values. The channels hold one outcome each; a duplicate
-// that arrives after the caller has its answer is ACKNOWLEDGED here and
-// dropped, because a blocking send parks the handler and Close's Shutdown
-// waits for it forever -- a ceremony that already succeeded would hang the
-// caller.
+// recordCallback publishes the first validated callback received before the
+// deadline. A retry can still receive a browser reply without replacing it.
+func (f *Flow) recordCallback(result callbackResult) bool {
+	f.callbackMu.Lock()
+	defer f.callbackMu.Unlock()
+	if !f.clock.Now().Before(f.deadline) {
+		return false
+	}
+	f.publishResultLocked(result)
+	return true
+}
+
+// publishResultLocked wakes all waiters and keeps the first result.
+func (f *Flow) publishResultLocked(result callbackResult) {
+	select {
+	case <-f.ready:
+	default:
+		f.result = result
+		close(f.ready)
+	}
+}
+
+// callbackHandler serves /callback and replies to the browser after recording
+// the outcome, so writing the reply cannot affect the deadline check.
 func (f *Flow) callbackHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/callback" {
@@ -283,31 +315,28 @@ func (f *Flow) callbackHandler() http.Handler {
 		// the state-mismatch branch told a user who deliberately refused
 		// that the state check had failed, a CSRF suspicion they can neither
 		// check nor act on.
+		result := callbackResult{code: gotCode}
+		var refusal string
 		if gotErr := q.Get("error"); gotErr != "" {
 			msg := gotErr
 			if desc := q.Get("error_description"); desc != "" {
 				msg = gotErr + ": " + desc
 			}
-			http.Error(w, "authorization refused", http.StatusBadRequest)
-			select {
-			case f.errCh <- fmt.Errorf("authorization failed: %s", msg):
-			default:
-			}
+			result = callbackResult{err: fmt.Errorf("authorization failed: %s", msg)}
+			refusal = "authorization refused"
+		} else if gotCode == "" {
+			result.err = errors.New("callback carried neither a code nor an error")
+			refusal = "invalid callback"
+		}
+		if !f.recordCallback(result) {
+			http.Error(w, ErrTimeout.Error(), http.StatusGone)
 			return
 		}
-		if gotCode == "" {
-			http.Error(w, "invalid callback", http.StatusBadRequest)
-			select {
-			case f.errCh <- errors.New("callback carried neither a code nor an error"):
-			default:
-			}
+		if refusal != "" {
+			http.Error(w, refusal, http.StatusBadRequest)
 			return
 		}
 		_, _ = fmt.Fprintln(w, "Authorization received. You can close this window and return to "+f.app.successName()+".")
-		select {
-		case f.codeCh <- gotCode:
-		default:
-		}
 	})
 }
 

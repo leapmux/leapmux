@@ -1225,6 +1225,30 @@ describe('AuthContext sign-in recovery', () => {
     expect(auth().signInRecovery()?.redirect).toBe('/oauth/authorize?state=s')
   })
 
+  it('keeps the original verification requirement during password sign-in recovery', async () => {
+    const auth = await bootSignedOut()
+    mockLogin.mockResolvedValue({
+      sessionReport: {
+        emailVerification: { verificationRequired: true },
+      },
+    })
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+        emailVerification: { verificationRequired: false },
+      },
+    })
+
+    await auth().login('alice', 'pw', undefined, { redirect: '/oauth/authorize?state=s' })
+
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'completed')
+    expect(auth().signInRecovery()).toEqual({
+      read: { kind: 'completed' },
+      redirect: '/oauth/authorize?state=s',
+      verificationRequired: true,
+    })
+  })
+
   it('states no redirect when the sign-in asked for none', async () => {
     const auth = await bootSignedOut()
     mockLogin.mockResolvedValue({ sessionReport: {} })

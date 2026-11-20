@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -21,6 +22,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -314,24 +316,80 @@ func TestOAuthAppStepUp_BrowserIssuedCredentialRefused(t *testing.T) {
 	bearer, _ := tokens["access_token"].(string)
 	require.NotEmpty(t, bearer)
 
-	// /oauth/step-up refuses with browser_step_up_required.
-	stepUpResp := startStepUp(t, env, bearer, "browser-issued")
+	faults := &oauthAuthenticationFaults{}
+	server := oauthAuthenticationServer(t, env, faults)
+	stepUpResp := startStepUpAt(t, server, bearer, "browser-issued")
 	assert.Equal(t, http.StatusBadRequest, stepUpResp.StatusCode)
-	body, err := io.ReadAll(stepUpResp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), `"error":"browser_step_up_required"`)
+	assert.JSONEq(t, `{"error":"browser_step_up_required","error_description":"this credential was issued through a browser on its own computer; verify it through that browser"}`, bodyOf(t, stepUpResp))
+	assert.Zero(t, faults.grantWrites.Load(), "a refusal must create no pending grant")
 }
 
 // A credential from a device-code exchange or IssueAPIToken can start the
 // device ceremony.
 func TestOAuthAppStepUp_OtherIssuancesAllowed(t *testing.T) {
 	t.Parallel()
-	env := setupAPIAuth(t)
 
-	// Device-code issuance: the cliCredential helper mints one.
-	_, bearer := cliCredential(t, env, "device-issued")
-	stepUpResp := startStepUp(t, env, bearer, "device-issued")
-	assert.Equal(t, http.StatusOK, stepUpResp.StatusCode)
+	checkGrant := func(t *testing.T, st store.Store, validator *auth.TokenValidator, bearer string, resp *http.Response) {
+		t.Helper()
+		grant := decodeStepUpGrant(t, resp)
+		row, err := st.DeviceAuthorizations().Get(t.Context(), validator.HashSecret(grant.DeviceCode))
+		require.NoError(t, err, "the response's device code must locate the pending grant")
+		assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State)
+		assert.Equal(t, verifycode.Format(row.UserCode), grant.UserCode)
+		user, err := validator.ValidateBearer(t.Context(), bearer)
+		require.NoError(t, err)
+		assert.Equal(t, user.Credential.APITokenID(), row.ElevateTokenID)
+	}
+
+	t.Run("device exchange", func(t *testing.T) {
+		t.Parallel()
+		env := setupAPIAuth(t)
+		deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"installation_name": {"device-issued"}})
+		approve := postConsentForm(t, env.server.URL+"/oauth/device", url.Values{
+			"user_code": {userCode}, "decision": {"allow"},
+		}, env.elevatedAdminCookie(t))
+		require.Equal(t, http.StatusOK, approve.StatusCode)
+
+		resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+			"grant_type":  {service.GrantTypeDeviceCode},
+			"client_id":   {oauthapp.ControlCLIClientID},
+			"device_code": {deviceCode},
+		})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var token struct {
+			AccessToken string `json:"access_token"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&token))
+		require.NotEmpty(t, token.AccessToken)
+
+		stepUp := startStepUp(t, env, token.AccessToken, "device-issued")
+		checkGrant(t, env.store, env.validator, token.AccessToken, stepUp)
+	})
+
+	t.Run("admin RPC", func(t *testing.T) {
+		t.Parallel()
+		admin := setupAdminUserTest(t)
+		issued, err := admin.client.IssueAPIToken(authedReq(t.Context(), &leapmuxv1.IssueAPITokenRequest{
+			User:             service.SelectUserByID(admin.adminID),
+			InstallationName: "admin-issued",
+		}, admin.token))
+		require.NoError(t, err)
+		require.NotEmpty(t, issued.GetAccessToken())
+
+		mux := http.NewServeMux()
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+		newOAuthServerHandler(service.OAuthServerDeps{
+			Store: admin.st, Validator: admin.validator, SessionHasher: hubtestutil.TestSecretHasher(),
+			Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+			HubURL:    func() string { return server.URL },
+		}).RegisterRoutes(mux)
+
+		stepUp := startStepUpAt(t, server, issued.GetAccessToken(), "admin-issued")
+		checkGrant(t, admin.st, admin.validator, issued.GetAccessToken(), stepUp)
+	})
 }
 
 // redeemStepUpCodeAt presents one step-up code to a chosen server, so a test

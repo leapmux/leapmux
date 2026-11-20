@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -778,15 +780,9 @@ func (h *IdPHandler) completeOAuthReauth(
 	h.redirectBack(w, r, oauthState.RedirectURI)
 }
 
-// redirectBack sends the browser to the address the flow recorded, or home
-// when it recorded none. The value passed through sanitizeRedirectURI when
-// beginOAuthFlow minted the state row, so it needs no second guard here.
+// redirectBack sends the browser to the effective same-origin destination.
 func (h *IdPHandler) redirectBack(w http.ResponseWriter, r *http.Request, redirectURI string) {
-	redirectTo := "/"
-	if redirectURI != "" {
-		redirectTo = redirectURI
-	}
-	http.Redirect(w, r, redirectTo, http.StatusFound)
+	http.Redirect(w, r, idpRedirectLocation(redirectURI), http.StatusFound)
 }
 
 // secureCookies reports whether this hub writes __Host- prefixed cookies.
@@ -794,32 +790,35 @@ func (h *IdPHandler) secureCookies(ctx context.Context) bool {
 	return settings.SecureCookiesFor(ctx, h.set.Snapshot(ctx))
 }
 
-// decideSignInProof reports how much the sign-in proved. Only a provider
-// sign-in for a consent route can prove a factor, and only for an account
-// that elevates only through that provider: the re-authentication stage
-// asked the provider for a fresh authentication, so for that account the
-// sign-in is the proof. An account that holds a password or a passkey proves
-// its factor locally instead, and every other sign-in proves nothing.
-//
-// A store failure is fatal and visible. It must not fall through to
-// SignInProvedNoFactor: that reads a broken lookup as "nothing was proved"
-// and signs the user in on a silent downgrade.
-func (h *IdPHandler) decideSignInProof(ctx context.Context, userID, redirectURI string) (auth.SignInProof, error) {
+// createOAuthLoginSession can grant a sign-in window when the consent
+// redirect forced a fresh authentication and the account holds only a
+// provider factor. The user-auth lock serializes the factor reads and the
+// session insert with password and passkey changes.
+func (h *IdPHandler) createOAuthLoginSession(ctx context.Context, userID userid.UserID, redirectURI string, lifetime time.Duration, meta auth.SessionMeta) (auth.CreatedSession, error) {
 	if !isConsentRoute(redirectURI) {
-		return auth.SignInProvedNoFactor, nil
+		return auth.CreateSession(ctx, h.store, h.sessionHasher, userID, lifetime, auth.SignInProvedNoFactor, meta)
 	}
-	user, err := h.store.Users().GetByID(ctx, userID)
-	if err != nil {
-		return 0, err
+
+	var session auth.CreatedSession
+	if err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		user, err := tx.Users().GetByID(ctx, userID.String())
+		if err != nil {
+			return fmt.Errorf("load account for provider sign-in proof: %w", err)
+		}
+		providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, tx, user)
+		if err != nil {
+			return fmt.Errorf("check account factors for provider sign-in proof: %w", err)
+		}
+		proof := auth.SignInProvedNoFactor
+		if providerOnly {
+			proof = auth.SignInProvedFactor
+		}
+		session, err = auth.CreateSession(ctx, tx, h.sessionHasher, userID, lifetime, proof, meta)
+		return err
+	}); err != nil {
+		return auth.CreatedSession{}, err
 	}
-	providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, h.store, user)
-	if err != nil {
-		return 0, err
-	}
-	if providerOnly {
-		return auth.SignInProvedFactor, nil
-	}
-	return auth.SignInProvedNoFactor, nil
+	return session, nil
 }
 
 // loginOAuthUser stores tokens, creates a session, and redirects the user.
@@ -837,13 +836,7 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	proof, proofErr := h.decideSignInProof(ctx, userID, redirectURI)
-	if proofErr != nil {
-		slog.Error("oauth: decide sign-in proof", "error", proofErr)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), proof, auth.SessionMeta{
+	session, sessionErr := h.createOAuthLoginSession(ctx, loginUID, redirectURI, settings.SessionDuration(h.set.Snapshot(ctx)), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 	})
 	if sessionErr != nil {
@@ -892,6 +885,34 @@ func sanitizeRedirectURI(uri string) string {
 		}
 	}
 	return uri
+}
+
+// idpRedirectLocation computes the callback's Location for the redirect sender
+// and the consent route classifier. For a parseable local address, http.Redirect
+// cleans the raw prefix before the first question mark and preserves its trailing
+// slash. The prefix can contain a fragment, and cleaning can change the path
+// before it. Escaped path segments retain their original spelling.
+func idpRedirectLocation(uri string) string {
+	uri = sanitizeRedirectURI(uri)
+	if uri == "" {
+		return "/"
+	}
+	if _, err := url.Parse(uri); err != nil {
+		// http.Redirect sends an unparseable address without cleaning it.
+		return uri
+	}
+	prefix, query, hasQuery := strings.Cut(uri, "?")
+	location := path.Clean(prefix)
+	if location != "/" && strings.HasSuffix(prefix, "/") {
+		location += "/"
+	}
+	if hasQuery {
+		location += "?" + query
+	}
+	if location = sanitizeRedirectURI(location); location == "" {
+		return "/"
+	}
+	return location
 }
 
 // tokenExpiryTime is the provider token's deadline, or a default measured

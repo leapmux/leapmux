@@ -8,8 +8,6 @@
   },
   "devFrontendUrl": "http://localhost:4328",
   "tauriEvents": {
-    "channelClose": "channel:close",
-    "userEventsClose": "userevents:close",
     "sidecarLog": "sidecar:log",
     "browserAuthResult": "browser-auth:result",
     "menuShowAbout": "menu:show-about",

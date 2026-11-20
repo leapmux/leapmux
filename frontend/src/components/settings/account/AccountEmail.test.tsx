@@ -330,18 +330,21 @@ describe('AccountEmail verification', () => {
   // origin, so the control is replaced by the browser remedy.
   it('offers the browser remedy instead of the resend control when the ceremonies run in the browser', async () => {
     mockCeremoniesRunInBrowser.mockReturnValue(true)
-    renderRouted()
+    const { container } = renderRouted()
 
     expect(await screen.findByText(/verify this address in your browser/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Resend code' })).not.toBeInTheDocument()
+    expect(container.querySelector('input[name="website"]')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('verify-email-resend')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
     expect(mockOpenHubPage).toHaveBeenCalledWith('/verify-email')
   })
 
   it('offers a resend for an unverified address', async () => {
-    renderRouted()
+    const { container } = renderRouted()
+    const resend = await screen.findByRole('button', { name: 'Resend code' })
+    expect(container.querySelector('input[name="website"]')).toBeInTheDocument()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Resend code' }))
+    fireEvent.click(resend)
 
     await vi.waitFor(() => {
       expect(mockResendVerificationEmail).toHaveBeenCalledWith({

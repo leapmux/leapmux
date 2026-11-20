@@ -74,15 +74,20 @@ func cliCredentialExpiring(t *testing.T, env *apiAuthEnv, name string, expiresAt
 // page never identifies a credential from it.
 func startStepUp(t *testing.T, env *apiAuthEnv, bearer, deviceName string) *http.Response {
 	t.Helper()
+	return startStepUpAt(t, env.server, bearer, deviceName)
+}
+
+func startStepUpAt(t *testing.T, server *httptest.Server, bearer, deviceName string) *http.Response {
+	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		env.server.URL+"/oauth/step-up",
+		server.URL+"/oauth/step-up",
 		strings.NewReader(url.Values{"installation_name": {deviceName}}.Encode()))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	resp, err := env.server.Client().Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
@@ -414,14 +419,17 @@ func TestCLIStepUp_TheActivationPageIdentifiesTheStoredCredential(t *testing.T) 
 	env := setupAPIAuth(t)
 	const storedName = "build-server-01"
 	const chosenName = "MacBook-Pro-of-the-owner"
-	_, bearer := cliCredential(t, env, storedName)
+	tokenID, bearer := cliCredential(t, env, storedName)
+	row, err := env.store.APITokens().GetByID(t.Context(), tokenID)
+	require.NoError(t, err)
 	grant := decodeStepUpGrant(t, startStepUp(t, env, bearer, chosenName))
 
 	page := activationPage(t, env, grant.UserCode, env.elevatedAdminCookie(t))
 
 	assert.Contains(t, page, "Verify an app credential", "a step-up must not read as an issuance")
 	assert.Contains(t, page, storedName, "the page must identify the credential the hub recorded")
-	assert.Contains(t, page, env.now().UTC().Format("2006-01-02"), "the page must show when the credential was added")
+	assert.Contains(t, page, "added "+row.CreatedAt.UTC().Format("2006-01-02")+" (UTC).",
+		"the device page must show the UTC date when the credential was added")
 	assert.NotContains(t, page, chosenName, "the requester's own label must identify nothing here")
 	assert.NotContains(t, page, "administer the hub", "a step-up widens nothing, so it offers no scope")
 }
@@ -801,7 +809,7 @@ func TestAuthorizeStepUp_TokenWithAScope(t *testing.T) {
 		"scope": {"file:read"}})
 	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
 	dest := deniedRedirect(t, resp)
-	assert.Contains(t, dest.Get("error_description"), "step_up",
+	assert.Equal(t, "step_up must not ask for a scope", dest.Get("error_description"),
 		"the refusal must come from the step-up parse, not the scope check")
 }
 
@@ -821,6 +829,7 @@ func TestAuthorizeStepUp_SessionWithAScope(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "invalid_scope", dest.Query().Get("error"),
 		"the scope check must answer first; the step-up parse would answer access_denied")
+	assert.Equal(t, "this app is not registered for every permission it asked for", dest.Query().Get("error_description"))
 }
 
 // The step-up page identifies the credential from the HUB's record of it, and
@@ -845,8 +854,8 @@ func TestAuthorizeStepUp_ThePageShowsTheHubsOwnRecord(t *testing.T) {
 		assert.Contains(t, page, "Verify LeapMux Desktop?", "the page must identify the registered app")
 		assert.Contains(t, page, stepUpSentence)
 		assert.Contains(t, page, row.UserAgent, "the page must identify the credential the hub recorded")
-		assert.Contains(t, page, row.CreatedAt.UTC().Format("2006-01-02"),
-			"the page must show when the credential was added")
+		assert.Contains(t, page, "added "+row.CreatedAt.UTC().Format("2006-01-02 15:04")+" (UTC).",
+			"the page must show the UTC date and minute when the credential was added")
 		assert.NotContains(t, page, attackerLabel,
 			"the requester's own label must identify nothing here")
 	})
@@ -865,8 +874,8 @@ func TestAuthorizeStepUp_ThePageShowsTheHubsOwnRecord(t *testing.T) {
 		assert.Contains(t, page, stepUpSentence)
 		assert.Contains(t, page, "LeapMux control CLI on build-server-01",
 			"the page must identify the credential the hub recorded")
-		assert.Contains(t, page, row.CreatedAt.UTC().Format("2006-01-02"),
-			"the page must show when the credential was added")
+		assert.Contains(t, page, "added "+row.CreatedAt.UTC().Format("2006-01-02 15:04")+" (UTC).",
+			"the page must show the UTC date and minute when the credential was added")
 		assert.NotContains(t, page, attackerLabel,
 			"the requester's own label must identify nothing here")
 	})
@@ -930,6 +939,51 @@ func TestAuthorizeStepUp_ThePageShowsTheRowParseValidated(t *testing.T) {
 		"the page must show the row the parse validated, whatever became of it since")
 	assert.NotContains(t, page, "<h1>Sign in to",
 		"a step-up must never fall back to the page that asks for an authorization")
+}
+
+func TestConsentForm_RejectsAnExplicitlyEmptyStepUp(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	authorizeURL := env.server.URL + "/oauth/authorize?"
+	consentURL := env.server.URL + "/oauth/consent"
+
+	t.Run("GET", func(t *testing.T) {
+		query := startQuery(url.Values{"step_up": {""}})
+		resp := getWithCookie(t, authorizeURL+query.Encode(), cookie)
+		require.Equal(t, http.StatusFound, resp.StatusCode)
+		location, err := resp.Location()
+		require.NoError(t, err)
+		assert.Equal(t, "access_denied", location.Query().Get("error"))
+		assert.Equal(t, query.Get("state"), location.Query().Get("state"))
+		assert.Empty(t, location.Query().Get("code"))
+	})
+
+	t.Run("POST", func(t *testing.T) {
+		form := startQuery(url.Values{"step_up": {""}, "decision": {"allow"}})
+		resp := postConsentForm(t, consentURL, form, cookie)
+		require.Equal(t, http.StatusFound, resp.StatusCode)
+		location, err := resp.Location()
+		require.NoError(t, err)
+		assert.Equal(t, "access_denied", location.Query().Get("error"))
+		assert.Equal(t, form.Get("state"), location.Query().Get("state"))
+		assert.Empty(t, location.Query().Get("code"))
+	})
+
+	t.Run("ordinary consent", func(t *testing.T) {
+		page := getWithCookie(t, authorizeURL+startQuery(nil).Encode(), cookie)
+		require.Equal(t, http.StatusOK, page.StatusCode)
+		form := hiddenFields(t, bodyOf(t, page))
+		assert.False(t, form.Has("step_up"), "ordinary consent must omit the step-up field")
+
+		form.Set("decision", "allow")
+		resp := postConsentForm(t, consentURL, form, cookie)
+		require.Equal(t, http.StatusFound, resp.StatusCode)
+		location, err := resp.Location()
+		require.NoError(t, err)
+		assert.Empty(t, location.Query().Get("error"))
+		assert.NotEmpty(t, location.Query().Get("code"))
+	})
 }
 
 // The form carries `step_up` forward. Without the hidden field the POST drops
@@ -1041,41 +1095,41 @@ func TestConsentStepUp_ApprovalWithoutRedemptionStampsNothing(t *testing.T) {
 // only, so a step-up code presented with the session cookie answered 401.
 func TestStepUpCodeExchange_RedeemsWithMatchingSessionCookie(t *testing.T) {
 	t.Parallel()
-	env := setupAPIAuth(t)
-	ctx := context.Background()
+	faults := &oauthAuthenticationFaults{}
+	env := setupAPIAuthWithStore(t, func(st store.Store) store.Store {
+		return oauthAuthenticationStore{Store: st, faults: faults}
+	})
+	ctx := t.Context()
+	target := desktopIssuedSession(t, env, env.userID, "LeapMux Desktop on laptop")
+	cookie := &http.Cookie{Name: auth.CookieName, Value: target.Token}
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID,
+		store.CredentialRef{Kind: store.CredentialRefKindSession, ID: target.ID})
 
-	// Create a session for the admin user.
-	cookie := env.adminCookie(t)
-	sessionID := hubtestutil.SessionIDFromCookie(t, cookie.Value)
+	first, err := env.probe.authenticateSession(cookie)
+	require.NoError(t, err)
+	require.False(t, first.Elevated(env.now()))
+	reads := faults.sessionReads.Load()
+	require.Positive(t, reads)
+	cached, err := env.probe.authenticateSession(cookie)
+	require.NoError(t, err)
+	require.False(t, cached.Elevated(env.now()))
+	require.Equal(t, reads, faults.sessionReads.Load(), "precondition: the probe must reuse cached UserInfo")
 
-	// Create a step-up code targeting that session.
-	code := id.Generate()
-	verifier, challenge := pkceVerifierAndChallenge()
-	_ = challenge
-	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.DesktopClientID,
-		CodeChallenge:    challenge,
-		RedirectURI:      "/",
-		GrantedScopes:    "",
-		InstallationName: "test",
-		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
-	}))
-
-	// Redeem with the matching session cookie (no bearer).
 	resp := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie, "")
 	require.Equal(t, http.StatusOK, resp.StatusCode, "the cookie rung must authenticate the step-up redemption")
+	assert.JSONEq(t, `{"elevated":true}`, bodyOf(t, resp))
 
-	var body map[string]any
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	assert.Equal(t, true, body["elevated"])
-
-	// The session now carries an elevation window.
-	sess, err := env.store.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(ctx, target.ID, env.now().UTC())
 	require.NoError(t, err)
-	assert.NotNil(t, sess.ElevationExpiresAt, "the redemption stamps the window")
+	require.NotNil(t, row.ElevationProvenAt, "the redemption stamps a proof")
+	require.NotNil(t, row.ElevationExpiresAt, "the redemption opens a window")
+	assert.Equal(t, row.ElevationProvenAt.Add(auth.ElevationWindow), *row.ElevationExpiresAt)
+
+	reads = faults.sessionReads.Load()
+	current, err := env.probe.authenticateSession(cookie)
+	require.NoError(t, err)
+	assert.Equal(t, reads+1, faults.sessionReads.Load(), "redemption must evict the cached UserInfo")
+	assert.True(t, current.Elevated(env.now()), "the next RPC must see the new window")
 }
 
 // The step-up code exchange refuses a request with no credential at all.
@@ -1084,31 +1138,22 @@ func TestStepUpCodeExchange_RedeemsWithMatchingSessionCookie(t *testing.T) {
 func TestStepUpCodeExchange_RefusesNoCredential(t *testing.T) {
 	t.Parallel()
 	env := setupAPIAuth(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	target := desktopIssuedSession(t, env, env.userID, "LeapMux Desktop on laptop")
+	cookie := &http.Cookie{Name: auth.CookieName, Value: target.Token}
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID,
+		store.CredentialRef{Kind: store.CredentialRefKindSession, ID: target.ID})
 
-	cookie := env.adminCookie(t)
-	sessionID := hubtestutil.SessionIDFromCookie(t, cookie.Value)
-
-	code := id.Generate()
-	verifier, challenge := pkceVerifierAndChallenge()
-	_ = challenge
-	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.DesktopClientID,
-		CodeChallenge:    challenge,
-		RedirectURI:      "/",
-		GrantedScopes:    "",
-		InstallationName: "test",
-		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
-	}))
-
-	// No cookie and no bearer.
 	resp := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, nil, "")
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.JSONEq(t, `{"error":"invalid_token","error_description":"authentication required"}`, bodyOf(t, resp))
+	assert.Equal(t, `Bearer error="invalid_token"`, resp.Header.Get("WWW-Authenticate"))
 
-	// The code stays valid: a second redemption with the cookie succeeds.
+	row, err := env.store.Sessions().GetByID(ctx, target.ID, env.now().UTC())
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationProvenAt, "an unauthenticated exchange proves nothing")
+	assert.Nil(t, row.ElevationExpiresAt, "an unauthenticated exchange opens no window")
+
 	resp2 := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie, "")
 	assert.Equal(t, http.StatusOK, resp2.StatusCode, "the code stays valid after a refused redemption")
 }
@@ -1120,36 +1165,27 @@ func TestStepUpCodeExchange_RefusesNoCredential(t *testing.T) {
 func TestStepUpCodeExchange_NoRowRollsBackConsumption(t *testing.T) {
 	t.Parallel()
 	env := setupAPIAuth(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	target := desktopIssuedSession(t, env, env.userID, "LeapMux Desktop on laptop")
+	cookie := &http.Cookie{Name: auth.CookieName, Value: target.Token}
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID,
+		store.CredentialRef{Kind: store.CredentialRefKindSession, ID: target.ID})
 
-	cookie := env.adminCookie(t)
-	sessionID := hubtestutil.SessionIDFromCookie(t, cookie.Value)
+	mux := stepUpHandlerOn(t, env, authorizationTransactionStore{
+		Store: env.store,
+		before: func() {
+			// Let authentication succeed, then revoke the session before the stamp.
+			rows, err := env.store.Sessions().Revoke(ctx, target.ID)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, rows)
+		},
+	})
+	resp := redeemDesktopStepUpInProcess(t, mux, cookie, "/", code, verifier)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.JSONEq(t, `{"error":"invalid_grant","error_description":"that credential is no longer available"}`, bodyOf(t, resp))
 
-	// Delete the target session to simulate a session that ended between
-	// auth and stamp.
-	_, err := env.store.Sessions().Revoke(ctx, sessionID)
-	require.NoError(t, err)
-
-	code := id.Generate()
-	verifier, challenge := pkceVerifierAndChallenge()
-	_ = challenge
-	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.DesktopClientID,
-		CodeChallenge:    challenge,
-		RedirectURI:      "/",
-		GrantedScopes:    "",
-		InstallationName: "test",
-		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
-	}))
-
-	// Present with a DIFFERENT session of the same user so authentication
-	// passes but the target row is gone.
-	cookie2 := env.adminCookie(t)
-	resp := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie2, "")
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "a dead target answers invalid_grant")
+	_, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, code, env.now().UTC())
+	require.NoError(t, err, "the missing session must roll back consumption")
 }
 
 // redeemStepUpCode presents one step-up code to /oauth/token. The request
@@ -1327,17 +1363,22 @@ func TestStepUpCodeExchange_AGrantNoRowAnswersInvalidGrant(t *testing.T) {
 // consumes, targeting either a session or a token.
 func seedStepUpCode(t *testing.T, env *apiAuthEnv, clientID string, stepUp store.CredentialRef) (code, verifier string) {
 	t.Helper()
+	return seedStepUpCodeForOwner(t, env, userid.MustNew(env.userID), clientID, stepUp)
+}
+
+func seedStepUpCodeForOwner(t *testing.T, env *apiAuthEnv, owner userid.UserID, clientID string, stepUp store.CredentialRef) (code, verifier string) {
+	t.Helper()
 	code = id.Generate()
 	verifier, challenge := pkceVerifierAndChallenge()
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(context.Background(), store.CreateOAuthAuthorizationCodeParams{
 		Code:             code,
-		UserID:           userid.MustNew(env.userID),
+		UserID:           owner,
 		ClientID:         clientID,
 		CodeChallenge:    challenge,
 		RedirectURI:      "/",
 		GrantedScopes:    "",
 		InstallationName: "test",
-		ExpiresAt:        time.Now().Add(5 * time.Minute),
+		ExpiresAt:        env.now().Add(5 * time.Minute),
 		StepUp:           stepUp,
 	}))
 	return code, verifier
@@ -1417,11 +1458,12 @@ func TestStepUpCodeExchange_ASecondPresentationMovesNothing(t *testing.T) {
 	first := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie, "")
 	require.Equal(t, http.StatusOK, first.StatusCode, "the matching cookie redeems the code")
 
-	stamped, err := env.store.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	stamped, err := env.store.Sessions().GetByID(ctx, sessionID, env.now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, stamped.ElevationProvenAt, "precondition: the redemption wrote the anchor")
 	require.NotNil(t, stamped.ElevationExpiresAt)
 
+	env.advance(time.Minute)
 	second := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie, "")
 	assert.Equal(t, http.StatusBadRequest, second.StatusCode)
 	body := decodeJSONBody(t, second)
@@ -1429,13 +1471,12 @@ func TestStepUpCodeExchange_ASecondPresentationMovesNothing(t *testing.T) {
 	assert.Equal(t, "code expired or already consumed", body["error_description"],
 		"the refusal must be the single-use one, not some other invalid_grant")
 
-	after, err := env.store.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	after, err := env.store.Sessions().GetByID(ctx, sessionID, env.now().UTC())
 	require.NoError(t, err)
-	require.NotNil(t, after.ElevationProvenAt)
-	assert.WithinDuration(t, *stamped.ElevationProvenAt, *after.ElevationProvenAt, time.Second,
-		"a replayed code must move nothing")
-	assert.WithinDuration(t, *stamped.ElevationExpiresAt, *after.ElevationExpiresAt, time.Second,
-		"a replayed code must not extend the window either")
+	assert.Equal(t, stamped.ElevationProvenAt, after.ElevationProvenAt,
+		"a replayed code must preserve the exact proof time")
+	assert.Equal(t, stamped.ElevationExpiresAt, after.ElevationExpiresAt,
+		"a replayed code must preserve the exact window deadline")
 }
 
 // The app's permission to elevate is re-read when the code is redeemed, not
@@ -1500,4 +1541,98 @@ func TestStepUpCodeExchange_AnAppThatLosesElevationAllowedIsRefused(t *testing.T
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt, "an app that may no longer elevate must leave no window")
 	assert.Nil(t, row.ElevationProvenAt)
+}
+
+// A permission change can commit after the exchange authenticates the app.
+// Redemption must use the permission that is current inside its transaction.
+func TestStepUpCodeExchange_DesktopLosesElevationAllowedBeforeLock(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	ctx := t.Context()
+	target := desktopIssuedSession(t, env, env.userID, "LeapMux Desktop on laptop")
+	targetCookie := &http.Cookie{Name: auth.CookieName, Value: target.Token}
+	approver := env.elevatedAdminCookie(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	q := startQuery(url.Values{
+		"client_id":      {oauthapp.DesktopClientID},
+		"step_up":        {oauthapp.StepUpSessionPrefix + target.ID},
+		"code_challenge": {challenge},
+	})
+	page := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), approver)
+	require.Equal(t, http.StatusOK, page.StatusCode)
+	form := hiddenFields(t, bodyOf(t, page))
+	require.Equal(t, q.Get("step_up"), form.Get("step_up"))
+	form.Set("decision", "allow")
+	approved := postConsentForm(t, env.server.URL+"/oauth/consent", form, approver)
+	require.Equal(t, http.StatusFound, approved.StatusCode)
+	loc, err := approved.Location()
+	require.NoError(t, err)
+	code := loc.Query().Get("code")
+	require.NotEmpty(t, code, "consent must approve the step-up before the app loses permission")
+
+	mux := stepUpHandlerOn(t, env, authorizationTransactionStore{
+		Store: env.store,
+		before: func() {
+			rows, err := env.store.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+				ClientID: oauthapp.DesktopClientID, CallerUserID: userid.MustNew(env.userID), CallerIsAdmin: true,
+				ElevationAllowed: false,
+			})
+			require.NoError(t, err)
+			require.EqualValues(t, 1, rows)
+		},
+	})
+	resp := redeemDesktopStepUpInProcess(t, mux, targetCookie, form.Get("redirect_uri"), code, verifier)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.JSONEq(t, `{"error":"invalid_grant","error_description":"that credential is no longer available"}`, bodyOf(t, resp))
+
+	row, err := env.store.Sessions().GetByID(ctx, target.ID, env.now().UTC())
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationProvenAt)
+	assert.Nil(t, row.ElevationExpiresAt)
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, env.now().UTC())
+	require.NoError(t, err, "a refusal must leave the code unconsumed")
+}
+
+// The presenter can authenticate just before its user is deleted. The auth
+// lock must reject the now-missing user without consuming the approved code.
+func TestStepUpCodeExchange_OwnerDisappearsBeforeLock(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	ctx := t.Context()
+	owner := hubtestutil.CreateTestUser(t, env.store, "desktop-owner", "desktop-owner-pass")
+	target := desktopIssuedSession(t, env, owner, "LeapMux Desktop on laptop")
+	cookie := &http.Cookie{Name: auth.CookieName, Value: target.Token}
+	code, verifier := seedStepUpCodeForOwner(t, env, userid.MustNew(owner), oauthapp.DesktopClientID,
+		store.CredentialRef{Kind: store.CredentialRefKindSession, ID: target.ID})
+
+	mux := stepUpHandlerOn(t, env, authorizationTransactionStore{
+		Store: env.store,
+		before: func() {
+			require.NoError(t, env.store.Users().Delete(ctx, owner))
+		},
+	})
+	resp := redeemDesktopStepUpInProcess(t, mux, cookie, "/", code, verifier)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.JSONEq(t, `{"error":"invalid_grant","error_description":"that credential is no longer available"}`, bodyOf(t, resp))
+
+	_, err := env.store.Users().GetByID(ctx, owner)
+	require.ErrorIs(t, err, store.ErrNotFound, "the user must be gone at lock acquisition")
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, env.now().UTC())
+	require.NoError(t, err, "a refusal must leave the code unconsumed")
+}
+
+func redeemDesktopStepUpInProcess(t *testing.T, mux *http.ServeMux, cookie *http.Cookie, redirect, code, verifier string) *http.Response {
+	t.Helper()
+	form := url.Values{
+		"grant_type": {service.GrantTypeAuthorizationCode}, "client_id": {oauthapp.DesktopClientID},
+		"redirect_uri": {redirect}, "code": {code}, "code_verifier": {verifier},
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	resp := rec.Result()
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
 }

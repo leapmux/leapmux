@@ -28,34 +28,42 @@ export interface BrowserCeremony {
  */
 export function useBrowserCeremony(
   kind: BrowserAuthKind,
-  onSuccess: () => void | Promise<void>,
+  onSuccess: (signal: AbortSignal) => void | Promise<void>,
 ): BrowserCeremony {
   const [phase, setPhase] = createSignal<BrowserCeremonyPhase>('idle')
   const [failure, setFailure] = createSignal('')
   const [flow, setFlow] = createSignal<BrowserAuthFlow | null>(null)
 
   const controller = new AbortController()
+  const { signal } = controller
   onCleanup(() => controller.abort())
 
   const start = async (): Promise<void> => {
+    if (signal.aborted || phase() === 'waiting')
+      return
     setFailure('')
     setPhase('waiting')
     try {
-      const f = await runBrowserAuth(kind, controller.signal)
+      const f = await runBrowserAuth(kind, signal)
+      if (signal.aborted)
+        return
       setFlow(f)
 
       const result = await f.result
+      if (signal.aborted)
+        return
+      setFlow(null)
       if (!result.ok) {
         setPhase('idle')
-        setFlow(null)
-        if (result.failure)
-          setFailure(result.failure)
+        setFailure(result.failure)
         return
       }
 
-      await onSuccess()
+      await onSuccess(signal)
     }
     catch (err) {
+      if (signal.aborted)
+        return
       setPhase('idle')
       setFlow(null)
       setFailure(formatErrorMessage(err))

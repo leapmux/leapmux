@@ -1,31 +1,15 @@
+import type { RelayReceiver } from '~/api/platformBridge'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 const bridgeMocks = vi.hoisted(() => ({
-  closeHandler: undefined as ((payload: unknown) => void) | undefined,
-  openChannelRelay: vi.fn<(relayId: number, channel: unknown) => Promise<void>>(),
+  openChannelRelay: vi.fn<(relayId: number) => Promise<void>>(),
   closeChannelRelay: vi.fn<(relayId: number) => Promise<void>>(),
-  createRelayChannel: vi.fn<(onmessage: (data: ArrayBuffer) => void) => Promise<unknown>>(),
-  onEvent: vi.fn(),
   sendChannelMessage: vi.fn(),
-  // Channels created through createRelayChannel, in wrapper order: a test
-  // fires a frame by calling a channel's onmessage with the raw bytes.
-  channels: [] as Array<{ id: number, onmessage: (data: ArrayBuffer) => void }>,
+  receivers: [] as RelayReceiver[],
 }))
 
 vi.mock('~/api/platformBridge', () => ({
-  parseRelayClosePayload: (payload: unknown) => {
-    const close = payload as { code?: unknown, reason?: unknown, wasClean?: unknown } | null
-    return {
-      code: typeof close?.code === 'number'
-        ? close.code
-        : 1006,
-      reason: typeof close?.reason === 'string'
-        ? close.reason
-        : '',
-      wasClean: close?.wasClean === true,
-    }
-  },
   desktopHub: () => null,
   getCapabilities: () => ({
     mode: 'tauri-desktop-solo',
@@ -38,33 +22,23 @@ vi.mock('~/api/platformBridge', () => ({
   isTauriApp: () => true,
   platformBridge: {
     closeChannelRelay: bridgeMocks.closeChannelRelay,
-    createRelayChannel: bridgeMocks.createRelayChannel,
-    onEvent: bridgeMocks.onEvent,
-    openChannelRelay: bridgeMocks.openChannelRelay,
+    openChannelRelay: async (relayId: number, receiver: RelayReceiver) => {
+      await Promise.resolve()
+      if (receiver.isAbandoned())
+        return false
+      bridgeMocks.receivers.push(receiver)
+      await bridgeMocks.openChannelRelay(relayId)
+      return true
+    },
     sendChannelMessage: bridgeMocks.sendChannelMessage,
   },
 }))
 
 describe('TauriRelayWebSocket', () => {
   beforeEach(() => {
-    bridgeMocks.closeHandler = undefined
-    bridgeMocks.onEvent.mockReset()
-    bridgeMocks.onEvent.mockImplementation(async (name: string, handler: (payload: unknown) => void) => {
-      if (name === 'channel:close')
-        bridgeMocks.closeHandler = handler
-      return vi.fn()
-    })
-    bridgeMocks.channels = []
-    bridgeMocks.createRelayChannel.mockReset()
-    bridgeMocks.createRelayChannel.mockImplementation((onmessage: (data: ArrayBuffer) => void) => {
-      const channel = { id: bridgeMocks.channels.length + 1, onmessage }
-      bridgeMocks.channels.push(channel)
-      return Promise.resolve(channel)
-    })
+    bridgeMocks.receivers = []
     bridgeMocks.openChannelRelay.mockReset()
     bridgeMocks.closeChannelRelay.mockReset()
-    // closeChannelRelay is async in platformBridge; default it to a resolved
-    // promise so the wrapper's `.catch(...)` on it has a promise to attach to.
     bridgeMocks.closeChannelRelay.mockResolvedValue(undefined)
     bridgeMocks.sendChannelMessage.mockReset()
   })
@@ -76,8 +50,8 @@ describe('TauriRelayWebSocket', () => {
   // entry. This mirrors the per-listener isolation channel.ts applies via safeCall.
   it('isolates a throwing event listener from its siblings and its own once-cleanup', async () => {
     const socket = new TauriRelayWebSocket()
-    await vi.waitFor(() => expect(bridgeMocks.channels).toHaveLength(1))
-    const channel = bridgeMocks.channels[0]!
+    await vi.waitFor(() => expect(bridgeMocks.receivers).toHaveLength(1))
+    const channel = bridgeMocks.receivers[0]!
 
     const calls: string[] = []
     // The throwing listener is `once`, so its removeEventListener must still run.
@@ -90,12 +64,12 @@ describe('TauriRelayWebSocket', () => {
     })
 
     // First frame: the throw must not escape, and the sibling must still run.
-    expect(() => channel.onmessage(new ArrayBuffer(0))).not.toThrow()
+    expect(() => channel.onMessage(new ArrayBuffer(0))).not.toThrow()
     expect(calls).toEqual(['throwing', 'normal'])
 
     // Second frame: the throwing `once` listener was removed despite throwing, so
     // only the surviving normal listener runs.
-    expect(() => channel.onmessage(new ArrayBuffer(0))).not.toThrow()
+    expect(() => channel.onMessage(new ArrayBuffer(0))).not.toThrow()
     expect(calls).toEqual(['throwing', 'normal', 'normal'])
   })
 
@@ -109,7 +83,11 @@ describe('TauriRelayWebSocket', () => {
     socket.onclose = event => closeEvents.push(event)
 
     await vi.waitFor(() => expect(bridgeMocks.openChannelRelay).toHaveBeenCalledOnce())
-    bridgeMocks.closeHandler?.({ code: 1011, reason: 'relay failed', wasClean: false })
+    bridgeMocks.receivers[0]!.onMessage({
+      code: 1011,
+      reason: 'relay failed',
+      wasClean: false,
+    })
     finishOpen()
     await new Promise(resolve => setTimeout(resolve, 0))
 
@@ -118,13 +96,8 @@ describe('TauriRelayWebSocket', () => {
     expect(closeEvents[0]).toMatchObject({ code: 1011, reason: 'relay failed', wasClean: false })
   })
 
-  // The Go sidecar's relay is a process-wide singleton that OpenChannelRelay
-  // reuses and CloseChannelRelay tears down without regard for who opened it. So
-  // a superseded wrapper must NOT close it: otherwise wrapper A's teardown (raced
-  // by its own open) lands after successor B adopted the relay and kills B's --
-  // and because the sidecar cancels the relay context before emitting, B never
-  // even receives a `channel:close`, it just silently wedges with every send
-  // failing into dispatchSend's catch.
+  // A superseded wrapper must leave teardown to the successor that adopted
+  // the relay, even if the superseded wrapper receives its open reply later.
   it('does not tear down a relay a successor wrapper has adopted', async () => {
     let finishOpenA!: () => void
     bridgeMocks.openChannelRelay.mockReturnValueOnce(new Promise<void>((resolve) => {
@@ -153,24 +126,15 @@ describe('TauriRelayWebSocket', () => {
     expect(socketB.readyState).toBe(WebSocket.OPEN)
   })
 
-  // Each relay RPC must NAME the wrapper it is for, and the open must carry the
-  // wrapper's frame channel beside that id.
-  //
-  // The wrapper-id claim orders the two requests in JS, but the sidecar runs each on
-  // its own goroutine with no ordering, so a close dispatched for A can execute after
-  // B's open adopted the relay. Carrying the id lets the sidecar ignore that stale
-  // close; an id that never leaves JS cannot. This pins the id actually crossing the
-  // bridge, and that a successor carries its own distinct one.
-  it('names the owning wrapper on every relay rpc', async () => {
+  // The sidecar needs each wrapper's id to reject a close that arrives after
+  // a successor adopted the relay.
+  it('identifies the owning wrapper on every relay rpc', async () => {
     bridgeMocks.openChannelRelay.mockResolvedValue(undefined)
 
     const socketA = new TauriRelayWebSocket()
     await vi.waitFor(() => expect(socketA.readyState).toBe(WebSocket.OPEN))
     const openAId = bridgeMocks.openChannelRelay.mock.calls[0]?.[0]
     expect(typeof openAId).toBe('number')
-    // The open carries the wrapper's frame channel, so the Rust shell can store
-    // the two together (see RelaySlot in desktop/rust/src/main.rs).
-    expect(bridgeMocks.openChannelRelay.mock.calls[0]?.[1]).toBe(bridgeMocks.channels[0])
 
     socketA.close()
     await vi.waitFor(() => expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1))
@@ -183,7 +147,6 @@ describe('TauriRelayWebSocket', () => {
     const openBId = bridgeMocks.openChannelRelay.mock.calls[1]?.[0]
     expect(typeof openBId).toBe('number')
     expect(openBId).not.toBe(openAId)
-    expect(bridgeMocks.openChannelRelay.mock.calls[1]?.[1]).toBe(bridgeMocks.channels[1])
 
     socketB.close()
   })
@@ -280,33 +243,32 @@ describe('TauriRelayWebSocket', () => {
     expect(closes[0]).toMatchObject({ code: 1006, wasClean: false })
   })
 
-  // The pre-open sibling of the failed-open case above: a close that lands BEFORE
-  // the open is even attempted must abandon the wrapper's claim too.
-  //
-  // handleClose (e.g. a predecessor relay's channel:close event reaching the fresh
-  // wrapper's listener) marks the wrapper CLOSED before openChannelRelay runs, so
-  // the constructor chain takes its early exit -- no relay was ever installed and
-  // nothing later releases the claim. If that exit kept the claim, it would dangle
-  // on the dead wrapper and the predecessor still driving the live relay could
-  // never reap it (releaseIfClaimable sees a foreign claimant) until some future
-  // wrapper happened to claim.
-  it('abandons the relay claim when a close lands before the open is attempted', async () => {
+  it('ignores a predecessor close while the successor open is pending', async () => {
     bridgeMocks.openChannelRelay.mockResolvedValueOnce(undefined)
-    const socketA = new TauriRelayWebSocket()
-    await vi.waitFor(() => expect(socketA.readyState).toBe(WebSocket.OPEN))
+    const predecessor = new TauriRelayWebSocket()
+    await vi.waitFor(() => expect(predecessor.readyState).toBe(WebSocket.OPEN))
 
-    // B claims the relay at construction; a close event reaches B's listener
-    // before its open is dispatched, so its constructor chain exits pre-open.
-    const socketB = new TauriRelayWebSocket()
-    bridgeMocks.closeHandler?.({ code: 1006, reason: 'relay died', wasClean: false })
-    expect(socketB.readyState).toBe(WebSocket.CLOSED)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    // B never opened a relay -- only A's open ever reached the bridge.
-    expect(bridgeMocks.openChannelRelay).toHaveBeenCalledOnce()
+    let finishOpen!: () => void
+    bridgeMocks.openChannelRelay.mockReturnValueOnce(new Promise<void>((resolve) => {
+      finishOpen = resolve
+    }))
+    const successor = new TauriRelayWebSocket()
+    const closed = vi.fn()
+    successor.onclose = closed
+    await vi.waitFor(() => expect(bridgeMocks.openChannelRelay).toHaveBeenCalledTimes(2))
 
-    // A still owns the live relay, so its close must actually reap it.
-    socketA.close()
-    await vi.waitFor(() => expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1))
+    bridgeMocks.receivers[0]!.onMessage({ code: 1006, reason: 'predecessor failed', wasClean: false })
+    expect(successor.readyState).toBe(WebSocket.CONNECTING)
+    expect(closed).not.toHaveBeenCalled()
+
+    finishOpen()
+    await vi.waitFor(() => expect(successor.readyState).toBe(WebSocket.OPEN))
+    bridgeMocks.receivers[1]!.onMessage({
+      code: 1000,
+      reason: 'done',
+      wasClean: true,
+    })
+    expect(closed).toHaveBeenCalledExactlyOnceWith({ code: 1000, reason: 'done', wasClean: true })
   })
 
   // Native WebSocket.close() transmits already-buffered data before closing, and
@@ -470,19 +432,16 @@ describe('TauriRelayWebSocket', () => {
   it('ignores a duplicate (type, listener) registration like a native socket', async () => {
     bridgeMocks.openChannelRelay.mockResolvedValueOnce(undefined)
     const socket = new TauriRelayWebSocket()
-    await vi.waitFor(() => expect(bridgeMocks.channels).toHaveLength(1))
+    await vi.waitFor(() => expect(bridgeMocks.receivers).toHaveLength(1))
 
     const listener = vi.fn()
     socket.addEventListener('message', listener)
     socket.addEventListener('message', listener)
-    bridgeMocks.channels[0]!.onmessage(new ArrayBuffer(0))
+    bridgeMocks.receivers[0]!.onMessage(new ArrayBuffer(0))
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
-  // Frames ride the open's Tauri channel as raw bytes -- no base64 at the
-  // boundary -- while the close keeps riding the global `channel:close` event,
-  // so every wrapper hears the terminal path of the relay it may own.
-  it('delivers raw frames from the channel and keeps close events on emit', async () => {
+  it('delivers raw frames and close notifications from the same channel', async () => {
     bridgeMocks.openChannelRelay.mockResolvedValueOnce(undefined)
     const socket = new TauriRelayWebSocket()
     const messages: ArrayBuffer[] = []
@@ -492,13 +451,17 @@ describe('TauriRelayWebSocket', () => {
     await vi.waitFor(() => expect(socket.readyState).toBe(WebSocket.OPEN))
 
     const frame = new Uint8Array([9, 8, 7, 0, 255]).buffer
-    bridgeMocks.channels[0]!.onmessage(frame)
+    bridgeMocks.receivers[0]!.onMessage(frame)
     expect(messages).toHaveLength(1)
     // The very same buffer arrives: the wrapper does not decode, recopy or
     // re-wrap what the channel delivered.
     expect(messages[0]).toBe(frame)
 
-    bridgeMocks.closeHandler!({ code: 1000, reason: 'done', wasClean: true })
+    bridgeMocks.receivers[0]!.onMessage({
+      code: 1000,
+      reason: 'done',
+      wasClean: true,
+    })
     expect(closes).toHaveLength(1)
     expect(closes[0]).toMatchObject({ code: 1000, reason: 'done', wasClean: true })
   })
@@ -523,7 +486,7 @@ describe('TauriRelayWebSocket', () => {
     )
 
     // The in-flight frame arrives on the released wrapper's channel anyway.
-    bridgeMocks.channels[0]!.onmessage(new Uint8Array([1, 2, 3]).buffer)
+    bridgeMocks.receivers[0]!.onMessage(new Uint8Array([1, 2, 3]).buffer)
     expect(listener).not.toHaveBeenCalled()
   })
 
@@ -537,7 +500,11 @@ describe('TauriRelayWebSocket', () => {
     const socket = new TauriRelayWebSocket()
     await vi.waitFor(() => expect(socket.readyState).toBe(WebSocket.OPEN))
 
-    bridgeMocks.closeHandler!({ code: 1006, reason: 'relay read loop failed', wasClean: false })
+    bridgeMocks.receivers[0]!.onMessage({
+      code: 1006,
+      reason: 'relay read loop failed',
+      wasClean: false,
+    })
     expect(socket.readyState).toBe(WebSocket.CLOSED)
     // The claim release names the dead relay so the sidecar can clear its slot.
     await vi.waitFor(() => expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1))

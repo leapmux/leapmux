@@ -103,6 +103,14 @@ func (s *oauthClientStore) Get(ctx context.Context, clientID string) (*store.OAu
 	return &out, nil
 }
 
+func (s *oauthClientStore) LockForElevation(ctx context.Context, clientID string) error {
+	if !s.conn.inTx() {
+		return store.ErrLockingReadOutsideTransaction
+	}
+	_, err := s.conn.q.LockOAuthClientForElevation(ctx, clientID)
+	return s.conn.queryError(err)
+}
+
 func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store.OAuthClientIcon, error) {
 	row, err := s.conn.q.GetOAuthClientIcon(ctx, clientID)
 	if err != nil {

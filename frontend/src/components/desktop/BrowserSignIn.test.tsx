@@ -1,3 +1,4 @@
+import type { SignInOptions } from '~/context/AuthContext'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -63,7 +64,7 @@ vi.mock('~/context/AuthContext', () => ({
     signInRecovery: () => (signInRecovery()
       ? {}
       : null),
-    adoptBrowserSignIn: (opts?: { redirect?: string }) => {
+    adoptBrowserSignIn: (opts?: SignInOptions) => {
       authLoadingHeld = true
       return Promise.resolve(mockAdopt(opts)).finally(() => {
         authLoadingHeld = false
@@ -112,7 +113,7 @@ function renderSignIn(initialPath = '/login') {
   const result = render(() => (
     <>
       <MemoryRouter history={history}>
-        <Route path="/login" component={BrowserSignIn} />
+        <Route path="/login" component={() => <BrowserSignIn isCurrentArrival={() => true} />} />
         <Route path="/" component={() => <div data-testid="app-home" />} />
         <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
       </MemoryRouter>
@@ -159,7 +160,7 @@ describe('BrowserSignIn', () => {
 
     await vi.waitFor(() => expect(navigations).toEqual(['/setup?x=1']))
     expect(bridgeMocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith('https://hub.example/authorize')
-    expect(mockAdopt).toHaveBeenCalledExactlyOnceWith({ redirect: '/setup?x=1' })
+    expect(mockAdopt).toHaveBeenCalledOnce()
   })
 
   // Whatever the sign-in was asked to continue to, an account that must
@@ -250,6 +251,45 @@ describe('BrowserSignIn', () => {
 
     await vi.waitFor(() => expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
     expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
+  })
+
+  it('does not adopt a successful result after the view unmounts', async () => {
+    const { unmount } = renderSignIn()
+    await startCeremony()
+
+    unmount()
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    await settle()
+
+    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    expect(mockAdopt).not.toHaveBeenCalled()
+  })
+
+  it('disables the wait actions until the flow is ready and after its result arrives', async () => {
+    const start = deferred<typeof START>()
+    const read = deferred<{ outcome: 'adopted', verificationRequired: boolean }>()
+    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    mockAdopt.mockReturnValue(read.promise)
+    renderSignIn()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with your browser' }))
+
+    const actions = ['Open again', 'Copy link', 'Cancel'].map(name => screen.getByRole('button', { name }))
+    for (const action of actions)
+      expect(action).toBeDisabled()
+
+    start.resolve(START)
+    await vi.waitFor(() => {
+      for (const action of actions)
+        expect(action).toBeEnabled()
+    })
+
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledOnce())
+    for (const action of actions)
+      expect(action).toBeDisabled()
+
+    read.resolve({ outcome: 'adopted', verificationRequired: false })
   })
 
   it('starts one ceremony when the button is clicked twice during the start', async () => {

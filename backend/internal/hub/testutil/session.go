@@ -13,13 +13,9 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// LoginWithoutWindow signs in through auth.Login and then drops the
-// FreshAuthenticationWindow the sign-in wrote, so the test gets the session
-// shape the codebase had before A10: a session with no elevation pair.
-//
-// Every test that signs in through the RPC and does not exercise the sign-in
-// window uses this helper, so the assertion measures the behavior behind the
-// gate rather than the window itself.
+// LoginWithoutWindow signs in through auth.Login and clears the elevation
+// window from both the stored and returned session. Use it for a test that
+// needs a valid session without a current step-up window.
 func LoginWithoutWindow(t *testing.T, st store.Store, hasher auth.SecretHasher, username, password string, lifetime time.Duration) (auth.CreatedSession, *store.User) {
 	t.Helper()
 	session, user, err := auth.Login(context.Background(), st, hasher, username, password, lifetime)

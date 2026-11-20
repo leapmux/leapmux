@@ -65,7 +65,7 @@ type UserEventsRelay struct {
 // execute later, and restarting over a newer relay would tear down
 // the one the page is actually listening on -- silently, since the
 // teardown cancels the relay context before its read loop can emit
-// an userevents:close. So a stale open abandons itself instead:
+// a user-events relay close. So a stale open abandons itself instead:
 // last open dispatched wins, whatever order the sidecar runs them in.
 func (a *App) OpenUserEventsRelay(requestCtx context.Context, relayID uint64, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) error {
 	return a.openRelay(requestCtx, relayOpenSpec{
@@ -89,16 +89,12 @@ func (a *App) OpenUserEventsRelay(requestCtx context.Context, relayID uint64, wo
 		},
 		commit: func(connection *desktopConnection, ws *websocket.Conn, ctx context.Context, cancel context.CancelFunc) {
 			relay := &UserEventsRelay{
-				wsRelay: newWSRelay(ws, ctx, cancel, a.EmitEvent),
+				wsRelay: newWSRelay(ws, ctx, cancel, relayID),
 			}
-			// Stamped before the relay is installed, so no close can ever observe it unowned.
-			relay.stampOwner(relayID)
-			// Route the read loop's emits through the relay-aware sink so an
-			// undeliverable frame carries this relay's owner id forward to the close
-			// path (mirrors the channel relay's commit closure).
+			// Every frame and close carries this subscription's owner.
 			relay.emit = a.emitForOwner(&relay.wsRelay)
-			go relay.runReadLoop()
 			connection.userEventsRelay = relay
+			go relay.runReadLoop()
 		},
 	})
 }
@@ -121,7 +117,7 @@ func (a *App) rejectIfSuperseded(connection *desktopConnection, relayID uint64) 
 // must not tear down its successor: the frontend's tearDown/open pair dispatches the
 // close first, but the sidecar may run it second, and the resulting teardown is
 // SILENT (the relay context is cancelled before the read loop can emit an
-// userevents:close), so the page would sit bootstrapped on a dead relay -- with the
+// user-events relay close), so the page would sit bootstrapped on a dead relay -- with the
 // hub's one-shot UserMaterialized never re-sent -- until a reload.
 func (a *App) CloseUserEventsRelay(relayID uint64) error {
 	return a.closeRelayIfOwner(relayID, func(c *desktopConnection) *wsRelay {

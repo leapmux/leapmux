@@ -40,7 +40,8 @@ type authorizeRequest struct {
 // stepUpTarget names the credential an authorization VERIFIES rather than
 // issues, and carries what the consent page shows for it.
 type stepUpTarget struct {
-	ref store.CredentialRef
+	ref       store.CredentialRef
+	formValue string
 	// display identifies the credential from the hub's OWN record, built
 	// while parseStepUpTarget loaded and validated the row. The page shows
 	// exactly what was checked then; nothing re-reads a row that may have
@@ -147,8 +148,8 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 	}
 	req.scopes = scopes
 	req.installation = normalizeInstallationName(values.Get("installation_name"))
-	if stepUpRaw := values.Get("step_up"); stepUpRaw != "" {
-		target, stepUpErr := h.parseStepUpTarget(r.Context(), stepUpRaw, values.Get("scope"), app, user)
+	if values.Has("step_up") {
+		target, stepUpErr := h.parseStepUpTarget(r.Context(), values.Get("step_up"), values.Get("scope"), app, user)
 		if stepUpErr != nil {
 			return req, *stepUpErr, true, false
 		}
@@ -164,6 +165,8 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 	}
 	return req, oauthErrorResponse{}, false, true
 }
+
+const consentCredentialAddedLayout = "2006-01-02 15:04"
 
 // parseStepUpTarget validates a `step_up` parameter and resolves the
 // credential it names. Every failure is redirectable with `access_denied`.
@@ -197,7 +200,7 @@ func (h *OAuthServerHandler) parseStepUpTarget(
 		target.ref = store.CredentialRef{Kind: store.CredentialRefKindSession, ID: id}
 		target.display = &deviceCredential{
 			Name:  sess.UserAgent,
-			Added: sess.CreatedAt.UTC().Format(credentialAddedLayout),
+			Added: sess.CreatedAt.UTC().Format(consentCredentialAddedLayout),
 		}
 	} else if strings.HasPrefix(raw, oauthapp.StepUpTokenPrefix) {
 		id := strings.TrimPrefix(raw, oauthapp.StepUpTokenPrefix)
@@ -218,7 +221,7 @@ func (h *OAuthServerHandler) parseStepUpTarget(
 		target.ref = store.CredentialRef{Kind: store.CredentialRefKindToken, ID: id}
 		target.display = &deviceCredential{
 			Name:  tokenDisplayName(tok),
-			Added: tok.CreatedAt.UTC().Format(credentialAddedLayout),
+			Added: tok.CreatedAt.UTC().Format(consentCredentialAddedLayout),
 		}
 	} else {
 		return target, oauthStepUpBody("step_up must start with session: or token:")
@@ -229,6 +232,7 @@ func (h *OAuthServerHandler) parseStepUpTarget(
 	if !app.ElevationAllowed {
 		return target, oauthStepUpBody("step_up token's app does not allow elevation")
 	}
+	target.formValue = raw
 	return target, nil
 }
 
@@ -282,7 +286,7 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 		CodeChallenge:    req.codeChallenge,
 		Scope:            req.scopes.String(),
 		InstallationName: req.installation,
-		StepUpRaw:        r.URL.Query().Get("step_up"),
+		StepUpRaw:        req.stepUp.formValue,
 	}
 	if !req.stepUp.ref.IsZero() {
 		data.StepUp = req.stepUp.display

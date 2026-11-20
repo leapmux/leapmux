@@ -245,8 +245,8 @@ var consentPageTmpl = mustParsePage("consent", `{{define "pageClass"}} wide{{end
   <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"/>
   <input type="hidden" name="scope" value="{{.Scope}}"/>
   <input type="hidden" name="installation_name" value="{{.InstallationName}}"/>
-  <input type="hidden" name="step_up" value="{{.StepUpRaw}}"/>
-  <div class="actions">
+  {{if .StepUp}}<input type="hidden" name="step_up" value="{{.StepUpRaw}}"/>
+  {{end}}<div class="actions">
     <button type="submit" name="decision" value="deny" class="btn btn-outline">Deny</button>
     {{if .StepUp}}<button type="submit" name="decision" value="allow" class="btn">Verify</button>
     {{else if .SignIn}}<button type="submit" name="decision" value="allow" class="btn">Sign in</button>

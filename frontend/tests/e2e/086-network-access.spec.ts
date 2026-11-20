@@ -178,11 +178,10 @@ test.describe('Network access', () => {
  */
 test.describe('Network access outside solo mode', () => {
   test('keeps the section for the trusted-proxy row when the listen row is hidden', async ({ page, leapmuxServer }) => {
-    await openAppAs(page, leapmuxServer.adminToken)
-    // The Administration section loads only in a session that holds a current
-    // window (E9), and the shared session's may have lapsed since the suite
-    // elevated it.
+    // Elevate before the app reads the shared session's deadline. The
+    // suite's elevation may already have expired.
     await elevateSessionViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, TEST_ADMIN_PASSWORD)
+    await openAppAs(page, leapmuxServer.adminToken)
 
     const dialog = await openSettingsAt(page, 'admin-network')
     await expect(dialog.getByTestId('preferences-nav-admin-network')).toBeVisible()

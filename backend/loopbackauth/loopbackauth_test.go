@@ -84,30 +84,6 @@ func TestWait_ReturnsTheCodeOnAValidCallback(t *testing.T) {
 	assert.Equal(t, "C-1", code)
 }
 
-func TestWait_WrongStateKeepsWaiting(t *testing.T) {
-	flow := startFlow(t, loopbackauth.Request{HubBaseURL: hubURL, App: loopbackauth.ControlCLI})
-	redirectURI, state := callbackParts(t, flow)
-
-	status, _ := getCallback(t, redirectURI, url.Values{"state": {"wrong"}, "code": {"evil"}}.Encode())
-	require.Equal(t, http.StatusBadRequest, status)
-
-	// The state check runs first: an error riding along with a mismatched
-	// state is still refused as a mismatch -- and silently, because a wrong
-	// state ends nothing.
-	status, _ = getCallback(t, redirectURI, url.Values{"state": {"wrong"}, "error": {"access_denied"}}.Encode())
-	require.Equal(t, http.StatusBadRequest, status)
-
-	// The flow is still waiting, so the valid callback is what Wait answers
-	// with. Had the mismatch ended the ceremony, the error would surface here
-	// instead of the code.
-	status, _ = getCallback(t, redirectURI, url.Values{"state": {state}, "code": {"C-1"}}.Encode())
-	require.Equal(t, http.StatusOK, status)
-
-	code, err := flow.Wait(testutil.DeadlineContext(t))
-	require.NoError(t, err)
-	assert.Equal(t, "C-1", code)
-}
-
 func TestWait_ReportsTheErrorParameter(t *testing.T) {
 	flow := startFlow(t, loopbackauth.Request{HubBaseURL: hubURL, App: loopbackauth.ControlCLI})
 	redirectURI, state := callbackParts(t, flow)
@@ -135,11 +111,6 @@ func TestWait_ReportsACallbackWithoutCodeOrError(t *testing.T) {
 	require.ErrorContains(t, err, "neither a code nor an error")
 }
 
-// TestFlow_DuplicateCallbacksNeverBlock is the wedge fix: the browser can
-// re-GET the success page (or a stale tab can re-send a bad state) after the
-// ceremony already holds its one outcome. A blocking send would park the
-// handler goroutine and Close's Shutdown would wait for it forever -- a
-// ceremony that already succeeded hanging the caller.
 func TestFlow_DuplicateCallbacksNeverBlock(t *testing.T) {
 	flow := startFlow(t, loopbackauth.Request{HubBaseURL: hubURL, App: loopbackauth.ControlCLI})
 	redirectURI, state := callbackParts(t, flow)
@@ -148,22 +119,46 @@ func TestFlow_DuplicateCallbacksNeverBlock(t *testing.T) {
 	status, _ := getCallback(t, redirectURI, valid)
 	require.Equal(t, http.StatusOK, status)
 
-	// The outcome is still unconsumed, so the code channel is full -- the
-	// exact state a duplicate arrival meets.
-	status, _ = getCallback(t, redirectURI, valid)
+	// The first outcome is pending when the duplicates arrive.
+	status, _ = getCallback(t, redirectURI, url.Values{"state": {state}, "code": {"different"}}.Encode())
 	require.Equal(t, http.StatusOK, status, "a duplicate success callback must answer, not block")
 	status, _ = getCallback(t, redirectURI, url.Values{"state": {"wrong"}, "code": {"evil"}}.Encode())
 	require.Equal(t, http.StatusBadRequest, status, "a duplicate bad-state callback must answer, not block")
-	status, _ = getCallback(t, redirectURI, valid)
-	require.Equal(t, http.StatusOK, status, "a third duplicate must still answer")
+	status, _ = getCallback(t, redirectURI, url.Values{"state": {state}, "error": {"access_denied"}}.Encode())
+	require.Equal(t, http.StatusBadRequest, status, "a later refusal must still answer")
 
 	guard(t, "Close after a duplicate callback", flow.Close)
 
-	// The FIRST outcome survives; duplicates were dropped rather than
-	// replacing it.
 	code, err := flow.Wait(testutil.DeadlineContext(t))
 	require.NoError(t, err)
 	assert.Equal(t, "C-1", code)
+}
+
+func TestClose_AllowsTheAcceptedCallbackToFinishItsReply(t *testing.T) {
+	flow := startFlow(t, loopbackauth.Request{HubBaseURL: hubURL, App: loopbackauth.ControlCLI})
+	redirectURI, state := callbackParts(t, flow)
+	ctx := testutil.DeadlineContext(t)
+	type result struct {
+		code string
+		err  error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		code, err := flow.Wait(ctx)
+		flow.Close()
+		finished <- result{code: code, err: err}
+	}()
+
+	status, body := getCallback(t, redirectURI, url.Values{"state": {state}, "code": {"C-1"}}.Encode())
+	assert.Equal(t, http.StatusOK, status)
+	assert.Contains(t, body, "Authorization received.")
+	select {
+	case got := <-finished:
+		assert.NoError(t, got.err)
+		assert.Equal(t, "C-1", got.code)
+	case <-ctx.Done():
+		t.Fatal("waiting for the flow to close")
+	}
 }
 
 func TestClose_IsIdempotent(t *testing.T) {
@@ -195,6 +190,56 @@ func TestWait_ReturnsErrTimeoutWhenTheClockPassesTheDeadline(t *testing.T) {
 	waiter.MustWait(testutil.DeadlineContext(t))
 }
 
+func TestWait_RejectsCallbacksAtAndAfterTheDeadline(t *testing.T) {
+	for name, delay := range map[string]time.Duration{"at deadline": 0, "after deadline": time.Second} {
+		t.Run(name, func(t *testing.T) {
+			clock := testutil.NewQuartzMock(t)
+			flow := startFlow(t, loopbackauth.Request{HubBaseURL: hubURL, App: loopbackauth.ControlCLI, Clock: clock})
+			redirectURI, state := callbackParts(t, flow)
+			ctx := testutil.DeadlineContext(t)
+			clock.Advance(loopbackauth.Timeout).MustWait(ctx)
+			if delay > 0 {
+				clock.Advance(delay).MustWait(ctx)
+			}
+
+			status, _ := getCallback(t, redirectURI, url.Values{"state": {state}, "code": {"late"}}.Encode())
+			assert.Equal(t, http.StatusGone, status)
+			code, err := flow.Wait(ctx)
+			assert.ErrorIs(t, err, loopbackauth.ErrTimeout)
+			assert.Empty(t, code)
+		})
+	}
+}
+
+func TestWait_KeepsTheCallbackThatArrivedBeforeTheDeadline(t *testing.T) {
+	for name, query := range map[string]url.Values{
+		"code":  {"code": {"early"}},
+		"error": {"error": {"access_denied"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clock := testutil.NewQuartzMock(t)
+			flow := startFlow(t, loopbackauth.Request{HubBaseURL: hubURL, App: loopbackauth.ControlCLI, Clock: clock})
+			redirectURI, state := callbackParts(t, flow)
+			ctx := testutil.DeadlineContext(t)
+			clock.Advance(loopbackauth.Timeout - time.Nanosecond).MustWait(ctx)
+			query.Set("state", state)
+			status, _ := getCallback(t, redirectURI, query.Encode())
+			clock.Advance(time.Nanosecond).MustWait(ctx)
+
+			code, err := flow.Wait(ctx)
+			if query.Has("code") {
+				assert.Equal(t, http.StatusOK, status)
+				assert.NoError(t, err)
+				assert.Equal(t, "early", code)
+			} else {
+				assert.Equal(t, http.StatusBadRequest, status)
+				assert.ErrorContains(t, err, "access_denied")
+				assert.Empty(t, code)
+			}
+		})
+	}
+}
+
 func TestAuthorizeURL_CarriesStepUpAndTheBoundPort(t *testing.T) {
 	withStepUp := startFlow(t, loopbackauth.Request{
 		HubBaseURL: hubURL,
@@ -212,7 +257,7 @@ func TestAuthorizeURL_CarriesStepUpAndTheBoundPort(t *testing.T) {
 	}
 	qWith, qWithout := parse(withStepUp), parse(without)
 	assert.Equal(t, "token:abc", qWith.Get("step_up"), "a step-up names its target")
-	assert.Empty(t, qWithout.Get("step_up"), "a plain sign-in carries no step_up")
+	assert.False(t, qWithout.Has("step_up"), "a plain sign-in carries no step_up")
 
 	// The redirect URI derives from the app's registered form with the BOUND
 	// port: a request to it must reach each flow's own listener.

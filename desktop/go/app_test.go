@@ -710,7 +710,7 @@ func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
 	setTestHome(t)
 
 	var conns atomic.Int64
-	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewUnstartedServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	hub.Config.ConnState = func(_ net.Conn, state http.ConnState) {
@@ -723,6 +723,7 @@ func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
 			// Both are transitions of a connection this already counted.
 		}
 	}
+	hub.Start()
 
 	endpoint, err := hubtransport.New(hub.URL)
 	require.NoError(t, err)

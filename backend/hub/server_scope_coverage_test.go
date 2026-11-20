@@ -167,8 +167,15 @@ func TestWellKnownMetadataRefusesWithoutAnAddress(t *testing.T) {
 	}
 }
 
-// mountedLiteralRoutes returns every path the hub mounts on its mux BY HAND,
-// derived from the source rather than restated here.
+type recordedRoutes map[string]bool
+
+func (routes recordedRoutes) HandleFunc(path string, _ func(http.ResponseWriter, *http.Request)) {
+	routes[path] = true
+}
+
+// handMountedRoutePaths returns the routes the Hub mounts by hand. It records
+// the OAuth server's table-driven registration directly and scans the other
+// registrations in the source.
 //
 // "By hand" is the split, and it is drawn on the shape of the first argument:
 //
@@ -186,19 +193,23 @@ func TestWellKnownMetadataRefusesWithoutAnAddress(t *testing.T) {
 // reverse direction below catches its consequence -- an entry that names a
 // route the scan no longer finds fails.
 //
-// It walks the whole module because a route can be mounted from any package
-// that takes a *http.ServeMux: the OAuth server, the IdP handler and the worker
-// delegation handler each register their own inside a RegisterRoutes method,
-// and a scan of hub/server.go alone would see none of them.
-func mountedLiteralRoutes(t *testing.T) []string {
+// It walks the whole module because the IdP and Worker delegation handlers
+// register their own paths outside hub/server.go.
+func handMountedRoutePaths(t *testing.T) []string {
 	t.Helper()
 
 	root, err := filepath.Abs("..")
 	require.NoError(t, err)
 
-	seen := map[string]bool{}
-	scanned := testutil.ForEachRepoSourceFile(t, root, func(_ *token.FileSet, _ string, file *ast.File) {
+	seen := make(recordedRoutes)
+	// Registration constructs handlers without calling them. Recording each
+	// path here covers every entry in the consent route table.
+	new(service.OAuthServerHandler).RegisterRoutes(seen)
+	scanned := testutil.ForEachRepoSourceFile(t, root, func(_ *token.FileSet, path string, file *ast.File) {
 		ast.Inspect(file, func(n ast.Node) bool {
+			if decl, ok := n.(*ast.FuncDecl); ok && filepath.Base(path) == "oauth_server_handler.go" && decl.Name.Name == "RegisterRoutes" {
+				return false // The recorder already observed these registrations.
+			}
 			call, ok := n.(*ast.CallExpr)
 			if !ok || len(call.Args) == 0 {
 				return true
@@ -250,17 +261,16 @@ func mountedLiteralRoutes(t *testing.T) []string {
 type routeCredentialRule int
 
 const (
-	// routeNoLeapMuxBearer carries no leapmux credential at all: it is
-	// anonymous, or it authenticates with something else entirely (a worker
-	// auth_token, a browser session the page itself establishes, an OAuth
-	// secret the request presents).
+	// routeNoLeapMuxBearer requires no scope on a LeapMux bearer. The route
+	// can still authenticate a browser session, an OAuth grant or a credential
+	// a caller presents to step up or revoke.
 	routeNoLeapMuxBearer routeCredentialRule = iota
 	// routeRequiresScope authenticates a leapmux bearer and states the one
 	// scope that bearer must hold.
 	routeRequiresScope
 )
 
-// handMountedRoutes records, for every route the hub mounts by literal path,
+// handMountedRoutes records, for every route the Hub mounts by hand,
 // either the scope it requires of a leapmux bearer or the reason it carries
 // none.
 //
@@ -306,7 +316,7 @@ var handMountedRoutes = map[string]struct {
 	"/oauth/device-authorization": {routeNoLeapMuxBearer, 0,
 		"RFC 8628 leg 1; the app has no credential yet, which is what it is asking for"},
 	"/oauth/token": {routeNoLeapMuxBearer, 0,
-		"authenticates a code, a device code or a refresh secret -- never a bearer"},
+		"authenticates an OAuth grant. A loopback step-up must also present the credential that the approved code identifies"},
 	"/oauth/revoke": {routeNoLeapMuxBearer, 0,
 		"the caller presents the very credential it is ending; demanding a scope would demand a permission to give up permissions"},
 	"/oauth/register": {routeNoLeapMuxBearer, 0,
@@ -343,7 +353,7 @@ var handMountedRoutes = map[string]struct {
 // TestEveryHandMountedRouteRecordsItsCredentialRule is the bidirectional
 // tripwire over the routes no descriptor walk reaches.
 func TestEveryHandMountedRouteRecordsItsCredentialRule(t *testing.T) {
-	mounted := mountedLiteralRoutes(t)
+	mounted := handMountedRoutePaths(t)
 
 	for _, path := range mounted {
 		entry, ok := handMountedRoutes[path]

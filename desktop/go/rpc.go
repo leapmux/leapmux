@@ -58,7 +58,6 @@ func NewRPCSession(app *App, reader io.Reader, writer io.Writer, onShutdown func
 
 func (s *RPCSession) Run() error {
 	s.app.SetEventSink(s.emitEvent)
-	s.app.SetEventSinkForRelay(s.emitEventForRelay)
 
 	sessionCtx, cancelSession := context.WithCancelCause(s.app.ctx)
 	readResults := make(chan frameReadResult, 1)
@@ -67,7 +66,6 @@ func (s *RPCSession) Run() error {
 	defer func() {
 		cancelSession(nil)
 		s.app.SetEventSink(nil)
-		s.app.SetEventSinkForRelay(nil)
 		s.drainHandlers(&handlers, context.Cause(sessionCtx))
 	}()
 	for {
@@ -210,17 +208,9 @@ func isBenignSessionReadError(err error) bool {
 	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
+// emitEvent writes events to the shell and reports any undeliverable relay frame
+// with the owner it carries.
 func (s *RPCSession) emitEvent(event *desktoppb.Event) {
-	s.emitEventForRelay(0, event)
-}
-
-// emitEventForRelay is the relay-aware emit: it writes the event frame to the
-// shell pipe, and on a delivery failure (oversize frame, broken pipe) tells
-// CloseRelayForUndeliverableEvent WHICH relay emitted it so the close can gate on
-// ownership. owner is 0 for non-relay events (the generic emitEvent path), which
-// CloseRelayForUndeliverableEvent treats as "no relay to close" (only *Message
-// payloads name a relay, and 0 matches no installed owner).
-func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 	frame := &desktoppb.Frame{
 		Message: &desktoppb.Frame_Event{Event: event},
 	}
@@ -232,20 +222,20 @@ func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 	// same failFrameForRelay path a failed write would, so an oversized relay
 	// frame still tears its relay down instead of being silently skipped.
 	if err := validateFrameSize(frame); err != nil {
-		s.failFrameForRelay(owner, frame, err)
+		s.failFrameForRelay(frame, err)
 		return
 	}
 	// Inline the write rather than routing through writeFrameUnchecked: a write
 	// failure on a relay event frame must close THAT relay (the stream is
 	// desynced), and writeFrameUnchecked's failure path is the log-only
-	// failFrameForRelay(0, ...) used for non-relay response frames. Doing the
+	// failFrameForRelay used for non-relay response frames. Doing the
 	// write here keeps both the budget and the write failure paths on
 	// failFrameForRelay.
 	s.mu.Lock()
 	werr := writeFrameTo(s.writer, frame)
 	s.mu.Unlock()
 	if werr != nil {
-		s.failFrameForRelay(owner, frame, werr)
+		s.failFrameForRelay(frame, werr)
 	}
 }
 
@@ -289,12 +279,8 @@ func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 // wedged UI. Anything else (a response, a non-relay event) is order-independent,
 // so logging it is the whole remedy.
 //
-// failFrameForRelay threads the emitting relay's owner id into
-// CloseRelayForUndeliverableEvent so the close gates on ownership: without it,
-// the close goroutine (spawned here) could run after a successor's open
-// superseded the emitter and tear down the successor's relay for the emitter's
-// fault. owner is 0 for non-relay frames, which no installed relay matches.
-func (s *RPCSession) failFrameForRelay(owner uint64, frame *desktoppb.Frame, err error) {
+// The owner on the event prevents cleanup from tearing down a successor.
+func (s *RPCSession) failFrameForRelay(frame *desktoppb.Frame, err error) {
 	slog.Error("failed to write frame", "error", err)
 	event := frame.GetEvent()
 	if event == nil {
@@ -302,7 +288,7 @@ func (s *RPCSession) failFrameForRelay(owner uint64, frame *desktoppb.Frame, err
 	}
 	// Off this goroutine: the emit that failed may BE the relay's read loop, and
 	// tearing the relay down joins that loop.
-	go s.app.CloseRelayForUndeliverableEvent(owner, event)
+	go s.app.CloseRelayForUndeliverableEvent(event)
 }
 
 // writeFrameUnchecked writes frame under the session write mutex WITHOUT
@@ -315,11 +301,8 @@ func (s *RPCSession) writeFrameUnchecked(frame *desktoppb.Frame) {
 	err := writeFrameTo(s.writer, frame)
 	s.mu.Unlock()
 	if err != nil {
-		// owner 0 matches no installed relay, so this logs and returns for the
-		// response frames writeFrameUnchecked carries -- the same log-only remedy
-		// the removed failFrame wrapper gave, without a second failure path to
-		// keep in sync.
-		s.failFrameForRelay(0, frame, err)
+		// This response carries no event. The failure needs only a log.
+		s.failFrameForRelay(frame, err)
 	}
 }
 

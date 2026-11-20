@@ -98,7 +98,7 @@ message ConnectSoloRequest {}
 // ordering (see desktop/go/rpc.go), so a close sent for relay A can execute AFTER a
 // later open adopted the relay as B -- tearing down the relay B just took ownership
 // of. The teardown cancels the relay context before the read loop can emit, so no
-// channel:close event ever reaches the frontend: the socket stays readyState=OPEN
+// channel relay close event ever reaches the frontend: the socket stays readyState=OPEN
 // forever, ensureWebSocket keeps early-returning, and every worker call fails until
 // the page is reloaded.
 //
@@ -388,6 +388,9 @@ message Event {
     // One ceremony ended. The sidecar emits exactly one for each ceremony.
     BrowserAuthResultEvent browser_auth_result = 6;
   }
+  // The owner at emission time for a relay frame or close. Zero identifies
+  // an event unrelated to a relay.
+  uint64 relay_id = 7;
 }
 
 message BrowserAuthResultEvent {

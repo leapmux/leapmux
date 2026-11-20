@@ -25,24 +25,37 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       targetPort: number
     }> = []
     let nextId = 1
-    let userEventsSocket: WebSocket | undefined
-    let channelSocket: WebSocket | undefined
+    interface RelaySocket {
+      relayId: number
+      socket: WebSocket
+    }
+    let userEventsRelay: RelaySocket | undefined
+    let channelRelay: RelaySocket | undefined
     const intentionallyClosedSockets = new WeakSet<WebSocket>()
 
-    const closeUserEventsSocket = () => {
-      if (!userEventsSocket)
-        return
-      intentionallyClosedSockets.add(userEventsSocket)
-      userEventsSocket.close()
-      userEventsSocket = undefined
+    const closeRelay = (relay: RelaySocket | undefined, relayId = relay?.relayId) => {
+      if (!relay || relay.relayId !== relayId)
+        return relay
+      intentionallyClosedSockets.add(relay.socket)
+      relay.socket.close()
+      return undefined
     }
 
-    const closeChannelSocket = () => {
-      if (!channelSocket)
-        return
-      intentionallyClosedSockets.add(channelSocket)
-      channelSocket.close()
-      channelSocket = undefined
+    const attachRelayChannel = (socket: WebSocket, channelId: number) => {
+      let index = 0
+      socket.binaryType = 'arraybuffer'
+      socket.addEventListener('message', (event) => {
+        win.__TAURI_INTERNALS__.runCallback(channelId, { index: index++, message: event.data })
+      })
+      socket.addEventListener('close', (event) => {
+        if (!intentionallyClosedSockets.has(socket)) {
+          win.__TAURI_INTERNALS__.runCallback(channelId, {
+            index: index++,
+            message: { code: event.code, reason: event.reason, wasClean: event.wasClean },
+          })
+        }
+        win.__TAURI_INTERNALS__.runCallback(channelId, { index, end: true })
+      })
     }
 
     win.__TAURI_INVOKE__ = (cmd: string, args?: any, options?: any) => {
@@ -122,9 +135,7 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           })
         }
         case 'open_channel_relay': {
-          closeChannelSocket()
-          const channel = args.channel
-          let nextFrameIndex = 0
+          closeRelay(channelRelay)
           const protocol = window.location.protocol === 'https:'
             ? 'wss:'
             : 'ws:'
@@ -132,40 +143,23 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
             `${protocol}//${window.location.host}/ws/channel`,
             ['channel-relay'],
           )
-          channelSocket = socket
-          socket.binaryType = 'arraybuffer'
-          socket.addEventListener('message', (event) => {
-            win.__TAURI_INTERNALS__.runCallback(channel.id, {
-              index: nextFrameIndex++,
-              message: event.data,
-            })
-          })
-          socket.addEventListener('close', (event) => {
-            if (!intentionallyClosedSockets.has(socket)) {
-              win.__TAURI_INTERNALS__.emitEvent('channel:close', {
-                code: event.code,
-                reason: event.reason,
-                wasClean: event.wasClean,
-              })
-            }
-          })
+          channelRelay = { relayId: args.relayId, socket }
+          attachRelayChannel(socket, args.channel.id)
           return new Promise<void>((resolve, reject) => {
             socket.addEventListener('open', () => resolve(), { once: true })
             socket.addEventListener('error', () => reject(new Error('channel relay failed')), { once: true })
           })
         }
         case 'send_channel_message':
-          channelSocket?.send(args instanceof Uint8Array
+          channelRelay?.socket.send(args instanceof Uint8Array
             ? args
             : new Uint8Array(args))
           return Promise.resolve()
         case 'close_channel_relay':
-          closeChannelSocket()
+          channelRelay = closeRelay(channelRelay, args.relayId)
           return Promise.resolve()
         case 'open_userevents_relay': {
-          closeUserEventsSocket()
-          const channel = args.channel
-          let nextFrameIndex = 0
+          closeRelay(userEventsRelay)
           const params = new URLSearchParams()
           for (const workspaceId of args.workspaceIds ?? [])
             params.append('workspace_ids', workspaceId)
@@ -179,25 +173,15 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
               : ''}`,
             ['userevents-relay'],
           )
-          userEventsSocket = socket
-          socket.binaryType = 'arraybuffer'
-          socket.addEventListener('message', (event) => {
-            win.__TAURI_INTERNALS__.runCallback(channel.id, {
-              index: nextFrameIndex++,
-              message: event.data,
-            })
-          })
-          socket.addEventListener('close', () => {
-            if (!intentionallyClosedSockets.has(socket))
-              win.__TAURI_INTERNALS__.emitEvent('userevents:close', undefined)
-          })
+          userEventsRelay = { relayId: args.relayId, socket }
+          attachRelayChannel(socket, args.channel.id)
           return new Promise<void>((resolve, reject) => {
             socket.addEventListener('open', () => resolve(), { once: true })
             socket.addEventListener('error', () => reject(new Error('userevents relay failed')), { once: true })
           })
         }
         case 'close_userevents_relay':
-          closeUserEventsSocket()
+          userEventsRelay = closeRelay(userEventsRelay, args.relayId)
           return Promise.resolve()
         default:
           return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
@@ -326,35 +310,45 @@ test.describe('Tunnel UI', () => {
   })
 
   test('tunnel creation error is displayed in dialog', async ({ page, workspace }) => {
-    // Override CreateTunnel to reject with an error. Every command this bridge
-    // does not handle passes to the previous __TAURI_INVOKE__.
+    // Only CreateTunnel fails. Forward the invoke options alongside the raw
+    // arguments so the proxy still receives the Hub method and headers.
     await page.evaluate(() => {
-      const previousInvoke = (window as any).__TAURI_INVOKE__
-      ;(window as any).__TAURI_INVOKE__ = (cmd: string, args?: any) => {
+      const win = window as any
+      const previousInvoke = win.__TAURI_INVOKE__
+      win.__TAURI_INVOKE__ = (cmd: string, args?: any, options?: any) => {
         if (cmd === 'create_tunnel')
           return Promise.reject(new Error('bind 127.0.0.1:3000: address already in use'))
-        if (cmd === 'delete_tunnel')
-          return Promise.resolve()
-        if (cmd === 'list_tunnels')
-          return Promise.resolve([])
-        if (cmd === 'get_runtime_state') {
-          return Promise.resolve({
-            shellMode: 'distributed',
-            connected: true,
-            hubUrl: window.location.origin,
-            capabilities: {
-              mode: 'tauri-desktop-distributed',
-              tunnels: true,
-              appControl: true,
-              windowControl: true,
-              systemPermissions: true,
-              localSolo: false,
-            },
-          })
-        }
-        return previousInvoke(cmd, args)
+        return previousInvoke(cmd, args, options)
       }
     })
+
+    const reply = await page.evaluate(async () => {
+      const reply: ArrayBuffer = await (window as any).__TAURI_INTERNALS__.invoke(
+        'proxy_http',
+        new TextEncoder().encode('{}'),
+        {
+          headers: {
+            'method': 'POST',
+            'path': '/leapmux.v1.SystemService/GetSystemInfo',
+            'headers-b64': btoa(JSON.stringify({
+              'Content-Type': 'application/json',
+              'Connect-Protocol-Version': '1',
+            })),
+          },
+        },
+      )
+      const metadataEnd = 4 + new DataView(reply).getUint32(0, true)
+      const decoder = new TextDecoder()
+      const metadata = JSON.parse(decoder.decode(reply.slice(4, metadataEnd)))
+      return {
+        status: metadata.status,
+        contentType: metadata.headers['content-type']?.[0],
+        body: decoder.decode(reply.slice(metadataEnd)),
+      }
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.contentType).toContain('application/json')
+    expect(JSON.parse(reply.body)).toHaveProperty('build')
 
     const { dialog } = await openAddTunnelDialog(page)
     await dialog.getByTestId('target-port').fill('3000')

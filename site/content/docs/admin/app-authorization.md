@@ -37,7 +37,7 @@ leapmux control admin app register \
 
 The response carries the `client_id` and, for a confidential client, the `client_secret` **once**. The Hub stores only its hash and cannot show it again.
 
-**Every write to a registration needs a recently proven factor** — registering, editing, allowing the step-up ceremony, and vouching. Editing is why: rewriting a redirect list diverts an authorization code already in flight to an address the editor chose, which is the most dangerous write on this surface.
+**Registering an app, editing its registration, changing its elevation setting, and vouching for it require a recently proven factor.** Changing the redirect list can divert an authorization code already in flight to an address the editor chose.
 
 In the browser the first such write opens a **Verify your identity** dialog. On the CLI the default ceremony opens a browser on the CLI's own machine; a credential from `leapmux control auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
@@ -95,15 +95,15 @@ The warning disappears, and the app's row under **Preferences → Apps** names t
 
 A **sensitive** change — a password, a passkey, the recovery address — needs a recently proven factor. That proof is a *step-up*, and it happens in a browser.
 
-Which ceremony runs follows the credential's issuance: a credential from a browser login verifies through a browser on its own machine, and one from the device-code login or from an administrator uses the device-code ceremony of `/oauth/step-up` — which the Hub refuses to a browser-issued credential with `browser_step_up_required`. See [OAuth API — Step-up](/docs/reference/oauth-api/#step-up) and [Session elevation](/docs/admin/security/#session-elevation).
+A credential from a browser login verifies through a browser on its own machine. A credential from the device-code login or from an administrator uses the device-code ceremony at `/oauth/step-up`. For a browser-issued app credential, `/oauth/step-up` returns `browser_step_up_required` only if the app may elevate. When the registration disallows elevation, the Hub returns `unauthorized_client`. See [OAuth API — Step-up](/docs/reference/oauth-api/#step-up) and [Session elevation](/docs/admin/security/#session-elevation).
 
-An app is refused the step-up ceremony by default. Its owner turns it on per app:
+Both the loopback and device-code step-up ceremonies require the app registration to allow elevation. New registrations have this setting disabled by default. The Hub enables it when it creates the built-in registrations. To allow elevation for an app, run the following command.
 
 ```bash
 leapmux control admin app allow-elevation --client-id <client_id>
 ```
 
-Turning it off closes every open window on the next request, because the Hub re-reads the flag each time it validates a credential rather than trusting what was true when the window opened.
+Disabling this setting blocks new step-up requests for the app. For the app’s bearer credentials, the Hub also stops honoring open elevation windows when it next validates the credential.
 
 The setting is not a trust tier and not a permission. The elevation window multiplies whatever the grant already allows, so no permission can express it.
 
@@ -127,7 +127,7 @@ leapmux control admin app revoke --client-id <client_id>
 
 **Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: the Hub keeps it as history that an administrator can list with `leapmux control admin api-token list --include-revoked`, and deleting the app it belonged to would leave that history pointing at nothing.
 
-Three registrations ship with the Hub — the control CLI, LeapMux Desktop, and the service account that holds administrator-issued credentials. None can be edited, retired, or deleted, because their fields are constants of the build. The elevation setting of the control CLI and the service account is the one thing that moves, so an administrator who does not want `leapmux control admin ...` to elevate can say so. LeapMux Desktop's step-ups run through the browser rather than `/oauth/step-up`, so the setting does not apply to it.
+The Hub ships with three built-in registrations. They are the control CLI, LeapMux Desktop, and the service account that holds administrator-issued credentials. The elevation setting is the only editable field on a built-in registration. An administrator can change it for any built-in app, including LeapMux Desktop. The Hub also protects these registrations from retirement and deletion.
 
 ## Solo mode
 

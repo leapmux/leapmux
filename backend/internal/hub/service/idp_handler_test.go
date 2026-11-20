@@ -1438,25 +1438,42 @@ func callbackSessionRow(t *testing.T, st store.Store, response *http.Response) *
 func TestOAuthLogin_ConsentRouteForcesARePromptAndStampsTheWindow(t *testing.T) {
 	t.Parallel()
 
-	server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	const subject = "consent-route-subject"
-	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "consent-route@example.com", subject)
-	linkedProviderUser(t, st, providerID, subject, "consent-route@example.com", false)
+	for _, tc := range []struct {
+		redirect string
+		location string
+	}{
+		{"/oauth/authorize?client_id=cli", "/oauth/authorize?client_id=cli"},
+		{"/oauth/%61uthorize?client_id=cli", "/oauth/%61uthorize?client_id=cli"},
+		{"/%6Fauth/devi%63e", "/%6Fauth/devi%63e"},
+		{"/oauth//authorize?client_id=cli", "/oauth/authorize?client_id=cli"},
+		{"/handoff/../oauth/./device#done", "/oauth/device#done"},
+		{"/oauth/other#done/../authorize", "/oauth/authorize"},
+		{"/oauth//%61uthorize", "/oauth/%61uthorize"},
+		{"/oauth/authorize?client_id=cli#done/../token", "/oauth/authorize?client_id=cli#done/../token"},
+	} {
+		t.Run(tc.redirect, func(t *testing.T) {
+			t.Parallel()
 
-	state, nonce, authURL := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
-	// Without the prompt the provider silently reuses its own session, the
-	// browser returns in a fraction of a second, and the sign-in proved
-	// nothing. max_age is the half a conforming provider must enforce.
-	assert.Equal(t, "login", authURL.Query().Get("prompt"))
-	assert.Equal(t, strconv.Itoa(int(huboauth.ReauthMaxAge.Seconds())), authURL.Query().Get("max_age"),
-		"the wire value comes from the exported constant, not a literal")
+			server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+			const email, subject = "consent-route@example.com", "consent-route-subject"
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, email, subject)
+			linkedProviderUser(t, st, providerID, subject, email, false)
 
-	resp := completeCallback(t, server, providerID, state, nonce)
-	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
-	row := callbackSessionRow(t, st, resp)
-	assert.NotNil(t, row.ElevationProvenAt,
-		"the round trip is the proof for an account whose only credential is the provider")
-	assert.NotNil(t, row.ElevationExpiresAt, "the proof grants the session the fresh window")
+			state, nonce, authURL := beginLogin(t, server, providerID, tc.redirect)
+			// The prompt asks for a fresh authentication. The maximum age
+			// is the additional limit that a conforming provider enforces.
+			assert.Equal(t, "login", authURL.Query().Get("prompt"))
+			assert.Equal(t, strconv.Itoa(int(huboauth.ReauthMaxAge.Seconds())), authURL.Query().Get("max_age"))
+
+			resp := completeCallback(t, server, providerID, state, nonce)
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			assert.Equal(t, tc.location, resp.Header.Get("Location"))
+			row := callbackSessionRow(t, st, resp)
+			require.NotNil(t, row.ElevationProvenAt)
+			require.NotNil(t, row.ElevationExpiresAt)
+			assert.Equal(t, auth.FreshAuthenticationWindow, row.ElevationExpiresAt.Sub(*row.ElevationProvenAt))
+		})
+	}
 }
 
 func TestOAuthLogin_ConsentRouteForAnAccountThatHoldsAPasswordStampsNoWindow(t *testing.T) {
@@ -1476,10 +1493,123 @@ func TestOAuthLogin_ConsentRouteForAnAccountThatHoldsAPasswordStampsNoWindow(t *
 	assert.Nil(t, row.ElevationExpiresAt)
 }
 
+// factorChangeBeforeLoginStore commits a factor change immediately before the
+// callback can take the lock that protects its session insert. The store
+// takes that lock in Sessions.Create for an ordinary sign-in, and the
+// callback can take it earlier to protect its factor reads as well.
+type factorChangeBeforeLoginStore struct {
+	store.Store
+	commitFactorChange func(context.Context) error
+}
+
+func (s factorChangeBeforeLoginStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	if err := s.commitFactorChange(ctx); err != nil {
+		return err
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, userID, fn)
+}
+
+func (s factorChangeBeforeLoginStore) Sessions() store.SessionStore {
+	return factorChangeBeforeLoginSessions{SessionStore: s.Store.Sessions(), commitFactorChange: s.commitFactorChange}
+}
+
+type factorChangeBeforeLoginSessions struct {
+	store.SessionStore
+	commitFactorChange func(context.Context) error
+}
+
+func (s factorChangeBeforeLoginSessions) Create(ctx context.Context, p store.CreateSessionParams) error {
+	if err := s.commitFactorChange(ctx); err != nil {
+		return err
+	}
+	return s.SessionStore.Create(ctx, p)
+}
+
+func TestOAuthLogin_ConsentSessionChecksFactorsUnderItsInsertLock(t *testing.T) {
+	t.Parallel()
+
+	for _, factor := range []string{"password", "passkey"} {
+		t.Run(factor, func(t *testing.T) {
+			t.Parallel()
+
+			changeRequested := make(chan struct{})
+			changeResult := make(chan error, 1)
+			server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+				return factorChangeBeforeLoginStore{Store: s, commitFactorChange: func(ctx context.Context) error {
+					close(changeRequested)
+					select {
+					case err := <-changeResult:
+						return err
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}}
+			})
+			const email, subject = "overlap@example.com", "overlap-subject"
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, email, subject)
+			userID := linkedProviderUser(t, st, providerID, subject, email, false)
+			uid := userid.MustNew(userID)
+			state, nonce, authURL := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+			require.Equal(t, "login", authURL.Query().Get("prompt"))
+			before, err := st.Users().GetByID(t.Context(), userID)
+			require.NoError(t, err)
+
+			var commitFactorChange func(context.Context) error
+			if factor == "password" {
+				hash, err := password.Hash("new-password")
+				require.NoError(t, err)
+				commitFactorChange = func(ctx context.Context) error {
+					return st.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+						if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{ID: userID, PasswordHash: hash}); err != nil {
+							return err
+						}
+						_, _, err := auth.RevokeAllUserCredentials(ctx, tx, uid)
+						return err
+					})
+				}
+			} else {
+				_, credential, wa := prepareProofPasskey(t, st, ks, userID)
+				commitFactorChange = func(ctx context.Context) error {
+					return st.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+						_, err := wa.StoreCredential(ctx, tx, id.Generate(), userID, credential, "First key")
+						return err
+					})
+				}
+			}
+			go func() {
+				select {
+				case <-changeRequested:
+					changeResult <- commitFactorChange(t.Context())
+				case <-t.Context().Done():
+				}
+			}()
+
+			resp := completeCallback(t, server, providerID, state, nonce)
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			row := callbackSessionRow(t, st, resp)
+			current, err := st.Users().GetByID(t.Context(), userID)
+			require.NoError(t, err)
+			if factor == "password" {
+				assert.True(t, current.FirstCredentialExempt)
+				assert.Greater(t, current.AuthGeneration, before.AuthGeneration)
+			} else {
+				count, err := st.PasskeyCredentials().CountByUser(t.Context(), userID)
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, count)
+			}
+			assert.Equal(t, current.AuthGeneration, row.AuthGeneration)
+			assert.Nil(t, row.ElevationProvenAt, "a provider sign-in cannot prove a newly registered local factor")
+			assert.Nil(t, row.ElevationExpiresAt)
+		})
+	}
+}
+
 func TestOAuthLogin_ANonConsentRoutePromptsNothingAndStampsNoWindow(t *testing.T) {
 	t.Parallel()
 
-	server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+		return proofReadFailingStore{Store: s, failUserLookup: true, failPasskeyCount: true}
+	})
 	const subject = "plain-login-subject"
 	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "plain-login@example.com", subject)
 	linkedProviderUser(t, st, providerID, subject, "plain-login@example.com", false)
@@ -1502,20 +1632,32 @@ func TestOAuthLogin_ANonConsentRoutePromptsNothingAndStampsNoWindow(t *testing.T
 func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
 	t.Parallel()
 
-	for _, redirect := range []string{"/oauth/authorizeX", "/oauth/token"} {
-		t.Run(redirect, func(t *testing.T) {
+	for _, tc := range []struct {
+		redirect string
+		location string
+	}{
+		{"/oauth/authorizeX", "/oauth/authorizeX"},
+		{"/oauth/token", "/oauth/token"},
+		{"/oauth/authorize/../token", "/oauth/token"},
+		{"/oauth/authorize#done/../token", "/oauth/token"},
+		{"/oauth/%2Fauthorize", "/oauth/%2Fauthorize"},
+		{"/oauth/%2561uthorize", "/oauth/%2561uthorize"},
+		{"//example.invalid/oauth/authorize", "/"},
+	} {
+		t.Run(tc.redirect, func(t *testing.T) {
 			t.Parallel()
 			server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 			const subject = "near-miss-subject"
 			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "near-miss@example.com", subject)
 			linkedProviderUser(t, st, providerID, subject, "near-miss@example.com", false)
 
-			state, nonce, authURL := beginLogin(t, server, providerID, redirect)
+			state, nonce, authURL := beginLogin(t, server, providerID, tc.redirect)
 			assert.Empty(t, authURL.Query().Get("prompt"), "a near-miss path is not a consent route")
 			assert.Empty(t, authURL.Query().Get("max_age"), "a near-miss path is not a consent route")
 
 			resp := completeCallback(t, server, providerID, state, nonce)
 			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			assert.Equal(t, tc.location, resp.Header.Get("Location"))
 			row := callbackSessionRow(t, st, resp)
 			assert.Nil(t, row.ElevationProvenAt, "a near-miss path is not a consent route")
 			assert.Nil(t, row.ElevationExpiresAt)
@@ -1527,16 +1669,26 @@ func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
 // sentinel, so the one fault a test plants is the one fault the flow meets.
 var errProofReadFailed = errors.New("proof read failed")
 
-// proofReadFailingStore fails one of the two reads the sign-in-proof
-// decision makes and delegates everything else to the real store, so the
-// flow reaches the proof decision and fails there.
+// proofReadFailingStore injects a fault inside the user-auth transaction.
+// Lookups before the proof decision still read the real store.
 type proofReadFailingStore struct {
 	store.Store
 	failUserLookup   bool
 	failPasskeyCount bool
 }
 
-func (s proofReadFailingStore) Users() store.UserStore {
+func (s proofReadFailingStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		s.Store = tx
+		return fn(proofReadFailingTx{s})
+	})
+}
+
+type proofReadFailingTx struct {
+	proofReadFailingStore
+}
+
+func (s proofReadFailingTx) Users() store.UserStore {
 	if !s.failUserLookup {
 		return s.Store.Users()
 	}
@@ -1551,7 +1703,7 @@ func (proofReadFailingUsers) GetByID(context.Context, string) (*store.User, erro
 	return nil, errProofReadFailed
 }
 
-func (s proofReadFailingStore) PasskeyCredentials() store.PasskeyCredentialStore {
+func (s proofReadFailingTx) PasskeyCredentials() store.PasskeyCredentialStore {
 	if !s.failPasskeyCount {
 		return s.Store.PasskeyCredentials()
 	}
@@ -1584,9 +1736,8 @@ func TestOAuthLogin_AStoreFailureInTheSignInProofRefusesTheSignIn(t *testing.T) 
 		server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
 			return proofReadFailingStore{Store: s, failUserLookup: true}
 		})
-		// The auto-link leg resolves the account by EMAIL and creates the
-		// provider link before it signs the user in, so the failing user
-		// lookup is the proof decision's own read and nothing earlier.
+		// The auto-link path finds the account by email. The injected fault
+		// targets the later account lookup for the sign-in proof.
 		const email, subject = "proof-fail-user@example.com", "proof-fail-user-subject"
 		userID := id.Generate()
 		require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{

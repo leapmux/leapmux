@@ -113,7 +113,7 @@ func TestSessionStoreClockExpiredCookiePrunedBeforePersist(t *testing.T) {
 
 	// Simulate the clock passing the cookie expiry: the record keeps the row
 	// with an expiry now in the past, exactly as a clock-passed cookie leaves it.
-	k := cookieKey(&http.Cookie{Name: "doomed", Path: "/"})
+	k := cookieKey(base, &http.Cookie{Name: "doomed", Path: "/"})
 	pc := j.record[k]
 	past := time.Now().Add(-time.Hour).UTC()
 	pc.Expires = &past
@@ -132,6 +132,40 @@ func TestSessionStoreClockExpiredCookiePrunedBeforePersist(t *testing.T) {
 	assert.False(t, names["doomed"], "clock-expired cookie must not be persisted")
 	assert.True(t, names["live"])
 	assert.True(t, names["third"])
+}
+
+func TestSessionStoreReplaysEffectiveCookieScopes(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example.test")
+	jar := openPersistentJar(base, dir)
+	jar.SetCookies(mustParse(t, "https://hub.example.test/oauth/token"), []*http.Cookie{
+		{Name: "default-path", Value: "step", Secure: true},
+		{Name: "host-only", Value: "own", Path: "/"},
+		{Name: "domain", Value: "shared", Path: "/", Domain: ".example.test"},
+	})
+	jar.SetCookies(base, []*http.Cookie{
+		{Name: "domain", Path: "/", Domain: "example.test.", MaxAge: -1},
+	})
+
+	for label, view := range map[string]http.CookieJar{
+		"live": jar, "exchange snapshot": jar.snapshot(), "reopened": openPersistentJar(base, dir),
+	} {
+		t.Run(label, func(t *testing.T) {
+			values := func(address string) map[string]string {
+				found := make(map[string]string)
+				for _, cookie := range view.Cookies(mustParse(t, address)) {
+					found[cookie.Name] = cookie.Value
+				}
+				return found
+			}
+			assert.Equal(t, map[string]string{"default-path": "step", "host-only": "own", "domain": "shared"},
+				values("https://hub.example.test/oauth/confirm"))
+			assert.Equal(t, map[string]string{"host-only": "own", "domain": "shared"},
+				values("https://hub.example.test/workspace"))
+			assert.Equal(t, map[string]string{"domain": "shared"},
+				values("https://another.example.test/oauth/confirm"))
+		})
+	}
 }
 
 func TestSessionStoreExpiredCookieIgnored(t *testing.T) {
@@ -221,9 +255,12 @@ func TestSessionStoreLeftoverTempFileCleaned(t *testing.T) {
 	openPersistentJar(base, dir)
 	assert.NoFileExists(t, tmpPath, "leftover temp file must be cleaned on open")
 
-	require.NoError(t, os.WriteFile(tmpPath, []byte("leftover"), 0o600))
 	j := openPersistentJar(base, dir)
 	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc")})
+	require.FileExists(t, path)
+	require.NoError(t, os.WriteFile(tmpPath, []byte("leftover"), 0o600))
+	require.FileExists(t, tmpPath)
+
 	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "", Path: "/", MaxAge: -1}})
 	assert.NoFileExists(t, tmpPath, "leftover temp file must be cleaned on removal")
 }
@@ -260,14 +297,102 @@ func TestSessionStoreCaseInsensitiveHost(t *testing.T) {
 }
 
 func TestSessionStoreUnsafeBytesEncoded(t *testing.T) {
-	a := mustParse(t, "https://a_b.example")
-	b := mustParse(t, "https://a~b.example")
-	ipv6 := mustParse(t, "http://[::1]")
+	dir := privateDir(t)
+	hosts := []struct {
+		url  string
+		file string
+	}{
+		{"https://a_b.example", "https_a_5fb.example_443.json"},
+		{"https://a~b.example", "https_a_7eb.example_443.json"},
+		{"http://[::1]", "http__3a_3a1_80.json"},
+	}
+	for i, host := range hosts {
+		base := mustParse(t, host.url)
+		jar := openPersistentJar(base, dir)
+		jar.SetCookies(base, []*http.Cookie{cookieFor("sid", string(rune('a'+i)))})
+		require.FileExists(t, filepath.Join(dir, host.file))
+	}
+	for i, host := range hosts {
+		jar := openPersistentJar(mustParse(t, host.url), dir)
+		data, err := useronly.ReadFile(jar.path)
+		require.NoError(t, err)
+		var sf sessionFile
+		require.NoError(t, json.Unmarshal(data, &sf))
+		assert.Equal(t, host.url, sf.HubURL)
+		require.Len(t, sf.Cookies, 1)
+		assert.Equal(t, string(rune('a'+i)), sf.Cookies[0].Value)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	require.NoError(t, err)
+	assert.Len(t, files, len(hosts))
+}
 
-	assert.NotEqual(t, sessionFileName(a), sessionFileName(b),
-		"hosts that differ in an unsafe byte must get different files")
-	assert.Equal(t, "http__3a_3a1_80.json", sessionFileName(ipv6),
-		"[::1] encodes to _3a_3a1 (url.Hostname strips brackets)")
+type observingCookieJar struct {
+	http.CookieJar
+	afterSet func()
+}
+
+func (j observingCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	j.CookieJar.SetCookies(u, cookies)
+	j.afterSet()
+}
+
+func TestSessionStoreSerializesLiveAndDiskUpdates(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example")
+	j := openPersistentJar(base, dir)
+	j.inner = observingCookieJar{
+		CookieJar: j.inner,
+		afterSet: func() {
+			if j.mu.TryLock() {
+				j.mu.Unlock()
+				t.Error("the live jar update ran outside the persistence lock")
+			}
+		},
+	}
+	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "first")})
+	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "second")})
+
+	live := j.Cookies(base)
+	reopened := openPersistentJar(base, dir).Cookies(base)
+	require.Len(t, live, 1)
+	require.Len(t, reopened, 1)
+	assert.Equal(t, "second", live[0].Value)
+	assert.Equal(t, live, reopened, "a restart reads the same cookie the live jar sends")
+}
+
+func TestSessionStorePositiveMaxAgeSetsTheStoredExpiry(t *testing.T) {
+	const maxAge = 3600
+	for _, name := range []string{"no Expires", "past Expires", "future Expires"} {
+		t.Run(name, func(t *testing.T) {
+			dir := privateDir(t)
+			base := mustParse(t, "https://hub.example")
+			j := openPersistentJar(base, dir)
+			cookie := cookieFor("sid", "fresh")
+			cookie.MaxAge = maxAge
+			now := time.Now()
+			switch name {
+			case "past Expires":
+				cookie.Expires = now.Add(-time.Hour)
+			case "future Expires":
+				cookie.Expires = now.Add(24 * time.Hour)
+			}
+			j.SetCookies(base, []*http.Cookie{cookie})
+
+			data, err := useronly.ReadFile(j.path)
+			require.NoError(t, err)
+			var sf sessionFile
+			require.NoError(t, json.Unmarshal(data, &sf))
+			require.Len(t, sf.Cookies, 1)
+			require.NotNil(t, sf.Cookies[0].Expires)
+			lifetime := maxAge * time.Second
+			assert.False(t, sf.Cookies[0].Expires.Before(now.Add(lifetime)))
+			assert.False(t, sf.Cookies[0].Expires.After(time.Now().Add(lifetime)))
+			reopened := openPersistentJar(base, dir).Cookies(base)
+			require.Len(t, reopened, 1)
+			assert.Equal(t, "fresh", reopened[0].Value)
+		})
+	}
 }
 
 func TestSessionStoreConcurrentSetCookies(t *testing.T) {

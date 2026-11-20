@@ -132,6 +132,7 @@ export async function issueControlCLICredentialViaAPI(
       code_verifier: TEST_PKCE_VERIFIER,
       redirect_uri: LOOPBACK_REDIRECT_URI,
     }).toString(),
+    redirect: 'manual',
   })
   const body = await tokenRes.json() as { token_id?: string }
   if (!body.token_id)

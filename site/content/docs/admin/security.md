@@ -157,7 +157,7 @@ The Hub is trusted for *identity*: it authenticates the user and identifies them
 - Your identity provider
 - Anyone holding a stolen session cookie
 
-Worker identity has a separate check for the browser's channels; see TOFU pinning below.
+The browser and the desktop app check Worker identity through TOFU pinning, described below.
 
 What the channel does verify for itself is that it *works*. Before `OpenChannel` returns, the client round-trips a no-op `Ping` through the encrypted session. The handshake alone only proves the client can encrypt to the Worker's static key; the Ping proves the Worker's session decrypts and that its replies decrypt back.
 
@@ -210,13 +210,15 @@ The Worker credential also permits resolution and cancellation of its recorded c
 
 Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated when the Worker registers and stored in the Worker's local state. The Hub receives only the public halves, at registration, and stores them: it pins them to the Worker and refuses a connection that presents other keys.
 
-The Frontend pins this identity **TOFU** ("trust on first use"). On the first connection to a Worker, the browser records the Worker's composite public key. On every later connection it compares the key the Hub hands over against the pinned one:
+The Frontend uses **TOFU** ("trust on first use") to pin Worker identity in both the browser and the desktop app. It compares the key the Hub supplies with the pin each time it opens a channel.
 
-- **First use** — no pin exists, so the handshake proceeds and the key is recorded once it succeeds. This is TOFU's weak point: everything afterwards is measured against whatever was pinned here, so verify the fingerprint out-of-band on first connect if you can.
+- **First use** — the Frontend records the Worker's composite public key once the channel opens successfully. This is TOFU's weak point: everything afterwards is measured against whatever was pinned here, so verify the fingerprint out-of-band on first connect if you can.
 - **Match** — the connection proceeds silently.
-- **Mismatch** — the Frontend stops and asks you to decide. Reject once and that Worker is refused for the rest of the browser session without prompting again; reload to be asked afresh.
+- **Mismatch** — the Frontend stops and asks you to decide. If you reject the key, the Frontend refuses that Worker for the rest of the session without prompting again. Reload the page or restart the desktop app to see the prompt again.
 
-Pinning stops one attack: a Hub substituting a Worker key in a channel that your browser opens. The substituted key differs from the pin, so the browser asks you to decide. Pinning does not stop a Hub that opens its own channel as you, or serves modified Frontend code that reads your pins. That limit holds for a browser. The desktop app runs its bundled Frontend and keeps its pins in its own storage, one store per Hub, so a Hub cannot serve it code that reads them.
+If the Hub substitutes a pinned Worker's key in a channel the Frontend opens, the key mismatch prompts you to decide. The Hub can still open its own channel as you because the Worker accepts the caller identity that the Hub supplies for both the browser and the desktop app.
+
+A browser also runs Frontend code from the Hub, so a compromised Hub can serve code that reads the browser's pins. The desktop app runs its bundled Frontend and keeps its pins in its own storage, with one store per Hub.
 
 The Hub pins the keys too, so a stolen Worker auth token alone cannot attach other keys to that Worker — not even for a client that has no pin yet. The Worker's public keys are public, though, so a holder of the token can still do these things:
 
@@ -318,7 +320,7 @@ A sign-in with a password or a passkey proves a factor on its own and starts a w
 
 In the browser, a refused action opens the **Verify your identity** prompt above whatever dialog raised it — the form keeps its input, and the action continues on its own once a factor is proven. [Accounts & Authentication](/docs/using/accounts/#managing-your-profile) shows what this looks like from the Preferences dialog; this section is the rule it implements.
 
-In the desktop app's remote-Hub mode, a refused action sends you to the browser instead: the step-up dialog offers **Verify in your browser**, and the proof happens on the Hub's page there. A desktop ceremony can also elevate the browser's own session for the full {{< duration elevation-window >}}, because the consent page requires it: a desktop sign-in or step-up that finds the browser without a window sends it through `/elevate`, which gives that browser session the full window too.
+In the desktop app’s remote-Hub mode, choose **Verify in your browser** in the step-up dialog. You prove the factor on the Hub’s page in the system browser. Both desktop sign-in and step-up require a current window on the browser session to approve consent. If that session lacks a window, `/elevate` gives it the full {{< duration elevation-window >}} once you prove a factor. The desktop session starts without a window. Its first action that requires elevation needs its own step-up. Approval sends a code to the desktop app's loopback listener. The Hub opens the window on the desktop session when the app successfully redeems the code.
 
 These actions require elevation:
 
@@ -334,7 +336,7 @@ Your account email and a linked provider are on that list because both are recov
 
 An app **registration** is on it for a similar reason, one layer out. Editing one rewrites where a consent redirects, so it diverts an authorization code already in flight to an address the editor chose — the most dangerous single write in the feature. **Disconnecting** an app is deliberately not on the list, and neither is retiring a registration: both only reduce what an app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
-An administrator's own surface takes the same rule — **every Administration procedure needs a current window**, reads included. The read verbs of `leapmux control admin` ask for a proof like the writes do, and an access-reducing verb — `session revoke`, `api-token revoke`, and the like — asks before it acts. A read needs the window and does not slide it. One thing stays readable without a window: the list of Hub-wide app registrations, which is outside the Admin procedures the rule follows. Its sensitive writes still need the window.
+Every procedure on an `Admin*` service needs a current window, including reads and actions that reduce access, such as `session revoke` and `api-token revoke`. A read needs the window and does not slide it. `AppService` applies its own rules to app registrations. Listing registrations, retiring an app, and deleting an empty registration work without a window. See [App Authorization](/docs/admin/app-authorization/).
 
 Within that, one property decides how strictly: **does the verb create a new way into an account?** Creating a user, resetting somebody's password, changing an account's administration, and writing somebody's email address or its verified flag all do.
 
@@ -371,7 +373,7 @@ Inside a LeapMux agent or terminal tab the question does not arise: a tab holds 
 
 How the proof runs depends on how the credential was issued. `leapmux control` picks the ceremony for you, and a refused command starts it.
 
-A credential from the default `leapmux control auth login` verifies through the **loopback ceremony**. A refused command opens a browser on the CLI's own machine, you prove the factor on the Hub's page there, and the command runs. The completion lands on a loopback address, so the browser has to be on that machine.
+A credential from the default `leapmux control auth login` verifies through the **loopback ceremony**. A refused command opens a browser on the CLI's own machine. Verify your identity if prompted, then approve the request on the Hub's page. Approval sends a code to the CLI's loopback listener. The command retries after the CLI redeems the code successfully.
 
 A credential from `leapmux control auth login --device-code`, or one an administrator issued with `leapmux control admin api-token issue`, verifies through the **device-code ceremony**: the CLI prints an address and a short code, a person approves it in a browser, and the refused command runs.
 
@@ -386,10 +388,10 @@ Or open: https://hub.example.com/oauth/device?user_code=7XC-8DZ
 Three properties are worth stating:
 
 - **The credential cannot approve its own request.** Both ceremonies accept a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
-- **Approving grants a window, not a credential.** Nothing is minted, nothing on disk changes, and no "an app was authorized" mail is sent. The window is the same {{< duration elevation-window >}} a browser session gets, every command that uses it slides it forward, and it is capped the same way.
+- **Step-up opens a window on the existing credential.** In the loopback ceremony, the Hub opens the window when the app successfully redeems the code. In the device-code ceremony, the Hub opens it when the account holder approves the request. Step-up issues no new credential and sends no app authorization email. During a loopback step-up, the CLI may refresh the bearer before redemption and save the updated tokens to its credential file. The window lasts {{< duration elevation-window >}} and has the same cap as a browser session. Sensitive changes slide the window. Reads do not slide it.
 - **A credential from the default login cannot be verified over SSH.** Its ceremony needs a browser on the CLI's own machine, and over SSH there is none. Sign in again with `--device-code` there: the device-code ceremony's browser can be on another machine, which is the flow headless hosts and containers use.
 
-A fully unattended job cannot answer a prompt, and no design makes it able to. Give one a narrowly scoped, short-lived credential instead, and expect to re-verify when a person is present.
+An unattended job can use a narrowly scoped, short-lived credential while its elevation window is current. A person must approve a new window after it expires.
 
 ### The account with nothing to prove
 

@@ -2,9 +2,8 @@
  * TauriRelayWebSocket provides a WebSocket-like interface that bridges through
  * Tauri IPC. Binary frames travel raw: the wrapper hands each relay open a
  * Tauri `Channel`, the Rust shell stores it beside the relay id, and frames
- * reach the handler as ArrayBuffers with no encode or decode at the boundary.
- * Close events keep riding the global Tauri events, so every wrapper hears the
- * terminal path of the relay it may own.
+ * reach the handler as ArrayBuffers. Close notifications use the same channel
+ * so a delayed frame still arrives before its relay closes.
  *
  * It satisfies ChannelManager's structural `ChannelSocket` surface (see
  * ~/lib/channel) so the channel layer drives a native browser WebSocket and
@@ -13,8 +12,7 @@
  * orders events, or dedups registrations, this wrapper must too.
  */
 
-import { parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
-import { TAURI_EVENT_CHANNEL_CLOSE } from '~/generated/contracts/desktop'
+import { platformBridge } from '~/api/platformBridge'
 import { createLogger } from '~/lib/logger'
 import { relayClaim } from '~/lib/relayClaim'
 
@@ -39,15 +37,10 @@ export class TauriRelayWebSocket {
   // openChannelRelay() is dispatched to a not-yet-open relay and silently
   // dropped, which would lose a Noise handshake message.
   private pendingSends: (ArrayBuffer | Uint8Array)[] = []
-  private unlistenClose: (() => void) | null = null
   // Claims the singleton relay synchronously, at construction and so before any
   // await, so a predecessor's in-flight teardown can see it has been superseded
   // (see relayClaim).
   private readonly wrapperId = relayClaim.claim()
-  // Whether platformBridge.openChannelRelay() actually resolved, i.e. whether a relay
-  // is installed that this wrapper is responsible for. A later step throwing in the
-  // open chain does NOT mean the open failed.
-  private relayInstalled = false
   // Whether this wrapper has already settled its relay claim (released the
   // installed relay or abandoned a claim whose open never landed). Close can race
   // the open chain -- close() schedules releaseRelay on the send chain's tail
@@ -58,92 +51,66 @@ export class TauriRelayWebSocket {
   private relayReleased = false
 
   constructor() {
-    platformBridge.onEvent(TAURI_EVENT_CHANNEL_CLOSE, (payload: unknown) => {
-      this.handleClose(parseRelayClosePayload(payload) as CloseEvent)
-    }).then(async (unlistenClose) => {
-      this.unlistenClose = unlistenClose
-      if (this.readyState === WebSocket.CLOSED) {
-        this.unlistenClose()
-        this.unlistenClose = null
-        // This open never landed either (handleClose ran before openChannelRelay
-        // was even attempted -- e.g. a predecessor relay's channel:close event
-        // reached this wrapper's listener). Same rule as the catch below's
-        // !relayInstalled arm: drop the claim, or it dangles on this dead wrapper
-        // and a predecessor still driving a live relay can never reap it.
+    void this.open()
+  }
+
+  private async open(): Promise<void> {
+    let installed = false
+    try {
+      installed = await platformBridge.openChannelRelay(this.wrapperId, {
+        isAbandoned: () => this.readyState === WebSocket.CLOSED,
+        onMessage: (message) => {
+          // The Rust slot clears asynchronously, so an in-flight message can
+          // still reach the old wrapper after close().
+          if (this.readyState === WebSocket.CLOSED)
+            return
+          if (message instanceof ArrayBuffer) {
+            const ev = { data: message } as MessageEvent
+            this.invokeHandler('onmessage', this.onmessage, ev)
+            this.dispatch('message', ev)
+          }
+          else {
+            this.handleClose(message as CloseEvent)
+          }
+        },
+      })
+      if (!installed) {
         this.abandonRelayClaim()
         return
       }
-      // The channel is this wrapper's frame delivery target: the Rust shell
-      // stores it beside the relay id (see `RelaySlot` in
-      // desktop/rust/src/main.rs) and sends each frame through it raw. Created
-      // in the open chain with the handler attached at construction -- a
-      // channel replays nothing to a handler set late.
-      const channel = await platformBridge.createRelayChannel((data) => {
-        // A frame can reach this handler after close() released this
-        // wrapper's relay id: the sidecar's slot clears asynchronously and an
-        // in-flight frame still names this channel. A frame for a stale relay
-        // id must not deliver.
-        if (this.readyState === WebSocket.CLOSED)
-          return
-        const ev = { data } as MessageEvent
-        this.invokeHandler('onmessage', this.onmessage, ev)
-        this.dispatch('message', ev)
-      })
-      await platformBridge.openChannelRelay(this.wrapperId, channel)
-      this.relayInstalled = true
       if (this.readyState === WebSocket.CLOSED) {
-        // close() raced the open: the Go sidecar installed a live relay whose
-        // owning wrapper is now gone (handleClose already unlistened). Tear it
-        // down so it does not linger, emitting frames no
-        // listener will consume until the next OpenChannelRelay reuses it --
-        // unless a successor wrapper has already adopted it, in which case it is
-        // the successor's to close.
+        // Close raced the open. Release the relay if a successor has not
+        // already taken the claim.
         this.releaseRelay()
         return
       }
       this.readyState = WebSocket.OPEN
-      // Flush any frames buffered before OPEN before firing the open event, so
-      // they are queued ahead of any sends the open handler issues.
+      // Flush sends queued before OPEN ahead of any sends from an open handler.
       this.flushPendingSends()
       const ev = {} as Event
       this.invokeHandler('onopen', this.onopen, ev)
       this.dispatch('open', ev)
-    }).catch((err: unknown) => {
-      // Two very different failures land here, and they need opposite handling.
-      // Deciding on relayInstalled rather than on "the chain rejected" is the point:
-      // a failure past the install (the flush machinery, a listener-teardown bug)
-      // runs AFTER the relay is installed, and treating that as "the open never
-      // landed" would abandon a live relay nobody then closes. (A throwing
-      // CONSUMER handler never lands here at all: the on* invocations and
-      // dispatch() isolate each handler, the way a native socket's event
-      // dispatch does -- an application bug in an open listener must not tear
-      // down a healthy relay.)
-      if (this.relayInstalled)
-        this.releaseRelay() // we own an installed relay; reap it
+    }
+    catch (err) {
+      if (installed)
+        this.releaseRelay()
       else
-        this.abandonRelayClaim() // never got one; let someone else own it
-      if (this.readyState === WebSocket.CLOSED)
+        this.abandonRelayClaim()
+      if (!this.markClosed())
         return
-      this.unlistenClose?.()
-      this.unlistenClose = null
-      this.readyState = WebSocket.CLOSED
       const ev = new ErrorEvent('error', {
         message: String(err),
       })
       this.invokeHandler('onerror', this.onerror, ev)
       this.dispatch('error', ev)
-      // A native WebSocket fires 'close' after 'error' on a failed connection, and
-      // ChannelManager.ensureWebSocket drains channels in its close handler, so
-      // emit one to keep the relay wrapper faithful to the surface it stands in
-      // for -- and to reclaim state should a future caller have channels open
-      // when a relay reopen fails. This catch already runs asynchronously (a
-      // promise rejection), so emitting synchronously matches handleClose.
+      // A native WebSocket fires close after a connection error.
+      // ChannelManager drains its channels in the close handler.
       this.emitClose({
         code: 1006,
         reason: String(err),
         wasClean: false,
       } as CloseEvent)
-    })
+    }
   }
 
   addEventListener(type: string, listener: EventListener, opts?: { once?: boolean }): void {
@@ -286,27 +253,16 @@ export class TauriRelayWebSocket {
     void queued.finally(() => this.releaseRelay())
   }
 
-  // releaseRelay tears down the shared sidecar relay, but only while this wrapper may
-  // claim it. A wrapper superseded by a successor must leave the relay alone:
-  // CloseChannelRelay closes whichever relay is installed, so closing here would
-  // kill the successor's (see relayClaim).
+  // Only a wrapper that can release the claim sends a close. The sidecar
+  // checks the id if a newer owner adopts the relay before the close arrives.
   private releaseRelay(): void {
     if (this.relayReleased)
       return
     if (!relayClaim.releaseIfClaimable(this.wrapperId))
       return
     this.relayReleased = true
-    // Name the relay this wrapper owns. The claim check above orders us against other
-    // WRAPPERS, but not against the sidecar: it runs each request on its own
-    // goroutine with no ordering, so this close can execute after a successor's open
-    // already adopted the relay. The id lets the sidecar ignore it in that case
-    // instead of tearing down a relay someone else is using.
-    //
-    // A rejection here means the JS claim is already surrendered but the Go-side
-    // relay may still be installed. That is self-healing -- the next
-    // OpenChannelRelay adopts or supersedes whatever is installed -- but it must
-    // not be SILENT: until that next open, the orphaned relay holds its Hub
-    // WebSocket and emits frames nobody consumes.
+    // If the close fails, the sidecar may keep its Hub WebSocket open.
+    // A successor open can adopt or replace that relay.
     platformBridge.closeChannelRelay(this.wrapperId).catch((err) => {
       log.warn('channel relay close failed; leaving relay for successor adoption', {
         error: String(err),
@@ -324,15 +280,8 @@ export class TauriRelayWebSocket {
     relayClaim.abandon(this.wrapperId)
   }
 
-  // handleClose is the sidecar-initiated path (a channel:close event): that
-  // callback already runs asynchronously relative to any caller, so state
-  // transition and emission happen together, as a native close event would.
-  // It settles the relay claim like every other terminal path -- the sidecar
-  // just told us the relay it emitted for is gone, so the claim must not stay
-  // pointed at this dead wrapper. releaseRelay re-checks ownership, so a
-  // successor that already claimed is left alone, and its close RPC lets the
-  // sidecar clear the dead relay's slot instead of waiting for the next open
-  // to reap it.
+  // The sidecar's channel callback delivers the close after earlier frames.
+  // Release the claim and let Rust clear the delivery slot for this owner.
   private handleClose(ev: CloseEvent): void {
     if (!this.markClosed())
       return
@@ -340,16 +289,13 @@ export class TauriRelayWebSocket {
     this.emitClose(ev)
   }
 
-  // markClosed transitions to CLOSED and detaches the sidecar listeners,
-  // reporting whether this call performed the transition. Split from emitClose
-  // so close() can transition synchronously while deferring the event.
+  // Report whether this call transitioned the socket to CLOSED. Keep this
+  // separate from emitClose so local close can defer the event.
   private markClosed(): boolean {
     if (this.readyState === WebSocket.CLOSED)
       return false
     this.readyState = WebSocket.CLOSED
     this.pendingSends = []
-    this.unlistenClose?.()
-    this.unlistenClose = null
     return true
   }
 

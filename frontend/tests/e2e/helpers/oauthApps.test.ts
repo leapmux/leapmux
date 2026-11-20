@@ -133,11 +133,12 @@ describe('listAppsViaAPI', () => {
 
 describe('issueControlCLICredentialViaAPI', () => {
   it('exchanges the code from the consent with the PKCE verifier, and returns the token id', async () => {
-    const requests: Array<{ url: string, body: string }> = []
+    const requests: Array<{ url: string, body: string, redirect: RequestRedirect | undefined }> = []
     vi.mocked(fetchHub).mockImplementation(async (url, init) => {
       requests.push({
         url,
         body: String(init?.body ?? ''),
+        redirect: init?.redirect,
       })
       if (url.endsWith('/oauth/consent')) {
         return new Response(null, {
@@ -154,9 +155,9 @@ describe('issueControlCLICredentialViaAPI', () => {
       .resolves
       .toEqual({ tokenId: 'tok-1' })
 
-    expect(requests.map(request => request.url)).toEqual([
-      'http://hub.test/oauth/consent',
-      'http://hub.test/oauth/token',
+    expect(requests.map(({ url, redirect }) => ({ url, redirect }))).toEqual([
+      { url: 'http://hub.test/oauth/consent', redirect: 'manual' },
+      { url: 'http://hub.test/oauth/token', redirect: 'manual' },
     ])
     const exchange = new URLSearchParams(requests[1]?.body ?? '')
     expect(exchange.get('code')).toBe('C')

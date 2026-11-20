@@ -6,13 +6,12 @@
  * site can build one by hand and no constant can drift from what is actually
  * stored.
  *
- * EVERY KEY IS SCOPED TO ONE ACCOUNT, because two accounts sharing a browser
- * profile must not share stored state. The scope is part of the stored key:
+ * Every key declares an account or device scope. The scope determines how
+ * the module builds the stored key.
  *
- *   - `account` -> `leapmux:u:<userId>:<name>`, and an access with no account
- *     set THROWS. There is no silent fallback: a value written before the
- *     identity resolves has no correct owner, and guessing one is how one
- *     user's preferences end up on another user's screen.
+ *   - `account` -> `leapmux:u:<encoded account>:<name>`. The account includes
+ *     the Hub origin and the user ID. Access throws until the account is set,
+ *     because a value written before the identity resolves has no owner.
  *   - `device` -> `leapmux:<name>`, for the two relay sequence marks that fence
  *     a process-wide sidecar and therefore CANNOT be partitioned. See
  *     `LOCAL_KEY_SPECS`.

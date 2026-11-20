@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/util/atomicfile"
+	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/useronly"
 )
 
@@ -22,6 +23,7 @@ type persistedCookie struct {
 	Name     string     `json:"name"`
 	Value    string     `json:"value"`
 	Path     string     `json:"path"`
+	Domain   string     `json:"domain,omitempty"`
 	Expires  *time.Time `json:"expires,omitempty"`
 	Secure   bool       `json:"secure,omitempty"`
 	HTTPOnly bool       `json:"http_only,omitempty"`
@@ -31,7 +33,7 @@ type persistedCookie struct {
 // expiry compares by instant: the field is a pointer, so struct equality
 // would report a cookie with an expiry as changed whenever it is re-set.
 func (pc persistedCookie) equal(other persistedCookie) bool {
-	if pc.Name != other.Name || pc.Value != other.Value || pc.Path != other.Path ||
+	if pc.Name != other.Name || pc.Value != other.Value || pc.Path != other.Path || pc.Domain != other.Domain ||
 		pc.Secure != other.Secure || pc.HTTPOnly != other.HTTPOnly {
 		return false
 	}
@@ -51,25 +53,29 @@ type sessionFile struct {
 // file. Cookies for the Hub's origin are recorded and written on change; the
 // file survives a restart so the session survives with it.
 type persistentJar struct {
-	inner *cookiejar.Jar
+	inner http.CookieJar
 
 	mu       sync.Mutex
 	base     *url.URL
 	path     string // empty means memory only
-	record   map[string]persistedCookie
+	record   map[sessionCookieKey]persistedCookie
 	lastJSON string // last marshalled record; skip write when unchanged
+}
+
+// newHubCookieJar creates an in-memory jar and its record for exchange snapshots.
+func newHubCookieJar(base *url.URL) *persistentJar {
+	return &persistentJar{
+		inner:  mustNewMemoryJar(),
+		base:   base,
+		record: make(map[sessionCookieKey]persistedCookie),
+	}
 }
 
 // openPersistentJar returns a jar that persists Hub-origin cookies to a file
 // under dir. It never fails: any problem leaves the jar empty in memory and
 // logs a warning. dir may be empty, in which case the jar is memory only.
 func openPersistentJar(base *url.URL, dir string) *persistentJar {
-	inner := mustNewMemoryJar()
-	j := &persistentJar{
-		inner:  inner,
-		base:   base,
-		record: map[string]persistedCookie{},
-	}
+	j := newHubCookieJar(base)
 	if dir == "" {
 		slog.Warn("session jar: no sessions directory; keeping cookies in memory only")
 		return j
@@ -97,11 +103,11 @@ func openPersistentJar(base *url.URL, dir string) *persistentJar {
 	}
 	now := time.Now()
 	for _, pc := range sf.Cookies {
-		if pc.Expires != nil && pc.Expires.Before(now) {
+		if pc.Expires != nil && !pc.Expires.After(now) {
 			continue
 		}
 		c := pc.toHTTP()
-		j.record[cookieKey(&c)] = pc
+		j.record[cookieKey(base, &c)] = pc
 		j.inner.SetCookies(base, []*http.Cookie{&c})
 	}
 	j.lastJSON = string(data)
@@ -148,24 +154,28 @@ func encodeHost(host string) string {
 // SetCookies forwards to the inner jar and, for the Hub's origin, records each
 // cookie and persists the record when it changed.
 func (j *persistentJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
-	j.inner.SetCookies(u, cookies)
 	if !sameHubOrigin(u, j.base) {
+		j.inner.SetCookies(u, cookies)
 		return
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	now := time.Now()
+	j.inner.SetCookies(u, cookies)
 	changed := false
 	for _, c := range cookies {
-		if cookieExpired(c) {
-			k := cookieKey(c)
+		if c.Domain != "" && !acceptsCookieDomain(u, c.Domain) {
+			continue
+		}
+		k := cookieKey(u, c)
+		pc, expired := fromHTTP(c, k.path, now)
+		if expired {
 			if _, ok := j.record[k]; ok {
 				delete(j.record, k)
 				changed = true
 			}
 			continue
 		}
-		k := cookieKey(c)
-		pc := fromHTTP(c)
 		if old, ok := j.record[k]; ok && old.equal(pc) {
 			continue
 		}
@@ -183,20 +193,60 @@ func (j *persistentJar) Cookies(u *url.URL) []*http.Cookie {
 	return j.inner.Cookies(u)
 }
 
-// cookieKey identifies a cookie by name and path, matching cookiejar's own
-// storage key for a given host.
-func cookieKey(c *http.Cookie) string {
-	return c.Name + "|" + c.Path
+type sessionCookieKey struct {
+	name   string
+	path   string
+	domain string
 }
 
-// cookieExpired reports whether a Set-Cookie removes the cookie: MaxAge < 0
-// means delete now (net/http maps Max-Age=0 to -1), and an Expires in the past
-// means the cookie is already dead.
-func cookieExpired(c *http.Cookie) bool {
-	if c.MaxAge < 0 {
-		return true
+// cookieKey uses the effective path and domain because updates can omit the
+// Path attribute or replace a host-only cookie with a cookie for that host.
+func cookieKey(u *url.URL, c *http.Cookie) sessionCookieKey {
+	domain := c.Domain
+	if domain == "" {
+		domain = u.Hostname()
 	}
-	return !c.Expires.IsZero() && c.Expires.Before(time.Now())
+	return sessionCookieKey{
+		name:   c.Name,
+		path:   sessionCookiePath(u, c.Path),
+		domain: strings.ToLower(strings.TrimPrefix(domain, ".")),
+	}
+}
+
+func sessionCookiePath(u *url.URL, path string) string {
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	// Use the same default path as net/http/cookiejar.
+	if lastSlash := strings.LastIndexByte(u.Path, '/'); lastSlash > 0 {
+		return u.Path[:lastSlash]
+	}
+	return "/"
+}
+
+// acceptsCookieDomain uses the standard jar's domain rules even for a
+// deletion. An invalid domain cannot displace a cookie in the record.
+func acceptsCookieDomain(u *url.URL, domain string) bool {
+	probe := mustNewMemoryJar()
+	probe.SetCookies(u, []*http.Cookie{{Name: "domain", Value: "test", Domain: domain, Path: "/"}})
+	return len(probe.Cookies(u)) != 0
+}
+
+// snapshot gives a token exchange its own standard jar, seeded from the
+// record before it sends a request. A redirect can then read staged changes
+// without exposing them to the live proxy.
+func (j *persistentJar) snapshot() http.CookieJar {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	snapshot := mustNewMemoryJar()
+	cookies := make([]*http.Cookie, 0, len(j.record))
+	for _, record := range j.sortedCookies() {
+		cookie := record.toHTTP()
+		cookies = append(cookies, &cookie)
+	}
+	snapshot.SetCookies(j.base, cookies)
+	return snapshot
 }
 
 // persistLocked writes or removes the session file. The caller holds j.mu.
@@ -210,7 +260,7 @@ func (j *persistentJar) persistLocked() {
 	// would not return.
 	now := time.Now()
 	for k, pc := range j.record {
-		if pc.Expires != nil && pc.Expires.Before(now) {
+		if pc.Expires != nil && !pc.Expires.After(now) {
 			delete(j.record, k)
 		}
 	}
@@ -227,20 +277,7 @@ func (j *persistentJar) persistLocked() {
 		j.lastJSON = ""
 		return
 	}
-	cookies := make([]persistedCookie, 0, len(j.record))
-	for _, pc := range j.record {
-		cookies = append(cookies, pc)
-	}
-	// Sorted by name and path so one record always marshals to the same
-	// bytes: the record is a map, and iteration order would otherwise make
-	// the unchanged check below re-write the file.
-	sort.Slice(cookies, func(a, b int) bool {
-		if cookies[a].Name != cookies[b].Name {
-			return cookies[a].Name < cookies[b].Name
-		}
-		return cookies[a].Path < cookies[b].Path
-	})
-	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: cookies}, "", "  ")
+	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: j.sortedCookies()}, "", "  ")
 	if err != nil {
 		slog.Warn("session jar: cannot encode session record; keeping cookies in memory only", "error", err)
 		return
@@ -260,20 +297,52 @@ func (j *persistentJar) persistLocked() {
 	j.lastJSON = string(data)
 }
 
-// fromHTTP converts an http.Cookie to its persisted form.
-func fromHTTP(c *http.Cookie) persistedCookie {
-	pc := persistedCookie{
+// sortedCookies keeps replays and persisted bytes independent of map order.
+// The caller holds j.mu.
+func (j *persistentJar) sortedCookies() []persistedCookie {
+	cookies := make([]persistedCookie, 0, len(j.record))
+	for _, pc := range j.record {
+		cookies = append(cookies, pc)
+	}
+	sort.Slice(cookies, func(a, b int) bool {
+		if cookies[a].Name != cookies[b].Name {
+			return cookies[a].Name < cookies[b].Name
+		}
+		if cookies[a].Path != cookies[b].Path {
+			return cookies[a].Path < cookies[b].Path
+		}
+		return cookies[a].Domain < cookies[b].Domain
+	})
+	return cookies
+}
+
+// fromHTTP converts a cookie to its persisted form and reports whether it
+// removes the cookie. Max-Age overrides Expires, as in net/http/cookiejar.
+func fromHTTP(c *http.Cookie, path string, now time.Time) (pc persistedCookie, expired bool) {
+	if c.MaxAge < 0 {
+		return persistedCookie{}, true
+	}
+	expires := c.Expires
+	if c.MaxAge > 0 {
+		expires = now.Add(time.Duration(c.MaxAge) * time.Second)
+	}
+	if !expires.IsZero() && !expires.After(now) {
+		return persistedCookie{}, true
+	}
+
+	pc = persistedCookie{
 		Name:     c.Name,
 		Value:    c.Value,
-		Path:     c.Path,
+		Path:     path,
+		Domain:   c.Domain,
 		Secure:   c.Secure,
 		HTTPOnly: c.HttpOnly,
 	}
-	if !c.Expires.IsZero() {
-		t := c.Expires.UTC()
+	if !expires.IsZero() {
+		t := expires.UTC()
 		pc.Expires = &t
 	}
-	return pc
+	return pc, false
 }
 
 // toHTTP converts a persisted cookie back to http.Cookie.
@@ -282,6 +351,7 @@ func (pc *persistedCookie) toHTTP() http.Cookie {
 		Name:     pc.Name,
 		Value:    pc.Value,
 		Path:     pc.Path,
+		Domain:   pc.Domain,
 		Secure:   pc.Secure,
 		HttpOnly: pc.HTTPOnly,
 	}
@@ -289,4 +359,48 @@ func (pc *persistedCookie) toHTTP() http.Cookie {
 		c.Expires = *pc.Expires
 	}
 	return c
+}
+
+// sessionFileAccess orders an admitted browser sign-in with reopening its
+// session file. Its mutex only protects the active locks, so slow disk work
+// for one Hub never holds the App's lifecycle mutex or delays another Hub.
+type sessionFileAccess struct {
+	mu    sync.Mutex
+	paths map[string]*sessionFileLock
+}
+
+type sessionFileLock struct {
+	mutex ctxutil.Mutex
+	users int
+}
+
+func (s *sessionFileAccess) lock(ctx context.Context, key string) (func(), error) {
+	s.mu.Lock()
+	if s.paths == nil {
+		s.paths = make(map[string]*sessionFileLock)
+	}
+	entry := s.paths[key]
+	if entry == nil {
+		entry = &sessionFileLock{}
+		s.paths[key] = entry
+	}
+	entry.users++
+	s.mu.Unlock()
+
+	release := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		entry.users--
+		if entry.users == 0 {
+			delete(s.paths, key)
+		}
+	}
+	if err := entry.mutex.Lock(ctx); err != nil {
+		release()
+		return nil, err
+	}
+	return func() {
+		entry.mutex.Unlock()
+		release()
+	}, nil
 }

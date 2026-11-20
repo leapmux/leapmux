@@ -8,7 +8,7 @@ export const ceremonyConfig: CeremonyConfig = {
   gate: 'redirect',
   // The in-app desktop sign-in. Without the slot, HubPage falls back to
   // ContinueInBrowser and the desktop app has no sign-in to offer.
-  inDesktop: () => <BrowserSignIn />,
+  inDesktop: isCurrentArrival => <BrowserSignIn isCurrentArrival={isCurrentArrival} />,
 }
 
 export default function LoginRoute() {

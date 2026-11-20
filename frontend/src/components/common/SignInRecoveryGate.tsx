@@ -1,3 +1,4 @@
+import type { Location } from '@solidjs/router'
 import type { ParentComponent } from 'solid-js'
 import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createSignal, on, Show, untrack } from 'solid-js'
@@ -11,9 +12,11 @@ import { centeredFull } from '~/styles/shared.css'
  * router matches `/a/` as `/a`, so a trailing slash does not make two
  * addresses.
  */
-function isAtAddress(pathname: string, search: string, target: string): boolean {
+function isAtAddress(location: Location, target: string): boolean {
   const url = new URL(target, 'http://leapmux.invalid')
-  return normalizeRoutePath(url.pathname) === normalizeRoutePath(pathname) && url.search === search
+  return normalizeRoutePath(url.pathname) === normalizeRoutePath(location.pathname)
+    && url.search === location.search
+    && url.hash === location.hash
 }
 
 /**
@@ -36,8 +39,9 @@ function isAtAddress(pathname: string, search: string, target: string): boolean 
  *
  * 1. The context adopts the account it read and marks the read completed.
  * 2. This gate navigates to the destination that `postSignInDestination`
- *    gives. A destination the hub serves is a full-document load, and the
- *    document leaves, so recovery is never cleared on that path.
+ *    gives, or releases the current route if the resolver keeps it and the
+ *    account needs no verification. A destination the hub serves loads a
+ *    new document, so recovery does not need to clear on that path.
  * 3. For a client-side route, this gate clears recovery once the router's
  *    location IS the destination. The children then mount directly on the
  *    destination route, and the source route never remounts.
@@ -55,7 +59,15 @@ export const SignInRecoveryGate: ParentComponent = (props) => {
     const recovery = untrack(auth.signInRecovery)
     if (!completed || !recovery)
       return
-    const destination = postSignInDestination(recovery.verificationRequired, recovery.redirect)
+    const verificationRequired = recovery.verificationRequired ?? false
+    const redirect = typeof recovery.redirect === 'function'
+      ? recovery.redirect(location)
+      : recovery.redirect
+    if (redirect === null && !verificationRequired) {
+      auth.finishSignInRecovery()
+      return
+    }
+    const destination = postSignInDestination(verificationRequired, redirect ?? undefined)
     if (destination.kind === 'route')
       setArriving(destination.path)
     followDestination(navigate, destination)
@@ -63,7 +75,7 @@ export const SignInRecoveryGate: ParentComponent = (props) => {
 
   createEffect(() => {
     const target = arriving()
-    if (target === null || !isAtAddress(location.pathname, location.search, target))
+    if (target === null || !isAtAddress(location, target))
       return
     setArriving(null)
     auth.finishSignInRecovery()

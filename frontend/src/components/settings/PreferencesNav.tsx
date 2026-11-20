@@ -30,8 +30,8 @@ export interface PreferencesNavProps {
   compact: boolean
   /**
    * When set, the ADMINISTRATION section ends with an "Unlock
-   * administration..." entry. The dialog passes it while the user is an
-   * administrator whose settings have not been loaded yet.
+   * administration..." entry. The dialog passes it when an administrator
+   * has no current elevation window and no catalogue request is pending.
    */
   onUnlockAdmin?: (() => void) | undefined
 }

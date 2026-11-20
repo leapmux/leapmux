@@ -1,4 +1,5 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
+import type { Location } from '@solidjs/router'
 import type { ParentComponent } from 'solid-js'
 import type { EmailVerificationStatus, GetCurrentUserResponse, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
@@ -36,10 +37,16 @@ const log = createLogger('auth')
  */
 export type SignInOutcome = 'adopted' | 'recovering' | 'superseded'
 
+type SignInRecoveryRedirect = string | ((location: Location) => string | null | undefined)
+
 /** Where a sign-in was asked to continue, for the navigation recovery owns. */
 export interface SignInOptions {
-  /** The address to continue to, such as the CLI consent page; see `postAuthNavigate`. */
-  redirect?: string | undefined
+  /**
+   * The address to continue to, such as the CLI consent page. A resolver reads
+   * the router's location after recovery adopts the account. It returns null
+   * to stay on the current page or undefined to use the default destination.
+   */
+  redirect?: SignInRecoveryRedirect | undefined
 }
 
 /**
@@ -65,10 +72,10 @@ export interface SignInRecovery {
    * once, and a failure whose message is empty still reads as a failure.
    */
   read: SignInRecoveryRead
-  /** The sign-in reported that the account must verify an email address. */
-  verificationRequired: boolean
-  /** The address the sign-in was asked to continue to. */
-  redirect?: string
+  /** Whether email verification is required, once a response reports it. */
+  verificationRequired?: boolean
+  /** Where to continue after recovery adopts the account. */
+  redirect?: SignInRecoveryRedirect
 }
 
 /**
@@ -87,7 +94,9 @@ const RECOVERY_ADOPTION_DISPLACED = 'Your account changed while it was loading. 
  *   while its rows loaded, and the caller's rule still holds the read
  *   current. Nothing else adopts the account then.
  */
-type AccountReadOutcome = 'adopted' | 'superseded' | 'displaced'
+type AccountReadResult
+  = | { outcome: 'adopted', verificationRequired: boolean | undefined }
+    | { outcome: 'superseded' | 'displaced' }
 
 export interface AuthLoginResult {
   outcome: SignInOutcome
@@ -502,12 +511,12 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /**
-   * Read the account, and adopt the answer only while `isSuperseded` still
-   * holds the read current. A failed read rejects.
+   * Read the account and reject on a failed request. Ask `isSuperseded`
+   * whether the answer still applies before adopting it.
    *
-   * The ONE call site of `GetCurrentUser`, and the caller states the
-   * staleness rule, so a new reader cannot forget the check: it cannot read
-   * at all without one. Two rules exist, and each is right for its reader:
+   * The caller states the staleness rule. Desktop sign-in reads
+   * `GetCurrentUser` through `runSignIn`, which checks its operation before
+   * adopting the session. The other readers use one of these rules.
    *
    * - `refreshUser` and the bootstrap restore pass `supersededByAnyWrite()`,
    *   because a response that an unrelated write outdated puts older account
@@ -516,18 +525,24 @@ export const AuthProvider: ParentComponent = (props) => {
    *   that an unrelated write discarded leaves the gate waiting with no read
    *   in flight. See `readForRecovery`.
    */
-  const readCurrentUser = async (isSuperseded: () => boolean): Promise<AccountReadOutcome> => {
+  const readCurrentUser = async (isSuperseded: () => boolean): Promise<AccountReadResult> => {
     const resp = await authClient.getCurrentUser({})
     if (isSuperseded())
-      return 'superseded'
-    if (await adoptCurrentUser(resp))
-      return 'adopted'
+      return { outcome: 'superseded' }
+    if (await adoptCurrentUser(resp)) {
+      return {
+        outcome: 'adopted',
+        verificationRequired: resp.sessionReport?.emailVerification?.verificationRequired,
+      }
+    }
     // `setUser` moved `authGeneration` itself, so `supersededByAnyWrite` reads
     // every refusal as superseded, which it is for that rule: a newer write
     // owns the state. The operation rule tells the two cases apart.
-    return isSuperseded()
-      ? 'superseded'
-      : 'displaced'
+    return {
+      outcome: isSuperseded()
+        ? 'superseded'
+        : 'displaced',
+    }
   }
 
   const refreshUser = async () => {
@@ -598,13 +613,13 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const readForRecovery = async (op: number) => {
     try {
-      const outcome = await readCurrentUser(() => !isCurrent(op))
+      const result = await readCurrentUser(() => !isCurrent(op))
       // The operation check also covers an adopted account: a newer
       // operation that started while the account's rows loaded owns the
       // state, and writes the rest of it.
-      if (outcome === 'superseded' || !isCurrent(op))
+      if (result.outcome === 'superseded' || !isCurrent(op))
         return
-      if (outcome === 'displaced') {
+      if (result.outcome !== 'adopted') {
         // `setUser` refused the account because a local write landed while
         // its rows loaded, yet no newer operation owns the state. Nothing
         // else will finish this recovery, so the gate offers Retry.
@@ -617,6 +632,7 @@ export const AuthProvider: ParentComponent = (props) => {
       loadTimeouts().catch(() => {})
       patchRecovery({
         read: { kind: 'completed' },
+        verificationRequired: signInRecovery()?.verificationRequired ?? result.verificationRequired ?? false,
       })
     }
     catch (err) {
@@ -633,13 +649,12 @@ export const AuthProvider: ParentComponent = (props) => {
 
   /**
    * Adopt what a SUCCESSFUL sign-in reported, under the operation that ran it.
-   * The one adoption both sign-in paths share: `runSignIn` (Login,
-   * FinishPasskeyLogin) and `setAuth` (the sign-ups, the OAuth completion and
-   * the first solo password).
+   * `runSignIn` handles password, passkey and desktop browser sign-in.
+   * `setAuth` handles sign-up, OAuth completion and the first solo password.
    *
    * With an account, this is the identity transition `adoptSignedInUser`
-   * makes, then the verification cooldown, then the elevation the reply
-   * granted -- only `SetInitialSoloPassword` grants one.
+   * makes, followed by the verification cooldown and any elevation the
+   * reply reports.
    *
    * Without an account, the sign-in still SUCCEEDED: the session cookie now
    * belongs to an account this page cannot read yet. The identity transition
@@ -681,7 +696,9 @@ export const AuthProvider: ParentComponent = (props) => {
     setBootstrapError(null)
     setSignInRecovery({
       read: { kind: 'reading' },
-      verificationRequired: verification?.verificationRequired ?? false,
+      ...(verification
+        ? { verificationRequired: verification.verificationRequired }
+        : {}),
       ...(opts.redirect !== undefined
         ? { redirect: opts.redirect }
         : {}),
@@ -794,7 +811,7 @@ export const AuthProvider: ParentComponent = (props) => {
       // superseded the restore. When that sign-in then fails, or its passkey
       // prompt is dismissed, the restored account is this document's account,
       // and nothing else loads the hub's timeouts for it.
-      if (await readCurrentUser(supersededByAnyWrite()) === 'adopted')
+      if ((await readCurrentUser(supersededByAnyWrite())).outcome === 'adopted')
         loadTimeouts().catch(() => {})
     }
     catch (err) {

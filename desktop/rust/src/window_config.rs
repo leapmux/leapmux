@@ -5,7 +5,7 @@
 //! refused. A Tauri-created window would skip that refusal, and nothing at
 //! compile time would notice.
 
-use tauri::utils::config::Config;
+use tauri::utils::{acl::capability::Capability, config::Config};
 
 const BASE_CONFIG: &str = include_str!("../tauri.conf.json");
 
@@ -53,5 +53,35 @@ fn the_main_window_sets_create_false() {
             "{name} must not set app.windows; a replaced list must repeat \
              \"create\": false to keep the shell building the window"
         );
+    }
+}
+
+#[test]
+fn the_main_webview_cannot_create_native_webviews() {
+    let capability: Capability = serde_json::from_str(include_str!("../capabilities/default.json"))
+        .expect("the default capability must parse as JSON");
+    assert_eq!(capability.windows, [crate::MAIN_WINDOW_LABEL]);
+    assert!(capability.webviews.is_empty());
+    assert!(capability.remote.is_none());
+    for permission in [
+        "core:webview:allow-create-webview",
+        "core:webview:allow-create-webview-window",
+        "core:window:allow-create",
+    ] {
+        assert!(
+            !capability
+                .permissions
+                .iter()
+                .any(|entry| entry.identifier().as_ref() == permission),
+            "the default capability must not grant {permission}"
+        );
+    }
+}
+
+#[test]
+fn the_notice_window_loads_only_the_bundled_notice() {
+    match crate::notice_window_url() {
+        tauri::WebviewUrl::App(path) => assert_eq!(path, std::path::Path::new("NOTICE.html")),
+        _ => panic!("the licenses window must start on a bundled asset"),
     }
 }

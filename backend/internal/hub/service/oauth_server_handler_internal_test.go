@@ -1,40 +1,101 @@
 package service
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
-// The consent-route check must be exact on the path: only the two pages
-// consentLeg serves with GET count, so a longer path like
-// /oauth/authorizeX and the token endpoint stay out, and a query or a
-// fragment does not change the page.
-func TestConsentRouteMatchesTheServedPathExactly(t *testing.T) {
+func TestConsentRouteMatchesEveryRegisteredGETRoute(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		redirect string
-		want     bool
-	}{
-		{"the authorize page", "/oauth/authorize", true},
-		{"the authorize page with a query", "/oauth/authorize?client_id=abc", true},
-		{"the authorize page with a fragment", "/oauth/authorize#done", true},
-		{"the device page", "/oauth/device", true},
-		{"the device page with a query", "/oauth/device?user_code=1234-5678", true},
-		{"a longer path beside the authorize page", "/oauth/authorizeX", false},
-		{"a longer path under the authorize page", "/oauth/authorize/extra", false},
-		{"the trailing slash of the authorize page", "/oauth/authorize/", false},
-		{"the token endpoint", "/oauth/token", false},
-		{"the consent endpoint, served with POST only", "/oauth/consent", false},
-		{"the home page", "/", false},
-		{"an empty redirect", "", false},
-		{"the authorize page specified inside a query", "/login?to=/oauth/authorize", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, isConsentRoute(tt.redirect))
+	mux := http.NewServeMux()
+	handler := &OAuthServerHandler{sessionHasher: hubtestutil.TestSecretHasher()}
+	handler.RegisterRoutes(mux)
+	for _, route := range oauthConsentRoutes {
+		t.Run(route.path, func(t *testing.T) {
+			allowsGET := slices.Contains(route.methods, http.MethodGet)
+			for _, suffix := range []string{"", "?client_id=abc", "#done"} {
+				target := route.path + suffix
+				assert.Equal(t, allowsGET, isConsentRoute(target), target)
+			}
+
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, route.path, nil))
+			if allowsGET {
+				assert.Equal(t, http.StatusFound, response.Code, "a GET consent route starts by requiring sign-in")
+			} else {
+				assert.Equal(t, http.StatusMethodNotAllowed, response.Code, "the route must refuse GET")
+			}
+
+			for _, method := range route.methods {
+				if method == http.MethodGet {
+					continue
+				}
+				t.Run(method, func(t *testing.T) {
+					response := httptest.NewRecorder()
+					mux.ServeHTTP(response, httptest.NewRequest(method, route.path, nil))
+					want := http.StatusUnauthorized
+					if method == http.MethodHead {
+						want = http.StatusFound
+					}
+					assert.Equal(t, want, response.Code, "the route must accept this method and require sign-in")
+				})
+			}
 		})
 	}
+}
+
+func TestConsentRouteRejectsOtherPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, redirect := range []string{
+		"/oauth/authorizeX",
+		"/oauth/authorize/extra",
+		"/oauth/authorize/",
+		"/oauth/token",
+		"/",
+		"",
+		"/login?to=/oauth/authorize",
+	} {
+		assert.False(t, isConsentRoute(redirect), redirect)
+	}
+}
+
+func TestConsentRouteMatchesEscapedPathSegments(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	new(OAuthServerHandler).RegisterRoutes(mux)
+	getRoutes := make(map[string]bool, len(oauthConsentRoutes))
+	for _, route := range oauthConsentRoutes {
+		getRoutes[route.path] = slices.Contains(route.methods, http.MethodGet)
+	}
+	tests := []struct {
+		path        string
+		wantPattern string
+	}{
+		{"/oauth/%61uthorize?client_id=abc", "/oauth/authorize"},
+		{"/%6Fauth/devi%63e", "/oauth/device"},
+		{"/oauth/%63onsent", "/oauth/consent"},
+		{"/oauth%2Fauthorize", ""},
+		{"/oauth%2fdevice", ""},
+		{"/oauth/%2Fauthorize", ""},
+		{"/oauth/authorize%2F", ""},
+		{"/oauth/%2561uthorize", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			_, pattern := mux.Handler(req)
+			assert.Equal(t, tt.wantPattern, pattern)
+			assert.Equal(t, getRoutes[tt.wantPattern], isConsentRoute(tt.path))
+		})
+	}
+	assert.False(t, isConsentRoute("/oauth/%6zuthorize"))
 }

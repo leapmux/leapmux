@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import { useLocation } from '@solidjs/router'
-import { Show } from 'solid-js'
+import { onCleanup, Show } from 'solid-js'
 import { HubPage } from '~/components/common/HubPage'
 import { SignedOutOnly } from '~/components/common/SignedOutOnly'
 import { normalizeRoutePath } from '~/lib/postAuthNavigate'
@@ -24,7 +24,7 @@ import { normalizeRoutePath } from '~/lib/postAuthNavigate'
  */
 export interface CeremonyConfig {
   gate: 'redirect' | 'explain' | false
-  inDesktop?: () => JSX.Element
+  inDesktop?: (isCurrentArrival: () => boolean) => JSX.Element
 }
 
 /**
@@ -107,17 +107,25 @@ export default function CeremonyLayout(props: { children?: JSX.Element }) {
   return (
     <Show keyed when={location.pathname}>
       {(pathname) => {
-        const config = ceremonyConfigFor(pathname)
-        const page = (
-          <HubPage inDesktop={config.inDesktop}>
+        const { gate, inDesktop } = ceremonyConfigFor(pathname)
+        // This owner survives the guard hiding a form that just signed in.
+        // A different pathname ends this arrival. Query and fragment changes
+        // stay on the same arrival and can update its destination.
+        let mounted = true
+        onCleanup(() => {
+          mounted = false
+        })
+        const isCurrentArrival = () => mounted && location.pathname === pathname
+        const page = () => (
+          <HubPage inDesktop={inDesktop && (() => inDesktop(isCurrentArrival))}>
             {props.children}
           </HubPage>
         )
-        return config.gate === false
-          ? page
+        return gate === false
+          ? page()
           : (
-              <SignedOutOnly whenSignedIn={config.gate}>
-                {page}
+              <SignedOutOnly whenSignedIn={gate}>
+                {page()}
               </SignedOutOnly>
             )
       }}

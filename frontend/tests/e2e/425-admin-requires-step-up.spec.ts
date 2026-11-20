@@ -19,17 +19,25 @@ test.describe('425-admin-requires-step-up', () => {
     await expect(page.getByText('Verify your identity')).not.toBeVisible()
   })
 
-  test('selecting the unlock entry opens the prompt and reveals admin groups after unlock', async ({ page, leapmuxServer }) => {
+  test('selecting the unlock entry reveals admin settings until verification ends', async ({ page, leapmuxServer }) => {
     const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
     await loginViaToken(page, cookie)
-    await page.goto(`${leapmuxServer.hubUrl}/?prefs=admin`)
+    const requestedSection = new URL('/?prefs=admin-general', leapmuxServer.hubUrl).href
+    await page.goto(requestedSection)
 
-    await page.getByTestId('preferences-nav-unlock-admin').click()
+    const general = page.getByTestId('preferences-nav-admin-general')
+    const unlock = page.getByTestId('preferences-nav-unlock-admin')
+    await unlock.click()
     await expect(page.getByText('Verify your identity')).toBeVisible()
 
     await answerElevationPrompt(page, TEST_ADMIN_PASSWORD)
 
-    await expect(page.getByTestId('preferences-nav-admin-general')).toBeVisible()
+    await expect(general).toHaveAttribute('aria-selected', 'true')
+    await page.getByTestId('elevation-drop').click()
+    await expect(general).not.toBeVisible()
+    await expect(unlock).toBeVisible()
+    await expect(page.getByTestId('preferences-nav-admin-apps')).toBeVisible()
+    await expect(page).toHaveURL(requestedSection)
   })
 
   test('an administrator who signed in through the page sees admin groups at once', async ({ page, leapmuxServer }) => {
@@ -42,5 +50,6 @@ test.describe('425-admin-requires-step-up', () => {
     await openSettingsAt(page, 'admin-general')
 
     await expect(page.getByTestId('preferences-nav-admin-general')).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).not.toBeVisible()
   })
 })

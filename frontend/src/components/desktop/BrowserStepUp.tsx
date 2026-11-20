@@ -14,9 +14,10 @@ export const BrowserStepUp: Component<{
   onElevated: () => void
 }> = (props) => {
   const auth = useAuth()
-  const { phase, failure, flow, start } = useBrowserCeremony('step-up', async () => {
+  const { phase, failure, flow, start } = useBrowserCeremony('step-up', async (signal) => {
     await auth.refreshUser()
-    props.onElevated()
+    if (!signal.aborted)
+      props.onElevated()
   })
 
   return (
@@ -32,6 +33,7 @@ export const BrowserStepUp: Component<{
         <div class={ceremonyPage.waitingActions}>
           <button
             type="button"
+            disabled={flow() === null}
             onClick={() => {
               const f = flow()
               if (f) {
@@ -43,6 +45,7 @@ export const BrowserStepUp: Component<{
           </button>
           <button
             type="button"
+            disabled={flow() === null}
             onClick={() => {
               const f = flow()
               if (f) {

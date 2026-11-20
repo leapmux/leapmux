@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/loopbackauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -666,51 +667,70 @@ func TestElevate_RunsTheDeviceCeremonyWhenTheHubGrantsIt(t *testing.T) {
 	assert.Zero(t, n, "a device step-up redeems no code")
 }
 
-// TestElevate_WithoutATokenIDTellsTheUserToSignInAgain keeps a ceremony that
-// cannot bind from starting. Without a token id there is no step_up target,
-// so the only way forward is a fresh login -- and the failure must say so
-// before any listener binds.
-func TestElevate_WithoutATokenIDTellsTheUserToSignInAgain(t *testing.T) {
-	hub := newElevationHub(t)
-	hub.startStatus = http.StatusBadRequest
-	hub.startBody = browserStepUpRefusal
-	// seedCredentials writes a credential file with no token id -- the shape
-	// of a login that predates the field.
-	c := elevatableClient(t, hub.server.URL)
-	stub := stubBrowser(t, approve)
-	captureStreams(t)
+// TestElevateViaLoopback_WithoutATokenIDTellsTheUserToSignInAgain
+// checks that the CLI rejects a credential with no step-up target before it
+// starts the loopback flow, which would bind a listener.
+func TestElevateViaLoopback_WithoutATokenIDTellsTheUserToSignInAgain(t *testing.T) {
+	// seedCredentials writes a credential file without a token id.
+	c := elevatableClient(t, "https://hub.example")
+	var starts int
+	start := func(loopbackauth.Request) (*loopbackauth.Flow, error) {
+		starts++
+		return nil, assert.AnError
+	}
 
-	err := c.Elevate(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sign in again with `leapmux control auth login`")
-	assert.Zero(t, stub.callsMade(), "no listener binds, so no detour is ever offered")
-	n, _, _ := hub.redemption()
-	assert.Zero(t, n)
+	err := c.elevateViaLoopback(context.Background(), start)
+
+	assert.ErrorIs(t, err, errStepUpNeedsSignIn)
+	assert.ErrorContains(t, err, "sign in again with `leapmux control auth login`")
+	assert.Zero(t, starts, "the loopback flow must start only after identifying the target")
 }
 
-// TestElevate_RefreshesTheBearerAfterAWaitThatExpiresTheToken covers the
-// wait itself: the step-up blocks on a person while the access token runs
-// out, and the redemption must present the credential the code identifies, not
-// the corpse of the one that asked.
-func TestElevate_RefreshesTheBearerAfterAWaitThatExpiresTheToken(t *testing.T) {
-	hub := newRepairHub(t, 3600)
-	hub.elevation.startStatus = http.StatusBadRequest
-	hub.elevation.startBody = browserStepUpRefusal
-	// An expiry inside the refresh skew: the token dies while the person is
-	// at the browser.
-	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(refreshSkew/2))
-	stub := stubBrowser(t, approve)
-	captureStreams(t)
+// TestElevate_RefreshesTheExpiredBearerOnlyAfterApproval expires the bearer
+// during the browser ceremony. Approval must renew the credential before
+// redemption. A denial must return without renewing it.
+func TestElevate_RefreshesTheExpiredBearerOnlyAfterApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		callback func(string) string
+		approved bool
+	}{
+		{name: "approval", callback: approve, approved: true},
+		{name: "denial", callback: deny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newRepairHub(t, 3600)
+			hub.elevation.startStatus = http.StatusBadRequest
+			hub.elevation.startBody = browserStepUpRefusal
+			c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
+			stub := stubBrowser(t, func(state string) string {
+				assert.Zero(t, hub.rotations.Load(), "the CLI has not refreshed before the browser answers")
+				creds, err := LoadCredentials(hub.server.URL)
+				require.NoError(t, err)
+				creds.ExpiresAt = time.Now().Add(-time.Hour)
+				require.NoError(t, SaveCredentials(hub.server.URL, *creds))
+				c.setBearer(creds.AccessToken, creds.ExpiresAt)
+				return tc.callback(state)
+			})
+			captureStreams(t)
 
-	require.NoError(t, c.Elevate(context.Background()))
+			err := c.Elevate(context.Background())
 
-	assert.Equal(t, 1, stub.callsMade())
-	assert.GreaterOrEqual(t, hub.rotations.Load(), int64(1),
-		"the wait must refresh the credential it outlived")
-	n, bearer, _ := hub.elevation.redemption()
-	assert.Equal(t, 1, n)
-	assert.Equal(t, "Bearer lmx_a_access_1", bearer,
-		"the token request carries the NEW bearer")
+			assert.Equal(t, 1, stub.callsMade())
+			assert.Equal(t, "Bearer lmx_a_access_0", hub.elevation.presentedCredential())
+			n, bearer, _ := hub.elevation.redemption()
+			if tc.approved {
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, hub.rotations.Load(), "approval renews the expired bearer once")
+				assert.Equal(t, 1, n)
+				assert.Equal(t, "Bearer lmx_a_access_1", bearer)
+			} else {
+				require.ErrorContains(t, err, "access_denied")
+				assert.Zero(t, hub.rotations.Load(), "denial ends the ceremony before renewal")
+				assert.Zero(t, n, "denial redeems no code")
+			}
+		})
+	}
 }
 
 // TestElevate_RepairsTheBearerAndPostsAgainAfterA401 pins the second post.
@@ -742,24 +762,6 @@ func TestElevate_RepairsTheBearerAndPostsAgainAfterA401(t *testing.T) {
 	assert.Equal(t, 2, n, "one refused redemption, then the replay")
 	assert.Equal(t, "Bearer lmx_a_access_1", bearer,
 		"the replay carries the repaired bearer")
-}
-
-// TestElevate_ReportsTheDenyThePersonChose keeps a deliberate refusal from
-// reading as a failure of the ceremony.
-func TestElevate_ReportsTheDenyThePersonChose(t *testing.T) {
-	hub := newElevationHub(t)
-	hub.startStatus = http.StatusBadRequest
-	hub.startBody = browserStepUpRefusal
-	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
-	stub := stubBrowser(t, deny)
-	captureStreams(t)
-
-	err := c.Elevate(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "access_denied")
-	assert.Equal(t, 1, stub.callsMade())
-	n, _, _ := hub.redemption()
-	assert.Zero(t, n, "a Deny redeems nothing")
 }
 
 // TestElevate_ReportsTheHubsRefusalOfTheCode keeps the hub's own
@@ -796,7 +798,7 @@ func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt
 
 	t.Run("a missing credential file says sign in again", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
-		err := c.elevateViaLoopback(context.Background())
+		err := c.elevateViaLoopback(context.Background(), loopbackauth.Start)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sign in again with `leapmux control auth login`")
 	})
@@ -808,7 +810,7 @@ func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
 
-		err = c.elevateViaLoopback(context.Background())
+		err = c.elevateViaLoopback(context.Background(), loopbackauth.Start)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, errStepUpNeedsSignIn,
 			"a corrupt file is not a credential without a token id")

@@ -53,6 +53,24 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	}
 }
 
+func TestAuthorizationCodeCredentialReferencesMatchTheirKinds(t *testing.T) {
+	t.Parallel()
+
+	for _, rel := range enumColumnMigrations {
+		t.Run(rel, func(t *testing.T) {
+			sql := statementsOf(t, rel)
+			dialect, _, _ := strings.Cut(rel, string(filepath.Separator))
+			for _, ref := range []string{"step_up", "minted"} {
+				emptyID := ref + "_ref_id = ''"
+				if dialect == "mysql" {
+					emptyID = "OCTET_LENGTH(" + ref + "_ref_id) = 0"
+				}
+				assert.Contains(t, sql, "CHECK (("+ref+"_kind IS NULL) = ("+emptyID+"))")
+			}
+		})
+	}
+}
+
 // enumRangeColumn is one enum column's CHECK range, and the proto enum it must
 // match.
 type enumRangeColumn struct {
@@ -128,20 +146,14 @@ func enumRangeColumns(t *testing.T) []enumRangeColumn {
 			column:       "oauth_authorization_codes.step_up_kind",
 			lastOrdinal:  int32(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_TOKEN),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.CredentialRefKind_name),
-			checks: []string{
-				"CHECK (step_up_kind BETWEEN 1 AND 2)",
-				"CHECK ((step_up_kind IS NULL) = (step_up_ref_id = ''))",
-			},
+			checks:       []string{"CHECK (step_up_kind BETWEEN 1 AND 2)"},
 		},
 		{
 			// Optional: SQL NULL spells nothing minted yet. See step_up_kind.
 			column:       "oauth_authorization_codes.minted_kind",
 			lastOrdinal:  int32(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_TOKEN),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.CredentialRefKind_name),
-			checks: []string{
-				"CHECK (minted_kind BETWEEN 1 AND 2)",
-				"CHECK ((minted_kind IS NULL) = (minted_ref_id = ''))",
-			},
+			checks:       []string{"CHECK (minted_kind BETWEEN 1 AND 2)"},
 		},
 		{
 			// Optional: SQL NULL spells a step-up code, and the tie holds a

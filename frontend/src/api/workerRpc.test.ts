@@ -49,13 +49,10 @@ vi.mock('~/api/transport', () => ({
   apiLoadingTimeoutMs: () => 30_000,
 }))
 
-// The relay wrapper's constructor drives the sidecar's event and relay
-// commands through this object. Mock the object's four methods only: the
-// `isTauriApp` selection itself stays real, so the test's Tauri flag is the
-// one that decides.
+// Replace the bridge's relay operations. The real isTauriApp still chooses
+// the transport from the test's Tauri flag.
 const bridgeMocks = vi.hoisted(() => ({
-  onEvent: vi.fn<() => Promise<() => void>>(),
-  openChannelRelay: vi.fn<() => Promise<void>>(),
+  openChannelRelay: vi.fn<() => Promise<boolean>>(),
   closeChannelRelay: vi.fn<() => Promise<void>>(),
   sendChannelMessage: vi.fn(),
 }))
@@ -66,7 +63,6 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
     ...actual,
     platformBridge: {
       ...actual.platformBridge,
-      onEvent: bridgeMocks.onEvent,
       openChannelRelay: bridgeMocks.openChannelRelay,
       closeChannelRelay: bridgeMocks.closeChannelRelay,
       sendChannelMessage: bridgeMocks.sendChannelMessage,
@@ -534,10 +530,8 @@ describe('the browser channel transport', () => {
 describe('BrowserChannelTransport createWebSocket', () => {
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
-    bridgeMocks.onEvent.mockReset()
-    bridgeMocks.onEvent.mockResolvedValue(vi.fn())
     bridgeMocks.openChannelRelay.mockReset()
-    bridgeMocks.openChannelRelay.mockResolvedValue(undefined)
+    bridgeMocks.openChannelRelay.mockResolvedValue(true)
     bridgeMocks.closeChannelRelay.mockReset()
     bridgeMocks.closeChannelRelay.mockResolvedValue(undefined)
     bridgeMocks.sendChannelMessage.mockReset()

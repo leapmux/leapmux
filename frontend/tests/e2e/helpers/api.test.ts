@@ -2,6 +2,7 @@ import type { DescMethod, JsonValue } from '@bufbuild/protobuf'
 import type { ChannelTransport } from '../../../src/lib/channel'
 import { fromJson } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
 import { MAX_PAGE_LIMIT } from '~/generated/contracts/pagination'
 import { AdminSettingsService } from '~/generated/proto/leapmux/v1/admin_pb'
 import { AgentProvider, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -535,7 +536,7 @@ describe('listCustomizedHubSettingsViaAPI', () => {
         { key: 'signup_enabled', valueJson: 'true', customized: false },
       ],
     }))
-    await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session')).resolves.toEqual([
+    await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session', 'secret')).resolves.toEqual([
       { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' },
     ])
     expect(requests.map(request => request.method)).toEqual([
@@ -562,7 +563,7 @@ describe('listCustomizedHubSettingsViaAPI', () => {
       }
       return new Response('{"code":"failed_precondition"}', {
         status: 403,
-        headers: { 'Leapmux-Elevation-Required': '1' },
+        headers: { [ELEVATION_REQUIRED_HEADER]: '1' },
       })
     })
     await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session', 'secret')).resolves.toEqual([

@@ -161,7 +161,7 @@ Handing the **input queue**'s first item to the turn an agent already runs, inst
 
 ### Step-up
 
-The ceremony that proves a factor for a credential rather than for a browser session. An app that needs one is refused with a marker and runs the ceremony its credential's issuance calls for: a credential from the device-code login or from an administrator opens `/oauth/step-up` — the device-code ceremony — and one from a browser login, such as the default `leapmux control auth login`, verifies through a loopback ceremony in a browser on its own machine. Either way the account holder approves in a browser, and the credential then holds a window for {{< duration elevation-window >}}. It issues nothing new. An app is refused the device-code ceremony unless its owner allowed it per app. See [Session elevation](/docs/admin/security/#session-elevation).
+A ceremony that proves a factor and opens a {{< duration elevation-window >}} window on an existing session or app credential. A web browser verifies a factor directly on the Hub’s page to elevate its own session. Remote-Hub Desktop sessions and app credentials issued through a browser use a loopback ceremony on the same machine. App credentials issued through device-code login or by an administrator use the device-code ceremony at `/oauth/step-up`. Both app-mediated ceremonies require the requesting app’s registration to allow elevation and a browser session with a current window to approve the request. Step-up issues no new credential. See [Session elevation](/docs/admin/security/#session-elevation).
 
 ## T
 

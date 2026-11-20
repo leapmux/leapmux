@@ -5,6 +5,7 @@ import { PreferencesProvider } from '~/context/PreferencesContext'
 import { reportDesktopShellRefusals, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
 import { promptForElevation, setElevationPrompter } from '~/lib/elevationPrompt'
 import { accountWireDescriptors } from '~/test-support/accountSchema'
+import { deferred, settle } from '~/test-support/async'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
 import { PreferencesDialog } from './PreferencesDialog'
@@ -17,7 +18,10 @@ const solo = vi.hoisted(() => vi.fn(() => false))
 // Solo over local IPC: the hub asks for no step-up and reports no deadline, so
 // the dialog unlocks the administration settings with no window at all.
 const autoAuthenticated = vi.hoisted(() => vi.fn(() => false))
-const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
+const [elevationExpiresAt, setElevationExpiresAt] = createSignal<{ seconds: bigint, nanos: number }>()
+const dropElevation = vi.fn(async () => {
+  setElevationExpiresAt(undefined)
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -61,8 +65,8 @@ vi.mock('~/context/AuthContext', async () => {
         ...account(),
         isAdmin: isAdmin(),
       }),
-      elevationExpiresAt: () => elevationExpiresAt(),
-      dropElevation: vi.fn().mockResolvedValue(undefined),
+      elevationExpiresAt,
+      dropElevation,
       refreshUser,
     }),
   }
@@ -144,13 +148,14 @@ beforeEach(() => {
   solo.mockReturnValue(false)
   desktop.mockReturnValue(false)
   autoAuthenticated.mockReturnValue(false)
-  elevationExpiresAt.mockReturnValue(undefined)
+  setElevationExpiresAt(undefined)
   resetDesktopShellStatusForTests()
 })
 
 afterEach(() => {
   cleanup()
   setElevationPrompter(null)
+  vi.useRealTimers()
 })
 
 // The desktop shell can refuse what the account already stored: a Linux
@@ -230,7 +235,7 @@ describe('PreferencesDialog admin restriction', () => {
   it('shows the administration groups only to admins', async () => {
     isAdmin.mockReturnValue(true)
     // A current window, so the administration settings load on open.
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -285,7 +290,7 @@ describe('PreferencesDialog admin restriction', () => {
   // a fresh editor.
   it('keeps an open admin editor mounted through an account re-read', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -327,7 +332,7 @@ describe('PreferencesDialog admin restriction', () => {
 
   it('marks admin groups that hold restart-class settings', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -363,7 +368,7 @@ describe('PreferencesDialog admin restriction', () => {
   // nothing in it that needs a restart, so saying so would be false.
   it('neither marks nor warns when the only restart row is hidden', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     solo.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [
@@ -441,7 +446,7 @@ describe('PreferencesDialog admin restriction', () => {
 
   it('renders the restart warning on restart groups', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [
         {
@@ -494,9 +499,35 @@ describe('PreferencesDialog admin unlock', () => {
     expect(listSettings).not.toHaveBeenCalled()
   })
 
+  it('sends no call when the window ends between render and the effects', async () => {
+    vi.useFakeTimers()
+    const deadline = Date.parse('2026-01-01T09:30:00Z')
+    vi.setSystemTime(deadline - 1)
+    isAdmin.mockReturnValue(true)
+    setElevationExpiresAt({
+      seconds: BigInt(deadline / 1000),
+      nanos: 0,
+    })
+
+    function EndWindowDuringRender() {
+      vi.setSystemTime(deadline)
+      return null
+    }
+    render(() => (
+      <PreferencesProvider>
+        <PreferencesDialog category="admin-general" onCategory={() => {}} onClose={() => {}} />
+        <EndWindowDuringRender />
+      </PreferencesProvider>
+    ))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(listSettings).not.toHaveBeenCalled()
+    expect(screen.getByTestId('preferences-nav-unlock-admin')).toBeInTheDocument()
+  })
+
   it('loads on open and offers no entry when the window is current', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue(adminGeneralSettings())
     renderDialog('admin-general')
 
@@ -542,6 +573,164 @@ describe('PreferencesDialog admin unlock', () => {
     expect(screen.getByTestId('preferences-nav-unlock-admin')).toBeTruthy()
   })
 
+  it('loads the catalog when another account action grants a window while Preferences is open', async () => {
+    isAdmin.mockReturnValue(true)
+    listSettings.mockResolvedValue(adminGeneralSettings())
+    renderDialog('admin-general')
+
+    expect(await screen.findByTestId('preferences-nav-unlock-admin')).toBeInTheDocument()
+    expect(listSettings).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('preferences-nav-admin-general')).not.toBeInTheDocument()
+
+    setElevationExpiresAt(inTwoHours())
+
+    await settle()
+    expect(listSettings).toHaveBeenCalledOnce()
+    expect(screen.getByTestId('preferences-nav-admin-general')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Session duration')).toBeInTheDocument()
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).not.toBeInTheDocument()
+  })
+
+  it('lets an in-flight Unlock load finish when its step-up updates the mirror', async () => {
+    isAdmin.mockReturnValue(true)
+    const catalog = deferred<ReturnType<typeof adminGeneralSettings>>()
+    listSettings.mockReturnValue(catalog.promise)
+    renderDialog('admin-general')
+
+    fireEvent.click(await screen.findByTestId('preferences-nav-unlock-admin'))
+    setElevationExpiresAt(inTwoHours())
+    expect(listSettings).toHaveBeenCalledOnce()
+
+    catalog.resolve(adminGeneralSettings())
+    expect(await screen.findByText('Session duration')).toBeInTheDocument()
+    expect(listSettings).toHaveBeenCalledOnce()
+  })
+
+  it('lets Unlock replace a pending catalogue from an ended window', async () => {
+    isAdmin.mockReturnValue(true)
+    setElevationExpiresAt(inTwoHours())
+    const oldCatalogue = deferred<ReturnType<typeof adminGeneralSettings>>()
+    const newCatalogue = deferred<ReturnType<typeof adminGeneralSettings>>()
+    listSettings.mockReturnValueOnce(oldCatalogue.promise).mockReturnValueOnce(newCatalogue.promise)
+    renderDialog('admin-general')
+    expect(listSettings).toHaveBeenCalledOnce()
+
+    setElevationExpiresAt(undefined)
+    fireEvent.click(screen.getByTestId('preferences-nav-unlock-admin'))
+    setElevationExpiresAt(inTwoHours())
+    expect(listSettings).toHaveBeenCalledTimes(2)
+
+    oldCatalogue.resolve(adminGeneralSettings())
+    await settle()
+    expect(screen.queryByText('Session duration')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preferences-nav-admin-apps')).toBeInTheDocument()
+
+    newCatalogue.resolve(adminGeneralSettings())
+    expect(await screen.findByText('Session duration')).toBeInTheDocument()
+    expect(listSettings).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['drop', 'expiry'] as const)('hides settings in navigation, the panel, and search on %s', async (end) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T09:30:00Z'))
+    const until = {
+      seconds: BigInt(Date.now() / 1000 + 60),
+      nanos: 0,
+    }
+    isAdmin.mockReturnValue(true)
+    listSettings.mockResolvedValue(adminGeneralSettings())
+    setElevationExpiresAt(until)
+    const onCategory = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <PreferencesDialog category="admin-general" onCategory={onCategory} onClose={() => {}} />
+      </PreferencesProvider>
+    ))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(screen.getByTestId('preferences-nav-admin-general')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Session duration')).toBeInTheDocument()
+    const search = screen.getByTestId('preferences-search')
+    fireEvent.input(search, {
+      target: { value: 'Session duration' },
+    })
+    expect(screen.getByRole('button', { name: /Session duration/ })).toBeInTheDocument()
+    fireEvent.input(search, {
+      target: { value: '' },
+    })
+
+    if (end === 'drop') {
+      fireEvent.click(screen.getByTestId('elevation-drop'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(dropElevation).toHaveBeenCalledOnce()
+    }
+    else {
+      await vi.advanceTimersByTimeAsync(59_999)
+      expect(screen.getByText('Session duration')).toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(1)
+    }
+
+    expect(screen.queryByTestId('preferences-nav-admin-general')).not.toBeInTheDocument()
+    expect(screen.queryByText('Session duration')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preferences-nav-admin-apps')).toBeInTheDocument()
+    expect(screen.getByTestId('preferences-nav-unlock-admin')).toBeInTheDocument()
+    fireEvent.input(search, {
+      target: { value: 'Session duration' },
+    })
+    expect(screen.queryByRole('button', { name: /Session duration/ })).not.toBeInTheDocument()
+    fireEvent.input(search, {
+      target: { value: '' },
+    })
+    expect(listSettings).toHaveBeenCalledOnce()
+    expect(onCategory).not.toHaveBeenCalled()
+
+    const renewedCatalog = deferred<ReturnType<typeof adminGeneralSettings>>()
+    listSettings.mockReturnValueOnce(renewedCatalog.promise)
+    setElevationExpiresAt(inTwoHours())
+
+    expect(listSettings).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTestId('preferences-nav-admin-general')).not.toBeInTheDocument()
+    expect(screen.queryByText('Session duration')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preferences-nav-admin-apps')).toBeInTheDocument()
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).not.toBeInTheDocument()
+    fireEvent.input(search, {
+      target: { value: 'Session duration' },
+    })
+    expect(screen.queryByRole('button', { name: /Session duration/ })).not.toBeInTheDocument()
+    fireEvent.input(search, {
+      target: { value: '' },
+    })
+
+    renewedCatalog.resolve(adminGeneralSettings())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(screen.getByTestId('preferences-nav-admin-general')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Session duration')).toBeInTheDocument()
+    expect(listSettings).toHaveBeenCalledTimes(2)
+    expect(onCategory).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the catalogue when a grant arrives after expiry but before its timer runs', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T09:30:00Z'))
+    isAdmin.mockReturnValue(true)
+    const endsAt = inTwoHours()
+    setElevationExpiresAt(endsAt)
+    listSettings.mockResolvedValue(adminGeneralSettings())
+    renderDialog('admin-general')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(screen.getByText('Session duration')).toBeInTheDocument()
+
+    vi.setSystemTime(Number(endsAt.seconds) * 1000)
+    const renewedCatalogue = deferred<ReturnType<typeof adminGeneralSettings>>()
+    listSettings.mockReturnValueOnce(renewedCatalogue.promise)
+    setElevationExpiresAt(inTwoHours())
+    expect(listSettings).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('Session duration')).not.toBeInTheDocument()
+
+    renewedCatalogue.resolve(adminGeneralSettings())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(screen.getByText('Session duration')).toBeInTheDocument()
+  })
+
   it('offers no entry and sends no call for a plain user', async () => {
     renderDialog()
 
@@ -558,7 +747,7 @@ describe('PreferencesDialog admin unlock', () => {
   // the entry to a user for whom a step-up changes nothing.
   it('hides the unlock entry for a failed or empty catalog, though a genuine elevation refusal keeps it', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockRejectedValue(new Error('hub unreachable'))
     renderDialog()
     await waitFor(() => expect(listSettings).toHaveBeenCalled())
@@ -580,7 +769,7 @@ describe('PreferencesDialog admin unlock', () => {
 
     // The genuine case: the window has lapsed and the user dismisses the
     // step-up prompt. The entry stays, so the user can ask again.
-    elevationExpiresAt.mockReturnValue(undefined)
+    setElevationExpiresAt(undefined)
     setElevationPrompter(async () => false)
     listSettings.mockImplementation(async () => {
       if (!(await promptForElevation()))
@@ -713,7 +902,7 @@ describe('PreferencesDialog solo mode', () => {
 
   it('hides administration groups that have no visible rows', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     solo.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [
@@ -912,7 +1101,7 @@ describe('PreferencesDialog load failure', () => {
   // broken" and "you are not an admin".
   it('states a failed admin load instead of silently showing no admin groups', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockRejectedValue(new Error('hub unavailable'))
     renderDialog()
 
@@ -929,7 +1118,7 @@ describe('PreferencesDialog load failure', () => {
 
   it('says nothing when the load succeeds', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     renderDialog()
     await waitFor(() => expect(listSettings).toHaveBeenCalled())
     expect(screen.queryAllByRole('alert').filter(el => el.getAttribute('data-variant') === 'error')).toEqual([])
@@ -1046,7 +1235,7 @@ describe('PreferencesDialog search index', () => {
   // panel that does not show the row.
   it('omits a row whose dependsOn condition does not hold', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [captchaDescriptor],
       values: [
@@ -1073,7 +1262,7 @@ describe('PreferencesDialog search index', () => {
 
   it('includes the same row once its condition holds', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [captchaDescriptor],
       values: [
@@ -1173,7 +1362,7 @@ describe('a hub-setting write keeps the row it came from', () => {
   // flips a toggle with Space lost focus to the document body.
   it('does not re-create the control the user just used', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
       values: [
@@ -1209,7 +1398,7 @@ describe('a hub-setting write keeps the row it came from', () => {
 describe('a hub setting a read-time rule overrides', () => {
   it('edits the configured value and notes the enforced one', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
       // Nothing stored, so the code default is what an edit replaces; dev
@@ -1230,7 +1419,7 @@ describe('a hub setting a read-time rule overrides', () => {
 
   it('drops the note once the configured value is the enforced one', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
       values: [
@@ -1294,7 +1483,7 @@ describe('PreferencesDialog section order', () => {
 describe('PreferencesDialog verified-session state', () => {
   it('shows it on an administration group while the session is verified', async () => {
     isAdmin.mockReturnValue(true)
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
     listSettings.mockResolvedValue(adminGeneralSettings())
 
     renderDialog('admin-general')
@@ -1302,23 +1491,20 @@ describe('PreferencesDialog verified-session state', () => {
     expect(screen.getByTestId('elevation-drop')).toBeTruthy()
   })
 
-  it('shows nothing on an administration group while the session is not', async () => {
+  it('hides the gated group while the session is unverified', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue(adminGeneralSettings())
 
     renderDialog('admin-general')
-    // With no window the administration settings load only after the unlock
-    // entry. The group then shows, and still without the verified-session
-    // state.
-    fireEvent.click(await screen.findByTestId('preferences-nav-unlock-admin'))
-    await waitFor(() => expect(screen.getByText('Session duration')).toBeTruthy())
-    expect(screen.queryByTestId('elevation-status')).toBeNull()
+    expect(await screen.findByTestId('preferences-nav-unlock-admin')).toBeInTheDocument()
+    expect(screen.queryByTestId('preferences-nav-admin-general')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('elevation-status')).not.toBeInTheDocument()
   })
 
   // A browser preference is not elevation-guarded, so a verified session is
   // not news there. Marking every group would make the state meaningless.
   it('shows nothing on a group with no elevation-guarded row', async () => {
-    elevationExpiresAt.mockReturnValue(inTwoHours())
+    setElevationExpiresAt(inTwoHours())
 
     renderDialog('appearance')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())

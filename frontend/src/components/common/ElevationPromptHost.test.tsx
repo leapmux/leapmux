@@ -532,16 +532,24 @@ describe('ElevationPromptHost', () => {
   })
 
   /** Starts a browser step-up ceremony through the open prompt. */
-  async function startBrowserCeremony() {
-    ceremoniesInBrowser.mockReturnValue(true)
-    renderHost()
+  async function openBrowserPrompt() {
+    const opened = bridgeMocks.openExternalUrl.mock.calls.length
     const answered = promptForElevation()
     expect(await screen.findByRole('dialog', { name: 'Verify your identity' })).toBeInTheDocument()
     fireEvent.click(within(promptDialog()).getByRole('button', { name: 'Verify in your browser' }))
-    await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalled())
+    await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalledTimes(opened + 1))
     // An object, not the promise itself: awaiting the helper must not await
     // the prompt, which settles only when the ceremony answers.
     return { answered }
+  }
+
+  async function startBrowserCeremony() {
+    ceremoniesInBrowser.mockReturnValue(true)
+    const host = renderHost()
+    return {
+      ...host,
+      ...await openBrowserPrompt(),
+    }
   }
 
   // The prompt settles true only AFTER the account refresh the success
@@ -563,6 +571,42 @@ describe('ElevationPromptHost', () => {
 
     refresh.resolve()
     await expect(answered).resolves.toBe(true)
+  })
+
+  it('keeps a successor prompt pending when a dismissed prompt finishes its refresh', async () => {
+    const refresh = deferred<void>()
+    mockRefreshUser.mockReturnValueOnce(refresh.promise)
+    const { answered: first } = await startBrowserCeremony()
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    await vi.waitFor(() => expect(mockRefreshUser).toHaveBeenCalledOnce())
+
+    dismissPrompt()
+    await expect(first).resolves.toBe(false)
+    bridgeMocks.startBrowserAuth.mockResolvedValue({
+      ceremonyId: 'c-2',
+      authorizeUrl: 'https://hub.example/authorize',
+    })
+    const { answered: second } = await openBrowserPrompt()
+
+    refresh.resolve()
+    await settle()
+
+    expect(promptDialog()).toBeInTheDocument()
+    expect(elevationPrompting()).toBe(true)
+    bridgeMocks.emit({ ceremonyId: 'c-2', ok: true, failure: '' })
+    await expect(second).resolves.toBe(true)
+    expect(mockRefreshUser).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels the ceremony and settles the prompt false when the remote host unmounts', async () => {
+    const { answered, unmount } = await startBrowserCeremony()
+
+    unmount()
+
+    await expect(answered).resolves.toBe(false)
+    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
+    expect(elevationPrompting()).toBe(false)
   })
 
   // A dismissal reports the cancellation and cancels the ceremony, so no

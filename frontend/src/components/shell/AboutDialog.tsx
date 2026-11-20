@@ -1,26 +1,21 @@
 import type { Component } from 'solid-js'
 import { Show } from 'solid-js'
-import { isTauriApp } from '~/api/platformBridge'
+import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { Dialog } from '~/components/common/Dialog'
 import { labelRow } from '~/components/common/Dialog.css'
+import { createLogger } from '~/lib/logger'
 import { formatVersionLine, getBackendBuildInfo, getFrontendBuildInfo } from '~/lib/systemInfo'
 
 interface AboutDialogProps {
   onClose: () => void
 }
 
-async function openNoticeInTauriWindow(e: MouseEvent) {
-  e.preventDefault()
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const win = new WebviewWindow('notice', {
-    url: '/NOTICE.html',
-    title: 'Third-party Licenses',
-    width: 800,
-    height: 600,
-  })
-  win.once('tauri://error', () => {
-    // Window with this label may already exist; focus it instead.
-    WebviewWindow.getByLabel('notice')?.then(w => w?.setFocus())
+const log = createLogger('AboutDialog')
+
+function openNoticeInTauriWindow(event: MouseEvent) {
+  event.preventDefault()
+  platformBridge.openNoticeWindow().catch((error: unknown) => {
+    log.warn('could not open third-party licenses', { error })
   })
 }
 

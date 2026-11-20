@@ -103,6 +103,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			require.NoErrorf(t, err, "the store open must seed %s", clientID)
 			assert.Equal(t, store.OAuthClientSourceBuiltin, app.RegistrationSource)
 			assert.Empty(t, app.OwnerUserID, "a built-in registration is hub-wide")
+			assert.Equalf(t, clientID == oauthapp.DesktopClientID, app.IssuesSessions,
+				"only the Desktop registration may issue sessions, checked %s", clientID)
 			// Against the column's FALSE default, and stated by the seed on
 			// purpose: a seeded row that lost it would take
 			// `leapmux control admin ...` away with no error anybody could
@@ -590,6 +592,45 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		assert.False(t, app.ElevationAllowed)
 	})
 
+	t.Run("locks only live apps that can elevate", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "elevation-lock")
+		ownerID := userid.MustNew(owner.ID)
+		appID := seedApp(t, st, "elevation-lock-app", owner.ID, store.OAuthClientSourceUser)
+		retiredID := seedApp(t, st, "retired-elevation-lock", owner.ID, store.OAuthClientSourceUser)
+		setAllowed := func(clientID string, allowed bool) {
+			t.Helper()
+			rows, err := st.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+				ClientID: clientID, CallerUserID: ownerID, CallerIsAdmin: true,
+				ElevationAllowed: allowed,
+			})
+			require.NoError(t, err)
+			require.EqualValues(t, 1, rows)
+		}
+		setAllowed(appID, true)
+		setAllowed(retiredID, true)
+
+		require.ErrorIs(t, st.OAuthClients().LockForElevation(ctx, appID), store.ErrLockingReadOutsideTransaction)
+		lock := func(clientID string) error {
+			return st.RunInTransaction(ctx, func(tx store.Store) error {
+				return tx.OAuthClients().LockForElevation(ctx, clientID)
+			})
+		}
+		require.NoError(t, lock(appID))
+		assert.ErrorIs(t, lock("unknown-client"), store.ErrNotFound)
+
+		setAllowed(appID, false)
+		assert.ErrorIs(t, lock(appID), store.ErrNotFound)
+
+		require.NoError(t, lock(retiredID))
+		rows, err := st.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+			ClientID: retiredID, CallerUserID: ownerID,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+		assert.ErrorIs(t, lock(retiredID), store.ErrNotFound)
+	})
+
 	t.Run("a write refuses an unminted caller", func(t *testing.T) {
 		st := s.NewStore(t)
 		alice := SeedUser(t, st, "guarded")
@@ -639,11 +680,13 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 	// half-written reference, and the tie CHECK refuses each half.
 	t.Run("a code row with a half-written step-up reference fails", func(t *testing.T) {
 		for _, tc := range []struct {
-			name string
-			step store.CredentialRef
+			name       string
+			step       store.CredentialRef
+			redemption store.RedemptionKind
 		}{
 			{name: "a kind with no id", step: store.CredentialRef{Kind: store.CredentialRefKindSession}},
-			{name: "an id with no kind", step: store.CredentialRef{ID: "some-token"}},
+			{name: "an id with no kind", step: store.CredentialRef{ID: "some-token"}, redemption: store.RedemptionKindToken},
+			{name: "a space id with no kind", step: store.CredentialRef{ID: " "}, redemption: store.RedemptionKindToken},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				st := s.NewStore(t)
@@ -661,10 +704,10 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 					InstallationName: "laptop",
 					ExpiresAt:        time.Now().Add(time.Minute),
 					StepUp:           tc.step,
-					Redemption:       store.RedemptionKindNone,
+					Redemption:       tc.redemption,
 				})
 				require.Error(t, err,
-					"CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')) must refuse a half-written reference")
+					"the step-up reference CHECK must refuse a half-written reference")
 			})
 		}
 	})
@@ -782,6 +825,15 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		_, err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
 		require.NoError(t, err)
+
+		for _, ref := range []store.CredentialRef{
+			{Kind: store.CredentialRefKindSession},
+			{ID: "session-abc"},
+			{ID: " "},
+		} {
+			assert.Errorf(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, ref),
+				"the minted reference CHECK must refuse a half-written reference: %#v", ref)
+		}
 
 		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "session-abc"}
 		require.NoError(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted))

@@ -82,11 +82,10 @@ func (h *OAuthServerHandler) authenticateClient(ctx context.Context, r *http.Req
 	return h.authenticateClientOpts(ctx, r, presentedID, false)
 }
 
-// authenticateClientAllowRevoked runs the same authentication for the RFC 7009
-// revocation stage, where a RETIRED app is not a refusal: its credentials were
-// revoked by the retirement cascade, so the idempotent branch in
-// bindRevocationToClient answers the retrying client with the 200 the endpoint
-// promises. Every other stage keeps refusing a retired app at the door.
+// authenticateClientAllowRevoked verifies the app identity even when the
+// registration was retired. Token revocation can acknowledge a retry after
+// retirement, and the code replay check can verify the presenter of a spent
+// code. Issuance uses authenticateClient, which refuses retired apps.
 func (h *OAuthServerHandler) authenticateClientAllowRevoked(ctx context.Context, r *http.Request) (*store.OAuthClient, *oauthErrorResponse, error) {
 	return h.authenticateClientOpts(ctx, r, "", true)
 }
@@ -203,17 +202,10 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	row, err := h.store.OAuthAuthorizationCodes().GetActive(r.Context(), code, h.now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			// A code that is unknown OR already consumed. The REPLAY case is
-			// the dangerous one, and RFC 6749 section 4.1.2 says what to do
-			// about it: revoke the credential the first exchange minted, since
-			// a second presentation means the code leaked.
-			//
-			// The remedy runs only for a caller that AUTHENTICATES as the
-			// code's app. RFC 6749 section 3.2.1 authenticates the client
-			// before the grant is acted on, and in the wrong hands the remedy
-			// is a denial of service: the code is a one-time value a referrer
-			// or a log can leak, and a caller that holds nothing else must not
-			// reach the credential it minted.
+			// Keep the same response for an unknown, expired, or consumed code.
+			// A consumed code can trigger revocation only after the presenter
+			// proves the code was issued to this app at this redirect URI and
+			// supplies its PKCE verifier.
 			app, clientErr, internalErr := h.authenticateClientAllowRevoked(r.Context(), r)
 			switch {
 			case internalErr != nil:
@@ -222,7 +214,7 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			case clientErr != nil:
 				// No revocation; the invalid_grant below is the whole answer.
 			default:
-				h.revokeReplayedCode(r.Context(), code, app)
+				h.revokeReplayedCode(r, code, app)
 			}
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 		} else {
@@ -234,19 +226,8 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	if respondClientAuthFailure(w, clientErr, internalErr, "client lookup failed") {
 		return
 	}
-	// RFC 6749 section 4.1.3: the redirect_uri MUST be present and identical to
-	// the one the authorization used. Without it a code intercepted at one
-	// registered address could be redeemed as though it came from another.
-	if presented := r.FormValue("redirect_uri"); presented != row.RedirectURI {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant",
-			"redirect_uri does not match the one used to obtain this code")
-		return
-	}
-	expected := pkce.S256(verifier)
-	// hmac.Equal is the codebase's one spelling of a constant-time comparison
-	// of secret-derived values, so an audit for them greps a single symbol.
-	if !hmac.Equal([]byte(expected), []byte(row.CodeChallenge)) {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
+	if proofErr := authorizationCodeProofFailure(r, row); proofErr != nil {
+		writeOAuthErrorBody(w, http.StatusBadRequest, *proofErr)
 		return
 	}
 	// The grant row's user_id is a column, so a blank one is corrupt data, not
@@ -302,6 +283,22 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			return nil
 		},
 	})
+}
+
+// authorizationCodeProofFailure checks the redirect URI and PKCE proof shared
+// by issuance and replay. The caller authenticates and matches the app.
+func authorizationCodeProofFailure(r *http.Request, row *store.OAuthAuthorizationCode) *oauthErrorResponse {
+	// RFC 6749 section 4.1.3 requires the exact redirect URI from consent.
+	if r.FormValue("redirect_uri") != row.RedirectURI {
+		body := oauthErrorBody("invalid_grant", "redirect_uri does not match the one used to obtain this code")
+		return &body
+	}
+	expected := pkce.S256(r.FormValue("code_verifier"))
+	if !hmac.Equal([]byte(expected), []byte(row.CodeChallenge)) {
+		body := oauthErrorBody("invalid_grant", "PKCE verification failed")
+		return &body
+	}
+	return nil
 }
 
 // consumeAuthorizationCode consumes the authorization code in the
@@ -367,6 +364,15 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		return
 	}
 	txErr := h.store.RunInUserAuthTransaction(r.Context(), uid, func(tx store.Store) error {
+		if row.StepUp.Kind.IsSession() {
+			// Hold the registration lock through the session stamp so a concurrent
+			// permission change and this redemption commit in the same order as
+			// their permission decisions. Lock the app before the code, as app
+			// deletion does.
+			if err := tx.OAuthClients().LockForElevation(r.Context(), row.ClientID); err != nil {
+				return fmt.Errorf("lock app for elevation: %w", err)
+			}
+		}
 		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
 			return err
 		}
@@ -395,10 +401,10 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 			return
 		}
-		// Only the two no-row refusals answer invalid_grant. Every other
-		// stamp error is a credential the Hub cannot read, which section 6.5
-		// answers 500 for.
-		if errors.Is(txErr, errElevationSessionEnded) || errors.Is(txErr, errElevationGrantUnavailable) {
+		// The lock can find no live user or app with permission to elevate.
+		// The stamp can find no live credential. Each leaves the code unused.
+		if errors.Is(txErr, store.ErrNotFound) || errors.Is(txErr, errElevationSessionEnded) ||
+			errors.Is(txErr, errElevationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that credential is no longer available")
 			return
 		}
@@ -445,7 +451,7 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errAuthorizationCodeUnavailable) {
-			h.revokeReplayedCode(r.Context(), row.Code, app)
+			h.revokeReplayedCode(r, row.Code, app)
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 			return
 		}
@@ -458,24 +464,18 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 	writeJSON(w, http.StatusOK, map[string]bool{"signed_in": true})
 }
 
-// revokeReplayedCode applies RFC 6749 section 4.1.2's remedy for a code
-// presented twice: revoke the credential the FIRST exchange minted.
-//
-// A second presentation means the code reached somebody who should not hold
-// it, so the credential it already produced is presumed compromised. Best
-// effort: a code that was merely unknown identifies no credential, and a store
-// failure here must not change the answer the caller gives.
-//
-// The caller must have AUTHENTICATED as app, and the revocation binds to it:
-// a code is redeemable only by the app it was issued to (RFC 6749 section
-// 4.1.3), so the same binding governs the remedy -- one app's replayed code
-// must not let a different app's caller revoke it.
-func (h *OAuthServerHandler) revokeReplayedCode(ctx context.Context, code string, app *store.OAuthClient) {
+// revokeReplayedCode applies RFC 6749 section 4.1.2's remedy for a verified
+// replay by revoking the credential the first exchange minted. The caller
+// authenticates the app. This function binds the app, redirect URI and PKCE
+// verifier to the consumed row before revocation. The request receives the
+// same refusal regardless of the revocation outcome.
+func (h *OAuthServerHandler) revokeReplayedCode(r *http.Request, code string, app *store.OAuthClient) {
+	ctx := r.Context()
 	row, err := h.store.OAuthAuthorizationCodes().Get(ctx, code)
-	if err != nil || row.Minted.IsZero() {
+	if err != nil || row.ConsumedAt == nil || row.Minted.IsZero() {
 		return
 	}
-	if row.ClientID != app.ClientID {
+	if row.ClientID != app.ClientID || authorizationCodeProofFailure(r, row) != nil {
 		return
 	}
 	if row.Minted.Kind.IsSession() {
@@ -546,7 +546,7 @@ func (h *OAuthServerHandler) issueTokenResponse(w http.ResponseWriter, r *http.R
 		if errors.Is(err, errAuthorizationCodeUnavailable) {
 			// The failed transaction has unwound. The winner committed its token and
 			// replay link together, so every validated reuse can identify that token.
-			h.revokeReplayedCode(r.Context(), grant.id, grant.app)
+			h.revokeReplayedCode(r, grant.id, grant.app)
 		}
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", grant.invalidGrantMsg)

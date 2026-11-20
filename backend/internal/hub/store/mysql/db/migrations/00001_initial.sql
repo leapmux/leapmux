@@ -689,8 +689,9 @@ CREATE TABLE oauth_authorization_codes (
     redemption_kind       SMALLINT CHECK (redemption_kind BETWEEN 1 AND 2),
     -- The ties make the states structural: a kind names nothing without its
     -- id, and a code verifies XOR redeems.
-    CHECK ((minted_kind IS NULL) = (minted_ref_id = '')),
-    CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')),
+    -- OCTET_LENGTH tests emptiness without the collation's space padding.
+    CHECK ((minted_kind IS NULL) = (OCTET_LENGTH(minted_ref_id) = 0)),
+    CHECK ((step_up_kind IS NULL) = (OCTET_LENGTH(step_up_ref_id) = 0)),
     CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT

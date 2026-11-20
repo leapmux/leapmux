@@ -2226,8 +2226,6 @@ export const DESKTOP_RS_ENV_NAMES = {
 }
 
 export const DESKTOP_RS_EVENT_NAMES = {
-  channelClose: 'EVENT_CHANNEL_CLOSE',
-  userEventsClose: 'EVENT_USER_EVENTS_CLOSE',
   sidecarLog: 'EVENT_SIDECAR_LOG',
   browserAuthResult: 'EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'EVENT_MENU_SHOW_ABOUT',
@@ -2241,8 +2239,6 @@ export const DESKTOP_RS_EVENT_NAMES = {
 export const DESKTOP_RS_MACOS_ONLY_EVENTS = new Set(['menuShowAbout', 'menuShowPreferences'])
 
 export const DESKTOP_TS_EVENT_NAMES = {
-  channelClose: 'TAURI_EVENT_CHANNEL_CLOSE',
-  userEventsClose: 'TAURI_EVENT_USER_EVENTS_CLOSE',
   sidecarLog: 'TAURI_EVENT_SIDECAR_LOG',
   browserAuthResult: 'TAURI_EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'TAURI_EVENT_MENU_SHOW_ABOUT',

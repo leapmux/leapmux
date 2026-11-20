@@ -1,9 +1,8 @@
 //! The navigation allow-list for every webview the shell serves.
 //!
 //! A plugin hook and not a per-window `on_navigation`, because one hook covers
-//! every webview -- the `main` window and the `notice` licenses window the
-//! frontend opens through the Tauri API -- and any webview a later change
-//! adds. The shell states its own predicate: Tauri 2.12.5 keeps
+//! every webview, including the licenses window that the shell opens for
+//! the bundled notice. The shell states its own predicate: Tauri 2.12.5 keeps
 //! `Webview::is_local_url` private, and the allow-list here is the app's
 //! policy, not a guess at Tauri's.
 //!

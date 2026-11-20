@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,10 +181,20 @@ func TestBrowserAuthSignInStoresTheSession(t *testing.T) {
 	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
 	require.NoError(t, err)
 	assert.Contains(t, authorizeURL, "/oauth/authorize?")
+	app.lifecycleMu.RLock()
+	ceremony := app.browserAuth
+	app.lifecycleMu.RUnlock()
+	require.NotNil(t, ceremony)
 	completeBrowserCallback(t, authorizeURL, "the-code")
+	select {
+	case <-ceremony.ctx.Done():
+	case <-browserAuthTestContext(t).Done():
+		t.Fatal("the ceremony did not finish")
+	}
 
 	evt := requireBrowserAuthEvent(t, events)
-	assert.Equal(t, id, evt.CeremonyId, "the one event carries the returned id")
+	assert.Equal(t, id, evt.CeremonyId)
+	assert.Empty(t, events, "the completed ceremony emitted exactly one result")
 	assert.True(t, evt.Ok)
 	assert.Empty(t, evt.Failure)
 	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"=issued-session",
@@ -360,14 +373,21 @@ func TestBrowserAuthTokenFailureClassesAreDistinct(t *testing.T) {
 	}
 	failures := make([]string, 0, len(responders))
 	for _, respond := range responders {
-		hub := browserAuthHub(t, respond)
-		app, events := newBrowserAuthApp(t, mustNewProxy(t, hub.URL), hub.URL)
+		hub := browserAuthHub(t, func(w http.ResponseWriter, r *http.Request) {
+			http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Path: "/", MaxAge: -1})
+			respond(w, r)
+		})
+		proxy := mustNewProxy(t, hub.URL)
+		app, events := newBrowserAuthApp(t, proxy, hub.URL)
+		previousToken := seedSessionCookie(proxy, testSessionCookieName)
 		_, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
 		require.NoError(t, err)
 		completeBrowserCallback(t, authorizeURL, "the-code")
 		evt := requireBrowserAuthEvent(t, events)
 		require.False(t, evt.Ok)
 		require.NotEmpty(t, evt.Failure, "each failure class carries a message")
+		assert.Equal(t, testSessionCookieName+"="+previousToken, proxy.cookieHeader().Get("Cookie"),
+			"an unconfirmed reply must not clear the existing session")
 		failures = append(failures, evt.Failure)
 	}
 	for i := range failures {
@@ -376,6 +396,122 @@ func TestBrowserAuthTokenFailureClassesAreDistinct(t *testing.T) {
 				"each failure class carries its own message")
 		}
 	}
+}
+
+func TestBrowserAuthTokenRedirectStaysOnTheHub(t *testing.T) {
+	var reachedOtherHub atomic.Bool
+	otherHub := browserAuthHub(t, func(http.ResponseWriter, *http.Request) {
+		reachedOtherHub.Store(true)
+	})
+	hub := browserAuthHub(t, func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "unconfirmed-session", Path: "/"})
+		http.Redirect(w, r, otherHub.URL+"/oauth/token", http.StatusTemporaryRedirect)
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+	previousToken := seedSessionCookie(proxy, testSessionCookieName)
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+
+	evt := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, evt.CeremonyId)
+	assert.False(t, evt.Ok)
+	assert.Contains(t, evt.Failure, "leaves the origin")
+	assert.False(t, reachedOtherHub.Load())
+	assert.Equal(t, testSessionCookieName+"="+previousToken, proxy.cookieHeader().Get("Cookie"))
+}
+
+func TestBrowserAuthTokenRedirectReadsPendingCookieChanges(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			nextCookie := make(chan string, 1)
+			server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/oauth/token":
+					http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "rotated", Path: "/"})
+					http.SetCookie(w, &http.Cookie{Name: "removed", Path: "/", MaxAge: -1})
+					http.Redirect(w, r, "/oauth/confirmation", status)
+				case "/oauth/confirmation":
+					nextCookie <- r.Header.Get("Cookie")
+					http.SetCookie(w, &http.Cookie{Name: "confirmed", Value: "yes", Path: "/"})
+					_, _ = io.WriteString(w, `{"signed_in": true}`)
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			t.Cleanup(server.Close)
+			setTestHome(t)
+			app := NewApp("")
+			t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+			require.NoError(t, app.ConnectDistributed(t.Context(), server.URL))
+			proxy := app.connection.proxy
+			seedSessionCookie(proxy, testSessionCookieName)
+			proxy.client.Jar.SetCookies(mustParseURL(server.URL), []*http.Cookie{
+				{Name: "removed", Value: "old", Path: "/"},
+			})
+			events := recordBrowserAuthEvents(app)
+
+			id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+			require.NoError(t, err)
+			completeBrowserCallback(t, authorizeURL, "the-code")
+			evt := requireBrowserAuthEvent(t, events)
+			require.Equal(t, id, evt.GetCeremonyId())
+			require.True(t, evt.GetOk(), evt.GetFailure())
+			select {
+			case cookies := <-nextCookie:
+				assert.Equal(t, testSessionCookieName+"=rotated", cookies)
+			default:
+				t.Fatal("the exchange did not reach the confirmation endpoint")
+			}
+			assert.Contains(t, proxy.cookieHeader().Get("Cookie"), "confirmed=yes")
+		})
+	}
+}
+
+type pausedSessionCookieJar struct {
+	http.CookieJar
+	applying chan struct{}
+	resume   <-chan struct{}
+}
+
+func (j *pausedSessionCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	close(j.applying)
+	<-j.resume
+	j.CookieJar.SetCookies(u, cookies)
+}
+
+func TestBrowserAuthCommitsCookiesOutsideTheLifecycleLock(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "confirmed-session", Path: "/"})
+		_, _ = io.WriteString(w, `{"signed_in": true}`)
+	})
+	endpoint, err := hubtransport.New(hub.URL)
+	require.NoError(t, err)
+	jar := openPersistentJar(mustParseURL(hub.URL), filepath.Join(t.TempDir(), "sessions"))
+	applying, resume := make(chan struct{}), make(chan struct{})
+	jar.inner = &pausedSessionCookieJar{CookieJar: jar.inner, applying: applying, resume: resume}
+	app, events := newBrowserAuthApp(t, newProxyForEndpoint(endpoint, jar), hub.URL)
+	release := sync.OnceFunc(func() { close(resume) })
+	defer release()
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+	select {
+	case <-applying:
+	case <-browserAuthTestContext(t).Done():
+		t.Fatal("the accepted session did not start applying cookies")
+	}
+	if assert.True(t, app.lifecycleMu.TryRLock(), "cookie I/O must run outside lifecycleMu") {
+		app.lifecycleMu.RUnlock()
+	}
+	release()
+	evt := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, evt.GetCeremonyId())
+	assert.True(t, evt.GetOk())
+	assert.FileExists(t, jar.path)
 }
 
 func TestBrowserAuthHubUnreachableForTheTokenRequest(t *testing.T) {
@@ -452,6 +588,208 @@ func TestBrowserAuthCancelOnlyEndsTheMatchingCeremony(t *testing.T) {
 	assert.Empty(t, evt2.Failure)
 }
 
+func TestBrowserAuthCancelReleasesTheLifecycleLockBeforeClosingTheListener(t *testing.T) {
+	clock := newBrowserAuthClock(t)
+	hub := browserAuthHub(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("a cancelled ceremony must not redeem a code")
+	})
+	app, events := newBrowserAuthApp(t, mustNewProxy(t, hub.URL), hub.URL)
+	app.browserAuthClock = clock
+
+	id, _, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	stops := clock.Trap().TimerStop()
+	defer stops.Close()
+	cancelled := make(chan struct{})
+	go func() {
+		defer close(cancelled)
+		app.CancelBrowserAuth(id)
+	}()
+
+	stopping := stops.MustWait(browserAuthTestContext(t))
+	if assert.True(t, app.lifecycleMu.TryRLock(), "listener cleanup must run outside lifecycleMu") {
+		app.lifecycleMu.RUnlock()
+	}
+	stopping.MustRelease(browserAuthTestContext(t))
+	select {
+	case <-cancelled:
+	case <-browserAuthTestContext(t).Done():
+		t.Fatal("CancelBrowserAuth did not finish")
+	}
+	event := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, event.CeremonyId)
+	assert.False(t, event.Ok)
+	assert.Empty(t, event.Failure)
+}
+
+type browserAuthRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f browserAuthRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type browserAuthBlockedBody struct {
+	io.ReadCloser
+	ctx     context.Context
+	reading chan<- context.Context
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (b *browserAuthBlockedBody) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		b.reading <- b.ctx
+		<-b.release
+	})
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return b.ReadCloser.Read(p)
+}
+
+// blockNextBrowserAuthTokenBody pauses the first token response after the
+// HTTP client has read its headers. Release allows decoding to proceed.
+func blockNextBrowserAuthTokenBody(t *testing.T, proxy *HubProxy) (<-chan context.Context, func()) {
+	t.Helper()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBody := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseBody)
+
+	reading := make(chan context.Context, 1)
+	transport := proxy.client.Transport
+	var tokenStarted atomic.Bool
+	proxy.client.Transport = browserAuthRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		first := r.URL.Path == "/oauth/token" && tokenStarted.CompareAndSwap(false, true)
+		resp, err := transport.RoundTrip(r)
+		if err == nil && first {
+			resp.Body = &browserAuthBlockedBody{ReadCloser: resp.Body, ctx: r.Context(), reading: reading, release: release}
+		}
+		return resp, err
+	})
+	return reading, releaseBody
+}
+
+func TestBrowserAuthCancelDuringRedemptionKeepsAcceptedConfirmation(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "issued-session", Path: "/"})
+		_, _ = w.Write([]byte(`{"signed_in": true}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+	reading, releaseBody := blockNextBrowserAuthTokenBody(t, proxy)
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+
+	var requestCtx context.Context
+	select {
+	case requestCtx = <-reading:
+	case <-browserAuthTestContext(t).Done():
+		t.Fatal("the token request did not read the response body")
+	}
+	assert.Empty(t, proxy.cookieHeader(), "the cookie must wait for confirmation")
+	app.CancelBrowserAuth(id)
+	assert.NoError(t, requestCtx.Err(), "cancel must leave an already started token request running")
+	releaseBody()
+
+	event := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, event.CeremonyId)
+	assert.True(t, event.Ok, "the Hub accepted the code")
+	assert.Empty(t, event.Failure)
+	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"=issued-session")
+}
+
+func TestBrowserAuthReplacementSerializesRedemptionOnTheSameJar(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: r.Form.Get("code"), Path: "/"})
+		_, _ = w.Write([]byte(`{"signed_in": true}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+	reading, releaseBody := blockNextBrowserAuthTokenBody(t, proxy)
+
+	firstID, firstURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, firstURL, "first")
+	var requestCtx context.Context
+	select {
+	case requestCtx = <-reading:
+	case <-browserAuthTestContext(t).Done():
+		t.Fatal("the first token request did not read the response body")
+	}
+	secondID, secondURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, secondURL, "second")
+	assert.ErrorIs(t, requestCtx.Err(), context.Canceled, "replacement cancels the predecessor's request")
+	mu := &app.connection.browserAuthRedemptionMu
+	if mu.TryLock() {
+		mu.Unlock()
+		t.Error("the predecessor must retain ownership until its token request exits")
+	}
+	releaseBody()
+
+	results := make(map[string]*desktoppb.BrowserAuthResultEvent, 2)
+	for range 2 {
+		event := requireBrowserAuthEvent(t, events)
+		results[event.CeremonyId] = event
+	}
+	require.Contains(t, results, firstID)
+	require.Contains(t, results, secondID)
+	assert.False(t, results[firstID].Ok)
+	assert.Empty(t, results[firstID].Failure)
+	assert.True(t, results[secondID].Ok)
+	assert.Empty(t, results[secondID].Failure)
+	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"=second")
+}
+
+func TestBrowserAuthReplacementDiscardsDecodedConfirmation(t *testing.T) {
+	clock := newBrowserAuthClock(t)
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "superseded-session", Path: "/"})
+		_, _ = w.Write([]byte(`{"signed_in": true}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+	app.browserAuthClock = clock
+	previousToken := seedSessionCookie(proxy, testSessionCookieName)
+
+	// The timer stops after the exchange has delivered the decoded result and
+	// before the ceremony admits it under lifecycleMu.
+	stops := clock.Trap().TimerStop(browserAuthTokenTimerTag)
+	closeTrap := sync.OnceFunc(stops.Close)
+	defer closeTrap()
+	firstID, firstURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, firstURL, "first")
+	stopping := stops.MustWait(browserAuthTestContext(t))
+
+	secondID, secondURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	require.NotEqual(t, firstID, secondID)
+	stopping.MustRelease(browserAuthTestContext(t))
+
+	first := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, firstID, first.CeremonyId)
+	assert.False(t, first.Ok)
+	assert.Empty(t, first.Failure)
+	assert.Equal(t, testSessionCookieName+"="+previousToken, proxy.cookieHeader().Get("Cookie"))
+
+	// The replacement keeps the slot and can confirm its own exchange.
+	closeTrap()
+	completeBrowserCallback(t, secondURL, "second")
+	second := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, secondID, second.CeremonyId)
+	assert.True(t, second.Ok)
+	assert.Empty(t, second.Failure)
+}
+
 func TestBrowserAuthStepUpWithoutASessionFails(t *testing.T) {
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"elevated": true}`))
@@ -459,9 +797,14 @@ func TestBrowserAuthStepUpWithoutASessionFails(t *testing.T) {
 	proxy := mustNewProxy(t, hub.URL)
 	app, _ := newBrowserAuthApp(t, proxy, hub.URL)
 
-	_, _, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_STEP_UP)
+	starts := 0
+	_, _, err := app.startBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_STEP_UP,
+		func(req loopbackauth.Request) (*loopbackauth.Flow, error) {
+			starts++
+			return loopbackauth.Start(req)
+		})
 	require.ErrorContains(t, err, "sign in first")
-	assert.Nil(t, app.browserAuth, "no listener binds")
+	assert.Zero(t, starts, "a step-up without a session must not start the listener")
 }
 
 func TestBrowserAuthNotConnectedFails(t *testing.T) {
@@ -489,41 +832,46 @@ func TestBrowserAuthSoloModeFails(t *testing.T) {
 }
 
 func TestBrowserAuthModeSwitchDuringTheTokenRequest(t *testing.T) {
-	arrived := make(chan struct{})
-	var arrivedOnce sync.Once
-	release := make(chan struct{})
-	hub := browserAuthHub(t, func(w http.ResponseWriter, r *http.Request) {
-		arrivedOnce.Do(func() { close(arrived) })
-		select {
-		case <-release:
-		case <-r.Context().Done():
-			return
-		}
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "leaked-session", Path: "/"})
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "unconfirmed-session", Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
-	app, events := newBrowserAuthApp(t, mustNewProxy(t, hub.URL), hub.URL)
+	setTestHome(t)
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	events := recordBrowserAuthEvents(app)
+	ctx := browserAuthTestContext(t)
+	require.NoError(t, app.ConnectDistributed(ctx, hub.URL))
+	firstProxy := app.connection.proxy
+	previousToken := seedSessionCookie(firstProxy, testSessionCookieName)
+	reading, releaseBody := blockNextBrowserAuthTokenBody(t, firstProxy)
 
 	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
 	require.NoError(t, err)
 	completeBrowserCallback(t, authorizeURL, "the-code")
 	select {
-	case <-arrived:
-	case <-browserAuthTestContext(t).Done():
-		t.Fatal("the token request never arrived at the Hub")
+	case <-reading:
+	case <-ctx.Done():
+		t.Fatal("the token request did not read the response body")
 	}
 
 	_, err = app.SwitchMode()
 	require.NoError(t, err)
-	newProxy := mustNewProxy(t, hub.URL)
-	installTestConnection(app, newProxy, nil, hub.URL)
-	close(release)
+	require.NoError(t, app.ConnectDistributed(ctx, hub.URL))
+	reconnectedProxy := app.connection.proxy
+	require.NotSame(t, firstProxy, reconnectedProxy)
+	assert.Equal(t, testSessionCookieName+"="+previousToken, reconnectedProxy.cookieHeader().Get("Cookie"),
+		"reconnecting to the same Hub must load only the previously confirmed session")
+	releaseBody()
 
 	evt := requireBrowserAuthEvent(t, events)
 	assert.Equal(t, id, evt.CeremonyId)
 	assert.False(t, evt.Ok)
 	assert.Empty(t, evt.Failure, "a mode switch ends the ceremony with no reason")
-	assert.Empty(t, newProxy.cookieHeader(), "the new connection's jar is untouched")
+	reopened := openPersistentJar(firstProxy.base, sessionsDir())
+	cookies := reopened.Cookies(firstProxy.base)
+	require.Len(t, cookies, 1)
+	assert.Equal(t, previousToken, cookies[0].Value)
 }
 
 func TestBrowserAuthDisconnectDuringTheWait(t *testing.T) {
@@ -593,4 +941,85 @@ func TestBrowserAuthTokenRequestTimeout(t *testing.T) {
 	assert.Equal(t, id, evt.CeremonyId)
 	assert.False(t, evt.Ok)
 	assert.Equal(t, "the Hub did not answer in time", evt.Failure)
+}
+
+// delayedTokenTimerClock lets the clock reach the deadline before the token
+// timer wakes its waiter, as can happen when the timer goroutine runs late.
+type delayedTokenTimerClock struct {
+	*quartz.Mock
+}
+
+func (c delayedTokenTimerClock) NewTimer(d time.Duration, tags ...string) *quartz.Timer {
+	if slices.Contains(tags, browserAuthTokenTimerTag) {
+		d += time.Second
+	}
+	return c.Mock.NewTimer(d, tags...)
+}
+
+func TestBrowserAuthTokenAnswerAtDeadlineLosesBeforeTimerDelivery(t *testing.T) {
+	for _, delay := range []time.Duration{0, time.Nanosecond} {
+		t.Run(delay.String(), func(t *testing.T) {
+			clock := newBrowserAuthClock(t)
+			hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+				http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "late-session", Path: "/"})
+				_, _ = w.Write([]byte(`{"signed_in": true}`))
+			})
+			proxy := mustNewProxy(t, hub.URL)
+			app, events := newBrowserAuthApp(t, proxy, hub.URL)
+			app.browserAuthClock = delayedTokenTimerClock{clock}
+			reading, releaseBody := blockNextBrowserAuthTokenBody(t, proxy)
+
+			id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+			require.NoError(t, err)
+			completeBrowserCallback(t, authorizeURL, "the-code")
+			select {
+			case <-reading:
+			case <-browserAuthTestContext(t).Done():
+				t.Fatal("the token request did not read the response body")
+			}
+			advanceBrowserClock(t, clock, browserAuthTokenTimeout+delay)
+			releaseBody()
+
+			event := requireBrowserAuthEvent(t, events)
+			assert.Equal(t, id, event.CeremonyId)
+			assert.False(t, event.Ok)
+			assert.Equal(t, "the Hub did not answer in time", event.Failure)
+			assert.Empty(t, proxy.cookieHeader())
+		})
+	}
+}
+
+func TestBrowserAuthTokenAnswerBeforeDeadlineSurvivesDelayedSettlement(t *testing.T) {
+	clock := newBrowserAuthClock(t)
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "accepted-session", Path: "/"})
+		_, _ = w.Write([]byte(`{"signed_in": true}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+	app.browserAuthClock = clock
+	reading, releaseBody := blockNextBrowserAuthTokenBody(t, proxy)
+	stops := clock.Trap().TimerStop(browserAuthTokenTimerTag)
+	defer stops.Close()
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+	select {
+	case <-reading:
+	case <-browserAuthTestContext(t).Done():
+		t.Fatal("the token request did not read the response body")
+	}
+	advanceBrowserClock(t, clock, browserAuthTokenTimeout-time.Nanosecond)
+	releaseBody()
+
+	stopping := stops.MustWait(browserAuthTestContext(t))
+	advanceBrowserClock(t, clock, time.Nanosecond)
+	stopping.MustRelease(browserAuthTestContext(t))
+
+	event := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, event.CeremonyId)
+	assert.True(t, event.Ok)
+	assert.Empty(t, event.Failure)
+	assert.Equal(t, testSessionCookieName+"=accepted-session", proxy.cookieHeader().Get("Cookie"))
 }

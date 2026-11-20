@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"math"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 func TestFrame_MaxUserEventsMessageFitsBudget(t *testing.T) {
 	frame := &desktoppb.Frame{
 		Message: &desktoppb.Frame_Event{Event: &desktoppb.Event{
+			RelayId: math.MaxUint64,
 			Payload: &desktoppb.Event_UserEventsMessage{
 				UserEventsMessage: &desktoppb.UserEventsMessageEvent{
 					Data: make([]byte, channelwire.UserEventsReadLimit),

@@ -545,8 +545,8 @@ describe('emitters', () => {
 
   it('emits every Tauri event the shell and webview spell, including the log and menu events', () => {
     // Both sides once stated `sidecar:log` and the two menu events manually.
-    // A change on one side could disable a listener without a failure. The name
-    // tables now contain all seven events.
+    // A change on one side could disable a listener. Both emitters now use
+    // the desktop contract.
     const d = readContract('desktop')
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const EVENT_SIDECAR_LOG: &str = "sidecar:log"')
@@ -564,7 +564,7 @@ describe('emitters', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_PREFERENCES: &str = "menu:show-preferences"')
-    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_CHANNEL_CLOSE')
+    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_BROWSER_AUTH_RESULT')
   })
 
   it('emits durations as const expressions, not runtime values', () => {
@@ -3521,10 +3521,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   // Supply every event when a fixture must pass the tauriEvents coverage check.
-  // Older four-event fixtures fail before they reach that check.
   const events = () => ({
-    channelClose: 'c:c',
-    userEventsClose: 'u:c',
     sidecarLog: 's:l',
     browserAuthResult: 'b:r',
     menuShowAbout: 'm:a',
@@ -3634,8 +3631,9 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelClose: 'same:event',
-        userEventsClose: 'same:event',
+        ...events(),
+        sidecarLog: 'same:event',
+        browserAuthResult: 'same:event',
       },
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -3669,10 +3667,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         extra: 'D_W',
       },
       devFrontendUrl: 'http://localhost:4328',
-      tauriEvents: {
-        channelClose: 'c:c',
-        userEventsClose: 'u:c',
-      },
+      tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3686,8 +3681,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelClose: 'c:c',
-        userEventsClose: 'u:c',
+        ...events(),
         extra: 'e:x',
       },
       windowBehavior: behavior(),
@@ -3725,10 +3719,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
           agentHelper: 'E_V',
         },
         devFrontendUrl: 'http://localhost:4328',
-        tauriEvents: {
-          channelClose: 'c:c',
-          userEventsClose: 'u:c',
-        },
+        tauriEvents: events(),
         windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
     }
@@ -3872,7 +3863,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const ENV_DEV_ENDPOINT: &str = "LEAPMUX_DESKTOP_DEV_ENDPOINT"')
     expect(rs).toContain('pub const ENV_DEV_FRONTEND: &str = "LEAPMUX_HUB_DEV_FRONTEND"')
-    expect(rs).toContain('pub const EVENT_CHANNEL_CLOSE: &str = "channel:close"')
+    expect(rs).toContain('pub const EVENT_BROWSER_AUTH_RESULT: &str = "browser-auth:result"')
     expect(rs).not.toContain('//!')
   })
 

@@ -22,7 +22,16 @@ import (
 // Test cleanup closes the server.
 func NewServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
-	return start(t, handler, false, func(p *http.Protocols) {
+	srv := NewUnstartedServer(t, handler)
+	srv.Start()
+	return srv
+}
+
+// NewUnstartedServer prepares the same cleartext server as NewServer. Set any
+// additional server fields before calling Start. Test cleanup closes it.
+func NewUnstartedServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	return unstartedServer(t, handler, false, func(p *http.Protocols) {
 		p.SetHTTP1(true)
 		p.SetUnencryptedHTTP2(true)
 	})
@@ -55,6 +64,17 @@ func NewHTTP1TLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 
 func start(t *testing.T, handler http.Handler, useTLS bool, setProtocols func(*http.Protocols)) *httptest.Server {
 	t.Helper()
+	srv := unstartedServer(t, handler, useTLS, setProtocols)
+	if useTLS {
+		srv.StartTLS()
+	} else {
+		srv.Start()
+	}
+	return srv
+}
+
+func unstartedServer(t *testing.T, handler http.Handler, useTLS bool, setProtocols func(*http.Protocols)) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(handler)
 	protocols := &http.Protocols{}
 	setProtocols(protocols)
@@ -62,11 +82,6 @@ func start(t *testing.T, handler http.Handler, useTLS bool, setProtocols func(*h
 	// EnableHTTP2 controls httptest's TLS setup. Protocols controls the server.
 	// Both must agree, or StartTLS offers no h2 through ALPN.
 	srv.EnableHTTP2 = useTLS && protocols.HTTP2()
-	if useTLS {
-		srv.StartTLS()
-	} else {
-		srv.Start()
-	}
 	t.Cleanup(srv.Close)
 	return srv
 }

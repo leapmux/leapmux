@@ -1,15 +1,23 @@
+import type { Location } from '@solidjs/router'
 import type { Component } from 'solid-js'
-import { useNavigate, useSearchParams } from '@solidjs/router'
+import { useLocation, useNavigate } from '@solidjs/router'
 import { Show } from 'solid-js'
 import { openExternalUrl, platformBridge } from '~/api/platformBridge'
 import { useAuth } from '~/context/AuthContext'
 import { copyTextToClipboard } from '~/lib/clipboard'
 import { hubOrigin } from '~/lib/hubSite'
-import { followDestination, postSignInDestination } from '~/lib/postAuthNavigate'
+import { followDestination, normalizeRoutePath, postSignInDestination } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import * as styles from './BrowserSignIn.css'
 import * as ceremonyPage from './ceremonyPage.css'
 import { useBrowserCeremony } from './useBrowserCeremony'
+
+/** Recovery owns navigation after the sign-in view is gone. */
+function resolveRecoveryRedirect(location: Location): string | null | undefined {
+  if (normalizeRoutePath(location.pathname).toLowerCase() === '/login')
+    return stringParam(location.query.redirect)
+  return null
+}
 
 /**
  * Desktop sign-in view for remote-Hub mode. Runs a browser ceremony with
@@ -17,18 +25,20 @@ import { useBrowserCeremony } from './useBrowserCeremony'
  * the password, passkey or OAuth sign-in; the sidecar receives the session
  * cookie and this view adopts the user.
  */
-export const BrowserSignIn: Component = () => {
+export const BrowserSignIn: Component<{
+  /** The pathname owner survives the guard hiding this view after adoption. */
+  isCurrentArrival: () => boolean
+}> = (props) => {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const location = useLocation()
   const auth = useAuth()
 
   const { phase, failure, flow, start, cancel } = useBrowserCeremony('sign-in', async () => {
-    // Adopt the session the sidecar's jar already holds. The redirect rides
-    // the sign-in, because a sign-in that recovers hands the navigation to
-    // SignInRecoveryGate, which reads the redirect from there.
-    const redirect = stringParam(searchParams.redirect)
-    const result = await auth.adoptBrowserSignIn({ redirect })
-    if (result.outcome === 'adopted') {
+    // Recovery resolves the redirect after the account read completes, even
+    // when the gate has already hidden this view.
+    const result = await auth.adoptBrowserSignIn({ redirect: resolveRecoveryRedirect })
+    if (result.outcome === 'adopted' && props.isCurrentArrival()) {
+      const redirect = stringParam(location.query.redirect)
       followDestination(navigate, postSignInDestination(result.verificationRequired, redirect))
     }
     // Every other outcome: sign-in recovery or a newer operation owns the state.
@@ -51,6 +61,7 @@ export const BrowserSignIn: Component = () => {
         <div class={ceremonyPage.waitingActions}>
           <button
             type="button"
+            disabled={flow() === null}
             onClick={() => {
               const f = flow()
               if (f) {
@@ -62,6 +73,7 @@ export const BrowserSignIn: Component = () => {
           </button>
           <button
             type="button"
+            disabled={flow() === null}
             onClick={() => {
               const f = flow()
               if (f) {
@@ -71,7 +83,7 @@ export const BrowserSignIn: Component = () => {
           >
             Copy link
           </button>
-          <button type="button" onClick={() => void cancel()}>
+          <button type="button" disabled={flow() === null} onClick={() => void cancel()}>
             Cancel
           </button>
         </div>

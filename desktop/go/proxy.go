@@ -64,13 +64,12 @@ func newProxy(hubURL string) (*HubProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unsupported hub URL %q: %w", hubURL, err)
 	}
-	return newProxyForEndpoint(endpoint, mustNewMemoryJar()), nil
+	base := mustParseURL(endpoint.BaseURL())
+	return newProxyForEndpoint(endpoint, newHubCookieJar(base)), nil
 }
 
 // mustNewMemoryJar returns a fresh in-memory cookie jar. cookiejar.New only
-// fails on a bad Options, and nil is valid, so this never panics in practice.
-// The concrete type is what persistentJar embeds; every caller passes it on
-// as an http.CookieJar.
+// fails on invalid options, and nil is valid.
 func mustNewMemoryJar() *cookiejar.Jar {
 	jar, _ := cookiejar.New(nil)
 	return jar

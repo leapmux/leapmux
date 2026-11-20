@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AboutDialog } from './AboutDialog'
 
@@ -20,16 +20,41 @@ vi.mock('~/lib/systemInfo', () => ({
   formatVersionLine: () => '1.0.0 (abc1234)',
 }))
 
+const { isTauriApp, openNoticeWindow } = vi.hoisted(() => ({
+  isTauriApp: vi.fn(() => false),
+  openNoticeWindow: vi.fn(async () => {}),
+}))
+
 vi.mock('~/api/platformBridge', () => ({
   desktopHub: () => null,
-  isTauriApp: () => false,
+  isTauriApp,
+  platformBridge: { openNoticeWindow },
 }))
 
 afterEach(() => {
   cleanup()
+  isTauriApp.mockReturnValue(false)
+  openNoticeWindow.mockClear()
 })
 
 describe('AboutDialog', () => {
+  it('uses the native notices command without a URL in the desktop app', async () => {
+    isTauriApp.mockReturnValue(true)
+    render(() => <AboutDialog onClose={() => {}} />)
+
+    const noticeLink = screen.getByRole('link', { name: 'NOTICE.html' })
+    expect(fireEvent.click(noticeLink)).toBe(false)
+    await waitFor(() => expect(openNoticeWindow).toHaveBeenCalledExactlyOnceWith())
+  })
+
+  it('links directly to the notices page in a browser', () => {
+    render(() => <AboutDialog onClose={() => {}} />)
+
+    const noticeLink = screen.getByRole('link', { name: 'NOTICE.html' })
+    expect(noticeLink).toHaveAttribute('href', '/NOTICE.html')
+    expect(noticeLink).toHaveAttribute('target', '_blank')
+  })
+
   it('lists leapmux.dev immediately before the GitHub URL under Homepage', () => {
     render(() => <AboutDialog onClose={() => {}} />)
 

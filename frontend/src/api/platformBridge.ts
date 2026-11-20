@@ -1093,23 +1093,10 @@ export const platformBridge = {
     const payload = await tauriInvoke<CliInstallSymlinkPayload>('cli_install_symlink', { force })
     return decodeCliInstallResult(payload)
   },
-  // relayId names which relay wrapper is asking. It travels to the sidecar so a
-  // close can be ignored once a later open has superseded it — the two are separate
-  // requests and the sidecar runs each on its own goroutine with no ordering, so
-  // wire order is not execution order.
-  //
-  // The channel is the frame delivery target the Rust shell stores beside that
-  // id (see `RelaySlot` in desktop/rust/src/main.rs): frames reach the webview
-  // as raw ArrayBuffers through it, and a superseded relay id never delivers.
-  // Created through this gateway so every @tauri-apps/api access stays in this
-  // module; the handler must be set before the channel travels (a channel
-  // replays nothing), which `createRelayChannel` guarantees by construction.
-  async createRelayChannel(onmessage: (data: ArrayBuffer) => void): Promise<import('@tauri-apps/api/core').Channel<ArrayBuffer>> {
-    const { Channel } = await loadTauriCore()
-    return new Channel<ArrayBuffer>(onmessage)
-  },
-  async openChannelRelay(relayId: number, channel: import('@tauri-apps/api/core').Channel<ArrayBuffer>): Promise<void> {
-    await tauriInvoke('open_channel_relay', { relayId, channel })
+  // The sidecar checks the id before acting on a close. It runs open and
+  // close requests on separate goroutines, so a stale close can arrive late.
+  async openChannelRelay(relayId: number, receiver: RelayReceiver): Promise<boolean> {
+    return openRelay('open_channel_relay', { relayId }, receiver)
   },
   async sendChannelMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
     await tauriInvoke('send_channel_message', data)
@@ -1117,38 +1104,26 @@ export const platformBridge = {
   async closeChannelRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_channel_relay', { relayId })
   },
-  // UserEvents relay (`/ws/userevents`). The webview can't dial the
-  // unix-socket hub natively in desktop solo mode, so the Go sidecar
-  // opens the WebSocket on our behalf and forwards each binary
-  // frame through the channel given here (raw length-prefixed
-  // WatchUserEvent bytes, no base64).
-  //
-  // relayId names the attempt, exactly like the channel relay above. It carries more
-  // weight here: this open force-restarts the relay (the hub sends UserMaterialized
-  // only at subscribe time, so reusing a live relay would leave a fresh page without
-  // its bootstrap), so the sidecar also uses the id to ignore an OPEN that a newer
-  // one has already superseded. `resume`, when present, is the per-user resume
-  // cursor the sidecar threads into the /ws/userevents URL so the hub can ship a
-  // ResumeDelta; serialized as a wire string + epoch (Tauri IPC carries no
-  // bigint), mirroring the resume_after_hlc query-param shape the Go side parses.
+  // The Go sidecar opens the user-events WebSocket on behalf of the
+  // webview. Each attempt replaces the prior subscription so the Hub sends
+  // a fresh bootstrap. The sidecar uses relayId to reject superseded opens.
+  // A resume cursor crosses IPC as a wire HLC string and an epoch string.
   async openUserEventsRelay(
     relayId: number,
-    channel: import('@tauri-apps/api/core').Channel<ArrayBuffer>,
+    receiver: RelayReceiver,
     workspaceIds: string[] = [],
     resume?: { hlc: { physical: bigint, logical: bigint, clientId: string }, epoch: bigint } | null,
-  ): Promise<void> {
-    const resumeHlc = resume
-      ? formatHlcWire(resume.hlc)
-      : null
-    await tauriInvoke('open_userevents_relay', {
+  ): Promise<boolean> {
+    return openRelay('open_userevents_relay', {
       relayId,
-      channel,
       workspaceIds,
-      resumeHlc,
+      resumeHlc: resume
+        ? formatHlcWire(resume.hlc)
+        : null,
       resumeEpoch: resume
         ? resume.epoch.toString()
         : null,
-    })
+    }, receiver)
   },
   async closeUserEventsRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_userevents_relay', { relayId })
@@ -1172,6 +1147,9 @@ export const platformBridge = {
   },
   async checkFullDiskAccess(): Promise<boolean> {
     return tauriInvoke('check_full_disk_access')
+  },
+  async openNoticeWindow(): Promise<void> {
+    await tauriInvoke('open_notice_window')
   },
   async openFullDiskAccessSettings(): Promise<void> {
     await tauriInvoke('open_full_disk_access_settings')
@@ -1233,20 +1211,48 @@ export const platformBridge = {
   },
 }
 
-/** A sidecar `*:close` relay event payload, after defensive parsing. */
-export interface RelayClosePayload {
+interface RelayClosePayload {
   code: number
   reason: string
   wasClean: boolean
 }
 
-/**
- * Defensively parse a sidecar `channel:close` / `userevents:close` event
- * payload. The sidecar emits a well-formed object, but the payload crosses the
- * untyped Tauri event boundary, so each field is guarded and the shared 1006
- * (abnormal-closure) default lives here -- one home for the wire default both
- * relay-close paths must agree on, rather than duplicated at each listener.
- */
+type RelayMessage = ArrayBuffer | RelayClosePayload
+
+export interface RelayReceiver {
+  isAbandoned: () => boolean
+  onMessage: (message: RelayMessage) => void
+}
+
+async function openRelay(
+  command: 'open_channel_relay' | 'open_userevents_relay',
+  args: Record<string, unknown>,
+  receiver: RelayReceiver,
+): Promise<boolean> {
+  const { Channel, invoke } = await loadTauriCore()
+  if (receiver.isAbandoned())
+    return false
+
+  // Attach the handler before invoking the open. The first frame can arrive
+  // before the open reply, and the channel does not replay it.
+  const channel = new Channel<unknown>((message) => {
+    receiver.onMessage(message instanceof ArrayBuffer
+      ? message
+      : parseRelayClosePayload(message))
+  })
+  try {
+    await invoke(command, { ...args, channel })
+    return true
+  }
+  catch (error) {
+    // Tauri drops the callback when a native Channel ends. If IPC rejects
+    // before Rust constructs the Channel, only the webview can unregister it.
+    const tauri = window.__TAURI_INTERNALS__ as { unregisterCallback: (id: number) => void }
+    tauri.unregisterCallback(channel.id)
+    throw error
+  }
+}
+
 export function parseRelayClosePayload(payload: unknown): RelayClosePayload {
   const close = payload as Partial<RelayClosePayload> | null
   return {

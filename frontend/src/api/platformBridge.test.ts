@@ -3,7 +3,9 @@ import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { deferred, settle } from '~/test-support/async'
 import { decodeProxyResponseEnvelope, desktopFetch, desktopHub, encodeProxyResponseEnvelope, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -50,27 +52,35 @@ describe('desktopFetch', () => {
   })
 
   it('rejects with AbortError when the signal aborts while the call is in flight', async () => {
-    // The proxied request settles only when the test answers it, so the
-    // abort must reject the call without waiting for that answer.
-    let answer!: (resp: ArrayBuffer) => void
-    const inFlight = new Promise((resolve) => {
-      answer = resolve
-    })
+    const started = deferred<void>()
+    const reply = deferred<ArrayBuffer>()
     mockIPC((cmd) => {
-      if (cmd === 'proxy_http')
-        return inFlight
+      if (cmd === 'proxy_http') {
+        started.resolve()
+        return reply.promise
+      }
       throw new Error(`unmocked Tauri command: ${cmd}`)
     })
 
     const controller = new AbortController()
     const call = desktopFetch('https://hub.example/test', { signal: controller.signal })
+    await started.promise
+    const rejected = vi.fn()
+    const observed = call.catch(rejected)
     controller.abort()
-    answer(encodeProxyResponseEnvelope({
-      status: 200,
-      headers: {},
-      body: new ArrayBuffer(0),
-    }))
-    await expect(call).rejects.toMatchObject({ name: 'AbortError' })
+    try {
+      // Drain the queued promise callbacks while the native reply is still held.
+      await settle()
+      expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'AbortError' }))
+    }
+    finally {
+      reply.resolve(encodeProxyResponseEnvelope({
+        status: 200,
+        headers: {},
+        body: new ArrayBuffer(0),
+      }))
+      await observed
+    }
   })
 
   it('rejects with AbortError when the signal is already aborted', async () => {
@@ -962,6 +972,93 @@ describe('platformBridge getStartupInfo', () => {
   })
 })
 
+describe('channel relay bridge', () => {
+  beforeEach(() => {
+    window.__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete window.__TAURI_INTERNALS__
+  })
+
+  it('delivers a raw frame before a close that arrives during the frame fetch', async () => {
+    let channelId!: number
+    mockIPC((cmd, args) => {
+      if (cmd === 'open_channel_relay' && args) {
+        channelId = (args as { channel: { id: number } }).channel.id
+        return null
+      }
+      if (cmd === 'close_channel_relay')
+        return null
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const socket = new TauriRelayWebSocket()
+    const delivered: (ArrayBuffer | CloseEvent)[] = []
+    socket.onmessage = event => delivered.push(event.data as ArrayBuffer)
+    socket.onclose = event => delivered.push(event)
+    const opened = deferred<void>()
+    socket.onopen = () => opened.resolve()
+    await opened.promise
+
+    // Tauri fetches raw messages of at least 1024 bytes asynchronously. Hold
+    // that fetch while the close notification can already reach the webview.
+    const tauri = window.__TAURI_INTERNALS__ as {
+      callbacks: Map<number, unknown>
+      runCallback: (id: number, payload: unknown) => void
+    }
+    const fetchFrame = deferred<ArrayBuffer>()
+    const frameDelivered = fetchFrame.promise.then(message => tauri.runCallback(channelId, { index: 0, message }))
+    const close = { code: 1001, reason: 'going away', wasClean: true }
+    tauri.runCallback(channelId, { index: 1, message: close })
+    tauri.runCallback(channelId, { index: 2, end: true })
+
+    expect(delivered).toEqual([])
+    const frame = new Uint8Array(1024).fill(255).buffer
+    fetchFrame.resolve(frame)
+    await frameDelivered
+    expect(delivered).toEqual([frame, close])
+    expect(delivered[0]).toBe(frame)
+    expect(tauri.callbacks.has(channelId)).toBe(false)
+  })
+
+  it('skips allocating a channel when the attempt ends before IPC starts', async () => {
+    const invoke = vi.fn()
+    mockIPC(invoke)
+    const tauri = window.__TAURI_INTERNALS__ as {
+      callbacks: Map<number, unknown>
+      transformCallback: () => number
+    }
+    const register = vi.spyOn(tauri, 'transformCallback')
+    let abandoned = false
+    const open = platformBridge.openUserEventsRelay(42, {
+      isAbandoned: () => abandoned,
+      onMessage: vi.fn(),
+    })
+
+    abandoned = true
+    await expect(open).resolves.toBe(false)
+    expect(register).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalled()
+    expect(tauri.callbacks.size).toBe(0)
+  })
+
+  it('unregisters the channel callback when the open is rejected before reaching Rust', async () => {
+    mockIPC((cmd) => {
+      throw new Error(`IPC refused the command: ${cmd}`)
+    })
+    const { callbacks } = window.__TAURI_INTERNALS__ as { callbacks: Map<number, unknown> }
+
+    const socket = new TauriRelayWebSocket()
+    const failed = deferred<void>()
+    socket.onclose = () => failed.resolve()
+    await failed.promise
+
+    expect(callbacks.size).toBe(0)
+  })
+})
+
 // The relay ids the sidecar fences on are only useful if they reach it: an open or
 // close that dropped its id would be indistinguishable from any other attempt's, and
 // the sidecar would be back to inferring intent from goroutine scheduling order.
@@ -975,11 +1072,6 @@ describe('userevents relay bridge', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  // The fake channel the relay open must carry to the sidecar beside the id.
-  function fakeChannel(): import('@tauri-apps/api/core').Channel<ArrayBuffer> {
-    return { id: 7 } as unknown as import('@tauri-apps/api/core').Channel<ArrayBuffer>
-  }
-
   it('forwards the relay id and the channel with the user events subscription on open', async () => {
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
@@ -987,15 +1079,19 @@ describe('userevents relay bridge', () => {
       return null
     })
 
-    const channel = fakeChannel()
-    await platformBridge.openUserEventsRelay(42, channel, ['ws-1'])
+    await platformBridge.openUserEventsRelay(42, {
+      isAbandoned: () => false,
+      onMessage: vi.fn(),
+    }, ['ws-1'])
 
     expect(calls).toEqual([
       {
         cmd: 'open_userevents_relay',
         args: {
           relayId: 42,
-          channel,
+          channel: expect.objectContaining({
+            id: expect.any(Number),
+          }),
           workspaceIds: ['ws-1'],
           resumeHlc: null,
           resumeEpoch: null,
@@ -1017,8 +1113,10 @@ describe('userevents relay bridge', () => {
       return null
     })
 
-    const channel = fakeChannel()
-    await platformBridge.openUserEventsRelay(7, channel, ['ws-1'], {
+    await platformBridge.openUserEventsRelay(7, {
+      isAbandoned: () => false,
+      onMessage: vi.fn(),
+    }, ['ws-1'], {
       hlc: { physical: 1754100000000n, logical: 3n, clientId: 'c-abc' },
       epoch: 7n,
     })
@@ -1028,7 +1126,9 @@ describe('userevents relay bridge', () => {
         cmd: 'open_userevents_relay',
         args: {
           relayId: 7,
-          channel,
+          channel: expect.objectContaining({
+            id: expect.any(Number),
+          }),
           workspaceIds: ['ws-1'],
           resumeHlc: '1754100000000.3.c-abc',
           resumeEpoch: '7',
@@ -1208,9 +1308,7 @@ describe('parseRelayClosePayload', () => {
   })
 
   it('defaults each field when the payload is missing or wrong-typed', () => {
-    // The untyped Tauri event boundary can deliver anything; every field is
-    // guarded and code defaults to 1006 (abnormal closure), the shared wire
-    // default both relay-close paths agree on.
+    // A malformed close uses 1006 (abnormal closure) as its default code.
     expect(parseRelayClosePayload(null)).toEqual({ code: 1006, reason: '', wasClean: false })
     expect(parseRelayClosePayload({ code: '1000', reason: 42, wasClean: 'yes' }))
       .toEqual({ code: 1006, reason: '', wasClean: false })

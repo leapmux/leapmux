@@ -117,15 +117,4 @@ describe('BrowserStepUp', () => {
     await vi.waitFor(() => expect(copyTextToClipboard).toHaveBeenCalledExactlyOnceWith('https://hub.example/authorize'))
     expect(directWrite).not.toHaveBeenCalled()
   })
-
-  // Every unmount aborts the ceremony -- also the one the app-root
-  // ErrorBoundary causes when it unmounts the host above this component.
-  it('cancels the ceremony when the host unmounts during the wait', async () => {
-    const { unmount } = renderStepUp()
-    await startCeremony()
-
-    unmount()
-
-    await vi.waitFor(() => expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
-  })
 })

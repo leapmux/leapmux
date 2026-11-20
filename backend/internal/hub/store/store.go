@@ -788,6 +788,10 @@ type OAuthClientStore interface {
 	// credential on a retired app, and the disconnect surface has to identify
 	// what it revoked.
 	Get(ctx context.Context, clientID string) (*OAuthClient, error)
+	// LockForElevation locks the live app registration against policy changes
+	// until the caller's transaction ends. It returns ErrNotFound when the
+	// app is missing, retired, or cannot elevate.
+	LockForElevation(ctx context.Context, clientID string) error
 	// GetIcon reads the icon bytes, their media type, and the facts that gate
 	// serving them, for the /oauth/apps/<id>/icon asset endpoint. It is a
 	// separate read because the full-row queries carry only whether an icon

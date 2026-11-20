@@ -222,12 +222,10 @@ func TestUserEventsRelayCancelsBeforeEmittingClose(t *testing.T) {
 		"the relay lifetime must be cancelled BEFORE the close event is emitted")
 }
 
-// parkedEmitRelay dials a real WebSocket that sends one frame and returns a wsRelay
-// whose emit callback parks (signalling emitEntered) until releaseEmit is closed. The
-// caller wraps the returned base in ChannelRelay/UserEventsRelay, runs its read loop,
-// and closes readDone when the loop exits. Chan/func fields are shared with any copy
-// of the base, so a &ChannelRelay{wsRelay: base} drives the same socket and emit.
-func parkedEmitRelay(t *testing.T, subprotocol string) (base wsRelay, releaseEmit, emitEntered, readDone chan struct{}) {
+// parkRelayEmit configures a relay with a real WebSocket that sends one frame.
+// The emit callback signals emitEntered and waits for releaseEmit. The caller
+// runs the relay's read loop and closes readDone when it exits.
+func parkRelayEmit(t *testing.T, relay *wsRelay, subprotocol string) (releaseEmit, emitEntered, readDone chan struct{}) {
 	t.Helper()
 	serverRelease := make(chan struct{})
 	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +248,7 @@ func parkedEmitRelay(t *testing.T, subprotocol string) (base wsRelay, releaseEmi
 	emitEntered = make(chan struct{})
 	releaseEmit = make(chan struct{})
 	readDone = make(chan struct{})
-	base = wsRelay{
+	*relay = wsRelay{
 		ws:     ws,
 		ctx:    ctx,
 		cancel: cancel,
@@ -260,7 +258,7 @@ func parkedEmitRelay(t *testing.T, subprotocol string) (base wsRelay, releaseEmi
 			<-releaseEmit
 		},
 	}
-	return base, releaseEmit, emitEntered, readDone
+	return releaseEmit, emitEntered, readDone
 }
 
 // The internal closeChannelRelay must DETACH the relay (cancel + force-close) and
@@ -269,8 +267,8 @@ func parkedEmitRelay(t *testing.T, subprotocol string) (base wsRelay, releaseEmi
 // (the old behavior) froze every lifecycle reader for up to relayDrainTimeout when a
 // read loop was wedged mid-emit.
 func TestCloseChannelRelayDetachIsPromptUnderLock(t *testing.T) {
-	base, releaseEmit, emitEntered, readDone := parkedEmitRelay(t, "channel-relay")
-	relay := &ChannelRelay{wsRelay: base}
+	relay := &ChannelRelay{}
+	releaseEmit, emitEntered, readDone := parkRelayEmit(t, &relay.wsRelay, "channel-relay")
 	go func() {
 		defer close(readDone)
 		relay.runReadLoop()
@@ -313,8 +311,8 @@ func TestCloseChannelRelayDetachIsPromptUnderLock(t *testing.T) {
 // drain window when a relay is wedged mid-emit. This is the availability fix: the
 // old code held the write lock across the 5s drain.
 func TestCloseChannelRelayDrainsOffLockWithoutFreezingReaders(t *testing.T) {
-	base, releaseEmit, emitEntered, readDone := parkedEmitRelay(t, "channel-relay")
-	relay := &ChannelRelay{wsRelay: base}
+	relay := &ChannelRelay{}
+	releaseEmit, emitEntered, readDone := parkRelayEmit(t, &relay.wsRelay, "channel-relay")
 	relay.stampOwner(1)
 	go func() {
 		defer close(readDone)
@@ -356,8 +354,8 @@ func TestCloseChannelRelayDrainsOffLockWithoutFreezingReaders(t *testing.T) {
 // The internal closeUserEventsRelay mirrors closeChannelRelay: it detaches promptly
 // under the lock and hands the drain to the caller.
 func TestCloseUserEventsRelayDetachIsPromptUnderLock(t *testing.T) {
-	base, releaseEmit, emitEntered, readDone := parkedEmitRelay(t, "userevents-relay")
-	relay := &UserEventsRelay{wsRelay: base}
+	relay := &UserEventsRelay{}
+	releaseEmit, emitEntered, readDone := parkRelayEmit(t, &relay.wsRelay, "userevents-relay")
 	go func() {
 		defer close(readDone)
 		relay.runReadLoop()
@@ -639,7 +637,7 @@ func TestSendChannelMessageRequestCancelDoesNotForceCloseRelay(t *testing.T) {
 // on its own goroutine with no ordering, so a close sent while wrapper A owned the
 // relay can execute after wrapper B's open adopted it. Without the ownership fence
 // that close tears down the relay B is using -- and because shutdown cancels the
-// relay context before the read loop can emit, no channel:close ever reaches the
+// relay context before the read loop can emit, no channel relay close ever reaches the
 // frontend: B sits at readyState OPEN forever with every send failing, and nothing
 // reopens it until the page reloads.
 //
@@ -782,7 +780,7 @@ func TestApp_OpenChannelRelay_AbandonsWhenConnectionSwappedDuringDial(t *testing
 // already owns the relay must abandon itself, not steal ownership back. Stealing would
 // re-stamp owner to the stale id, and that wrapper's later Close would then tear the
 // relay down out from under the active successor -- silently (shutdown cancels the
-// relay context before the read loop can emit a channel:close), stranding the page at
+// relay context before the read loop can emit a channel relay close), stranding the page at
 // readyState OPEN with every send failing until a reload.
 //
 // This exercises the pre-dial policy path: a successor is already installed when the

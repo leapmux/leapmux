@@ -3095,8 +3095,16 @@ func mountCachedBearerProbe(mux *http.ServeMux, server *httptest.Server, interce
 	return probe
 }
 func (p *cachedBearerProbe) authenticate(bearer string) (*auth.UserInfo, error) {
+	return p.authenticateWithHeader("Authorization", "Bearer "+bearer)
+}
+
+func (p *cachedBearerProbe) authenticateSession(cookie *http.Cookie) (*auth.UserInfo, error) {
+	return p.authenticateWithHeader("Cookie", cookie.Name+"="+cookie.Value)
+}
+
+func (p *cachedBearerProbe) authenticateWithHeader(header, value string) (*auth.UserInfo, error) {
 	ctx, info := connect.NewClientContext(context.Background())
-	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	info.RequestHeader().Set(header, value)
 	_, err := p.client.ListWorkspaces(ctx, &leapmuxv1.ListWorkspacesRequest{})
 	if err != nil {
 		return nil, err
@@ -3201,72 +3209,30 @@ func TestAPIAuth_DesktopAuthorize_RefusesAScope(t *testing.T) {
 func TestSessionCodeExchange_IssuesSession(t *testing.T) {
 	t.Parallel()
 	env := setupAPIAuth(t)
-	cookie := env.elevatedAdminCookie(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	code, verifier := desktopSessionCode(t, env, "laptop")
 
-	verifier, challenge := pkceVerifierAndChallenge()
-	state := id.Generate()
-	redirect := "http://127.0.0.1:54321/callback"
+	resp := exchangeSessionCode(t, env, code, verifier)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.JSONEq(t, `{"signed_in":true}`, bodyOf(t, resp))
+	cookie := issuedSessionCookie(t, resp)
 
-	// Consent for leapmux-desktop.
-	authClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	form := url.Values{
-		"client_id":             {oauthapp.DesktopClientID},
-		"response_type":         {"code"},
-		"code_challenge_method": {"S256"},
-		"redirect_uri":          {redirect},
-		"state":                 {state},
-		"code_challenge":        {challenge},
-		"decision":              {"allow"},
-		"installation_name":     {"laptop"},
-	}
-	req, _ := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
-	req.AddCookie(cookie)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := authClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-	loc, err := url.Parse(resp.Header.Get("Location"))
-	require.NoError(t, err)
-	code := loc.Query().Get("code")
-	require.NotEmpty(t, code)
-
-	// Exchange.
-	exchangeResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
-		"grant_type":    {"authorization_code"},
-		"client_id":     {oauthapp.DesktopClientID},
-		"redirect_uri":  {redirect},
-		"code":          {code},
-		"code_verifier": {verifier},
-	})
-	require.NoError(t, err)
-	defer func() { _ = exchangeResp.Body.Close() }()
-	require.Equal(t, http.StatusOK, exchangeResp.StatusCode)
-	var body map[string]any
-	require.NoError(t, json.NewDecoder(exchangeResp.Body).Decode(&body))
-	assert.Equal(t, true, body["signed_in"])
-
-	// A session cookie was set.
-	found := false
-	for _, c := range exchangeResp.Cookies() {
-		if c.Name == auth.CookieName && c.Value != "" {
-			found = true
-		}
-	}
-	assert.True(t, found, "the exchange sets a session cookie")
-
-	// The row carries a minted session.
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind,
-		"the exchange records the minted session")
-	require.NotEmpty(t, row.Minted.ID, "the exchange records the minted session")
+	assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
+	assert.Equal(t, hubtestutil.SessionIDFromCookie(t, cookie.Value), row.Minted.ID,
+		"the code must record the session the cookie identifies")
 
-	// The session has no elevation pair.
-	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, time.Now().UTC())
+	user, err := env.probe.authenticateSession(cookie)
+	require.NoError(t, err, "the issued cookie must authenticate")
+	assert.Equal(t, env.userID, user.ID.String())
+	assert.Equal(t, row.Minted.ID, user.Credential.SessionID())
+
+	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, env.now().UTC())
 	require.NoError(t, err)
-	assert.Nil(t, sess.ElevationExpiresAt, "a fresh session carries no elevation")
+	assert.Equal(t, oauthapp.DesktopClientID, sess.IssuedToClient)
+	assert.Nil(t, sess.ElevationProvenAt, "a fresh session carries no proof")
+	assert.Nil(t, sess.ElevationExpiresAt, "a fresh session carries no window")
 }
 
 // An empty installation label leaves the session's UserAgent the app's name
@@ -3401,6 +3367,93 @@ func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
 		"the issued cookie must stop authenticating the moment the session is revoked")
 }
 
+func TestAuthorizationCodeReplayRequiresProof(t *testing.T) {
+	t.Parallel()
+
+	for _, client := range []struct {
+		id    string
+		other string
+	}{
+		{oauthapp.ControlCLIClientID, oauthapp.DesktopClientID},
+		{oauthapp.DesktopClientID, oauthapp.ControlCLIClientID},
+	} {
+		t.Run(client.id, func(t *testing.T) {
+			t.Parallel()
+
+			for _, invalid := range []struct {
+				name  string
+				field string
+				value string
+			}{
+				{"wrong redirect", "redirect_uri", "http://127.0.0.1:54322/callback"},
+				{"wrong verifier", "code_verifier", strings.Repeat("a", 43)},
+				{"wrong app", "client_id", client.other},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					t.Parallel()
+
+					env := setupAPIAuth(t)
+					var code, verifier string
+					if client.id == oauthapp.DesktopClientID {
+						code, verifier = desktopSessionCode(t, env, "laptop")
+					} else {
+						code, verifier = issueLocalRedirectCode(t, env)
+					}
+
+					form := url.Values{
+						"grant_type":    {service.GrantTypeAuthorizationCode},
+						"client_id":     {client.id},
+						"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+						"code":          {code},
+						"code_verifier": {verifier},
+					}
+					exchange := func() *http.Response {
+						t.Helper()
+						resp, err := http.PostForm(env.server.URL+"/oauth/token", form)
+						require.NoError(t, err)
+						t.Cleanup(func() { _ = resp.Body.Close() })
+						return resp
+					}
+					initial := exchange()
+					require.Equal(t, http.StatusOK, initial.StatusCode)
+					body := sessionCodeExchangeBody(t, initial)
+
+					var authHeader, authValue string
+					if client.id == oauthapp.DesktopClientID {
+						authHeader = "Cookie"
+						cookie := issuedSessionCookie(t, initial)
+						authValue = cookie.Name + "=" + cookie.Value
+					} else {
+						token, ok := body["access_token"].(string)
+						require.True(t, ok)
+						require.NotEmpty(t, token)
+						authHeader = "Authorization"
+						authValue = "Bearer " + token
+					}
+					_, err := env.probe.authenticateWithHeader(authHeader, authValue)
+					require.NoError(t, err, "the initial credential must authenticate")
+
+					valid := form.Get(invalid.field)
+					form.Set(invalid.field, invalid.value)
+					refusal := exchange()
+					require.Equal(t, http.StatusBadRequest, refusal.StatusCode)
+					require.JSONEq(t, `{"error":"invalid_grant","error_description":"code expired or already consumed"}`, bodyOf(t, refusal))
+					_, err = env.probe.authenticateWithHeader(authHeader, authValue)
+					require.NoError(t, err, "a replay without matching proof must leave the credential usable")
+
+					form.Set(invalid.field, valid)
+					replay := exchange()
+					require.Equal(t, http.StatusBadRequest, replay.StatusCode)
+					require.JSONEq(t, `{"error":"invalid_grant","error_description":"code expired or already consumed"}`, bodyOf(t, replay))
+					_, err = env.probe.authenticateWithHeader(authHeader, authValue)
+					assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+						"a replay with matching proof must revoke the minted credential")
+				})
+			}
+		})
+	}
+}
+
 // Two exchanges of one session code at the same time: exactly one signs the
 // desktop in and the other answers invalid_grant -- never a 500, which would
 // tell the caller to retry a code that is already spent. The winner's session
@@ -3413,7 +3466,12 @@ func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
 	code, verifier := desktopSessionCode(t, env, "laptop")
 
 	start := make(chan struct{})
-	statuses := make(chan int, 2)
+	type exchangeResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	results := make(chan exchangeResult, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	for range 2 {
@@ -3428,22 +3486,29 @@ func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
 				"code_verifier": {verifier},
 			})
 			if err != nil {
-				statuses <- 0
+				results <- exchangeResult{err: err}
 				return
 			}
-			_ = resp.Body.Close()
-			statuses <- resp.StatusCode
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			results <- exchangeResult{status: resp.StatusCode, body: body, err: err}
 		}()
 	}
 	close(start)
 	wg.Wait()
-	close(statuses)
-	got := make([]int, 0, 2)
-	for status := range statuses {
-		got = append(got, status)
+	close(results)
+	statuses := make([]int, 0, 2)
+	for result := range results {
+		require.NoError(t, result.err)
+		statuses = append(statuses, result.status)
+		switch result.status {
+		case http.StatusOK:
+			assert.JSONEq(t, `{"signed_in":true}`, string(result.body))
+		case http.StatusBadRequest:
+			assert.JSONEq(t, `{"error":"invalid_grant","error_description":"code expired or already consumed"}`, string(result.body))
+		}
 	}
-	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, got,
-		"one code signs in once; the loser is invalid_grant and never a 500")
+	require.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, statuses)
 
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)

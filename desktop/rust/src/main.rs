@@ -711,31 +711,37 @@ fn handle_sidecar_frame(app_handle: &AppHandle, pending: &PendingMap, frame: pro
 
 fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
     let Some(payload) = event.payload else { return };
+    let relay_id = event.relay_id;
 
     match payload {
         proto::event::Payload::ChannelMessage(msg) => {
-            app_handle.state::<RelaySlots>().channel.send_raw(msg.data);
+            app_handle
+                .state::<RelaySlots>()
+                .channel
+                .send_raw(relay_id, msg.data);
         }
         proto::event::Payload::ChannelClose(close) => {
-            let _ = app_handle.emit(
-                contracts_generated::EVENT_CHANNEL_CLOSE,
-                json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
+            app_handle.state::<RelaySlots>().channel.send_close(
+                relay_id,
+                close.code,
+                close.reason,
+                close.was_clean,
             );
         }
         proto::event::Payload::UserEventsMessage(msg) => {
-            // Forward the hub's length-prefixed WatchUserEvent frame
-            // verbatim to the webview. The frontend's `useUserEvents`
-            // hook decodes identically to native WS frames. Frames ride
-            // the open's Tauri channel (raw bytes), not a base64 event.
+            // Forward the length-prefixed WatchUserEvent frame verbatim. The
+            // frontend decodes it the same way as a native WebSocket frame.
             app_handle
                 .state::<RelaySlots>()
                 .user_events
-                .send_raw(msg.data);
+                .send_raw(relay_id, msg.data);
         }
         proto::event::Payload::UserEventsClose(close) => {
-            let _ = app_handle.emit(
-                contracts_generated::EVENT_USER_EVENTS_CLOSE,
-                json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
+            app_handle.state::<RelaySlots>().user_events.send_close(
+                relay_id,
+                close.code,
+                close.reason,
+                close.was_clean,
             );
         }
         proto::event::Payload::BrowserAuthResult(result) => {
@@ -1134,84 +1140,148 @@ async fn cli_install_symlink(
     }
 }
 
-// --- Relay frame delivery ---
-//
-// Each relay kind's frames reach the webview through a Tauri `Channel` its
-// frontend wrapper created and handed to the open command; the webview
-// receives `InvokeResponseBody::Raw` bytes as an ArrayBuffer (the sub-1KiB
-// eval path is the same ArrayBuffer). Closes keep riding the global Tauri
-// events (`channel:close` / `userevents:close`), so every wrapper hears the
-// terminal path of the relay it may own.
+const NOTICE_WINDOW_LABEL: &str = "notice";
 
-/// One relay kind's delivery slot: the channel of the frontend wrapper the
-/// relay was last handed to, plus the relay id naming that wrapper.
-///
-/// The owner discipline mirrors desktop/go/channel_relay.go's `owner` field.
-/// The sidecar runs every relay request on its own goroutine with no ordering,
-/// so a stale open -- an earlier wrapper whose request ran late -- can land
-/// AFTER its successor's. Installing its channel then would route the live
-/// relay's frames to the superseded wrapper: a frame for a superseded relay id
-/// must not deliver. The id comparison makes the outcome independent of the
-/// schedule, the same fence `adoptLiveRelay`/`rejectIfSuperseded` and
-/// `closeIfOwner` apply at the sidecar: an open at or below the installed
-/// owner is refused, and a close clears the slot only while its id still owns
-/// it.
-struct RelaySlot {
-    relay_id: u64,
-    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+fn notice_window_url() -> tauri::WebviewUrl {
+    tauri::WebviewUrl::App("NOTICE.html".into())
 }
 
-/// The delivery slot for one relay kind's frames. Locks recover from
-/// poisoning rather than wedging delivery; see the `recover` helper.
+// WebView2 cannot create a webview from a synchronous command. Tauri's async
+// command dispatcher runs the window builder outside the main thread.
+#[tauri::command]
+async fn open_notice_window(window: WebviewWindow) -> Result<(), String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("only the main window can open third-party licenses".to_string());
+    }
+
+    let app = window.app_handle();
+    if let Some(notice) = app.get_webview_window(NOTICE_WINDOW_LABEL) {
+        return notice.set_focus().map_err(|error| error.to_string());
+    }
+
+    // The initial URL must be local by construction. WebView2 can start
+    // its first navigation before the navigation hook is installed.
+    match tauri::WebviewWindowBuilder::new(app, NOTICE_WINDOW_LABEL, notice_window_url())
+        .title("Third-party Licenses")
+        .inner_size(800.0, 600.0)
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .build()
+    {
+        Ok(_) => Ok(()),
+        Err(
+            error @ (tauri::Error::WindowLabelAlreadyExists(_)
+            | tauri::Error::WebviewLabelAlreadyExists(_)),
+        ) => app
+            .get_webview_window(NOTICE_WINDOW_LABEL)
+            .ok_or_else(|| error.to_string())?
+            .set_focus()
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+// --- Relay frame delivery ---
+
+type RelayChannel = tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>;
+
 #[derive(Default)]
-struct RelayChannelSlot(Mutex<Option<RelaySlot>>);
+struct RelayReceivers {
+    accepted: Option<u64>,
+    channels: HashMap<u64, RelayChannel>,
+}
+
+/// The active receiver and pending candidates for one relay kind. A frame may
+/// arrive before its open response. Route it to its exact owner without
+/// displacing the current receiver until a newer open succeeds.
+#[derive(Default)]
+struct RelayChannelSlot(Mutex<RelayReceivers>);
 
 impl RelayChannelSlot {
-    /// Installs `channel` as the delivery target owned by `relay_id` and
-    /// reports whether it took. A superseded open -- an id at or below the
-    /// installed owner -- is refused, so its channel never delivers. Called
-    /// only after the sidecar accepted the open, so a refused open cannot
-    /// leave its channel installed either.
-    fn install(
-        &self,
-        relay_id: u64,
-        channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
-    ) -> bool {
-        let mut slot = recover(&self.0);
-        if slot
-            .as_ref()
-            .is_some_and(|current| current.relay_id > relay_id)
-        {
+    fn register(&self, relay_id: u64, channel: RelayChannel) -> bool {
+        let mut receivers = recover(&self.0);
+        if relay_id == 0 || receivers.accepted.is_some_and(|active| active >= relay_id) {
             return false;
         }
-        *slot = Some(RelaySlot { relay_id, channel });
-        true
-    }
-
-    /// Delivers `data` raw to the current owner's channel. A frame with no
-    /// installed channel is dropped: no wrapper is listening for it.
-    fn send_raw(&self, data: Vec<u8>) {
-        let slot = recover(&self.0);
-        if let Some(current) = slot.as_ref() {
-            let _ = current
-                .channel
-                .send(tauri::ipc::InvokeResponseBody::Raw(data));
-        }
-    }
-
-    /// Clears the slot while `relay_id` still owns it and reports whether it
-    /// cleared. A stale close leaves the successor's channel installed, the
-    /// same fence as channel_relay.go's `closeIfOwner`.
-    fn close_if_owner(&self, relay_id: u64) -> bool {
-        let mut slot = recover(&self.0);
-        if slot
-            .as_ref()
-            .is_some_and(|current| current.relay_id == relay_id)
+        if let std::collections::hash_map::Entry::Vacant(entry) = receivers.channels.entry(relay_id)
         {
-            *slot = None;
+            entry.insert(channel);
             return true;
         }
         false
+    }
+
+    fn accept(&self, relay_id: u64) -> bool {
+        let mut receivers = recover(&self.0);
+        if !receivers.channels.contains_key(&relay_id) {
+            return false;
+        }
+        receivers.channels.retain(|id, _| *id >= relay_id);
+        receivers.accepted = Some(relay_id);
+        true
+    }
+
+    async fn open(
+        &self,
+        relay_id: u64,
+        channel: RelayChannel,
+        request: impl std::future::Future<Output = Result<proto::Response, String>>,
+        repeat_close: impl std::future::Future<Output = Result<proto::Response, String>>,
+    ) -> Result<(), String> {
+        if !self.register(relay_id, channel) {
+            return Err("relay receiver could not be registered".to_string());
+        }
+        // Sending the request can start the sidecar's read loop before the
+        // reply is written. The receiver must already exist when it starts.
+        if let Err(error) = request.await.and_then(check_response) {
+            self.close_if_owner(relay_id);
+            return Err(error);
+        }
+        if self.accept(relay_id) {
+            return Ok(());
+        }
+
+        // A close during the handshake can reach Go before the relay exists.
+        // Repeat it after a successful reply. Go closes only this owner, so
+        // this also covers an older reply that arrived after a newer open.
+        if let Err(error) = repeat_close.await.and_then(check_response) {
+            shell_log!("relay {relay_id} cleanup after open failed: {error}");
+        }
+        Err("relay receiver closed or superseded during open".to_string())
+    }
+
+    fn send(&self, relay_id: u64, body: tauri::ipc::InvokeResponseBody) {
+        let receiver = recover(&self.0).channels.get(&relay_id).cloned();
+        if let Some(channel) = receiver {
+            let _ = channel.send(body);
+        }
+    }
+
+    fn send_raw(&self, relay_id: u64, data: Vec<u8>) {
+        self.send(relay_id, tauri::ipc::InvokeResponseBody::Raw(data));
+    }
+
+    fn send_close(&self, relay_id: u64, code: u32, reason: String, was_clean: bool) {
+        // Tauri assigns an index to every send on this Channel. A close can
+        // reach the webview before an earlier raw body finishes fetching.
+        self.send(
+            relay_id,
+            tauri::ipc::InvokeResponseBody::Json(
+                json!({ "code": code, "reason": reason, "wasClean": was_clean }).to_string(),
+            ),
+        );
+    }
+
+    #[cfg(test)]
+    fn has_receiver(&self, relay_id: u64) -> bool {
+        recover(&self.0).channels.contains_key(&relay_id)
+    }
+
+    fn close_if_owner(&self, relay_id: u64) -> bool {
+        let mut receivers = recover(&self.0);
+        if receivers.accepted == Some(relay_id) {
+            receivers.accepted = None;
+        }
+        receivers.channels.remove(&relay_id).is_some()
     }
 }
 
@@ -1222,29 +1292,28 @@ struct RelaySlots {
     user_events: RelayChannelSlot,
 }
 
-// relay_id names which frontend relay wrapper is asking, so the sidecar can ignore
-// a close that a later open has already superseded. See the proto's comment on
-// OpenChannelRelayRequest.
+// The sidecar uses relay_id to ignore a close after a newer open takes
+// ownership. See the comment on OpenChannelRelayRequest.
 #[tauri::command]
 async fn open_channel_relay(
     shell: State<'_, Arc<DesktopShell>>,
     slots: State<'_, RelaySlots>,
     relay_id: u64,
-    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    channel: RelayChannel,
 ) -> Result<(), String> {
-    check_response(
-        shell
-            .send_request_async(proto::request::Method::OpenChannelRelay(
+    slots
+        .channel
+        .open(
+            relay_id,
+            channel,
+            shell.send_request_async(proto::request::Method::OpenChannelRelay(
                 proto::OpenChannelRelayRequest { relay_id },
-            ))
-            .await?,
-    )?;
-    // After the sidecar accepted: an open it refused as superseded must not
-    // install its channel either.
-    if !slots.channel.install(relay_id, channel) {
-        return Err("channel relay superseded by a newer open".to_string());
-    }
-    Ok(())
+            )),
+            shell.send_request_async(proto::request::Method::CloseChannelRelay(
+                proto::CloseChannelRelayRequest { relay_id },
+            )),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1277,9 +1346,8 @@ async fn close_channel_relay(
     slots: State<'_, RelaySlots>,
     relay_id: u64,
 ) -> Result<(), String> {
-    // Drop the delivery target first: the wrapper named by relay_id is done
-    // with the relay whatever the sidecar answers, and the unbounded sidecar
-    // call below must not keep feeding a dead wrapper frames meanwhile.
+    // Drop the owner's delivery target before waiting for the sidecar. The
+    // wrapper has already closed.
     slots.channel.close_if_owner(relay_id);
     check_response(
         shell
@@ -1296,30 +1364,29 @@ async fn open_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
     slots: State<'_, RelaySlots>,
     relay_id: u64,
-    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    channel: RelayChannel,
     workspace_ids: Vec<String>,
     resume_hlc: Option<String>,
     resume_epoch: Option<String>,
 ) -> Result<(), String> {
-    check_response(
-        shell
-            .send_request_async(proto::request::Method::OpenUserEventsRelay(
+    slots
+        .user_events
+        .open(
+            relay_id,
+            channel,
+            shell.send_request_async(proto::request::Method::OpenUserEventsRelay(
                 proto::OpenUserEventsRelayRequest {
                     relay_id,
                     workspace_ids,
                     resume_hlc,
                     resume_epoch,
                 },
-            ))
-            .await?,
-    )?;
-    // The same owner fence as the channel relay: a superseded open must not
-    // steal the delivery target back (the sidecar refused it as superseded
-    // too, but its refusal and this check are what order the two).
-    if !slots.user_events.install(relay_id, channel) {
-        return Err("userevents relay superseded by a newer open".to_string());
-    }
-    Ok(())
+            )),
+            shell.send_request_async(proto::request::Method::CloseUserEventsRelay(
+                proto::CloseUserEventsRelayRequest { relay_id },
+            )),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -2164,9 +2231,8 @@ fn main() {
             // The `main` window is declared with `"create": false`, so the
             // shell builds it here. `on_new_window` refuses every new window
             // the PAGE requests (`window.open`, a `target="_blank"` link).
-            // The `notice` licenses window the frontend opens is created
-            // through the Tauri API instead, and the navigation allow-list
-            // covers its webview too.
+            // The native command opens the bundled licenses window with the
+            // same popup policy. The navigation plugin covers both windows.
             let window_config = app
                 .config()
                 .app
@@ -2326,6 +2392,7 @@ fn main() {
             proxy_http,
             cli_path_status,
             cli_install_symlink,
+            open_notice_window,
             open_channel_relay,
             send_channel_message,
             close_channel_relay,
@@ -2526,77 +2593,208 @@ mod tests {
         }
     }
 
-    // The installed channel receives the relay frames raw, in order.
-    #[test]
-    fn relay_slot_delivers_raw_frames_to_the_installed_channel() {
-        let delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
-        let slot = RelayChannelSlot::default();
-        assert!(slot.install(2, recording_channel(&delivered)));
+    #[tokio::test]
+    async fn relay_open_delivers_one_shot_bootstrap_before_the_reply() {
+        let slots = RelaySlots::default();
+        let slot = &slots.user_events;
+        let delivered = Arc::default();
+        let one_shot = vec![0, 0, 0, 3, 9, 8, 7];
 
-        slot.send_raw(vec![1, 2, 3]);
-        slot.send_raw(vec![4, 5, 6, 7]);
+        slot.open(
+            1,
+            recording_channel(&delivered),
+            async {
+                // The sidecar read loop can emit the only initial
+                // WatchUserEvent while the open reply is still pending.
+                slot.send_raw(1, one_shot.clone());
+                assert_eq!(*recover(&delivered), vec![one_shot]);
+                Ok(proto::Response::default())
+            },
+            async { panic!("a successful open needs no cleanup") },
+        )
+        .await
+        .expect("the relay open should succeed");
+    }
+
+    #[tokio::test]
+    async fn relay_routes_frames_to_their_owner_while_a_new_open_is_pending() {
+        let slots = RelaySlots::default();
+        for slot in [&slots.channel, &slots.user_events] {
+            let predecessor = Arc::default();
+            let successor = Arc::default();
+            assert!(slot.register(1, recording_channel(&predecessor)));
+            assert!(slot.accept(1));
+
+            slot.open(
+                2,
+                recording_channel(&successor),
+                async {
+                    slot.send_raw(1, vec![10]);
+                    slot.send_raw(2, vec![20]);
+                    slot.send_raw(1, vec![11]);
+                    slot.send_raw(2, vec![21]);
+                    assert_eq!(*recover(&predecessor), vec![vec![10], vec![11]]);
+                    assert_eq!(*recover(&successor), vec![vec![20], vec![21]]);
+                    Ok(proto::Response::default())
+                },
+                async { panic!("a successful open needs no cleanup") },
+            )
+            .await
+            .expect("the successor open should succeed");
+
+            slot.send_raw(1, vec![12]);
+            slot.send_raw(2, vec![22]);
+            assert_eq!(*recover(&predecessor), vec![vec![10], vec![11]]);
+            assert_eq!(*recover(&successor), vec![vec![20], vec![21], vec![22]]);
+        }
+    }
+
+    #[test]
+    fn relay_sends_the_close_after_raw_frames_on_the_owner_channel() {
+        use tauri::ipc::InvokeResponseBody;
+
+        let slots = RelaySlots::default();
+        for slot in [&slots.channel, &slots.user_events] {
+            let stale = Arc::default();
+            assert!(slot.register(1, recording_channel(&stale)));
+            assert!(slot.accept(1));
+
+            let delivered: Arc<Mutex<Vec<InvokeResponseBody>>> = Arc::default();
+            let channel = {
+                let delivered = Arc::clone(&delivered);
+                RelayChannel::new(move |body| {
+                    recover(&delivered).push(body);
+                    Ok(())
+                })
+            };
+            assert!(slot.register(2, channel));
+            assert!(slot.accept(2));
+
+            let frame = vec![0xff; 1024];
+            slot.send_raw(2, frame.clone());
+            slot.send_close(1, 1011, "stale close".to_string(), false);
+            slot.send_close(2, 1000, "done".to_string(), true);
+
+            assert!(recover(&stale).is_empty());
+            let messages = recover(&delivered);
+            let [InvokeResponseBody::Raw(bytes), InvokeResponseBody::Json(close)] =
+                messages.as_slice()
+            else {
+                panic!("expected a raw frame and a JSON close on the same channel");
+            };
+            assert_eq!(bytes, &frame);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(close).expect("parse close"),
+                json!({ "code": 1000, "reason": "done", "wasClean": true }),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_preserves_the_predecessor_when_a_new_open_fails() {
+        let slot = RelayChannelSlot::default();
+        let predecessor = Arc::default();
+        let rejected = Arc::default();
+        assert!(slot.register(1, recording_channel(&predecessor)));
+        assert!(slot.accept(1));
+
         assert_eq!(
-            *recover(&delivered),
-            vec![vec![1, 2, 3], vec![4, 5, 6, 7]],
-            "both frames must deliver raw and in order"
+            slot.open(
+                2,
+                recording_channel(&rejected),
+                async { Err("dial failed".to_string()) },
+                async { panic!("a rejected open needs no cleanup") },
+            )
+            .await,
+            Err("dial failed".to_string())
         );
+        assert!(!slot.has_receiver(2));
+        slot.send_raw(2, vec![20]);
+        slot.send_raw(1, vec![10]);
+        assert!(recover(&rejected).is_empty());
+        assert_eq!(*recover(&predecessor), vec![vec![10]]);
     }
 
-    // The owner fence of channel_relay.go's `owner` field: an open that ran
-    // late (an earlier relay id) must not steal the delivery target back from
-    // the successor, or the live relay's frames would reach a superseded
-    // wrapper -- a frame for a superseded relay id must not deliver.
-    #[test]
-    fn relay_slot_refuses_to_deliver_for_a_stale_relay_id() {
-        let delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    #[tokio::test]
+    async fn relay_repeats_an_owner_close_that_raced_its_open() {
         let slot = RelayChannelSlot::default();
-        assert!(slot.install(2, recording_channel(&delivered)));
+        let delivered = Arc::default();
+        let repeated = AtomicBool::new(false);
 
-        let stale_delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
-        assert!(
-            !slot.install(1, recording_channel(&stale_delivered)),
-            "a stale open must not take the delivery slot"
-        );
-
-        slot.send_raw(vec![9]);
-        assert_eq!(*recover(&delivered), vec![vec![9]]);
-        assert!(
-            recover(&stale_delivered).is_empty(),
-            "a frame for a superseded relay id must not deliver"
-        );
+        assert!(slot
+            .open(
+                1,
+                recording_channel(&delivered),
+                async {
+                    assert!(slot.close_if_owner(1));
+                    assert!(!slot.has_receiver(1));
+                    Ok(proto::Response::default())
+                },
+                async {
+                    repeated.store(true, Ordering::Relaxed);
+                    Ok(proto::Response::default())
+                },
+            )
+            .await
+            .is_err());
+        assert!(repeated.load(Ordering::Relaxed));
+        assert!(!slot.has_receiver(1));
     }
 
-    // `closeIfOwner`'s fence: a stale close must leave the successor's
-    // channel installed, and the named owner's close leaves the slot
-    // delivering to no one.
-    #[test]
-    fn relay_slot_close_clears_only_the_owner_it_names() {
-        let delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    #[tokio::test]
+    async fn relay_keeps_the_newer_receiver_when_open_replies_arrive_out_of_order() {
         let slot = RelayChannelSlot::default();
-        assert!(slot.install(2, recording_channel(&delivered)));
+        let older = Arc::default();
+        let newer = Arc::default();
+        let closed_older = AtomicBool::new(false);
 
-        assert!(
-            !slot.close_if_owner(1),
-            "a stale close must not clear the successor's slot"
-        );
-        slot.send_raw(vec![1]);
-        assert_eq!(recover(&delivered).len(), 1, "the successor still receives");
+        let result = slot
+            .open(
+                1,
+                recording_channel(&older),
+                async {
+                    slot.open(
+                        2,
+                        recording_channel(&newer),
+                        async { Ok(proto::Response::default()) },
+                        async { panic!("the newer open needs no cleanup") },
+                    )
+                    .await
+                    .expect("the newer open should succeed");
+                    Ok(proto::Response::default())
+                },
+                async {
+                    closed_older.store(true, Ordering::Relaxed);
+                    Ok(proto::Response::default())
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(closed_older.load(Ordering::Relaxed));
+        slot.send_raw(1, vec![10]);
+        slot.send_raw(2, vec![20]);
+        assert!(recover(&older).is_empty());
+        assert_eq!(*recover(&newer), vec![vec![20]]);
+    }
+
+    #[test]
+    fn relay_slot_rejects_a_stale_open_and_close() {
+        let slot = RelayChannelSlot::default();
+        let current = Arc::default();
+        let stale = Arc::default();
+        assert!(slot.register(2, recording_channel(&current)));
+        assert!(slot.accept(2));
+        assert!(!slot.register(1, recording_channel(&stale)));
+        assert!(!slot.close_if_owner(1));
+        slot.send_raw(1, vec![10]);
+        slot.send_raw(2, vec![20]);
+        assert!(recover(&stale).is_empty());
+        assert_eq!(*recover(&current), vec![vec![20]]);
 
         assert!(slot.close_if_owner(2));
-        slot.send_raw(vec![2]);
-        assert_eq!(
-            recover(&delivered).len(),
-            1,
-            "frames after the owner's close deliver to no one"
-        );
-    }
-
-    #[test]
-    fn relay_slot_drops_frames_with_no_installed_channel() {
-        let slot = RelayChannelSlot::default();
-        // Nothing to deliver to: the frame must be dropped, not panic.
-        slot.send_raw(vec![1]);
-        assert!(!slot.close_if_owner(1), "no slot, nothing to clear");
+        slot.send_raw(2, vec![21]);
+        assert_eq!(*recover(&current), vec![vec![20]]);
     }
 
     // The sidecar sends its build in the shared leapmux.v1.BuildInfo message;

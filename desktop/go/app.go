@@ -54,13 +54,13 @@ type App struct {
 	// lifecycleMu is released across it rather than held for the whole boot.
 	startSolo  func(context.Context) (*soloRuntime, error)
 	binaryHash string
-	// browserAuth is the ceremony in progress, guarded by lifecycleMu. A newer
-	// start, a matching cancel and the disconnect teardown all end it through
-	// endBrowserAuthLocked.
+	// browserAuth is the current ceremony, guarded by lifecycleMu.
 	browserAuth *browserAuthCeremony
 	// browserAuthClock schedules the ceremony's timers. NewApp sets the real
 	// clock; a test replaces it to drive the timeouts.
 	browserAuthClock quartz.Clock
+	// sessionFiles orders browser sign-in writes with reconnects to the same Hub.
+	sessionFiles sessionFileAccess
 	// events is the event pub-sub: a generic sink and a relay-aware variant
 	// behind one RWMutex. Extracted into its own type so App's mutex surface is
 	// just the lifecycle/config locks. See event_sink.go and #295.
@@ -74,6 +74,8 @@ type desktopConnection struct {
 	solo   *soloRuntime
 	relay  *ChannelRelay
 	hubURL string
+	// browserAuthRedemptionMu serializes token exchanges on this proxy's jar.
+	browserAuthRedemptionMu ctxutil.Mutex
 	// Both relays carry their own owner id (see wsRelay.owner), so ownership dies
 	// with the relay it named rather than lingering on the connection.
 	userEventsRelay *UserEventsRelay
@@ -248,15 +250,8 @@ func (a *App) acquireLifecycleRLock() (func(), error) {
 // -- it reconnects, re-handshakes and re-bootstraps -- and scopes the damage to
 // the affected relay instead of the whole sidecar session.
 //
-// emitterOwner is the owning wrapper id of the relay whose read loop emitted the
-// undeliverable frame (threaded through emitForOwner -> EmitRelayEvent ->
-// failFrameForRelay). The close gates on it the same way CloseChannelRelay does: if a
-// successor wrapper's open has superseded this relay by the time this goroutine
-// acquires lifecycleMu, the successor's relay is left alone -- the emitter's read
-// loop is already being torn down by the successor's install, and closing the
-// successor's relay for a fault that belonged to the emitter would force the
-// successor to reconnect for nothing.
-//
+// The event carries the owner that emitted it. If another owner has since
+// adopted or replaced the relay, leave it running.
 // The close event must be emitted explicitly: tearing a relay down cancels its
 // context first, so its read loop exits WITHOUT emitting the close it would send
 // on a network error, and the frontend would otherwise just go quiet. The event is
@@ -266,7 +261,11 @@ func (a *App) acquireLifecycleRLock() (func(), error) {
 //
 // Must not run on the failing relay's own read-loop goroutine: the teardown joins
 // that loop (see RPCSession.failFrameForRelay, which dispatches it asynchronously).
-func (a *App) CloseRelayForUndeliverableEvent(emitterOwner uint64, event *desktoppb.Event) {
+func (a *App) CloseRelayForUndeliverableEvent(event *desktoppb.Event) {
+	emitterOwner := event.GetRelayId()
+	if emitterOwner == 0 {
+		return
+	}
 	switch event.GetPayload().(type) {
 	case *desktoppb.Event_ChannelMessage:
 		a.closeUndeliverableRelay(
@@ -342,40 +341,16 @@ func (a *App) closeUndeliverableRelay(getRelay func(*desktopConnection) *wsRelay
 	}
 	drainRelay(drain)
 	slog.Error(logMsg)
-	a.EmitEvent(closeEvent)
+	a.events.EmitRelay(emitterOwner, closeEvent)
 }
-
-// The five methods below are thin forwarders onto a.events (see event_sink.go);
-// they preserve the call sites in rpc.go, channel_relay.go, userevents_relay.go,
-// solo.go, and the tests, which keep calling a.SetEventSink / a.EmitEvent / etc.
 
 func (a *App) SetEventSink(sink func(*desktoppb.Event)) {
 	a.events.Set(sink)
 }
 
-// SetEventSinkForRelay installs the relay-aware sink the RPCSession provides
-// alongside the generic sink. The relay read loops route their emits through it
-// (via EmitRelayEvent) so a frame that cannot be delivered carries the emitting
-// relay's owner id forward to the close path.
-func (a *App) SetEventSinkForRelay(sink func(owner uint64, event *desktoppb.Event)) {
-	a.events.SetRelay(sink)
-}
-
-// emitForOwner is a thin forwarder onto eventSink.forOwner; see that method for
-// why the closure reads relay.owner at call time (via an atomic load against the
-// lifecycleMu-guarded re-stamp an adopt performs) rather than capturing its value.
+// emitForOwner reads the relay's owner each time the read loop emits an event.
 func (a *App) emitForOwner(relay *wsRelay) func(*desktoppb.Event) {
 	return a.events.forOwner(relay)
-}
-
-// EmitRelayEvent routes a relay-sourced event through the relay-aware sink when
-// one is installed, falling back to the generic EmitEvent otherwise (e.g. when
-// the relay emits before the RPCSession has wired its sink, or in a focused
-// test that constructs a bare App). The fallback loses the owner id, but a
-// session without a sink has no shell pipe to deliver an undeliverable frame
-// over in the first place.
-func (a *App) EmitRelayEvent(owner uint64, event *desktoppb.Event) {
-	a.events.EmitRelay(owner, event)
 }
 
 func (a *App) EmitEvent(event *desktoppb.Event) {
@@ -645,14 +620,15 @@ func (a *App) beginDisconnect() (*desktopConnection, func()) {
 // connection's lifetime and its transports, now that the Hub they carried has
 // stopped and there is nothing left to deliver.
 func (a *App) finishDisconnect(connection *desktopConnection) {
+	var ceremony *browserAuthCeremony
+	// Wait for the loopback listener only after releasing lifecycleMu.
+	defer func() { ceremony.closeListener() }()
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 
-	// A browser ceremony belongs to the connection that started it. End it
-	// before the lifetime below is cancelled, so its goroutine wakes on a
-	// ceremony that the slot no longer names and emits the one cancelled
-	// result for it.
-	a.endBrowserAuthLocked()
+	if a.browserAuth != nil && a.browserAuth.connection == connection {
+		ceremony = a.detachBrowserAuthLocked()
+	}
 
 	// The connection's lifetime ends HERE. openRelay parents every relay context
 	// on it and coder/websocket force-closes a socket whose context is
@@ -853,6 +829,14 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 		hubEndpoint.CloseIdleConnections()
 		return fmt.Errorf("cannot reach Hub at %s: %w", hubURL, err)
 	}
+	base := mustParseURL(hubEndpoint.BaseURL())
+	releaseSessionFile, err := a.sessionFiles.lock(probeCtx, sessionFileName(base))
+	if err != nil {
+		hubEndpoint.CloseIdleConnections()
+		return err
+	}
+	jar := openPersistentJar(base, sessionsDir())
+	releaseSessionFile()
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 	if err := a.rejectIfCannotConnect(); err != nil {
@@ -875,7 +859,7 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 		return a.rollbackDistributed(err, connectionStop)
 	}
 	// The endpoint the probe already used and already settled the protocol on.
-	proxy := newProxyForEndpoint(hubEndpoint, openPersistentJar(mustParseURL(hubEndpoint.BaseURL()), sessionsDir()))
+	proxy := newProxyForEndpoint(hubEndpoint, jar)
 	a.applyProxyToTunnels(proxy)
 	a.connection = &desktopConnection{
 		ctx:    connectionCtx,

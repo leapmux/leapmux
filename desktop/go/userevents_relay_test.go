@@ -59,7 +59,7 @@ func blockFirstUserEventsDial(t *testing.T) (dialing chan struct{}, release chan
 // bootstrap), and RPCSession runs every request on its own goroutine with no
 // ordering -- so without the fence both concurrent opens report success while the
 // loser silently tears the winner's relay down. That teardown emits nothing (the
-// relay context is cancelled before the read loop can emit an userevents:close), so
+// relay context is cancelled before the read loop can emit a user-events relay close), so
 // the page sits bootstrapped on a dead relay and awaitWorkspaceBootstrap burns its
 // full 30s.
 func TestApp_OpenUserEventsRelay_ConcurrentOpenDoesNotTearDownTheSuccessor(t *testing.T) {
@@ -99,7 +99,7 @@ func TestApp_OpenUserEventsRelay_ConcurrentOpenDoesNotTearDownTheSuccessor(t *te
 //
 // The frontend's tearDown/open pair dispatches the close first, but the sidecar may
 // run it second; closing then kills the fresh relay, and because the teardown cancels
-// the relay context before the read loop can emit, no userevents:close ever reaches the
+// the relay context before the read loop can emit, no user-events relay close ever reaches the
 // page -- it stays bootstrapped on a dead relay, with the hub's one-shot
 // UserMaterialized never re-sent, until a reload.
 func TestApp_CloseUserEventsRelay_IgnoresStaleOwner(t *testing.T) {

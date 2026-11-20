@@ -1,4 +1,5 @@
 import type { UserEventsHook } from './useUserEvents'
+import type { RelayReceiver } from '~/api/platformBridge'
 import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
@@ -23,6 +24,7 @@ import {
 import { flushStorageWrites, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { isStatePopulated } from '~/lib/crdt/pendingOps'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
+import { deferred } from '~/test-support/async'
 import { TEST_ACCOUNT } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { nextUserEventsRelayId, useUserEvents } from './useUserEvents'
@@ -31,81 +33,31 @@ import { nextUserEventsRelayId, useUserEvents } from './useUserEvents'
 // storage gateway, so they need a real database to reload it from.
 useTestStorage()
 
-// Controllable stand-in for the Tauri sidecar bridge so a test can drive the
-// desktop relay path (isTauriApp() true, no buildWsUrl override) and assert the
-// listener/relay teardown. Defaults keep the native-WebSocket tests below (which
-// pass buildWsUrl) on their own path -- isTauri stays false and the bridge
-// functions are never touched by them.
+// The bridge is active in the tests that drive the native desktop relay path.
 const bridge = vi.hoisted(() => ({
   isTauri: false,
-  handlers: new Map<string, (payload: unknown) => void>(),
-  // Every onEvent registration, in order, INCLUDING ones a later attempt has
-  // superseded: `handlers` only keeps the latest per name, but the stale-handler
-  // tests need to fire a superseded attempt's listener the way Rust would.
-  registrations: [] as Array<{ name: string, handler: (payload: unknown) => void }>,
-  // Channels created through createRelayChannel, in attempt order: a frame
-  // reaches an attempt by calling its channel's onmessage with the raw bytes.
-  channels: [] as Array<{ id: number, onmessage: (data: ArrayBuffer) => void }>,
-  unlistenCalls: new Map<string, number>(),
+  receivers: [] as RelayReceiver[],
   openCalls: 0,
   closeCalls: 0,
   openedRelayIds: [] as number[],
-  // The channel handed to each relay open, so the frame delivery target is
-  // assertable beside the id.
-  openedChannels: [] as unknown[],
-  // Resume token handed to each relay open, so the DESKTOP branch's cursor
-  // threading is assertable. The fake used to accept only `relayId`, silently
-  // discarding the token -- dropping it in the hook would have shipped green.
   openedResumeTokens: [] as unknown[],
   closedRelayIds: [] as number[],
-  // When true, onEvent registers the listener synchronously (as Rust does) but
-  // leaves its promise pending until releaseOnEvent() -- the real registration gap,
-  // in which bridgeCleanup has nothing to unsubscribe yet.
-  deferOnEvent: false,
-  pendingOnEvent: [] as Array<() => void>,
-  releaseOnEvent(): void {
-    const waiting = bridge.pendingOnEvent
-    bridge.pendingOnEvent = []
-    for (const resolve of waiting) resolve()
-  },
+  pauseOpen: null as Promise<void> | null,
 }))
 
 vi.mock('~/api/platformBridge', () => ({
-  parseRelayClosePayload: (payload: unknown) => {
-    const close = payload as { code?: unknown, reason?: unknown, wasClean?: unknown } | null
-    return {
-      code: typeof close?.code === 'number'
-        ? close.code
-        : 1006,
-      reason: typeof close?.reason === 'string'
-        ? close.reason
-        : '',
-      wasClean: close?.wasClean === true,
-    }
-  },
   desktopHub: () => null,
   isTauriApp: () => bridge.isTauri,
   platformBridge: {
-    createRelayChannel: (onmessage: (data: ArrayBuffer) => void) => {
-      const channel = { id: bridge.channels.length + 1, onmessage }
-      bridge.channels.push(channel)
-      return Promise.resolve(channel)
-    },
-    onEvent: (name: string, handler: (payload: unknown) => void) => {
-      bridge.handlers.set(name, handler)
-      bridge.registrations.push({ name, handler })
-      const unlisten = () => bridge.unlistenCalls.set(name, (bridge.unlistenCalls.get(name) ?? 0) + 1)
-      if (!bridge.deferOnEvent)
-        return Promise.resolve(unlisten)
-      return new Promise<() => void>((resolve) => {
-        bridge.pendingOnEvent.push(() => resolve(unlisten))
-      })
-    },
-    openUserEventsRelay: async (relayId: number, channel: unknown, _workspaceIds?: string[], resume?: unknown) => {
+    openUserEventsRelay: async (relayId: number, receiver: RelayReceiver, _workspaceIds?: string[], resume?: unknown) => {
+      await bridge.pauseOpen
+      if (receiver.isAbandoned())
+        return false
       bridge.openCalls++
       bridge.openedRelayIds.push(relayId)
-      bridge.openedChannels.push(channel)
+      bridge.receivers.push(receiver)
       bridge.openedResumeTokens.push(resume)
+      return true
     },
     closeUserEventsRelay: async (relayId: number) => {
       bridge.closeCalls++
@@ -251,18 +203,13 @@ class FakeSocket {
 
 beforeEach(() => {
   bridge.isTauri = false
-  bridge.handlers.clear()
-  bridge.registrations.length = 0
-  bridge.channels.length = 0
-  bridge.unlistenCalls.clear()
+  bridge.receivers.length = 0
+  bridge.pauseOpen = null
   bridge.openCalls = 0
   bridge.closeCalls = 0
   bridge.openedRelayIds.length = 0
-  bridge.openedChannels.length = 0
   bridge.openedResumeTokens.length = 0
   bridge.closedRelayIds.length = 0
-  bridge.deferOnEvent = false
-  bridge.pendingOnEvent.length = 0
   FakeSocket.instances = []
   // The hook constructs the socket via `new WebSocket(url, subprotocols)`;
   // a class with the same constructor + addEventListener / close shape
@@ -1389,7 +1336,7 @@ describe('useUserEvents (desktop bridge path)', () => {
       await flushEffects()
   }
 
-  it('opens the relay and registers the bridge listeners', async () => {
+  it('opens a relay with one receiver for the attempt', async () => {
     bridge.isTauri = true
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-1')
@@ -1400,13 +1347,7 @@ describe('useUserEvents (desktop bridge path)', () => {
       })
       await settleBridge()
       expect(bridge.openCalls).toBe(1)
-      // Frames ride the attempt's Tauri channel: created before the open so the
-      // handler is live when the first frame arrives, and handed to the open as
-      // the delivery target. The close keeps riding the global
-      // `userevents:close` event.
-      expect(bridge.channels).toHaveLength(1)
-      expect(bridge.openedChannels[0]).toBe(bridge.channels[0])
-      expect(bridge.handlers.has('userevents:close')).toBe(true)
+      expect(bridge.receivers).toHaveLength(1)
       dispose()
     })
   })
@@ -1460,7 +1401,7 @@ describe('useUserEvents (desktop bridge path)', () => {
     })
   })
 
-  it('tears down the bridge listeners and closes the relay on a terminal close', async () => {
+  it('closes the relay on a fatal close notification', async () => {
     bridge.isTauri = true
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-1')
@@ -1473,17 +1414,10 @@ describe('useUserEvents (desktop bridge path)', () => {
       })
       await settleBridge()
 
-      // A terminal close (1008 policy violation / auth expiry) must stop retrying
-      // AND release the bridge resources -- the platformBridge close listener and
-      // the Go-side relay are not GC-reclaimed like a native WebSocket, so leaving
-      // them attached would leak (and double-dispatch on a later re-subscribe).
-      // The frame channel needs no unlisten: the relay close drops the Rust-side
-      // slot, which unregisters its callback.
-      bridge.handlers.get('userevents:close')!({ code: 1008, reason: 'forbidden' })
+      bridge.receivers[0]!.onMessage({ code: 1008, reason: 'forbidden', wasClean: false })
       await flushEffects()
 
       expect(onFatalClose).toHaveBeenCalledWith({ code: 1008, reason: 'forbidden' })
-      expect(bridge.unlistenCalls.get('userevents:close')).toBe(1)
       expect(bridge.closeCalls).toBe(1)
       dispose()
     })
@@ -1504,11 +1438,11 @@ describe('useUserEvents (desktop bridge path)', () => {
 
       // A recoverable close (1006 transport drop) schedules a reconnect and must
       // NOT fire onFatalClose or immediately tear the bridge down.
-      bridge.handlers.get('userevents:close')!({ code: 1006, reason: '' })
+      bridge.receivers[0]!.onMessage({ code: 1006, reason: '', wasClean: false })
       await flushEffects()
 
       expect(onFatalClose).not.toHaveBeenCalled()
-      expect(bridge.unlistenCalls.get('userevents:close') ?? 0).toBe(0)
+      expect(bridge.closeCalls).toBe(0)
       dispose()
     })
   })
@@ -1534,7 +1468,7 @@ describe('useUserEvents (desktop bridge path)', () => {
         await settleBridge()
         expect(bridge.openCalls).toBe(1)
 
-        bridge.handlers.get('userevents:close')!({ code: 1006, reason: '' })
+        bridge.receivers[0]!.onMessage({ code: 1006, reason: '', wasClean: false })
         await vi.advanceTimersByTimeAsync(1_000)
         await settleBridge()
 
@@ -1548,18 +1482,31 @@ describe('useUserEvents (desktop bridge path)', () => {
     }
   })
 
-  // A close delivered to a SUPERSEDED attempt must not tear down the generation that
-  // replaced it.
-  //
-  // The attempt's unlisten callbacks only exist once the onEvent promises resolve, so
-  // between Rust registering a listener and that microtask, bridgeCleanup marks the
-  // attempt disposed but unsubscribes NOTHING -- a close arriving in that window still
-  // reaches the stale handler. Unguarded, it ran tearDown() on the CURRENT generation
-  // (closing the fresh user's relay) and fired onFatalClose, surfacing AppShell's "Live
-  // updates disconnected. Reload the page to reconnect." on a freshly-reconnected session.
-  it('ignores a close for an attempt a later userId change superseded', async () => {
+  it('skips opening an attempt superseded before the bridge is ready', async () => {
     bridge.isTauri = true
-    bridge.deferOnEvent = true
+    const ready = deferred<void>()
+    bridge.pauseOpen = ready.promise
+    await createRoot(async (dispose) => {
+      const [userId, setUserId] = createSignal('user-1')
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => makeFakePending() as never,
+      })
+      await settleBridge()
+      setUserId('user-2')
+      ready.resolve()
+      await settleBridge()
+
+      expect(bridge.openedRelayIds).toHaveLength(1)
+      expect(bridge.closedRelayIds).toHaveLength(1)
+      expect(bridge.openedRelayIds[0]).not.toBe(bridge.closedRelayIds[0])
+      dispose()
+    })
+  })
+
+  it('ignores a queued close from a superseded receiver', async () => {
+    bridge.isTauri = true
     await createRoot(async (dispose) => {
       const [userId, setUserId] = createSignal('user-1')
       const onFatalClose = vi.fn()
@@ -1570,26 +1517,18 @@ describe('useUserEvents (desktop bridge path)', () => {
         onFatalClose,
       })
       await settleBridge()
-      // The first attempt's listeners are registered in Rust, but its onEvent
-      // promises have not resolved: the registration gap.
-      const staleClose = bridge.registrations.find(r => r.name === 'userevents:close')!.handler
-      expect(bridge.openCalls).toBe(0)
-
-      // Switch users: tearDown() supersedes attempt 1 and attempt 2 takes over.
       setUserId('user-2')
-      bridge.releaseOnEvent()
       await settleBridge()
-      expect(bridge.openCalls).toBe(1)
-      const successorRelayId = bridge.openedRelayIds[0]
-      const closesBefore = [...bridge.closedRelayIds]
+      expect(bridge.openedRelayIds).toHaveLength(2)
+      const [predecessorId, successorId] = bridge.openedRelayIds
 
-      // Attempt 1's close lands late, on a listener nothing has unsubscribed yet.
-      staleClose({ code: 1008, reason: 'forbidden' })
-      await settleBridge()
-
+      bridge.receivers[0]!.onMessage({ code: 1008, reason: 'predecessor rejected', wasClean: false })
       expect(onFatalClose).not.toHaveBeenCalled()
-      expect(bridge.closedRelayIds).toEqual(closesBefore)
-      expect(bridge.closedRelayIds).not.toContain(successorRelayId)
+      expect(bridge.closedRelayIds).toEqual([predecessorId])
+
+      bridge.receivers[1]!.onMessage({ code: 1008, reason: 'forbidden', wasClean: false })
+      expect(onFatalClose).toHaveBeenCalledExactlyOnceWith({ code: 1008, reason: 'forbidden' })
+      expect(bridge.closedRelayIds).toEqual([predecessorId, successorId])
       dispose()
     })
   })
@@ -1611,7 +1550,7 @@ describe('useUserEvents (desktop bridge path)', () => {
         pending: () => pending as never,
       })
       await settleBridge()
-      const staleChannel = bridge.channels[0]!
+      const staleReceiver = bridge.receivers[0]!
       expect(bridge.openCalls).toBe(1)
 
       setUserId('user-2')
@@ -1627,7 +1566,7 @@ describe('useUserEvents (desktop bridge path)', () => {
       const framed = new ArrayBuffer(4 + payload.length)
       new DataView(framed).setUint32(0, payload.length, false)
       new Uint8Array(framed, 4).set(payload)
-      staleChannel.onmessage(framed)
+      staleReceiver.onMessage(framed)
       await settleBridge()
 
       expect(pending.bootstrap).not.toHaveBeenCalled()

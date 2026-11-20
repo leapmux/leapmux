@@ -2,6 +2,7 @@ import type { SettingsStorePorts } from './settingsStore'
 import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 import { createSettingsStore } from './settingsStore'
 
 function value(key: string, effectiveJson: string): SettingValue {
@@ -117,6 +118,133 @@ describe('createSettingsStore load', () => {
 
       expect(store.values().has('new')).toBe(true)
       expect(store.values().has('stale')).toBe(false)
+    })
+  })
+
+  it('discards a late catalogue reply after access is denied', async () => {
+    const pending = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
+    let allowed = true
+    await withStore({
+      list: () => pending.promise,
+      enabled: () => allowed,
+    }, async (store) => {
+      const load = store.load()
+      allowed = false
+      await store.load()
+      pending.resolve({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '1'),
+        ],
+      })
+      await load
+
+      expect(store.state.descriptors).toEqual([])
+      expect(store.values().size).toBe(0)
+      expect(store.state.loading).toBe(false)
+      expect(store.state.loaded).toBe(false)
+    })
+  })
+
+  it('reads the committed value after a pending write in the current window', async () => {
+    const write = deferred<void>()
+    let serverValue = '1'
+    const list = vi.fn(async () => ({
+      descriptors: [
+        descriptor('smtp'),
+      ],
+      values: [
+        value('smtp', serverValue),
+      ],
+    }))
+    await withStore({
+      list,
+      update: async (key, next) => {
+        await write.promise
+        serverValue = next
+        return value(key, serverValue)
+      },
+    }, async (store) => {
+      const pendingWrite = store.update('smtp', '2')
+      const pendingLoad = store.load()
+      const listedWhileWriting = list.mock.calls.length > 0
+      write.resolve()
+      await Promise.all([pendingWrite, pendingLoad])
+
+      expect(listedWhileWriting).toBe(false)
+      expect(store.state.descriptors).toEqual([
+        descriptor('smtp'),
+      ])
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+    })
+  })
+
+  it.each(['update', 'reset'] as const)('loads after an earlier %s response when a window is renewed', async (operation) => {
+    const catalogue = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
+    const write = deferred<SettingValue>()
+    const list = vi.fn(() => catalogue.promise)
+    await withStore({
+      list,
+      update: () => write.promise,
+      reset: () => write.promise,
+    }, async (store) => {
+      const previousWrite = operation === 'update'
+        ? store.update('smtp', '1')
+        : store.reset('smtp')
+      store.clear()
+      const freshLoad = store.load()
+      const listedBeforeWriteFinished = list.mock.calls.length > 0
+
+      write.resolve(operation === 'update'
+        ? value('smtp', '1')
+        : {
+            ...value('smtp', '0'),
+            valueJson: '',
+            customized: false,
+          })
+      await previousWrite
+      catalogue.resolve({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '2'),
+        ],
+      })
+      await freshLoad
+
+      expect(listedBeforeWriteFinished).toBe(false)
+      expect(list).toHaveBeenCalledOnce()
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+    })
+  })
+
+  it('issues a newer write after the pending catalogue read finishes', async () => {
+    const catalogue = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
+    const update = vi.fn(async () => value('smtp', '2'))
+    await withStore({
+      list: () => catalogue.promise,
+      update,
+    }, async (store) => {
+      const load = store.load()
+      const write = store.update('smtp', '2')
+      await Promise.resolve()
+      const wroteBeforeListFinished = update.mock.calls.length > 0
+      catalogue.resolve({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '1'),
+        ],
+      })
+      await Promise.all([load, write])
+
+      expect(wroteBeforeListFinished).toBe(false)
+      expect(update).toHaveBeenCalledOnce()
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
     })
   })
 
