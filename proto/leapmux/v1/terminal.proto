@@ -83,13 +83,9 @@ message OpenTerminalRequest {
     TabCreation creation = 9;
   }
 
-  // A command line that the new shell runs once it is ready, as
-  // `leapmux control terminal run` sends one: the Worker pastes it and presses
-  // Enter. The Worker writes it when the shell's line editor turns on
-  // bracketed paste, or after a short wait for a shell that never does, so the
-  // command never races the shell's own start. Only a shell that this request
-  // starts runs it: a quake request that returns the directory's existing
-  // terminal ignores it. Empty runs nothing.
+  // A command that the original interactive shell evaluates after its startup
+  // files run. The Worker requires an acknowledgement from that shell. A quake
+  // request that returns an existing terminal ignores it. Empty runs nothing.
   string initial_command = 10;
 }
 

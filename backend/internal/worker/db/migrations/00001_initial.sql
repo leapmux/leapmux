@@ -865,6 +865,8 @@ CREATE TABLE tab_creations (
     request_payload BLOB NOT NULL,
     publication_payload BLOB NOT NULL,
     runtime_payload BLOB NOT NULL,
+    -- A restored terminal must never release a possibly delivered command again.
+    initial_command_claimed BOOLEAN NOT NULL DEFAULT FALSE CHECK (initial_command_claimed IN (0, 1)),
     -- The checkout selected at creation, retained after the runtime payload is cleared.
     selected_worktree_identity BLOB,
     publication_result BLOB NOT NULL DEFAULT X'',

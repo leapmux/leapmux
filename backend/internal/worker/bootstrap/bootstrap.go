@@ -36,6 +36,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/service"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/util/drain"
@@ -262,6 +263,9 @@ func Wire(p Params) *Wiring {
 		ShutdownDeadline:    p.ShutdownDeadline,
 	})
 	svc.EnableSemanticEvents()
+	if err := terminal.ReapInitialCommandLaunches(p.DataDir); err != nil {
+		slog.Warn("remove abandoned terminal command handoffs failed", "error", err)
+	}
 	svc.RestoreState()
 
 	// WatchEvents stream teardown owns UnwatchAll via watchSession.OnCancel

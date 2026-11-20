@@ -57,7 +57,7 @@ test.describe('control CLI terminals', () => {
       '--worker',
       leapmuxServer.workerId,
       '--command',
-      'echo INITIAL_$((6 * 7))',
+      'LEAPMUX_TEST_INITIAL_VALUE=$((6 * 7)); echo INITIAL_$LEAPMUX_TEST_INITIAL_VALUE',
     ]) as OpenedTerminal
     expect(opened.id).toBeTruthy()
     await expect(tabById(page, opened.id)).toBeVisible()
@@ -73,24 +73,23 @@ test.describe('control CLI terminals', () => {
     ]) as TerminalWaitResult
     expect(ran).toMatchObject({ id: opened.id, reached: true, line: 'INITIAL_42' })
 
-    // The shell runs its input in order, so a second copy of the command
-    // that reached it before this command shows before AFTER_2.
+    // The next command reads state from the initial command in the same shell.
     await runCLI(cli, [
       'terminal',
       'run',
       opened.id,
-      'echo AFTER_$((1 + 1))',
+      'echo AFTER_$LEAPMUX_TEST_INITIAL_VALUE',
     ])
     const after = await runCLI(cli, [
       'terminal',
       'wait',
       opened.id,
       '--regex',
-      '^AFTER_2$',
+      '^AFTER_42$',
       '--timeout',
       '20s',
     ]) as TerminalWaitResult
-    expect(after).toMatchObject({ reached: true })
+    expect(after).toMatchObject({ reached: true, line: 'AFTER_42' })
     const screen = await runCLI(cli, [
       'terminal',
       'read',

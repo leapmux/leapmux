@@ -156,10 +156,10 @@ func TestTerminalOpenRequest_CarriesTheInitialCommand(t *testing.T) {
 func TestTerminalOpenLong(t *testing.T) {
 	flat := strings.Join(strings.Fields(terminalOpenLong), " ")
 	for _, fact := range []string{
-		"once the shell is ready",
-		"turns on bracketed paste",
-		"after a short wait",
-		"a restart of the terminal does not run it again",
+		"in the original interactive shell after its startup files run",
+		"if the shell cannot acknowledge the handoff",
+		"recovery reports an unverified outcome without running it again",
+		"A restart of the terminal does not run it again",
 		`"-" to read it from stdin`,
 	} {
 		assert.Contains(t, flat, fact)

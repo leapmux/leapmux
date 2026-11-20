@@ -146,7 +146,8 @@ type Service struct {
 	//
 	// One pointer to an immutable workerOwner, rather than one atomic per field,
 	// so a reader never pairs one owner's id with another owner's username.
-	owner atomic.Pointer[workerOwner]
+	owner         atomic.Pointer[workerOwner]
+	ownerChangeMu sync.Mutex
 
 	// AgentStartup / TerminalStartup track in-flight startups — the
 	// window between OpenAgent/OpenTerminal returning and the subprocess
@@ -1558,6 +1559,8 @@ func (svc *Service) SetRegisteredBy(userID userid.UserID) {
 	if userID.IsZero() {
 		return
 	}
+	svc.ownerChangeMu.Lock()
+	defer svc.ownerChangeMu.Unlock()
 	svc.owner.Store(&workerOwner{id: userID})
 }
 
@@ -1620,6 +1623,7 @@ func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) Iden
 	}
 	next := &workerOwner{id: uid, username: identity.GetRegisteredByUsername()}
 	outcome := IdentityNewOwner
+	svc.ownerChangeMu.Lock()
 	if prev := svc.owner.Load(); prev != nil && !prev.id.IsZero() {
 		if prev.id.MatchesUser(uid) {
 			outcome = IdentitySameOwner
@@ -1632,6 +1636,7 @@ func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) Iden
 		}
 	}
 	svc.owner.Store(next)
+	svc.ownerChangeMu.Unlock()
 	svc.bindSemanticEvents()
 	return outcome
 }

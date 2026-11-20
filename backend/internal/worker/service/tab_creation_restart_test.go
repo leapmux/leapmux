@@ -431,3 +431,72 @@ func TestCreationRestart_RestoresTheCurrentTerminalDimensions(t *testing.T) {
 		})
 	}
 }
+
+func TestCreationRestartDoesNotReleaseAClaimedTerminalCommandAgain(t *testing.T) {
+	t.Parallel()
+	hub := newRecoveryPublicationHub(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "worker.db")
+	oldDatabase := openRecoveryDatabase(t, path)
+	oldService, _ := newRecoveryService(t, hub.config(oldDatabase, directory))
+	defer oldService.Shutdown()
+
+	intent := hub.intent("claimed-terminal-command")
+	_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, intent, directory)
+	const command = "printf once"
+	request.(*leapmuxv1.OpenTerminalRequest).InitialCommand = command
+	runtime := &terminalCreationRuntime{
+		Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}},
+		Options: terminal.Options{
+			ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25,
+			InitialCommand: command,
+		},
+		Title: "Terminal with claimed command",
+	}
+	operation := seedRecoveryCreation(t, oldService, recoveryCreationSeed{
+		request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+		runtime: runtime, state: creationPublished,
+		write: func(ctx context.Context, queries *db.Queries, _ *sql.Tx) error {
+			return queries.CreateTerminal(ctx, db.CreateTerminalParams{
+				ID: intent.TabId, WorkingDir: directory, Shell: runtime.Options.Shell,
+				Title: runtime.Title, Cols: 80, Rows: 25, Screen: []byte{},
+			})
+		},
+	})
+	oldService.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "reassigned-owner"})
+	require.Error(t, operation.releaseTerminalInitialCommand(t.Context(), func() error {
+		t.Error("a retired owner cannot expose the payload")
+		return nil
+	}), "a retired owner cannot release the command")
+	oldService.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: hub.owner.String()})
+	claimed, err := oldService.Queries.ClaimTerminalInitialCommand(t.Context(), db.ClaimTerminalInitialCommandParams{
+		UserID: hub.owner.String(), WorkerID: oldService.WorkerID, TabID: intent.TabId,
+		TabType: int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL), PublishedState: creationPublished,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), claimed, "the earlier launch persisted a release before the restart")
+	repeated, err := oldService.Queries.ClaimTerminalInitialCommand(t.Context(), db.ClaimTerminalInitialCommandParams{
+		UserID: hub.owner.String(), WorkerID: oldService.WorkerID, TabID: intent.TabId,
+		TabType: int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL), PublishedState: creationPublished,
+	})
+	require.NoError(t, err)
+	assert.Zero(t, repeated, "one creation can claim its command only once")
+	oldService.Shutdown()
+	require.NoError(t, oldDatabase.Close())
+
+	freshDatabase := openRecoveryDatabase(t, path)
+	fresh, _ := newRecoveryService(t, hub.config(freshDatabase, directory))
+	defer fresh.Shutdown()
+	var launches atomic.Int32
+	fresh.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+		launches.Add(1)
+		return errors.New("the terminal startup was invoked")
+	}
+	ctx := creationOutcomeContext(t)
+	require.NoError(t, fresh.ResolvePendingTabCreations(ctx))
+	fresh.TerminalStartup.WaitForInFlight()
+	assert.Zero(t, launches.Load(), "recovery cannot launch a claimed command")
+	row, err := fresh.Queries.GetTerminal(ctx, intent.TabId)
+	require.NoError(t, err)
+	assert.Contains(t, row.StartupError, "cannot verify whether the initial command ran")
+}

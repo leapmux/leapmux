@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -68,11 +69,6 @@ type ScreenBuffer struct {
 	total    int64 // Total bytes ever written (monotonic within a PTY session).
 	tracker  modeTracker
 	geometry screenGeometryHistory
-	// bracketedPasteSet closes at the next DECSET 2004 in the output.
-	// nextBracketedPasteSet creates it, and Write closes it and clears the
-	// slot, so the next caller waits for the sequence after that one. Nil
-	// while nothing waits.
-	bracketedPasteSet chan struct{}
 }
 
 // NewScreenBuffer creates a new screen buffer.
@@ -111,10 +107,6 @@ func (sb *ScreenBuffer) writeLocked(data []byte) (int64, []Signal) {
 	// bytes would hold.
 	sb.tracker.beginChunk()
 	sb.tracker.feed(data)
-	if sb.tracker.chunkBracketedPasteSet && sb.bracketedPasteSet != nil {
-		close(sb.bracketedPasteSet)
-		sb.bracketedPasteSet = nil
-	}
 	signals := sb.tracker.drainSignals()
 	sb.total += int64(len(data))
 	// Writes larger than the ring would overwrite themselves; only the
@@ -187,21 +179,6 @@ func (sb *ScreenBuffer) InputModes() terminput.Modes {
 		ApplicationCursorKeys: sb.tracker.appCursorKeys,
 		BracketedPaste:        sb.tracker.bracketedPaste,
 	}
-}
-
-// nextBracketedPasteSet returns a channel that closes when the output next
-// turns bracketed paste on (DECSET 2004). A mode that is already on does not
-// count: only a sequence that a Write after this call carries does. A restart
-// hands this buffer to the next shell, and the mode of the shell before it
-// then cannot close the channel. Every caller before the next such sequence
-// shares one channel.
-func (sb *ScreenBuffer) nextBracketedPasteSet() <-chan struct{} {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	if sb.bracketedPasteSet == nil {
-		sb.bracketedPasteSet = make(chan struct{})
-	}
-	return sb.bracketedPasteSet
 }
 
 // TotalBytes returns the cumulative byte count ever written to this buffer.
@@ -458,15 +435,18 @@ type Options struct {
 	// they land last, after TERM is set, and the directory of
 	// LEAPMUX_CONTROL_CLI goes first on PATH.
 	ExtraEnv []string
-	// InitialCommand is a command line that the shell of this spawn runs once
-	// it is ready. The terminal sends it as `leapmux control terminal run`
-	// sends one: the command as a paste, then the Enter key, in one write.
-	// startInitialCommand states when the shell is ready. Empty runs nothing.
+	// InitialCommand is evaluated by the original shell after its startup
+	// files run. Empty starts an ordinary interactive shell.
 	//
 	// The service's RestartTerminal handler builds its Options from the
 	// terminal's row, which holds no command, so a restart that the user asks
 	// for does not run the command again.
 	InitialCommand string
+	// InitialCommandDir is the private Worker parent for launch files.
+	InitialCommandDir string `json:"-"`
+	// ReleaseInitialCommand authorizes a durable launch and calls expose
+	// while the same Worker owner still controls it.
+	ReleaseInitialCommand func(context.Context, func() error) error `json:"-"`
 }
 
 // spawnEnv builds the environment a terminal's login shell is started with,
@@ -528,6 +508,17 @@ func startWithScreenBuffer(
 	screenBuf *ScreenBuffer,
 	outputFn OutputHandler,
 ) (*Terminal, error) {
+	return startWithTerminalRegistration(ctx, opts, clock, screenBuf, outputFn, nil)
+}
+
+func startWithTerminalRegistration(
+	ctx context.Context,
+	opts Options,
+	clock quartz.Clock,
+	screenBuf *ScreenBuffer,
+	outputFn OutputHandler,
+	register func(*Terminal) error,
+) (*Terminal, error) {
 	if clock == nil {
 		panic("terminal: clock must not be nil")
 	}
@@ -541,13 +532,38 @@ func startWithScreenBuffer(
 	}
 
 	args := LoginShellArgs(shell)
+	program := shell
+	env := spawnEnv(os.Environ(), opts.ExtraEnv)
+	var bootstrap *initialCommandBootstrap
+	if opts.InitialCommand != "" {
+		if err := CheckInitialCommand(shell, opts.InitialCommand); err != nil {
+			return nil, err
+		}
+		if !strings.ContainsAny(shell, `/\`) {
+			resolved, err := exec.LookPath(shell)
+			if err != nil {
+				return nil, err
+			}
+			program = resolved
+		}
+		var err error
+		bootstrap, err = newInitialCommandBootstrap(opts.InitialCommandDir)
+		if err != nil {
+			return nil, err
+		}
+		defer bootstrap.close()
+		program, args, env, err = bootstrap.launch(program, args, env)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	ptmx, err := pty.New()
 	if err != nil {
 		return nil, fmt.Errorf("new pty: %w", err)
 	}
 
-	owner, err := procutil.PreparePTYProcess(ctx, ptmx, procutil.PTYLaunch{Program: shell, Args: args, Dir: opts.WorkingDir, Env: spawnEnv(os.Environ(), opts.ExtraEnv)})
+	owner, err := procutil.PreparePTYProcess(ctx, ptmx, procutil.PTYLaunch{Program: program, Args: args, Dir: opts.WorkingDir, Env: env})
 	if err != nil {
 		_ = ptmx.Close()
 		return nil, fmt.Errorf("prepare pty process: %w", err)
@@ -595,21 +611,40 @@ func startWithScreenBuffer(
 		childSideClosedCh: make(chan struct{}),
 	}
 
-	// Before the reader starts, so the shell's first DECSET 2004 cannot pass
-	// before the wait for it exists.
-	if opts.InitialCommand != "" {
-		t.startInitialCommand(opts.InitialCommand)
-	}
 	go func() {
 		t.readOutput()
 		close(t.readDoneCh)
 	}()
 	go t.waitForExit()
+	failStartup := func(err error) (*Terminal, error) {
+		t.Stop()
+		t.Wait()
+		<-t.readDoneCh
+		return nil, err
+	}
+	if bootstrap != nil {
+		if err := bootstrap.await(ctx, t, clock, bootstrap.requestPath(), ErrInitialCommandHandoff); err != nil {
+			return failStartup(err)
+		}
+	}
+	if register != nil {
+		if err := register(t); err != nil {
+			return failStartup(err)
+		}
+	}
+	if bootstrap != nil {
+		if err := bootstrap.release(ctx, t, opts); err != nil {
+			return failStartup(err)
+		}
+		if err := bootstrap.await(ctx, t, clock, bootstrap.ackPath(), errInitialCommandUnproved); err != nil {
+			return failStartup(err)
+		}
+	}
 
 	slog.Info("terminal started",
 		"terminal_id", opts.ID,
 		"shell", shell,
-		"args", args,
+		"args", LoginShellArgs(shell),
 		"pid", owner.PID(),
 	)
 
@@ -904,13 +939,6 @@ func (t *Terminal) ExitCode() (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-// isStopped reports whether Stop ran.
-func (t *Terminal) isStopped() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.stopped
 }
 
 // sendInput encodes in for the modes that the program in the terminal enabled,

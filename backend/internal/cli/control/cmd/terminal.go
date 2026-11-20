@@ -50,7 +50,7 @@ func newTerminalCommand() *cobra.Command {
 				{Comment: "Run the tests in a new terminal, then print the exit code of its shell.", Command: `T=$(leapmux control terminal open -q --command 'make test; exit') && leapmux control terminal wait "$T" --exit`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.String("command", "", `run this command line once the shell is ready, as "terminal run" runs one ("-" reads stdin)`)
+				fs.String("command", "", `evaluate this command in the original shell after startup ("-" reads stdin)`)
 				fs.String("shell", "", "shell to start (default: the worker's default shell)")
 				fs.String("start-dir", "", "directory the shell starts in (default: --dir)")
 				fs.String("title", "", "tab title (default: the worker picks one)")
@@ -150,15 +150,13 @@ func newTerminalCommand() *cobra.Command {
 const terminalOpenLong = `Open a new terminal in a new tab. Without --workspace and --tile, the new
 tab opens beside the tab that runs leapmux.
 
---command runs a command line in the new shell once the shell is ready: the
-Worker pastes the command and presses Enter, as "terminal run" does. The
-shell is ready when its line editor turns on bracketed paste, which zsh, fish
-and bash 5.1 or later do. A shell that never does, such as sh, gets the
-command after a short wait. Only the new shell runs the command, so a restart
-of the terminal does not run it again. The command line is the value of
---command, or "-" to read it from stdin. --command does not wait for the
-program to finish: read its output with "terminal read", or wait with
-"terminal wait".`
+--command runs a command in the original interactive shell after its startup
+files run. Use Bash, zsh, fish, sh, or Dash on Unix, or use PowerShell. The
+Worker reports a startup failure if the shell cannot acknowledge the handoff.
+A restart of the terminal does not run it again. If the Worker stops after
+claiming the command, recovery reports an unverified outcome without running
+it again. The command is the value of --command, or "-" to read it from stdin.
+Read its output with "terminal read", or wait for it with "terminal wait".`
 
 // runTerminalList lists the terminal tabs with their titles and states.
 func runTerminalList(inv *cli.Invocation) (any, error) {

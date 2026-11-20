@@ -19,22 +19,16 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-// The initial command of OpenTerminal reaches the shell once, when the shell
-// is ready, encoded as `leapmux control terminal run` sends a command. The
-// shells of these tests are POSIX scripts that report in hex each byte they
-// read, so a test reads the exact bytes that reached the PTY and their order.
-
 // skipWithoutPOSIXShell skips a test whose shell is a POSIX script.
 func skipWithoutPOSIXShell(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("the recording shell is a POSIX script that puts the terminal in raw mode with stty")
+		t.Skip("the fixture uses a POSIX shell")
 	}
 }
 
@@ -92,16 +86,6 @@ func recordedInput(t *testing.T, svc *Service, terminalID, marker string) (strin
 	return out.String(), true
 }
 
-// requireNoEarlyInput asserts that every <EARLY> report on the screen of the
-// terminal is empty: nothing reached the shell before it was ready.
-func requireNoEarlyInput(t *testing.T, svc *Service, terminalID string) {
-	t.Helper()
-	screen, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
-	for _, m := range regexp.MustCompile(`<EARLY>([0-9a-f]*)</EARLY>`).FindAllStringSubmatch(string(screen), -1) {
-		require.Emptyf(t, m[1], "the shell read %q before it was ready", m[1])
-	}
-}
-
 // sendMarkerByte types one byte into the terminal, and waits until the
 // recording shell reports it after marker. Every write that reached the PTY
 // before the byte shows in front of it.
@@ -118,15 +102,6 @@ func sendMarkerByte(t *testing.T, svc *Service, d testRPCDispatcher, terminalID,
 		return ok && strings.HasSuffix(got, want)
 	}, "the shell reads the byte %q", b)
 	return got
-}
-
-// commandAsTerminalRunSendsIt returns, in hex, the bytes of command as
-// `leapmux control terminal run` sends it: a paste, then "enter".
-func commandAsTerminalRunSendsIt(t *testing.T, command string, modes terminput.Modes) string {
-	t.Helper()
-	enter, err := terminput.ParseKeys([]string{"enter"})
-	require.NoError(t, err)
-	return hex.EncodeToString(terminput.Input{Data: []byte(command), Paste: true, Keys: enter}.Encode(modes))
 }
 
 // openTerminalRunning opens a terminal tab with shell and command through
@@ -147,9 +122,7 @@ func openTerminalRunning(t *testing.T, svc *Service, d testRPCDispatcher, shell,
 	return resp.GetTerminalId()
 }
 
-// setupInitialCommandService builds a service whose terminals run on a mock
-// clock, so the fallback wait of an initial command passes only when a test
-// advances the clock.
+// setupInitialCommandService builds a service whose terminal timers use a mock clock.
 func setupInitialCommandService(t *testing.T) (*Service, testRPCDispatcher, *quartz.Mock) {
 	t.Helper()
 	clock := testutil.NewQuartzMock(t)
@@ -157,58 +130,53 @@ func setupInitialCommandService(t *testing.T) (*Service, testRPCDispatcher, *qua
 	return svc, d, clock
 }
 
-// The shell gets nothing while it starts. When its line editor turns
-// bracketed paste on, it gets the command once: a bracketed paste and Enter,
-// in the bytes that `terminal run` sends. It gets no second copy when the line
-// editor turns the mode on again.
-func TestOpenTerminal_RunsTheInitialCommandOnceTheShellIsReady(t *testing.T) {
+func TestOpenTerminalRunsOneInitialCommandWithADurableClaim(t *testing.T) {
 	skipWithoutPOSIXShell(t)
 	t.Parallel()
-	svc, d, _ := setupInitialCommandService(t)
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
-
-	id := openTerminalRunning(t, svc, d, writeRecordingShell(t, true, ""), "make test\nmake lint")
-	want := commandAsTerminalRunSendsIt(t, "make test\nmake lint", terminput.Modes{BracketedPaste: true})
-	require.Contains(t, want, hex.EncodeToString([]byte("\x1b[200~make test\rmake lint\x1b[201~\r")), "precondition: the encoding of terminal run")
-
+	const marker = "WORKER_INITIAL_COMMAND"
+	id := openTerminalRunning(t, svc, d, testutil.TestShell(), "printf '%s\\n' WORKER_INITIAL_''COMMAND")
 	testutil.RequireEventually(t, func() bool {
-		got, _ := recordedInput(t, svc, id, "<READY>")
-		return got == want
-	}, "the shell reads the command once it is ready")
-	requireNoEarlyInput(t, svc, id)
-	assert.Equal(t, want+"5a", sendMarkerByte(t, svc, d, id, "<READY>", 'Z'), "the command reached the shell once, before any later input")
+		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		return strings.Contains(string(screen), marker)
+	}, "the original shell should produce the startup receipt")
+	sendInteractiveTerminalReceipt(t, svc, d, id, "WORKER_AFTER_INITIAL")
+	screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+	assert.Equal(t, 1, strings.Count(string(screen), marker))
+	row, err := svc.Queries.GetTabCreation(t.Context(), db.GetTabCreationParams{
+		UserID: svc.RegisteredBy().String(), WorkerID: svc.WorkerID, TabID: id,
+	})
+	require.NoError(t, err)
+	assert.True(t, row.InitialCommandClaimed)
 }
 
-// A shell that never turns bracketed paste on gets the command after the
-// fallback wait, as typed text and Enter.
-func TestOpenTerminal_SendsTheInitialCommandAfterTheFallbackWait(t *testing.T) {
-	skipWithoutPOSIXShell(t)
+func TestOpenTerminalRejectsUnsupportedInitialCommandBeforeCreatingATab(t *testing.T) {
 	t.Parallel()
-	svc, d, clock := setupInitialCommandService(t)
-	defer drainAllInFlight(svc)
+	svc, d, writer := setupTestService(t)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		Shell: "recording-shell", WorkingDir: t.TempDir(), InitialCommand: "printf startup",
+	}, writer)
+	require.Len(t, writer.errors, 1)
+	assert.Empty(t, writer.responses)
+	ids, err := svc.Queries.ListAllTerminalIDs(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+}
 
-	id := openTerminalRunning(t, svc, d, writeRecordingShell(t, false, ""), "make test")
+func sendInteractiveTerminalReceipt(t *testing.T, svc *Service, d testRPCDispatcher, id, marker string) {
+	t.Helper()
+	command, err := testutil.TestShellOutputCommand(marker)
+	require.NoError(t, err)
+	writer := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
+		TerminalId: id, Data: []byte(command + testutil.TestShellEnter()),
+	}, writer)
+	require.Empty(t, writer.errors)
 	testutil.RequireEventually(t, func() bool {
-		_, started := recordedInput(t, svc, id, "<STARTED>")
-		return started
-	}, "the shell starts")
-	got, _ := recordedInput(t, svc, id, "<STARTED>")
-	require.Empty(t, got, "nothing reaches the shell before the fallback wait ends")
-
-	wait, armed := clock.Peek()
-	require.True(t, armed, "the fallback timer runs while the shell is not ready")
-	clock.Advance(wait).MustWait(testutil.DeadlineContext(t))
-	want := commandAsTerminalRunSendsIt(t, "make test", terminput.Modes{})
-	assert.Equal(t, hex.EncodeToString([]byte("make test\r")), want, "precondition: the encoding of terminal run")
-	// The timer fires on the mock clock, and the terminal writes the command
-	// from its own goroutine after that. A marker sent at once could reach
-	// the shell before the command, so the test waits for the command first.
-	testutil.RequireEventually(t, func() bool {
-		got, _ := recordedInput(t, svc, id, "<STARTED>")
-		return got == want
-	}, "the shell reads the command once the fallback wait ends")
-	assert.Equal(t, want+"5a", sendMarkerByte(t, svc, d, id, "<STARTED>", 'Z'), "the command reached the shell once, before any later input")
-	requireNoEarlyInput(t, svc, id)
+		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		return strings.Contains(string(screen), marker)
+	}, "the interactive shell should produce its receipt")
 }
 
 // A quake request that finds the directory's terminal returns it, and its
@@ -250,29 +218,26 @@ func TestOpenTerminal_AQuakeOpenOfTheExistingTerminalRunsNoCommand(t *testing.T)
 	assert.Equal(t, "5a59", sendMarkerByte(t, svc, d, first, "<READY>", 'Y'), "the existing shell reads only what the test typed")
 }
 
-// RestartTerminal starts a new shell for the tab, and that shell does not run
-// the command of the request that opened the tab again.
+// A user-requested restart starts an ordinary shell without the earlier command.
 func TestRestartTerminal_DoesNotRunTheInitialCommandAgain(t *testing.T) {
 	skipWithoutPOSIXShell(t)
 	t.Parallel()
-	svc, d, _ := setupInitialCommandService(t)
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 
-	// The shell exits after the Enter at the end of the command.
-	id := openTerminalRunning(t, svc, d, writeRecordingShell(t, true, "0d"), "make test")
+	const marker = "WORKER_RESTART_INITIAL"
+	id := openTerminalRunning(t, svc, d, testutil.TestShell(), "printf '%s\\n' WORKER_RESTART_''INITIAL; exit")
 	waitForTerminalExit(t, svc.Terminals, id)
-	got, _ := recordedInput(t, svc, id, "<READY>")
-	require.Equal(t, commandAsTerminalRunSendsIt(t, "make test", terminput.Modes{BracketedPaste: true}), got, "the first shell ran the command")
+	screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+	require.Equal(t, 1, strings.Count(string(screen), marker))
 
-	w := newTestWriter()
-	dispatchRestart(d, id, w)
-	require.Empty(t, w.errors)
-	testutil.RequireEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
-		return strings.Count(string(screen), "<READY>") == 2
-	}, "the restarted shell is ready")
-	assert.Equal(t, "5a", sendMarkerByte(t, svc, d, id, "<READY>", 'Z'), "the restarted shell reads only what the test typed")
-	requireNoEarlyInput(t, svc, id)
+	writer := newTestWriter()
+	dispatchRestart(d, id, writer)
+	require.Empty(t, writer.errors)
+	testutil.RequireEventually(t, func() bool { return svc.Terminals.IsRunning(id) }, "the restarted terminal should have a live shell")
+	sendInteractiveTerminalReceipt(t, svc, d, id, "WORKER_RESTART_INTERACTIVE")
+	screen, _, _ = svc.Terminals.ScreenSnapshotSince(id, 0)
+	assert.Equal(t, 1, strings.Count(string(screen), marker))
 }
 
 // An empty initial command runs nothing, and the terminal arms no wait for it.
@@ -288,7 +253,7 @@ func TestOpenTerminal_AnEmptyInitialCommandRunsNothing(t *testing.T) {
 		return ready
 	}, "the shell is ready")
 	_, armed := clock.Peek()
-	assert.False(t, armed, "no fallback timer waits for a command that does not exist")
+	assert.False(t, armed, "an ordinary launch does not arm handoff timers")
 	assert.Equal(t, "5a", sendMarkerByte(t, svc, d, id, "<READY>", 'Z'))
 }
 

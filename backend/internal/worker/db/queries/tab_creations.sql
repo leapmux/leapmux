@@ -58,6 +58,16 @@ WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND state = ?;
 UPDATE tab_creations SET runtime_payload = ?
 WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND state = ?;
 
+-- name: ClaimTerminalInitialCommand :execrows
+UPDATE tab_creations SET initial_command_claimed = TRUE
+WHERE user_id = sqlc.arg(user_id) AND worker_id = sqlc.arg(worker_id)
+    AND tab_id = sqlc.arg(tab_id) AND tab_type = sqlc.arg(tab_type)
+    AND state = sqlc.arg(published_state) AND NOT initial_command_claimed
+    AND EXISTS (
+        SELECT 1 FROM terminals
+        WHERE terminals.id = tab_creations.tab_id AND closed_at IS NULL AND NOT workspace_archived
+    );
+
 -- name: SaveTabCreationCancelProgress :execrows
 UPDATE tab_creations SET cancel_progress_payload = ?
 WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND state = ?;

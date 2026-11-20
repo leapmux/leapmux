@@ -228,39 +228,56 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 	}
 	m.mu.Unlock()
 
-	t, err := Start(ctx, opts, m.clock, outputFn)
+	started := make(chan bool, 1)
+	var installed *Terminal
+	register := func(t *Terminal) error {
+		m.mu.Lock()
+		if _, exists := m.current[opts.ID]; exists {
+			m.mu.Unlock()
+			return fmt.Errorf("terminal already exists: %s", opts.ID)
+		}
+		registration := m.addRegistrationLocked(opts.ID, t, func(TerminalMeta) TerminalMeta {
+			return TerminalMeta{
+				WorkingDir:    opts.WorkingDir,
+				ShellStartDir: opts.ShellStartDir,
+				Cols:          uint32(opts.Cols),
+				Rows:          uint32(opts.Rows),
+			}
+		})
+		m.mu.Unlock()
+		installed = t
+		m.watchTerminalExit(registration, func(id string, code int) {
+			if <-started && exitFn != nil {
+				exitFn(id, code)
+			}
+		})
+		return nil
+	}
+	_, err := startWithTerminalRegistration(ctx, opts, m.clock, NewScreenBuffer(), outputFn, register)
 	if err != nil {
+		m.mu.Lock()
+		if current := m.current[opts.ID]; current != nil && current.terminal == installed {
+			delete(m.current, opts.ID)
+		}
+		m.mu.Unlock()
+		started <- false
 		return err
 	}
-
-	m.installTerminal(opts.ID, t, exitFn, func(TerminalMeta) TerminalMeta {
-		return TerminalMeta{
-			WorkingDir:    opts.WorkingDir,
-			ShellStartDir: opts.ShellStartDir,
-			Cols:          uint32(opts.Cols),
-			Rows:          uint32(opts.Rows),
-		}
-	})
+	started <- true
 	return nil
 }
 
-// installTerminal records a freshly-spawned *Terminal in the manager
-// and starts the goroutine that waits on its exit. Used by both
-// StartTerminal and RestartTerminal. composeMeta is called under
-// m.mu.Lock with the previous meta (zero value if none) and returns
-// the meta to install: StartTerminal ignores prev and returns a fresh
-// struct; RestartTerminal overlays opts onto prev so non-Options
-// fields (Title) survive. Reading prev under the install lock closes
-// the gap with concurrent UpdateTitle calls that would otherwise be
-// silently overwritten by an outside-the-lock overlay.
-//
-// Notify when the terminal exits but keep it in the map so that
-// ScreenSnapshot and ListTerminals still work. The entry is removed by
-// RemoveTerminal (explicit close). The freshly allocated registration.done channel
-// is closed once the exit handler returned, so WaitForExit callers
-// observe a definitive "the exit goroutine is done" signal.
+// installTerminal installs a replacement physical terminal and watches its exit.
 func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, composeMeta func(prev TerminalMeta) TerminalMeta) {
 	m.mu.Lock()
+	registration := m.addRegistrationLocked(id, t, composeMeta)
+	m.mu.Unlock()
+	m.watchTerminalExit(registration, exitFn)
+}
+
+// addRegistrationLocked reads the old metadata under the install lock so a
+// concurrent title update can only happen before or after the replacement.
+func (m *Manager) addRegistrationLocked(id string, t *Terminal, composeMeta func(TerminalMeta) TerminalMeta) *terminalRegistration {
 	var previous TerminalMeta
 	if current := m.current[id]; current != nil {
 		previous = current.meta
@@ -268,8 +285,13 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 	registration := &terminalRegistration{id: id, terminal: t, meta: composeMeta(previous), done: make(chan struct{})}
 	m.current[id] = registration
 	m.draining[registration] = struct{}{}
-	m.mu.Unlock()
+	return registration
+}
 
+// watchTerminalExit keeps the screen readable until RemoveTerminal. It closes
+// registration.done after the exit handler finishes.
+func (m *Manager) watchTerminalExit(registration *terminalRegistration, exitFn ExitHandler) {
+	t, id := registration.terminal, registration.id
 	go func() {
 		exitCode := t.Wait()
 		// The handler persists the terminal's FINAL screen, so it must not run
