@@ -50,7 +50,7 @@ func matching(t *testing.T, pattern string) func(string) bool {
 // newTestScreen starts a screen watch of cols by rows over screen.
 func newTestScreen(t *testing.T, cols, rows uint32, screen string, match func(string) bool) *screenWatch {
 	t.Helper()
-	w, err := newScreenWatch(screenInfo(cols, rows, screen), match)
+	w, err := newScreenWatch(screenInfo(cols, rows, screen), match, false)
 	require.NoError(t, err)
 	t.Cleanup(w.dispose)
 	return w
@@ -142,15 +142,15 @@ func TestRegexMatcher_AnchorsAtTheEndsOfTheLine(t *testing.T) {
 }
 
 func TestNewScreenWatch_RefusesAScreenWithoutASize(t *testing.T) {
-	_, err := newScreenWatch(screenInfo(0, 24, ""), containing(t, "x"))
+	_, err := newScreenWatch(screenInfo(0, 24, ""), containing(t, "x"), false)
 	assert.Equal(t, cli.CodeInternal, cli.FromError(err).Code)
 	assert.Contains(t, err.Error(), "no size")
 }
 
 func TestNewScreenWatch_RefusesAScreenTooLargeToRender(t *testing.T) {
-	_, err := newScreenWatch(screenInfo(maxTerminalDimension+1, 24, ""), containing(t, "x"))
+	_, err := newScreenWatch(screenInfo(maxTerminalDimension+1, 24, ""), containing(t, "x"), false)
 	assert.Contains(t, err.Error(), "too large to render")
-	_, err = newScreenWatch(screenInfo(5000, 5000, ""), containing(t, "x"))
+	_, err = newScreenWatch(screenInfo(5000, 5000, ""), containing(t, "x"), false)
 	assert.Contains(t, err.Error(), "too large to render", "the scrollback counts in the cells that a render allocates")
 	assert.Empty(t, cli.FromError(err).Hints, "a wait has no --raw to point at")
 }

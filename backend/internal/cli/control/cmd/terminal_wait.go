@@ -38,11 +38,11 @@ at once, it prints the lowest one.
 The text that the screen shows when the wait begins counts, so a wait for a
 text that the terminal already shows ends at once. Each line that appears
 later counts too, even one that scrolls off the screen before the CLI reads
-it. The scrollback from before the wait does not count. To wait for the
-output of a new command only, clear the screen first, or wait for a line that
-the command line itself does not show. In the second example, the echoed
-command line holds "echo DONE", and only the line of the output matches
-'^DONE$'.
+it. Use --scrollback to include the retained history from before the wait.
+To wait for the output of a new command only, use the default screen scope
+and clear the screen first, or wait for a line that the command text does not
+show. In the second example, the echoed command line holds "echo DONE".
+The line of output matches '^DONE$'.
 
 The command exits 0 when the condition holds. It exits 6 when the wait ended
 without it: --timeout passed, the shell ended before the terminal showed the
@@ -69,11 +69,13 @@ func newTerminalWaitLeaf() *cobra.Command {
 			{Comment: "Wait until the shell ends, and keep its exit code.", Command: "CODE=$(leapmux control terminal wait 4cbb3f34 --exit)"},
 			{Comment: "Run the tests, then wait for the line that the last command prints.", Command: "leapmux control terminal run 4cbb3f34 'make test; echo DONE' && leapmux control terminal wait 4cbb3f34 --regex '^DONE$' --timeout 10m"},
 			{Comment: "Wait until a server reports that it listens, for 2 minutes at most.", Command: "leapmux control terminal wait 4cbb3f34 --text 'Listening on' --timeout 2m"},
+			{Comment: "Look for a completed build in the terminal's retained output.", Command: "leapmux control terminal wait 4cbb3f34 --text 'Build complete' --scrollback"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.Bool("exit", false, "wait until the shell of the terminal ends, and print its exit code")
 			fs.String("text", "", "wait until a line of the terminal holds this text")
 			fs.String("regex", "", "wait until a line of the terminal matches this regular expression, in RE2 syntax")
+			fs.Bool("scrollback", false, "also search the retained scrollback from before the wait")
 			fs.Duration("timeout", 0, "stop waiting after this long, such as 90s or 10m; 0 waits without a limit")
 		},
 		Complete: completeTargets,
@@ -88,6 +90,8 @@ type terminalWaitSpec struct {
 	// match reports whether one line of the terminal meets --text or
 	// --regex.
 	match func(line string) bool
+	// scrollback includes existing history in the text search.
+	scrollback bool
 	// condition states the text of --text or --regex for a notice, such as
 	// `the text "PASS"`.
 	condition string
@@ -102,7 +106,7 @@ func terminalWaitSpecOf(inv *cli.Invocation) (terminalWaitSpec, error) {
 	if err != nil {
 		return terminalWaitSpec{}, err
 	}
-	spec := terminalWaitSpec{exit: boolFlag(inv, "exit"), timeout: timeout}
+	spec := terminalWaitSpec{exit: boolFlag(inv, "exit"), timeout: timeout, scrollback: boolFlag(inv, "scrollback")}
 	hasText, hasRegex := inv.Changed("text"), inv.Changed("regex")
 	switch {
 	case hasText && hasRegex:
@@ -111,6 +115,8 @@ func terminalWaitSpecOf(inv *cli.Invocation) (terminalWaitSpec, error) {
 	case spec.exit && (hasText || hasRegex):
 		return terminalWaitSpec{}, cli.Usagef("--exit takes no --text and no --regex").
 			WithHint("a wait for text already ends with exit status 6 when the shell ends first")
+	case spec.scrollback && !hasText && !hasRegex:
+		return terminalWaitSpec{}, cli.Usagef("--scrollback needs --text or --regex")
 	case hasText:
 		text := stringFlag(inv, "text")
 		spec.match, err = textMatcher(text)
@@ -494,18 +500,19 @@ func awaitShellExit(ctx context.Context, clock quartz.Clock, feed <-chan feedOut
 // replay its screen, and the offset where the watch of its output resumes.
 func waitForScreenText(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spec terminalWaitSpec) (terminalWaitResult, terminalWaitOutcome, error) {
 	w := newTerminalWaiter(t.ID, spec)
-	screen, err := newScreenWatch(info, spec.match)
+	screen, err := newScreenWatch(info, spec.match, spec.scrollback)
 	if err != nil {
 		return w.result, 0, err
 	}
 	defer screen.dispose()
+	terminalOutcome, terminalEnded := w.record(info)
 	// The screen when the wait begins counts. A shell that already ended
 	// shows nothing new, so the wait for text ends without its condition.
 	if outcome, done, err := w.screenChanged(screen); err != nil || done {
 		return w.result, outcome, err
 	}
-	if outcome, done := w.record(info); done {
-		return w.result, outcome, nil
+	if terminalEnded {
+		return w.result, terminalOutcome, nil
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	var wg sync.WaitGroup

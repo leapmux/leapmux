@@ -266,7 +266,7 @@ func TestRenderSize(t *testing.T) {
 			assert.Equal(t, []string{"first", "second"}, cli.FromError(hinted).Hints)
 
 			_, readErr := renderScreen(tc.info, screenReadOptions{})
-			_, waitErr := newScreenWatch(tc.info, func(string) bool { return false })
+			_, waitErr := newScreenWatch(tc.info, func(string) bool { return false }, false)
 			assert.Equal(t, e.Message, cli.FromError(readErr).Message, "terminal read refuses the size alike")
 			assert.Equal(t, e.Message, cli.FromError(waitErr).Message, "terminal wait refuses the size alike")
 			assert.Equal(t, []string{rawScreenHint}, cli.FromError(readErr).Hints)

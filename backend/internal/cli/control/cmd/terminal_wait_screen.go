@@ -17,8 +17,8 @@ import (
 // The lines that count are the lines of the screen when the watch starts,
 // and every line that appears after them. A line that scrolls off the screen
 // within one chunk of output still counts, because a check reads every row
-// that scrolled into the scrollback since the last check. The scrollback from
-// before the watch does not count.
+// that scrolled into the scrollback since the last check. With --scrollback,
+// the retained history in the initial or reconnected snapshot counts too.
 //
 // The emulator keeps the size that the terminal had when the watch started.
 // The Worker reports no resize on the watch, so output that a program draws for
@@ -31,6 +31,7 @@ type screenWatch struct {
 	id         string
 	cols, rows int
 	match      func(line string) bool
+	scrollback bool
 
 	term *xterm.Terminal
 	// normal is the normal buffer that boundary and settled count rows of. A
@@ -48,12 +49,12 @@ type screenWatch struct {
 
 // newScreenWatch starts a watch over the screen that info reports, at the
 // size that info reports. match reports whether one line meets the wait.
-func newScreenWatch(info *leapmuxv1.TerminalInfo, match func(line string) bool) (*screenWatch, error) {
+func newScreenWatch(info *leapmuxv1.TerminalInfo, match func(line string) bool, scrollback bool) (*screenWatch, error) {
 	cols, rows, err := renderSize(info)
 	if err != nil {
 		return nil, err
 	}
-	w := &screenWatch{id: info.GetTerminalId(), cols: cols, rows: rows, match: match}
+	w := &screenWatch{id: info.GetTerminalId(), cols: cols, rows: rows, match: match, scrollback: scrollback}
 	if err := w.reset(info.GetScreen()); err != nil {
 		w.dispose()
 		return nil, err
@@ -62,15 +63,20 @@ func newScreenWatch(info *leapmuxv1.TerminalInfo, match func(line string) bool) 
 }
 
 // reset replaces the state of the emulator with screen: the bytes that the
-// Worker retains, which replay the whole state. The screen that they show
-// counts, and the scrollback above it does not.
+// Worker retains. The search starts at the visible screen or at the oldest
+// retained row when the caller requests scrollback.
 func (w *screenWatch) reset(screen []byte) error {
 	w.release()
 	w.term = xterm.New(xterm.WithCols(w.cols), xterm.WithRows(w.rows), xterm.WithScrollback(contracts.TerminalScrollbackLines))
 	if err := w.emulate(screen); err != nil {
 		return err
 	}
-	w.follow(w.term.NormalBuffer(), w.term.NormalBuffer().YBase)
+	buffer := w.term.NormalBuffer()
+	first := buffer.YBase
+	if w.scrollback {
+		first = 0
+	}
+	w.follow(buffer, first)
 	return nil
 }
 

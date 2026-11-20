@@ -1443,11 +1443,11 @@ at once, it prints the lowest one.
 The text that the screen shows when the wait begins counts, so a wait for a
 text that the terminal already shows ends at once. Each line that appears
 later counts too, even one that scrolls off the screen before the CLI reads
-it. The scrollback from before the wait does not count. To wait for the
-output of a new command only, clear the screen first, or wait for a line that
-the command line itself does not show. In the second example, the echoed
-command line holds "echo DONE", and only the line of the output matches
-'^DONE$'.
+it. Use --scrollback to include the retained history from before the wait.
+To wait for the output of a new command only, use the default screen scope
+and clear the screen first, or wait for a line that the command text does not
+show. In the second example, the echoed command line holds "echo DONE".
+The line of output matches '^DONE$'.
 
 The command exits 0 when the condition holds. It exits 6 when the wait ended
 without it: --timeout passed, the shell ended before the terminal showed the
@@ -1477,6 +1477,7 @@ leapmux control terminal wait <terminal> [flags]
 | `--exit` | wait until the shell of the terminal ends, and print its exit code |
 | `--text string` | wait until a line of the terminal holds this text |
 | `--regex string` | wait until a line of the terminal matches this regular expression, in RE2 syntax |
+| `--scrollback` | also search the retained scrollback from before the wait |
 | `--timeout duration` | stop waiting after this long, such as 90s or 10m; 0 waits without a limit (default: 0s) |
 
 ```sh
@@ -1488,6 +1489,9 @@ leapmux control terminal run 4cbb3f34 'make test; echo DONE' && leapmux control 
 
 # Wait until a server reports that it listens, for 2 minutes at most.
 leapmux control terminal wait 4cbb3f34 --text 'Listening on' --timeout 2m
+
+# Look for a completed build in the terminal's retained output.
+leapmux control terminal wait 4cbb3f34 --text 'Build complete' --scrollback
 ```
 
 ### `leapmux control terminal resize`

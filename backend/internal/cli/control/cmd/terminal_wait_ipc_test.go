@@ -273,6 +273,43 @@ func TestTerminalWaitTextOverIPC_EndsAtOnceWhenTheScreenShowsTheText(t *testing.
 	assert.NotContains(t, w.called(), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure)
 }
 
+func TestTerminalWaitTextOverIPC_CanSearchExistingScrollback(t *testing.T) {
+	id := fullTestID("term-1")
+	const marker = "build completed in the earlier screen"
+	info := terminalRecord(id, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, marker+"\r\nclosing\r\nfinished\r\n")
+	info.Rows = 2
+	w := newWatchedTerminalWorker(info)
+	startWatchedTerminalWorker(t, w, id)
+
+	defaultWait := runControl(t, "terminal", "wait", id, "--text", marker)
+	assert.Equal(t, cli.ExitWaitEnded, defaultWait.Code)
+	assert.Contains(t, defaultWait.Stdout, `"reached":false`)
+
+	withHistory := runControlText(t, "terminal", "wait", id, "--scrollback", "--text", marker)
+	require.Equal(t, cli.ExitOK, withHistory.Code, withHistory.Stderr)
+	assert.Equal(t, marker+"\n", withHistory.Stdout)
+	assert.NotContains(t, w.called(), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure)
+
+	calls := w.called()
+	failure := runControl(t, "terminal", "wait", id, "--exit", "--scrollback").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, failure.Message, "--scrollback needs --text or --regex")
+	assert.Equal(t, calls, w.called(), "invalid flags make no new Worker requests")
+}
+
+func TestTerminalWaitTextOverIPC_ReportsTheStatusOfAnInitialMatch(t *testing.T) {
+	id := fullTestID("term-1")
+	info := terminalRecord(id, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "DONE\r\n")
+	info.ExitCode = int32Ptr(0)
+	w := newWatchedTerminalWorker(info)
+	startWatchedTerminalWorker(t, w, id)
+	data := runControl(t, "terminal", "wait", id, "--text", "DONE").Data(t)
+	assert.Equal(t, "DONE", data["line"])
+	assert.Equal(t, true, data["reached"])
+	assert.Equal(t, "exited", data["status"])
+	assert.Equal(t, float64(0), data["exit_code"])
+	assert.NotContains(t, w.called(), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure)
+}
+
 func TestTerminalWaitTextOverIPC_MatchesOutputThatArrivesInParts(t *testing.T) {
 	id := fullTestID("term-1")
 	screen := "$ make test\r\n"
