@@ -477,9 +477,9 @@ func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	journal := svc.semanticEvents.journal.Load()
 	require.NotNil(t, journal)
 	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "agent-1"}
+	createClaimTestAgent(t, svc, "agent-1")
 	_, start, err := journal.Open(t.Context(), tab, nil)
 	require.NoError(t, err)
-	createClaimTestAgent(t, svc, "agent-1")
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
 	payload := []byte(`{"id":7,"request_id":"permission-1","method":"interaction/requestPermission"}`)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "permission-1", Payload: payload}))

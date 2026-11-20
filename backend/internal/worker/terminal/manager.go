@@ -154,7 +154,7 @@ type TerminalSnapshot struct {
 const defaultReadDrainGrace = 2 * time.Second
 
 // terminalRegistration owns one physical incarnation and its metadata. It stays
-// in draining until its exit handler returns, even after removal or replacement.
+// in draining until its reader and exit handler return, even after removal or replacement.
 type terminalRegistration struct {
 	id       string
 	terminal *Terminal
@@ -162,7 +162,21 @@ type terminalRegistration struct {
 	done     chan struct{}
 }
 
-// Manager tracks current terminals and every unfinished exit handler.
+func (r *terminalRegistration) waitForPublishers(canceled <-chan struct{}) bool {
+	select {
+	case <-r.terminal.readDoneCh:
+	case <-canceled:
+		return false
+	}
+	select {
+	case <-r.done:
+		return true
+	case <-canceled:
+		return false
+	}
+}
+
+// Manager tracks current terminals and every unfinished reader or exit handler.
 type Manager struct {
 	mu       sync.RWMutex
 	current  map[string]*terminalRegistration
@@ -311,7 +325,8 @@ func (m *Manager) watchTerminalExit(registration *terminalRegistration, exitFn E
 		// Terminal.waitForReadDrainedWithin, which starts it only once that
 		// close finished. A shell that leaves no such holder behind never
 		// reaches it.
-		if !t.waitForReadDrainedWithin(defaultReadDrainGrace) {
+		readDrained := t.waitForReadDrainedWithin(defaultReadDrainGrace)
+		if !readDrained {
 			slog.Warn("terminal reader did not drain after the shell exited; "+
 				"persisting the screen without its last output",
 				"terminal_id", id,
@@ -322,10 +337,33 @@ func (m *Manager) watchTerminalExit(registration *terminalRegistration, exitFn E
 			exitFn(id, exitCode)
 		}
 		close(registration.done)
+		if !readDrained {
+			<-t.readDoneCh
+		}
 		m.mu.Lock()
 		delete(m.draining, registration)
 		m.mu.Unlock()
 	}()
+}
+
+// WaitForTabPublishers joins the readers and exit handlers of a retired
+// tab's incarnations. The caller first stops new startup admission and
+// joins any startup that was already admitted.
+func (m *Manager) WaitForTabPublishers(ctx context.Context, terminalID string) error {
+	m.mu.RLock()
+	var registrations []*terminalRegistration
+	for registration := range m.draining {
+		if registration.id == terminalID {
+			registrations = append(registrations, registration)
+		}
+	}
+	m.mu.RUnlock()
+	for _, registration := range registrations {
+		if !registration.waitForPublishers(ctx.Done()) {
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // SendInput encodes in for the modes that the program in the terminal enabled,
@@ -855,12 +893,14 @@ func (m *Manager) HangUpAll(grace time.Duration) []string {
 			<-hungUp
 		}(t)
 	}
-	for _, exit := range exits {
-		finish := beginPending(exit.id)
-		go func(done chan struct{}) {
+	joinFinished := make(chan struct{})
+	defer close(joinFinished)
+	for _, registration := range exits {
+		finish := beginPending(registration.id)
+		go func(registration *terminalRegistration) {
 			defer finish()
-			<-done
-		}(exit.done)
+			registration.waitForPublishers(joinFinished)
+		}(registration)
 	}
 
 	// Keep the join allowance for immediate escalation, and cap the sum at

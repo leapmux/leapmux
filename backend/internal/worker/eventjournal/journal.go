@@ -29,6 +29,7 @@ const (
 var (
 	ErrUnavailable = errors.New("the Worker's event journal is unavailable")
 	ErrCursor      = errors.New("the event checkpoint does not match retained history for this tab")
+	ErrAdmission   = errors.New("no live tab with event history access")
 )
 
 // Journal owns the event tables in one Worker database. A failed commit or a
@@ -92,6 +93,24 @@ func (j *Journal) Record(tab Tab, fact *leapmuxv1.SemanticTabFact) {
 		item.fact = []byte{}
 		item.gap = leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT
 	}
+	j.enqueue(item)
+}
+
+// Seal orders retirement after facts already admitted for the resource.
+// Call it after joining the publishers or after determining that their drain
+// cannot be verified.
+func (j *Journal) Seal(tab Tab, publishersFinished bool) {
+	if !tab.Valid() {
+		return
+	}
+	item := observation{tab: tab, observed: j.clock.Now().UnixMilli(), seal: true}
+	if !publishersFinished {
+		item.gap = leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT
+	}
+	j.enqueue(item)
+}
+
+func (j *Journal) enqueue(item observation) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.closing {
@@ -184,6 +203,12 @@ func (j *Journal) writePublications(ctx context.Context) {
 		writeCtx, cancel := context.WithTimeout(ctx, journalWriteTimeout)
 		err := j.store.write(writeCtx, func(q *db.Queries) error {
 			for _, item := range batch {
+				if item.seal {
+					if err := j.store.seal(writeCtx, q, item); err != nil {
+						return err
+					}
+					continue
+				}
 				if _, err := j.store.append(writeCtx, q, item); err != nil {
 					return err
 				}

@@ -30,6 +30,7 @@ message WatchSemanticEventsResponse {
     SemanticWatchReady ready = 1;
     SemanticWatchRecord record = 2;
     SemanticWatchGap gap = 3;
+    SemanticWatchRetired retired = 4;
   }
 }
 
@@ -52,6 +53,11 @@ message SemanticWatchRecord {
   bytes cursor = 4;
   // Present when this exact request instance still waits for an answer.
   string current_request_handle = 5;
+}
+
+// Retirement confirms that the Worker has sealed this resource's history.
+message SemanticWatchRetired {
+  int64 final_sequence = 1;
 }
 
 enum SemanticWatchGapReason {

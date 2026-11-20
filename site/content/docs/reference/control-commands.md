@@ -2292,6 +2292,9 @@ agent request has a request_instance that correlates it with its end. It
 has a request handle only while that exact instance still needs an answer.
 With --checkpoint, --limit counts only the printed tab events. This mode
 follows the tab across workspace moves and does not take --workspace.
+After a terminal tab closes, resume with its full ID and the same
+checkpoint. The stream exits after stream.retired confirms the final
+Worker position. The shell can exit and restart while the tab stays open.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints
@@ -2324,6 +2327,7 @@ Kinds:
   - stream.unavailable: the hub, a Worker, or a Worker for one tab cannot deliver events; retrying says whether the stream tries again
   - stream.gap: a source delivers again; events of the kinds in lost, between since and time, may be lost
   - stream.heartbeat: the stream runs; only --heartbeat prints it
+  - stream.retired: the Worker finished the checkpointed terminal tab's event history
 
 ```text
 leapmux control events [flags]
@@ -2333,7 +2337,7 @@ leapmux control events [flags]
 |---|---|
 | `--workspace string` | watch only this workspace: an id, a prefix, "title:&lt;title&gt;" or "self" (default: every workspace) |
 | `--tab string` | watch only this tab: an id, a prefix, "id:&lt;id&gt;", "title:&lt;title&gt;" or "self" |
-| `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, stream.ready, stream.unavailable, stream.gap, stream.heartbeat; repeatable) |
+| `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, stream.ready, stream.unavailable, stream.gap, stream.heartbeat, stream.retired; repeatable) |
 | `--limit int` | end the stream after this many events; 0 runs without a limit |
 | `--heartbeat duration` | print a stream.heartbeat event at this interval, such as 30s; 0 prints none (default: 0s) |
 | `--checkpoint string` | save and resume the event position for the agent or terminal selected by --tab |

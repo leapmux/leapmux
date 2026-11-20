@@ -29,6 +29,7 @@ type semanticWatchChannel interface {
 type eventFrame struct {
 	response *leapmuxv1.WatchSemanticEventsResponse
 	err      error
+	end      bool
 }
 
 func (s *session) receiveSemanticWatch(ctx context.Context, workerID string, request *leapmuxv1.WatchSemanticEventsRequest, out chan<- eventFrame) error {
@@ -49,7 +50,7 @@ func (s *session) receiveSemanticWatch(ctx context.Context, workerID string, req
 				return cli.Newf(cli.CodeInternal, "the Worker sent an invalid event history frame")
 			}
 			select {
-			case out <- eventFrame{response: &response}:
+			case out <- eventFrame{response: &response, end: end}:
 			case <-ctx.Done():
 				return ctx.Err()
 			}

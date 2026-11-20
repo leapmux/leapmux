@@ -87,6 +87,9 @@ func (svc *Service) applyTabCloseEffects(ctx context.Context, key ownedTabKey, r
 			}
 		}
 	}
+	if key.tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL && retirement.RetiredLiveRow {
+		svc.retireTerminalEventHistory(key.tabID)
+	}
 	if retirement.PayloadRevoked {
 		svc.TabPayloads.publishRevoked(key.userID, key.tabID)
 	}

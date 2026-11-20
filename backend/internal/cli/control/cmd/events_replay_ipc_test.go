@@ -155,3 +155,85 @@ func TestCheckpointedEventsOverIPCResolvesSelfWithoutTheHub(t *testing.T) {
 	assert.Equal(t, "agent-1", request.GetTab().GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, request.GetTab().GetTabType())
 }
+
+type retiredHistoryIPCWorker struct {
+	requests chan *leapmuxv1.WatchSemanticEventsRequest
+	end      bool
+}
+
+func (*retiredHistoryIPCWorker) CallInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error) {
+	return nil, fmt.Errorf("unexpected unary Worker request")
+}
+
+func (w *retiredHistoryIPCWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
+	send func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController),
+) error {
+	if target != "worker-B" || req.GetMethod() != semanticWatchProcedure {
+		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
+	}
+	request := new(leapmuxv1.WatchSemanticEventsRequest)
+	if err := proto.Unmarshal(req.GetPayload(), request); err != nil {
+		return err
+	}
+	select {
+	case w.requests <- request:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	saved := validCheckpoint()
+	frames := []*leapmuxv1.WatchSemanticEventsResponse{
+		{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: &leapmuxv1.SemanticWatchReady{
+			Tab: request.GetTab(), WorkerId: target, JournalId: saved.JournalID, TabStreamId: saved.TabStreamID,
+			AfterSequence: saved.Sequence, HighWaterSequence: saved.Sequence, Cursor: request.GetAfterCursor(),
+		}}},
+		{Event: &leapmuxv1.WatchSemanticEventsResponse_Retired{Retired: &leapmuxv1.SemanticWatchRetired{FinalSequence: saved.Sequence}}},
+	}
+	for _, frame := range frames {
+		raw, err := proto.Marshal(frame)
+		if err != nil {
+			return err
+		}
+		send(&leapmuxv1.InnerStreamMessage{Payload: raw, End: frame.GetRetired() != nil && w.end})
+	}
+	return nil
+}
+
+func TestCheckpointedClosedTerminalOverIPCUsesItsSavedSourceAndRequiresEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  bool
+		code int
+	}{
+		{"final retirement", true, cli.ExitOK},
+		{"retirement without end", false, cli.ExitFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testutil.DeadlineContext(t)
+			worker := &retiredHistoryIPCWorker{
+				requests: make(chan *leapmuxv1.WatchSemanticEventsRequest, 1), end: tc.end,
+			}
+			startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A", "worker-B")}, newEventsWorker(), func(r *controlipc.Router) { r.CrossWorker = worker })
+			saved := validCheckpoint()
+			saved.TabID, saved.WorkerID = fullTestID("terminal"), "worker-B"
+			path := filepath.Join(t.TempDir(), "closed-terminal.json")
+			checkpoint, err := openEventCheckpoint(path)
+			require.NoError(t, err)
+			require.NoError(t, checkpoint.save(saved))
+			checkpoint.close()
+
+			run := runControlLive(t, "events", "--tab", saved.TabID, "--checkpoint", path, "--kind", "stream,terminal.bell", "--json")
+			assert.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+			request := receive(t, ctx, worker.requests)
+			assert.Equal(t, saved.TabID, request.GetTab().GetTabId())
+			assert.Equal(t, checkpointTerminalType, request.GetTab().GetTabType())
+			assert.Equal(t, saved.Cursor, request.GetAfterCursor())
+			if tc.end {
+				last := run.next(t, ctx)
+				assert.Equal(t, kindStreamRetired, last.Kind)
+				require.NotNil(t, last.Sequence)
+				assert.Equal(t, saved.Sequence, *last.Sequence)
+			}
+			assert.Equal(t, tc.code, receive(t, ctx, run.code))
+		})
+	}
+}

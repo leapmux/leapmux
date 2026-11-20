@@ -905,9 +905,22 @@ CREATE TABLE semantic_event_tails (
     high_sequence INTEGER NOT NULL CHECK (high_sequence >= 0),
     floor_sequence INTEGER NOT NULL CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence),
     last_observed_unix_millis INTEGER NOT NULL,
+    resource_closed BOOLEAN NOT NULL DEFAULT FALSE CHECK (resource_closed IN (0, 1)),
+    final_sequence INTEGER CHECK (final_sequence IS NULL OR (resource_closed AND final_sequence = high_sequence)),
     PRIMARY KEY (tab_type, tab_id)
 ) WITHOUT ROWID;
 CREATE INDEX semantic_event_tail_age_idx ON semantic_event_tails (last_observed_unix_millis, tab_type, tab_id);
+
+-- Mark only an existing history stream. A prior cursor already created its tail.
+-- +goose StatementBegin
+CREATE TRIGGER semantic_event_terminal_closed
+AFTER UPDATE OF closed_at ON terminals
+WHEN OLD.closed_at IS NULL AND NEW.closed_at IS NOT NULL AND NOT NEW.is_quake
+BEGIN
+    UPDATE semantic_event_tails SET resource_closed = TRUE
+    WHERE tab_type = 2 AND tab_id = NEW.id;
+END;
+-- +goose StatementEnd
 
 CREATE TABLE semantic_event_entries (
     ingest_order INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -931,6 +944,7 @@ CREATE UNIQUE INDEX semantic_event_request_open_idx
     WHERE request_open_instance IS NOT NULL;
 
 -- +goose Down
+DROP TRIGGER IF EXISTS semantic_event_terminal_closed;
 DROP TABLE IF EXISTS semantic_event_entries;
 DROP TABLE IF EXISTS semantic_event_tails;
 DROP TABLE IF EXISTS semantic_event_journal;

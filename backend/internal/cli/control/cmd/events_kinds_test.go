@@ -48,7 +48,7 @@ func TestEventKinds_TheTableHoldsEveryKindThatTheStreamPrints(t *testing.T) {
 		kindAgentActivity, kindAgentStatus, kindAgentTurnEnd, kindAgentRequest, kindAgentRequestEnded,
 		kindAgentTodos, kindAgentBackgroundTasks,
 		kindTerminalStatus, kindTerminalTitle, kindTerminalBell, kindTerminalNotification, kindTerminalProgress, kindTerminalExit,
-		kindStreamReady, kindStreamUnavailable, kindStreamGap, kindStreamHeartbeat,
+		kindStreamReady, kindStreamUnavailable, kindStreamGap, kindStreamHeartbeat, kindStreamRetired,
 	}
 	assert.ElementsMatch(t, printed, eventKindNames())
 }

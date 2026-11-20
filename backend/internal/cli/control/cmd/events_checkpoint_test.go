@@ -123,6 +123,27 @@ type shortEventWriter struct{}
 
 func (shortEventWriter) Write(data []byte) (int, error) { return len(data) - 1, nil }
 
+func TestCheckpointedRetirementRequiresTheFullSavedPosition(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	replay := makeCheckpointedEvents(t, &output)
+	replay.opts.filter = kindFilter{}
+	replay.save = func(*eventCheckpoint) error {
+		t.Error("a retirement confirmation does not advance the saved position")
+		return nil
+	}
+	final := &leapmuxv1.SemanticWatchRetired{FinalSequence: 3}
+	require.Error(t, replay.acceptRetirement(final, 3, 4), "the Worker promised another record")
+	require.Error(t, replay.acceptRetirement(final, 2, 2), "the final sequence is beyond the printed records")
+	require.Empty(t, output.String())
+	require.NoError(t, replay.acceptRetirement(final, 3, 3))
+	event := decodeEventLine(t, output.String())
+	assert.Equal(t, kindStreamRetired, event.Kind)
+	require.NotNil(t, event.Sequence)
+	assert.Equal(t, int64(3), *event.Sequence)
+	assert.Zero(t, replay.printed)
+}
+
 func TestCheckpointedEventsDoesNotSaveAfterAShortWrite(t *testing.T) {
 	t.Parallel()
 	replay := makeCheckpointedEvents(t, shortEventWriter{})

@@ -12,9 +12,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 type pausedSemanticWatchWriter struct {
@@ -33,6 +36,108 @@ func (w *pausedSemanticWatchWriter) SendStream(message *leapmuxv1.InnerStreamMes
 		<-w.resume
 	}
 	return nil
+}
+
+func TestClosedTerminalWatchRecordsAnInFlightExitBeforeRetirement(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, opened := setupTestService(t)
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+	exitEntered, releaseExit := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseExit) })
+	defer release()
+	svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, output terminal.OutputHandler, exit terminal.ExitHandler) error {
+		return svc.Terminals.StartTerminal(ctx, opts, output, func(id string, code int) {
+			close(exitEntered)
+			<-releaseExit
+			exit(id, code)
+		})
+	}
+	terminalID := openTerminalViaRPC(t, svc, dispatcher, opened, t.TempDir())
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: terminalID}
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	_, checkpoint, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
+
+	closed := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: terminalTabIdent(terminalID), WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+	}, closed)
+	require.Empty(t, closed.errors)
+	require.Len(t, closed.responses, 1)
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-exitEntered:
+	case <-ctx.Done():
+		t.Fatal("the shell exit callback did not enter")
+	}
+	_, _, err = journal.Open(ctx, tab, nil)
+	require.ErrorIs(t, err, eventjournal.ErrAdmission)
+	reader, ready, err := journal.Open(ctx, tab, checkpoint.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(ctx, ready.GetHighWaterSequence())
+	require.NoError(t, err)
+	require.Empty(t, page, "closed history must wait for the shell exit callback")
+
+	writer := newTestWriter()
+	caller := channel.NewCaller(svc.RegisteredBy(), mustScopes("worker:read terminal:read"))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.watchSemanticEvents(ctx, caller, &leapmuxv1.WatchSemanticEventsRequest{
+			Tab: terminalTabIdent(terminalID), AfterCursor: checkpoint.GetCursor(),
+		}, writer)
+	}()
+	release()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the closed history did not finish")
+	}
+	stream := writer.streamsSnapshot()
+	require.GreaterOrEqual(t, len(stream), 3)
+	for _, message := range stream {
+		require.Nil(t, message.GetError())
+	}
+	var exit, retired leapmuxv1.WatchSemanticEventsResponse
+	require.NoError(t, proto.Unmarshal(stream[len(stream)-2].GetPayload(), &exit))
+	require.NoError(t, proto.Unmarshal(stream[len(stream)-1].GetPayload(), &retired))
+	require.NotNil(t, exit.GetRecord().GetFact().GetTerminalExit())
+	require.NotNil(t, retired.GetRetired())
+	assert.Equal(t, exit.GetRecord().GetSequence(), retired.GetRetired().GetFinalSequence())
+	assert.True(t, stream[len(stream)-1].GetEnd())
+}
+
+func TestTerminalShellExitLeavesItsJournalOpen(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, opened := setupTestService(t)
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+	terminalID := openTerminalViaRPC(t, svc, dispatcher, opened, t.TempDir())
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: terminalID}
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	_, initial, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
+	exitTerminalAndWait(t, svc, dispatcher, terminalID, "")
+	svc.Terminals.WaitForExit(terminalID)
+
+	reader, start, err := journal.Open(t.Context(), tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(t.Context(), start.GetAfterSequence())
+	require.NoError(t, err)
+	require.NotEmpty(t, page)
+	assert.NotNil(t, page[len(page)-1].GetRecord().GetFact().GetTerminalExit())
+	atExit, _, err := reader.Read(t.Context(), start.GetHighWaterSequence())
+	require.NoError(t, err)
+	assert.Empty(t, atExit, "a shell exit leaves an open tab history")
 }
 
 func TestWatchSemanticEventsRevokesAnOpenHistoryPage(t *testing.T) {
@@ -163,6 +268,7 @@ func TestSemanticJournalRetainsAnAdmittedHandlerPublicationDuringShutdown(t *tes
 	journal := svc.semanticEvents.journal.Load()
 	require.NotNil(t, journal)
 	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "agent"}
+	createClaimTestAgent(t, svc, tab.ID)
 	_, checkpoint, err := journal.Open(t.Context(), tab, nil)
 	require.NoError(t, err)
 	svc.Shutdown()

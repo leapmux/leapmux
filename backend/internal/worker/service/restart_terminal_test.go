@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -555,24 +556,33 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 	})
 }
 
-// TestRestartTerminal_CloseDuringRestart exercises the closed_at guard
-// in runTerminalRestart. We force the race deterministically by setting
-// closed_at on the DB row *before* dispatching RestartTerminal:
-// requireTerminalForRestart doesn't check closed_at, so the spawn
-// proceeds, and the post-spawn re-fetch inside runTerminalRestart sees
-// the closed row and tears the freshly-spawned PTY back down.
-//
-// (The Manager-level RestartTerminal doesn't go through the
-// startTerminalFn indirection that OpenTerminal uses, so we can't
-// inject a callback there. Pre-seeding closed_at is the simplest way
-// to drive the same code path the real CloseTab-during-restart
-// race produces.)
+type gatedTerminalRestartIPC struct {
+	fakeRemoteIPC
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (f *gatedTerminalRestartIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string, func(), error) {
+	close(f.entered)
+	<-f.release
+	return f.fakeRemoteIPC.TerminalSpawning(info)
+}
+
 func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	ctx := testutil.DeadlineContext(t)
+	continueStart := make(chan struct{})
+	release := sync.OnceFunc(func() { close(continueStart) })
+	ipc := &gatedTerminalRestartIPC{entered: make(chan struct{}), release: continueStart}
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
 	defer drainAllInFlight(svc)
+	defer release()
 
 	const id = "tm-close-race"
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -580,19 +590,47 @@ func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 		Shell: testutil.TestShell(),
 		Cols:  80, Rows: 25, Screen: []byte{},
 	}))
-	// Mimic a CloseTab that won the race: closed_at is already set
-	// when the RestartTerminal request lands.
-	require.NoError(t, closeErr(svc.Queries.CloseTerminal(ctx, id)))
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: id}
+	_, initial, err := journal.Open(ctx, tab, nil)
+	require.NoError(t, err)
 
 	dispatchRestart(d, id, w)
 	require.Empty(t, w.errors)
+	select {
+	case <-ipc.entered:
+	case <-ctx.Done():
+		t.Fatal("the admitted restart did not reach shell setup")
+	}
+	require.NoError(t, closeErr(svc.Queries.CloseTerminal(ctx, id)))
+	release()
 
-	// Wait for runTerminalRestart to finish its trailing work, then poll
-	// — the goroutine removes the manager entry asynchronously after
-	// startWithScreenBuffer returns.
 	svc.TerminalStartup.WaitForInFlight()
-	testutil.AssertEventually(t, func() bool { return !svc.Terminals.HasTerminal(id) },
-		"runTerminalRestart must remove the PTY when closed_at is set between spawn and post-spawn fetch")
+	assert.False(t, svc.Terminals.HasTerminal(id), "the restart must remove the PTY after the close")
+	require.NoError(t, svc.Terminals.WaitForTabPublishers(ctx, id))
+	reader, ready, err := journal.Open(ctx, tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(ctx, ready.GetAfterSequence())
+	require.NoError(t, err)
+	require.NotEmpty(t, page)
+	assert.NotNil(t, page[len(page)-1].GetRecord().GetFact().GetTerminalExit(), "the admitted PTY reached its exit handler")
+}
+
+func TestRestartTerminal_RejectsAClosedRowBeforeTheShellStarts(t *testing.T) {
+	t.Parallel()
+	ipc := &fakeRemoteIPC{}
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
+	const id = "closed-terminal"
+	require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+		ID: id, WorkingDir: t.TempDir(), Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	require.NoError(t, closeErr(svc.Queries.CloseTerminal(t.Context(), id)))
+	dispatchRestart(d, id, w)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codeNotFound, w.errors[0].code)
+	assert.Zero(t, ipc.count.Load())
+	assert.False(t, svc.Terminals.HasTerminal(id))
 }
 
 func (f *fakeRemoteIPC) HoldDelegation(userid.UserID) func() { return func() {} }

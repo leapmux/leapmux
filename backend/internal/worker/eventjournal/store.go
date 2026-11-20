@@ -34,6 +34,7 @@ type observation struct {
 	fact           []byte
 	gap            leapmuxv1.SemanticWatchGapReason
 	requestOpening []byte
+	seal           bool
 }
 
 func (s store) initialize(ctx context.Context, workerID string, owner userid.UserID, now time.Time) (row db.SemanticEventJournal, err error) {
@@ -69,15 +70,24 @@ func (s store) initialize(ctx context.Context, workerID string, owner userid.Use
 		if err := s.pruneExpired(ctx, q, now); err != nil {
 			return err
 		}
-		if row.Dirty != 0 {
-			tails, err := q.ListSemanticEventTails(ctx)
-			if err != nil {
-				return err
+		tails, err := q.ListSemanticEventTails(ctx)
+		if err != nil {
+			return err
+		}
+		for _, tail := range tails {
+			if tail.FinalSequence.Valid {
+				continue
 			}
-			for _, tail := range tails {
-				_, err := s.append(ctx, q, observation{tab: Tab{Type: leapmuxv1.TabType(tail.TabType), ID: tail.TabID}, observed: now.UnixMilli(),
-					gap: leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP})
-				if err != nil {
+			item := observation{
+				tab: Tab{Type: leapmuxv1.TabType(tail.TabType), ID: tail.TabID}, observed: now.UnixMilli(),
+				gap: leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP,
+			}
+			if tail.ResourceClosed {
+				if err := s.seal(ctx, q, item); err != nil {
+					return err
+				}
+			} else if row.Dirty != 0 {
+				if _, err := s.append(ctx, q, item); err != nil {
 					return err
 				}
 			}
@@ -104,6 +114,13 @@ func (s store) ensureTail(ctx context.Context, q *db.Queries, tab Tab, observed 
 	tail, err := q.GetSemanticEventTail(ctx, key)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return tail, err
+	}
+	live, err := tab.live(ctx, q)
+	if err != nil {
+		return tail, err
+	}
+	if !live {
+		return tail, ErrAdmission
 	}
 	count, err := q.CountSemanticEventTails(ctx)
 	if err != nil {
@@ -135,8 +152,14 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 		item.requestOpening = nil
 	}
 	tail, err := s.ensureTail(ctx, q, item.tab, item.observed)
+	if errors.Is(err, ErrAdmission) {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
+	}
+	if tail.FinalSequence.Valid {
+		return tail.FinalSequence.Int64, nil
 	}
 	if item.requestOpening != nil {
 		exists, err := q.HasSemanticEventRequestOpening(ctx, db.HasSemanticEventRequestOpeningParams{
@@ -186,6 +209,26 @@ func (s store) append(ctx context.Context, q *db.Queries, item observation) (int
 		}
 	}
 	return sequence, nil
+}
+
+func (s store) seal(ctx context.Context, q *db.Queries, item observation) error {
+	key := db.GetSemanticEventTailParams{TabType: int64(item.tab.Type), TabID: item.tab.ID}
+	tail, err := q.GetSemanticEventTail(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !tail.ResourceClosed || tail.FinalSequence.Valid {
+		return nil
+	}
+	if item.gap != 0 {
+		if _, err := s.append(ctx, q, item); err != nil {
+			return err
+		}
+	}
+	return q.SealSemanticEventTail(ctx, db.SealSemanticEventTailParams(key))
 }
 
 func (s store) pruneThrough(ctx context.Context, q *db.Queries, tab Tab, sequence int64) (db.SemanticEventJournal, error) {

@@ -543,6 +543,7 @@ To follow an agent's chat, use `agent messages --follow` instead.
 | `terminal.status`, `terminal.exit` | A terminal's shell changed its status, or exited with its exit code. |
 | `terminal.title`, `terminal.bell`, `terminal.notification`, `terminal.progress` | A program in a terminal set the title, rang the bell, asked for a desktop notification, or reported its progress. |
 | `stream.ready`, `stream.unavailable`, `stream.gap`, `stream.heartbeat` | The health of the stream itself. |
+| `stream.retired` | The Worker finished the checkpointed terminal tab's event history. |
 
 - **`--kind` selects what prints**: a kind such as `agent.request`, or a family such as `agent`. Repeat it, or separate the values with commas. An unknown value fails with `usage` and lists the known ones.
 - **`--workspace` narrows the scope** to one workspace. Without it, the stream watches every workspace. A tab that opens while the stream runs joins it, and a tab that closes leaves it. The stream ends with status `0` when the watched workspace is deleted.
@@ -570,6 +571,12 @@ meantime. The checkpoint covers `terminal.status`, `terminal.exit`,
 `terminal.progress`. The Worker checks access to the tab each time
 the CLI opens the stream.
 
+After a terminal tab closes, pass its full ID and the same checkpoint to
+read its retained events. The command exits with status `0` after
+`stream.retired` confirms the final Worker position. Resuming at that
+position prints the confirmation again without repeating earlier events.
+The shell can exit and restart while the tab stays open.
+
 An agent tab also supports checkpoints. Its events cover activity, process
 status, turn ends, requests, to-do lists, and background tasks. For a
 request, `request_instance` correlates the request with its end. The
@@ -580,6 +587,8 @@ Use the same tab and `--kind` selection when you resume. The checkpoint
 follows the tab across workspace moves. `--limit` counts the tab
 events that the CLI prints. A `stream.gap` reports the affected sequence
 interval and why the Worker could not replay it.
+If the Worker has discarded the entire stream identity, the checkpoint
+fails with `conflict`.
 
 The CLI saves its position after it writes the event. If the process stops
 between those steps, the next run can print the event again. Deduplicate by

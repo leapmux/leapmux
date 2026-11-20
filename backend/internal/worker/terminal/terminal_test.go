@@ -43,7 +43,9 @@ func TestHangUpAllKeepsJoinBudgetForImmediateAndLargeGrace(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m := NewManager()
 				exited := make(chan struct{})
-				m.draining[&terminalRegistration{id: "draining", done: exited}] = struct{}{}
+				reader := make(chan struct{})
+				close(reader)
+				m.draining[&terminalRegistration{id: "draining", done: exited, terminal: &Terminal{readDoneCh: reader}}] = struct{}{}
 				release := sync.OnceFunc(func() { close(exited) })
 				defer release()
 				joined := make(chan []string, 1)
@@ -65,6 +67,30 @@ func TestHangUpAllKeepsJoinBudgetForImmediateAndLargeGrace(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestHangUpAllJoinsAReaderAfterItsExitHandlerReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager()
+		exitDone := make(chan struct{})
+		close(exitDone)
+		readDone := make(chan struct{})
+		release := sync.OnceFunc(func() { close(readDone) })
+		defer release()
+		m.draining[&terminalRegistration{
+			id: "draining", done: exitDone, terminal: &Terminal{readDoneCh: readDone},
+		}] = struct{}{}
+		joined := make(chan []string, 1)
+		go func() { joined <- m.HangUpAll(0) }()
+		synctest.Wait()
+		select {
+		case <-joined:
+			t.Fatal("shutdown finished before the reader returned")
+		default:
+		}
+		release()
+		assert.Empty(t, <-joined)
+	})
 }
 
 func (p *writeCountingPTY) Write([]byte) (int, error) {

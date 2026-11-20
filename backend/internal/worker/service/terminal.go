@@ -152,9 +152,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, creationErr.Error())
 				return
 			}
-			latest, readErr := svc.Queries.GetTerminalForRestart(bgCtx(), terminalID)
-			if readErr != nil {
-				sendInternalError(sender, readErr.Error())
+			latest, ok := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalForRestart)
+			if !ok {
 				return
 			}
 			dbTerm = latest
@@ -237,6 +236,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if !svc.Terminals.ExitHandlerFinished(terminalID) {
 				svc.TerminalStartup.abandon(startupHandle)
 				sendFailedPrecondition(sender, "terminal exit cleanup is still in progress; try again")
+				return
+			}
+			// A close can finish between the initial row read and this
+			// startup claim. After the claim, a concurrent close joins it.
+			live, open := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalForRestart)
+			if !open || refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, live.WorkspaceArchived, "terminal") {
+				svc.TerminalStartup.abandon(startupHandle)
 				return
 			}
 			svc.announceTerminalStarting(terminalID, shell)

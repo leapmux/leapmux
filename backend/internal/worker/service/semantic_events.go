@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 const semanticJournalDeadline = 5 * time.Second
@@ -29,6 +30,7 @@ type semanticEventCapture struct {
 	enabled, draining, stopped bool
 	producersFinished          bool
 	journal                    atomic.Pointer[eventjournal.Journal]
+	retirements                drain.Counter
 }
 
 // EnableSemanticEvents is called at Worker bootstrap, before starting producers.
@@ -81,6 +83,26 @@ func (svc *Service) recordAgentFact(agentID string, event *leapmuxv1.AgentEvent)
 	}
 }
 
+func (svc *Service) retireTerminalEventHistory(terminalID string) {
+	capture := &svc.semanticEvents
+	capture.mu.Lock()
+	journal := capture.journal.Load()
+	if journal == nil || capture.stopped || !journal.OwnedBy(svc.RegisteredBy()) {
+		capture.mu.Unlock()
+		return
+	}
+	capture.retirements.Add()
+	capture.mu.Unlock()
+	go func() {
+		defer capture.retirements.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), semanticJournalDeadline)
+		defer cancel()
+		drained := svc.TerminalStartup.waitForTabStartup(ctx, terminalID) == nil &&
+			svc.Terminals.WaitForTabPublishers(ctx, terminalID) == nil
+		journal.Seal(eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: terminalID}, drained)
+	}()
+}
+
 func (svc *Service) stopSemanticEventReaders(producersFinished bool) {
 	capture := &svc.semanticEvents
 	capture.mu.Lock()
@@ -107,7 +129,8 @@ func (svc *Service) FinalizeSemanticEvents(handlersFinished bool) {
 		budget := svc.ShutdownDeadline.Cap(semanticJournalDeadline)
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
-		if err := journal.Stop(ctx, capture.producersFinished && handlersFinished && budget > 0); err != nil {
+		sealsFinished := drain.WaitBounded(capture.retirements.DoneChan(), budget, "")
+		if err := journal.Stop(ctx, capture.producersFinished && handlersFinished && sealsFinished && budget > 0); err != nil {
 			slog.Warn("stop Worker event journal failed", "error", err)
 		}
 	}
@@ -128,9 +151,9 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		sendSemanticWatchError(sender, codes.InvalidArgument, "an agent or terminal tab is required")
 		return
 	}
-	scope, grant, queryAccess := leapmuxv1.Scope_SCOPE_TERMINAL_READ, "terminal:read", svc.Queries.CanWatchTerminalHistory
+	scope, grant := leapmuxv1.Scope_SCOPE_TERMINAL_READ, "terminal:read"
 	if tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
-		scope, grant, queryAccess = leapmuxv1.Scope_SCOPE_AGENT_READ, "agent:read", svc.Queries.CanWatchAgentHistory
+		scope, grant = leapmuxv1.Scope_SCOPE_AGENT_READ, "agent:read"
 	}
 	if !caller.Allows(scope) {
 		sendSemanticWatchError(sender, codes.PermissionDenied, "event history requires "+grant)
@@ -161,16 +184,16 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		if !checkOwner() {
 			return false
 		}
-		allowed, err := queryAccess(ctx, tab.ID)
+		if tab.Type != leapmuxv1.TabType_TAB_TYPE_AGENT {
+			return true
+		}
+		allowed, err := svc.Queries.CanWatchAgentHistory(ctx, tab.ID)
 		if err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("check tab event history access failed", "error", err)
-				sendSemanticWatchError(sender, codes.Unavailable, "could not check access to tab event history")
-			}
+			reportSemanticWatchError(ctx, sender, err)
 			return false
 		}
 		if !allowed {
-			sendSemanticWatchError(sender, codes.NotFound, "no tab with retained access")
+			sendSemanticWatchError(sender, codes.NotFound, eventjournal.ErrAdmission.Error())
 		}
 		return allowed
 	}
@@ -189,10 +212,12 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		return
 	}
 	after := ready.GetAfterSequence()
-	// Closing an idle tab need not produce a notification. Recheck its
-	// eligibility even if no publication wakes this reader.
-	recheck := svc.Clock.NewTicker(5 * time.Second)
-	defer recheck.Stop()
+	var recheck <-chan time.Time
+	if tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
+		ticker := svc.Clock.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		recheck = ticker.C
+	}
 	for ctx.Err() == nil && checkAccess() {
 		frames, changed, err := reader.Read(ctx, after)
 		if err != nil {
@@ -215,6 +240,9 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 			if !checkOwner() || !sendSemanticWatchFrame(sender, frame) {
 				return
 			}
+			if frame.GetRetired() != nil {
+				return
+			}
 			if gap := frame.GetGap(); gap != nil {
 				after = gap.GetResumeAfterSequence()
 			} else {
@@ -225,7 +253,7 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 			select {
 			case <-ctx.Done():
 			case <-changed:
-			case <-recheck.C:
+			case <-recheck:
 			}
 		}
 	}
@@ -243,6 +271,10 @@ func (svc *Service) currentSemanticRequestHandle(ctx context.Context, journal *e
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := db.New(tx)
+	open, err := queries.CanWatchAgentHistory(ctx, agentID)
+	if err != nil || !open {
+		return "", err
+	}
 	claim, err := queries.GetControlRequestClaim(ctx, db.GetControlRequestClaimParams{AgentID: agentID, RequestID: request.GetRequestId()})
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -270,7 +302,7 @@ func sendSemanticWatchFrame(sender channel.ResponseWriter, frame *leapmuxv1.Watc
 		sendSemanticWatchError(sender, codes.ResourceExhausted, "a tab event exceeds this connection's payload limit")
 		return false
 	}
-	return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw}) == nil
+	return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw, End: frame.GetRetired() != nil}) == nil
 }
 
 func reportSemanticWatchError(ctx context.Context, sender channel.ResponseWriter, err error) {
@@ -279,6 +311,10 @@ func reportSemanticWatchError(ctx context.Context, sender channel.ResponseWriter
 	}
 	if errors.Is(err, eventjournal.ErrCursor) {
 		sendSemanticWatchError(sender, codes.FailedPrecondition, eventjournal.ErrCursor.Error())
+		return
+	}
+	if errors.Is(err, eventjournal.ErrAdmission) {
+		sendSemanticWatchError(sender, codes.NotFound, eventjournal.ErrAdmission.Error())
 		return
 	}
 	slog.Warn("read Worker event journal failed", "error", err)

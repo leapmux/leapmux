@@ -536,6 +536,15 @@ func (m *WatcherManager) PublishDerivedTerminalStatus(terminalID string, derive 
 	m.drainTerminalStatuses(terminalID)
 }
 
+// PublishTerminalStatusSnapshot sends a state reminder to existing watchers.
+// A reminder has no new occurrence to record in event history.
+func (m *WatcherManager) PublishTerminalStatusSnapshot(terminalID string, event *leapmuxv1.TerminalEvent) {
+	m.terminalStatuses.enqueue(terminalID, func() terminalStatusItem {
+		return terminalStatusItem{event: event}
+	})
+	m.drainTerminalStatuses(terminalID)
+}
+
 // ReplayTerminalStatus queues the status that derive states for one subscriber,
 // and returns before the send.
 //

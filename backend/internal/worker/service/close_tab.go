@@ -776,6 +776,8 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 // leaves the manager's terminals/meta/exitDone entries behind, which the
 // reconciler used to do and which leaked one entry per reaped terminal.
 func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResponse {
+	releaseCloseAdmission := svc.TerminalStartup.holdCloseAdmission(terminalID)
+	defer releaseCloseAdmission()
 	// Read BEFORE the teardown, because the reap below needs the row's
 	// working_dir and closeTabCommon stamps closed_at on the way out. A failed
 	// read leaves both zero, which the reap treats as "no directory", and the

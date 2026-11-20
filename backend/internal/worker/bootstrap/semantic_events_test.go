@@ -28,6 +28,9 @@ func TestWiringFinalizesTheEventJournalAfterAdmittedHandlersJoin(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
 	const agentID = "late-publication"
+	require.NoError(t, w.Service.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
 	w.dispatcher.Handle("finish-admitted-control-answer", channel.Registration{},
 		func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 			close(entered)

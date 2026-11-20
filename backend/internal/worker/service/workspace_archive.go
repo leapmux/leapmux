@@ -418,7 +418,7 @@ func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
 		if exitCode.Valid {
 			closed.ExitCode = ptrconv.Ptr(int32(exitCode.Int64))
 		}
-		svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
+		svc.Watchers.PublishTerminalStatusSnapshot(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event:      &leapmuxv1.TerminalEvent_Closed{Closed: closed},
 		})

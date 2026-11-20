@@ -24,15 +24,6 @@ type checkpointedEvents struct {
 }
 
 func (s *session) runCheckpointedEvents(opts eventsOptions) error {
-	bounded := s.bounded()
-	target, err := bounded.resolveCheckpointTab(opts.tab)
-	bounded.Close()
-	if err != nil {
-		return err
-	}
-	if target.Type != leapmuxv1.TabType_TAB_TYPE_AGENT && target.Type != leapmuxv1.TabType_TAB_TYPE_TERMINAL {
-		return cli.Usagef("--checkpoint requires an agent or terminal tab")
-	}
 	checkpoint, err := openEventCheckpoint(opts.checkpoint)
 	if err != nil {
 		return err
@@ -41,6 +32,15 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 	state, err := checkpoint.read()
 	if err != nil {
 		return err
+	}
+	bounded := s.bounded()
+	target, err := bounded.resolveCheckpointTab(opts.tab, state)
+	bounded.Close()
+	if err != nil {
+		return err
+	}
+	if target.Type != leapmuxv1.TabType_TAB_TYPE_AGENT && target.Type != leapmuxv1.TabType_TAB_TYPE_TERMINAL {
+		return cli.Usagef("--checkpoint requires an agent or terminal tab")
 	}
 	kinds := eventCheckpointKinds(opts.filter, target.Type)
 	if state != nil {
@@ -87,7 +87,10 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 	return nil
 }
 
-func (s *session) resolveCheckpointTab(selector string) (tabTarget, error) {
+func (s *session) resolveCheckpointTab(selector string, saved *eventCheckpoint) (tabTarget, error) {
+	if saved != nil && saved.TabType == "terminal" && resolve.ExplicitID(resolve.KindTab, selector) == saved.TabID {
+		return tabTarget{ID: saved.TabID, Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkerID: saved.WorkerID}, nil
+	}
 	if !s.c.IsWorkerIPC() || strings.TrimSpace(selector) != resolve.SelfTarget {
 		return s.resolveTab(resolve.KindTab, selector, resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
 	}
@@ -168,6 +171,12 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 			if !ready {
 				return false, invalidSemanticEventSequence()
 			}
+			if retired := frame.response.GetRetired(); retired != nil {
+				if !frame.end {
+					return false, invalidSemanticEventSequence()
+				}
+				return false, r.acceptRetirement(retired, after, high)
+			}
 			next, err := r.acceptFrame(frame.response, after, high)
 			if err != nil {
 				return false, err
@@ -178,6 +187,16 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 			}
 		}
 	}
+}
+
+func (r *checkpointedEvents) acceptRetirement(retired *leapmuxv1.SemanticWatchRetired, after, high int64) error {
+	if retired.GetFinalSequence() != after || after < high || r.state.Sequence != after {
+		return invalidSemanticEventSequence()
+	}
+	event := r.notice(kindStreamRetired)
+	event.JournalID, event.TabStreamID, event.Sequence = r.state.JournalID, r.state.TabStreamID, &after
+	event.Summary = "the Worker finished this tab's event history"
+	return r.print(event)
 }
 
 func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) error {
@@ -294,7 +313,7 @@ func semanticGapDescription(reason leapmuxv1.SemanticWatchGapReason) (string, st
 	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP:
 		return "unclean_stop", "the Worker stopped before it confirmed all events were recorded"
 	case leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT:
-		return "source_limit", "the Worker could not retain a tab event"
+		return "source_limit", "the Worker could not retain complete tab event history"
 	default:
 		return "", ""
 	}

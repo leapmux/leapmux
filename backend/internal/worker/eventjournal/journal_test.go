@@ -21,13 +21,47 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func openJournalDatabase(t *testing.T) *sql.DB {
+func openJournalDatabase(t *testing.T, tabs ...Tab) *sql.DB {
 	t.Helper()
 	database, err := workerdb.Open(filepath.Join(t.TempDir(), "events.db"), sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, database.Close()) })
 	require.NoError(t, workerdb.Migrate(t.Context(), database))
+	queries := db.New(database)
+	for _, tab := range tabs {
+		require.True(t, tab.Valid())
+		if tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
+			require.NoError(t, queries.CreateAgent(t.Context(), db.CreateAgentParams{
+				ID: tab.ID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			}))
+		} else {
+			require.NoError(t, queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+				ID: tab.ID, WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte{},
+			}))
+		}
+	}
 	return database
+}
+
+func TestLateClosedTerminalEventsCannotEvictALiveHistory(t *testing.T) {
+	t.Parallel()
+	closed, live := terminalHistoryTab("closed"), terminalHistoryTab("live")
+	database := openJournalDatabase(t, closed, live)
+	policy := defaultRetention()
+	policy.tabs = 1
+	journal := startTestJournal(t, database, quartz.NewReal(), "owner", policy)
+	_, checkpoint, err := journal.Open(t.Context(), live, nil)
+	require.NoError(t, err)
+	_, err = db.New(database).CloseTerminal(t.Context(), closed.ID)
+	require.NoError(t, err)
+	journal.Record(closed, terminalBellFact())
+	journal.Seal(closed, true)
+	_, _, err = journal.Open(t.Context(), live, checkpoint.GetCursor())
+	require.NoError(t, err)
+	tails, err := db.New(database).ListSemanticEventTails(t.Context())
+	require.NoError(t, err)
+	require.Len(t, tails, 1)
+	assert.Equal(t, live.ID, tails[0].TabID)
 }
 
 func startTestJournal(t *testing.T, database *sql.DB, clock quartz.Clock, owner string, retention retention) *Journal {
@@ -54,9 +88,123 @@ func terminalTitleFact(title string) *leapmuxv1.SemanticTabFact {
 	return &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_TerminalTitle{TerminalTitle: &leapmuxv1.TerminalTitleChanged{Title: title}}}
 }
 
+func TestClosedTerminalHistorySealsAfterTheLastAdmittedFact(t *testing.T) {
+	t.Parallel()
+	tab := terminalHistoryTab("closed")
+	database := openJournalDatabase(t, tab)
+	clock := testutil.NewQuartzMock(t)
+	policy := defaultRetention()
+	journal := startTestJournal(t, database, clock, "owner", policy)
+	_, initial, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
+	_, err = db.New(database).CloseTerminal(t.Context(), tab.ID)
+	require.NoError(t, err)
+
+	_, _, err = journal.Open(t.Context(), tab, nil)
+	require.ErrorIs(t, err, ErrAdmission)
+	reader, pending, err := journal.Open(t.Context(), tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, changed, err := reader.Read(t.Context(), pending.GetAfterSequence())
+	require.NoError(t, err)
+	require.Empty(t, page, "database closure alone does not seal the stream")
+
+	journal.Record(tab, terminalBellFact())
+	journal.Seal(tab, true)
+	journal.Record(tab, terminalTitleFact("late stale publication"))
+	require.NoError(t, journal.barrier(t.Context()))
+	select {
+	case <-changed:
+	default:
+		t.Fatal("the last fact and seal did not wake the reader")
+	}
+	page, _, err = reader.Read(t.Context(), pending.GetAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	last := page[0].GetRecord()
+	require.NotNil(t, last.GetFact().GetTerminalBell())
+	assert.Equal(t, int64(1), last.GetSequence())
+	page, _, err = reader.Read(t.Context(), last.GetSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.NotNil(t, page[0].GetRetired())
+	assert.Equal(t, last.GetSequence(), page[0].GetRetired().GetFinalSequence())
+
+	require.NoError(t, journal.Stop(t.Context(), false))
+	clock.Advance(policy.age + time.Second).MustWait(t.Context())
+	restarted := startTestJournal(t, database, clock, "owner", policy)
+	reader, resumed, err := restarted.Open(t.Context(), tab, initial.GetCursor())
+	require.NoError(t, err)
+	assert.Equal(t, last.GetSequence(), resumed.GetHighWaterSequence(), "a sealed tail gains no dirty-start gap")
+	page, _, err = reader.Read(t.Context(), resumed.GetAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	gap := page[0].GetGap()
+	require.NotNil(t, gap)
+	assert.Equal(t, leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION, gap.GetReason())
+	page, _, err = reader.Read(t.Context(), gap.GetResumeAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.NotNil(t, page[0].GetRetired())
+	assert.Equal(t, last.GetSequence(), page[0].GetRetired().GetFinalSequence())
+}
+
+func TestJournalReportsAnInterruptedRetirementBeforeItSealsTheHistory(t *testing.T) {
+	t.Parallel()
+	tab := terminalHistoryTab("pending")
+	database := openJournalDatabase(t, tab)
+	journal := startTestJournal(t, database, quartz.NewReal(), "owner", defaultRetention())
+	_, initial, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
+	_, err = db.New(database).CloseTerminal(t.Context(), tab.ID)
+	require.NoError(t, err)
+	require.NoError(t, journal.Stop(t.Context(), false))
+
+	restarted := startTestJournal(t, database, quartz.NewReal(), "owner", defaultRetention())
+	reader, resumed, err := restarted.Open(t.Context(), tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(t.Context(), resumed.GetAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	gap := page[0].GetGap()
+	require.NotNil(t, gap)
+	assert.Equal(t, leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP, gap.GetReason())
+	page, _, err = reader.Read(t.Context(), gap.GetResumeAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.NotNil(t, page[0].GetRetired())
+	assert.Equal(t, gap.GetResumeAfterSequence(), page[0].GetRetired().GetFinalSequence())
+}
+
+func TestIncompletePublisherDrainReportsAGapBeforeRetirement(t *testing.T) {
+	t.Parallel()
+	tab := terminalHistoryTab("incomplete-drain")
+	database := openJournalDatabase(t, tab)
+	journal := startTestJournal(t, database, quartz.NewReal(), "owner", defaultRetention())
+	_, initial, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
+	_, err = db.New(database).CloseTerminal(t.Context(), tab.ID)
+	require.NoError(t, err)
+
+	journal.Seal(tab, false)
+	journal.Record(tab, terminalBellFact())
+	reader, resumed, err := journal.Open(t.Context(), tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(t.Context(), resumed.GetAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	gap := page[0].GetGap()
+	require.NotNil(t, gap)
+	assert.Equal(t, leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT, gap.GetReason())
+	page, _, err = reader.Read(t.Context(), gap.GetResumeAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.NotNil(t, page[0].GetRetired())
+	assert.Equal(t, gap.GetResumeAfterSequence(), page[0].GetRetired().GetFinalSequence())
+}
+
 func TestJournalReplaysCommittedEventsAndWakesAnIdleReader(t *testing.T) {
 	t.Parallel()
-	journal := startTestJournal(t, openJournalDatabase(t), quartz.NewReal(), "owner", defaultRetention())
+	journal := startTestJournal(t, openJournalDatabase(t, terminalHistoryTab("terminal")), quartz.NewReal(), "owner", defaultRetention())
 	_, initial, err := journal.Open(t.Context(), terminalHistoryTab("terminal"), nil)
 	require.NoError(t, err)
 	require.Zero(t, initial.GetAfterSequence())
@@ -96,7 +244,7 @@ func TestJournalReplaysCommittedEventsAndWakesAnIdleReader(t *testing.T) {
 
 func TestJournalRejectsForeignAndTamperedCursors(t *testing.T) {
 	t.Parallel()
-	database := openJournalDatabase(t)
+	database := openJournalDatabase(t, terminalHistoryTab("first"), terminalHistoryTab("second"))
 	journal := startTestJournal(t, database, quartz.NewReal(), "owner", defaultRetention())
 	reader, first, err := journal.Open(t.Context(), terminalHistoryTab("first"), nil)
 	require.NoError(t, err)
@@ -153,7 +301,7 @@ func TestJournalReportsRetentionAndUnrecordableFacts(t *testing.T) {
 	t.Parallel()
 	policy := defaultRetention()
 	policy.perTab = 2
-	journal := startTestJournal(t, openJournalDatabase(t), quartz.NewReal(), "owner", policy)
+	journal := startTestJournal(t, openJournalDatabase(t, terminalHistoryTab("terminal")), quartz.NewReal(), "owner", policy)
 	_, initial, err := journal.Open(t.Context(), terminalHistoryTab("terminal"), nil)
 	require.NoError(t, err)
 	journal.Record(terminalHistoryTab("terminal"), terminalTitleFact("pruned"))
@@ -186,7 +334,7 @@ func TestJournalReportsRetentionAndUnrecordableFacts(t *testing.T) {
 
 func TestJournalRecordsOnlyUncleanRestartsAsGaps(t *testing.T) {
 	t.Parallel()
-	database := openJournalDatabase(t)
+	database := openJournalDatabase(t, terminalHistoryTab("terminal"))
 	clock := quartz.NewReal()
 	first := startTestJournal(t, database, clock, "owner", defaultRetention())
 	_, initial, err := first.Open(t.Context(), terminalHistoryTab("terminal"), nil)
@@ -219,7 +367,7 @@ func TestJournalRecordsOnlyUncleanRestartsAsGaps(t *testing.T) {
 func TestJournalReportsExpiredHistoryOnAnIdleStream(t *testing.T) {
 	t.Parallel()
 	clock := testutil.NewQuartzMock(t)
-	journal := startTestJournal(t, openJournalDatabase(t), clock, "owner", defaultRetention())
+	journal := startTestJournal(t, openJournalDatabase(t, terminalHistoryTab("terminal")), clock, "owner", defaultRetention())
 	reader, _, err := journal.Open(t.Context(), terminalHistoryTab("terminal"), nil)
 	require.NoError(t, err)
 	journal.Record(terminalHistoryTab("terminal"), terminalTitleFact("old"))
@@ -244,7 +392,7 @@ func TestJournalRetainsAContiguousSuffixUnderTheSharedEntryQuota(t *testing.T) {
 	t.Parallel()
 	policy := defaultRetention()
 	policy.entries = 2
-	journal := startTestJournal(t, openJournalDatabase(t), quartz.NewReal(), "owner", policy)
+	journal := startTestJournal(t, openJournalDatabase(t, terminalHistoryTab("first"), terminalHistoryTab("second")), quartz.NewReal(), "owner", policy)
 	first, _, err := journal.Open(t.Context(), terminalHistoryTab("first"), nil)
 	require.NoError(t, err)
 	second, _, err := journal.Open(t.Context(), terminalHistoryTab("second"), nil)
@@ -277,7 +425,7 @@ func TestJournalRetainsAContiguousSuffixUnderTheSharedEntryQuota(t *testing.T) {
 
 func TestJournalQueueOverflowLeavesARecoverableGap(t *testing.T) {
 	t.Parallel()
-	database := openJournalDatabase(t)
+	database := openJournalDatabase(t, terminalHistoryTab("terminal"))
 	clock := quartz.NewReal()
 	owner := userid.MustNew("owner")
 	journal, err := Start(t.Context(), database, "worker", owner, clock)
@@ -317,9 +465,9 @@ func TestJournalQueueOverflowLeavesARecoverableGap(t *testing.T) {
 
 func TestJournalSeparatesAgentAndTerminalPositionsWithTheSameID(t *testing.T) {
 	t.Parallel()
-	journal := startTestJournal(t, openJournalDatabase(t), quartz.NewReal(), "owner", defaultRetention())
 	terminal := terminalHistoryTab("shared-id")
 	agent := Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: terminal.ID}
+	journal := startTestJournal(t, openJournalDatabase(t, terminal, agent), quartz.NewReal(), "owner", defaultRetention())
 	_, terminalStart, err := journal.Open(t.Context(), terminal, nil)
 	require.NoError(t, err)
 	_, agentStart, err := journal.Open(t.Context(), agent, nil)

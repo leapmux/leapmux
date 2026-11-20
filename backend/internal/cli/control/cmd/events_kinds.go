@@ -82,6 +82,7 @@ const (
 	kindStreamUnavailable = "stream.unavailable"
 	kindStreamGap         = "stream.gap"
 	kindStreamHeartbeat   = "stream.heartbeat"
+	kindStreamRetired     = "stream.retired"
 )
 
 // eventSource is where the stream learns of an event.
@@ -134,6 +135,7 @@ var eventKinds = []eventKind{
 	{kindStreamUnavailable, sourceStream, false, "the hub, a Worker, or a Worker for one tab cannot deliver events; retrying says whether the stream tries again"},
 	{kindStreamGap, sourceStream, false, "a source delivers again; events of the kinds in lost, between since and time, may be lost"},
 	{kindStreamHeartbeat, sourceStream, false, "the stream runs; only --heartbeat prints it"},
+	{kindStreamRetired, sourceStream, false, "the Worker finished the checkpointed terminal tab's event history"},
 }
 
 // eventKindNames lists the name of every kind, in the order of the table.

@@ -90,7 +90,7 @@ SELECT closed_at, title, workspace_archived FROM terminals WHERE id = ?;
 -- its shell exiting ends it, and the handler refuses the respawn.
 SELECT working_dir, shell_start_dir, shell, cols, rows,
        length(screen) AS screen_length, workspace_archived, is_quake
-FROM terminals WHERE id = ?;
+FROM terminals WHERE id = ? AND closed_at IS NULL;
 
 -- name: CloseTerminal :execresult
 -- closed_at IS NULL keeps this idempotent -- see the note on CloseAgent, which

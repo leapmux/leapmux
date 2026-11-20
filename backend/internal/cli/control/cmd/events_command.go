@@ -79,6 +79,9 @@ agent request has a request_instance that correlates it with its end. It
 has a request handle only while that exact instance still needs an answer.
 With --checkpoint, --limit counts only the printed tab events. This mode
 follows the tab across workspace moves and does not take --workspace.
+After a terminal tab closes, resume with its full ID and the same
+checkpoint. The stream exits after stream.retired confirms the final
+Worker position. The shell can exit and restart while the tab stays open.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints

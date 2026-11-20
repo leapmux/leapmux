@@ -235,23 +235,20 @@ func (l Listing) SelfTabID(kind Kind) string {
 func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target, error) {
 	selector := strings.TrimLeftFunc(input, unicode.IsSpace)
 	input = strings.TrimSpace(selector)
+	if exact := ExplicitID(kind, input); exact != "" {
+		return Target{ID: exact}, nil
+	}
 	switch {
 	case input == "":
 		return Target{}, cli.Usagef("the %s is empty", kind)
 	case input == SelfTarget:
 		return l.self(ctx, kind)
 	case strings.HasPrefix(input, literalIDPrefix):
-		literalID := strings.TrimSpace(strings.TrimPrefix(input, literalIDPrefix))
-		if literalID == "" {
-			return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
-		}
-		return Target{ID: literalID}, nil
+		return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
 	case strings.HasPrefix(selector, titlePrefix):
 		return l.byTitle(ctx, kind, strings.TrimPrefix(selector, titlePrefix))
 	case strings.HasPrefix(selector, namePrefix):
 		return l.byName(ctx, kind, strings.TrimPrefix(selector, namePrefix))
-	case isCompleteTargetID(kind, input):
-		return Target{ID: input}, nil
 	case len(input) < MinPrefixLength:
 		e := cli.Usagef("%q is too short for a %s id prefix; type at least %d characters", input, kind, MinPrefixLength).
 			WithHint(`use "id:<id>" to select a literal id`)
@@ -261,6 +258,21 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 		return Target{}, e.WithHint(`use "self" for your own %s`, kind)
 	}
 	return l.byPrefix(ctx, kind, input)
+}
+
+// ExplicitID returns an ID supplied in full or with the literal ID prefix.
+func ExplicitID(kind Kind, selector string) string {
+	input := strings.TrimSpace(selector)
+	if literal, ok := strings.CutPrefix(input, literalIDPrefix); ok {
+		return strings.TrimSpace(literal)
+	}
+	if strings.HasPrefix(input, titlePrefix) || strings.HasPrefix(input, namePrefix) {
+		return ""
+	}
+	if isCompleteTargetID(kind, input) {
+		return input
+	}
+	return ""
 }
 
 // isCompleteTargetID recognizes the direct forms. A UUID-shaped tab id is

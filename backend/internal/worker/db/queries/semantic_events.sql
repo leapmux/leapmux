@@ -52,6 +52,10 @@ SET high_sequence = high_sequence + 1,
 WHERE tab_type = sqlc.arg(tab_type) AND tab_id = sqlc.arg(tab_id)
 RETURNING high_sequence;
 
+-- name: SealSemanticEventTail :exec
+UPDATE semantic_event_tails SET final_sequence = high_sequence
+WHERE tab_type = ? AND tab_id = ? AND resource_closed AND final_sequence IS NULL;
+
 -- name: AdvanceSemanticEventFloor :exec
 UPDATE semantic_event_tails SET floor_sequence = sqlc.arg(floor_sequence)
 WHERE tab_type = sqlc.arg(tab_type) AND tab_id = sqlc.arg(tab_id) AND floor_sequence < sqlc.arg(floor_sequence);

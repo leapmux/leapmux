@@ -36,6 +36,13 @@ func (j *Journal) Open(ctx context.Context, tab Tab, cursor []byte) (reader *Rea
 		var after int64
 		var err error
 		if len(cursor) == 0 {
+			live, liveErr := tab.live(ctx, q)
+			if liveErr != nil {
+				return liveErr
+			}
+			if !live {
+				return ErrAdmission
+			}
 			tail, err = j.store.ensureTail(ctx, q, tab, now.UnixMilli())
 			after = tail.HighSequence
 		} else {
@@ -112,6 +119,12 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 		return []*leapmuxv1.WatchSemanticEventsResponse{gap}, changed, nil
 	}
 	if after == tail.HighSequence {
+		if tail.FinalSequence.Valid {
+			retired := &leapmuxv1.SemanticWatchRetired{FinalSequence: tail.FinalSequence.Int64}
+			return []*leapmuxv1.WatchSemanticEventsResponse{
+				{Event: &leapmuxv1.WatchSemanticEventsResponse_Retired{Retired: retired}},
+			}, changed, nil
+		}
 		return nil, changed, nil
 	}
 	expired, err := q.GetExpiredSemanticEventCutoff(ctx, db.GetExpiredSemanticEventCutoffParams{

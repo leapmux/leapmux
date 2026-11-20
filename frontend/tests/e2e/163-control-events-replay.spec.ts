@@ -3,10 +3,10 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
-import { mintCLITokenForAdmin, startControlEventStream } from './helpers/cli'
+import { mintCLITokenForAdmin, runCLI, startControlEventStream } from './helpers/cli'
 import { createTestDirectory } from './helpers/runDirectory'
 import { sendActiveTerminalInput, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
-import { openTerminalViaUI, terminalTabs } from './helpers/ui'
+import { openTerminalViaUI, tabById, terminalTabs } from './helpers/ui'
 
 test('replays a bell that rang between CLI processes and checkpoints it', async ({ authenticatedWorkspace, leapmuxServer, page }) => {
   void authenticatedWorkspace
@@ -94,5 +94,100 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
   finally {
     live.child.kill()
     await live.finished
+  }
+})
+
+test('replays a closed tab to its final Worker position', async ({ authenticatedWorkspace, leapmuxServer, page }) => {
+  void authenticatedWorkspace
+  await openTerminalViaUI(page)
+  const tab = terminalTabs(page)
+  await tab.click()
+  const tabId = await tab.getAttribute('data-tab-id')
+  if (!tabId)
+    throw new Error('the terminal tab has no ID')
+  await waitForTerminalReady(page)
+
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const checkpoint = join(createTestDirectory('leapmux-closed-tab-events-'), 'checkpoint.json')
+  const args = [
+    '--tab',
+    tabId,
+    '--checkpoint',
+    checkpoint,
+    '--kind',
+    'stream,terminal.bell,terminal.exit',
+  ]
+  const first = startControlEventStream(cli, args)
+  try {
+    await expect.poll(() => first.events().map(event => event.kind)).toContain('stream.ready')
+    await expect.poll(() => existsSync(checkpoint)).toBe(true)
+  }
+  finally {
+    first.child.kill('SIGINT')
+    await first.finished
+  }
+
+  expect(await sendActiveTerminalInput(page, 'printf "\\aCLOSED_%s\\n" BELL\r')).toBe(true)
+  await waitForTerminalText(page, 'CLOSED_BELL')
+  expect(await sendActiveTerminalInput(page, 'exit 27\r')).toBe(true)
+  const shell = await runCLI(cli, [
+    'terminal',
+    'wait',
+    tabId,
+    '--exit',
+    '--timeout',
+    '20s',
+  ])
+  expect(shell).toMatchObject({ reached: true, exit_code: 27 })
+  await expect(tabById(page, tabId)).toBeVisible()
+  const closed = await runCLI(cli, [
+    'tab',
+    'close',
+    tabId,
+    '--worktree',
+    'keep',
+  ]) as {
+    tombstoned: boolean
+    worker_close_error?: string
+  }
+  expect(closed.tombstoned).toBe(true)
+  expect(closed.worker_close_error).toBeUndefined()
+
+  const resumed = startControlEventStream(cli, args)
+  try {
+    expect(await resumed.finished, resumed.diagnostic()).toEqual({ code: 0, signal: null })
+    const events = resumed.events()
+    expect(events.map(event => event.kind)).toEqual([
+      'stream.ready',
+      'terminal.bell',
+      'terminal.exit',
+      'stream.retired',
+    ])
+    expect(events[1]).toMatchObject({ tab_id: tabId, replayed: true })
+    expect(events[2]).toMatchObject({
+      tab_id: tabId,
+      exit_code: 27,
+      replayed: true,
+    })
+    expect(events[3]).toMatchObject({
+      tab_id: tabId,
+      sequence: expect.any(Number),
+    })
+    const saved = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
+    expect(saved.sequence).toBe(events[3]?.sequence)
+  }
+  finally {
+    resumed.child.kill()
+    await resumed.finished
+  }
+
+  const completed = startControlEventStream(cli, args)
+  try {
+    expect(await completed.finished, completed.diagnostic()).toEqual({ code: 0, signal: null })
+    expect(completed.events().map(event => event.kind)).toEqual(['stream.ready', 'stream.retired'])
+  }
+  finally {
+    completed.child.kill()
+    await completed.finished
   }
 })
