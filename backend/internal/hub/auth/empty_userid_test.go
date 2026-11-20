@@ -141,11 +141,11 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// authenticate as blank on every subsequent request.
 				create := func(userID userid.UserID) (auth.CreatedSession, error) {
 					if name == "CreateSessionAt" {
-						return auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID,
-							auth.DefaultSessionDuration, auth.SignInProvedNoFactor, time.Now().UTC())
+						return auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Now().UTC(), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
+
 					}
-					return auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID,
-						auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+					return auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
+
 				}
 				_, err := create(zero)
 				require.Error(t, err, "a zero UserID must not create a session")
@@ -521,7 +521,7 @@ func TestIdentityStructTypes_ScopesToOptionsStructs(t *testing.T) {
 	assert.True(t, carries["HTTPAuthOpts"], "it declares SoloUser *UserInfo")
 	assert.True(t, carries["UserInfo"], "it declares ID userid.UserID")
 	assert.False(t, carries["AuthContextRegistry"], "it reaches a *UserInfo only through internal state")
-	assert.False(t, carries["SessionMeta"], "it carries a user agent, no identity")
+	assert.False(t, carries["SessionCreationOptions"], "it carries session settings, no identity")
 }
 
 func TestCarriesNamedStruct(t *testing.T) {
@@ -534,7 +534,7 @@ func TestCarriesNamedStruct(t *testing.T) {
 		"behind a pointer":           {"*InterceptorOptions", true},
 		"behind a slice":             {"[]InterceptorOptions", true},
 		"as a map value":             {"map[string]InterceptorOptions", true},
-		"a struct that carries none": {"SessionMeta", false},
+		"a struct that carries none": {"SessionCreationOptions", false},
 		"a plain string":             {"string", false},
 	} {
 		t.Run(name, func(t *testing.T) {

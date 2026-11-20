@@ -1,8 +1,7 @@
 import type { Component } from 'solid-js'
 import { Show } from 'solid-js'
-import { openExternalUrl } from '~/api/platformBridge'
 import { useAuth } from '~/context/AuthContext'
-import { copyTextToClipboard } from '~/lib/clipboard'
+import { BrowserCeremonyWaiting } from './BrowserCeremonyWaiting'
 import * as ceremonyPage from './ceremonyPage.css'
 import { useBrowserCeremony } from './useBrowserCeremony'
 
@@ -14,49 +13,35 @@ export const BrowserStepUp: Component<{
   onElevated: () => void
 }> = (props) => {
   const auth = useAuth()
-  const { phase, failure, flow, start } = useBrowserCeremony('step-up', async (signal) => {
+  const ceremony = useBrowserCeremony('step-up', async (signal) => {
     if (!await auth.reloadUser())
       throw new Error('LeapMux could not read the verified session. Try again.')
     if (!signal.aborted)
       props.onElevated()
   })
+  const waitingFlow = () => {
+    const state = ceremony.state()
+    return state.phase === 'waiting'
+      ? state.flow
+      : null
+  }
+  const failure = () => {
+    const state = ceremony.state()
+    return state.phase === 'idle'
+      ? state.failure
+      : ''
+  }
 
   return (
     <div>
       <p>LeapMux verifies you through your browser.</p>
-      <Show when={phase() === 'idle'}>
-        <button type="button" onClick={() => void start()}>
+      <Show when={ceremony.state().phase === 'idle'}>
+        <button type="button" onClick={() => void ceremony.start()}>
           Verify in your browser
         </button>
       </Show>
-      <Show when={phase() === 'waiting'}>
-        <p>Waiting for your browser...</p>
-        <div class={ceremonyPage.waitingActions}>
-          <button
-            type="button"
-            disabled={flow() === null}
-            onClick={() => {
-              const f = flow()
-              if (f) {
-                void openExternalUrl(f.url)
-              }
-            }}
-          >
-            Open again
-          </button>
-          <button
-            type="button"
-            disabled={flow() === null}
-            onClick={() => {
-              const f = flow()
-              if (f) {
-                void copyTextToClipboard(f.url)
-              }
-            }}
-          >
-            Copy link
-          </button>
-        </div>
+      <Show when={ceremony.state().phase !== 'idle'}>
+        <BrowserCeremonyWaiting flow={waitingFlow()} />
       </Show>
       <Show when={failure()}>
         <p class={ceremonyPage.error}>{failure()}</p>

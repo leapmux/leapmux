@@ -596,9 +596,12 @@ func cliCredentialFor(t *testing.T, env *apiAuthEnv, userID, name string) (token
 func desktopIssuedSession(t *testing.T, env *apiAuthEnv, userID, label string) auth.CreatedSession {
 	t.Helper()
 	sess, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(),
-		userid.MustNew(userID), auth.DefaultSessionDuration,
-		auth.SignInProvedNoFactor,
-		auth.SessionMeta{UserAgent: label, IssuedToClient: oauthapp.DesktopClientID})
+		userid.MustNew(userID), auth.SessionCreationOptions{
+			Lifetime:       auth.DefaultSessionDuration,
+			Proof:          auth.SignInProvedNoFactor,
+			UserAgent:      label,
+			IssuedToClient: oauthapp.DesktopClientID,
+		})
 	require.NoError(t, err)
 	return sess
 }
@@ -769,9 +772,12 @@ func TestAuthorizeStepUp_SessionExpiryReadsTheHandlerClock(t *testing.T) {
 	// A target with a lifetime far shorter than the approving session's, so
 	// one advance outlives the target without the session or its elevation.
 	sess, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(),
-		userid.MustNew(env.userID), time.Minute,
-		auth.SignInProvedNoFactor,
-		auth.SessionMeta{UserAgent: "LeapMux Desktop on alice@laptop", IssuedToClient: oauthapp.DesktopClientID})
+		userid.MustNew(env.userID), auth.SessionCreationOptions{
+			Lifetime:       time.Minute,
+			Proof:          auth.SignInProvedNoFactor,
+			UserAgent:      "LeapMux Desktop on alice@laptop",
+			IssuedToClient: oauthapp.DesktopClientID,
+		})
 	require.NoError(t, err)
 	cookie := env.elevatedAdminCookie(t)
 	env.advance(5 * time.Minute)

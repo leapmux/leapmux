@@ -56,11 +56,11 @@ func newHTTPAuthFixture(t *testing.T) httpAuthFixture {
 
 	real, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
 	require.NoError(t, err)
-	realSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(real.ID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	realSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(real.ID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	plantedID := hubtestutil.CreateTestUser(t, st, "attacker", "attackerpass123")
-	plantedSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(plantedID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	plantedSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(plantedID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	return httpAuthFixture{

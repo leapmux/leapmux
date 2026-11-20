@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayCloseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { deferred, settle } from '~/test-support/async'
 import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
@@ -38,6 +38,23 @@ function encodeProxyResponseEnvelope(response: {
       ]),
     ),
     body: new Uint8Array(response.body),
+  }))
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+function encodeRelayRead(
+  cursor: bigint,
+  item: { data: Uint8Array } | { close: { code: number, reason: string, wasClean: boolean } },
+): ArrayBuffer {
+  const value = 'data' in item
+    ? { case: 'data' as const, value: item.data }
+    : {
+        case: 'close' as const,
+        value: create(RelayCloseSchema, item.close),
+      }
+  const bytes = toBinary(RelayReadResponseSchema, create(RelayReadResponseSchema, {
+    cursor,
+    item: value,
   }))
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
@@ -111,14 +128,25 @@ describe('desktopFetch', () => {
 
   it('rejects with AbortError when the signal aborts while the call is in flight', async () => {
     const started = deferred<void>()
+    const cancelled = deferred<void>()
     const reply = deferred<ArrayBuffer>()
-    mockIPC((cmd) => {
-      if (cmd === 'proxy_http') {
-        started.resolve()
-        return reply.promise
-      }
-      throw new Error(`unmocked Tauri command: ${cmd}`)
-    })
+    let proxyRequestId = ''
+    let cancelledRequestId = ''
+    ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+      invoke: (cmd: string, args?: unknown, options?: { headers?: Record<string, string> }) => {
+        if (cmd === 'proxy_http') {
+          proxyRequestId = options?.headers?.['request-id'] ?? ''
+          started.resolve()
+          return reply.promise
+        }
+        if (cmd === 'cancel_proxy_http') {
+          cancelledRequestId = (args as { requestId: string }).requestId
+          cancelled.resolve()
+          return Promise.resolve(null)
+        }
+        throw new Error(`unmocked Tauri command: ${cmd}`)
+      },
+    }
 
     const controller = new AbortController()
     const call = desktopFetch('https://hub.example/test', { signal: controller.signal })
@@ -127,9 +155,12 @@ describe('desktopFetch', () => {
     const observed = call.catch(rejected)
     controller.abort()
     try {
+      await cancelled.promise
       // Drain the queued promise callbacks while the native reply is still held.
       await settle()
       expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'AbortError' }))
+      expect(proxyRequestId).not.toBe('')
+      expect(cancelledRequestId).toBe(proxyRequestId)
     }
     finally {
       reply.resolve(encodeProxyResponseEnvelope({
@@ -252,8 +283,8 @@ describe('ProxyHttpResponse wire data', () => {
       headers: {},
       body: new ArrayBuffer(0),
     })
-    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 2))).toThrow()
-    expect(() => decodeProxyResponseEnvelope(new Uint8Array([0x1A, 0x05, 0x01]))).toThrow()
+    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 2))).toThrow(/premature EOF/)
+    expect(() => decodeProxyResponseEnvelope(new Uint8Array([0x1A, 0x05, 0x01]))).toThrow(/premature EOF/)
   })
 })
 
@@ -1037,15 +1068,21 @@ describe('channel relay bridge', () => {
     delete window.__TAURI_INTERNALS__
   })
 
-  it('delivers a raw frame before a close that arrives during the frame fetch', async () => {
-    let channelId!: number
+  it('acknowledges a raw frame before reading its following close', async () => {
+    const firstRead = deferred<ArrayBuffer>()
     mockIPC((cmd, args) => {
-      if (cmd === 'open_channel_relay' && args) {
-        channelId = (args as { channel: { id: number } }).channel.id
+      if (cmd === 'open_channel_relay' || cmd === 'close_channel_relay')
         return null
+      if (cmd === 'read_channel_relay') {
+        const after = (args as { afterCursor: string }).afterCursor
+        if (after === '0')
+          return firstRead.promise
+        if (after === '1') {
+          return encodeRelayRead(2n, {
+            close: { code: 1001, reason: 'going away', wasClean: true },
+          })
+        }
       }
-      if (cmd === 'close_channel_relay')
-        return null
       throw new Error(`unmocked Tauri command: ${cmd}`)
     })
 
@@ -1057,33 +1094,26 @@ describe('channel relay bridge', () => {
     socket.onopen = () => opened.resolve()
     await opened.promise
 
-    // Tauri fetches raw messages of at least 1024 bytes asynchronously. Hold
-    // that fetch while the close notification can already reach the webview.
-    const tauri = window.__TAURI_INTERNALS__ as {
-      callbacks: Map<number, unknown>
-      runCallback: (id: number, payload: unknown) => void
-    }
-    const fetchFrame = deferred<ArrayBuffer>()
-    const frameDelivered = fetchFrame.promise.then(message => tauri.runCallback(channelId, { index: 0, message }))
-    const close = { code: 1001, reason: 'going away', wasClean: true }
-    tauri.runCallback(channelId, { index: 1, message: close })
-    tauri.runCallback(channelId, { index: 2, end: true })
-
     expect(delivered).toEqual([])
-    const frame = new Uint8Array(1024).fill(255).buffer
-    fetchFrame.resolve(frame)
-    await frameDelivered
-    expect(delivered).toEqual([frame, close])
-    expect(delivered[0]).toBe(frame)
-    expect(tauri.callbacks.has(channelId)).toBe(false)
+    const frame = new Uint8Array(1024).fill(255)
+    firstRead.resolve(encodeRelayRead(1n, { data: frame }))
+    await vi.waitFor(() => expect(delivered).toHaveLength(2))
+    expect(Array.from(new Uint8Array(delivered[0] as ArrayBuffer))).toEqual(Array.from(frame))
+    expect(delivered[1]).toMatchObject({ code: 1001, reason: 'going away', wasClean: true })
   })
 
   it('accepts a raw frame serialized by Tauri fallback IPC', async () => {
-    let channelId!: number
+    const hold = deferred<ArrayBuffer>()
     mockIPC((cmd, args) => {
-      if (cmd === 'open_channel_relay' && args) {
-        channelId = (args as { channel: { id: number } }).channel.id
+      if (cmd === 'open_channel_relay')
         return null
+      if (cmd === 'read_channel_relay') {
+        if ((args as { afterCursor: string }).afterCursor === '0') {
+          return Array.from(new Uint8Array(encodeRelayRead(1n, {
+            data: new Uint8Array([1, 2, 3]),
+          })))
+        }
+        return hold.promise
       }
       throw new Error(`unmocked Tauri command: ${cmd}`)
     })
@@ -1094,25 +1124,12 @@ describe('channel relay bridge', () => {
     socket.onmessage = event => frame.resolve(event.data as ArrayBuffer)
     await opened.promise
 
-    const tauri = window.__TAURI_INTERNALS__ as {
-      runCallback: (id: number, payload: unknown) => void
-    }
-    tauri.runCallback(channelId, {
-      index: 0,
-      message: [1, 2, 3],
-    })
-
     expect(Array.from(new Uint8Array(await frame.promise))).toEqual([1, 2, 3])
   })
 
-  it('skips allocating a channel when the attempt ends before IPC starts', async () => {
+  it('skips IPC when the attempt ends before the Tauri import settles', async () => {
     const invoke = vi.fn()
     mockIPC(invoke)
-    const tauri = window.__TAURI_INTERNALS__ as {
-      callbacks: Map<number, unknown>
-      transformCallback: () => number
-    }
-    const register = vi.spyOn(tauri, 'transformCallback')
     let abandoned = false
     const open = platformBridge.openUserEventsRelay(42, {
       isAbandoned: () => abandoned,
@@ -1121,23 +1138,19 @@ describe('channel relay bridge', () => {
 
     abandoned = true
     await expect(open).resolves.toBe(false)
-    expect(register).not.toHaveBeenCalled()
     expect(invoke).not.toHaveBeenCalled()
-    expect(tauri.callbacks.size).toBe(0)
   })
 
-  it('unregisters the channel callback when the open is rejected before reaching Rust', async () => {
+  it('closes the wrapper when the open is rejected before reaching Rust', async () => {
     mockIPC((cmd) => {
       throw new Error(`IPC refused the command: ${cmd}`)
     })
-    const { callbacks } = window.__TAURI_INTERNALS__ as { callbacks: Map<number, unknown> }
-
     const socket = new TauriRelayWebSocket()
     const failed = deferred<void>()
     socket.onclose = () => failed.resolve()
     await failed.promise
 
-    expect(callbacks.size).toBe(0)
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
   })
 })
 
@@ -1154,9 +1167,11 @@ describe('userevents relay bridge', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  it('forwards the relay id and the channel with the user events subscription on open', async () => {
+  it('forwards the relay id with the user events subscription on open', async () => {
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
+      if (cmd === 'read_userevents_relay')
+        return new Promise(() => {})
       calls.push({ cmd, args })
       return null
     })
@@ -1171,9 +1186,6 @@ describe('userevents relay bridge', () => {
         cmd: 'open_userevents_relay',
         args: {
           relayId: 42,
-          channel: expect.objectContaining({
-            id: expect.any(Number),
-          }),
           workspaceIds: ['ws-1'],
           resumeHlc: null,
           resumeEpoch: null,
@@ -1191,6 +1203,8 @@ describe('userevents relay bridge', () => {
     // but make the desktop sidecar reject the relay-open on every reconnect.
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
+      if (cmd === 'read_userevents_relay')
+        return new Promise(() => {})
       calls.push({ cmd, args })
       return null
     })
@@ -1208,9 +1222,6 @@ describe('userevents relay bridge', () => {
         cmd: 'open_userevents_relay',
         args: {
           relayId: 7,
-          channel: expect.objectContaining({
-            id: expect.any(Number),
-          }),
           workspaceIds: ['ws-1'],
           resumeHlc: '1754100000000.3.c-abc',
           resumeEpoch: '7',

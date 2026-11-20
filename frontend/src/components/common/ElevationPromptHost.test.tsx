@@ -12,6 +12,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { ElevationPromptHost } from '~/components/common/ElevationPromptHost'
 import { elevationPrompting, promptForElevation, setElevationPrompter } from '~/lib/elevationPrompt'
 import { deferred, settle } from '~/test-support/async'
+import { browserAuthDriver, resetBrowserAuthDriver } from '~/test-support/browserAuthDriver'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // The account most of these tests run as: it holds a password, so the form
@@ -59,49 +60,23 @@ vi.mock('~/lib/hubSite', () => ({
   hubOrigin: vi.fn(),
 }))
 
-/**
- * The ceremony seams the real `runBrowserAuth` drives. `onEvent` hands the
- * callback the emitted payload, never the Tauri event envelope. The factory
- * also carries `desktopFetch`/`isTauriApp`/`getCapabilities`, which the real
- * `~/api/transport` and the real systemInfo load from the same module.
- */
-const bridgeMocks = vi.hoisted(() => ({
-  openExternalUrl: vi.fn<(url: string) => Promise<void>>(),
-  startBrowserAuth: vi.fn<() => Promise<{ ceremonyId: string, authorizeUrl: string }>>(),
-  cancelBrowserAuth: vi.fn<(ceremonyId: string) => Promise<void>>(),
-  handlers: [] as ((...args: unknown[]) => void)[],
-  emit(payload: { ceremonyId: string, ok: boolean, failure: string }): void {
-    for (const handler of [...bridgeMocks.handlers])
-      handler(payload)
-  },
-}))
-
-vi.mock('~/api/platformBridge', () => ({
-  desktopFetch: vi.fn(),
-  desktopHub: () => null,
-  getCapabilities: () => ({
-    mode: 'web',
-    tunnels: false,
-    appControl: false,
-    windowControl: false,
-    systemPermissions: false,
-    localSolo: false,
-  }),
-  isTauriApp: () => false,
-  openExternalUrl: (url: string) => bridgeMocks.openExternalUrl(url),
-  platformBridge: {
-    startBrowserAuth: () => bridgeMocks.startBrowserAuth(),
-    cancelBrowserAuth: (ceremonyId: string) => bridgeMocks.cancelBrowserAuth(ceremonyId),
-    onEvent: (_event: string, handler: (...args: unknown[]) => void): Promise<() => void> => {
-      bridgeMocks.handlers.push(handler)
-      return Promise.resolve(vi.fn(() => {
-        const index = bridgeMocks.handlers.indexOf(handler)
-        if (index >= 0)
-          bridgeMocks.handlers.splice(index, 1)
-      }))
-    },
-  },
-}))
+vi.mock('~/api/platformBridge', async () => {
+  const browserAuth = (await import('~/test-support/browserAuthDriver')).browserAuthPlatformMock()
+  return {
+    ...browserAuth,
+    desktopFetch: vi.fn(),
+    desktopHub: () => null,
+    getCapabilities: () => ({
+      mode: 'web',
+      tunnels: false,
+      appControl: false,
+      windowControl: false,
+      systemPermissions: false,
+      localSolo: false,
+    }),
+    isTauriApp: () => false,
+  }
+})
 
 /**
  * The host reads the address, because the OAuth option needs one to return the
@@ -148,16 +123,7 @@ describe('ElevationPromptHost', () => {
     ceremoniesInBrowser.mockReturnValue(false)
     mockReloadUser.mockReset()
     mockReloadUser.mockResolvedValue(true)
-    bridgeMocks.openExternalUrl.mockReset()
-    bridgeMocks.openExternalUrl.mockResolvedValue(undefined)
-    bridgeMocks.startBrowserAuth.mockReset()
-    bridgeMocks.startBrowserAuth.mockResolvedValue({
-      ceremonyId: 'c-1',
-      authorizeUrl: 'https://hub.example/authorize',
-    })
-    bridgeMocks.cancelBrowserAuth.mockReset()
-    bridgeMocks.cancelBrowserAuth.mockResolvedValue(undefined)
-    bridgeMocks.handlers.length = 0
+    resetBrowserAuthDriver()
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.open = true
     })
@@ -533,11 +499,11 @@ describe('ElevationPromptHost', () => {
 
   /** Starts a browser step-up ceremony through the open prompt. */
   async function openBrowserPrompt() {
-    const opened = bridgeMocks.openExternalUrl.mock.calls.length
+    const opened = browserAuthDriver.openExternalUrl.mock.calls.length
     const answered = promptForElevation()
     expect(await screen.findByRole('dialog', { name: 'Verify your identity' })).toBeInTheDocument()
     fireEvent.click(within(promptDialog()).getByRole('button', { name: 'Verify in your browser' }))
-    await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalledTimes(opened + 1))
+    await vi.waitFor(() => expect(browserAuthDriver.openExternalUrl).toHaveBeenCalledTimes(opened + 1))
     // An object, not the promise itself: awaiting the helper must not await
     // the prompt, which settles only when the ceremony answers.
     return { answered }
@@ -559,7 +525,7 @@ describe('ElevationPromptHost', () => {
     const refresh = deferred<boolean>()
     mockReloadUser.mockReturnValue(refresh.promise)
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledOnce())
     let settled = false
@@ -577,12 +543,12 @@ describe('ElevationPromptHost', () => {
     const refresh = deferred<boolean>()
     mockReloadUser.mockReturnValueOnce(refresh.promise)
     const { answered: first } = await startBrowserCeremony()
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
     await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledOnce())
 
     dismissPrompt()
     await expect(first).resolves.toBe(false)
-    bridgeMocks.startBrowserAuth.mockResolvedValue({
+    browserAuthDriver.startBrowserAuth.mockResolvedValue({
       ceremonyId: 'c-2',
       authorizeUrl: 'https://hub.example/authorize',
     })
@@ -593,7 +559,7 @@ describe('ElevationPromptHost', () => {
 
     expect(promptDialog()).toBeInTheDocument()
     expect(elevationPrompting()).toBe(true)
-    bridgeMocks.emit({ ceremonyId: 'c-2', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-2', ok: true, failure: '' })
     await expect(second).resolves.toBe(true)
     expect(mockReloadUser).toHaveBeenCalledTimes(2)
   })
@@ -604,8 +570,8 @@ describe('ElevationPromptHost', () => {
     unmount()
 
     await expect(answered).resolves.toBe(false)
-    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
+    expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
     expect(elevationPrompting()).toBe(false)
   })
 
@@ -617,6 +583,6 @@ describe('ElevationPromptHost', () => {
     dismissPrompt()
 
     await expect(answered).resolves.toBe(false)
-    await vi.waitFor(() => expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
+    await vi.waitFor(() => expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
   })
 })

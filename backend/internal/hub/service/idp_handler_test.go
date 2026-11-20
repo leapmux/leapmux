@@ -1460,6 +1460,9 @@ func TestOAuthLogin_ConsentRouteForcesARePromptAndStampsTheWindow(t *testing.T) 
 			linkedProviderUser(t, st, providerID, subject, email, false)
 
 			state, nonce, authURL := beginLogin(t, server, providerID, tc.redirect)
+			stored, err := st.OAuthStates().Get(t.Context(), state)
+			require.NoError(t, err)
+			assert.Equal(t, store.OAuthStatePurposeConsentLogin, stored.Purpose)
 			// The prompt asks for a fresh authentication. The maximum age
 			// is the additional limit that a conforming provider enforces.
 			assert.Equal(t, "login", authURL.Query().Get("prompt"))
@@ -1652,6 +1655,9 @@ func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
 			linkedProviderUser(t, st, providerID, subject, "near-miss@example.com", false)
 
 			state, nonce, authURL := beginLogin(t, server, providerID, tc.redirect)
+			stored, err := st.OAuthStates().Get(t.Context(), state)
+			require.NoError(t, err)
+			assert.Equal(t, store.OAuthStatePurposeLogin, stored.Purpose)
 			assert.Empty(t, authURL.Query().Get("prompt"), "a near-miss path is not a consent route")
 			assert.Empty(t, authURL.Query().Get("max_age"), "a near-miss path is not a consent route")
 
@@ -1897,7 +1903,7 @@ func TestOAuthReauth_ReadsTheProviderRowOnce(t *testing.T) {
 // purposeRewritingStore gives the handler a state row whose purpose is a
 // value the schema refuses to store, which is the only way to drive the
 // unknown-purpose branch. oauth_states.purpose carries
-// CHECK (purpose BETWEEN 1 AND 2) in all three dialects, so no such row is
+// CHECK (purpose BETWEEN 1 AND 3) in all three dialects, so no such row is
 // STORABLE -- this store fabricates one on the read path instead.
 type purposeRewritingStore struct {
 	store.Store
@@ -1934,9 +1940,9 @@ func TestOAuthCallback_RefusesAnUnknownPurpose(t *testing.T) {
 	t.Parallel()
 
 	// The unset zero, an ordinal above the range, and a negative one: the three
-	// shapes a value that is not LOGIN or REAUTH can take.
+	// shapes a value that is not LOGIN, CONSENT_LOGIN or REAUTH can take.
 	for _, purpose := range []leapmuxv1.OAuthStatePurpose{
-		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 3, -1,
+		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 4, -1,
 	} {
 		t.Run("purpose "+strconv.Itoa(int(purpose)), func(t *testing.T) {
 			t.Parallel()

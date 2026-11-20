@@ -116,8 +116,8 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 			return err
 		}
 		user = current
-		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, loginUID,
-			s.sessionDuration(ctx), auth.SignInProvedFactor)
+		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, loginUID, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedFactor})
+
 		return err
 	})
 	if errors.Is(err, errElevationProofChanged) || errors.Is(err, store.ErrNotFound) {
@@ -274,7 +274,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx), auth.SignInProvedFactor)
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedFactor})
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}

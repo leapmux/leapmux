@@ -12,6 +12,10 @@ import (
 type CredentialIdentity struct {
 	kind credentialKind
 	id   string
+	// appElevationDisabled carries the current registration policy joined onto
+	// an API credential. It is false for sessions, delegation credentials and
+	// API credentials built in tests without a persisted app row.
+	appElevationDisabled bool
 	// workerID is the worker that MINTED a delegation token. It limits where the
 	// token may be used (see ChannelService.verifyDelegationWorkerScope); empty
 	// for every other kind.
@@ -40,6 +44,20 @@ func APICredential(tokenID string) CredentialIdentity {
 		panic("auth: API credential requires an ID")
 	}
 	return CredentialIdentity{kind: credentialAPI, id: tokenID}
+}
+
+// APICredentialWithElevationPolicy identifies an API credential and carries
+// whether its current app registration permits a new elevation ceremony.
+func APICredentialWithElevationPolicy(tokenID string, elevationAllowed bool) CredentialIdentity {
+	credential := APICredential(tokenID)
+	credential.appElevationDisabled = !elevationAllowed
+	return credential
+}
+
+// AppElevationDisabled reports whether the credential's current app policy
+// prevents every available step-up ceremony.
+func (c CredentialIdentity) AppElevationDisabled() bool {
+	return c.kind == credentialAPI && c.appElevationDisabled
 }
 
 // DelegationCredential identifies a delegation_tokens row minted by workerID.

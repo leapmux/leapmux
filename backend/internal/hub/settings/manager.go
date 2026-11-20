@@ -437,6 +437,12 @@ func (m *Manager) publishFromStore(ctx context.Context) {
 	m.publishWrite(m.buildSnapshotFromStore(ctx))
 }
 
+// PublishCommittedWrite reloads and publishes a settings write that a caller
+// committed through UpdateManyInTransaction or ResetManyInTransaction.
+func (m *Manager) PublishCommittedWrite(ctx context.Context) {
+	m.publishFromStore(ctx)
+}
+
 // fireSubs runs the subscribers when the effective state changed.
 func (m *Manager) fireSubs(prev, s *Snapshot, subs []func(*Snapshot)) {
 	if prev == nil || prev.canon != s.canon {
@@ -698,6 +704,28 @@ func (m *Manager) requireRegistered(desc Descriptor) error {
 // caller was told it never reached. The captcha verbs pay both costs when
 // they clear a provider's row beside the selection that points at it.
 func (m *Manager) ResetMany(ctx context.Context, descs []Descriptor) error {
+	return m.resetMany(ctx, descs, func(write func(tx store.Store, locked lockedRows) error) error {
+		return m.writeInTransaction(ctx, write)
+	})
+}
+
+// ResetManyInTransaction applies the same validated reset through a store
+// already bound to the caller's transaction. See UpdateManyInTransaction.
+func (m *Manager) ResetManyInTransaction(ctx context.Context, tx store.Store, descs []Descriptor) error {
+	return m.resetMany(ctx, descs, func(write func(tx store.Store, locked lockedRows) error) error {
+		locked, err := lockAll(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return write(tx, locked)
+	})
+}
+
+func (m *Manager) resetMany(
+	ctx context.Context,
+	descs []Descriptor,
+	commit func(write func(tx store.Store, locked lockedRows) error) error,
+) error {
 	if len(descs) == 0 {
 		return Invalidf("no settings resets given")
 	}
@@ -714,7 +742,7 @@ func (m *Manager) ResetMany(ctx context.Context, descs []Descriptor) error {
 	}
 	// lockAll's whole-table lock already covers the rows this transaction
 	// deletes, so no separate per-key lock is needed here.
-	return m.writeInTransaction(ctx, func(tx store.Store, locked lockedRows) error {
+	return commit(func(tx store.Store, locked lockedRows) error {
 		kept := make([]store.SettingRow, 0, len(locked.all))
 		for _, row := range locked.all {
 			if !names[row.Key] {
@@ -792,6 +820,29 @@ type KeyWrite struct {
 // Both halves of one key travel in the same KeyWrite, which is what lets a
 // site key and its secret land together or not at all.
 func (m *Manager) UpdateMany(ctx context.Context, writes []KeyWrite) error {
+	return m.updateMany(ctx, writes, func(write func(tx store.Store, locked lockedRows) error) error {
+		return m.writeInTransaction(ctx, write)
+	})
+}
+
+// UpdateManyInTransaction applies the same validated write through a store
+// already bound to the caller's transaction. The caller publishes only after
+// that outer transaction commits.
+func (m *Manager) UpdateManyInTransaction(ctx context.Context, tx store.Store, writes []KeyWrite) error {
+	return m.updateMany(ctx, writes, func(write func(tx store.Store, locked lockedRows) error) error {
+		locked, err := lockAll(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return write(tx, locked)
+	})
+}
+
+func (m *Manager) updateMany(
+	ctx context.Context,
+	writes []KeyWrite,
+	commit func(write func(tx store.Store, locked lockedRows) error) error,
+) error {
 	if len(writes) == 0 {
 		return Invalidf("no settings writes given")
 	}
@@ -863,7 +914,7 @@ func (m *Manager) UpdateMany(ctx context.Context, writes []KeyWrite) error {
 			},
 		})
 	}
-	return m.writeInTransaction(ctx, func(tx store.Store, locked lockedRows) error {
+	return commit(func(tx store.Store, locked lockedRows) error {
 		params, err := m.prepareRows(pending, locked)
 		if err != nil {
 			return err

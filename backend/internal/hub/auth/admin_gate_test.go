@@ -173,7 +173,7 @@ func TestAdminGate_ExpiredWindowRefused(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
-		"the refusal must be the one a step-up prompt can clear")
+		"an expired window can be recovered through verification")
 }
 
 // TestAdminGate_AdminReadLeavesTheWindowUnchanged pins that an admitted read
@@ -331,8 +331,35 @@ func TestAdminGate_AppWithoutElevationAllowedRefused(t *testing.T) {
 	_, err = f.adminClient.ListSettings(callCtx, &leapmuxv1.ListSettingsRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
-		"the refusal must be the one a step-up prompt can clear")
+	assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the app owner must enable elevation before a prompt can help")
+	assert.Contains(t, err.Error(), "application owner disabled identity verification")
+
+	n, err = f.st.OAuthClients().SetElevationAllowed(context.Background(), store.SetOAuthClientElevationAllowedParams{
+		ClientID: clientID, ElevationAllowed: true,
+		CallerUserID: owner, CallerIsAdmin: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	retryTokenID := id.Generate()
+	retrySecret := auth.MintAccessSecret()
+	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
+		ID:               retryTokenID,
+		UserID:           owner,
+		ClientID:         clientID,
+		InstallationName: "retry",
+		GrantedScopes:    "admin:read",
+		SecretHash:       f.tv.HashSecret(retrySecret),
+	}))
+
+	retryCtx, retryInfo := connect.NewClientContext(context.Background())
+	retryInfo.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, retryTokenID, retrySecret))
+	_, err = f.adminClient.ListSettings(retryCtx, &leapmuxv1.ListSettingsRequest{})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", retryInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"re-enabling the app restores the ordinary verification remedy")
 }
 
 // TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused pins the marker on

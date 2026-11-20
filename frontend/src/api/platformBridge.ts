@@ -16,7 +16,7 @@ import {
   WINDOW_MODE_MAXIMIZED,
   WINDOW_MODE_NORMAL,
 } from '~/generated/contracts/desktop'
-import { BrowserAuthKind as ProtoBrowserAuthKind, ProxyHttpResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { BrowserAuthKind as ProtoBrowserAuthKind, ProxyHttpResponseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { arrayBufferToBase64 } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
@@ -1027,7 +1027,7 @@ export const platformBridge = {
    *
    * Resolves with raw ProxyHttpResponse protobuf bytes, never a JSON body.
    */
-  async proxyHttp(method: string, path: string, headers: Record<string, string>, body: ArrayBuffer | Uint8Array | string | null | undefined): Promise<ArrayBuffer> {
+  async proxyHttp(requestId: string, method: string, path: string, headers: Record<string, string>, body: ArrayBuffer | Uint8Array | string | null | undefined): Promise<ArrayBuffer> {
     const bytes = body === null || body === undefined
       ? new Uint8Array(0)
       : typeof body === 'string'
@@ -1038,13 +1038,16 @@ export const platformBridge = {
         [TAURI_IPC_HEADER_METHOD]: method,
         [TAURI_IPC_HEADER_PATH]: path,
         [TAURI_IPC_HEADER_HEADERS]: arrayBufferToBase64(JSON.stringify(headers)),
-        [TAURI_IPC_HEADER_REQUEST_ID]: crypto.randomUUID(),
+        [TAURI_IPC_HEADER_REQUEST_ID]: requestId,
       },
     })
     const responseBytes = ipcBytes(response)
     if (responseBytes === null)
       throw new Error('native HTTP proxy returned no byte response')
     return responseBytes
+  },
+  async cancelProxyHttp(requestId: string): Promise<void> {
+    await tauriInvoke('cancel_proxy_http', { requestId })
   },
   // Returns null off-Tauri or off-macOS so callers can skip the IPC.
   async cliPathStatus(): Promise<CliPathStatus | null> {
@@ -1219,26 +1222,63 @@ async function openRelay(
   args: Record<string, unknown>,
   receiver: RelayReceiver,
 ): Promise<boolean> {
-  const { Channel, invoke } = await loadTauriCore()
+  const { invoke } = await loadTauriCore()
   if (receiver.isAbandoned())
     return false
 
-  // Attach the handler before invoking the open. The first frame can arrive
-  // before the open reply, and the channel does not replay it.
-  const channel = new Channel<unknown>((message) => {
-    const bytes = ipcBytes(message)
-    receiver.onMessage(bytes ?? parseRelayClosePayload(message))
-  })
+  await invoke(command, args)
+  const relayId = args.relayId as number
+  const readCommand = command === 'open_channel_relay'
+    ? 'read_channel_relay'
+    : 'read_userevents_relay'
+  void pumpRelay(readCommand, relayId, receiver, invoke)
+  return true
+}
+
+async function pumpRelay(
+  command: 'read_channel_relay' | 'read_userevents_relay',
+  relayId: number,
+  receiver: RelayReceiver,
+  invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>,
+): Promise<void> {
+  let cursor = 0n
   try {
-    await invoke(command, { ...args, channel })
-    return true
+    while (!receiver.isAbandoned()) {
+      const payload = await invoke<unknown>(command, {
+        relayId,
+        afterCursor: cursor.toString(),
+      })
+      const bytes = ipcBytes(payload)
+      if (bytes === null)
+        throw new Error('native relay read returned no byte response')
+      const delivery = fromBinary(RelayReadResponseSchema, new Uint8Array(bytes))
+      if (delivery.cursor <= cursor)
+        throw new Error('native relay cursor did not advance')
+      cursor = delivery.cursor
+      if (delivery.item.case === 'data') {
+        const data = delivery.item.value
+        receiver.onMessage(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer)
+        continue
+      }
+      if (delivery.item.case === 'close') {
+        receiver.onMessage({
+          code: delivery.item.value.code,
+          reason: delivery.item.value.reason,
+          wasClean: delivery.item.value.wasClean,
+        })
+        return
+      }
+      throw new Error('native relay read returned no item')
+    }
   }
-  catch (error) {
-    // Tauri drops the callback when a native Channel ends. If IPC rejects
-    // before Rust constructs the Channel, only the webview can unregister it.
-    const tauri = window.__TAURI_INTERNALS__ as { unregisterCallback: (id: number) => void }
-    tauri.unregisterCallback(channel.id)
-    throw error
+  catch (err) {
+    if (!receiver.isAbandoned()) {
+      receiver.onMessage({
+        code: 1006,
+        reason: String(err),
+        wasClean: false,
+      })
+    }
   }
 }
 
@@ -1275,18 +1315,21 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
   const parsed = new URL(url)
   const path = parsed.pathname + parsed.search
 
-  // The proxied request cannot be cancelled once sent, so an abort settles
-  // only this call while the request runs on. The listener is removed as
-  // soon as either side settles so a late abort cannot reject a call that
-  // already has its answer.
+  // The request id correlates cancellation across the renderer, Rust shell and
+  // Go sidecar. The listener is removed as soon as either side settles, so a
+  // late abort cannot cancel a call that already has its answer.
   const signal = init?.signal ?? undefined
   if (signal?.aborted)
     throw new DOMException('The operation was aborted.', 'AbortError')
+  const requestId = crypto.randomUUID()
   let onAbort: (() => void) | undefined
-  let proxied = platformBridge.proxyHttp(method, path, headers, body)
+  let proxied = platformBridge.proxyHttp(requestId, method, path, headers, body)
   if (signal) {
     const aborted = new Promise<never>((_, reject) => {
-      onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'))
+      onAbort = () => {
+        void platformBridge.cancelProxyHttp(requestId).catch(err => log.warn('native HTTP proxy cancellation failed', err))
+        reject(new DOMException('The operation was aborted.', 'AbortError'))
+      }
       signal.addEventListener('abort', onAbort)
     })
     proxied = Promise.race([proxied, aborted])

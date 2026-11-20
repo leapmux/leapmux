@@ -59,6 +59,7 @@ message Request {
     // BrowserAuthKind. A new start ends the ceremony in progress.
     StartBrowserAuthRequest start_browser_auth = 35;
     CancelBrowserAuthRequest cancel_browser_auth = 36;
+    CancelProxyHttpRequest cancel_proxy_http = 37;
   }
 }
 
@@ -79,6 +80,13 @@ message StartBrowserAuthRequest {
 // nothing.
 message CancelBrowserAuthRequest {
   string ceremony_id = 1;
+}
+
+// Cancels the proxied HTTP request that carries the same renderer request id.
+// Cancellation can arrive before request admission, so the sidecar retains a
+// short pre-cancel tombstone.
+message CancelProxyHttpRequest {
+  string request_id = 1;
 }
 
 // Parameterless requests
@@ -199,11 +207,28 @@ message ProxyHttpRequest {
   string path = 2;
   map<string, string> headers = 3;
   bytes body = 4;
+  string request_id = 5;
 }
 
 message SendChannelMessageRequest {
   uint64 relay_id = 1;
   bytes data = 2;
+}
+
+// One owner-scoped relay item returned by an acknowledged Tauri read. The
+// renderer sends cursor back on its next read, which releases this item.
+message RelayReadResponse {
+  uint64 cursor = 1;
+  oneof item {
+    bytes data = 2;
+    RelayClose close = 3;
+  }
+}
+
+message RelayClose {
+  uint32 code = 1;
+  string reason = 2;
+  bool was_clean = 3;
 }
 
 message CreateTunnelRequest {

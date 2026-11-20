@@ -494,7 +494,6 @@ CREATE TABLE oauth_clients (
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
     -- Whether an authorization for this app mints a Hub session rather than
     -- an app credential. A constant of the build; see the sqlite twin.
-    issues_sessions       BOOLEAN NOT NULL DEFAULT FALSE,
     -- An AppRegistrationSource ordinal: who put this registration in the table.
     registration_source   SMALLINT NOT NULL CHECK (registration_source BETWEEN 1 AND 4),
     -- WHO vouched, and WHEN. The two move together, which the CHECK below
@@ -674,14 +673,11 @@ CREATE TABLE oauth_authorization_codes (
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
-    -- The credential the exchange MINTED, stamped at consumption: one kind
-    -- and one id, so the reference identifies one credential or has no target. See
-    -- the sqlite twin for the replay remedy this serves. A NULL kind means
-    -- nothing was minted, and the column never stores 0.
-    minted_kind           SMALLINT CHECK (minted_kind BETWEEN 1 AND 2),
+    -- The credential id the exchange MINTED, stamped at consumption. Its kind
+    -- comes from redemption_kind. See the sqlite twin for the replay remedy.
     minted_ref_id         VARCHAR(255) NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
-    -- than issuing one. One reference, as minted_kind carries. No foreign
+    -- than issuing one. One reference carries at most one target. No foreign
     -- key, for the reason device_authorizations.elevate_token_id gives.
     step_up_kind          SMALLINT CHECK (step_up_kind BETWEEN 1 AND 2),
     step_up_ref_id        VARCHAR(255) NOT NULL DEFAULT '',
@@ -690,11 +686,9 @@ CREATE TABLE oauth_authorization_codes (
     redemption_kind       SMALLINT CHECK (redemption_kind BETWEEN 1 AND 2),
     -- The ties make the states structural: a kind has no effect without its
     -- id, and a code verifies XOR redeems.
-    -- OCTET_LENGTH tests emptiness without the collation's space padding.
-    CHECK ((minted_kind IS NULL) = (OCTET_LENGTH(minted_ref_id) = 0)),
     CHECK ((step_up_kind IS NULL) = (OCTET_LENGTH(step_up_ref_id) = 0)),
     CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
-    CHECK (minted_kind IS NULL OR (consumed_at IS NOT NULL AND minted_kind = redemption_kind)),
+    CHECK (OCTET_LENGTH(minted_ref_id) = 0 OR (consumed_at IS NOT NULL AND redemption_kind IS NOT NULL)),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;
@@ -762,15 +756,15 @@ CREATE TABLE oauth_states (
     -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
     -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
     -- reaching the DEFAULT. That matters because the callback treats every
-    -- value that is not REAUTH as a LOGIN -- the branch that may create a
-    -- session and link an identity.
-    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 2),
-    -- The session a REAUTH state elevates on success. Empty for a LOGIN state.
+    -- callback dispatches only the three explicit purposes and refuses every
+    -- other value before it can create a session or link an identity.
+    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 3),
+    -- The session a REAUTH state elevates on success. Empty for login states.
     session_id      VARCHAR(255) NOT NULL DEFAULT '',
     expires_at      DATETIME(3) NOT NULL,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     -- A REAUTH (2) state carries the session it elevates, and a LOGIN state
-    -- carries none. TestOAuthStatePurposeReauthNumbering pins the literal 2,
+    -- login states carry none. TestOAuthStatePurposeReauthNumbering pins 2,
     -- which a constraint cannot take as a parameter.
     CHECK ((purpose = 2) = (session_id <> '')),
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)

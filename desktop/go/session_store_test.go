@@ -45,7 +45,7 @@ func TestSessionStoreSetCookiePersists(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 	j := openPersistentJar(base, dir)
 
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc123")})
 
 	path := filepath.Join(dir, sessionFileName(base))
 	require.FileExists(t, path)
@@ -54,7 +54,7 @@ func TestSessionStoreSetCookiePersists(t *testing.T) {
 	j2 := openPersistentJar(base, dir)
 	cookies := j2.Cookies(base)
 	require.Len(t, cookies, 1)
-	assert.Equal(t, "sid", cookies[0].Name)
+	assert.Equal(t, testSessionCookieName, cookies[0].Name)
 	assert.Equal(t, "abc123", cookies[0].Value)
 }
 
@@ -63,11 +63,11 @@ func TestSessionStoreMaxAgeZeroRemoves(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 	j := openPersistentJar(base, dir)
 
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc123")})
 	path := filepath.Join(dir, sessionFileName(base))
 	require.FileExists(t, path)
 
-	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "", Path: "/", MaxAge: -1}})
+	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "", Path: "/", MaxAge: -1}})
 	assert.NoFileExists(t, path, "the file must be gone after the Hub clears the cookie")
 }
 
@@ -80,16 +80,16 @@ func TestSessionStoreReAddAfterRemovalWritesTheFile(t *testing.T) {
 	j := openPersistentJar(base, dir)
 	path := filepath.Join(dir, sessionFileName(base))
 
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc123")})
 	require.FileExists(t, path)
 
 	// Sign-out clears the cookie: the record empties and the file goes.
-	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "", Path: "/", MaxAge: -1}})
+	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "", Path: "/", MaxAge: -1}})
 	require.NoFileExists(t, path)
 
 	// The Hub re-issues the identical cookie. Its bytes match the last
 	// write, and the re-add must still write the file.
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc123")})
 	require.FileExists(t, path, "the re-add must write the file again")
 
 	j2 := openPersistentJar(base, dir)
@@ -109,31 +109,31 @@ func TestSessionStoreClockExpiredCookiePrunedBeforePersist(t *testing.T) {
 	path := filepath.Join(dir, sessionFileName(base))
 
 	future := time.Now().Add(time.Hour).UTC()
-	j.SetCookies(base, []*http.Cookie{{Name: "doomed", Value: "x", Path: "/", Expires: future}})
-	j.SetCookies(base, []*http.Cookie{cookieFor("live", "y")})
+	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "doomed", Path: "/doomed", Expires: future}})
+	j.SetCookies(base, []*http.Cookie{{Name: testSecureSessionCookieName, Value: "live", Path: "/"}})
 	require.FileExists(t, path)
 
 	// Simulate the clock passing the cookie expiry: the record keeps the row
 	// with an expiry now in the past, exactly as a clock-passed cookie leaves it.
-	k := cookieKey(base, &http.Cookie{Name: "doomed", Path: "/"})
+	k := cookieKey(base, &http.Cookie{Name: testSessionCookieName, Path: "/doomed"})
 	pc := j.record[k]
 	past := time.Now().Add(-time.Hour).UTC()
 	pc.Expires = &past
 	j.record[k] = pc
 
-	j.SetCookies(base, []*http.Cookie{cookieFor("third", "z")})
+	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "third", Path: "/third"}})
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var sf sessionFile
 	require.NoError(t, json.Unmarshal(data, &sf))
-	names := map[string]bool{}
+	values := map[string]bool{}
 	for _, c := range sf.Cookies {
-		names[c.Name] = true
+		values[c.Value] = true
 	}
-	assert.False(t, names["doomed"], "clock-expired cookie must not be persisted")
-	assert.True(t, names["live"])
-	assert.True(t, names["third"])
+	assert.False(t, values["doomed"], "clock-expired cookie must not be persisted")
+	assert.True(t, values["live"])
+	assert.True(t, values["third"])
 }
 
 func TestSessionStoreReplaysEffectiveCookieScopes(t *testing.T) {
@@ -150,7 +150,7 @@ func TestSessionStoreReplaysEffectiveCookieScopes(t *testing.T) {
 	})
 
 	for label, view := range map[string]http.CookieJar{
-		"live": jar, "exchange snapshot": jar.snapshot(), "reopened": openPersistentJar(base, dir),
+		"live": jar, "exchange snapshot": jar.snapshot(),
 	} {
 		t.Run(label, func(t *testing.T) {
 			values := func(address string) map[string]string {
@@ -167,6 +167,48 @@ func TestSessionStoreReplaysEffectiveCookieScopes(t *testing.T) {
 			assert.Equal(t, map[string]string{"domain": "shared"},
 				values("https://another.example.test/oauth/confirm"))
 		})
+	}
+	assert.Empty(t, openPersistentJar(base, dir).Cookies(base),
+		"auxiliary cookies stay live but do not survive a restart")
+}
+
+func TestSessionStorePersistsOnlyHubSessionCookieNames(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example.test")
+	jar := openPersistentJar(base, dir)
+	jar.SetCookies(base, []*http.Cookie{
+		cookieFor(testSessionCookieName, "plain"),
+		{Name: testSecureSessionCookieName, Value: "secure", Path: "/", Secure: true},
+		cookieFor("reverse-proxy-session", "auxiliary"),
+	})
+
+	for label, view := range map[string]http.CookieJar{
+		"live":              jar,
+		"exchange snapshot": jar.snapshot(),
+	} {
+		t.Run(label, func(t *testing.T) {
+			cookies := view.Cookies(base)
+			require.Len(t, cookies, 3)
+		})
+	}
+
+	data, err := useronly.ReadFile(jar.path)
+	require.NoError(t, err)
+	var sf sessionFile
+	require.NoError(t, json.Unmarshal(data, &sf))
+	require.Len(t, sf.Cookies, 2)
+	persistedNames := map[string]bool{}
+	for _, cookie := range sf.Cookies {
+		persistedNames[cookie.Name] = true
+	}
+	assert.True(t, persistedNames[testSessionCookieName])
+	assert.True(t, persistedNames[testSecureSessionCookieName])
+	assert.False(t, persistedNames["reverse-proxy-session"])
+
+	reopened := openPersistentJar(base, dir).Cookies(base)
+	require.Len(t, reopened, 2)
+	for _, cookie := range reopened {
+		assert.NotEqual(t, "reverse-proxy-session", cookie.Name)
 	}
 }
 
@@ -198,7 +240,7 @@ func TestSessionStoreWrongOriginIgnored(t *testing.T) {
 
 	sf := sessionFile{
 		HubURL:  "http://hub.example",
-		Cookies: []persistedCookie{{Name: "sid", Value: "abc", Path: "/"}},
+		Cookies: []persistedCookie{{Name: testSessionCookieName, Value: "abc", Path: "/"}},
 	}
 	data, err := json.Marshal(sf)
 	require.NoError(t, err)
@@ -220,7 +262,7 @@ func TestSessionStoreUnparseableFileIgnored(t *testing.T) {
 	j := openPersistentJar(base, dir)
 	assert.Empty(t, j.Cookies(base), "a corrupt file must leave the jar empty")
 
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc")})
 	assert.Len(t, j.Cookies(base), 1, "the jar must still work after a corrupt file")
 }
 
@@ -234,7 +276,7 @@ func TestSessionStoreWrongPermissionsIgnored(t *testing.T) {
 
 	sf := sessionFile{
 		HubURL:  base.String(),
-		Cookies: []persistedCookie{{Name: "sid", Value: "abc", Path: "/"}},
+		Cookies: []persistedCookie{{Name: testSessionCookieName, Value: "abc", Path: "/"}},
 	}
 	data, err := json.Marshal(sf)
 	require.NoError(t, err)
@@ -258,12 +300,12 @@ func TestSessionStoreLeftoverTempFileCleaned(t *testing.T) {
 	assert.NoFileExists(t, tmpPath, "leftover temp file must be cleaned on open")
 
 	j := openPersistentJar(base, dir)
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc")})
 	require.FileExists(t, path)
 	require.NoError(t, os.WriteFile(tmpPath, []byte("leftover"), 0o600))
 	require.FileExists(t, tmpPath)
 
-	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "", Path: "/", MaxAge: -1}})
+	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "", Path: "/", MaxAge: -1}})
 	assert.NoFileExists(t, tmpPath, "leftover temp file must be cleaned on removal")
 }
 
@@ -273,7 +315,7 @@ func TestSessionStoreNoDirectory(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 
 	j := openPersistentJar(base, "")
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc123")})
 
 	assert.Len(t, j.Cookies(base), 1, "the jar must keep cookies in memory")
 
@@ -288,7 +330,7 @@ func TestSessionStoreCaseInsensitiveHost(t *testing.T) {
 	lower := mustParse(t, "https://hub.example")
 
 	j := openPersistentJar(upper, dir)
-	j.SetCookies(upper, []*http.Cookie{cookieFor("sid", "abc")})
+	j.SetCookies(upper, []*http.Cookie{cookieFor(testSessionCookieName, "abc")})
 
 	assert.Equal(t, sessionFileName(upper), sessionFileName(lower),
 		"the file name must ignore host case")
@@ -309,7 +351,7 @@ func TestSessionStoreUsesFixedSizeOriginDigestNames(t *testing.T) {
 	for i, raw := range hubs {
 		base := mustParse(t, raw)
 		jar := openPersistentJar(base, dir)
-		jar.SetCookies(base, []*http.Cookie{cookieFor("sid", string(rune('a'+i)))})
+		jar.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, string(rune('a'+i)))})
 		name := sessionFileName(base)
 		assert.Len(t, name, len("session_")+sha256.Size*2+len(".json"))
 		assert.False(t, seen[name], "different origins require different session files")
@@ -354,8 +396,8 @@ func TestSessionStoreSerializesLiveAndDiskUpdates(t *testing.T) {
 			}
 		},
 	}
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "first")})
-	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "second")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "first")})
+	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "second")})
 
 	live := j.Cookies(base)
 	reopened := openPersistentJar(base, dir).Cookies(base)
@@ -372,7 +414,7 @@ func TestSessionStorePositiveMaxAgeSetsTheStoredExpiry(t *testing.T) {
 			dir := privateDir(t)
 			base := mustParse(t, "https://hub.example")
 			j := openPersistentJar(base, dir)
-			cookie := cookieFor("sid", "fresh")
+			cookie := cookieFor(testSessionCookieName, "fresh")
 			cookie.MaxAge = maxAge
 			now := time.Now()
 			switch name {
@@ -409,7 +451,7 @@ func TestSessionStoreConcurrentSetCookies(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			j.SetCookies(base, []*http.Cookie{cookieFor("sid", string(rune('a'+i%26)))})
+			j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, string(rune('a'+i%26)))})
 		}()
 	}
 	wg.Wait()
@@ -430,7 +472,7 @@ func TestSessionStoreUnchangedCookieSetOneWrite(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 	j := openPersistentJar(base, dir)
 
-	c := cookieFor("sid", "abc123")
+	c := cookieFor(testSessionCookieName, "abc123")
 	c.Expires = time.Now().Add(time.Hour).UTC()
 
 	j.SetCookies(base, []*http.Cookie{c})
@@ -459,7 +501,7 @@ func TestSessionStoreUnchangedCookieWithExpirySetOneWrite(t *testing.T) {
 	expires := time.Now().Add(time.Hour).UTC()
 	sf := sessionFile{
 		HubURL:  base.String(),
-		Cookies: []persistedCookie{{Name: "sid", Value: "abc123", Path: "/", Expires: &expires}},
+		Cookies: []persistedCookie{{Name: testSessionCookieName, Value: "abc123", Path: "/", Expires: &expires}},
 	}
 	// The compact form differs from the writer's own indented form, so a
 	// rewrite changes these bytes even though the cookie values are the same.
@@ -469,15 +511,16 @@ func TestSessionStoreUnchangedCookieWithExpirySetOneWrite(t *testing.T) {
 	require.NoError(t, atomicfile.WriteFile(path, data, 0o600))
 
 	j := openPersistentJar(base, dir)
-	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "abc123", Path: "/", Expires: expires}})
+	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "abc123", Path: "/", Expires: expires}})
 
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, data, got, "an unchanged cookie must not rewrite the session file")
 }
 
-// Equal-path cookies use creation order as their final tie breaker. The file
-// preserves that order, so a snapshot or restart chooses the same value.
+// Equal-path cookies use creation order as their final tie breaker. The live
+// record preserves every cookie, while the file preserves that order for the
+// session-cookie subset.
 func TestSessionStoreCookieFilePreservesCreationOrder(t *testing.T) {
 	dir := privateDir(t)
 	base := mustParse(t, "https://hub.example")
@@ -486,11 +529,11 @@ func TestSessionStoreCookieFilePreservesCreationOrder(t *testing.T) {
 	j.SetCookies(base, []*http.Cookie{
 		{Name: "y", Value: "v", Path: "/"},
 		{Name: "a", Value: "v", Path: "/z"},
-		{Name: "sid", Value: "v", Path: "/deep"},
+		{Name: testSessionCookieName, Value: "v", Path: "/deep"},
 		{Name: "m", Value: "v", Path: "/"},
 		{Name: "a", Value: "v", Path: "/"},
 		{Name: "x", Value: "v", Path: "/"},
-		{Name: "sid", Value: "v", Path: "/"},
+		{Name: testSessionCookieName, Value: "v", Path: "/"},
 		{Name: "q", Value: "v", Path: "/"},
 		{Name: "w", Value: "v", Path: "/"},
 		{Name: "b", Value: "v", Path: "/"},
@@ -506,18 +549,22 @@ func TestSessionStoreCookieFilePreservesCreationOrder(t *testing.T) {
 	want := []persistedCookie{
 		{Name: "y", Value: "v", Path: "/"},
 		{Name: "a", Value: "v", Path: "/z"},
-		{Name: "sid", Value: "v", Path: "/deep"},
+		{Name: testSessionCookieName, Value: "v", Path: "/deep"},
 		{Name: "m", Value: "v", Path: "/"},
 		{Name: "a", Value: "v", Path: "/"},
 		{Name: "x", Value: "v", Path: "/"},
-		{Name: "sid", Value: "v", Path: "/"},
+		{Name: testSessionCookieName, Value: "v", Path: "/"},
 		{Name: "q", Value: "v", Path: "/"},
 		{Name: "w", Value: "v", Path: "/"},
 		{Name: "b", Value: "v", Path: "/"},
 		{Name: "v", Value: "v", Path: "/"},
 		{Name: "a", Value: "v", Path: "/deep/deeper"},
 	}
-	assert.Equal(t, want, sf.Cookies, "the session file must preserve cookie creation order")
+	assert.Equal(t, want, j.orderedCookies(), "the live record must preserve every cookie's creation order")
+	assert.Equal(t, []persistedCookie{
+		{Name: testSessionCookieName, Value: "v", Path: "/deep"},
+		{Name: testSessionCookieName, Value: "v", Path: "/"},
+	}, sf.Cookies, "the session file must preserve session-cookie creation order")
 }
 
 func TestSessionStoreRetriesAnIdenticalCookieAfterAWriteFailure(t *testing.T) {
@@ -525,7 +572,7 @@ func TestSessionStoreRetriesAnIdenticalCookieAfterAWriteFailure(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 	jar := openPersistentJar(base, dir)
 	path := filepath.Join(dir, sessionFileName(base))
-	cookie := cookieFor("sid", "new-session")
+	cookie := cookieFor(testSessionCookieName, "new-session")
 
 	require.NoError(t, os.Mkdir(path, 0o700))
 	jar.SetCookies(base, []*http.Cookie{cookie})
@@ -543,13 +590,13 @@ func TestSessionStoreRetriesAnIdenticalClearAfterARemovalFailure(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 	jar := openPersistentJar(base, dir)
 	path := filepath.Join(dir, sessionFileName(base))
-	jar.SetCookies(base, []*http.Cookie{cookieFor("sid", "old-session")})
+	jar.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "old-session")})
 	require.NoError(t, os.Remove(path))
 	require.NoError(t, os.Mkdir(path, 0o700))
 	blocker := filepath.Join(path, "blocker")
 	require.NoError(t, os.WriteFile(blocker, []byte("keep this directory nonempty"), 0o600))
 
-	deletion := &http.Cookie{Name: "sid", Path: "/", MaxAge: -1}
+	deletion := &http.Cookie{Name: testSessionCookieName, Path: "/", MaxAge: -1}
 	jar.SetCookies(base, []*http.Cookie{deletion})
 	require.NoError(t, os.Remove(blocker))
 
@@ -564,8 +611,8 @@ func TestSessionStorePreservesPrecedenceForSameNameAndPath(t *testing.T) {
 	base := mustParse(t, "https://hub.example.test")
 	jar := openPersistentJar(base, dir)
 	jar.SetCookies(base, []*http.Cookie{
-		{Name: "scope", Value: "parent-domain", Path: "/", Domain: ".example.test"},
-		cookieFor("scope", "host-only"),
+		{Name: testSessionCookieName, Value: "parent-domain", Path: "/", Domain: ".example.test"},
+		cookieFor(testSessionCookieName, "host-only"),
 	})
 
 	winner := func(view http.CookieJar) string {
@@ -587,7 +634,7 @@ func TestSessionStoreCanPersistForALongDNSName(t *testing.T) {
 	}, ".")
 	base := mustParse(t, "https://"+host)
 	jar := openPersistentJar(base, dir)
-	jar.SetCookies(base, []*http.Cookie{cookieFor("sid", "new-session")})
+	jar.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "new-session")})
 
 	restored := openPersistentJar(base, dir).Cookies(base)
 	require.Len(t, restored, 1)

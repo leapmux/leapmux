@@ -442,11 +442,12 @@ type OAuthState struct {
 	// browser cookie for this row.
 	NonceHash   string
 	RedirectURI string
-	// Purpose is OAuthStatePurposeLogin or OAuthStatePurposeReauth. The
+	// Purpose is one of the three explicit OAuthStatePurpose values. The
 	// callback branches on it: a reauth row elevates SessionID and must never
-	// create a session or link an identity.
+	// create a session or link an identity, while consent login records the
+	// fresh provider proof requested at the start.
 	Purpose leapmuxv1.OAuthStatePurpose
-	// SessionID is the session a reauth row elevates. Empty for a login row.
+	// SessionID is the session a reauth row elevates. Empty for login rows.
 	SessionID string
 	ExpiresAt time.Time
 	CreatedAt time.Time
@@ -462,6 +463,9 @@ const (
 	// OAuthStatePurposeReauth proves the identity again for a session that is
 	// ALREADY signed in, to elevate it.
 	OAuthStatePurposeReauth = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_REAUTH
+	// OAuthStatePurposeConsentLogin starts a sign-in that forced fresh provider
+	// authentication because it returns to an OAuth consent route.
+	OAuthStatePurposeConsentLogin = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_CONSENT_LOGIN
 )
 
 // PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
@@ -1636,17 +1640,6 @@ type OAuthClient struct {
 	// scope set and MULTIPLIES it, so no grant field could express it and mean
 	// anything.
 	ElevationAllowed bool
-	// IssuesSessions is whether an authorization for this app mints a Hub
-	// session rather than an app credential: the browser handoff of the
-	// desktop's remote-Hub mode. The consent page reads it to pick its
-	// variant, and the consent POST writes the fork it decided onto the code
-	// row, so the token stage reads the ROW and never re-derives it.
-	//
-	// A CONSTANT OF THE BUILD, like ClientName and GrantTypes: only the seed
-	// writes it. Minting a session hands out the account itself, so a
-	// registration surface that could turn this on would let any app ask for
-	// a full session instead of a scoped credential.
-	IssuesSessions bool
 	// RegistrationSource says who put this registration in the table. The
 	// column stores the ordinal and its CHECK is the closed set.
 	RegistrationSource leapmuxv1.AppRegistrationSource
@@ -1763,7 +1756,6 @@ type UpsertBuiltInClientParams struct {
 	Scopes             string
 	GrantTypes         string
 	ElevationAllowed   bool
-	IssuesSessions     bool
 	RegistrationSource leapmuxv1.AppRegistrationSource
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -1891,8 +1883,8 @@ type APITokenRef struct {
 
 // CredentialRefKind is a defined type over leapmuxv1.CredentialRefKind: which
 // table a credential reference identifies. oauth_authorization_codes.step_up_kind
-// and minted_kind store the ordinal, and SQL NULL (the zero value here) means
-// the reference has no target -- the column never stores UNSPECIFIED.
+// stores the ordinal, and SQL NULL (the zero value here) means the reference
+// has no target -- the column never stores UNSPECIFIED.
 type CredentialRefKind leapmuxv1.CredentialRefKind
 
 const (
@@ -1962,6 +1954,38 @@ const (
 // IssuesSession reports whether the code redeems into a Hub session rather
 // than an app credential.
 func (k RedemptionKind) IssuesSession() bool { return k == RedemptionKindSession }
+
+// MintedRef derives the credential an ordinary code produced from the
+// redemption decision that consent stored. An empty id means no mint yet.
+func (k RedemptionKind) MintedRef(id string) CredentialRef {
+	if id == "" {
+		return CredentialRef{}
+	}
+	switch k {
+	case RedemptionKindSession:
+		return CredentialRef{Kind: CredentialRefKindSession, ID: id}
+	case RedemptionKindToken:
+		return CredentialRef{Kind: CredentialRefKindToken, ID: id}
+	default:
+		return CredentialRef{ID: id}
+	}
+}
+
+// RedemptionForCredentialRef returns the consented redemption kind that must
+// match a minted credential reference.
+func RedemptionForCredentialRef(ref CredentialRef) (RedemptionKind, bool) {
+	if ref.ID == "" {
+		return RedemptionKindNone, false
+	}
+	switch ref.Kind {
+	case CredentialRefKindSession:
+		return RedemptionKindSession, true
+	case CredentialRefKindToken:
+		return RedemptionKindToken, true
+	default:
+		return RedemptionKindNone, false
+	}
+}
 
 // StoredRedemption reads the stored redemption kind. A nil ordinal is the SQL
 // NULL that spells a step-up code. See StoredRef.

@@ -42,13 +42,12 @@ func SeedBuiltIns(ctx context.Context, st Store, now time.Time) error {
 	rows := make([]UpsertBuiltInClientParams, 0, len(oauthapp.BuiltInRegistrations()))
 	for _, app := range oauthapp.BuiltInRegistrations() {
 		rows = append(rows, seed(UpsertBuiltInClientParams{
-			ClientID:       app.ClientID,
-			ClientName:     app.ClientName,
-			ClientURI:      app.ClientURI,
-			RedirectURIs:   app.RedirectURIs,
-			Scopes:         app.Scopes,
-			GrantTypes:     app.GrantTypes,
-			IssuesSessions: app.IssuesSessions,
+			ClientID:     app.ClientID,
+			ClientName:   app.ClientName,
+			ClientURI:    app.ClientURI,
+			RedirectURIs: app.RedirectURIs,
+			Scopes:       app.Scopes,
+			GrantTypes:   app.GrantTypes,
 		}))
 	}
 	for _, row := range rows {

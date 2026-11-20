@@ -2095,11 +2095,17 @@ describe('AuthContext storage namespace', () => {
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
     expect(screen.getByTestId('username')).toHaveTextContent('alice')
+    const endedAccounts: StorageAccount[] = []
+    const stop = auth().onAccountEnd(account => endedAccounts.push(account))
 
     await auth().logout()
 
+    expect(endedAccounts).toEqual([
+      storageAccountFor(window.location.origin, 'alice'),
+    ])
     expect(hasStorageAccount()).toBe(true)
     expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(accountStorageKey(storageAccountFor(window.location.origin, 'alice'), 'browser-prefs'))
+    stop()
   })
 
   // A User the app cannot key storage by is not an identity. Letting
@@ -2197,5 +2203,26 @@ describe('adoptBrowserSignIn', () => {
     await auth().adoptBrowserSignIn()
 
     expect(storageAccountId()).toBe(storageAccountFor('https://hub.example.com', 'u1'))
+  })
+
+  it('publishes the hydrated remote account when the Hub cache changes during hydration', async () => {
+    const remoteAccount = storageAccountFor('https://hub.example.com', 'u1')
+    mockDesktopHub.mockReturnValue({ kind: 'remote', url: 'https://hub.example.com' })
+    const auth = await bootSignedOut()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+    const hydration = holdNextHydration()
+
+    const adoption = auth().adoptBrowserSignIn()
+    await hydration.entered
+    mockDesktopHub.mockReturnValue(null)
+    hydration.release()
+
+    await adoption
+    expect(auth().storageAccount()).toBe(remoteAccount)
+    expect(storageAccountId()).toBe(remoteAccount)
   })
 })

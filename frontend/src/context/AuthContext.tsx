@@ -2,11 +2,12 @@ import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Location } from '@solidjs/router'
 import type { ParentComponent } from 'solid-js'
 import type { EmailVerificationStatus, GetCurrentUserResponse, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { createEffect, createSignal, on, onMount, useContext } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
 import { advanceAuthSessionEpoch, loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
@@ -115,6 +116,10 @@ export type UserAdoption = (user: User | undefined, verification?: EmailVerifica
 
 export interface AuthState {
   user: () => User | null
+  /** The hydrated browser-storage identity published with `user`. */
+  storageAccount: () => StorageAccount | null
+  /** Subscribe to an authenticated account ending before its shell unmounts. */
+  onAccountEnd: (listener: (account: StorageAccount) => void) => () => void
   loading: () => boolean
   error: () => string | null
   /**
@@ -235,7 +240,14 @@ export interface AuthState {
 const AuthContext = createStableContext<AuthState>('context/AuthContext')
 
 export const AuthProvider: ParentComponent = (props) => {
-  const [user, setUserSignal] = createSignal<User | null>(null)
+  const [identity, setIdentity] = createSignal<{ user: User, storageAccount: StorageAccount } | null>(null)
+  const user = createMemo(() => identity()?.user ?? null)
+  const storageAccount = createMemo(() => identity()?.storageAccount ?? null)
+  const accountEndListeners = new Set<(account: StorageAccount) => void>()
+  const onAccountEnd = (listener: (account: StorageAccount) => void): (() => void) => {
+    accountEndListeners.add(listener)
+    return () => accountEndListeners.delete(listener)
+  }
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
@@ -386,12 +398,14 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const setUser = async (next: User | null): Promise<boolean> => {
     const generation = ++authGeneration
+    const outgoingAccount = identity()?.storageAccount ?? null
     if (next && !next.id) {
       log.error('the hub returned a user with no id; treating the session as signed out', { user: next })
       next = null
     }
+    let account: StorageAccount | null = null
     if (next) {
-      const account = storageAccountFor(hubOrigin(), next.id)
+      account = storageAccountFor(hubOrigin(), next.id)
       const prepared = await prepareStorageAccount(account)
       // A later identity superseded this one while its rows were loading. It
       // owns the mirror now, so publishing this one would point the namespace
@@ -403,7 +417,19 @@ export const AuthProvider: ParentComponent = (props) => {
         return false
       setStorageAccount(account)
     }
-    setUserSignal(next)
+    if (!next && outgoingAccount) {
+      for (const listener of [...accountEndListeners]) {
+        try {
+          listener(outgoingAccount)
+        }
+        catch (err) {
+          log.error('authenticated account cleanup failed', { err })
+        }
+      }
+    }
+    setIdentity(next && account
+      ? { user: next, storageAccount: account }
+      : null)
     return true
   }
 
@@ -792,14 +818,18 @@ export const AuthProvider: ParentComponent = (props) => {
     setElevationExpiresAt(undefined)
   }
 
-  // Register auth error callback for auto-logout on 401.
-  setOnAuthError(() => {
-    // isAutoAuthenticated, not isSoloMode: the question is whether THIS
-    // connection holds a session to lose. A solo hub reached at a network
-    // address does -- it signed in -- so a 401 there must clear the user like
-    // anywhere else, or the app keeps rendering a session the hub refused.
-    if (!isAutoAuthenticated())
-      clearAuthUser()
+  onMount(() => {
+    // Register the process-global transport callback only for this provider's
+    // lifetime, so a disposed provider cannot receive a later 401.
+    setOnAuthError(() => {
+      // isAutoAuthenticated, not isSoloMode: the question is whether THIS
+      // connection holds a session to lose. A solo hub reached at a network
+      // address does -- it signed in -- so a 401 there must clear the user like
+      // anywhere else, or the app keeps rendering a session the hub refused.
+      if (!untrack(isAutoAuthenticated))
+        clearAuthUser()
+    })
+    onCleanup(() => setOnAuthError(null))
   })
 
   /**
@@ -1030,6 +1060,8 @@ export const AuthProvider: ParentComponent = (props) => {
 
   const state: AuthState = {
     user,
+    storageAccount,
+    onAccountEnd,
     loading,
     error,
     verificationResendAvailableAt,

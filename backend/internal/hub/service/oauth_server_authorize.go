@@ -35,6 +35,7 @@ type authorizeRequest struct {
 	scopes        authscope.ScopeSet
 	installation  string
 	stepUp        stepUpTarget
+	issuesSession bool
 }
 
 // stepUpTarget identifies the credential an authorization VERIFIES rather than
@@ -56,7 +57,7 @@ func (req authorizeRequest) redemptionKind() store.RedemptionKind {
 	if !req.stepUp.ref.IsZero() {
 		return store.RedemptionKindNone
 	}
-	if req.app.IssuesSessions {
+	if req.issuesSession {
 		return store.RedemptionKindSession
 	}
 	return store.RedemptionKindToken
@@ -90,6 +91,7 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 		return req, oauthErrorBody("server_error", ""), false, false
 	}
 	req.app = app
+	req.issuesSession = h.issuesSession(app.ClientID)
 
 	presented := values.Get("redirect_uri")
 	registered, matched := MatchRedirectURI(ParseRedirectURIs(app.RedirectURIs), presented)
@@ -291,7 +293,7 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 	if !req.stepUp.ref.IsZero() {
 		data.StepUp = req.stepUp.display
 	} else {
-		data.SignIn = req.app.IssuesSessions
+		data.SignIn = req.issuesSession
 	}
 	writePage(w, http.StatusOK, consentPageTmpl, data, redirectFormActionSource(req.redirectURI))
 }

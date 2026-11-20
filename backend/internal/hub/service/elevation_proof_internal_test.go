@@ -49,8 +49,11 @@ func TestGrantSessionElevationRefusesAnAppWhosePolicyIsDisabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID),
-		auth.DefaultSessionDuration, auth.SignInProvedNoFactor,
-		auth.SessionMeta{IssuedToClient: clientID})
+		auth.SessionCreationOptions{
+			Lifetime:       auth.DefaultSessionDuration,
+			Proof:          auth.SignInProvedNoFactor,
+			IssuedToClient: clientID,
+		})
 	require.NoError(t, err)
 
 	_, err = grantSessionElevation(ctx, st, auth.NewCredentialLifecycleEffects(nil, nil, nil),

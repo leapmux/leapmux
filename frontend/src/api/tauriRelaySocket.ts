@@ -1,9 +1,8 @@
 /**
  * TauriRelayWebSocket provides a WebSocket-like interface that bridges through
- * Tauri IPC. Binary frames travel raw: the wrapper hands each relay open a
- * Tauri `Channel`, the Rust shell stores it beside the relay id, and frames
- * reach the handler as ArrayBuffers. Close notifications use the same channel
- * so a delayed frame still arrives before its relay closes.
+ * Tauri IPC. Binary frames travel through one acknowledged raw read at a time.
+ * Rust retains each owner-scoped item until the next cursor advances, so a
+ * failed invoke can repeat without losing or reordering a frame or close.
  *
  * It satisfies ChannelManager's structural `ChannelSocket` surface (see
  * ~/lib/channel) so the channel layer drives a native browser WebSocket and

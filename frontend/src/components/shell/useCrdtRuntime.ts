@@ -44,7 +44,9 @@ export interface UseCrdtRuntimeOpts {
    * The storage account (hub + user id) that keys the checkpoint store; empty
    * until the session restores. NOT the identity the Hub reports.
    */
-  storageAccount: () => StorageAccount
+  storageAccount: () => StorageAccount | null
+  /** Runs cleanup before AuthGuard disposes this runtime on logout. */
+  onAccountEnd: (listener: (account: StorageAccount) => void) => () => void
   /**
    * The authenticated user id the Hub reports on each frame; empty until the
    * session restores. `useUserEvents` compares it against every frame's
@@ -218,6 +220,16 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     if (uid)
       void settled.then(() => clearCheckpointAndOpLog(uid))
   }
+
+  const stopAccountEnd = opts.onAccountEnd((account) => {
+    if (lastResumeUid !== account)
+      return
+    setPendingMgr(null)
+    setHydrated(false)
+    disposeRecorderAndClear(account)
+    lastResumeUid = null
+  })
+  onCleanup(stopAccountEnd)
 
   /**
    * Deadline on the persisted-checkpoint read. Generous -- this is a

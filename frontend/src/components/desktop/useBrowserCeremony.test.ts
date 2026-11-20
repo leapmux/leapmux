@@ -42,15 +42,17 @@ describe('useBrowserCeremony', () => {
 
   it('starts the ceremony and holds its flow while it waits', async () => {
     const fx = flowFixture()
-    runBrowserAuth.mockResolvedValue(fx.flow)
+    const starting = deferred<BrowserAuthFlow>()
+    runBrowserAuth.mockReturnValue(starting.promise)
 
     await inCeremonyRoot('sign-in', vi.fn(), async (ceremony) => {
       const done = ceremony.start()
+      expect(ceremony.state()).toEqual({ phase: 'starting' })
+      starting.resolve(fx.flow)
       await settle()
 
       expect(runBrowserAuth).toHaveBeenCalledExactlyOnceWith('sign-in', expect.any(AbortSignal))
-      expect(ceremony.phase()).toBe('waiting')
-      expect(ceremony.flow()).toBe(fx.flow)
+      expect(ceremony.state()).toEqual({ phase: 'waiting', flow: fx.flow })
 
       fx.result.resolve({ ok: false, failure: '' })
       await done
@@ -60,17 +62,23 @@ describe('useBrowserCeremony', () => {
   it('calls the success continuation when the result settles ok', async () => {
     const fx = flowFixture()
     runBrowserAuth.mockResolvedValue(fx.flow)
-    const onSuccess = vi.fn(() => Promise.resolve())
+    const completion = deferred<void>()
+    const onSuccess = vi.fn(() => completion.promise)
 
     await inCeremonyRoot('step-up', onSuccess, async (ceremony) => {
       const done = ceremony.start()
       await settle()
       fx.result.resolve({ ok: true, failure: '' })
+      await vi.waitFor(() => expect(ceremony.state()).toEqual({ phase: 'completing' }))
+      void ceremony.start()
+
+      expect(runBrowserAuth).toHaveBeenCalledTimes(1)
+      completion.resolve()
       await done
 
       expect(onSuccess).toHaveBeenCalledOnce()
       expect(runBrowserAuth).toHaveBeenCalledExactlyOnceWith('step-up', expect.any(AbortSignal))
-      expect(ceremony.failure()).toBe('')
+      expect(ceremony.state()).toEqual({ phase: 'completing' })
     })
   })
 
@@ -85,9 +93,7 @@ describe('useBrowserCeremony', () => {
       fx.result.resolve({ ok: false, failure: 'the code expired' })
       await done
 
-      expect(ceremony.phase()).toBe('idle')
-      expect(ceremony.flow()).toBeNull()
-      expect(ceremony.failure()).toBe('the code expired')
+      expect(ceremony.state()).toEqual({ phase: 'idle', failure: 'the code expired' })
       expect(onSuccess).not.toHaveBeenCalled()
     })
   })
@@ -104,8 +110,7 @@ describe('useBrowserCeremony', () => {
       fx.result.resolve({ ok: false, failure: '' })
       await done
 
-      expect(ceremony.phase()).toBe('idle')
-      expect(ceremony.failure()).toBe('')
+      expect(ceremony.state()).toEqual({ phase: 'idle', failure: '' })
     })
   })
 
@@ -116,9 +121,7 @@ describe('useBrowserCeremony', () => {
     await inCeremonyRoot('sign-in', onSuccess, async (ceremony) => {
       await ceremony.start()
 
-      expect(ceremony.phase()).toBe('idle')
-      expect(ceremony.flow()).toBeNull()
-      expect(ceremony.failure()).toBe('the sidecar is not reachable')
+      expect(ceremony.state()).toEqual({ phase: 'idle', failure: 'the sidecar is not reachable' })
       expect(onSuccess).not.toHaveBeenCalled()
     })
   })
@@ -133,8 +136,7 @@ describe('useBrowserCeremony', () => {
       fx.result.resolve({ ok: true, failure: '' })
       await done
 
-      expect(ceremony.phase()).toBe('idle')
-      expect(ceremony.failure()).toBe('the account read failed')
+      expect(ceremony.state()).toEqual({ phase: 'idle', failure: 'the account read failed' })
     })
   })
 
@@ -151,7 +153,7 @@ describe('useBrowserCeremony', () => {
       await ceremony.cancel()
 
       expect(fx.cancel).toHaveBeenCalledOnce()
-      expect(ceremony.phase()).toBe('waiting')
+      expect(ceremony.state()).toEqual({ phase: 'waiting', flow: fx.flow })
 
       fx.result.resolve({ ok: false, failure: '' })
       await done
@@ -162,7 +164,7 @@ describe('useBrowserCeremony', () => {
     await inCeremonyRoot('sign-in', vi.fn(), async (ceremony) => {
       await ceremony.cancel()
 
-      expect(ceremony.phase()).toBe('idle')
+      expect(ceremony.state()).toEqual({ phase: 'idle', failure: '' })
     })
   })
 
@@ -197,12 +199,12 @@ describe('useBrowserCeremony', () => {
       await settle()
       firstRun.result.resolve({ ok: false, failure: 'the code expired' })
       await first
-      expect(ceremony.failure()).toBe('the code expired')
+      expect(ceremony.state()).toEqual({ phase: 'idle', failure: 'the code expired' })
 
       const second = ceremony.start()
       await settle()
 
-      expect(ceremony.failure()).toBe('')
+      expect(ceremony.state()).toEqual({ phase: 'waiting', flow: secondRun.flow })
 
       secondRun.result.resolve({ ok: false, failure: '' })
       await second

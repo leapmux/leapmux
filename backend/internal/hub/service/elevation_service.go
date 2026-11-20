@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -338,15 +339,65 @@ func requireElevatedSessionForDurableAuthority(ctx context.Context, now time.Tim
 //
 // A read failure REFUSES, and slideElevation is best-effort. See each for the
 // direction it fails in.
-func commitUnderElevation(ctx context.Context, st store.Store, actor *auth.UserInfo, now func() time.Time, write func() error) error {
-	if err := refuseIfActingAuthorityMoved(ctx, st, actor, now()); err != nil {
-		return err
+func commitUnderElevation(
+	ctx context.Context,
+	st store.Store,
+	actor *auth.UserInfo,
+	now func() time.Time,
+	write func(tx store.Store) error,
+	targets ...userid.UserID,
+) error {
+	if actor == nil {
+		return connect.Errorf(connect.CodeUnauthenticated, "not authenticated")
 	}
-	if err := write(); err != nil {
+	if actor.SoloAuthenticated() {
+		if err := st.RunInTransaction(ctx, write); err != nil {
+			return err
+		}
+		slideElevation(ctx, st, actor, now())
+		return nil
+	}
+	lockIDs := append([]userid.UserID{actor.ID}, targets...)
+	if err := runWithUserAuthLocks(ctx, st, lockIDs, func(tx store.Store) error {
+		lockedActor, err := tx.Users().GetByID(ctx, actor.ID.String())
+		if err != nil {
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting account: %w", err))
+		}
+		if err := refuseIfActingAuthorityMovedFrom(ctx, tx, lockedActor, actor, now()); err != nil {
+			return err
+		}
+		return write(tx)
+	}); err != nil {
 		return err
 	}
 	slideElevation(ctx, st, actor, now())
 	return nil
+}
+
+// runWithUserAuthLocks takes every requested user-auth lock in stable ID order
+// and runs write in their shared transaction. Nested store calls reuse that
+// transaction, so callers may still invoke a target-owned store helper.
+func runWithUserAuthLocks(
+	ctx context.Context, st store.Store, ids []userid.UserID, write func(tx store.Store) error,
+) error {
+	ordered := append([]userid.UserID(nil), ids...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].String() < ordered[j].String() })
+	unique := ordered[:0]
+	for _, id := range ordered {
+		if len(unique) == 0 || unique[len(unique)-1].String() != id.String() {
+			unique = append(unique, id)
+		}
+	}
+	var lock func(int, store.Store) error
+	lock = func(index int, current store.Store) error {
+		if index == len(unique) {
+			return write(current)
+		}
+		return current.RunInUserAuthTransaction(ctx, unique[index], func(tx store.Store) error {
+			return lock(index+1, tx)
+		})
+	}
+	return lock(0, st)
 }
 
 // requireElevatedActor demands a recently proven factor from the acting
@@ -469,16 +520,12 @@ func assertElevatedActor(userInfo *auth.UserInfo, now time.Time) error {
 // puts an argument check that belongs to the caller's own typing (see
 // RequestEmailChange). An unknown key is the caller's mistake, and reporting
 // it first spares a verification prompt answered for nothing.
-func writeUnderElevation(ctx context.Context, st store.Store, now func() time.Time, write func() error) error {
+func writeUnderElevation(ctx context.Context, st store.Store, now func() time.Time, write func(tx store.Store) error) error {
 	actor, err := requireElevatedActor(ctx, now())
 	if err != nil {
 		return err
 	}
-	if err := write(); err != nil {
-		return err
-	}
-	slideElevation(ctx, st, actor, now())
-	return nil
+	return commitUnderElevation(ctx, st, actor, now, write)
 }
 
 // refuseIfActingAuthorityMoved re-reads the acting credential's authority
@@ -546,17 +593,7 @@ func refuseIfActingAuthorityMovedFrom(ctx context.Context, st store.Store, locke
 	if err := recheckCredentialEpochUnderLock(locked, actor); err != nil {
 		return err
 	}
-	sessionID := actor.Credential.SessionID()
-	if sessionID == "" {
-		return nil
-	}
-	if _, err := st.Sessions().GetByID(ctx, sessionID, now); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return refuseIfSessionWasRevoked(ctx, st, sessionID)
-		}
-		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting session: %w", err))
-	}
-	return nil
+	return recheckActingCredentialUnderLock(ctx, st, entryStepUp(actor), now)
 }
 
 // slideElevation extends the acting session's elevation window after a

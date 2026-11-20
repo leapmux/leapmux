@@ -1,38 +1,12 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { browserAuthDriver, resetBrowserAuthDriver } from '~/test-support/browserAuthDriver'
 import { BrowserStepUp } from './BrowserStepUp'
 
-/**
- * The ceremony seams: the sidecar's two commands and its one result event per
- * ceremony. `onEvent` hands the callback the emitted payload, never the Tauri
- * event envelope.
- */
-const bridgeMocks = vi.hoisted(() => ({
-  openExternalUrl: vi.fn<(url: string) => Promise<void>>(),
-  startBrowserAuth: vi.fn<() => Promise<{ ceremonyId: string, authorizeUrl: string }>>(),
-  cancelBrowserAuth: vi.fn<(ceremonyId: string) => Promise<void>>(),
-  handlers: [] as ((...args: unknown[]) => void)[],
-  emit(payload: { ceremonyId: string, ok: boolean, failure: string }): void {
-    for (const handler of [...bridgeMocks.handlers])
-      handler(payload)
-  },
-}))
-
-vi.mock('~/api/platformBridge', () => ({
-  openExternalUrl: (url: string) => bridgeMocks.openExternalUrl(url),
-  platformBridge: {
-    startBrowserAuth: () => bridgeMocks.startBrowserAuth(),
-    cancelBrowserAuth: (ceremonyId: string) => bridgeMocks.cancelBrowserAuth(ceremonyId),
-    onEvent: (_event: string, handler: (...args: unknown[]) => void): Promise<() => void> => {
-      bridgeMocks.handlers.push(handler)
-      return Promise.resolve(vi.fn(() => {
-        const index = bridgeMocks.handlers.indexOf(handler)
-        if (index >= 0)
-          bridgeMocks.handlers.splice(index, 1)
-      }))
-    },
-  },
-}))
+vi.mock('~/api/platformBridge', async () => {
+  const { browserAuthPlatformMock } = await import('~/test-support/browserAuthDriver')
+  return browserAuthPlatformMock()
+})
 
 const mockReloadUser = vi.hoisted(() => vi.fn<() => Promise<boolean>>())
 vi.mock('~/context/AuthContext', () => ({
@@ -47,11 +21,6 @@ vi.mock('~/lib/clipboard', () => ({
   copyTextToClipboard: (text: string) => copyTextToClipboard(text),
 }))
 
-const START = {
-  ceremonyId: 'c-1',
-  authorizeUrl: 'https://hub.example/authorize',
-}
-
 function renderStepUp() {
   const onElevated = vi.fn()
   const result = render(() => <BrowserStepUp onElevated={onElevated} />)
@@ -60,18 +29,12 @@ function renderStepUp() {
 
 async function startCeremony() {
   fireEvent.click(await screen.findByRole('button', { name: 'Verify in your browser' }))
-  await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalled())
+  await vi.waitFor(() => expect(browserAuthDriver.openExternalUrl).toHaveBeenCalled())
 }
 
 describe('BrowserStepUp', () => {
   beforeEach(() => {
-    bridgeMocks.openExternalUrl.mockReset()
-    bridgeMocks.openExternalUrl.mockResolvedValue(undefined)
-    bridgeMocks.startBrowserAuth.mockReset()
-    bridgeMocks.startBrowserAuth.mockResolvedValue(START)
-    bridgeMocks.cancelBrowserAuth.mockReset()
-    bridgeMocks.cancelBrowserAuth.mockResolvedValue(undefined)
-    bridgeMocks.handlers.length = 0
+    resetBrowserAuthDriver()
     copyTextToClipboard.mockReset()
     copyTextToClipboard.mockResolvedValue(true)
     mockReloadUser.mockReset()
@@ -82,7 +45,7 @@ describe('BrowserStepUp', () => {
     const { onElevated } = renderStepUp()
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: 'the code expired' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: false, failure: 'the code expired' })
 
     expect(await screen.findByText('the code expired')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Verify in your browser' })).toBeInTheDocument()
@@ -94,7 +57,7 @@ describe('BrowserStepUp', () => {
     const { onElevated } = renderStepUp()
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledTimes(1))
     expect(onElevated).toHaveBeenCalledTimes(1)
@@ -105,7 +68,7 @@ describe('BrowserStepUp', () => {
     const { onElevated } = renderStepUp()
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     expect(await screen.findByText(/could not read the verified session/i)).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Verify in your browser' })).toBeInTheDocument()
@@ -116,11 +79,13 @@ describe('BrowserStepUp', () => {
     renderStepUp()
     await startCeremony()
 
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+
     fireEvent.click(await screen.findByRole('button', { name: 'Open again' }))
 
-    await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalledTimes(2))
-    expect(bridgeMocks.openExternalUrl).toHaveBeenNthCalledWith(2, 'https://hub.example/authorize')
-    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(browserAuthDriver.openExternalUrl).toHaveBeenCalledTimes(2))
+    expect(browserAuthDriver.openExternalUrl).toHaveBeenNthCalledWith(2, 'https://hub.example/authorize')
+    expect(browserAuthDriver.startBrowserAuth).toHaveBeenCalledTimes(1)
   })
 
   it('copies the ceremony link through the clipboard gateway', async () => {

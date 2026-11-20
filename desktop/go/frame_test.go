@@ -45,10 +45,11 @@ func TestFrame_roundTrip_request(t *testing.T) {
 				Id: 42,
 				Method: &desktoppb.Request_ProxyHttp{
 					ProxyHttp: &desktoppb.ProxyHttpRequest{
-						Method:  "POST",
-						Path:    "/api/v1/data",
-						Headers: map[string]string{"Content-Type": "application/json"},
-						Body:    []byte(`{"key":"value"}`),
+						Method:    "POST",
+						Path:      "/api/v1/data",
+						Headers:   map[string]string{"Content-Type": "application/json"},
+						Body:      []byte(`{"key":"value"}`),
+						RequestId: "request-42",
 					},
 				},
 			},
@@ -69,6 +70,7 @@ func TestFrame_roundTrip_request(t *testing.T) {
 	require.NotNil(t, proxy)
 	assert.Equal(t, "POST", proxy.Method)
 	assert.Equal(t, "/api/v1/data", proxy.Path)
+	assert.Equal(t, "request-42", proxy.RequestId)
 	assert.Equal(t, []byte(`{"key":"value"}`), proxy.Body)
 }
 

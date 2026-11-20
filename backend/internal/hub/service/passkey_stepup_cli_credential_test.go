@@ -73,7 +73,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	// credential, and another browser session.
 	otherBearer := env.bearerFor(t)
 	otherTokenID := tokenIDOf(t, otherBearer)
-	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	_, err = env.client.ChangePassword(bearerReq(ctx, &leapmuxv1.ChangePasswordRequest{

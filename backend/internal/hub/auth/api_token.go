@@ -548,7 +548,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				Elevation: elevation,
 			},
 			touch:      func() { _ = v.store.APITokens().Touch(ctx, api.ID) },
-			credential: APICredential(tokenID),
+			credential: APICredentialWithElevationPolicy(tokenID, api.ClientElevationAllowed),
 		}, nil
 
 	case BearerKindDelegation:

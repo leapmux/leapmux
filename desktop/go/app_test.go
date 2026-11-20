@@ -303,7 +303,7 @@ func TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedReq
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	data, err := json.Marshal(sessionFile{
 		HubURL:  base.String(),
-		Cookies: []persistedCookie{{Name: "sid", Value: "abc123", Path: "/"}},
+		Cookies: []persistedCookie{{Name: testSessionCookieName, Value: "abc123", Path: "/"}},
 	})
 	require.NoError(t, err)
 	require.NoError(t, atomicfile.WriteFile(filepath.Join(dir, sessionFileName(base)), data, 0o600))
@@ -318,7 +318,7 @@ func TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedReq
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, "sid=abc123", proxiedCookie,
+	assert.Equal(t, testSessionCookieName+"=abc123", proxiedCookie,
 		"the first proxied request must carry the stored session cookie")
 }
 

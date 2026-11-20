@@ -132,6 +132,10 @@ type OAuthServerDeps struct {
 	// store, and the context holds none of the request's values.
 	// Required.
 	ServingCtx context.Context
+	// IssuesSession resolves the build-owned capability at authorization.
+	// Nil uses oauthapp.IssuesSession. Tests may inject a mutable resolver to
+	// prove that redemption follows the consented code row.
+	IssuesSession func(clientID string) bool
 }
 
 // OAuthServerHandler implements /oauth/* and the two metadata documents. It
@@ -152,6 +156,7 @@ type OAuthServerHandler struct {
 	set           *settings.Manager
 	limiter       *ratelimit.Manager
 	refreshFlight singleflight.Group
+	issuesSession func(clientID string) bool
 
 	// The clock every instant the handler mints or compares comes from:
 	// grant expiry, the device-code slow_down throttle, token lifetimes,
@@ -173,6 +178,10 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 	if deps.Store != nil && deps.SessionHasher.IsZero() {
 		panic("OAuth server requires a session secret hasher when a store is configured")
 	}
+	issuesSession := deps.IssuesSession
+	if issuesSession == nil {
+		issuesSession = oauthapp.IssuesSession
+	}
 	return &OAuthServerHandler{
 		sessionHasher: deps.SessionHasher,
 		store:         deps.Store,
@@ -184,6 +193,7 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		notices:       deps.Notices,
 		set:           deps.Settings,
 		limiter:       deps.Limiter,
+		issuesSession: issuesSession,
 		servingCtx:    deps.ServingCtx,
 	}
 }

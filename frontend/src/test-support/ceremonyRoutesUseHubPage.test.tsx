@@ -28,6 +28,7 @@ const formMounted = vi.fn()
 const runBrowserAuth = vi.hoisted(() => vi.fn<() => Promise<BrowserAuthFlow>>())
 vi.mock('~/lib/browserAuth', () => ({ runBrowserAuth }))
 vi.mock('~/api/transport', () => ({
+  advanceAuthSessionEpoch: vi.fn(),
   loadTimeouts: vi.fn(async () => {}),
   setElevationAdoptionOpener: vi.fn(),
   setOnAuthError: vi.fn(),
@@ -313,7 +314,7 @@ describe('CeremonyLayout', () => {
     {
       change: 'replaces the redirect before email verification',
       path: nextLogin,
-      destination: '/verify-email',
+      destination: `/verify-email?redirect=${encodeURIComponent('/?current#destination')}`,
       verificationRequired: true,
     },
   ])('finishes adoption when the visitor $change', async ({ path, destination, verificationRequired }) => {
@@ -330,7 +331,10 @@ describe('CeremonyLayout', () => {
 
   it.each([
     { destination: '/?retried#destination', verificationRequired: false },
-    { destination: '/verify-email', verificationRequired: true },
+    {
+      destination: `/verify-email?redirect=${encodeURIComponent('/?retried#destination')}`,
+      verificationRequired: true,
+    },
   ])('recovers through $destination when the initial account read fails', async ({ destination, verificationRequired }) => {
     const { auth, navigate, navigations, read } = await reachBrowserSignInAdoption(originalLogin)
     navigate(nextLogin)

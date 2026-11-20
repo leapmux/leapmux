@@ -292,7 +292,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	h.loginOAuthUser(rec, req, userID, providerID, providerSubject, "", &huboauth.TokenSet{
 		AccessToken: "access", RefreshToken: "refresh", TokenType: "bearer",
 		ExpiresAt: time.Now().Add(time.Hour),
-	}, "")
+	}, "", store.OAuthStatePurposeLogin)
 
 	require.Equal(t, http.StatusFound, rec.Code)
 	parsed, err := http.ParseSetCookie(rec.Header().Get("Set-Cookie"))

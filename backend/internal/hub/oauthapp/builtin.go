@@ -107,6 +107,17 @@ func IsBuiltIn(clientID string) bool {
 	return false
 }
 
+// IssuesSession reports whether this build authorizes clientID to mint a Hub
+// session rather than a scoped app credential.
+func IssuesSession(clientID string) bool {
+	for _, app := range BuiltInRegistrations() {
+		if app.ClientID == clientID {
+			return app.IssuesSessions
+		}
+	}
+	return false
+}
+
 // BuiltInClientIDs lists them in a stable order, for a test or a listing that
 // must cover all of them.
 func BuiltInClientIDs() []string {
@@ -120,9 +131,9 @@ func BuiltInClientIDs() []string {
 
 // DesktopIssuesSessions records that an authorization for the desktop mints a
 // SESSION on the Hub rather than an app credential: the browser handoff of its
-// remote-Hub mode. It is the seed's source for oauth_clients.issues_sessions,
-// which the consent page reads to pick its variant and the consent POST writes
-// onto the code row. Exactly one built-in answers true.
+// remote-Hub mode. The consent page reads the built-in descriptor to pick its
+// variant and writes that decision onto the code row. Exactly one built-in
+// answers true.
 //
 // Minting a session hands out the account itself, so this is a constant of the
 // build and not a registration field any caller can turn on.

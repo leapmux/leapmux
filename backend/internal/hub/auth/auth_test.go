@@ -27,7 +27,7 @@ func TestCreateSessionMaximumDuration(t *testing.T) {
 	st := newTestStore(t)
 	userID := userid.MustNew(seedUser(t, st))
 	before := time.Now()
-	session, err := auth.CreateSession(t.Context(), st, hubtestutil.TestSecretHasher(), userID, math.MaxInt64, auth.SignInProvedNoFactor)
+	session, err := auth.CreateSession(t.Context(), st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: math.MaxInt64, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	assert.True(t, session.ExpiresAt.After(before.Add(time.Duration(math.MaxInt64))))
 	stored, err := st.Sessions().GetByID(t.Context(), session.ID, before)
@@ -101,7 +101,7 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := time.Now()
-			createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, lifetime, auth.SignInProvedNoFactor)
+			createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: lifetime, Proof: auth.SignInProvedNoFactor})
 			require.NoError(t, err)
 			hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, createdSession.ExpiresAt)
 		})
@@ -110,7 +110,7 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 	// A positive lifetime must also reach the session. This detects an implementation that always uses the default.
 	t.Run("positive is honoured", func(t *testing.T) {
 		before := time.Now()
-		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Hour, auth.SignInProvedNoFactor)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 		require.NoError(t, err)
 		hubtestutil.AssertSessionLifetime(t, before, time.Hour, createdSession.ExpiresAt)
 	})
@@ -124,7 +124,7 @@ func TestCreateSession_RecordsVerifiedClientIP(t *testing.T) {
 	user, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
 	require.NoError(t, err)
 
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), time.Hour, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	session, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestCreateSession_SignInProvedFactorStampsTheSignInWindow(t *testing.T) {
 	ctx := context.Background()
 
 	before := time.Now()
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Hour, auth.SignInProvedFactor)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedFactor})
 	require.NoError(t, err)
 
 	row, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
@@ -160,8 +160,8 @@ func TestCreateSessionAt_FullWindowUsesTheSuppliedInstant(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
 
-	created, err := auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID,
-		time.Hour, auth.SignInProvedFactorWithFullWindow, now)
+	created, err := auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID, now, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedFactorWithFullWindow})
+
 	require.NoError(t, err)
 	row, err := st.Sessions().GetByID(ctx, created.ID, now)
 	require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestCreateSession_SignInProvedNoFactorStampsNoWindow(t *testing.T) {
 	userID := userid.MustNew(createTestUser(t, st))
 	ctx := context.Background()
 
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Hour, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	row, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
@@ -196,7 +196,7 @@ func TestCreateSession_ZeroSignInProofRefused(t *testing.T) {
 	userID := createTestUser(t, st)
 	ctx := context.Background()
 
-	_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour, auth.SignInProof(0))
+	_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProof(0)})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sign-in proof",
 		"the zero proof must be the reported cause")
@@ -454,7 +454,7 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 		userID := createTestUser(t, st)
 		ctx := context.Background()
 
-		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 		require.NoError(t, err)
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
@@ -475,7 +475,7 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
-		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 		require.NoError(t, err)
 
 		info, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), createdSession.Token)

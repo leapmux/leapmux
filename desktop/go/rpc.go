@@ -29,6 +29,82 @@ type RPCSession struct {
 	shutdownCleanup *drain.Counter
 	peerDone        chan struct{}
 	onShutdown      func()
+	proxyRequests   proxyRequestRegistry
+}
+
+const proxyPrecancelCapacity = 1024
+
+type proxyRequestEntry struct {
+	cancel context.CancelFunc
+}
+
+type proxyRequestRegistry struct {
+	mu             sync.Mutex
+	active         map[string]*proxyRequestEntry
+	precancelled   map[string]struct{}
+	precancelOrder []string
+}
+
+func validProxyRequestID(requestID string) bool {
+	return requestID != "" && len(requestID) <= 128
+}
+
+func (r *proxyRequestRegistry) begin(parent context.Context, requestID string) (context.Context, func(), error) {
+	if !validProxyRequestID(requestID) {
+		return nil, nil, fmt.Errorf("proxy request id is invalid")
+	}
+	ctx, cancel := context.WithCancel(parent)
+	entry := &proxyRequestEntry{cancel: cancel}
+	r.mu.Lock()
+	if r.active == nil {
+		r.active = make(map[string]*proxyRequestEntry)
+	}
+	if _, exists := r.active[requestID]; exists {
+		r.mu.Unlock()
+		cancel()
+		return nil, nil, fmt.Errorf("proxy request %q is already active", requestID)
+	}
+	if _, cancelled := r.precancelled[requestID]; cancelled {
+		delete(r.precancelled, requestID)
+		cancel()
+	}
+	r.active[requestID] = entry
+	r.mu.Unlock()
+	return ctx, func() {
+		r.mu.Lock()
+		if r.active[requestID] == entry {
+			delete(r.active, requestID)
+		}
+		r.mu.Unlock()
+		cancel()
+	}, nil
+}
+
+func (r *proxyRequestRegistry) cancel(requestID string) error {
+	if !validProxyRequestID(requestID) {
+		return fmt.Errorf("proxy request id is invalid")
+	}
+	r.mu.Lock()
+	if entry := r.active[requestID]; entry != nil {
+		cancel := entry.cancel
+		r.mu.Unlock()
+		cancel()
+		return nil
+	}
+	if r.precancelled == nil {
+		r.precancelled = make(map[string]struct{})
+	}
+	if _, exists := r.precancelled[requestID]; !exists {
+		r.precancelled[requestID] = struct{}{}
+		r.precancelOrder = append(r.precancelOrder, requestID)
+	}
+	for len(r.precancelled) > proxyPrecancelCapacity && len(r.precancelOrder) > 0 {
+		expired := r.precancelOrder[0]
+		r.precancelOrder = r.precancelOrder[1:]
+		delete(r.precancelled, expired)
+	}
+	r.mu.Unlock()
+	return nil
 }
 
 type frameReadResult struct {
@@ -430,7 +506,13 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 		s.writeSidecarInfo(id)
 
 	case *desktoppb.Request_ProxyHttp:
-		resp, body, err := s.app.ProxyHTTP(ctx, m.ProxyHttp.Method, m.ProxyHttp.Path, m.ProxyHttp.Headers, m.ProxyHttp.Body)
+		requestCtx, finish, err := s.proxyRequests.begin(ctx, m.ProxyHttp.GetRequestId())
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
+		defer finish()
+		resp, body, err := s.app.ProxyHTTP(requestCtx, m.ProxyHttp.Method, m.ProxyHttp.Path, m.ProxyHttp.Headers, m.ProxyHttp.Body)
 		if err != nil {
 			s.writeError(id, err)
 			return
@@ -602,6 +684,9 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 	case *desktoppb.Request_CancelBrowserAuth:
 		s.app.CancelBrowserAuth(m.CancelBrowserAuth.GetCeremonyId())
 		s.writeOK(id)
+
+	case *desktoppb.Request_CancelProxyHttp:
+		s.writeErrOrOK(id, s.proxyRequests.cancel(m.CancelProxyHttp.GetRequestId()))
 
 	default:
 		s.writeError(id, fmt.Errorf("unknown method: %T", req.Method))

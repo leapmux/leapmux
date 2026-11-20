@@ -13,7 +13,7 @@ import type { BranchRef } from '~/components/workspace/workspaceTabTree.model'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { LinkConfirmState } from '~/hooks/createLinkConfirm'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
-import type { HubUserId, StorageAccount } from '~/lib/browserStorage'
+import type { HubUserId } from '~/lib/browserStorage'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { TabView } from '~/stores/tabView'
@@ -45,11 +45,10 @@ import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
 import { BOOT_PHASE_READY, BOOT_SPLASH_ENTER_MS, setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet, storageAccountFor } from '~/lib/browserStorage'
+import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { attachDismissSoftKeyboardOnTap } from '~/lib/dismissSoftKeyboardOnTap'
-import { hubOrigin } from '~/lib/hubSite'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
@@ -128,12 +127,6 @@ const log = createLogger('shell')
 export const AppShell: Component = () => {
   const auth = useAuth()
   const userId = (): HubUserId => (auth.user()?.id ?? '') as HubUserId
-  const storageAccount = (): StorageAccount => {
-    const uid = userId()
-    return uid
-      ? storageAccountFor(hubOrigin(), uid)
-      : '' as StorageAccount
-  }
   const workspace = useWorkspace()
   const preferences = usePreferences()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -171,7 +164,8 @@ export const AppShell: Component = () => {
     effectiveClientId,
     ownClientId,
   } = useCrdtRuntime({
-    storageAccount,
+    storageAccount: auth.storageAccount,
+    onAccountEnd: auth.onAccountEnd,
     hubUserId: userId,
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
     activeClient,

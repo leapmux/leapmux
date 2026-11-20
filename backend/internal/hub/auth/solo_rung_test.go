@@ -159,7 +159,8 @@ func TestSoloRung_ASessionCookieAuthenticatesOverTCP(t *testing.T) {
 	f.setSoloPassword(t)
 
 	createdSession, err := auth.CreateSession(
-		context.Background(), f.store, hubtestutil.TestSecretHasher(), userid.MustNew(f.user.ID.String()), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+		context.Background(), f.store, hubtestutil.TestSecretHasher(), userid.MustNew(f.user.ID.String()), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
+
 	require.NoError(t, err)
 	// The Admin* procedure behind the call below now needs a step-up window.
 	hubtestutil.ElevateSession(t, f.store, hubtestutil.SessionIDFromCookie(t, createdSession.Token), f.user.ID.String())

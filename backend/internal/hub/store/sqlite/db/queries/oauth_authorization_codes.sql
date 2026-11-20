@@ -23,17 +23,14 @@ INSERT INTO oauth_authorization_codes (
 );
 
 -- name: MarkOAuthAuthorizationCodeMinted :execresult
--- Records WHICH credential this code produced -- a session or an app
--- credential, as the reference states -- so a replay of the same code can
--- revoke it. RFC 6749 section 4.1.2 requires exactly that, and without the
--- stamp there was nothing to name the credential by.
+-- Records WHICH credential id this code produced. redemption_kind supplies
+-- the kind, so a replay can revoke the exact credential without a second copy.
 UPDATE oauth_authorization_codes
-SET minted_kind = sqlc.narg(minted_kind),
-    minted_ref_id = sqlc.arg(minted_ref_id)
+SET minted_ref_id = sqlc.arg(minted_ref_id)
 WHERE code = sqlc.arg(code)
   AND consumed_at IS NOT NULL
   AND step_up_kind IS NULL
-  AND minted_kind IS NULL
+  AND minted_ref_id = ''
   AND redemption_kind = sqlc.arg(expected_redemption_kind);
 
 -- name: GetOAuthAuthorizationCode :one

@@ -103,8 +103,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			require.NoErrorf(t, err, "the store open must seed %s", clientID)
 			assert.Equal(t, store.OAuthClientSourceBuiltin, app.RegistrationSource)
 			assert.Empty(t, app.OwnerUserID, "a built-in registration is hub-wide")
-			assert.Equalf(t, clientID == oauthapp.DesktopClientID, app.IssuesSessions,
-				"only the Desktop registration may issue sessions, checked %s", clientID)
+			assert.Equalf(t, clientID == oauthapp.DesktopClientID, oauthapp.IssuesSession(clientID),
+				"only the Desktop descriptor may issue sessions, checked %s", clientID)
 			// Against the column's FALSE default, and stated by the seed on
 			// purpose: a seeded row that lost it would take
 			// `leapmux control admin ...` away with no error anybody could

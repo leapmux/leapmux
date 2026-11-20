@@ -42,7 +42,7 @@ func reauthSession(t *testing.T, st store.Store, providerID, subject string) (co
 	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 		UserID: userid.MustNew(userID), ProviderID: providerID, ProviderSubject: subject,
 	}))
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	return &http.Cookie{Name: auth.CookieName, Value: createdSession.Token}, userID, createdSession.ID
 }
@@ -296,7 +296,7 @@ func TestOAuthReauth_RefusesAnUnlinkedIdentity(t *testing.T) {
 		ID: userID, Username: "nolinks", PasswordHash: "hash", DisplayName: "No Links",
 		Email: "nolinks@example.com", EmailVerified: true,
 	}))
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	cookie := &http.Cookie{Name: auth.CookieName, Value: createdSession.Token}
 

@@ -672,6 +672,17 @@ func recheckActingSessionUnderLock(
 	if !auth.NewElevation(session.ElevationProvenAt, session.ElevationExpiresAt).IsCurrent(p.elevationInstant(now)) {
 		return stepUpStateMovedError()
 	}
+	if session.UserID != p.userInfo.ID.String() || session.AuthGeneration < p.userInfo.UserAuthGeneration {
+		return stepUpStateMovedError()
+	}
+	if session.IssuedToClient != "" {
+		if err := tx.OAuthClients().LockForElevation(ctx, session.IssuedToClient); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return stepUpStateMovedError()
+			}
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("lock the acting session app: %w", err))
+		}
+	}
 	return nil
 }
 
@@ -708,11 +719,20 @@ func recheckActingAPITokenUnderLock(
 		}
 		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting credential: %w", err))
 	}
-	if row.RevokedAt != nil {
+	if row.RevokedAt != nil || row.UserID != p.userInfo.ID.String() || row.AuthGeneration < p.userInfo.UserAuthGeneration {
+		return stepUpStateMovedError()
+	}
+	if row.ExpiresAt != nil && !now.Before(*row.ExpiresAt) || !now.Before(row.CreatedAt.Add(auth.AbsoluteTokenLifetime)) {
 		return stepUpStateMovedError()
 	}
 	if !auth.NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt).IsCurrent(p.elevationInstant(now)) {
 		return stepUpStateMovedError()
+	}
+	if err := tx.OAuthClients().LockForElevation(ctx, row.ClientID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return stepUpStateMovedError()
+		}
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("lock the acting credential app: %w", err))
 	}
 	return nil
 }

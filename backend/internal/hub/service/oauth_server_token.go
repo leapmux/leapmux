@@ -455,8 +455,9 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 			userAgent = app.ClientName + " on " + row.InstallationName
 		}
 		sess, err := auth.CreateSession(r.Context(), tx, h.sessionHasher, grantUID,
-			settings.SessionDuration(h.snapshot(r.Context())), auth.SignInProvedNoFactor,
-			auth.SessionMeta{
+			auth.SessionCreationOptions{
+				Lifetime:       settings.SessionDuration(h.snapshot(r.Context())),
+				Proof:          auth.SignInProvedNoFactor,
 				UserAgent:      userAgent,
 				IssuedToClient: app.ClientID,
 			})

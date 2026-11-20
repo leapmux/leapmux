@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/sessioncookie"
 	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/useronly"
@@ -109,7 +110,12 @@ func openPersistentJar(base *url.URL, dir string) *persistentJar {
 		return j
 	}
 	now := time.Now()
+	ignoredAuxiliary := false
 	for _, pc := range sf.Cookies {
+		if !sessioncookie.IsName(pc.Name) {
+			ignoredAuxiliary = true
+			continue
+		}
 		if pc.Expires != nil && !pc.Expires.After(now) {
 			continue
 		}
@@ -121,6 +127,12 @@ func openPersistentJar(base *url.URL, dir string) *persistentJar {
 		j.inner.SetCookies(base, []*http.Cookie{&c})
 	}
 	j.lastJSON = string(data)
+	if ignoredAuxiliary {
+		j.diskDirty = true
+		j.mu.Lock()
+		j.persistLocked()
+		j.mu.Unlock()
+	}
 	return j
 }
 
@@ -269,7 +281,8 @@ func (j *persistentJar) persistLocked() {
 			j.diskDirty = true
 		}
 	}
-	if len(j.record) == 0 {
+	persisted := j.persistedCookies()
+	if len(persisted) == 0 {
 		if err := os.Remove(j.path); err != nil && !os.IsNotExist(err) {
 			slog.Warn("session store: remove session file", "path", j.path, "err", err)
 			return
@@ -285,12 +298,13 @@ func (j *persistentJar) persistLocked() {
 		j.diskDirty = false
 		return
 	}
-	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: j.orderedCookies()}, "", "  ")
+	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: persisted}, "", "  ")
 	if err != nil {
 		slog.Warn("session jar: cannot encode session record; keeping cookies in memory only", "error", err)
 		return
 	}
-	if !j.diskDirty && string(data) == j.lastJSON {
+	if string(data) == j.lastJSON {
+		j.diskDirty = false
 		return
 	}
 	dir := filepath.Dir(j.path)
@@ -325,6 +339,20 @@ func (j *persistentJar) orderedCookies() []persistedCookie {
 		cookies[index] = item.cookie
 	}
 	return cookies
+}
+
+// persistedCookies keeps only Hub authentication cookies on disk. The live
+// record and snapshots retain auxiliary cookies for reverse proxies and
+// in-progress browser flows.
+func (j *persistentJar) persistedCookies() []persistedCookie {
+	ordered := j.orderedCookies()
+	persisted := make([]persistedCookie, 0, len(ordered))
+	for _, cookie := range ordered {
+		if sessioncookie.IsName(cookie.Name) {
+			persisted = append(persisted, cookie)
+		}
+	}
+	return persisted
 }
 
 // fromHTTP converts a cookie to its persisted form and reports whether it

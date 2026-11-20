@@ -4,12 +4,13 @@ import { createSignal, onCleanup } from 'solid-js'
 import { runBrowserAuth } from '~/lib/browserAuth'
 import { formatErrorMessage } from '~/lib/errors'
 
-export type BrowserCeremonyPhase = 'idle' | 'waiting'
+export type BrowserCeremonyState
+  = | { phase: 'idle', failure: string }
+    | { phase: 'starting' | 'completing' }
+    | { phase: 'waiting', flow: BrowserAuthFlow }
 
 export interface BrowserCeremony {
-  phase: () => BrowserCeremonyPhase
-  failure: () => string
-  flow: () => BrowserAuthFlow | null
+  state: () => BrowserCeremonyState
   start: () => Promise<void>
   cancel: () => Promise<void>
 }
@@ -30,56 +31,52 @@ export function useBrowserCeremony(
   kind: BrowserAuthKind,
   onSuccess: (signal: AbortSignal) => void | Promise<void>,
 ): BrowserCeremony {
-  const [phase, setPhase] = createSignal<BrowserCeremonyPhase>('idle')
-  const [failure, setFailure] = createSignal('')
-  const [flow, setFlow] = createSignal<BrowserAuthFlow | null>(null)
+  const [state, setState] = createSignal<BrowserCeremonyState>({ phase: 'idle', failure: '' })
 
   const controller = new AbortController()
   const { signal } = controller
   onCleanup(() => controller.abort())
 
   const start = async (): Promise<void> => {
-    if (signal.aborted || phase() === 'waiting')
+    if (signal.aborted || state().phase !== 'idle')
       return
-    setFailure('')
-    setPhase('waiting')
+    setState({ phase: 'starting' })
     try {
       const f = await runBrowserAuth(kind, signal)
       if (!signal.aborted)
-        setFlow(f)
+        setState({ phase: 'waiting', flow: f })
 
       const result = await f.result
-      if (!signal.aborted)
-        setFlow(null)
       if (!result.ok) {
         if (signal.aborted)
           return
-        setPhase('idle')
-        setFailure(result.failure)
+        setState({ phase: 'idle', failure: result.failure })
         return
       }
 
       // The sidecar may accept a code after this route requested cancellation.
       // Persistent authentication belongs to the surviving provider, while
       // onSuccess uses signal to suppress route-owned navigation and callbacks.
+      if (!signal.aborted)
+        setState({ phase: 'completing' })
       await onSuccess(signal)
     }
     catch (err) {
       if (signal.aborted)
         return
-      setPhase('idle')
-      setFlow(null)
-      setFailure(formatErrorMessage(err))
+      setState({
+        phase: 'idle',
+        failure: formatErrorMessage(err),
+      })
     }
   }
 
   const cancel = async (): Promise<void> => {
-    const f = flow()
-    if (f) {
-      await f.cancel()
-    }
+    const current = state()
+    if (current.phase === 'waiting')
+      await current.flow.cancel()
     // The result event will settle and reset the phase.
   }
 
-  return { phase, failure, flow, start, cancel }
+  return { state, start, cancel }
 }

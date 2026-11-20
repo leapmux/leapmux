@@ -324,10 +324,11 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 			return fmt.Errorf("store the initial solo password: %w", err)
 		}
 		reqInfo := serverCallInfo(ctx)
-		session, err = auth.CreateSessionAt(ctx, tx, s.sessionHasher, uid, settings.SessionDuration(snap),
-			auth.SignInProvedFactorWithFullWindow, now, auth.SessionMeta{
-				UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
-			})
+		session, err = auth.CreateSessionAt(ctx, tx, s.sessionHasher, uid, now, auth.SessionCreationOptions{
+			Lifetime:  settings.SessionDuration(snap),
+			Proof:     auth.SignInProvedFactorWithFullWindow,
+			UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
+		})
 		if err != nil {
 			return err
 		}
@@ -488,7 +489,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 		if mintErr != nil {
 			return nil, mintErr
 		}
-		session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, uid, s.sessionDuration(ctx), auth.SignInProvedFactor)
+		session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, uid, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedFactor})
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -554,7 +555,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 	if err != nil {
 		return nil, err
 	}
-	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx), auth.SignInProvedFactor)
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedFactor})
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -847,7 +848,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	session, sessionErr := auth.CreateSession(ctx, s.store, s.sessionHasher, finalUID, s.sessionDuration(ctx), auth.SignInProvedNoFactor)
+	session, sessionErr := auth.CreateSession(ctx, s.store, s.sessionHasher, finalUID, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedNoFactor})
 	if sessionErr != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}

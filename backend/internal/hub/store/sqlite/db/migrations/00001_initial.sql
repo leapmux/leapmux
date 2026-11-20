@@ -528,7 +528,6 @@ CREATE TABLE oauth_clients (
     -- let any app ask for a full session instead of a scoped credential. The
     -- consent page reads it, and the consent POST writes the fork it decided
     -- onto the code row (oauth_authorization_codes.redemption_kind).
-    issues_sessions       BOOLEAN NOT NULL DEFAULT FALSE,
     -- An AppRegistrationSource ordinal: who put this registration in the table.
     registration_source   INTEGER NOT NULL CHECK (typeof(registration_source) = 'integer') CHECK (registration_source BETWEEN 1 AND 4),
     -- An administrator vouched. NULL is the unverified marker the consent page
@@ -770,18 +769,16 @@ CREATE TABLE oauth_authorization_codes (
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
     consumed_at           DATETIME,
-    -- The credential the exchange MINTED, stamped at consumption: one kind
-    -- and one id, so the reference identifies one credential or has no target.
+    -- The credential id the exchange MINTED, stamped at consumption. Its kind
+    -- is derived from redemption_kind, the consent decision that produced it.
     --
     -- It is what makes a code REPLAY destructive rather than merely refused:
     -- RFC 6749 section 4.1.2 requires the server to revoke the credential a
     -- replayed code already produced, and without the stamp there was nothing
-    -- to name it. A NULL kind means nothing was minted -- a code nobody
-    -- redeemed, or a step-up -- and the column never stores 0.
-    minted_kind           INTEGER CHECK (minted_kind IS NULL OR typeof(minted_kind) = 'integer') CHECK (minted_kind BETWEEN 1 AND 2),
+    -- to name it. An empty id means nothing was minted.
     minted_ref_id         TEXT NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
-    -- than issuing one. One reference, as minted_kind carries: at most one
+    -- than issuing one. One reference carries at most one
     -- target is structural, since a reference holds one kind and one id. No
     -- foreign key, for the reason device_authorizations.elevate_token_id
     -- gives.
@@ -794,10 +791,9 @@ CREATE TABLE oauth_authorization_codes (
     redemption_kind       INTEGER CHECK (redemption_kind IS NULL OR typeof(redemption_kind) = 'integer') CHECK (redemption_kind BETWEEN 1 AND 2),
     -- The ties make the states structural: a kind has no effect without its
     -- id, and a code verifies XOR redeems.
-    CHECK ((minted_kind IS NULL) = (minted_ref_id = '')),
     CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')),
     CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
-    CHECK (minted_kind IS NULL OR (consumed_at IS NOT NULL AND minted_kind = redemption_kind))
+    CHECK (minted_ref_id = '' OR (consumed_at IS NOT NULL AND redemption_kind IS NOT NULL))
 );
 CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 
@@ -859,15 +855,15 @@ CREATE TABLE oauth_states (
     -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
     -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
     -- reaching the DEFAULT. That matters because the callback treats every
-    -- value that is not REAUTH as a LOGIN -- the branch that may create a
-    -- session and link an identity.
-    purpose         INTEGER NOT NULL DEFAULT 1 CHECK (typeof(purpose) = 'integer') CHECK (purpose BETWEEN 1 AND 2),
-    -- The session a REAUTH state elevates on success. Empty for a LOGIN state.
+    -- callback dispatches only the three explicit purposes and refuses every
+    -- other value before it can create a session or link an identity.
+    purpose         INTEGER NOT NULL DEFAULT 1 CHECK (typeof(purpose) = 'integer') CHECK (purpose BETWEEN 1 AND 3),
+    -- The session a REAUTH state elevates on success. Empty for login states.
     session_id      TEXT NOT NULL DEFAULT '',
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- A REAUTH (2) state carries the session it elevates, and a LOGIN state
-    -- carries none. TestOAuthStatePurposeReauthNumbering pins the literal 2,
+    -- login states carry none. TestOAuthStatePurposeReauthNumbering pins 2,
     -- which a constraint cannot take as a parameter.
     CHECK ((purpose = 2) = (session_id <> ''))
 );

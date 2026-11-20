@@ -429,8 +429,8 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
 
     // Desktop sidecar path: the webview can't open a native WS to
     // the unix-socket hub in solo mode, so the Go sidecar dials
-    // `/ws/userevents` for us and forwards each frame through a
-    // Tauri channel. Skip this branch when a `buildWsUrl` override is
+    // `/ws/userevents` for us and forwards each frame through acknowledged
+    // raw Tauri reads. Skip this branch when a `buildWsUrl` override is
     // supplied (tests intentionally drive a real WebSocket).
     if (isTauriApp() && !opts.buildWsUrl) {
       // One id per attempt, shared by this attempt's open and its close, so the

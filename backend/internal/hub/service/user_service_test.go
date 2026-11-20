@@ -228,7 +228,7 @@ func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTe
 	// than a sign-in with the window dropped, because the drop queues a
 	// user_info event and TestUserService_UpdateProfile_SameUsername counts
 	// the event stream.
-	session, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	session, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -297,7 +297,7 @@ func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *u
 	})
 
 	// PasswordSet is false, so password Login refuses. Mint a session directly.
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -1696,7 +1696,7 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Create a second session for the same user (simulates another device).
-	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	// Verify both sessions are valid.
@@ -2863,7 +2863,7 @@ func TestUserService_DeletePasskey_LastPasskeyWithNewPassword_Deactivates(t *tes
 	pkID := seedPasskeyCredential(t, env.store, env.userID, "Only One")
 	env.elevate(t)
 
-	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	_, err = env.client.DeletePasskey(authedReq(context.Background(), &leapmuxv1.DeletePasskeyRequest{
@@ -2971,7 +2971,7 @@ func TestUserService_DeactivatePasskeyAuth_InvalidatesOtherSessions(t *testing.T
 	seedPasskeyCredential(t, env.store, env.userID, "Only")
 	env.elevate(t)
 
-	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	_, err = env.client.DeactivatePasskeyAuth(authedReq(context.Background(), &leapmuxv1.DeactivatePasskeyAuthRequest{
@@ -3195,7 +3195,7 @@ func TestBeginPasskeyRegistration_FreshVerifiedSessionStartsFirstPasskeyWithoutE
 		ID: userID, Username: "first-passkey", PasswordHash: password.PlaceholderHash,
 		Email: "first-passkey@example.com", EmailVerified: true, FirstCredentialExempt: false,
 	}))
-	created, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	created, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	row, err := env.store.Sessions().GetByID(ctx, created.ID, time.Now().UTC())
 	require.NoError(t, err)
@@ -3265,7 +3265,7 @@ func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 		ID: userID, Username: "shell", PasswordHash: password.PlaceholderHash,
 		DisplayName: "Shell", EmailVerified: false, FirstCredentialExempt: false, IsAdmin: true,
 	}))
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	_, err = client.BeginPasskeyRegistration(authedReq(context.Background(), &leapmuxv1.BeginPasskeyRegistrationRequest{}, createdSession.Token))
@@ -3330,7 +3330,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	// encrypted session row), so the failure lands on the parse branch.
 	sessionID, _, err := wa.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	_, err = client.FinishPasskeyElevation(authedReq(context.Background(), &leapmuxv1.FinishPasskeyElevationRequest{
@@ -3427,7 +3427,7 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 		Transports: "[]", FriendlyName: "Phone", KeyVersion: keyVersion, CreatedAt: time.Now().UTC(),
 	}))
 
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	begin := func() (*leapmuxv1.BeginPasskeyRegistrationResponse, error) {
@@ -3529,7 +3529,7 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "solouser", PasswordHash: hash, DisplayName: "Solo", FirstCredentialExempt: true, IsAdmin: true,
 	}))
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	pkID := seedPasskeyCredential(t, st, userID, "Laptop")
 

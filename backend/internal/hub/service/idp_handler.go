@@ -385,6 +385,9 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 	nonce := id.Generate()
 
 	redirectURI := sanitizeRedirectURI(r.URL.Query().Get("redirect"))
+	if purpose == store.OAuthStatePurposeLogin && isConsentRoute(redirectURI) {
+		purpose = store.OAuthStatePurposeConsentLogin
+	}
 
 	if err := h.store.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
 		State:        state,
@@ -410,7 +413,7 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 		// browser returns in a fraction of a second, and the "step-up" proved
 		// nothing.
 		ForceReauthentication: purpose == store.OAuthStatePurposeReauth ||
-			(purpose == leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_LOGIN && isConsentRoute(redirectURI)),
+			purpose == store.OAuthStatePurposeConsentLogin,
 	})
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -571,14 +574,14 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 	// The login leg is the one that creates, so it must never be the branch a
 	// value reaches by not matching something else -- and the Go zero value,
 	// UNSPECIFIED, is exactly such a value. oauth_states.purpose carries
-	// CHECK (purpose BETWEEN 1 AND 2) in all three dialects, so a row cannot
+	// CHECK (purpose BETWEEN 1 AND 3) in all three dialects, so a row cannot
 	// hold anything else; this branch keeps the two statements of the rule in
 	// agreement rather than trusting one of them alone.
 	switch oauthState.Purpose {
 	case store.OAuthStatePurposeReauth:
 		h.completeOAuthReauth(w, r, oauthState, link, err)
 		return
-	case store.OAuthStatePurposeLogin:
+	case store.OAuthStatePurposeLogin, store.OAuthStatePurposeConsentLogin:
 		// The rest of this function is the login leg.
 	default:
 		slog.Error("oauth: state row carries an unknown purpose",
@@ -614,7 +617,8 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 			return
 		}
 
-		h.loginOAuthUser(w, r, user.ID, providerID, claims.Subject, "", tokenSet, oauthState.RedirectURI)
+		h.loginOAuthUser(w, r, user.ID, providerID, claims.Subject, "", tokenSet,
+			oauthState.RedirectURI, oauthState.Purpose)
 		return
 	}
 	if !errors.Is(err, store.ErrNotFound) {
@@ -640,7 +644,7 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 		}
 		if emailErr == nil && existingUser.EmailVerified {
 			h.loginOAuthUser(w, r, existingUser.ID, providerID, claims.Subject, claims.Email,
-				tokenSet, oauthState.RedirectURI)
+				tokenSet, oauthState.RedirectURI, oauthState.Purpose)
 			return
 		}
 	}
@@ -784,9 +788,9 @@ func (h *IdPHandler) secureCookies(ctx context.Context) bool {
 func (h *IdPHandler) createOAuthLoginSession(
 	ctx context.Context,
 	userID userid.UserID,
-	providerID, providerSubject, autoLinkEmail, redirectURI string,
-	lifetime time.Duration,
-	meta auth.SessionMeta,
+	providerID, providerSubject, autoLinkEmail string,
+	purpose leapmuxv1.OAuthStatePurpose,
+	options auth.SessionCreationOptions,
 ) (auth.CreatedSession, error) {
 	var session auth.CreatedSession
 	if err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
@@ -818,17 +822,17 @@ func (h *IdPHandler) createOAuthLoginSession(
 		if link.UserID != user.ID {
 			return errElevationProofChanged
 		}
-		proof := auth.SignInProvedNoFactor
-		if isConsentRoute(redirectURI) {
+		options.Proof = auth.SignInProvedNoFactor
+		if purpose == store.OAuthStatePurposeConsentLogin {
 			providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, tx, user)
 			if err != nil {
 				return fmt.Errorf("check account factors for provider sign-in proof: %w", err)
 			}
 			if providerOnly {
-				proof = auth.SignInProvedFactor
+				options.Proof = auth.SignInProvedFactor
 			}
 		}
-		session, err = auth.CreateSession(ctx, tx, h.sessionHasher, userID, lifetime, proof, meta)
+		session, err = auth.CreateSession(ctx, tx, h.sessionHasher, userID, options)
 		return err
 	}); err != nil {
 		return auth.CreatedSession{}, err
@@ -844,6 +848,7 @@ func (h *IdPHandler) loginOAuthUser(
 	userID, providerID, providerSubject, autoLinkEmail string,
 	tokenSet *huboauth.TokenSet,
 	redirectURI string,
+	purpose leapmuxv1.OAuthStatePurpose,
 ) {
 	ctx := r.Context()
 
@@ -854,8 +859,9 @@ func (h *IdPHandler) loginOAuthUser(
 		return
 	}
 	session, sessionErr := h.createOAuthLoginSession(ctx, loginUID,
-		providerID, providerSubject, autoLinkEmail, redirectURI,
-		settings.SessionDuration(h.set.Snapshot(ctx)), auth.SessionMeta{
+		providerID, providerSubject, autoLinkEmail, purpose,
+		auth.SessionCreationOptions{
+			Lifetime:  settings.SessionDuration(h.set.Snapshot(ctx)),
 			UserAgent: r.UserAgent(),
 		})
 	if sessionErr != nil {

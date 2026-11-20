@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -25,7 +24,7 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 		RedirectURI:      c.RedirectUri,
 		GrantedScopes:    c.GrantedScopes,
 		InstallationName: c.InstallationName,
-		Minted:           store.StoredRef(c.MintedKind, c.MintedRefID),
+		Minted:           store.StoredRedemption(c.RedemptionKind).MintedRef(c.MintedRefID),
 		StepUp:           store.StoredRef(c.StepUpKind, c.StepUpRefID),
 		Redemption:       store.StoredRedemption(c.RedemptionKind),
 		CreatedAt:        c.CreatedAt.Time,
@@ -102,16 +101,14 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 }
 
 func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
-	mintedKind, mintedRefID := minted.NullableKind()
-	if mintedKind == nil {
+	redemption, ok := store.RedemptionForCredentialRef(minted)
+	if !ok {
 		return store.ErrInvalidArgument
 	}
-	redemptionKind := leapmuxv1.RedemptionKind(*mintedKind)
 	rows, err := s.conn.rowsAffected(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
 		Code:                   code,
-		MintedKind:             mintedKind,
-		MintedRefID:            mintedRefID,
-		ExpectedRedemptionKind: &redemptionKind,
+		MintedRefID:            minted.ID,
+		ExpectedRedemptionKind: redemption.NullableKind(),
 	}))
 	if err != nil {
 		return err

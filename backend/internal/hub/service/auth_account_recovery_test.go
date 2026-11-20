@@ -293,7 +293,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	}))
 	seedPasskeyCredential(t, st, userID, "Laptop")
 	uid := userid.MustNew(userID)
-	oldSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	oldSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	ceremonyID := id.Generate()
 	now := time.Now().UTC()

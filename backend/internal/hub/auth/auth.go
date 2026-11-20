@@ -443,7 +443,10 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 		if !sessMintOK {
 			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		session, err = CreateSession(ctx, tx, hasher, sessUID, lifetime, SignInProvedFactor)
+		session, err = CreateSession(ctx, tx, hasher, sessUID, SessionCreationOptions{
+			Lifetime: lifetime,
+			Proof:    SignInProvedFactor,
+		})
 		if err != nil {
 			return err
 		}
@@ -463,8 +466,12 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 	return session, user, nil
 }
 
-// SessionMeta holds optional metadata for session creation.
-type SessionMeta struct {
+// SessionCreationOptions holds every decision required to create a session.
+// Callers use keyed fields, so adding a decision cannot silently shift an
+// adjacent positional argument.
+type SessionCreationOptions struct {
+	Lifetime  time.Duration
+	Proof     SignInProof
 	UserAgent string
 	// IssuedToClient identifies the built-in app this session is issued to through
 	// the browser handoff. Empty stores NULL.
@@ -490,26 +497,26 @@ type CreatedSession struct {
 //
 // proof states whether the sign-in proved a factor and which initial window
 // that proof grants. The zero value is refused.
-func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, proof SignInProof, meta ...SessionMeta) (CreatedSession, error) {
-	return CreateSessionAt(ctx, st, hasher, userID, lifetime, proof, time.Now().UTC(), meta...)
+func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, options SessionCreationOptions) (CreatedSession, error) {
+	return CreateSessionAt(ctx, st, hasher, userID, time.Now().UTC(), options)
 }
 
 // CreateSessionAt creates a session at the supplied Hub clock instant. Callers
 // use it when the surrounding transaction and its response must share one now.
-func CreateSessionAt(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, proof SignInProof, now time.Time, meta ...SessionMeta) (CreatedSession, error) {
+func CreateSessionAt(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, now time.Time, options SessionCreationOptions) (CreatedSession, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
 	if userID.IsZero() {
 		return CreatedSession{}, fmt.Errorf("create session: user id is required")
 	}
-	if proof != SignInProvedNoFactor && proof != SignInProvedFactor &&
-		proof != SignInProvedFactorWithFullWindow {
+	if options.Proof != SignInProvedNoFactor && options.Proof != SignInProvedFactor &&
+		options.Proof != SignInProvedFactorWithFullWindow {
 		return CreatedSession{}, fmt.Errorf("create session: sign-in proof is required")
 	}
 	sessionID, secret := id.Generate(), id.Generate()
 	now = now.UTC()
-	expiresAt := sessionExpiry(now, lifetime)
+	expiresAt := sessionExpiry(now, options.Lifetime)
 	params := store.CreateSessionParams{
 		ID:         sessionID,
 		SecretHash: hasher.Hash(secret),
@@ -518,9 +525,9 @@ func CreateSessionAt(ctx context.Context, st store.Store, hasher SecretHasher, u
 		IPAddress:  peer.ClientIP(ctx),
 	}
 	var elevation Elevation
-	if proof == SignInProvedFactor || proof == SignInProvedFactorWithFullWindow {
+	if options.Proof == SignInProvedFactor || options.Proof == SignInProvedFactorWithFullWindow {
 		window := FreshAuthenticationWindow
-		if proof == SignInProvedFactorWithFullWindow {
+		if options.Proof == SignInProvedFactorWithFullWindow {
 			window = ElevationWindow
 		}
 		until := now.Add(window)
@@ -528,10 +535,8 @@ func CreateSessionAt(ctx context.Context, st store.Store, hasher SecretHasher, u
 		params.ElevationExpiresAt = &until
 		elevation = Elevation{ExpiresAt: until}
 	}
-	if len(meta) > 0 {
-		params.UserAgent = meta[0].UserAgent
-		params.IssuedToClient = meta[0].IssuedToClient
-	}
+	params.UserAgent = options.UserAgent
+	params.IssuedToClient = options.IssuedToClient
 	if err := st.Sessions().Create(ctx, params); err != nil {
 		return CreatedSession{}, fmt.Errorf("create session: %w", err)
 	}

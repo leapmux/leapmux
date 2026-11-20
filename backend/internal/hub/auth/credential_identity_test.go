@@ -97,6 +97,13 @@ func TestCredentialIdentityMatchesWholeIdentity(t *testing.T) {
 		DelegationCredential("token", "worker-2")))
 }
 
+func TestCredentialIdentityCarriesAppElevationPolicy(t *testing.T) {
+	assert.False(t, APICredential("token").AppElevationDisabled())
+	assert.False(t, APICredentialWithElevationPolicy("token", true).AppElevationDisabled())
+	assert.True(t, APICredentialWithElevationPolicy("token", false).AppElevationDisabled())
+	assert.False(t, SessionCredential("session").AppElevationDisabled())
+}
+
 func TestPrincipalKeyIsKindDistinct(t *testing.T) {
 	assert.Equal(t, "session:s1", SessionCredential("s1").PrincipalKey())
 

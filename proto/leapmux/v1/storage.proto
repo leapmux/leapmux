@@ -78,8 +78,9 @@ enum AppRegistrationSource {
 // oauth_states.purpose.
 //
 // The callback branches on this, and the two branches differ in what they are
-// allowed to do, so the column may not carry an unset value: a LOGIN may create
-// a session and link an identity, and a REAUTH must do neither. The CHECK
+// allowed to do, so the column may not carry an unset value: LOGIN and
+// CONSENT_LOGIN may create a session and link an identity, and REAUTH must do
+// neither. The CHECK
 // excludes UNSPECIFIED for that reason -- an insert that forgot the purpose
 // fails rather than defaulting into the branch with more authority.
 enum OAuthStatePurpose {
@@ -89,6 +90,9 @@ enum OAuthStatePurpose {
   // Proves the identity again for a session that is already signed in, to
   // elevate it. Must never create a session or link an identity.
   OAUTH_STATE_PURPOSE_REAUTH = 2;
+  // Starts a sign-in that returns to an OAuth consent route. The provider must
+  // reauthenticate, and a provider-only account may receive a sign-in window.
+  OAUTH_STATE_PURPOSE_CONSENT_LOGIN = 3;
 }
 
 // WebAuthnSessionKind is which ceremony a short-lived WebAuthn session row
@@ -150,7 +154,7 @@ enum ApiTokenIssuance {
 }
 
 // CredentialRefKind is the kind of credential a reference identifies. Numbers
-// oauth_authorization_codes.step_up_kind and oauth_authorization_codes.minted_kind.
+// oauth_authorization_codes.step_up_kind.
 //
 // The reference is one pair of columns -- a kind and an id -- so a row identifies
 // exactly one credential or none. NULL (this enum's UNSPECIFIED, which no

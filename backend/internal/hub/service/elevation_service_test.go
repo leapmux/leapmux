@@ -103,7 +103,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	// sign-in with the window dropped, because the drop queues a user_info
 	// event and TestElevateSession_GrantTearsNothingDown counts the event
 	// stream.
-	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	recorder := &teardownRecorder{}

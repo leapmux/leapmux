@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -204,6 +205,79 @@ func TestAdminUserService_CommitRefusesAWithdrawnActingSession(t *testing.T) {
 			require.Error(t, err, "a commit must not land on a session an administrator took away")
 			assert.False(t, verb.landed(t, env, subjectID, subjectUsername),
 				"a refused commit must leave no write behind")
+		})
+	}
+}
+
+func TestAdminUserService_CommitRefusesADroppedElevationWindow(t *testing.T) {
+	ctx := context.Background()
+
+	for name, verb := range adminCommitVerbs() {
+		t.Run(name, func(t *testing.T) {
+			env := setupAdminUserTest(t)
+			subjectID, subjectUsername := seedCommitSubject(t, env)
+			require.False(t, verb.landed(t, env, subjectID, subjectUsername))
+
+			_, err := env.client.GetUser(authedReq(ctx,
+				&leapmuxv1.GetUserRequest{User: service.SelectUserByID(env.adminID)}, env.token))
+			require.NoError(t, err)
+			dropped, err := env.st.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
+				SessionID: hubtestutil.SessionIDFromCookie(t, env.token),
+				UserID:    userid.MustNew(env.adminID),
+			})
+			require.NoError(t, err)
+			require.EqualValues(t, 1, dropped)
+
+			err = verb.call(ctx, env, subjectID, subjectUsername, env.token)
+			require.Error(t, err, "a commit must not land after its stored elevation ended")
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			assert.False(t, verb.landed(t, env, subjectID, subjectUsername))
+		})
+	}
+}
+
+func TestAdminUserService_CommitRefusesMovedBearerAuthority(t *testing.T) {
+	for _, movement := range []string{"token revoked", "app elevation disabled"} {
+		t.Run(movement, func(t *testing.T) {
+			env := setupAdminUserTest(t)
+			ctx := context.Background()
+			subjectID, _ := seedCommitSubject(t, env)
+			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
+				User:             service.SelectUserByID(env.adminID),
+				InstallationName: "authority-race",
+				Scopes:           []string{"admin:users"},
+			}, env.token))
+			require.NoError(t, err)
+			hubtestutil.ElevateAPIToken(t, env.st, issued.GetTokenId(), env.adminID)
+
+			_, err = env.client.GetUser(adminBearerReq(ctx,
+				&leapmuxv1.GetUserRequest{User: service.SelectUserByID(env.adminID)}, issued.GetAccessToken()))
+			require.NoError(t, err)
+			switch movement {
+			case "token revoked":
+				revoked, err := env.st.APITokens().Revoke(ctx, issued.GetTokenId())
+				require.NoError(t, err)
+				require.EqualValues(t, 1, revoked)
+			case "app elevation disabled":
+				changed, err := env.st.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+					ClientID:         issued.GetClientId(),
+					ElevationAllowed: false,
+					CallerUserID:     userid.MustNew(env.adminID),
+					CallerIsAdmin:    true,
+				})
+				require.NoError(t, err)
+				require.EqualValues(t, 1, changed)
+			}
+
+			_, err = env.client.UpdateUser(adminBearerReq(ctx, &leapmuxv1.UpdateUserRequest{
+				User:        service.SelectUserByID(subjectID),
+				DisplayName: proto.String("Must not land"),
+			}, issued.GetAccessToken()))
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			user, loadErr := env.st.Users().GetByID(ctx, subjectID)
+			require.NoError(t, loadErr)
+			assert.NotEqual(t, "Must not land", user.DisplayName)
 		})
 	}
 }

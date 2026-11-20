@@ -66,7 +66,7 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 		FirstCredentialExempt: true,
 	}))
 	uid := userid.MustNew(userID)
-	oldSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	oldSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), uid, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	// seedPasskeyCredential plants a row whose public key no keystore could

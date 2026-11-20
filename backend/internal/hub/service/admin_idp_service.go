@@ -129,8 +129,8 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("encrypt client secret: %w", err))
 	}
-	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
-		if err := s.store.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+	if err := writeUnderElevation(ctx, s.store, s.now, func(tx store.Store) error {
+		if err := tx.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 			ID:           providerID,
 			ProviderType: storedType,
 			Name:         displayName,
@@ -210,8 +210,8 @@ func (s *AdminIdPService) RemoveOAuthProvider(ctx context.Context, req *leapmuxv
 			"%d user(s) have no other login method through provider %q; they will be locked out - set a password for them first, or pass force",
 			orphaned, req.GetId())
 	}
-	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
-		if err := s.store.OAuthProviders().Delete(ctx, req.GetId()); err != nil {
+	if err := writeUnderElevation(ctx, s.store, s.now, func(tx store.Store) error {
+		if err := tx.OAuthProviders().Delete(ctx, req.GetId()); err != nil {
 			return storeConnectError(err, "delete provider")
 		}
 		return nil
@@ -226,8 +226,8 @@ func (s *AdminIdPService) SetOAuthProviderEnabled(ctx context.Context, req *leap
 	if err := s.requireOAuthProvider(ctx, req.GetId()); err != nil {
 		return nil, err
 	}
-	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
-		if err := s.store.OAuthProviders().UpdateEnabled(ctx, store.UpdateOAuthProviderEnabledParams{
+	if err := writeUnderElevation(ctx, s.store, s.now, func(tx store.Store) error {
+		if err := tx.OAuthProviders().UpdateEnabled(ctx, store.UpdateOAuthProviderEnabledParams{
 			Enabled: req.GetEnabled(),
 			ID:      req.GetId(),
 		}); err != nil {

@@ -54,7 +54,7 @@ func stepUpUser(t *testing.T, st store.Store, passwordSet bool) *store.User {
 func firstCredentialSession(t *testing.T, st store.Store, user *store.User, now time.Time) *auth.UserInfo {
 	t.Helper()
 	uid := userid.MustNew(user.ID)
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	return &auth.UserInfo{
 		ID:              uid,
@@ -68,7 +68,7 @@ func firstCredentialSession(t *testing.T, st store.Store, user *store.User, now 
 func liveElevatedSessionAt(t *testing.T, st store.Store, user *store.User, now time.Time) (*auth.UserInfo, string) {
 	t.Helper()
 	uid := userid.MustNew(user.ID)
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	n, err := st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
 		SessionID:          createdSession.ID,

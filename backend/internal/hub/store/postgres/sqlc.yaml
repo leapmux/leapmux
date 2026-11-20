@@ -97,11 +97,6 @@ sql:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "CredentialRefKind"
               pointer: true
-          - column: "oauth_authorization_codes.minted_kind"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "CredentialRefKind"
-              pointer: true
           - column: "oauth_authorization_codes.redemption_kind"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

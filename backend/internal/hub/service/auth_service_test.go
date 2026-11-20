@@ -358,7 +358,7 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 		ID: userID, Username: "oauthonly", PasswordHash: password.PlaceholderHash,
 		DisplayName: "OAuth Only", FirstCredentialExempt: false,
 	}))
-	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour, auth.SignInProvedNoFactor)
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	for _, p := range []struct {
@@ -489,7 +489,7 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 		ID: userID, Username: "haslink", PasswordHash: password.PlaceholderHash,
 		DisplayName: "Has Link", FirstCredentialExempt: true,
 	}))
-	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour, auth.SignInProvedNoFactor)
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub", ClientID: "cid",

@@ -207,10 +207,18 @@ function mountRuntime(
   hubUserId: () => HubUserId = () => storageAccountUserId(storageAccount()) as HubUserId,
 ) {
   let dispose = () => {}
+  let accountEndListener: ((account: StorageAccount) => void) | null = null
   const runtime = createRoot((d) => {
     dispose = d
     return useCrdtRuntime({
       storageAccount,
+      onAccountEnd: (listener) => {
+        accountEndListener = listener
+        return () => {
+          if (accountEndListener === listener)
+            accountEndListener = null
+        }
+      },
       hubUserId,
       getWorkspaceId: () => 'ws-1',
       activeClient: createActiveClientStore(),
@@ -218,7 +226,11 @@ function mountRuntime(
       onWorkersChanged: () => {},
     })
   })
-  return { runtime, dispose }
+  return {
+    runtime,
+    dispose,
+    endAccount: (account: StorageAccount) => accountEndListener?.(account),
+  }
 }
 
 /**
@@ -354,6 +366,8 @@ describe('useCrdtRuntime hydration gate', () => {
   // token before the reset that bumps it made this case invalidate its own
   // hydration every time, wedging the gate shut for the incoming account.
   it('re-opens the ready gate across a direct user switch', async () => {
+    await seedCheckpoint('user-a')
+    await seedCheckpoint('user-b')
     // The account is composed around the raw id signal, so one identity switch
     // drives both domains across the A -> B switch.
     const [uid, setUid] = createSignal('user-a' as HubUserId)
@@ -368,6 +382,21 @@ describe('useCrdtRuntime hydration gate', () => {
     await settleUntil(() => userEventsSpy.ready!())
     // ...and re-opens once the incoming account's hydration installs.
     expect(userEventsSpy.ready!()).toBe(true)
+    await settleUntilAsync(async () => (await readCheckpoint(accountOf('user-a'), CLIENT)).status === 'miss')
+    expect((await readCheckpoint(accountOf('user-b'), CLIENT)).status).toBe('ok')
+    dispose()
+  })
+
+  it('clears the authenticated account before owner disposal on logout', async () => {
+    await seedCheckpoint('user-a')
+    const account = accountOf('user-a')
+    const { dispose, endAccount } = mountRuntime(() => account)
+    await settleUntil(() => userEventsSpy.ready!())
+
+    endAccount(account)
+
+    expect(userEventsSpy.ready!()).toBe(false)
+    await settleUntilAsync(async () => (await readCheckpoint(account, CLIENT)).status === 'miss')
     dispose()
   })
 
@@ -524,6 +553,7 @@ describe('useCrdtRuntime hydration gate', () => {
         dispose = d
         return useCrdtRuntime({
           storageAccount: () => accountOf(uid()),
+          onAccountEnd: () => () => {},
           hubUserId: uid,
           getWorkspaceId: () => 'ws-1',
           activeClient: createActiveClientStore(),
@@ -1071,6 +1101,7 @@ describe('useCrdtRuntime worker list changes', () => {
       dispose = d
       useCrdtRuntime({
         storageAccount: () => accountOf('user-a'),
+        onAccountEnd: () => () => {},
         hubUserId: () => 'user-a' as HubUserId,
         getWorkspaceId: () => 'ws-1',
         activeClient: createActiveClientStore(),

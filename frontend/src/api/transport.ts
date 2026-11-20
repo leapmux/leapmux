@@ -14,7 +14,7 @@ export function advanceAuthSessionEpoch(): void {
   authSessionEpoch++
 }
 
-export function setOnAuthError(callback: () => void): void {
+export function setOnAuthError(callback: (() => void) | null): void {
   onAuthError = callback
 }
 

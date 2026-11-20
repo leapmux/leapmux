@@ -258,7 +258,18 @@ func RequireElevation(userInfo *UserInfo, now time.Time) error {
 	if err := RequireElevatableCredential(userInfo); err != nil {
 		return err
 	}
+	if userInfo.Credential.AppElevationDisabled() {
+		return AppElevationDisabledError()
+	}
 	return ElevationRequiredError()
+}
+
+// AppElevationDisabledError refuses a command-line credential whose app owner
+// disabled every step-up ceremony. It deliberately does not wrap
+// ErrElevationRequired: a verification prompt cannot recover this request.
+func AppElevationDisabledError() error {
+	return connect.NewError(connect.CodeFailedPrecondition,
+		"the application owner disabled identity verification for this credential; enable app elevation and try again")
 }
 
 // RequireElevatableCredential refuses a credential that can carry no

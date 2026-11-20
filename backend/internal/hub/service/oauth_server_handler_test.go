@@ -149,6 +149,16 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 // the handler sees it, so one test can fail a store call and read the answer
 // the HTTP surface gives for it. wrap may be nil for the plain store.
 func setupAPIAuthWithStore(t *testing.T, wrap func(store.Store) store.Store) *apiAuthEnv {
+	return setupAPIAuthWithStoreAndSessionResolver(t, wrap, nil)
+}
+
+func setupAPIAuthWithSessionResolver(t *testing.T, issuesSession func(string) bool) *apiAuthEnv {
+	return setupAPIAuthWithStoreAndSessionResolver(t, nil, issuesSession)
+}
+
+func setupAPIAuthWithStoreAndSessionResolver(
+	t *testing.T, wrap func(store.Store) store.Store, issuesSession func(string) bool,
+) *apiAuthEnv {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -189,11 +199,12 @@ func setupAPIAuthWithStore(t *testing.T, wrap func(store.Store) store.Store) *ap
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
 	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-		Store:     st,
-		Validator: tv,
-		Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer),
-		Settings:  set,
-		HubURL:    func() string { return srv.URL },
+		Store:         st,
+		Validator:     tv,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(sc, closer, closer),
+		Settings:      set,
+		HubURL:        func() string { return srv.URL },
+		IssuesSession: issuesSession,
 	})
 	h.Now = now
 	h.RegisterRoutes(mux)
@@ -3562,29 +3573,6 @@ func TestSessionCodeExchange_RefusesApprovalFromAnOlderCredentialGeneration(t *t
 	assert.Zero(t, row.Minted)
 }
 
-// setDesktopIssuesSessions reconciles the desktop's registration to the value
-// given, through the seed's own writer: issues_sessions is a constant of the
-// build and nothing else may turn it.
-func setDesktopIssuesSessions(t *testing.T, env *apiAuthEnv, value bool) {
-	t.Helper()
-	require.NoError(t, env.store.OAuthClients().UpsertBuiltIn(context.Background(), store.UpsertBuiltInClientParams{
-		ClientID:           oauthapp.DesktopClientID,
-		ClientName:         oauthapp.DesktopName,
-		ClientURI:          "",
-		RedirectURIs:       oauthapp.DesktopRedirectURI,
-		Scopes:             oauthapp.DesktopScopes,
-		GrantTypes:         oauthapp.DesktopGrantTypes,
-		ElevationAllowed:   true,
-		IssuesSessions:     value,
-		RegistrationSource: store.OAuthClientSourceBuiltin,
-		CreatedAt:          env.now(),
-		UpdatedAt:          env.now(),
-	}))
-	app, err := env.store.OAuthClients().Get(context.Background(), oauthapp.DesktopClientID)
-	require.NoError(t, err)
-	require.Equal(t, value, app.IssuesSessions, "precondition: the registration carries the new value")
-}
-
 // The redemption kind the consent bound decides the fork at redeem, not a
 // property of the app re-read then. The two must be able to DISAGREE, which is
 // what makes the row the decider: a compare of the app id answers from the app
@@ -3592,13 +3580,17 @@ func setDesktopIssuesSessions(t *testing.T, env *apiAuthEnv, value bool) {
 func TestSessionCodeExchange_TheConsentDecidesTheForkNotTheRegistration(t *testing.T) {
 	t.Parallel()
 
-	t.Run("a consented session still mints a session after the registration stops minting them", func(t *testing.T) {
+	t.Run("a consented session still mints a session after the build capability turns off", func(t *testing.T) {
 		t.Parallel()
-		env := setupAPIAuth(t)
+		var issuesSession atomic.Bool
+		issuesSession.Store(true)
+		env := setupAPIAuthWithSessionResolver(t, func(clientID string) bool {
+			return clientID == oauthapp.DesktopClientID && issuesSession.Load()
+		})
 		ctx := context.Background()
 		code, verifier := desktopSessionCode(t, env, "laptop")
 
-		setDesktopIssuesSessions(t, env, false)
+		issuesSession.Store(false)
 
 		resp := exchangeSessionCode(t, env, code, verifier)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -3611,18 +3603,20 @@ func TestSessionCodeExchange_TheConsentDecidesTheForkNotTheRegistration(t *testi
 		assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
 	})
 
-	t.Run("a consented token still mints a token after the registration starts minting sessions", func(t *testing.T) {
+	t.Run("a consented token still mints a token after the build capability turns on", func(t *testing.T) {
 		t.Parallel()
-		env := setupAPIAuth(t)
+		var issuesSession atomic.Bool
+		env := setupAPIAuthWithSessionResolver(t, func(clientID string) bool {
+			return clientID == oauthapp.DesktopClientID && issuesSession.Load()
+		})
 		ctx := context.Background()
-		// The registration mints no session at consent, so the page shows the
+		// The build capability mints no session at consent, so the page shows the
 		// ordinary permission consent and the code records a token redemption
 		// -- for the very app a compare of the id would have sent down the
 		// session path.
-		setDesktopIssuesSessions(t, env, false)
 		code, verifier := desktopSessionCode(t, env, "laptop")
 
-		setDesktopIssuesSessions(t, env, true)
+		issuesSession.Store(true)
 
 		resp := exchangeSessionCode(t, env, code, verifier)
 		require.Equal(t, http.StatusOK, resp.StatusCode)

@@ -5,41 +5,20 @@ import { createSignal, onCleanup } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from '~/context/AuthContext'
 import { deferred, settle } from '~/test-support/async'
+import { browserAuthDriver, DEFAULT_BROWSER_AUTH_START, resetBrowserAuthDriver } from '~/test-support/browserAuthDriver'
 import { BrowserSignIn } from './BrowserSignIn'
 
-/**
- * The ceremony seams: the sidecar's two commands and its one result event per
- * ceremony. `onEvent` hands the callback the emitted payload, never the Tauri
- * event envelope.
- */
-const bridgeMocks = vi.hoisted(() => ({
-  openExternalUrl: vi.fn<(url: string) => Promise<void>>(),
-  startBrowserAuth: vi.fn<() => Promise<{ ceremonyId: string, authorizeUrl: string }>>(),
-  cancelBrowserAuth: vi.fn<(ceremonyId: string) => Promise<void>>(),
-  handlers: [] as ((...args: unknown[]) => void)[],
-  emit(payload: { ceremonyId: string, ok: boolean, failure: string }): void {
-    for (const handler of [...bridgeMocks.handlers])
-      handler(payload)
-  },
-}))
-
-vi.mock('~/api/platformBridge', () => ({
-  desktopHub: () => ({ kind: 'remote', url: 'https://hub.example' }),
-  openExternalUrl: (url: string) => bridgeMocks.openExternalUrl(url),
-  platformBridge: {
-    startBrowserAuth: () => bridgeMocks.startBrowserAuth(),
-    cancelBrowserAuth: (ceremonyId: string) => bridgeMocks.cancelBrowserAuth(ceremonyId),
-    switchMode: vi.fn(),
-    onEvent: (_event: string, handler: (...args: unknown[]) => void): Promise<() => void> => {
-      bridgeMocks.handlers.push(handler)
-      return Promise.resolve(vi.fn(() => {
-        const index = bridgeMocks.handlers.indexOf(handler)
-        if (index >= 0)
-          bridgeMocks.handlers.splice(index, 1)
-      }))
+vi.mock('~/api/platformBridge', async () => {
+  const browserAuth = (await import('~/test-support/browserAuthDriver')).browserAuthPlatformMock()
+  return {
+    ...browserAuth,
+    desktopHub: () => ({ kind: 'remote', url: 'https://hub.example' }),
+    platformBridge: {
+      ...browserAuth.platformBridge,
+      switchMode: vi.fn(),
     },
-  },
-}))
+  }
+})
 
 const mockAdopt = vi.fn()
 // Real signals for the state the adoption moves, so the probes re-render when
@@ -72,11 +51,6 @@ vi.mock('~/context/AuthContext', () => ({
     },
   }),
 }))
-
-const START = {
-  ceremonyId: 'c-1',
-  authorizeUrl: 'https://hub.example/authorize',
-}
 
 function UserProbe() {
   const auth = useAuth()
@@ -134,18 +108,12 @@ function renderSignIn(initialPath = '/login') {
 
 async function startCeremony() {
   fireEvent.click(await screen.findByRole('button', { name: 'Sign in with your browser' }))
-  await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalled())
+  await vi.waitFor(() => expect(browserAuthDriver.openExternalUrl).toHaveBeenCalled())
 }
 
 describe('BrowserSignIn', () => {
   beforeEach(() => {
-    bridgeMocks.openExternalUrl.mockReset()
-    bridgeMocks.openExternalUrl.mockResolvedValue(undefined)
-    bridgeMocks.startBrowserAuth.mockReset()
-    bridgeMocks.startBrowserAuth.mockResolvedValue(START)
-    bridgeMocks.cancelBrowserAuth.mockReset()
-    bridgeMocks.cancelBrowserAuth.mockResolvedValue(undefined)
-    bridgeMocks.handlers.length = 0
+    resetBrowserAuthDriver()
     copyTextToClipboard.mockReset()
     copyTextToClipboard.mockResolvedValue(true)
     setCurrentUser(null)
@@ -164,10 +132,10 @@ describe('BrowserSignIn', () => {
     const { navigations } = renderSignIn(`/login?redirect=${encodeURIComponent('/setup?x=1')}`)
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     await vi.waitFor(() => expect(navigations).toEqual(['/setup?x=1']))
-    expect(bridgeMocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith('https://hub.example/authorize')
+    expect(browserAuthDriver.openExternalUrl).toHaveBeenCalledExactlyOnceWith('https://hub.example/authorize')
     expect(mockAdopt).toHaveBeenCalledOnce()
   })
 
@@ -178,7 +146,7 @@ describe('BrowserSignIn', () => {
     renderSignIn()
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
   })
@@ -187,7 +155,7 @@ describe('BrowserSignIn', () => {
     renderSignIn()
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: 'the code expired' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: false, failure: 'the code expired' })
 
     expect(await screen.findByText('the code expired')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Sign in with your browser' })).toBeInTheDocument()
@@ -202,9 +170,9 @@ describe('BrowserSignIn', () => {
     await startCeremony()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
-    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
 
     expect(await screen.findByRole('button', { name: 'Sign in with your browser' })).toBeInTheDocument()
     // The Hub line and the idle description only: no failure reason renders
@@ -221,9 +189,9 @@ describe('BrowserSignIn', () => {
     await startCeremony()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
-    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledOnce())
     expect(await screen.findByTestId('user-probe')).toHaveTextContent('signed-in:u1')
@@ -244,21 +212,21 @@ describe('BrowserSignIn', () => {
 
     unmount()
 
-    await vi.waitFor(() => expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
+    await vi.waitFor(() => expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
   })
 
   it('opens no URL and cancels when the view unmounts before the start resolves', async () => {
     const start = deferred<{ ceremonyId: string, authorizeUrl: string }>()
-    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    browserAuthDriver.startBrowserAuth.mockReturnValue(start.promise)
     const { unmount } = renderSignIn()
     fireEvent.click(await screen.findByRole('button', { name: 'Sign in with your browser' }))
     await settle()
 
     unmount()
-    start.resolve(START)
+    start.resolve(DEFAULT_BROWSER_AUTH_START)
 
-    await vi.waitFor(() => expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
-    expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
+    expect(browserAuthDriver.openExternalUrl).not.toHaveBeenCalled()
   })
 
   it('adopts a successful result after unmount without navigating', async () => {
@@ -266,18 +234,18 @@ describe('BrowserSignIn', () => {
     await startCeremony()
 
     unmount()
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
     await settle()
 
-    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
     expect(mockAdopt).toHaveBeenCalledOnce()
     expect(navigations).toEqual([])
   })
 
   it('disables the wait actions until the flow is ready and after its result arrives', async () => {
-    const start = deferred<typeof START>()
+    const start = deferred<typeof DEFAULT_BROWSER_AUTH_START>()
     const read = deferred<{ outcome: 'adopted', verificationRequired: boolean }>()
-    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    browserAuthDriver.startBrowserAuth.mockReturnValue(start.promise)
     mockAdopt.mockReturnValue(read.promise)
     renderSignIn()
 
@@ -287,13 +255,13 @@ describe('BrowserSignIn', () => {
     for (const action of actions)
       expect(action).toBeDisabled()
 
-    start.resolve(START)
+    start.resolve(DEFAULT_BROWSER_AUTH_START)
     await vi.waitFor(() => {
       for (const action of actions)
         expect(action).toBeEnabled()
     })
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
     await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledOnce())
     for (const action of actions)
       expect(action).toBeDisabled()
@@ -303,7 +271,7 @@ describe('BrowserSignIn', () => {
 
   it('starts one ceremony when the button is clicked twice during the start', async () => {
     const start = deferred<{ ceremonyId: string, authorizeUrl: string }>()
-    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    browserAuthDriver.startBrowserAuth.mockReturnValue(start.promise)
     renderSignIn()
 
     const button = await screen.findByRole('button', { name: 'Sign in with your browser' })
@@ -315,7 +283,7 @@ describe('BrowserSignIn', () => {
     // first click (the view swaps it for the waiting actions), and no second
     // ceremony starts.
     expect(screen.queryByRole('button', { name: 'Sign in with your browser' })).toBeNull()
-    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledTimes(1)
+    expect(browserAuthDriver.startBrowserAuth).toHaveBeenCalledTimes(1)
   })
 
   // The handoff succeeded but the account read failed: recovery owns the
@@ -328,12 +296,12 @@ describe('BrowserSignIn', () => {
     const { navigations } = renderSignIn()
     await startCeremony()
 
-    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
     await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledOnce())
     expect(await screen.findByTestId('recovery-probe')).toHaveTextContent('recovering')
     expect(navigations).toEqual([])
-    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledTimes(1)
+    expect(browserAuthDriver.startBrowserAuth).toHaveBeenCalledTimes(1)
   })
 
   it('opens the same URL again and starts no second ceremony', async () => {
@@ -342,9 +310,9 @@ describe('BrowserSignIn', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open again' }))
 
-    await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalledTimes(2))
-    expect(bridgeMocks.openExternalUrl).toHaveBeenNthCalledWith(2, 'https://hub.example/authorize')
-    expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(browserAuthDriver.openExternalUrl).toHaveBeenCalledTimes(2))
+    expect(browserAuthDriver.openExternalUrl).toHaveBeenNthCalledWith(2, 'https://hub.example/authorize')
+    expect(browserAuthDriver.startBrowserAuth).toHaveBeenCalledTimes(1)
   })
 
   it('renders the Hub line with the connected origin', async () => {

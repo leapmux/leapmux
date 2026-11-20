@@ -691,8 +691,9 @@ func TestRPCSessionBurstDoesNotHidePeerDisconnect(t *testing.T) {
 			Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 				Id: uint64(i + 1),
 				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
-					Method: http.MethodGet,
-					Path:   "/blocked",
+					Method:    http.MethodGet,
+					Path:      "/blocked",
+					RequestId: fmt.Sprintf("burst-%d", i),
 				}},
 			}},
 		}))
@@ -732,8 +733,9 @@ func TestRPCSessionShutdownProceedsWithInFlightProxyHandlers(t *testing.T) {
 			Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 				Id: uint64(i + 1),
 				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
-					Method: http.MethodGet,
-					Path:   "/blocked",
+					Method:    http.MethodGet,
+					Path:      "/blocked",
+					RequestId: fmt.Sprintf("shutdown-%d", i),
 				}},
 			}},
 		}))
@@ -814,8 +816,9 @@ func TestRPCSessionDisconnectCancelsBlockedProxyHandler(t *testing.T) {
 		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 			Id: 1,
 			Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
-				Method: http.MethodGet,
-				Path:   "/blocked",
+				Method:    http.MethodGet,
+				Path:      "/blocked",
+				RequestId: "disconnect-blocked",
 			}},
 		}},
 	}))
@@ -830,6 +833,98 @@ func TestRPCSessionDisconnectCancelsBlockedProxyHandler(t *testing.T) {
 		assert.NoError(t, <-runDone)
 		t.Fatal("RPC session did not cancel its blocked handler after peer disconnect")
 	}
+	require.NoError(t, app.Shutdown())
+}
+
+func TestProxyRequestRegistryHandlesCancellationBeforeAndAfterAdmission(t *testing.T) {
+	var registry proxyRequestRegistry
+	require.NoError(t, registry.cancel("before"))
+	beforeCtx, beforeDone, err := registry.begin(t.Context(), "before")
+	require.NoError(t, err)
+	defer beforeDone()
+	select {
+	case <-beforeCtx.Done():
+	default:
+		t.Fatal("a cancellation received before admission must cancel the admitted request")
+	}
+
+	activeCtx, activeDone, err := registry.begin(t.Context(), "active")
+	require.NoError(t, err)
+	defer activeDone()
+	require.NoError(t, registry.cancel("active"))
+	select {
+	case <-activeCtx.Done():
+	default:
+		t.Fatal("an active request must observe its correlated cancellation")
+	}
+}
+
+func TestRPCSessionCancelProxyHTTPCancelsTheHubRequest(t *testing.T) {
+	deadline, cancelDeadline := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancelDeadline)
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+		close(cancelled)
+	}))
+	t.Cleanup(upstream.Close)
+
+	app := NewApp("")
+	installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
+	serverConn, clientConn := net.Pipe()
+	runDone := make(chan error, 1)
+	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
+	responses := make(chan uint64, 2)
+	go func() {
+		reader := bufio.NewReader(clientConn)
+		for range 2 {
+			frame, err := ReadFrame(reader)
+			if err != nil {
+				return
+			}
+			if response := frame.GetResponse(); response != nil {
+				responses <- response.Id
+			}
+		}
+	}()
+
+	require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
+		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
+			Id: 1,
+			Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
+				Method: http.MethodGet, Path: "/blocked", RequestId: "request-1",
+			}},
+		}},
+	}))
+	<-entered
+	require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
+		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
+			Id: 2,
+			Method: &desktoppb.Request_CancelProxyHttp{CancelProxyHttp: &desktoppb.CancelProxyHttpRequest{
+				RequestId: "request-1",
+			}},
+		}},
+	}))
+
+	select {
+	case <-cancelled:
+	case <-deadline.Done():
+		t.Fatal("the Hub request did not observe renderer cancellation")
+	}
+	seen := map[uint64]bool{}
+	for range 2 {
+		select {
+		case id := <-responses:
+			seen[id] = true
+		case <-deadline.Done():
+			t.Fatal("the RPC session did not answer both proxy and cancel requests")
+		}
+	}
+	assert.Equal(t, map[uint64]bool{1: true, 2: true}, seen)
+	require.NoError(t, clientConn.Close())
+	require.NoError(t, <-runDone)
 	require.NoError(t, app.Shutdown())
 }
 
@@ -968,8 +1063,10 @@ func TestRPCSessionAdmitsEveryRequestWithoutExhaustion(t *testing.T) {
 	for i := 0; i < burst; i++ {
 		require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
 			Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
-				Id:     uint64(i + 1),
-				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{Method: http.MethodGet, Path: "/ok"}},
+				Id: uint64(i + 1),
+				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
+					Method: http.MethodGet, Path: "/ok", RequestId: fmt.Sprintf("admit-%d", i),
+				}},
 			}},
 		}))
 	}
