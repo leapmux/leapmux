@@ -3629,14 +3629,20 @@ func (b *Base) Interrupt(stop agentapi.StopContext) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	b.Mu.Lock()
+	if b.stopDone != nil {
+		b.Mu.Unlock()
+		return nil
+	}
 	sessionID := b.sessionID
+	// Attribute the stop before the peer can respond. The pre-stop hook
+	// observes this same prompt state before it considers sending a cancel.
+	if sessionID != "" && b.promptActive {
+		b.interruptRequested = true
+	}
 	b.Mu.Unlock()
 	if sessionID == "" {
 		return nil
 	}
-	// Record the stop before sending the cancel.
-	// A result sent immediately after the provider receives the cancel then already belongs to the stopped turn.
-	b.noteACPInterruptRequested()
 	if b.hooks.CancelBeforeControlWithdrawal {
 		if err := b.cancelSession(); err != nil {
 			return err

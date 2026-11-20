@@ -448,7 +448,7 @@ func (a *Agent) adoptCompleteZCodeSessionSnapshot(snap zcodeStateSnapshot, fresh
 func (a *Agent) retireZCodeSessionState(sessionID string) {
 	a.cancelZCodeRuntimeHeaderAnswersForSession(sessionID)
 	a.dropZCodeSteersOfReplacedSession()
-	a.retryResolution.Reset()
+	a.retryHistory = nil
 	a.stopAllZCodeTurnWatchers()
 	a.endZCodeCompaction()
 	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)

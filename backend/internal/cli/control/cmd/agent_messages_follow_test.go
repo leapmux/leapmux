@@ -620,6 +620,38 @@ func TestDrainBacklog_StopsWhenCursorDoesNotAdvance(t *testing.T) {
 	assert.Equal(t, int64(10), cursor.Get("a-1"), "a below-bound row never lowers the cursor")
 }
 
+func TestDrainBacklog_PagesPastAnAlreadyRetractedRow(t *testing.T) {
+	tr := &fakeAgentMessagesTransport{}
+	_, sub, cursor, _ := runAgentMessagesTail(t.Context(), "a-1", 15, tr)
+	t.Cleanup(sub.Cancel)
+	tr.onFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: "a-1",
+			Event: &leapmuxv1.AgentEvent_MessagesRetracted{
+				MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{19}},
+			},
+		}},
+	})
+	var fetchedAfter, emitted []int64
+	fetch := func(_ context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+		fetchedAfter = append(fetchedAfter, afterSeq)
+		if afterSeq == 15 {
+			return []*leapmuxv1.AgentChatMessage{{Seq: 19}}, true, nil
+		}
+		return []*leapmuxv1.AgentChatMessage{{Seq: 20}}, false, nil
+	}
+	drained, err := drainBacklog(t.Context(), "a-1", cursor, fetch, func(m *leapmuxv1.AgentChatMessage) error {
+		emitted = append(emitted, m.GetSeq())
+		return nil
+	})
+
+	require.NoError(t, err)
+	assert.True(t, drained)
+	assert.Equal(t, []int64{15, 19}, fetchedAfter)
+	assert.Equal(t, []int64{20}, emitted)
+	assert.Equal(t, int64(20), cursor.Get("a-1"))
+}
+
 func splitNonEmpty(s string) []string {
 	out := []string{}
 	for _, line := range bytesSplitLines([]byte(s)) {

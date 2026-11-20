@@ -92,7 +92,7 @@ func (sink *agentOutputSink) enqueuePreparedSessionInfo(prepared map[string]json
 	}
 	changed := make(map[string]interface{}, len(prepared))
 	for key, encoded := range prepared {
-		if key == contracts.SessionInfoKeyModelAPIRetry && sink.modelAPIRetryProcessExited {
+		if sink.turnPublisherSink().processOutputRetired.Load() && (key == contracts.SessionInfoKeyCompaction || key == contracts.SessionInfoKeyModelAPIRetry) {
 			continue
 		}
 		if _, exempt := dedupExemptSessionInfoKeys[key]; exempt {

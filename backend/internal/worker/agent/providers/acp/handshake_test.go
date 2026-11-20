@@ -403,7 +403,7 @@ func TestACPStopCancellationDoesNotWaitForStdin(t *testing.T) {
 				synctest.Wait()
 				select {
 				case recorded := <-attributed:
-					assert.True(t, recorded)
+					assert.Equal(t, !full, recorded, "only an admitted cancel attributes the prompt as interrupted")
 				default:
 					t.Error("queueing the captured cancellation blocked behind the stdin writer")
 				}
@@ -452,6 +452,60 @@ func TestACPStoppedRootPromptDoesNotWaitForTheSessionLock(t *testing.T) {
 		assert.Error(t, <-done)
 	}
 	assert.Len(t, peer.recorded(), 2, "the late prompt sends no native RPC")
+}
+
+func TestACPPreStopAndInterruptCancelTheSamePromptOnce(t *testing.T) {
+	for _, interruptFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("interrupt first=%t", interruptFirst), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan ACPStopSnapshot, 1)
+				release := make(chan struct{})
+				finishHook := sync.OnceFunc(func() { close(release) })
+				defer finishHook()
+				peer := &handshakePeer{}
+				rig := newHandshakeRig(t, peer, Hooks{
+					PrepareStop: func(snapshot ACPStopSnapshot) {
+						entered <- snapshot
+						<-release
+					},
+				}, nil, func(method string) json.RawMessage {
+					if method == MethodSessionNew {
+						return json.RawMessage(`{"sessionId":"session"}`)
+					}
+					return json.RawMessage(`{"protocolVersion":1}`)
+				})
+				_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
+				require.NoError(t, err)
+				rig.base.Mu.Lock()
+				rig.base.promptActive = true
+				rig.base.Mu.Unlock()
+				if interruptFirst {
+					require.NoError(t, rig.base.Interrupt(agent.StopContext{}))
+				}
+				stopped := make(chan struct{})
+				go func() {
+					rig.base.Stop()
+					close(stopped)
+				}()
+				snapshot := <-entered
+				require.NotNil(t, snapshot.Cancel)
+				if !interruptFirst {
+					_ = rig.base.Interrupt(agent.StopContext{})
+				}
+				snapshot.Cancel()
+				synctest.Wait()
+				var cancels int
+				for _, request := range peer.recorded() {
+					if request.Method == MethodSessionCancel {
+						cancels++
+					}
+				}
+				assert.Equal(t, 1, cancels, "the prompt has one cancellation across both paths")
+				finishHook()
+				<-stopped
+			})
+		})
+	}
 }
 
 func TestACPStopKeepsTheSessionSnapshotWhileOutputOwnsTheTurnLock(t *testing.T) {

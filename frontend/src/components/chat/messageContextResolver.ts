@@ -198,11 +198,28 @@ interface ResolvedCacheEntry {
 
 type RetractedMessage = Extract<ChatWindowChange, { kind: 'retraction' }>['includes']
 
+type PointResult = ResolvedMessage | undefined
+
+type LookupTarget = { span: MessageSpanIdentity } | {
+  seq: bigint
+  adopt: (replacement: Promise<PointResult>) => void
+}
+
 interface InflightLookup {
   controller: AbortController
   promise: Promise<unknown>
   retractions: RetractedMessage[]
-  target: { span: MessageSpanIdentity } | { seq: bigint }
+  target: LookupTarget
+}
+
+function lookupResult<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((accept, refuse) => {
+    resolve = accept
+    reject = refuse
+  })
+  return { promise, resolve, reject }
 }
 
 function newestRelatedMessage(first: AgentChatMessage | undefined, second: AgentChatMessage | undefined): AgentChatMessage | undefined {
@@ -549,22 +566,30 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     if (signal.aborted)
       return
     const spansToReload = new Map<string, MessageSpanIdentity>()
-    const pointsToReload = new Set<bigint>()
-    for (const [key, identity] of spanDemand) {
-      if (!source.spanMessage(identity, 'request') || !source.spanMessage(identity, 'result'))
-        spansToReload.set(key, identity)
-    }
-    for (const { target, controller } of inflight.values()) {
-      controller.abort()
-      if ('span' in target)
-        spansToReload.set(messageSpanKey(target.span), target.span)
-      else
-        pointsToReload.add(target.seq)
-    }
+    const pointsToReload = new Set(messageLeases.keys())
+    const pointAdoptions = new Map<bigint, (replacement: Promise<PointResult>) => void>()
+    // The window can evict a resident row before its revision page arrives.
+    // Revalidate active span demand even while the window still holds both sides.
+    for (const [key, identity] of spanDemand)
+      spansToReload.set(key, identity)
+    const previousLookups = [
+      ...inflight.values(),
+    ]
     inflight.clear()
-    for (const seq of messageLeases.keys()) {
-      if (!source.messageBySeq(seq))
-        pointsToReload.add(seq)
+    for (const { target } of previousLookups) {
+      if ('span' in target) {
+        spansToReload.set(messageSpanKey(target.span), target.span)
+      }
+      else {
+        pointsToReload.add(target.seq)
+        pointAdoptions.set(target.seq, target.adopt)
+      }
+    }
+    const pointSpans = new Map<bigint, string>()
+    for (const seq of pointsToReload) {
+      const known = messageBySeq(seq)
+      if (known?.spanId)
+        pointSpans.set(seq, messageSpanKey(known))
     }
 
     // Invalidating the off-window cache also removes pairs retained by a trim.
@@ -590,10 +615,23 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (!disposed && !signal.aborted)
         console.warn('Failed to refresh a related message', error)
     }
-    for (const identity of spansToReload.values())
-      void fetchWholeSpan(identity, signal).catch(reportFailure)
-    for (const seq of pointsToReload)
-      void message(seq, signal).catch(reportFailure)
+    const spanReads = new Map<string, Promise<AgentChatMessage[]>>()
+    for (const [key, identity] of spansToReload) {
+      const read = fetchWholeSpan(identity, signal)
+      spanReads.set(key, read)
+      void read.catch(reportFailure)
+    }
+    for (const seq of pointsToReload) {
+      const span = pointSpans.get(seq)
+      const next = fetchPoint(seq, signal, span === undefined
+        ? undefined
+        : spanReads.get(span))
+      pointAdoptions.get(seq)?.(next)
+      void next.catch(reportFailure)
+    }
+    // The caller's point promise adopts the replacement before the old transport can reject.
+    for (const { controller } of previousLookups)
+      controller.abort()
   }
 
   const unsubscribeWindow = source.subscribeWindowChanges?.(change => untrack(() => {
@@ -650,104 +688,120 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     // Fetching must not subscribe the caller to cache changes that the fetch causes.
     return untrack(() => spanNeedsNoFetch(identity)
       ? Promise.resolve()
-      : fetchWholeSpan(identity))
+      : loadWholeSpan(identity))
   }
 
-  /**
-   * Fetch every message of the span of `identity`, and mark the span as settled. A second
-   * caller while the fetch runs shares it.
-   */
-  function fetchWholeSpan(identity: MessageSpanIdentity, watchSignal?: AbortSignal): Promise<void> {
-    const spanId = messageSpanKey(identity)
-    // Fetching must not subscribe the caller to cache changes that the fetch causes.
-    return untrack(async () => {
-      if (leases.has(spanId) || renderGraceSpans.has(spanId))
-        spanDemand.set(spanId, messageSpanIdentity(identity))
-      const key = `span:${spanId}`
-      const running = inflight.get(key)
-      if (running)
-        return running.promise as Promise<void>
-      const controller = new AbortController()
-      const unlinkWatch = linkWatchSignal(controller, watchSignal)
-      const retractions: RetractedMessage[] = []
-      const promise = source.fetchSpan(identity, controller.signal).then((messages) => {
-        if (disposed || controller.signal.aborted)
-          return
-        if (messages.some(message => messageSpanKey(message) !== spanId))
-          throw new Error('The related-message response contains a different span or provider session')
-        batch(() => {
-          const accepted = messages
-            .filter(message => !retractions.some(includes => includes(message)))
-            .map(selectRecoveredMessage)
-            .filter(message => messageSpanKey(message) === spanId)
-          // Marking a pair settled changes how positional roles are resolved, even
-          // if every accepted message was already cached.
-          if (!loadedSpans.has(spanId)) {
-            loadedSpans.add(spanId)
-            publishCacheChange(false)
-          }
-          remember(accepted)
-        })
-      }).finally(() => {
+  function startLookup<T>(
+    key: string,
+    target: LookupTarget,
+    watchSignal: AbortSignal | undefined,
+    read: (signal: AbortSignal, retractions: RetractedMessage[]) => Promise<T>,
+    result = lookupResult<T>(),
+  ): Promise<T> {
+    const running = inflight.get(key)
+    if (running)
+      return running.promise as Promise<T>
+    const controller = new AbortController()
+    const unlinkWatch = linkWatchSignal(controller, watchSignal)
+    const lookup: InflightLookup = {
+      controller,
+      promise: result.promise,
+      retractions: [],
+      target,
+    }
+    inflight.set(key, lookup)
+    void (async () => {
+      try {
+        result.resolve(await read(controller.signal, lookup.retractions))
+      }
+      catch (error) {
+        result.reject(error)
+      }
+      finally {
         unlinkWatch()
-        if (inflight.get(key)?.controller === controller)
+        if (inflight.get(key) === lookup)
           inflight.delete(key)
+      }
+    })()
+    return result.promise
+  }
+
+  function loadWholeSpan(identity: MessageSpanIdentity): Promise<void> {
+    return fetchWholeSpan(identity).then(() => undefined)
+  }
+
+  /** Fetch and remember the surviving messages of a span once for its current readers. */
+  function fetchWholeSpan(identity: MessageSpanIdentity, watchSignal?: AbortSignal): Promise<AgentChatMessage[]> {
+    const spanId = messageSpanKey(identity)
+    if (leases.has(spanId) || renderGraceSpans.has(spanId))
+      spanDemand.set(spanId, messageSpanIdentity(identity))
+    return startLookup(`span:${spanId}`, { span: identity }, watchSignal, async (signal, retractions) => {
+      if (disposed || signal.aborted)
+        return []
+      const messages = await source.fetchSpan(identity, signal)
+      if (disposed || signal.aborted)
+        return []
+      if (messages.some(message => messageSpanKey(message) !== spanId))
+        throw new Error('The related-message response contains a different span or provider session')
+      return batch(() => {
+        const accepted = messages
+          .filter(message => !retractions.some(includes => includes(message)))
+          .map(selectRecoveredMessage)
+          .filter(message => messageSpanKey(message) === spanId)
+        // Settling a pair changes positional roles even when every message was cached.
+        if (!loadedSpans.has(spanId)) {
+          loadedSpans.add(spanId)
+          publishCacheChange(false)
+        }
+        remember(accepted)
+        return accepted
       })
-      inflight.set(key, {
-        controller,
-        promise,
-        retractions,
-        target: { span: identity },
-      })
-      return promise
     })
   }
 
-  function message(seq: bigint, watchSignal?: AbortSignal): Promise<ResolvedMessage | undefined> {
+  function pointAbortError(): DOMException {
+    return new DOMException('The message resolver is no longer active', 'AbortError')
+  }
+
+  function fetchPoint(seq: bigint, watchSignal?: AbortSignal, spanRead?: Promise<AgentChatMessage[]>): Promise<PointResult> {
+    const result = lookupResult<PointResult>()
+    return startLookup(`seq:${seq}`, { seq, adopt: result.resolve }, watchSignal, async (signal, retractions) => {
+      const spanRows = spanRead === undefined
+        ? undefined
+        : await spanRead.catch(() => undefined)
+      if (disposed || signal.aborted)
+        throw pointAbortError()
+      const shared = spanRows?.find(row => row.seq === seq && !retractions.some(includes => includes(row)))
+      const fetched = shared ?? await source.fetchMessage(seq, signal)
+      if (disposed || signal.aborted)
+        throw pointAbortError()
+      if (!fetched)
+        return undefined
+      if (fetched.seq !== seq)
+        throw new Error('The message response contains a different sequence')
+      if (retractions.some(includes => includes(fetched))) {
+        const current = messageBySeq(seq)
+        return current === undefined
+          ? undefined
+          : reference(current, undefined, false)
+      }
+      const selected = selectRecoveredMessage(fetched)
+      if (messageLeases.has(seq))
+        remember([selected])
+      return reference(selected, undefined, false)
+    }, result)
+  }
+
+  function message(seq: bigint): Promise<PointResult> {
     return untrack(async () => {
       if (seq <= 0n)
         return undefined
       if (disposed)
-        throw new DOMException('The message resolver is no longer active', 'AbortError')
+        throw pointAbortError()
       const resident = messageBySeq(seq)
-      if (resident)
-        return reference(resident, undefined, false)
-      const key = `seq:${seq}`
-      const running = inflight.get(key)
-      if (running)
-        return running.promise as Promise<ResolvedMessage | undefined>
-      const controller = new AbortController()
-      const unlinkWatch = linkWatchSignal(controller, watchSignal)
-      const retractions: RetractedMessage[] = []
-      const promise = source.fetchMessage(seq, controller.signal).then((fetchedMessage) => {
-        if (disposed || controller.signal.aborted)
-          throw new DOMException('The message resolver is no longer active', 'AbortError')
-        if (!fetchedMessage)
-          return undefined
-        if (fetchedMessage.seq !== seq)
-          throw new Error('The message response contains a different sequence')
-        if (retractions.some(includes => includes(fetchedMessage))) {
-          const current = messageBySeq(seq)
-          return current === undefined
-            ? undefined
-            : reference(current, undefined, false)
-        }
-        const selected = selectRecoveredMessage(fetchedMessage)
-        if (messageLeases.has(seq))
-          remember([selected])
-        return reference(selected, undefined, false)
-      }).finally(() => {
-        unlinkWatch()
-        if (inflight.get(key)?.controller === controller)
-          inflight.delete(key)
-      })
-      inflight.set(key, {
-        controller,
-        promise,
-        retractions,
-        target: { seq },
-      })
-      return promise
+      return resident
+        ? reference(resident, undefined, false)
+        : fetchPoint(seq)
     })
   }
 
@@ -819,13 +873,13 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
         if (pairedByPlaceInWindow) {
           return spanSettled(identity)
             ? undefined
-            : fetchWholeSpan(identity)
+            : loadWholeSpan(identity)
         }
         const drawsFromRequest = pluginFor(message.agentProvider)?.transcript.needsRequest?.(resolved.resolved) ?? false
         const sitsBesideRequest = spanRole !== 'request' && spanRole !== 'none'
         if ((!drawsFromRequest && !sitsBesideRequest) || spanNeedsNoFetch(identity))
           return undefined
-        return fetchWholeSpan(identity)
+        return loadWholeSpan(identity)
       }
       catch (error) {
         // A failure to read the row is a failed lookup, as it was a rejection before.
@@ -835,7 +889,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     // Not an async function, for the reason of loadRequest.
     loadResult: identity => untrack(() => spanSettled(identity) || source.holdsNewest() || related(identity, 'result') !== undefined
       ? undefined
-      : fetchWholeSpan(identity)),
+      : loadWholeSpan(identity)),
     retainSpan: (identity) => {
       if (!identity.spanId || disposed)
         return () => undefined

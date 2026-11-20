@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -19,16 +20,21 @@ type claudeConversationFrame struct {
 	destination     *claudeTranscriptDestination
 	spans           agent.SpanServices
 	prepared        *agent.CapturedTranscriptOperation
+	report          *agent.CapturedTranscriptOperation
 	retryResolution *agent.CapturedTranscriptOperation
 	admission       *claudeOutputDecision
 	span            agent.SpanInfo
+	result          *claudeReceivedResult
+	inputEvidence   *claudeInferredTurnEvidence
 }
 
 func (destination *claudeTranscriptDestination) captureFrame(content []byte, msgType string, env *messageEnvelope) *claudeConversationFrame {
 	key := claudeRevocableKey(msgType, env)
 	captured := destination.capture(agent.MessageContent{
-		Original: content, IdempotencyKey: key, WriteReceipt: agent.NewTranscriptWriteReceipt(),
+		IdempotencyKey: key, WriteReceipt: agent.NewTranscriptWriteReceipt(),
 	}, agent.SpanInfo{})
+	// Claude's reader owns these bytes before it admits the frame.
+	captured.Original = content
 	frame := &claudeConversationFrame{
 		msgType: msgType, envelope: env, content: captured, destination: destination,
 		spans: agent.TranscriptFrameSpans(captured, destination.sink),
@@ -43,12 +49,25 @@ func (frame *claudeConversationFrame) live() bool {
 	return agent.TranscriptFrameIsCurrent(frame.content)
 }
 
-func (frame *claudeConversationFrame) admit() (bool, error) {
+func (a *Agent) admitClaudeFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, retractions *claudeFrameRetractions) (bool, error) {
 	accepted, err := frame.content.WriteReceipt.AdmitMessage(frame.destination.sink, frame.content)
-	if err == nil && frame.admission != nil {
-		frame.admission.resolve(accepted)
+	if err != nil {
+		return false, err
 	}
-	return accepted, err
+	a.settleClaudeInferredTurn(frame, accepted)
+	if !accepted {
+		a.resolveClaudeRetractionOwner(frame, false)
+		return false, nil
+	}
+	return true, retractions.apply(sequence)
+}
+
+func (a *Agent) completeClaudeNativeFrame(frame *claudeConversationFrame, err error) error {
+	if err == nil {
+		_, stored := frame.content.WriteReceipt.StoredMessageSequence()
+		a.resolveClaudeRetractionOwner(frame, stored)
+	}
+	return err
 }
 
 func (frame *claudeConversationFrame) prepare(content agent.MessageContent, span agent.SpanInfo, notification bool) error {
@@ -87,28 +106,21 @@ func (frame *claudeConversationFrame) persist(sequence agent.TranscriptSequence)
 	return true, nil
 }
 
-func (a *Agent) submitClaudeSequence(sink agent.TranscriptServices, label string, run func(agent.TranscriptSequence) error) error {
-	drain, err := agent.ReserveTranscriptSequence(sink, label, run)
-	if err == nil {
-		err = drain()
-	}
-	a.reportClaudeSequenceError(label, err)
-	return err
-}
-
 func (a *Agent) submitClaudeConversationFrame(frame *claudeConversationFrame, label string, run func(agent.TranscriptSequence) error) {
 	senderSettled := a.outputOrder.captureSender(frame)
-	err := a.submitClaudeSequence(frame.destination.sink, label, func(sequence agent.TranscriptSequence) error {
+	drain, err := agent.ReserveTranscriptSequence(frame.destination.sink, label, func(sequence agent.TranscriptSequence) error {
 		err := run(sequence)
 		if err == nil && senderSettled != nil {
 			senderSettled()
 		}
 		return err
 	})
+	if err == nil {
+		err = drain()
+	}
+	a.reportClaudeSequenceError(label, err)
 	if !agent.OutputRetained(err) {
-		if frame.admission != nil {
-			frame.admission.resolve(false)
-		}
+		a.resolveClaudeRetractionOwner(frame, false)
 		if senderSettled != nil {
 			senderSettled()
 		}
@@ -127,19 +139,49 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 		slog.Warn("invalid message envelope", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	routing := decodeClaudeFrameRouting(content)
 	if env.ParentToolUseID != "" {
 		if !claudeIsSyntheticContext(msgType, &env) && (msgType != claudeMsgTypeUser || !isSimpleUserTextEcho(content)) {
-			a.routeClaudeOutput(func() { a.routeSubagentMessage(content, msgType, &env) })
+			a.routeClaudeOutput(func() { a.routeSubagentMessage(content, msgType, &env, routing) })
 		}
 		return
 	}
-	a.routeClaudeRootSequence("process Claude conversation frame", func(func()) claudeRootSequence {
+	var result *claudeReceivedResult
+	var inputEvidence *claudeInferredTurnEvidence
+	if !claudeIsSyntheticContext(msgType, &env) && !routing.isReplay && a.liveClaudeOutput() {
+		switch msgType {
+		case claudeMsgTypeResult:
+			if (env.Origin.Kind != "peer" || !env.Origin.Handback) &&
+				(routing.sessionID == "" || routing.sessionID == a.nativeTranscriptSession()) {
+				result = a.captureClaudeResultEdge()
+			}
+		case claudeMsgTypeAssistant, claudeMsgTypeUser:
+			inputEvidence = a.reserveClaudeInferredTurn()
+		}
+	}
+	route, err := a.reserveRoutedClaudeRootOutput("process Claude conversation frame", func(func()) claudeRootSequence {
 		destination := a.rootTranscript()
 		frame := destination.captureFrame(content, msgType, &env)
-		wireSession := providerkit.StringField(content, "session_id")
-		retractions := claudeFrameRetractions{candidates: a.claudeRetractionCandidates(claudeEvictionKeys(content, msgType, frame.content.IdempotencyKey), wireSession, destination)}
+		if frame.spans == nil {
+			a.releaseClaudeInferredTurn(inputEvidence)
+			return func(agent.TranscriptSequence) error {
+				return errors.New("the Claude frame has no retained span authority")
+			}
+		}
+		frame.result = result
+		frame.inputEvidence = inputEvidence
+		if routing.sessionID != "" && routing.sessionID != frame.content.AgentSessionID {
+			a.releaseClaudeInferredTurn(frame.inputEvidence)
+			frame.inputEvidence = nil
+		}
+		if msgType == claudeMsgTypeResult && !routing.isReplay && frame.live() && a.liveClaudeOutput() &&
+			(routing.sessionID == "" || routing.sessionID == frame.content.AgentSessionID) {
+			a.endClaudeCompaction()
+		}
+		keys := routing.claudeEvictionKeys(msgType, frame.content.IdempotencyKey)
+		retractions := claudeFrameRetractions{candidates: a.claudeRetractionCandidates(keys, routing.sessionID, destination)}
 		if !claudeIsSyntheticContext(msgType, &env) && !claudeIsFailedCompactCommand(&env) {
-			a.rememberRevocableFrame(frame, wireSession)
+			a.rememberRevocableFrame(frame, routing.sessionID)
 		}
 		senderSettled := a.outputOrder.captureSender(frame)
 		return func(sequence agent.TranscriptSequence) error {
@@ -150,14 +192,82 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 			return err
 		}
 	})
+	if err != nil {
+		a.releaseClaudeInferredTurn(inputEvidence)
+		a.reportClaudeSequenceError("process Claude conversation frame", err)
+		return
+	}
+	route()
+}
+
+type claudeInferredTurnEvidence struct{ pending uint64 }
+
+func (a *Agent) reserveClaudeInferredTurn() *claudeInferredTurnEvidence {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.sessionStateReported {
+		return nil
+	}
+	if a.inferredTurnEvidence == nil {
+		a.inferredTurnEvidence = &claudeInferredTurnEvidence{}
+	}
+	a.inferredTurnEvidence.pending++
+	return a.inferredTurnEvidence
+}
+
+func (a *Agent) releaseClaudeInferredTurn(evidence *claudeInferredTurnEvidence) {
+	if evidence == nil {
+		return
+	}
+	a.Mu.Lock()
+	evidence.pending--
+	a.Mu.Unlock()
+}
+
+func (a *Agent) settleClaudeInferredTurn(frame *claudeConversationFrame, accepted bool) {
+	evidence := frame.inputEvidence
+	if evidence == nil {
+		return
+	}
+	current := accepted && frame.live()
+	a.Mu.Lock()
+	activate := current && a.inferredTurnEvidence == evidence && !a.sessionStateReported &&
+		!a.turnActive && a.liveClaudeOutputLocked()
+	if activate {
+		a.turnActive = true
+	}
+	evidence.pending--
+	a.Mu.Unlock()
+	frame.inputEvidence = nil
+	if activate {
+		a.PublishTurnActive()
+	}
+}
+
+type claudeReceivedResult struct {
+	endRevision   uint64
+	inputRevision uint64
+	busyRevision  uint64
+	interrupted   bool
+}
+
+func (a *Agent) captureClaudeResultEdge() *claudeReceivedResult {
+	a.Mu.Lock()
+	a.turnEndRevision++
+	result := &claudeReceivedResult{
+		endRevision: a.turnEndRevision, inputRevision: a.turnInputRevision,
+		busyRevision: a.nativeBusyRevision, interrupted: a.interruptRequested,
+	}
+	a.interruptRequested = false
+	retired := a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
+	a.Mu.Unlock()
+	a.cancelControls(retired)
+	return result
 }
 
 func (a *Agent) processClaudeRootFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, retractions *claudeFrameRetractions) error {
-	accepted, err := frame.admit()
+	accepted, err := a.admitClaudeFrame(sequence, frame, retractions)
 	if err != nil || !accepted {
-		return err
-	}
-	if err := retractions.apply(); err != nil {
 		return err
 	}
 	msgType, env := frame.msgType, frame.envelope
@@ -166,17 +276,18 @@ func (a *Agent) processClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 		if err := a.resolveHeldAPIError(sequence, frame); err != nil {
 			return err
 		}
-		a.observeTurnFromOutput(frame.content.Original, msgType)
 	}
 	if msgType == claudeMsgTypeAssistant && env.IsAPIErrorMessage {
 		a.holdAPIError(frame)
+		a.resolveClaudeRetractionOwner(frame, true)
 		return nil
 	}
 	if syntheticContext || msgType == claudeMsgTypeAssistant && claudeIsFailedCompactCommand(env) ||
 		msgType == claudeMsgTypeUser && isSimpleUserTextEcho(frame.content.Original) {
+		a.resolveClaudeRetractionOwner(frame, false)
 		return nil
 	}
-	return a.persistClaudeRootFrame(sequence, frame)
+	return a.completeClaudeNativeFrame(frame, a.persistClaudeRootFrame(sequence, frame))
 }
 
 type claudeFrameRetractions struct {
@@ -184,7 +295,7 @@ type claudeFrameRetractions struct {
 	targets    []claudeRetractionTarget
 }
 
-func (retractions *claudeFrameRetractions) apply() error {
+func (retractions *claudeFrameRetractions) apply(sequence agent.TranscriptSequence) error {
 	if len(retractions.candidates) > 0 {
 		targets, ready := selectClaudeRetractionTargets(retractions.candidates)
 		if !ready {
@@ -193,37 +304,49 @@ func (retractions *claudeFrameRetractions) apply() error {
 		retractions.candidates = nil
 		retractions.targets = targets
 	}
-	return applyClaudeRetractions(&retractions.targets)
+	return applyClaudeRetractions(sequence, &retractions.targets)
 }
 
-func applyClaudeRetractions(targets *[]claudeRetractionTarget) error {
+func applyClaudeRetractions(sequence agent.TranscriptSequence, targets *[]claudeRetractionTarget) error {
 	for len(*targets) > 0 {
-		if err := (*targets)[0].apply(); err != nil {
+		if err := (*targets)[0].apply(sequence); err != nil {
 			return err
 		}
+		(*targets)[0] = claudeRetractionTarget{}
 		*targets = (*targets)[1:]
 	}
 	return nil
 }
 
 func (a *Agent) receiveClaudeFallback(content []byte) {
-	var env messageEnvelope
-	if err := json.Unmarshal(content, &env); err != nil {
+	routing := decodeClaudeFrameRouting(content)
+	// Apply the model observation in native source order. The notice can wait for storage.
+	// An absent scope means a session fallback. A local fallback changes only its own response.
+	if routing.scope != claudeModelFallbackScopeLocal {
+		a.adoptClaudeModelFallback(content)
+	}
+	var fields struct {
+		UUID            string `json:"uuid"`
+		ParentToolUseID string `json:"parent_tool_use_id"`
+		ToolUseID       string `json:"tool_use_id"`
+	}
+	if err := json.Unmarshal(content, &fields); err != nil {
 		slog.Warn("invalid Claude fallback", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	// Apply the model observation in native source order. The notice can wait for storage.
-	// An absent scope means a session fallback. A local fallback changes only its own response.
-	if providerkit.StringField(content, "scope") != claudeModelFallbackScopeLocal {
-		a.adoptClaudeModelFallback(content)
-	}
+	env := messageEnvelope{UUID: fields.UUID, ParentToolUseID: fields.ParentToolUseID, ToolUseID: fields.ToolUseID}
 	a.routeClaudeRootSequence("process Claude fallback", func(wakeRoot func()) claudeRootSequence {
 		destination := a.rootTranscript()
 		frame := destination.captureFrame(content, claudeMsgTypeSystem, &env)
+		if frame.spans == nil {
+			return func(agent.TranscriptSequence) error {
+				return errors.New("the Claude fallback has no retained span authority")
+			}
+		}
 		var candidates []claudeRetractionCandidate
 		if env.ParentToolUseID == "" {
-			keys := claudeEvictionKeys(content, claudeMsgTypeSystem, claudeTranscriptKey(env.UUID))
-			candidates = a.claudeRetractionCandidates(keys, providerkit.StringField(content, "session_id"), nil)
+			keys := routing.claudeEvictionKeys(claudeMsgTypeSystem, claudeTranscriptKey(env.UUID))
+			candidates = a.claudeRetractionCandidates(keys, routing.sessionID, nil)
 		}
 		return a.prepareClaudeFallback(frame, candidates, wakeRoot)
 	})
@@ -232,6 +355,7 @@ func (a *Agent) receiveClaudeFallback(content []byte) {
 type claudeFallbackQueueWrite struct {
 	targets []claudeRetractionTarget
 	drain   func() error
+	err     error
 }
 
 func (a *Agent) prepareClaudeFallback(frame *claudeConversationFrame, candidates []claudeRetractionCandidate, wakeRoot func()) claudeRootSequence {
@@ -242,20 +366,32 @@ func (a *Agent) prepareClaudeFallback(frame *claudeConversationFrame, candidates
 	writes := map[*agent.OutputQueue]*claudeFallbackQueueWrite{rootQueue: rootWrite}
 	var orderedWrites []*claudeFallbackQueueWrite
 	var ready atomic.Bool
+	var pendingChildren atomic.Int64
+	var reservationErr error
 	reserve := func(queue *agent.OutputQueue, writer agent.TranscriptServices) {
 		if _, exists := writes[queue]; exists {
 			return
 		}
 		write := &claudeFallbackQueueWrite{}
 		writes[queue] = write
-		drain, err := agent.ReserveTranscriptSequence(writer, label, func(agent.TranscriptSequence) error {
+		drain, err := agent.ReserveTranscriptSequence(writer, label, func(sequence agent.TranscriptSequence) error {
 			if !ready.Load() {
 				return agent.ErrOutputInFlight
 			}
-			return applyClaudeRetractions(&write.targets)
+			if len(write.targets) == 0 {
+				return nil
+			}
+			if err := applyClaudeRetractions(sequence, &write.targets); err != nil {
+				return err
+			}
+			// Every targeted deletion committed before this callback returned.
+			if pendingChildren.Add(-1) == 0 {
+				wakeRoot()
+			}
+			return nil
 		})
 		if err != nil {
-			a.reportClaudeSequenceError(label, err)
+			write.err = err
 			return
 		}
 		write.drain = drain
@@ -263,31 +399,49 @@ func (a *Agent) prepareClaudeFallback(frame *claudeConversationFrame, candidates
 	}
 	decisions := make(map[*claudeOutputDecision]struct{})
 	for _, candidate := range candidates {
-		for dest, owner := range candidate.owners {
-			queue := agent.OutputQueueFor(dest.sink)
+		for owner := range candidate.owners.all {
+			queue := agent.OutputQueueFor(owner.destination.sink)
 			if queue != rootQueue {
-				reserve(queue, dest.sink)
+				reserve(queue, owner.destination.sink)
 			}
-			decisions[owner.admission] = struct{}{}
+			if owner.admission != nil {
+				decisions[owner.admission] = struct{}{}
+			}
 		}
 	}
 	afterClaudeOutputDecisions(decisions, func() {
 		targets, _ := selectClaudeRetractionTargets(candidates)
 		for _, target := range targets {
 			queue := agent.OutputQueueFor(target.destination.sink)
-			writes[queue].targets = append(writes[queue].targets, target)
+			write := writes[queue]
+			write.targets = append(write.targets, target)
+			if write.err != nil && reservationErr == nil {
+				reservationErr = write.err
+			}
 		}
+		var count int64
+		for _, write := range orderedWrites {
+			if len(write.targets) != 0 {
+				count++
+			}
+		}
+		pendingChildren.Store(count)
 		ready.Store(true)
 		for _, write := range orderedWrites {
 			a.reportClaudeSequenceError(label, write.drain())
 		}
-		wakeRoot()
+		if count == 0 {
+			wakeRoot()
+		}
 	})
 	return func(sequence agent.TranscriptSequence) error {
-		if !ready.Load() {
+		if !ready.Load() || pendingChildren.Load() != 0 {
 			return agent.ErrOutputInFlight
 		}
-		if err := applyClaudeRetractions(&rootWrite.targets); err != nil {
+		if reservationErr != nil {
+			return reservationErr
+		}
+		if err := applyClaudeRetractions(sequence, &rootWrite.targets); err != nil {
 			return err
 		}
 		return persistClaudeFallbackNotice(sequence, frame)
@@ -392,7 +546,7 @@ func (a *Agent) clearHeldAPIError(held *claudeHeldAPIError) {
 
 func (a *Agent) persistClaudeRetryResolution(sequence agent.TranscriptSequence, frame *claudeConversationFrame) error {
 	if frame.retryResolution == nil {
-		if !frame.live() || !a.apiRetry.TakePending() {
+		if !frame.destination.apiRetry.TakePending() {
 			return nil
 		}
 		raw, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
@@ -428,7 +582,7 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 				return nil
 			}
 			content.Metadata = a.MessageWithToolUses(raw).Metadata
-			if a.takeInterruptRequest() && env.statesAbortedTurn() {
+			if frame.result != nil && frame.result.interrupted && env.statesAbortedTurn() {
 				content.Completion = agent.MessageCompletionInterrupted
 			}
 		}
@@ -442,7 +596,7 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 		return err
 	}
 
-	live := frame.live()
+	live := frame.live() && a.liveClaudeOutput()
 	if live && (msgType == claudeMsgTypeAssistant || msgType == claudeMsgTypeResult) {
 		a.extractAndBroadcastUsage(env, msgType)
 	}
@@ -458,27 +612,34 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 		claudeCloseToolResultSpans(frame.spans, env)
 	case claudeMsgTypeResult:
 		frame.spans.ResetSpans()
-		if live {
-			a.finishClaudeRootResult(env, raw)
+		frame.destination.apiRetry.Reset()
+		if live && frame.result != nil {
+			a.finishClaudeRootResult(frame.result, env, raw)
 		}
 	}
 	return nil
 }
 
-func (a *Agent) finishClaudeRootResult(env *messageEnvelope, raw []byte) {
-	a.endClaudeCompaction()
-	a.apiRetry.Reset()
+func (a *Agent) finishClaudeRootResult(result *claudeReceivedResult, env *messageEnvelope, raw []byte) {
 	a.Mu.Lock()
 	a.TurnToolUses = 0
+	if a.awaitedInputRevision <= result.inputRevision {
+		a.awaitedInputRevision = 0
+	}
+	current := a.turnEndRevision == result.endRevision && a.awaitedInputRevision == 0 &&
+		a.nativeBusyRevision == result.busyRevision
+	publishesState := a.sessionStateReported
+	if current && !publishesState {
+		a.turnActive = false
+	}
 	a.Mu.Unlock()
 	// A child can outlive this root result, so clear only the root's restart intents.
 	a.tasks.clearClaudeRestarts("")
-	direct := agent.DirectProviderServices(a.sink)
-	providerkit.ScheduleOrCancelServerErrorAutoRetry(direct, env.IsError && isRetryableClaudeResultError(env.Result), raw)
-	// Native session state can keep the turn active for a queued steer.
-	if a.publishesSessionState() {
-		a.recordClaudeResultEdge()
-	} else {
-		a.disarmTurn()
+	if current {
+		direct := agent.DirectProviderServices(a.sink)
+		providerkit.ScheduleOrCancelServerErrorAutoRetry(direct, env.IsError && isRetryableClaudeResultError(env.Result), raw)
+		if !publishesState {
+			a.publishTurnActive(direct)
+		}
 	}
 }

@@ -109,12 +109,20 @@ func (scope *capturedTranscriptScope) ReserveSpanColor(id, parent string) int32 
 
 // TranscriptFrameSpans supplies geometry and effects for the captured lifetime.
 func (owner *transcriptOwner) TranscriptFrameSpans() agent.SpanServices {
-	return &capturedTranscriptScope{anchor: owner, tracker: owner.tracker, retainedLive: true}
+	exact := owner.withFrameAuthority()
+	return &capturedTranscriptScope{anchor: &exact, tracker: exact.tracker, retainedLive: true}
 }
 
 // SnapshotTranscriptFrame takes geometry with the frame's original authority.
 func (owner *transcriptOwner) SnapshotTranscriptFrame(span agent.SpanInfo) agent.TranscriptPublication {
-	captured := owner.withSpanSnapshot(owner.tracker, span)
-	captured.frameAuthority = true
-	return &transcriptPublication{owner: captured}
+	exact := owner.withFrameAuthority()
+	return &transcriptPublication{owner: exact.withSpanSnapshot(exact.tracker, span)}
 }
+
+func (owner *transcriptOwner) withFrameAuthority() transcriptOwner {
+	exact := *owner
+	exact.frameAuthority = true
+	return exact
+}
+
+var _ agent.TranscriptFrameOwner = (*transcriptOwner)(nil)

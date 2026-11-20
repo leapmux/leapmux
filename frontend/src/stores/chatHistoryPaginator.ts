@@ -30,6 +30,8 @@ export function landingPageLimit(viewportHeight: number | undefined, pageLimit: 
  * genuinely-vanished live seq stops the loop instead of spinning.
  */
 const MAX_FORWARD_FILL_PAGES = 4
+/** A deletion can invalidate an entire landing. Limit the extra reads under that jump. */
+const MAX_LANDING_READS = 4
 const MAX_CATCH_UP_PAGES = Math.ceil(Number(CATCH_UP_GAP_LIMIT) / MESSAGE_PAGE_LIMIT)
 const MAX_INT64_SEQ = 9223372036854775807n
 
@@ -289,7 +291,7 @@ export interface HistoryPaginatorDeps {
     abortSignal?: AbortSignal,
   ) => Promise<T>
   duringHistoryRead: <T>(agentId: string, read: (survives: SurvivesHistoryRead) => Promise<T>) => Promise<T>
-  retractMessages: (agentId: string, sequences: readonly bigint[], handle?: WatchEventsHandle) => boolean
+  reconcileLoadedPage: (agentId: string, sequences: readonly bigint[], revisions: AgentChatMessage[], handle?: WatchEventsHandle) => void
   needsLatestAnchor: (agentId: string) => boolean
   completeLatestAnchor: (agentId: string) => void
   mergeFetchedMessages: (agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') => void
@@ -345,6 +347,28 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     return untrack(() => new Map((state.messagesByAgent[agentId] ?? []).map(message => [message.id, message.seq])))
   }
 
+  /** Read a fresh page if retractions remove every row while older history still exists. */
+  async function landLatestPage(
+    workerId: string,
+    agentId: string,
+    read: { limit: number, signal: AbortSignal, survives: SurvivesHistoryRead, mayReplace?: (() => boolean) | undefined },
+    apply: (page: ListAgentMessagesResponse) => void,
+  ): Promise<boolean> {
+    const { limit, signal, survives, mayReplace } = read
+    for (let count = 0; count < MAX_LANDING_READS; count++) {
+      if (signal.aborted || mayReplace?.() === false)
+        return false
+      const page = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit }, { signal })
+      if (signal.aborted || mayReplace?.() === false)
+        return false
+      if (page.hasMore && !page.messages.some(survives))
+        continue
+      apply(page)
+      return true
+    }
+    throw new Error('History changed before the latest page could be loaded.')
+  }
+
   /**
    * Apply a LATEST page's body + its authoritative to-do list + background-task
    * registry + goal -- the shared tail of loadInitialMessages and
@@ -363,6 +387,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     resp: ListAgentMessagesResponse,
     survives: SurvivesHistoryRead,
     previous?: ReadonlyMap<string, bigint>,
+    applyMetadata = true,
   ): void {
     const messages = resp.messages.filter(survives)
     // A cold load or deletion re-anchor can run while the watch adds rows.
@@ -373,6 +398,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
           message.seq > 0n && previous.get(message.id) !== message.seq && survives(message))
     deps.completeLatestAnchor(agentId)
     deps.applyMessages(agentId, mergeWindow(messages, arrivals, 'newer'), resp.hasMore)
+    if (!applyMetadata)
+      return
     if (resp.todos)
       deps.replaceTodos(agentId, resp.todos.todos)
     if (resp.backgroundTasks)
@@ -397,13 +424,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     // initial page.
     await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal, survives) => {
       const previous = snapshotLoadedIdentities(agentId)
-      let resp
       try {
-        resp = await workerAgent.listAgentMessages(workerId, {
-          agentId,
-          anchor: MessagePageAnchor.LATEST,
-          limit: MESSAGE_PAGE_LIMIT,
-        }, { signal })
+        // The cold LATEST page also hydrates metadata that the transcript rows omit.
+        await landLatestPage(workerId, agentId, { limit: MESSAGE_PAGE_LIMIT, signal, survives }, page =>
+          applyLatestPage(agentId, page, survives, previous))
       }
       catch (err) {
         // A REJECTED cold start is the other way the registry cannot be read,
@@ -421,11 +445,6 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // still fires. This records a fact; it does not handle the error.
         throw err
       }
-      if (signal.aborted)
-        return
-      // The server ships the authoritative to-do list on the cold-start (LATEST)
-      // page; subsequent live updates arrive via todos_changed broadcasts.
-      applyLatestPage(agentId, resp, survives, previous)
     })
   }
 
@@ -503,10 +522,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
               else if (currentId === stored.id)
                 updates.push(stored)
             }
-            batch(() => {
-              deps.retractMessages(agentId, removals, handle)
-              deps.mergeFetchedMessages(agentId, updates, 'newer')
-            })
+            deps.reconcileLoadedPage(agentId, removals, updates, handle)
             return !resp.hasMore || cursor >= last.seq
           })
           if (done)
@@ -839,10 +855,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       setState('tailFillDeferred', agentId, false)
     })
     let hasMore = false
+    let cursor = deps.getLastMessageSeq(agentId)
     for (let count = 0; count < pages && (hasMore || !deps.caughtUpToLiveTail(agentId)); count++) {
       if (signal.aborted)
         return
-      const cursor = deps.getLastMessageSeq(agentId)
       if (cursor === undefined || options.mayContinue?.() === false)
         break
 
@@ -859,20 +875,32 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       if (options.mayContinue?.() === false)
         break
 
-      // Only an ascending range after the loaded cursor can extend the window.
-      const rows = reply.messages.filter(row => row.seq > cursor && survives(row))
-      if (rows.length === 0) {
-        if (!hasMore)
-          deps.liveTail.settleToWindow(agentId, liveSeqAtEntry, cursor)
-        finishTailFill(agentId, hasMore, !hasMore && options.mayContinue?.() !== false)
-        return
+      // A retraction can remove every row in a valid page. Track the range read
+      // from the Worker independently of the rows that can enter the window.
+      let coveredThrough: bigint = cursor
+      for (const row of reply.messages) {
+        if (row.seq <= coveredThrough)
+          throw new Error('The forward history page repeats or misorders a sequence.')
+        coveredThrough = row.seq
       }
-
-      batch(() => {
-        deps.mergeFetchedMessages(agentId, rows, 'newer')
-        deps.trimOldestEnd(agentId, deps.maxLoaded)
-      })
-      hasMore = hasMore && deps.getLastSeq(agentId) <= rows.at(-1)!.seq
+      if (hasMore && coveredThrough === cursor)
+        throw new Error('The forward history page does not advance its cursor.')
+      const rows = reply.messages.filter(survives)
+      if (rows.length > 0) {
+        batch(() => {
+          deps.mergeFetchedMessages(agentId, rows, 'newer')
+          deps.trimOldestEnd(agentId, deps.maxLoaded)
+        })
+      }
+      const loadedTail = deps.getLastSeq(agentId)
+      if (rows.length === 0 && !hasMore) {
+        deps.liveTail.settleToWindow(agentId, liveSeqAtEntry, loadedTail)
+        break
+      }
+      hasMore = hasMore && loadedTail <= coveredThrough
+      cursor = loadedTail > coveredThrough
+        ? loadedTail
+        : coveredThrough
     }
     finishTailFill(agentId, hasMore, options.mayContinue?.() !== false)
   }
@@ -957,10 +985,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // Always re-anchor on a fresh latest page so the window is contiguous
       // up to the tail regardless of how far it had drifted. The request carries
       // `signal`, so an abort releases the browser's wait.
-      const latest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit }, { signal })
-      if (signal.aborted || mayReplace?.() === false)
-        return false
-      batch(() => {
+      const landed = await landLatestPage(workerId, agentId, { limit, signal, survives, mayReplace }, latest => batch(() => {
         const observedTail = deps.liveTail.get(agentId)
         // A lower tail observed during the request is newer deletion evidence.
         const latestSeq = observedTail < liveSeqAtEntry && (latest.latestSeq === undefined || observedTail < latest.latestSeq)
@@ -973,16 +998,19 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
           deps.liveTail.setAuthoritative(agentId, latestSeq, liveSeqAtEntry)
         else if (messages.length === 0 && !latest.hasMore)
           deps.liveTail.resetToEmptyIfStale(agentId, liveSeqAtEntry)
-        applyLatestPage(agentId, { ...latest, messages, hasMore: latestSeq !== 0n && latest.hasMore }, survives, deps.needsLatestAnchor(agentId)
+        const reanchor = deps.needsLatestAnchor(agentId)
+        applyLatestPage(agentId, { ...latest, messages, hasMore: latestSeq !== 0n && latest.hasMore }, survives, reanchor
           ? previous
-          : undefined)
+          : undefined, !reanchor)
         const caughtUp = deps.caughtUpToLiveTail(agentId)
         setState('hasMoreNewer', agentId, !caughtUp)
         const remainingPages = caughtUp
           ? 1
           : 0
         deps.setLandingRefillPages(agentId, remainingPages)
-      })
+      }))
+      if (!landed)
+        return false
       await forwardFillToLiveTail(workerId, agentId, signal, liveSeqAtEntry, survives, { pages: 1, limit, mayContinue: mayReplace })
       return true
     }, abortSignal, recovery?.pageLimit)
@@ -1048,20 +1076,32 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
             limit: Math.ceil(limit / 2),
           }
       // Both reads share the wait owned by this seek.
-      const [before, after] = await Promise.all([
+      const readAround = () => Promise.all([
         workerAgent.listAgentMessages(workerId, beforeRequest, { signal }),
         atSequenceLimit
           ? undefined
           : listMessagesAfter(workerId, agentId, seq, signal, limit),
       ])
-      if (signal.aborted)
-        return false
-      const newerIds = new Set(after?.messages.map(row => row.id))
-      const rows = [
+      let [before, after] = await readAround()
+      let rows: AgentChatMessage[]
+      for (let reads = 1; ; reads++) {
+        if (signal.aborted)
+          return false
+        const newer = after?.messages.filter(survives) ?? []
+        const newerIds = new Set(newer.map(row => row.id))
         // A message can move from BEFORE to AFTER between the two queries.
-        ...before.messages.filter(row => !newerIds.has(row.id)),
-        ...(after?.messages ?? []),
-      ].filter(survives)
+        rows = [
+          ...before.messages.filter(row => survives(row) && !newerIds.has(row.id)),
+          ...newer,
+        ]
+        if (rows.length > 0 || (!before.hasMore && !after?.hasMore))
+          break
+        if (reads >= MAX_LANDING_READS)
+          throw new Error('History changed before the requested sequence could be loaded.')
+        const [olderResult, newerResult] = await readAround()
+        before = olderResult
+        after = newerResult
+      }
       batch(() => {
         deps.completeLatestAnchor(agentId)
         deps.setLandingRefillPages(agentId, atSequenceLimit ? 1 : 0)

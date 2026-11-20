@@ -107,14 +107,7 @@ func ReserveTranscriptSequence(writer TranscriptServices, label string, run func
 	ticket := tickets[0]
 	ready.Store(ticket)
 	return func() error {
-		err := queue.FlushAfterReady(ticket)
-		if ticket.Done() {
-			return nil
-		}
-		if err == nil {
-			err = ErrOutputInFlight
-		}
-		return &PendingOutputError{Err: err}
+		return transcriptTicketResult(ticket, queue.FlushAfterReady(ticket))
 	}, nil
 }
 
@@ -127,17 +120,44 @@ func (sequence TranscriptSequence) Persist(operation CapturedTranscriptOperation
 	if writer == nil {
 		return false, errors.New("the transcript operation has no writer")
 	}
+	if err := sequence.validateWriter(writer); err != nil {
+		return false, err
+	}
 	var execution *outputExecution
 	if sequence.ticket != nil {
 		execution = &outputExecution{ticket: sequence.ticket, operation: operation.operation, source: operation.source}
-		if !execution.active() || OutputQueueFor(writer) != sequence.ticket.Queue() {
-			return false, errors.New("the transcript operation has no active position on its output queue")
-		}
-		if err := writer.ValidateTranscriptOutput(sequence.ticket); err != nil {
-			return false, err
-		}
 	}
 	return operation.captured.persistWithExecution(operation.operation, operation.source, execution)
+}
+
+// Retract applies the captured claim at the active position on its writer's queue.
+func (sequence TranscriptSequence) Retract(writer TranscriptServices, captured MessageContent, keys []string) error {
+	if writer == nil {
+		return errors.New("the transcript retraction has no writer")
+	}
+	if err := sequence.validateWriter(writer); err != nil {
+		return err
+	}
+	return DirectTranscript(writer).RetractMessagesByIdempotencyKey(captured, keys)
+}
+
+func (sequence TranscriptSequence) validateWriter(writer TranscriptServices) error {
+	queue := OutputQueueFor(writer)
+	if sequence.ticket == nil && queue == nil {
+		return nil
+	}
+	if queue == nil || sequence.ticket == nil || sequence.ticket.Queue() != queue || !queue.executes(sequence.ticket) {
+		return errors.New("the transcript operation has no active position on its output queue")
+	}
+	return writer.ValidateTranscriptOutput(sequence.ticket)
+}
+
+// TranscriptFrameOwner supplies all operations that need the same captured lifetime.
+type TranscriptFrameOwner interface {
+	TranscriptOwner
+	IsTranscriptFrameCurrent() bool
+	TranscriptFrameSpans() SpanServices
+	SnapshotTranscriptFrame(SpanInfo) TranscriptPublication
 }
 
 // TranscriptFrameIsCurrent checks exact native lifetime authority for an admitted frame.
@@ -145,31 +165,30 @@ func TranscriptFrameIsCurrent(content MessageContent) bool {
 	if content.Publication == nil {
 		return true
 	}
-	owner := content.Publication.Owner()
-	if frameOwner, ok := owner.(interface{ IsTranscriptFrameCurrent() bool }); ok {
-		return frameOwner.IsTranscriptFrameCurrent()
-	}
-	return owner.IsSessionCurrent()
+	owner, ok := content.Publication.Owner().(TranscriptFrameOwner)
+	return ok && owner.IsTranscriptFrameCurrent()
 }
 
 // TranscriptFrameSpans returns span services for a frame's original lifetime.
+// A capture without a publication comes from a sink that tracks spans directly.
 func TranscriptFrameSpans(content MessageContent, live SpanServices) SpanServices {
-	if content.Publication != nil {
-		if owner, ok := content.Publication.Owner().(interface{ TranscriptFrameSpans() SpanServices }); ok {
-			return owner.TranscriptFrameSpans()
-		}
+	if content.Publication == nil {
+		return live
 	}
-	return live
+	if owner, ok := content.Publication.Owner().(TranscriptFrameOwner); ok {
+		return owner.TranscriptFrameSpans()
+	}
+	return nil
 }
 
 // CaptureTranscriptFrame takes geometry at execution while keeping admission-time authority.
 func CaptureTranscriptFrame(writer TranscriptServices, content MessageContent, span SpanInfo) (CapturedTranscript, error) {
 	if content.Publication != nil {
-		if owner, ok := content.Publication.Owner().(interface {
-			SnapshotTranscriptFrame(SpanInfo) TranscriptPublication
-		}); ok {
-			content.Publication = owner.SnapshotTranscriptFrame(span)
+		owner, ok := content.Publication.Owner().(TranscriptFrameOwner)
+		if !ok {
+			return CapturedTranscript{}, errors.New("the transcript publication has no frame authority")
 		}
+		content.Publication = owner.SnapshotTranscriptFrame(span)
 	}
 	return CaptureTranscriptWithReceipt(writer, content, span)
 }
@@ -405,13 +424,7 @@ func (batch *CapturedTranscriptBatch) FlushAfterReady() error {
 		_ = batch.queue.Flush()
 		return refusal
 	}
-	if batch.ticket.Done() {
-		return nil
-	}
-	if err == nil {
-		err = ErrOutputInFlight
-	}
-	return &PendingOutputError{Err: err}
+	return transcriptTicketResult(batch.ticket, err)
 }
 
 // Discard releases a group only before preparation begins. It invokes no sink.
@@ -545,7 +558,10 @@ func OrderedTranscript(queue *OutputQueue, writer TranscriptServices) Transcript
 
 func (writer orderedTranscript) submit(label string, run func() error) error {
 	ticket := writer.queue.Append(OutputWrite{Label: label, Run: run})[0]
-	err := writer.queue.Flush()
+	return transcriptTicketResult(ticket, writer.queue.Flush())
+}
+
+func transcriptTicketResult(ticket *OutputTicket, err error) error {
 	if ticket.Done() {
 		return nil
 	}

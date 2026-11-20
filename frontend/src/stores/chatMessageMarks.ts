@@ -241,6 +241,10 @@ export function createMessageMarksStore() {
       if (sequences.size === 0)
         return
       const cur = base.get(agentId)
+      if (sequences.size === 1) {
+        recordRemoval(agentId, cur, removeMarkAt(cur.marks, sequences.values().next().value!))
+        return
+      }
       const kept = cur.marks.filter(mark => !sequences.has(mark.seq))
       recordRemoval(agentId, cur, kept.length === cur.marks.length
         ? cur.marks

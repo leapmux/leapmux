@@ -13,7 +13,7 @@ function retryLabel(retry: LiveModelAPIRetry): string {
     ? undefined
     : `HTTP ${retry.errorStatus}`
   const waiting = retry.phase === MODEL_API_RETRY_PHASE.Waiting
-  const delay = waiting && retry.retryDelayMs
+  const delay = waiting && retry.retryDelayMs !== undefined
     ? ` ${formatShortWait(retry.retryDelayMs)}`
     : ''
   const phase = waiting

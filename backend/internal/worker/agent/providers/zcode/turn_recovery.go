@@ -1052,9 +1052,6 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 		}
 		a.PublishTurnActive()
 	}()
-	if foreground {
-		a.retryResolution.Reset()
-	}
 	// The finalizer publishes inactivity after the row and retry bookkeeping.
 	// That publication can release queued input into the next foreground.
 

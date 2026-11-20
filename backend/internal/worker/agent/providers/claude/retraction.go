@@ -5,14 +5,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // claudeTranscriptKey normalizes a wire message UUID into the exact transcript
 // key of a persisted envelope. Claude Code's two native eviction signals (a
 // fallback system frame's retracted_message_uuids and a replacement assistant
-// frame's supersedes) name the same wire UUIDs, so both the persisted key and
+// frame's supersedes) identify the same wire UUIDs, so both the persisted key and
 // the signal normalize through this function to match exactly. An empty or
 // whitespace-only UUID yields no key, which keeps the write unkeyed.
 func claudeTranscriptKey(uuid string) string {
@@ -20,7 +20,7 @@ func claudeTranscriptKey(uuid string) string {
 }
 
 // claudeRevocableKey returns the transcript key of a revocable envelope: an
-// assistant or tool-result frame, the only shapes a native eviction names. Any
+// assistant or tool-result frame, the only shapes that native eviction can remove. Any
 // other envelope keeps no key and follows the ordinary unkeyed write.
 func claudeRevocableKey(msgType string, env *messageEnvelope) string {
 	switch msgType {
@@ -32,56 +32,6 @@ func claudeRevocableKey(msgType string, env *messageEnvelope) string {
 		}
 	}
 	return ""
-}
-
-// claudeEvictionKeys returns the normalized target keys one frame evicts: the
-// fallback system frame's retracted_message_uuids, or a replacement assistant
-// frame's supersedes. The carrying frame's own UUID drops out, because a frame
-// never evicts itself -- its fallback notice and model update must survive.
-// Empty values, repeats and malformed entries drop out as well.
-func claudeEvictionKeys(content []byte, msgType string, self string) []string {
-	var targets []string
-	switch msgType {
-	case claudeMsgTypeSystem:
-		var frame struct {
-			Subtype               string          `json:"subtype"`
-			RetractedMessageUUIDs json.RawMessage `json:"retracted_message_uuids"`
-		}
-		if json.Unmarshal(content, &frame) != nil || frame.Subtype != contracts.ClaudeSystemSubtypeModelRefusalFallback {
-			return nil
-		}
-		// The plural field is a list on the wire. A bare value is malformed
-		// and drops out.
-		var many []json.RawMessage
-		if json.Unmarshal(frame.RetractedMessageUUIDs, &many) != nil {
-			return nil
-		}
-		targets = claudeStringListEntries(many)
-	case claudeMsgTypeAssistant:
-		var frame struct {
-			Supersedes json.RawMessage `json:"supersedes"`
-		}
-		if json.Unmarshal(content, &frame) != nil {
-			return nil
-		}
-		targets = claudeStringList(frame.Supersedes)
-	default:
-		return nil
-	}
-	keys := make([]string, 0, len(targets))
-	seen := make(map[string]struct{}, len(targets))
-	for _, value := range targets {
-		key := claudeTranscriptKey(value)
-		if key == "" || key == self {
-			continue
-		}
-		if _, repeat := seen[key]; repeat {
-			continue
-		}
-		seen[key] = struct{}{}
-		keys = append(keys, key)
-	}
-	return keys
 }
 
 // claudeStringList reads one wire value that can be a single string or an array
@@ -115,9 +65,10 @@ func claudeStringListEntries(many []json.RawMessage) []string {
 }
 
 type claudeTranscriptDestination struct {
-	sink    agent.ProviderServices
-	capture func(agent.MessageContent, agent.SpanInfo) agent.MessageContent
-	keys    []string
+	sink     agent.ProviderServices
+	capture  func(agent.MessageContent, agent.SpanInfo) agent.MessageContent
+	keys     map[string]struct{}
+	apiRetry providerkit.RetryResolution
 }
 
 type claudeRetractionTarget struct {
@@ -127,8 +78,39 @@ type claudeRetractionTarget struct {
 }
 
 type claudeRetractionOwner struct {
-	authority agent.MessageContent
-	admission *claudeOutputDecision
+	destination *claudeTranscriptDestination
+	publication agent.TranscriptPublication
+	sessionID   string
+	admission   *claudeOutputDecision
+}
+
+func (owner claudeRetractionOwner) authority() agent.MessageContent {
+	return agent.MessageContent{Publication: owner.publication, AgentSessionID: owner.sessionID}
+}
+
+// claudeRetractionOwners stores the ordinary single destination inline.
+type claudeRetractionOwners struct {
+	first claudeRetractionOwner
+	extra []claudeRetractionOwner
+}
+
+func (owners claudeRetractionOwners) all(yield func(claudeRetractionOwner) bool) {
+	if owners.first.destination == nil || !yield(owners.first) {
+		return
+	}
+	for _, owner := range owners.extra {
+		if !yield(owner) {
+			return
+		}
+	}
+}
+
+func (owners *claudeRetractionOwners) add(owner claudeRetractionOwner) {
+	if owners.first.destination == nil {
+		owners.first = owner
+		return
+	}
+	owners.extra = append(owners.extra, owner)
 }
 
 // The reader records provisional owners. Task events can replace a child
@@ -137,7 +119,7 @@ type claudeTranscriptIndex struct {
 	mu       sync.Mutex
 	root     *claudeTranscriptDestination
 	children map[string]*claudeTranscriptDestination
-	byKey    map[string]map[*claudeTranscriptDestination]claudeRetractionOwner
+	byKey    map[string]claudeRetractionOwners
 }
 
 func (a *Agent) resetTranscriptIndex() {
@@ -190,12 +172,14 @@ func (a *Agent) replaceChildTranscript(childID string) {
 		return
 	}
 	delete(a.transcripts.children, childID)
-	for _, key := range previous.keys {
-		owners := a.transcripts.byKey[key]
-		delete(owners, previous)
-		if len(owners) == 0 {
-			delete(a.transcripts.byKey, key)
+	for key := range previous.keys {
+		var retained claudeRetractionOwners
+		for owner := range a.transcripts.byKey[key].all {
+			if owner.destination != previous {
+				retained.add(owner)
+			}
 		}
+		a.transcripts.keepOwnersLocked(key, retained)
 	}
 	previous.keys = nil
 	a.childTranscriptLocked(childID)
@@ -218,28 +202,74 @@ func (a *Agent) rememberRevocableFrame(frame *claudeConversationFrame, wireSessi
 	}
 	a.transcripts.mu.Lock()
 	defer a.transcripts.mu.Unlock()
+	key := content.IdempotencyKey
+	owners := a.transcripts.byKey[key]
+	for owner := range owners.all {
+		if owner.destination == destination && owner.admission == nil {
+			return
+		}
+	}
+	owners.add(claudeRetractionOwner{
+		destination: destination, publication: content.Publication,
+		sessionID: content.AgentSessionID, admission: frame.admission,
+	})
 	if a.transcripts.byKey == nil {
-		a.transcripts.byKey = make(map[string]map[*claudeTranscriptDestination]claudeRetractionOwner)
+		a.transcripts.byKey = make(map[string]claudeRetractionOwners)
 	}
-	owners := a.transcripts.byKey[content.IdempotencyKey]
-	if owners == nil {
-		owners = make(map[*claudeTranscriptDestination]claudeRetractionOwner)
-		a.transcripts.byKey[content.IdempotencyKey] = owners
-	}
-	if _, known := owners[destination]; !known {
-		owners[destination] = claudeRetractionOwner{
-			authority: agent.MessageContent{Publication: content.Publication, AgentSessionID: content.AgentSessionID},
-			admission: frame.admission,
+	a.transcripts.byKey[key] = owners
+	if destination != a.transcripts.root {
+		if destination.keys == nil {
+			destination.keys = make(map[string]struct{})
 		}
-		if destination != a.transcripts.root {
-			destination.keys = append(destination.keys, content.IdempotencyKey)
-		}
+		destination.keys[key] = struct{}{}
 	}
+}
+
+func (index *claudeTranscriptIndex) keepOwnersLocked(key string, owners claudeRetractionOwners) {
+	if owners.first.destination == nil {
+		delete(index.byKey, key)
+		return
+	}
+	index.byKey[key] = owners
+}
+
+// resolveClaudeRetractionOwner compacts a settled owner in the current index.
+// Candidates already frozen by a later frame keep the original decision.
+func (a *Agent) resolveClaudeRetractionOwner(frame *claudeConversationFrame, accepted bool) {
+	decision := frame.admission
+	if decision == nil {
+		return
+	}
+	frame.admission = nil
+	key, destination := frame.content.IdempotencyKey, frame.destination
+	a.transcripts.mu.Lock()
+	var retained claudeRetractionOwners
+	destinationStillKnown := false
+	acceptedDestination := false
+	for owner := range a.transcripts.byKey[key].all {
+		if owner.admission == decision {
+			if !accepted || acceptedDestination {
+				continue
+			}
+			owner.admission = nil
+		}
+		if owner.destination == destination {
+			destinationStillKnown = true
+			acceptedDestination = acceptedDestination || owner.admission == nil
+		}
+		retained.add(owner)
+	}
+	a.transcripts.keepOwnersLocked(key, retained)
+	if !destinationStillKnown {
+		delete(destination.keys, key)
+	}
+	a.transcripts.mu.Unlock()
+	decision.resolve(accepted)
 }
 
 type claudeRetractionCandidate struct {
 	key    string
-	owners map[*claudeTranscriptDestination]claudeRetractionOwner
+	owners claudeRetractionOwners
 }
 
 // claudeRetractionCandidates freezes the preceding destinations at the
@@ -252,16 +282,13 @@ func (a *Agent) claudeRetractionCandidates(keys []string, wireSession string, de
 	defer a.transcripts.mu.Unlock()
 	var candidates []claudeRetractionCandidate
 	for _, key := range keys {
-		var eligible map[*claudeTranscriptDestination]claudeRetractionOwner
-		for dest, owner := range a.transcripts.byKey[key] {
-			if (destination == nil || dest == destination) && agent.TranscriptFrameIsCurrent(owner.authority) {
-				if eligible == nil {
-					eligible = make(map[*claudeTranscriptDestination]claudeRetractionOwner)
-				}
-				eligible[dest] = owner
+		var eligible claudeRetractionOwners
+		for owner := range a.transcripts.byKey[key].all {
+			if (destination == nil || owner.destination == destination) && agent.TranscriptFrameIsCurrent(owner.authority()) {
+				eligible.add(owner)
 			}
 		}
-		if len(eligible) > 0 {
+		if eligible.first.destination != nil {
 			candidates = append(candidates, claudeRetractionCandidate{key: key, owners: eligible})
 		}
 	}
@@ -280,18 +307,24 @@ func selectClaudeRetractionTargets(candidates []claudeRetractionCandidate) ([]cl
 	for _, candidate := range candidates {
 		var selected *claudeTranscriptDestination
 		var captured agent.MessageContent
-		count := 0
-		for destination, owner := range candidate.owners {
-			accepted, settled := owner.admission.result()
-			if !settled {
-				return nil, false
+		ambiguous := false
+		for owner := range candidate.owners.all {
+			if owner.admission != nil {
+				accepted, settled := owner.admission.result()
+				if !settled {
+					return nil, false
+				}
+				if !accepted {
+					continue
+				}
 			}
-			if accepted {
-				count++
-				selected, captured = destination, owner.authority
+			if selected == nil {
+				selected, captured = owner.destination, owner.authority()
+			} else if selected != owner.destination {
+				ambiguous = true
 			}
 		}
-		if count != 1 {
+		if selected == nil || ambiguous {
 			continue
 		}
 		group := destinationSession{destination: selected, sessionID: captured.AgentSessionID}
@@ -305,6 +338,6 @@ func selectClaudeRetractionTargets(candidates []claudeRetractionCandidate) ([]cl
 	return targets, true
 }
 
-func (target claudeRetractionTarget) apply() error {
-	return agent.DirectTranscript(target.destination.sink).RetractMessagesByIdempotencyKey(target.authority, target.keys)
+func (target claudeRetractionTarget) apply(sequence agent.TranscriptSequence) error {
+	return sequence.Retract(target.destination.sink, target.authority, target.keys)
 }

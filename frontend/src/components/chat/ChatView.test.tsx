@@ -1048,6 +1048,7 @@ describe('ChatView', () => {
     ]
     const [hasNewerMessages, setHasNewerMessages] = createSignal(false)
     const [phase, setPhase] = createSignal<'waiting' | 'running'>('waiting')
+    const [retryDelayMs, setRetryDelayMs] = createSignal<number | undefined>(4000)
     const view = render(() => (
       <PreferencesProvider>
         <ChatView
@@ -1057,11 +1058,14 @@ describe('ChatView', () => {
           }}
           agentLifecycle={{
             get liveModelAPIRetry() {
+              const delay = retryDelayMs()
               return {
                 phase: phase(),
                 attempt: 2,
                 maxAttempts: 5,
-                retryDelayMs: 4000,
+                ...(delay === undefined
+                  ? {}
+                  : { retryDelayMs: delay }),
                 errorStatus: 529,
                 error: 'Overloaded',
               }
@@ -1076,6 +1080,11 @@ describe('ChatView', () => {
     expect(indicator).toHaveTextContent('Model API retry 2/5 · HTTP 529 · Waiting 4s')
     expect(indicator).toHaveTextContent('Overloaded')
 
+    setRetryDelayMs(0)
+    expect(indicator).toHaveTextContent('Waiting 0ms')
+    setRetryDelayMs(undefined)
+    expect(indicator).toHaveTextContent('Waiting · Overloaded')
+    setRetryDelayMs(4000)
     setPhase('running')
     expect(indicator).toHaveTextContent('Model API retry 2/5 · HTTP 529 · Running')
     expect(indicator).not.toHaveTextContent('4s')

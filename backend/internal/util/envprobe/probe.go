@@ -44,6 +44,70 @@ type Snapshot struct {
 	Present map[string]bool `json:"present,omitempty"`
 }
 
+// DecodeObservation reads the preamble record emitted for this request.
+// Every requested variable needs a value and presence flag. Every requested
+// path needs the corresponding absolute path or an empty resolved value.
+func (r Request) DecodeObservation(encoded string) (Snapshot, bool) {
+	if strings.ContainsAny(encoded, "\r\n") {
+		return Snapshot{}, false
+	}
+	raw, err := requestEncoding.DecodeString(encoded)
+	if err != nil {
+		return Snapshot{}, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var wire struct {
+		Values     map[string]*string `json:"values"`
+		WorkingDir string             `json:"workingDir"`
+		Paths      map[string]*string `json:"paths"`
+		Present    map[string]*bool   `json:"present"`
+	}
+	names := make(map[string]struct{}, len(r.Variables)+len(r.PathVariables))
+	for _, name := range r.Variables {
+		names[name] = struct{}{}
+	}
+	for name := range r.PathVariables {
+		names[name] = struct{}{}
+	}
+	if decoder.Decode(&wire) != nil || decoder.Decode(new(any)) != io.EOF ||
+		len(wire.Values) != len(names) || len(wire.Present) != len(names) ||
+		len(wire.Paths) != len(r.PathVariables) || !absoluteObservationPath(wire.WorkingDir) {
+		return Snapshot{}, false
+	}
+	snapshot := Snapshot{
+		Values: make(map[string]string, len(names)), WorkingDir: wire.WorkingDir,
+		Paths: make(map[string]string, len(r.PathVariables)), Present: make(map[string]bool, len(names)),
+	}
+	for name := range names {
+		value, present := wire.Values[name], wire.Present[name]
+		if value == nil || present == nil || strings.ContainsRune(*value, 0) ||
+			(!*present && *value != "") {
+			return Snapshot{}, false
+		}
+		snapshot.Values[name], snapshot.Present[name] = *value, *present
+	}
+	for name, cutset := range r.PathVariables {
+		path := wire.Paths[name]
+		if path == nil {
+			return Snapshot{}, false
+		}
+		if strings.Trim(snapshot.Values[name], cutset) == "" {
+			if *path != "" {
+				return Snapshot{}, false
+			}
+		} else if !absoluteObservationPath(*path) {
+			return Snapshot{}, false
+		}
+		snapshot.Paths[name] = *path
+	}
+	return snapshot, true
+}
+
+func absoluteObservationPath(path string) bool {
+	return filepath.IsAbs(path) && !strings.ContainsRune(path, 0)
+}
+
 func (r Request) Validate() error {
 	for _, name := range r.Variables {
 		if !variableName.MatchString(name) {

@@ -171,7 +171,7 @@ type TranscriptServices interface {
 	// a revoked capture changes nothing. The scoped delete runs in one store
 	// transaction under the owning root's transcript mutation lock, and the
 	// caller's queue keeps retry ownership on a storage failure. An empty key
-	// list, or keys that name no stored row, records no event.
+	// list, or keys without a stored row, records no event.
 	RetractMessagesByIdempotencyKey(captured MessageContent, keys []string) error
 	// IsMessageRetracted reports whether the captured scope already retains an
 	// eviction receipt for one key. It reads durable state through the supplied

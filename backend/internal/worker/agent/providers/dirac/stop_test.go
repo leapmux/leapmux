@@ -8,15 +8,23 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
+
+func probeDiracCheckpoint(profile, sessionID string, openArchive func(string) (sessionstore.ArchiveRoot, error)) diracCheckpointProbe {
+	var observation diracCheckpointObservation
+	return observation.probe(profile, sessionID, openArchive)
+}
+
+func evaluateDiracCheckpoint(root sessionstore.ArchiveRoot, sessionID string) diracCheckpointProbe {
+	var observation diracCheckpointObservation
+	return observation.evaluate(root, sessionID)
+}
 
 // writeDiracCheckpointStore lays out a minimal native archive for one session.
 // runtime is the acp-session-runtime-configs record ("" writes none). taskID is
@@ -231,9 +239,34 @@ func TestDecodeDiracRuntimeLinkReadsTheTaskAndMode(t *testing.T) {
 }
 
 // spycancel counts the cancellations a wait sends.
-type spyCancel struct{ calls atomic.Int32 }
+type spyCancel struct {
+	calls  atomic.Int32
+	called chan struct{}
+}
 
-func (s *spyCancel) fn() { s.calls.Add(1) }
+func (s *spyCancel) fn() {
+	if s.calls.Add(1) == 1 && s.called != nil {
+		close(s.called)
+	}
+}
+
+func startDiracCheckpointWait(wait diracCheckpointWait) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		waitForDiracCheckpoint(wait)
+	}()
+	return done
+}
+
+func awaitDiracTestCancel(t *testing.T, cancel *spyCancel) {
+	t.Helper()
+	select {
+	case <-cancel.called:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the checkpoint wait did not request cancellation")
+	}
+}
 
 func TestWaitForDiracCheckpointReturnsImmediatelyForAConfirmedCheckpoint(t *testing.T) {
 	t.Parallel()
@@ -245,15 +278,10 @@ func TestWaitForDiracCheckpointReturnsImmediatelyForAConfirmedCheckpoint(t *test
 	w := diracCheckpointWait{
 		agentID: "test", profile: root, sessionID: "01SESSION",
 		promptActive: true, cancel: cancel.fn,
-		processDone: make(chan struct{}), ctx: context.Background(), clock: quartz.NewReal(),
+		processDone: make(chan struct{}), ctx: testutil.DeadlineContext(t), clock: testutil.NewQuartzMock(t),
 	}
-	done := make(chan struct{})
-	go func() { waitForDiracCheckpoint(w); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("a confirmed checkpoint must return without waiting for the budget")
-	}
+	done := startDiracCheckpointWait(w)
+	awaitDiracTestStop(t, done)
 	assert.Zero(t, cancel.calls.Load(), "a confirmed checkpoint sends no cancellation")
 }
 
@@ -263,15 +291,10 @@ func TestWaitForDiracCheckpointIgnoresAnIdleSession(t *testing.T) {
 	w := diracCheckpointWait{
 		agentID: "test", profile: t.TempDir(), sessionID: "01SESSION",
 		promptActive: false, cancel: cancel.fn,
-		processDone: make(chan struct{}), ctx: context.Background(), clock: quartz.NewReal(),
+		processDone: make(chan struct{}), ctx: testutil.DeadlineContext(t), clock: testutil.NewQuartzMock(t),
 	}
-	done := make(chan struct{})
-	go func() { waitForDiracCheckpoint(w); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("an idle session must return without polling")
-	}
+	done := startDiracCheckpointWait(w)
+	awaitDiracTestStop(t, done)
 	assert.Zero(t, cancel.calls.Load(), "an idle session sends no cancellation")
 }
 
@@ -281,22 +304,17 @@ func TestWaitForDiracCheckpointCancelsOnceThenStopsOnProcessExit(t *testing.T) {
 	// checkpointed.
 	root := t.TempDir()
 	writeDiracCheckpointStore(t, root, "01SESSION", runtimeConfig("native-root", "act"), `[]`, "native-root", nil)
-	cancel := &spyCancel{}
+	cancel := &spyCancel{called: make(chan struct{})}
 	processDone := make(chan struct{})
 	w := diracCheckpointWait{
 		agentID: "test", profile: root, sessionID: "01SESSION",
 		promptActive: true, cancel: cancel.fn,
-		processDone: processDone, ctx: context.Background(), clock: quartz.NewReal(),
+		processDone: processDone, ctx: testutil.DeadlineContext(t), clock: testutil.NewQuartzMock(t),
 	}
-	done := make(chan struct{})
-	go func() { waitForDiracCheckpoint(w); close(done) }()
-	waitForCalls(t, func() bool { return cancel.calls.Load() == 1 })
+	done := startDiracCheckpointWait(w)
+	awaitDiracTestCancel(t, cancel)
 	close(processDone)
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the wait must return on process exit")
-	}
+	awaitDiracTestStop(t, done)
 	assert.Equal(t, int32(1), cancel.calls.Load(), "the wait queues at most one cancellation")
 }
 
@@ -304,57 +322,44 @@ func TestWaitForDiracCheckpointStopsOnCancellation(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeDiracCheckpointStore(t, root, "01SESSION", runtimeConfig("native-root", "act"), `[]`, "native-root", nil)
-	ctx, cancelCtx := context.WithCancel(context.Background())
-	cancel := &spyCancel{}
+	ctx, cancelCtx := context.WithCancel(testutil.DeadlineContext(t))
+	t.Cleanup(cancelCtx)
+	cancel := &spyCancel{called: make(chan struct{})}
 	w := diracCheckpointWait{
 		agentID: "test", profile: root, sessionID: "01SESSION",
 		promptActive: true, cancel: cancel.fn,
-		processDone: make(chan struct{}), ctx: ctx, clock: quartz.NewReal(),
+		processDone: make(chan struct{}), ctx: ctx, clock: testutil.NewQuartzMock(t),
 	}
-	done := make(chan struct{})
-	go func() { waitForDiracCheckpoint(w); close(done) }()
-	waitForCalls(t, func() bool { return cancel.calls.Load() == 1 })
+	done := startDiracCheckpointWait(w)
+	awaitDiracTestCancel(t, cancel)
 	cancelCtx()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the wait must return when its context ends")
-	}
+	awaitDiracTestStop(t, done)
 }
 
 func TestWaitForDiracCheckpointGivesUpAtTheBudget(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeDiracCheckpointStore(t, root, "01SESSION", runtimeConfig("native-root", "act"), `[]`, "native-root", nil)
-	cancel := &spyCancel{}
+	cancel := &spyCancel{called: make(chan struct{})}
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	poll := clock.Trap().NewTimer(diracStopPollTimerTag)
+	t.Cleanup(poll.Close)
 	w := diracCheckpointWait{
 		agentID: "test", profile: root, sessionID: "01SESSION",
 		promptActive: true, cancel: cancel.fn,
-		processDone: make(chan struct{}), ctx: context.Background(), clock: quartz.NewReal(),
+		processDone: make(chan struct{}), ctx: ctx, clock: clock,
 	}
-	done := make(chan struct{})
-	go func() { waitForDiracCheckpoint(w); close(done) }()
-	waitForCalls(t, func() bool { return cancel.calls.Load() == 1 })
-	// The archive never becomes ready, so the two-second budget ends the wait.
-	select {
-	case <-done:
-	case <-time.After(2*diracStopBudget + time.Second):
-		t.Fatal("the wait must return when the budget expires")
+	done := startDiracCheckpointWait(w)
+	awaitDiracTestCancel(t, cancel)
+	// The archive never becomes ready. Advance through each scheduled poll
+	// until the budget expires.
+	for remaining := diracStopBudget; remaining > 0; remaining -= diracStopPollInterval {
+		require.Equal(t, diracStopPollInterval, testutil.WaitForTimer(t, ctx, poll))
+		clock.Advance(min(remaining, diracStopPollInterval)).MustWait(ctx)
 	}
+	awaitDiracTestStop(t, done)
 	assert.Equal(t, int32(1), cancel.calls.Load())
-}
-
-// waitForCalls polls until condition holds, failing the test if it never does.
-func waitForCalls(t *testing.T, condition func() bool) {
-	t.Helper()
-	ctx := testutil.DeadlineContext(t)
-	for !condition() {
-		select {
-		case <-ctx.Done():
-			t.Fatal("the expected side effect never arrived")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
 }
 
 func TestDiracCheckpointRejectsIncompleteFirstOperationWithSeed(t *testing.T) {
@@ -420,6 +425,42 @@ func TestDiracCheckpointRejectsHistoryReplacedDuringConversationRead(t *testing.
 	assert.False(t, probe.ready, "the index and conversation must belong to one archive observation")
 }
 
+func TestDiracCheckpointDoesNotFallBackAfterTheBaselineDisappears(t *testing.T) {
+	t.Parallel()
+
+	const baseline = "api_conversation_history.baseline.jsonl"
+	const legacy = "api_conversation_history.json"
+	profile := t.TempDir()
+	writeDiracCheckpointStore(t, profile, "session", runtimeConfig("task", "act"), matchingHistory("task", "session"), "task", map[string]string{
+		baseline: "invalid baseline",
+		legacy:   `[{"role":"user","content":[{"type":"text","text":"hi"}]}]`,
+	})
+	path := filepath.Join(profile, "data", "tasks", "task", baseline)
+	root, err := sessionstore.OpenArchiveRoot(profile)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, root.Close()) })
+	var removed, restored bool
+	archive := changingDiracCheckpointRoot{ArchiveRoot: root, beforeOpen: func(name string) {
+		switch name {
+		case baseline:
+			require.NoError(t, os.Rename(path, path+".away"))
+			removed = true
+		case legacy:
+			require.NoError(t, os.Rename(path+".away", path))
+			restored = true
+		}
+	}}
+	t.Cleanup(func() {
+		if removed && !restored {
+			assert.NoError(t, os.Rename(path+".away", path))
+		}
+	})
+
+	probe := evaluateDiracCheckpoint(archive, "session")
+	assert.True(t, removed)
+	assert.False(t, probe.ready, "a baseline that vanished during the probe cannot authorize a legacy fallback")
+}
+
 func TestDiracCheckpointReportsAReadThatCannotComplete(t *testing.T) {
 	t.Parallel()
 	probe := probeDiracCheckpoint(t.TempDir(), "session", func(string) (sessionstore.ArchiveRoot, error) {
@@ -441,4 +482,47 @@ func TestDiracCheckpointReportsAReadThatCannotComplete(t *testing.T) {
 	}()
 	awaitDiracTestStop(t, done)
 	assert.Zero(t, cancel.calls.Load())
+}
+
+func TestWaitForDiracCheckpointReusesUnchangedArchiveObservation(t *testing.T) {
+	t.Parallel()
+	profile := t.TempDir()
+	writeDiracCheckpointStore(t, profile, "session", runtimeConfig("task", "act"), matchingHistory("task", "session"), "task", map[string]string{
+		"api_conversation_history.jsonl": strings.TrimSuffix(diracUserMessageHistory, "\n"),
+	})
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	poll := clock.Trap().NewTimer(diracStopPollTimerTag)
+	t.Cleanup(poll.Close)
+	processDone := make(chan struct{})
+	var historyReads, operationReads atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		waitForDiracCheckpoint(diracCheckpointWait{
+			profile: profile, sessionID: "session", promptActive: true,
+			processDone: processDone, ctx: ctx, clock: clock,
+			openArchive: func(path string) (sessionstore.ArchiveRoot, error) {
+				root, err := sessionstore.OpenArchiveRoot(path)
+				if err != nil {
+					return nil, err
+				}
+				return changingDiracCheckpointRoot{ArchiveRoot: root, beforeOpen: func(name string) {
+					switch name {
+					case "taskHistory.json":
+						historyReads.Add(1)
+					case "api_conversation_history.jsonl":
+						operationReads.Add(1)
+					}
+				}}, nil
+			},
+		})
+	}()
+	require.Equal(t, diracStopPollInterval, testutil.WaitForTimer(t, ctx, poll))
+	clock.Advance(diracStopPollInterval).MustWait(ctx)
+	require.Equal(t, diracStopPollInterval, testutil.WaitForTimer(t, ctx, poll))
+	assert.Equal(t, int32(1), historyReads.Load(), "an unchanged index needs no new read")
+	assert.Equal(t, int32(1), operationReads.Load(), "an unchanged incomplete operation needs no new read")
+	close(processDone)
+	awaitDiracTestStop(t, done)
 }

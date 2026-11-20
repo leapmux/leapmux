@@ -578,3 +578,27 @@ func TestHistoricalDividerMessagePreservesLiveActorState(t *testing.T) {
 	assert.Equal(t, beforeChecks, sink.permissionCheckSnapshots())
 	assert.Equal(t, beforeCount, unspentToolCount(svc.Output, "agent-1"))
 }
+
+func TestSessionInfoReplay_PhysicalReplacementClearsTheRetiredCompaction(t *testing.T) {
+	t.Parallel()
+
+	svc, retired, watcher := newSessionInfoServiceFixture(t)
+	compaction := map[string]any{contracts.CompactionFieldTrigger: "auto"}
+	retired.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyCompaction: compaction})
+
+	successor := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	var watched []any
+	for _, info := range watcher.snapshot() {
+		if value, found := info[contracts.SessionInfoKeyCompaction]; found {
+			watched = append(watched, value)
+		}
+	}
+	assert.Equal(t, []any{compaction, nil}, watched)
+	assert.Empty(t, svc.Output.SessionInfoReplayEvents("agent-1"))
+
+	successor.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyCompaction: compaction})
+	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: "agent-1", Output: retired, Stopped: true})
+	svc.Output.WaitActivityRefreshes()
+	info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	assert.Equal(t, compaction, info[contracts.SessionInfoKeyCompaction])
+}

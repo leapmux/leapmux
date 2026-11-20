@@ -1,9 +1,14 @@
 import { expect } from '@playwright/test'
-import { assistantBubbles, chatScrollContainer, messageContents, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { selectedAgentTabId } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
+import { waitForTerminalReady } from '../helpers/terminal'
+import { assistantBubbles, chatScrollContainer, messageContents, openTerminalViaUI, sendMessage, tabById, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { listTerminalsViaAPI } from '../helpers/workerTabs'
 import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('folds a retried request into one resolved retry row', async ({ native }) => {
   const { page, modelScript } = native
+  const agentId = await selectedAgentTabId(page)
   const historyMarker = 'Earlier chat history'
   const historyText = Array.from({ length: 80 }, (_, index) => `${historyMarker} ${index + 1}`).join('\n\n')
   const historyStep = await modelScript.queue({ text: historyText })
@@ -26,6 +31,24 @@ zcodeTest('folds a retried request into one resolved retry row', async ({ native
     await modelScript.waitForGate(retryGate)
     await expect(indicator).toContainText(/Model API retry 2(?:\/\d+)? .* Running/)
     await expect(indicator).toBeInViewport()
+
+    const terminalId = await openTerminalViaUI(page)
+    const { hubUrl, adminToken, workerId } = native.leapmuxServer
+    await retryUntilPass(async () => {
+      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, native.workspaceId)
+      expect(terminals.map(terminal => terminal.id)).toContain(terminalId)
+    })
+    await expect(tabById(page, agentId)).toHaveAttribute('aria-selected', 'false')
+    await expect(tabById(page, terminalId)).toHaveAttribute('aria-selected', 'true')
+    // Terminal content requires FULL interest. The Worker applies agent interest first.
+    await waitForTerminalReady(page)
+    await expect(indicator).toHaveCount(0)
+
+    await tabById(page, agentId).click()
+    expect(await selectedAgentTabId(page)).toBe(agentId)
+    await expect(indicator).toContainText(/Model API retry 2(?:\/\d+)? .* Running/)
+    await expect(indicator).toBeInViewport()
+
     await modelScript.releaseGate(retryGate)
     await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)

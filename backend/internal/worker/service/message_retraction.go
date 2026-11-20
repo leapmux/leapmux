@@ -19,22 +19,17 @@ import (
 //
 // The scoped receipt-and-delete runs in one store transaction under the owning
 // root's transcript mutation lock. One sorted AgentMessagesRetracted event goes
-// out after the commit, and the drain runs after the lock releases. Keys that
-// name no stored row still record their receipt, which is what suppresses a
-// late insertion for an admitted held frame.
+// out after the commit, and the drain runs after the lock releases. A receipt
+// can precede its row. It then prevents a held frame from being inserted.
 func (s *agentOutputSink) RetractMessagesByIdempotencyKey(captured agent.MessageContent, keys []string) error {
 	claims := retractionClaimKeys(keys)
 	if len(claims) == 0 {
 		return nil
 	}
-	owner, err := s.capturedOwner(captured)
+	owner, err := s.retractionOwner(captured)
 	if err != nil {
 		return err
 	}
-	if owner == nil {
-		return errors.New("the retraction claim has no captured transcript owner")
-	}
-	sessionID := captured.AgentSessionID
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()
 	var seqs []int64
@@ -43,7 +38,7 @@ func (s *agentOutputSink) RetractMessagesByIdempotencyKey(captured agent.Message
 		mutation.Unlock()
 		return nil
 	}
-	seqs, err = s.retractKeysUnderLock(sessionID, claims)
+	seqs, err = s.retractKeysUnderLock(owner.sessionID, claims)
 	if err == nil && len(seqs) > 0 {
 		s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 			AgentId: s.agentID,
@@ -70,12 +65,12 @@ func (s *agentOutputSink) IsMessageRetracted(captured agent.MessageContent, key 
 	if key == "" {
 		return false, nil
 	}
-	sessionID, err := s.retractionSessionScope(captured)
+	owner, err := s.retractionOwner(captured)
 	if err != nil {
 		return false, err
 	}
 	present, err := s.h.queries.HasMessageRetraction(bgCtx(), db.HasMessageRetractionParams{
-		AgentID: s.agentID, AgentSessionID: sessionID, IdempotencyKey: key,
+		AgentID: s.agentID, AgentSessionID: owner.sessionID, IdempotencyKey: key,
 	})
 	if err != nil {
 		return false, fmt.Errorf("read message retraction: %w", err)
@@ -83,17 +78,15 @@ func (s *agentOutputSink) IsMessageRetracted(captured agent.MessageContent, key 
 	return present, nil
 }
 
-// retractionSessionScope validates the captured destination identity and
-// returns the stored session fact the claim or lookup is scoped to.
-func (s *agentOutputSink) retractionSessionScope(captured agent.MessageContent) (string, error) {
+func (s *agentOutputSink) retractionOwner(captured agent.MessageContent) (*transcriptOwner, error) {
 	owner, err := s.capturedOwner(captured)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if owner == nil {
-		return "", errors.New("the retraction claim has no captured transcript owner")
+		return nil, errors.New("the retraction claim has no captured transcript owner")
 	}
-	return captured.AgentSessionID, nil
+	return owner, nil
 }
 
 // retractionAuthorityLocked reports whether the claim's captured lifetime still
@@ -126,41 +119,38 @@ func (s *agentOutputSink) retractionAuthorityLocked(owner *transcriptOwner) bool
 // Deleting rows moves no sequence high-water, so the next message keeps a fresh
 // sequence above every prior one.
 func (s *agentOutputSink) retractKeysUnderLock(sessionID string, keys []string) ([]int64, error) {
-	ctx := bgCtx()
-	var seqs []int64
-	collect := func(queries *db.Queries) error {
-		for _, key := range keys {
-			if _, err := queries.RecordMessageRetraction(ctx, db.RecordMessageRetractionParams{
-				AgentID: s.agentID, AgentSessionID: sessionID, IdempotencyKey: key,
-			}); err != nil {
-				return fmt.Errorf("record message retraction: %w", err)
-			}
-			deleted, err := queries.DeleteMessageByAgentSessionAndKey(ctx, db.DeleteMessageByAgentSessionAndKeyParams{
-				AgentID: s.agentID, AgentSessionID: sessionID, IdempotencyKey: key,
-			})
-			if err != nil {
-				return fmt.Errorf("delete retracted message: %w", err)
-			}
-			seqs = append(seqs, deleted...)
-		}
-		return nil
-	}
 	if s.h.db == nil {
-		if err := collect(s.h.queries); err != nil {
-			return nil, err
-		}
-	} else {
-		tx, err := s.h.db.BeginTx(ctx, nil)
+		return nil, errors.New("the retraction has no database transaction")
+	}
+	ctx := bgCtx()
+	tx, err := s.h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("start message retraction transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	queries := s.h.queries.WithTx(tx)
+
+	var seqs []int64
+	for _, key := range keys {
+		affected, err := queries.RecordMessageRetraction(ctx, db.RecordMessageRetractionParams{
+			AgentID: s.agentID, AgentSessionID: sessionID, IdempotencyKey: key,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("start message retraction transaction: %w", err)
+			return nil, fmt.Errorf("record message retraction: %w", err)
 		}
-		defer func() { _ = tx.Rollback() }()
-		if err := collect(s.h.queries.WithTx(tx)); err != nil {
-			return nil, err
+		if affected == 0 {
+			continue
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit message retraction: %w", err)
+		deleted, err := queries.DeleteMessageByAgentSessionAndKey(ctx, db.DeleteMessageByAgentSessionAndKeyParams{
+			AgentID: s.agentID, AgentSessionID: sessionID, IdempotencyKey: key,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("delete retracted message: %w", err)
 		}
+		seqs = append(seqs, deleted...)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit message retraction: %w", err)
 	}
 	slices.Sort(seqs)
 	return seqs, nil

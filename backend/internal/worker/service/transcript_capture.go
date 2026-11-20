@@ -75,8 +75,9 @@ func (owner *transcriptOwner) currentLocked() bool {
 }
 
 func (owner *transcriptOwner) frameSessionCurrentLocked() bool {
-	return owner.sink.childLifetime == owner.childLease &&
-		owner.sink.turnPublisherSink().currentMessageSessionFact() == owner.publisherSession &&
+	publisher := owner.sink.turnPublisherSink()
+	return !publisher.processOutputRetired.Load() && owner.sink.childLifetime == owner.childLease &&
+		publisher.currentMessageSessionFact() == owner.publisherSession &&
 		owner.sink.currentSpanTracker() == owner.tracker
 }
 

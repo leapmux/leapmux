@@ -16,9 +16,8 @@ import (
 // Dirac keeps its task history in `$DIRAC_DIR/data/state/taskHistory.json`,
 // one record per task, and each task's files under `$DIRAC_DIR/data/tasks/<id>/`.
 // The `ulid` of a history record is the ACP session id, which is the resume
-// handle `session/load` consumes. A task directory can outlive its history row
-// after an unclean exit, so the reader also scans `tasks/*/` and falls back to
-// `task_metadata.json`.
+// handle `session/load` consumes. A task directory without a history row
+// has no session handle to display in the catalog.
 
 // diracHistoryRecord is one row of `taskHistory.json`.
 type diracHistoryRecord struct {
@@ -37,19 +36,25 @@ type diracRuntimeLink struct {
 }
 
 // decodeDiracRuntimeLink decodes one runtime-link record. The task ID must be a
-// safe path component. The mode is returned as recorded; the caller decides
-// which modes it accepts.
+// safe path component. Return an empty mode when settings do not specify a
+// string. Tasklet readers need only the task ID. Checkpoint confirmation
+// requires a supported mode.
 func decodeDiracRuntimeLink(raw []byte) (diracRuntimeLink, error) {
 	var record struct {
-		TaskID   string `json:"taskId"`
-		Settings struct {
-			Mode string `json:"mode"`
-		} `json:"settings"`
+		TaskID   string          `json:"taskId"`
+		Settings json.RawMessage `json:"settings"`
 	}
 	if err := json.Unmarshal(raw, &record); err != nil || !safeDiracComponent(record.TaskID) {
 		return diracRuntimeLink{}, fmt.Errorf("the Dirac session has no valid native root task")
 	}
-	return diracRuntimeLink{TaskID: record.TaskID, Mode: record.Settings.Mode}, nil
+	link := diracRuntimeLink{TaskID: record.TaskID}
+	var settings struct {
+		Mode string `json:"mode"`
+	}
+	if json.Unmarshal(record.Settings, &settings) == nil {
+		link.Mode = settings.Mode
+	}
+	return link, nil
 }
 
 // diracHistoryMatch reports whether the history index holds exactly one row for
@@ -89,7 +94,6 @@ func diracStoredSessions(_ context.Context, q agent.StoredSessionQuery) ([]agent
 	}
 	data := filepath.Join(root, "data")
 	byHandle := map[string]agent.StoredSession{}
-	seenTask := map[string]bool{}
 
 	raw, err := os.ReadFile(filepath.Join(data, "state", "taskHistory.json"))
 	if err == nil {
@@ -108,19 +112,9 @@ func diracStoredSessions(_ context.Context, q agent.StoredSessionQuery) ([]agent
 					Title:     record.Task,
 					UpdatedAt: diracTimestampMillis(record.TS),
 				}
-				if record.ID != "" {
-					seenTask[record.ID] = true
-				}
 			}
 		}
 	}
-
-	// A task directory with no history row still holds a session: the row is
-	// written at the end of a task, so a killed process leaves the directory
-	// and no row. The task id is not the session id, so such a session has no
-	// resume handle the picker can offer; it is counted for the store's
-	// completeness and not listed. See the report's open risks.
-	_ = seenTask
 
 	out := make([]agent.StoredSession, 0, len(byHandle))
 	for _, session := range byHandle {

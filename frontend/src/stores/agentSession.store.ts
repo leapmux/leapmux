@@ -282,6 +282,14 @@ export function createAgentSessionStore() {
         replays.delete(agentId)
     },
 
+    /** Release the departed tab's replay receipt and live retry together. */
+    forgetAgentWatch(agentId: string, replayId?: bigint) {
+      if (replayId !== undefined && replays.get(agentId)?.replayId !== replayId)
+        return
+      replays.delete(agentId)
+      setState('modelAPIRetryByAgent', agentId, undefined)
+    },
+
     acceptsReplay,
 
     claimGoalProgressWrite(agentId: string, field: keyof GoalProgress, delivery: SessionMetadataDelivery): boolean {

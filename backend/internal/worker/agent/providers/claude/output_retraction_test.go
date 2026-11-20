@@ -26,13 +26,16 @@ func TestClaudeTranscriptKey_NormalizesTheWireUUID(t *testing.T) {
 func TestClaudeEvictionKeys_DropsEmptyRepeatSelfAndMalformedValues(t *testing.T) {
 	t.Parallel()
 
-	keys := claudeEvictionKeys([]byte(`{"type":"system","subtype":"model_refusal_fallback","retracted_message_uuids":["U-1","u-1","", 7, {"x":1},"u-2"]}`), claudeMsgTypeSystem, "u-9")
+	keysOf := func(content []byte, msgType, self string) []string {
+		return decodeClaudeFrameRouting(content).claudeEvictionKeys(msgType, self)
+	}
+	keys := keysOf([]byte(`{"type":"system","subtype":"model_refusal_fallback","retracted_message_uuids":["U-1","u-1","", 7, {"x":1},"u-2"]}`), claudeMsgTypeSystem, "u-9")
 	assert.Equal(t, []string{"u-1", "u-2"}, keys)
 
-	assert.Empty(t, claudeEvictionKeys([]byte(`{"type":"system","retracted_message_uuids":["u-9"]}`), claudeMsgTypeSystem, "u-9"),
+	assert.Empty(t, keysOf([]byte(`{"type":"system","retracted_message_uuids":["u-9"]}`), claudeMsgTypeSystem, "u-9"),
 		"a frame never evicts itself")
-	assert.Empty(t, claudeEvictionKeys([]byte(`{"type":"system","retracted_message_uuids":"not-a-list"}`), claudeMsgTypeSystem, ""))
-	assert.Empty(t, claudeEvictionKeys([]byte(`{"type":"system","retracted_message_uuids":["u-1"]}`), claudeMsgTypeResult, ""),
+	assert.Empty(t, keysOf([]byte(`{"type":"system","retracted_message_uuids":"not-a-list"}`), claudeMsgTypeSystem, ""))
+	assert.Empty(t, keysOf([]byte(`{"type":"system","retracted_message_uuids":["u-1"]}`), claudeMsgTypeResult, ""),
 		"only a fallback system frame carries the signal")
 }
 
@@ -41,8 +44,7 @@ func persistedAssistant(uuid, text string) []byte {
 	return []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]},"uuid":"` + uuid + `","session_id":"s-1"}`)
 }
 
-// fallbackRetracting is the model-refusal fallback notice that evicts the named
-// native messages.
+// fallbackRetracting builds the model-refusal fallback notice for the supplied keys.
 func fallbackRetracting(uuid string, retracted ...string) []byte {
 	quoted := ""
 	for index, value := range retracted {

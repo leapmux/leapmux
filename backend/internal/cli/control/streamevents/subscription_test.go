@@ -201,11 +201,16 @@ func TestSubscription_ForwardsRetractionWithoutAdvancingAgentCursor(t *testing.T
 	})
 	assert.Equal(t, int64(15), agents.Get(agentID))
 	pushAgentMessage(tr, agentID, 17)
+	// A live deletion can arrive before a replay row the Worker already read.
+	pushAgentMessage(tr, agentID, 19)
+	assert.Equal(t, int64(17), agents.Get(agentID))
+	pushAgentMessage(tr, agentID, 20)
 
-	require.Len(t, delivered, 2)
+	require.Len(t, delivered, 3)
 	assert.Equal(t, []int64{19}, delivered[0].GetMessagesRetracted().GetSeqs())
 	assert.Equal(t, int64(17), delivered[1].GetAgentMessage().GetSeq())
-	assert.Equal(t, int64(17), agents.Get(agentID))
+	assert.Equal(t, int64(20), delivered[2].GetAgentMessage().GetSeq())
+	assert.Equal(t, int64(20), agents.Get(agentID))
 }
 
 // TestSubscription_TurnEndNotifyDoesNotForward pins that AgentTurnEnd is a

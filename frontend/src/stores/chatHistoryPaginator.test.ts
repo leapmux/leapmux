@@ -109,7 +109,7 @@ function harness(init: {
     catchUpAbort,
     runHistoryFetch: historyFetches.runHistoryFetch,
     duringHistoryRead: historyFetches.duringHistoryRead,
-    retractMessages: vi.fn(() => false),
+    reconcileLoadedPage: vi.fn(),
     needsLatestAnchor: () => false,
     completeLatestAnchor: () => undefined,
     mergeFetchedMessages,
@@ -504,6 +504,35 @@ describe('chatHistoryPaginator', () => {
       expect(h.applyMessages).toHaveBeenCalledExactlyOnceWith('a', [current], true)
     })
 
+    it('keeps the seek when retraction removes both landing pages', async () => {
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
+      const survivorBefore = makeMsg(4n)
+      const survivorAfter = makeMsg(8n)
+      listAgentMessages
+        .mockResolvedValueOnce(page([
+          makeMsg(5n),
+        ], true))
+        .mockResolvedValueOnce(page([
+          makeMsg(6n),
+        ], true))
+        .mockImplementation(async (_worker, request) => request.anchor === MessagePageAnchor.BEFORE
+          ? page([survivorBefore], false)
+          : page([survivorAfter], false))
+
+      const seek = h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
+      expect(listAgentMessages).toHaveBeenCalledTimes(2)
+      h.historyFetches.noteRetractions('a', new Set([5n, 6n]))
+
+      await expect(seek).resolves.toBe(true)
+      expect(h.applyMessages).toHaveBeenCalledExactlyOnceWith('a', [survivorBefore, survivorAfter], false)
+      expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
+    })
+
     it('releases the sibling seek request when its other page fails', async () => {
       const h = harness({
         messages: [
@@ -758,6 +787,33 @@ describe('chatHistoryPaginator', () => {
   })
 
   describe('exhaustion-forced deferred tail fill', () => {
+    it('advances over a fully retracted forward page while more rows exist', async () => {
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        liveGet: () => 9n,
+      })
+      listAgentMessages
+        .mockResolvedValueOnce(page([
+          makeMsg(2n),
+          makeMsg(4n),
+        ], true, 9n))
+        .mockResolvedValueOnce(page([
+          makeMsg(9n),
+        ], false, 9n))
+
+      const fill = h.paginator.forwardFillToLiveTail('w', 'a', new AbortController().signal, 9n)
+      expect(listAgentMessages).toHaveBeenCalledTimes(1)
+      h.historyFetches.noteRetractions('a', new Set([2n, 4n]))
+      await fill
+
+      expect(listAgentMessages.mock.calls.map(([, request]) => request.cursorSeq)).toEqual([1n, 4n])
+      expect(h.state.messagesByAgent.a?.map(message => message.seq)).toEqual([1n, 9n])
+      expect(h.state.hasMoreNewer.a).toBe(false)
+      expect(h.state.tailFillDeferred.a).toBe(false)
+    })
+
     it('marks the gap deferred (not a settled wall) when a storm outruns the bounded fill', async () => {
       // caughtUpToLiveTail never settles (a sustained broadcast storm) while every round
       // still advances the window, so the bounded fill runs out of attempts and PARKS:

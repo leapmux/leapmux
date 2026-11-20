@@ -688,7 +688,7 @@ func hasToolResultBlock(env *messageEnvelope) bool {
 // Resolve the child through the task-to-tool-use index recorded at task_started.
 // If that index misses an early envelope, EnsureChildAgent can still use the spawn span.
 // Never change the parent span tracker for these messages.
-func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messageEnvelope) {
+func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messageEnvelope, routing claudeFrameRouting) {
 	// A forwarded user envelope without tool_result repeats the spawn prompt already recorded through PersistChildPrompt at task_started.
 	//
 	// The synchronous foreground Task path emits that user prompt as one extra progress event before the run loop for its own UI.
@@ -709,6 +709,10 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 
 	spawnSpanID := env.ParentToolUseID
 	taskID := a.tasks.taskIDForToolUse(spawnSpanID)
+	if msgType == claudeMsgTypeUser && a.liveClaudeOutput() && !routing.isReplay &&
+		(routing.sessionID == "" || routing.sessionID == a.nativeTranscriptSession()) {
+		a.settleToolControls(env.ContentBlocks())
+	}
 
 	// A forwarded child envelope can precede task_started, before a task ID exists.
 	// recordPendingTaskEnd handles the corresponding result-order case.
@@ -757,36 +761,41 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 		return
 	}
 	frame := destination.captureFrame(content, msgType, env)
-	wireSession := providerkit.StringField(content, "session_id")
-	retractions := claudeFrameRetractions{candidates: a.claudeRetractionCandidates(claudeEvictionKeys(content, msgType, frame.content.IdempotencyKey), wireSession, destination)}
-	a.rememberRevocableFrame(frame, wireSession)
+	if frame.spans == nil {
+		slog.Error("the Claude child frame has no retained span authority", "agent_id", a.AgentID(), "child_agent_id", childID)
+		return
+	}
+	keys := routing.claudeEvictionKeys(msgType, frame.content.IdempotencyKey)
+	retractions := claudeFrameRetractions{candidates: a.claudeRetractionCandidates(keys, routing.sessionID, destination)}
+	a.rememberRevocableFrame(frame, routing.sessionID)
 	a.submitClaudeConversationFrame(frame, "process Claude child frame", func(sequence agent.TranscriptSequence) error {
-		accepted, err := frame.admit()
+		accepted, err := a.admitClaudeFrame(sequence, frame, &retractions)
 		if err != nil || !accepted {
 			return err
 		}
-		if err := retractions.apply(); err != nil {
-			return err
-		}
-		return a.persistClaudeChildFrame(sequence, frame, spawnSpanID, taskID)
+		return a.completeClaudeNativeFrame(frame, a.persistClaudeChildFrame(sequence, frame, spawnSpanID, taskID))
 	})
 }
 
 func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, spawnSpanID, taskID string) error {
 	env, msgType := frame.envelope, frame.msgType
+	if frame.report != nil {
+		_, err := sequence.Persist(*frame.report)
+		return err
+	}
 	if frame.prepared == nil {
 		content := frame.content
-		if frame.live() {
+		if frame.live() && a.liveClaudeOutput() {
 			switch msgType {
 			case claudeMsgTypeAssistant:
 				if toolUseID, report, ok := claudeSubagentHandback(env); ok {
-					if a.tasks.rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, env.TaskDescription, report) {
-						providerkit.PersistSubagentReport(frame.destination.sink, agent.SubagentReportWrite{
-							ReportID: toolUseID,
-							Report:   agent.SubagentReport{Label: env.TaskDescription, Text: report},
-						})
+					if !a.tasks.rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, env.TaskDescription, report) {
+						return nil
 					}
-					return nil
+					return frame.persistChildHandback(sequence, agent.SubagentReportWrite{
+						ReportID: toolUseID,
+						Report:   agent.SubagentReport{Label: env.TaskDescription, Text: report},
+					})
 				}
 				if a.tasks.isHandbackEcho(spawnSpanID, env) {
 					return nil
@@ -812,7 +821,7 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 	if err != nil || !stored {
 		return err
 	}
-	live := frame.live()
+	live := frame.live() && a.liveClaudeOutput()
 	switch msgType {
 	case claudeMsgTypeAssistant:
 		if live {
@@ -830,9 +839,6 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 			}
 		}
 	case claudeMsgTypeUser:
-		if live {
-			a.settleToolControls(env.ContentBlocks())
-		}
 		claudeCloseToolResultSpans(frame.spans, env)
 	case claudeMsgTypeResult:
 		if live {
@@ -840,6 +846,24 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 		}
 	}
 	return nil
+}
+
+func (frame *claudeConversationFrame) persistChildHandback(sequence agent.TranscriptSequence, write agent.SubagentReportWrite) error {
+	content, present, err := agent.SubagentReportContent(write)
+	if err != nil || !present {
+		return err
+	}
+	content.Publication = frame.content.Publication
+	content.AgentSessionID = frame.content.AgentSessionID
+	content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	captured, err := agent.CaptureTranscriptFrame(frame.destination.sink, content, agent.SpanInfo{})
+	if err != nil {
+		return err
+	}
+	operation := captured.WorkerNotificationOperation()
+	frame.report = &operation
+	_, err = sequence.Persist(operation)
+	return err
 }
 
 func (a *Agent) finishClaudeChildResult(completion agent.MessageCompletion, isError bool, spawnSpanID, taskID string) {

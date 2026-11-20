@@ -38,7 +38,8 @@ func (sink *agentOutputSink) registeredCurrent() bool {
 }
 
 func (admission *providerTurnAdmission) currentLocked(exactSequence bool) bool {
-	if !admission.sink.registeredCurrent() || admission.sink.turnPublisherSink() != admission.publisher {
+	if !admission.sink.registeredCurrent() || admission.sink.turnPublisherSink() != admission.publisher ||
+		admission.publisher.processOutputRetired.Load() {
 		return false
 	}
 	current, exists := admission.sink.h.activity.Load(admission.sink.agentID)

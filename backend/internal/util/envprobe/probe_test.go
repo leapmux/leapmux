@@ -148,10 +148,13 @@ func TestRunWritesOneEnvironmentObservationRecord(t *testing.T) {
 	t.Setenv("LEAPMUX_OBSERVED_EMPTY", "")
 	t.Setenv("LEAPMUX_OBSERVED_MISSING", "")
 	require.NoError(t, os.Unsetenv("LEAPMUX_OBSERVED_MISSING"))
-	args, err := (Request{
+	t.Setenv("LEAPMUX_OBSERVED_TRIMMED_PATH", " \t ")
+	request := Request{
 		Variables:         []string{"LEAPMUX_OBSERVED_VALUE", "LEAPMUX_OBSERVED_EMPTY", "LEAPMUX_OBSERVED_MISSING"},
+		PathVariables:     map[string]string{"LEAPMUX_OBSERVED_TRIMMED_PATH": " \t"},
 		ObservationPrefix: prefix,
-	}).Arguments()
+	}
+	args, err := request.Arguments()
 	require.NoError(t, err)
 	var output, diagnostic bytes.Buffer
 	code, handled := Run(args, &output, &diagnostic)
@@ -167,6 +170,21 @@ func TestRunWritesOneEnvironmentObservationRecord(t *testing.T) {
 	require.NoError(t, err)
 	var snapshot Snapshot
 	require.NoError(t, json.Unmarshal(data, &snapshot))
-	assert.Equal(t, map[string]string{"LEAPMUX_OBSERVED_VALUE": value, "LEAPMUX_OBSERVED_EMPTY": "", "LEAPMUX_OBSERVED_MISSING": ""}, snapshot.Values)
-	assert.Equal(t, map[string]bool{"LEAPMUX_OBSERVED_VALUE": true, "LEAPMUX_OBSERVED_EMPTY": true, "LEAPMUX_OBSERVED_MISSING": false}, snapshot.Present)
+	assert.Equal(t, map[string]string{
+		"LEAPMUX_OBSERVED_VALUE": value, "LEAPMUX_OBSERVED_EMPTY": "",
+		"LEAPMUX_OBSERVED_MISSING": "", "LEAPMUX_OBSERVED_TRIMMED_PATH": " \t ",
+	}, snapshot.Values)
+	assert.Equal(t, map[string]bool{
+		"LEAPMUX_OBSERVED_VALUE": true, "LEAPMUX_OBSERVED_EMPTY": true,
+		"LEAPMUX_OBSERVED_MISSING": false, "LEAPMUX_OBSERVED_TRIMMED_PATH": true,
+	}, snapshot.Present)
+	assert.Equal(t, map[string]string{"LEAPMUX_OBSERVED_TRIMMED_PATH": ""}, snapshot.Paths)
+
+	decoded, accepted := request.DecodeObservation(encoded)
+	require.True(t, accepted)
+	assert.Equal(t, snapshot, decoded)
+	wrongRequest := request
+	wrongRequest.Variables = []string{"LEAPMUX_OBSERVED_VALUE", "LEAPMUX_OBSERVED_EMPTY", "WRONG_VARIABLE"}
+	_, accepted = wrongRequest.DecodeObservation(encoded)
+	assert.False(t, accepted)
 }

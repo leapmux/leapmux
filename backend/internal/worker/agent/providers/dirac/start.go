@@ -1,11 +1,7 @@
 package dirac
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"os/user"
 	"path/filepath"
@@ -28,7 +24,9 @@ import (
 const diracNoAutoUpdateEnv = "DIRAC_NO_AUTO_UPDATE=1"
 
 // Dirac uses each exported value exactly as the shell passes it to Node.
-var diracProfilePathVariables = map[string]string{"DIRAC_DIR": "", "HOME": "", "USERPROFILE": ""}
+var diracProfileProbe = envprobe.Request{
+	PathVariables: map[string]string{"DIRAC_DIR": "", "HOME": "", "USERPROFILE": ""},
+}
 
 // Start starts a Dirac ACP process and performs the handshake.
 //
@@ -49,7 +47,7 @@ func startWithClock(ctx context.Context, opts agent.Options, sink agent.Provider
 		BaseArgs:  []string{"--acp"},
 		PinnedEnv: []string{diracNoAutoUpdateEnv},
 		ObserveEnvironment: &launch.ObservationRequest{
-			PathVariables: diracProfilePathVariables,
+			PathVariables: diracProfileProbe.PathVariables,
 		},
 		SessionConfig: acp.SessionConfig{
 			NewMethod: acp.MethodSessionNew,
@@ -111,59 +109,21 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 	}
 }
 
-// applyObservedProfile records the launch's candidate before ACP opens a
-// session. A checkpoint must also link the exact session to a task in it.
-// Child archive reads keep their existing profile resolution.
+// applyObservedProfile installs the launch's archive root before ACP opens a
+// session. Archive reads still require a link to the exact native session.
+// An unreadable observation leaves the Worker's tasklet fallback in place.
 func (a *Agent) applyObservedProfile() {
-	snapshot, ok := decodeDiracEnvironmentObservation(a.PreambleMetaValue(envprobe.ObservationKey))
+	snapshot, ok := diracProfileProbe.DecodeObservation(a.PreambleMetaValue(envprobe.ObservationKey))
 	if ok {
-		a.checkpointProfile = diracEffectiveHome(snapshot)
-	}
-	if a.checkpointProfile == "" {
-		slog.Debug("the Dirac launch profile could not be observed", "agent_id", a.AgentID())
-		return
-	}
-}
-
-// decodeDiracEnvironmentObservation requires exactly the inputs requested from
-// the native helper. An absent value and a reported empty value differ.
-func decodeDiracEnvironmentObservation(encoded string) (envprobe.Snapshot, bool) {
-	if strings.ContainsAny(encoded, "\r\n") {
-		return envprobe.Snapshot{}, false
-	}
-	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
-	if err != nil {
-		return envprobe.Snapshot{}, false
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	// Pointer values distinguish null from an exported empty string or a
-	// false presence flag. The helper reports every requested variable.
-	var wire struct {
-		Values     map[string]*string `json:"values"`
-		WorkingDir string             `json:"workingDir"`
-		Paths      map[string]*string `json:"paths"`
-		Present    map[string]*bool   `json:"present"`
-	}
-	count := len(diracProfilePathVariables)
-	if decoder.Decode(&wire) != nil || decoder.Decode(new(any)) != io.EOF ||
-		len(wire.Values) != count || len(wire.Paths) != count || len(wire.Present) != count ||
-		!absoluteDiracLaunchPath(wire.WorkingDir) {
-		return envprobe.Snapshot{}, false
-	}
-	snapshot := envprobe.Snapshot{
-		Values: make(map[string]string, count), WorkingDir: wire.WorkingDir,
-		Paths: make(map[string]string, count), Present: make(map[string]bool, count),
-	}
-	for name := range diracProfilePathVariables {
-		value, path, present := wire.Values[name], wire.Paths[name], wire.Present[name]
-		if value == nil || path == nil || present == nil || strings.ContainsRune(*value, 0) ||
-			(!*present && *value != "") || (*value == "" && *path != "") || (*value != "" && !absoluteDiracLaunchPath(*path)) {
-			return envprobe.Snapshot{}, false
+		if root := diracEffectiveHome(snapshot); root != "" {
+			a.profileMu.Lock()
+			a.root = root
+			a.profileObserved = true
+			a.profileMu.Unlock()
+			return
 		}
-		snapshot.Values[name], snapshot.Paths[name], snapshot.Present[name] = *value, *path, *present
 	}
-	return snapshot, true
+	slog.Debug("the Dirac launch profile could not be observed", "agent_id", a.AgentID())
 }
 
 func absoluteDiracLaunchPath(path string) bool {

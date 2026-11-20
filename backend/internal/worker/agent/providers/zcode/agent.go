@@ -188,11 +188,11 @@ type Agent struct {
 	// foregroundTurnID is the key in turns of the user's own turn, empty while
 	// the user runs none. A background start never replaces it. Guarded by a.Mu.
 	foregroundTurnID string
-	retryResolution  providerkit.RetryResolution
-	// modelAPIRetryPublished is the JSON encoding of the live model API retry
-	// object this agent last published, empty while the indicator is clear. It
-	// makes the publication change-driven. Guarded by dispatchMu.
-	modelAPIRetryPublished string
+	// retryHistory owns the latest persisted retry notice. Guarded by dispatchMu.
+	retryHistory *zcodeRetryHistory
+	// modelAPIRetryPublished is the last published display. A zero value means
+	// the indicator is clear. Guarded by dispatchMu.
+	modelAPIRetryPublished zcodeModelAPIRetryDisplay
 	// stopWindow ends a turn whose stop the app-server accepted and then never
 	// reported. Guarded by a.Mu. See stoppedTurnWindow and armStoppedZCodeTurnLocked.
 	stopWindow stoppedTurnWindow
@@ -352,15 +352,10 @@ type zcodeTurnState struct {
 // turn's current physical request. The state is published as session-info
 // under the model_api_retry key.
 type zcodeModelAPIRetryState struct {
-	// LogicalCallID is the native modelCall.logicalCallId that links attempts.
-	LogicalCallID string
-	// PhysicalRequestID is the current physical request ID. The installed
-	// runtime assigns a new request ID to later attempts.
-	PhysicalRequestID string
-	// PhysicalAttempt is the attempt number within this logical call.
-	PhysicalAttempt int64
-	// ExpectedPhysicalAttempt is the native attempt number that ends a wait.
-	ExpectedPhysicalAttempt int64
+	zcodeRetryPhysicalRequest
+	// The physical limit counts request attempts. A recovery display uses its
+	// own limit until a retry schedule supplies a new display.
+	physicalMaxAttempts int64
 	// Phase is "waiting" or "running".
 	Phase string
 	// Attempt is the current attempt number (positive).
@@ -374,7 +369,7 @@ type zcodeModelAPIRetryState struct {
 	// Error is the error text of the last failure (optional).
 	Error *string
 	// LastFailedPhysicalID retains the last failed physical request ID after
-	// terminal failure clears the indicator.
+	// a permanent failure clears the indicator.
 	LastFailedPhysicalID string
 	// StreamRecovery identifies the recovery already proved for this call.
 	StreamRecovery *zcodeModelAPIRetryRecovery

@@ -195,7 +195,7 @@ func TestClaudeCodeAgent_Interrupt_SendsControlRequest(t *testing.T) {
 // Record the interruption note before sending the request, so an aborted turn's result cannot arrive before the note.
 //
 // The reader delivers the acknowledgement to Interrupt and immediately reads the next line.
-// Recording the note after that wait races takeInterruptRequest, which consumes it.
+// Recording the note after that wait races the result handler that reads it.
 // When the reader wins, the stopped turn incorrectly keeps its error_during_execution failure state and danger color despite the reader-requested stop.
 //
 // This case forces that order by delivering the abort result before the acknowledgement.

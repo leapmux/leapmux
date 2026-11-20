@@ -206,6 +206,29 @@ func readDiracPresentation(root sessionstore.ArchiveRoot) ([]json.RawMessage, er
 	return decodeDiracPresentation(snapshot, baseline, operations)
 }
 
+type diracAPIHistoryFiles struct {
+	snapshot, baseline, operations []byte
+}
+
+// readDiracAPIHistoryFiles reads the baseline in preference to the legacy
+// snapshot, then reads the operations written after either seed.
+func readDiracAPIHistoryFiles(root sessionstore.ArchiveRoot) (diracAPIHistoryFiles, error) {
+	var files diracAPIHistoryFiles
+	baseline, err := readOptionalDiracFile(root, "api_conversation_history.baseline.jsonl")
+	if err != nil {
+		return files, err
+	}
+	files.baseline = baseline
+	if baseline == nil {
+		files.snapshot, err = readOptionalDiracFile(root, "api_conversation_history.json")
+		if err != nil {
+			return files, err
+		}
+	}
+	files.operations, err = readOptionalDiracFile(root, "api_conversation_history.jsonl")
+	return files, err
+}
+
 func readOptionalDiracFile(root sessionstore.ArchiveRoot, name string) ([]byte, error) {
 	data, err := readDiracRegularFile(root, name, diracTranscriptLimit)
 	if errors.Is(err, os.ErrNotExist) {

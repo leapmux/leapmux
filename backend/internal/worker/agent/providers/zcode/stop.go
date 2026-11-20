@@ -739,10 +739,7 @@ func (a *Agent) Stop() {
 	a.stopAllZCodeTurnWatchers()
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
-	completion := a.ProcessExitCompletion()
-	a.flushZCodeGeneration(completion)
-	a.retireZCodeProcessTurns()
-	a.persistIncompleteZCodeTools(completion)
+	a.finalizeZCodeProcessTranscript()
 	if stopWasPending {
 		a.persistZCodeStopRow()
 	}
@@ -761,14 +758,18 @@ func (a *Agent) Wait() error {
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
 	a.cancelStoppedZCodeTurn()
-	completion := a.ProcessExitCompletion()
-	a.flushZCodeGeneration(completion)
-	a.retireZCodeProcessTurns()
-	a.persistIncompleteZCodeTools(completion)
+	a.finalizeZCodeProcessTranscript()
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()
 	a.forgetZCodeConversation()
 	return err
+}
+
+func (a *Agent) finalizeZCodeProcessTranscript() {
+	completion := a.ProcessExitCompletion()
+	a.flushZCodeGeneration(completion)
+	a.retireZCodeProcessTurns()
+	a.persistIncompleteZCodeTools(completion)
 }
 
 // retireZCodeProcessTurns clears every owner after process exit and orders the
@@ -776,6 +777,7 @@ func (a *Agent) Wait() error {
 func (a *Agent) retireZCodeProcessTurns() {
 	a.dispatchMu.Lock()
 	defer a.unlockZCodeDispatch()
+	a.retryHistory = nil
 	a.Mu.Lock()
 	a.compactionSessionID = ""
 	a.clearZCodeTurnsLocked()

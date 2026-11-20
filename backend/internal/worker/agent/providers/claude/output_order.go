@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -181,13 +182,19 @@ type claudeRootMessage struct {
 	envelope     *messageEnvelope
 	notification bool
 	resetSpans   bool
-	persisted    func()
+	apiRetry     bool
 }
 
 func (a *Agent) prepareClaudeRootMessage(message claudeRootMessage) claudeRootSequence {
 	destination := a.rootTranscript()
-	content := destination.capture(agent.MessageContent{Original: message.content, WriteReceipt: agent.NewTranscriptWriteReceipt()}, agent.SpanInfo{})
+	content := destination.capture(agent.MessageContent{WriteReceipt: agent.NewTranscriptWriteReceipt()}, agent.SpanInfo{})
+	content.Original = message.content
 	spans := agent.TranscriptFrameSpans(content, destination.sink)
+	if spans == nil {
+		return func(agent.TranscriptSequence) error {
+			return errors.New("the Claude notification has no retained span authority")
+		}
+	}
 	var operation *agent.CapturedTranscriptOperation
 	return func(sequence agent.TranscriptSequence) error {
 		if operation == nil {
@@ -218,8 +225,8 @@ func (a *Agent) prepareClaudeRootMessage(message claudeRootMessage) claudeRootSe
 		if _, err := sequence.Persist(*operation); err != nil {
 			return err
 		}
-		if message.persisted != nil {
-			message.persisted()
+		if message.apiRetry {
+			destination.apiRetry.NoteRetry()
 		}
 		return nil
 	}

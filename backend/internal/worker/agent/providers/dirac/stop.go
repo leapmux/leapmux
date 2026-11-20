@@ -24,7 +24,7 @@ import (
 // no claim about fresh writes from later prompts.
 
 const (
-	// diracStopBudget bounds the whole pre-stop confirmation. It starts before
+	// diracStopBudget limits the whole pre-stop confirmation. It starts before
 	// any file observation so even the first read is inside the budget.
 	diracStopBudget = 2 * time.Second
 	// diracStopPollInterval is the gap between two file reads. A confirmed
@@ -52,12 +52,13 @@ type diracCheckpointProbe struct {
 // the process exit, a cancellation or the two-second budget -- whichever comes
 // first.
 func (a *Agent) waitForDiracResumeCheckpoint(snapshot acp.ACPStopSnapshot) {
-	if snapshot.SessionID == a.resumedSession || a.checkpointProfile == "" {
+	profile := a.checkpointProfile()
+	if snapshot.SessionID == a.resumedSession || profile == "" {
 		return
 	}
 	waitForDiracCheckpoint(diracCheckpointWait{
 		agentID:      a.AgentID(),
-		profile:      a.checkpointProfile,
+		profile:      profile,
 		sessionID:    snapshot.SessionID,
 		promptActive: snapshot.PromptActive,
 		cancel:       snapshot.Cancel,
@@ -97,9 +98,10 @@ func waitForDiracCheckpoint(w diracCheckpointWait) {
 		openArchive = sessionstore.OpenArchiveRoot
 	}
 	results := make(chan diracCheckpointProbe, 1)
+	var observation diracCheckpointObservation
 	startReader := func() {
 		go func() {
-			results <- probeDiracCheckpoint(profile, sessionID, openArchive)
+			results <- observation.probe(profile, sessionID, openArchive)
 		}()
 	}
 	warn := func(err error) {
@@ -161,23 +163,31 @@ func waitForDiracCheckpoint(w diracCheckpointWait) {
 	}
 }
 
-// probeDiracCheckpoint opens one native archive and closes it before the
-// result reaches the waiting stop call.
-func probeDiracCheckpoint(profile, sessionID string, openArchive func(string) (sessionstore.ArchiveRoot, error)) (result diracCheckpointProbe) {
+// diracCheckpointObservation reuses an incomplete result only after all paths
+// that influenced it compare equal in the next opened archive.
+type diracCheckpointObservation struct {
+	files       *diracCheckpointFiles
+	probeResult diracCheckpointProbe
+}
+
+// probe opens one native archive and closes it before returning its result.
+func (o *diracCheckpointObservation) probe(profile, sessionID string, openArchive func(string) (sessionstore.ArchiveRoot, error)) (result diracCheckpointProbe) {
 	if profile == "" || !safeDiracComponent(sessionID) {
 		return result
 	}
 	root, err := openArchive(profile)
 	if err != nil {
+		o.files = nil
 		return diracCheckpointProbe{err: checkpointReadFailure(err)}
 	}
 	defer func() {
 		if err := root.Close(); err != nil {
+			o.files = nil
 			result.ready = false
 			result.err = errors.Join(result.err, err)
 		}
 	}()
-	result = evaluateDiracCheckpoint(root, sessionID)
+	result = o.evaluate(root, sessionID)
 	if result.ready {
 		opened, err := root.Stat(".")
 		if err != nil {
@@ -194,11 +204,27 @@ func probeDiracCheckpoint(profile, sessionID string, openArchive func(string) (s
 	return result
 }
 
-// evaluateDiracCheckpoint requires the observed profile to link the exact
+// evaluate requires the observed profile to link the exact
 // ACP session to its task. The same archive observation must contain one
 // matching index record and a recoverable conversation for that task.
-func evaluateDiracCheckpoint(root sessionstore.ArchiveRoot, sessionID string) (result diracCheckpointProbe) {
+func (o *diracCheckpointObservation) evaluate(root sessionstore.ArchiveRoot, sessionID string) (result diracCheckpointProbe) {
+	if o.files != nil {
+		unchanged, err := o.files.unchanged(root)
+		if unchanged {
+			return o.probeResult
+		}
+		o.files = nil
+		if err != nil {
+			return diracCheckpointProbe{err: err}
+		}
+	}
 	files := &diracCheckpointFiles{identities: make(map[string]os.FileInfo)}
+	defer func() {
+		// Always verify a complete checkpoint through fresh file handles.
+		if !result.ready && result.err == nil && !files.changed && len(files.identities) > 0 {
+			o.files, o.probeResult = files, result
+		}
+	}()
 	archive := diracCheckpointArchive{ArchiveRoot: root, files: files}
 	link, err := readDiracRuntimeLink(archive, sessionID)
 	if failure := checkpointReadFailure(err); failure != nil {
@@ -206,6 +232,11 @@ func evaluateDiracCheckpoint(root sessionstore.ArchiveRoot, sessionID string) (r
 		return result
 	}
 	records, historyErr := readDiracHistory(archive)
+	// A read error can disappear even if the file's metadata stays the same.
+	if err != nil && !errors.Is(err, os.ErrNotExist) ||
+		historyErr != nil && !errors.Is(historyErr, os.ErrNotExist) {
+		files.changed = true
+	}
 	if err != nil {
 		for _, row := range records {
 			if row.ULID == sessionID {
@@ -227,6 +258,7 @@ func evaluateDiracCheckpoint(root sessionstore.ArchiveRoot, sessionID string) (r
 	}
 	chain, err := sessionstore.OpenCheckedArchiveDirectoryChain(archive, "data", "tasks", link.TaskID)
 	if err != nil {
+		files.changed = true
 		result.err = checkpointReadFailure(err)
 		return result
 	}
@@ -238,6 +270,7 @@ func evaluateDiracCheckpoint(root sessionstore.ArchiveRoot, sessionID string) (r
 	}()
 	recoverable, err := diracConversationRecoverable(chain.Root())
 	if err != nil {
+		files.changed = true
 		result.err = checkpointReadFailure(err)
 		return result
 	}
@@ -255,25 +288,14 @@ func checkpointReadFailure(err error) error {
 }
 
 func diracConversationRecoverable(taskRoot sessionstore.ArchiveRoot) (bool, error) {
-	baseline, err := readOptionalDiracFile(taskRoot, "api_conversation_history.baseline.jsonl")
+	files, err := readDiracAPIHistoryFiles(taskRoot)
 	if err != nil {
 		return false, err
 	}
-	var snapshot []byte
-	if baseline == nil {
-		snapshot, err = readOptionalDiracFile(taskRoot, "api_conversation_history.json")
-		if err != nil {
-			return false, err
-		}
-	}
-	operations, err := readOptionalDiracFile(taskRoot, "api_conversation_history.jsonl")
-	if err != nil {
-		return false, err
-	}
-	if len(operations) > 0 && bytes.IndexByte(operations, '\n') < 0 {
+	if len(files.operations) > 0 && bytes.IndexByte(files.operations, '\n') < 0 {
 		return false, nil
 	}
-	messages, err := decodeDiracAPIHistory(snapshot, baseline, operations)
+	messages, err := decodeDiracAPIHistory(files.snapshot, files.baseline, files.operations)
 	return err == nil && len(messages) > 0, nil
 }
 
@@ -300,6 +322,17 @@ type diracCheckpointArchive struct {
 type diracCheckpointFiles struct {
 	identities map[string]os.FileInfo
 	changed    bool
+}
+
+func (r diracCheckpointArchive) Open(name string) (*os.File, error) {
+	file, err := r.ArchiveRoot.Open(name)
+	if errors.Is(err, os.ErrNotExist) && r.files.identities[filepath.Join(r.prefix, name)] != nil {
+		// An optional file can use a legacy fallback only if the initial
+		// lookup found it absent. A disappearance invalidates this probe.
+		r.files.changed = true
+		return nil, errors.New("the Dirac checkpoint file disappeared before it opened")
+	}
+	return file, err
 }
 
 func (r diracCheckpointArchive) OpenChild(name string) (sessionstore.ArchiveRoot, error) {

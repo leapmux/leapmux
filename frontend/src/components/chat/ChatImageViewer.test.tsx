@@ -1,9 +1,11 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ChatWindowChange } from '~/stores/chat.store'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { MAX_INLINE_IMAGE_BASE64_LEN } from '~/lib/imageBlocks'
+import { deferred, settle } from '~/test-support/async'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ChatImageViewer, decodeImageBytes } from './ChatImageViewer'
@@ -154,6 +156,39 @@ describe('ChatImageViewer', () => {
     expect(img.getAttribute('alt')).toBe('screenshot')
     // The message was already in the window, so nothing was fetched.
     expect(fetchMessage).not.toHaveBeenCalled()
+  })
+
+  it('draws a surviving image when full watch promotion replaces its pending lookup', async () => {
+    const previous = deferred<AgentChatMessage | undefined>()
+    const current = deferred<AgentChatMessage | undefined>()
+    const fetchMessage = vi.fn<(_seq: bigint, _signal: AbortSignal) => Promise<AgentChatMessage | undefined>>()
+      .mockReturnValueOnce(previous.promise)
+      .mockReturnValueOnce(current.promise)
+    let changeWindow!: (change: ChatWindowChange) => void
+    const messages = testMessageContext({
+      fetchMessage,
+      subscribeWindowChanges: (observer) => {
+        changeWindow = observer
+        return () => undefined
+      },
+    })
+    const { container } = render(() => (
+      <ChatImageViewer workerId="w-1" agentId="a-1" seq={7n} imageIndex={0} title="screenshot" messages={messages} />
+    ))
+    expect(fetchMessage).toHaveBeenCalledTimes(1)
+
+    changeWindow({ kind: 'promotion', signal: new AbortController().signal })
+    expect(fetchMessage.mock.calls[0]?.[1].aborted).toBe(true)
+    expect(fetchMessage).toHaveBeenCalledTimes(2)
+    current.resolve(claudeImageMessage([
+      { type: 'image', data: PNG_BASE64, mimeType: 'image/png' },
+    ]))
+    await settle()
+
+    expect(container.querySelector('img')).toHaveAttribute('alt', 'screenshot')
+    previous.reject(new DOMException('The request was superseded.', 'AbortError'))
+    await settle()
+    expect(container.querySelector('img')).toHaveAttribute('alt', 'screenshot')
   })
 
   it('says so when the message no longer holds an image at that index', async () => {

@@ -285,6 +285,7 @@ export function createChatStore() {
     seqs: ReadonlySet<bigint>,
     includes: Extract<ChatWindowChange, { kind: 'retraction' }>['includes'],
     handle?: WatchEventsHandle,
+    revisions: AgentChatMessage[] = [],
   ): boolean {
     if (seqs.size === 0) {
       notifyWindowObservers(agentId, { kind: 'retraction', includes })
@@ -308,26 +309,58 @@ export function createChatStore() {
     return batch(() => {
       publishOrderedPage(agentId)
       const previous = state.messagesByAgent[agentId] ?? []
-      const surviving: AgentChatMessage[] = []
       const removedIds: string[] = []
-      for (const message of previous) {
-        if (seqs.has(message.seq))
-          removedIds.push(message.id)
-        else
-          surviving.push(message)
-      }
-      const needsAnchor = removedIds.length > 0 && surviving.length === 0
+      const surviving = hasLoadedRetraction(previous, seqs)
+        ? previous.filter((message) => {
+            if (!seqs.has(message.seq))
+              return true
+            removedIds.push(message.id)
+            return false
+          })
+        : previous
+      const next = revisions.length === 0
+        ? surviving
+        : mergeWindow(surviving, revisions, 'newer')
+      const needsAnchor = removedIds.length > 0 && next.length === 0
       if (needsAnchor)
         pendingLatestAnchors.set(agentId, true)
-      if (removedIds.length > 0) {
-        spanIdx.reindex(agentId, surviving)
-        setState('messagesByAgent', agentId, surviving)
+      if (next !== previous) {
+        if (next !== surviving) {
+          publishWindowReplacement(agentId, surviving, next)
+          invalidateNewSupplements(surviving, next)
+          reclaimDroppedRows(surviving, next)
+        }
+        spanIdx.reindex(agentId, next)
+        setState('messagesByAgent', agentId, next)
       }
       messageMarks.removeSequences(agentId, seqs)
       notifyWindowObservers(agentId, { kind: 'retraction', includes })
       contentVersions.forget(removedIds)
+      for (const message of revisions) {
+        notifyMessageObservers(agentId, message)
+        liveTail.bump(agentId, message.seq)
+      }
       return needsAnchor
     })
+  }
+
+  function hasLoadedRetraction(messages: AgentChatMessage[], sequences: ReadonlySet<bigint>): boolean {
+    // Search individual sequences for a small deletion. A dense miss needs no copy either.
+    if (sequences.size > 8)
+      return messages.some(message => sequences.has(message.seq))
+    for (const seq of sequences) {
+      if (messages[lowerBoundBySeq(messages, seq)]?.seq === seq)
+        return true
+    }
+    return false
+  }
+
+  function reconcileLoadedPage(agentId: string, sequences: readonly bigint[], revisions: AgentChatMessage[], handle?: WatchEventsHandle): void {
+    const seqs = new Set(sequences.filter(seq => seq > 0n))
+    if (seqs.size > 0)
+      commitRetraction(agentId, seqs, message => seqs.has(message.seq), handle, revisions)
+    else
+      mergeFetchedMessages(agentId, revisions, 'newer')
   }
 
   function retractMessages(agentId: string, sequences: readonly bigint[], handle?: WatchEventsHandle): boolean {
@@ -637,6 +670,18 @@ export function createChatStore() {
 
     isMessageRetracted(agentId: string, seq: bigint, handle: WatchEventsHandle): boolean {
       return watchRetractions.get(handle)?.get(agentId)?.has(seq) ?? false
+    },
+
+    retainWatchRetractions(handle: WatchEventsHandle, fullAgents: ReadonlyMap<string, bigint>): void {
+      const retractions = watchRetractions.get(handle)
+      if (!retractions)
+        return
+      for (const agentId of retractions.keys()) {
+        if (!fullAgents.has(agentId))
+          retractions.delete(agentId)
+      }
+      if (retractions.size === 0)
+        watchRetractions.delete(handle)
     },
 
     retireWatchHandle(handle: WatchEventsHandle): void {
@@ -1101,7 +1146,7 @@ export function createChatStore() {
     catchUpAbort,
     runHistoryFetch: historyFetches.runHistoryFetch,
     duringHistoryRead: historyFetches.duringHistoryRead,
-    retractMessages,
+    reconcileLoadedPage,
     needsLatestAnchor: hasPendingLatestAnchor,
     completeLatestAnchor: pendingLatestAnchors.remove,
     mergeFetchedMessages,

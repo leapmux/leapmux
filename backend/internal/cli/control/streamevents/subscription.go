@@ -665,7 +665,9 @@ func (s *Subscription) dispatchAgentEvent(ae *leapmuxv1.AgentEvent) {
 			"agent_id", ae.GetAgentId())
 		return
 	}
-	if msg := ae.GetAgentMessage(); msg != nil {
+	if retraction := ae.GetMessagesRetracted(); retraction != nil {
+		s.agents.recordRetraction(ae.GetAgentId(), retraction.GetSeqs())
+	} else if msg := ae.GetAgentMessage(); msg != nil {
 		if seq := msg.GetSeq(); seq >= 0 {
 			if !s.agents.Advance(ae.GetAgentId(), seq) {
 				return

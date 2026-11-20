@@ -106,7 +106,7 @@ func TestRetractMessagesByIdempotencyKey_DeletesRowsAndEmitsSeqsOnce(t *testing.
 	})
 	assert.ErrorIs(t, err, sql.ErrNoRows, "a retracted key cannot be reinserted at a fresh sequence")
 
-	// A duplicate signal names no new row and emits no event.
+	// A duplicate signal deletes no row and emits no event.
 	require.NoError(t, sink.RetractMessagesByIdempotencyKey(captured, []string{"u-1", "u-3"}))
 	assert.Len(t, retractedSeqs(t, w), 1, "duplicate signals emit no event")
 
@@ -503,4 +503,197 @@ func TestClaudeDelayedRestartRoutesTheRecipientAfterItsDeliveredPrompt(t *testin
 	assert.Equal(t, "after-start", rows[3].IdempotencyKey)
 	assert.False(t, rows[3].TranscriptOnly)
 	assert.Equal(t, "[]", rows[3].SpanLines, "the restarted run uses its own tracker")
+}
+
+func TestClaudeFallbackNoticeWaitsForTheChildRetractionToCommit(t *testing.T) {
+	t.Parallel()
+	svc, root, watcher := messageRetractionFixture(t)
+	a, _ := startClaudeRetractionFixture(t, svc, root)
+	ctx := t.Context()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"spawn","task_type":"local_agent","prompt":"Inspect."}`))
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn", ProviderChildKey: "task",
+	})
+	require.NoError(t, err)
+	registerAgentWatch(svc, watcher.channelID, childID, leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"target","session_id":"s-1","parent_tool_use_id":"spawn","message":{"content":[{"type":"text","text":"partial child answer"}]}}`))
+	child := root.ChildSink(childID)
+	queue := agent.OutputQueueFor(child)
+	require.NotNil(t, queue)
+	queue.StopRetries()
+	blocker := agent.NewOutputOwner()
+	queue.Append(agent.OutputWrite{Owner: blocker, Label: "block child storage", Run: func() error {
+		return fmt.Errorf("child storage is unavailable")
+	}})
+	_, err = svc.DB.ExecContext(ctx, `CREATE TRIGGER refuse_claude_child_delete BEFORE DELETE ON messages
+		WHEN OLD.idempotency_key = 'target' BEGIN SELECT RAISE(ABORT, 'child deletion failed'); END`)
+	require.NoError(t, err)
+
+	readRoot := func() []db.Message {
+		t.Helper()
+		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+		require.NoError(t, err)
+		return rows
+	}
+	before := len(readRoot())
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","scope":"local","uuid":"fallback","session_id":"s-1","retracted_message_uuids":["target"]}`))
+	assert.Len(t, readRoot(), before, "a child storage failure keeps the root notice waiting")
+
+	queue.ClearOwner(blocker)
+	assert.ErrorContains(t, agent.FlushPendingOutput(child), "child deletion failed")
+	assert.Len(t, readRoot(), before, "a failed deletion still keeps the root notice waiting")
+
+	_, err = svc.DB.ExecContext(ctx, "DROP TRIGGER refuse_claude_child_delete")
+	require.NoError(t, err)
+	require.NoError(t, agent.FlushPendingOutput(child))
+	require.Len(t, retractedSeqs(t, watcher), 1)
+	rows := readRoot()
+	require.Len(t, rows, before+1)
+	last := rows[len(rows)-1]
+	notice, err := msgcodec.Decompress(last.Content, last.ContentCompression)
+	require.NoError(t, err)
+	assert.Contains(t, string(notice), "model_refusal_fallback")
+}
+
+func TestClaudeChildHandbackReportRetriesBeforeLaterChildOutput(t *testing.T) {
+	t.Parallel()
+	svc, root, _ := messageRetractionFixture(t)
+	a, _ := startClaudeRetractionFixture(t, svc, root)
+	ctx := t.Context()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"spawn","task_type":"local_agent","prompt":"Inspect."}`))
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn", ProviderChildKey: "task",
+	})
+	require.NoError(t, err)
+	child := root.ChildSink(childID)
+	childQueue := agent.OutputQueueFor(child)
+	require.NotNil(t, childQueue)
+	childQueue.StopRetries()
+	_, err = svc.DB.ExecContext(ctx, fmt.Sprintf(`CREATE TRIGGER reject_child_report BEFORE INSERT ON messages
+		WHEN NEW.agent_id <> 'agent-1' AND NEW.source = %d
+		BEGIN SELECT RAISE(ABORT, 'child report write failed'); END`, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX))
+	require.NoError(t, err)
+
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"handback-frame","session_id":"s-1","parent_tool_use_id":"spawn","task_description":"Reviewer","message":{"content":[{"type":"tool_use","id":"handback","name":"SubagentHandback","input":{"message":"Findings"}}]}}`))
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"later","session_id":"s-1","parent_tool_use_id":"spawn","message":{"content":[{"type":"text","text":"a later message"}]}}`))
+	before, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	assert.Len(t, before, 1, "the later assistant row waits behind the failed report")
+
+	_, err = svc.DB.ExecContext(ctx, "DROP TRIGGER reject_child_report")
+	require.NoError(t, err)
+	require.NoError(t, agent.FlushPendingOutput(child))
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 3, "the original prompt, report, and later message each appear once")
+	report, err := msgcodec.Decompress(rows[1].Content, rows[1].ContentCompression)
+	require.NoError(t, err)
+	assert.Contains(t, string(report), "Findings")
+	assert.Empty(t, rows[1].AgentSessionID, "the admitted virtual child had no native session")
+	assert.Equal(t, "later", rows[2].IdempotencyKey)
+}
+
+func TestClaudeRetiredSpanCannotClearTheSuccessorTail(t *testing.T) {
+	t.Parallel()
+	svc, root, _ := messageRetractionFixture(t)
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn", ProviderChildKey: "child",
+	})
+	require.NoError(t, err)
+	first := root.AcquireChildStateSink(childID)
+	require.True(t, first.RetainTranscriptSpans())
+	first.Sink.OpenSpan("same-span", "")
+	captured := first.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	retained := agent.TranscriptFrameSpans(captured, first.Sink)
+
+	successor := root.AcquireChildStateSink(childID)
+	require.True(t, successor.RetainTranscriptSpans())
+	successor.Sink.OpenSpan("same-span", "")
+	successor.Sink.ReportProgress(agent.OutputTailProgress("same-span", "successor output", false))
+	child := requireChildOutputSink(t, requireRootOutputSink(t, svc.Output, "agent-1"), childID)
+	readTail := func() string {
+		child.progress.mu.Lock()
+		defer child.progress.mu.Unlock()
+		tail := child.progress.tails["same-span"]
+		if tail == nil {
+			return ""
+		}
+		return tail.text
+	}
+	require.Equal(t, "successor output", readTail())
+	retained.CloseSpan("same-span")
+
+	assert.Equal(t, "successor output", readTail())
+	active := child.currentSpanTracker().ActiveSpans()
+	require.Len(t, active, 1)
+	assert.Equal(t, "same-span", active[0].SpanID)
+}
+
+func TestRetractionWithoutATransactionLeavesRowsAndReceiptsUnchanged(t *testing.T) {
+	t.Parallel()
+	svc, root, _ := messageRetractionFixture(t)
+	messageRetractionPersist(t, root, "target")
+	capture := root.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	ctx := t.Context()
+	_, err := svc.DB.ExecContext(ctx, `CREATE TRIGGER reject_nontransactional_delete BEFORE DELETE ON messages
+		WHEN OLD.idempotency_key = 'target' BEGIN SELECT RAISE(ABORT, 'deletion refused'); END`)
+	require.NoError(t, err)
+	store := svc.Output.db
+	svc.Output.db = nil
+	defer func() { svc.Output.db = store }()
+
+	require.Error(t, root.RetractMessagesByIdempotencyKey(capture, []string{"target"}))
+	present, err := root.IsMessageRetracted(capture, "target")
+	require.NoError(t, err)
+	assert.False(t, present, "a missing transaction must prevent any receipt write")
+	row, err := svc.Queries.GetMessageByIdempotencyKey(ctx, db.GetMessageByIdempotencyKeyParams{
+		AgentID: "agent-1", AgentSessionID: "s-1", IdempotencyKey: "target",
+	})
+	require.NoError(t, err)
+	assert.Positive(t, row.Seq)
+}
+
+func TestClaudeRetiredFramePersistsWithoutLiveTurnEffects(t *testing.T) {
+	t.Parallel()
+	svc, root, watcher := messageRetractionFixture(t)
+	ctx := t.Context()
+	messageRetractionPersist(t, root, "evicted")
+	claim := root.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	root.OpenSpan("call", "")
+	admitted := root.CaptureMessage(agent.MessageContent{
+		Original:     []byte(`{"type":"result","subtype":"success"}`),
+		WriteReceipt: agent.NewTranscriptWriteReceipt(),
+	}, agent.SpanInfo{})
+	retainedSpans := agent.TranscriptFrameSpans(admitted, root)
+	require.NotNil(t, retainedSpans)
+	require.True(t, agent.TranscriptFrameIsCurrent(admitted))
+	root.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyCompaction: map[string]any{}})
+
+	// NoteAgentProcessExited retires the source before it resets activity.
+	// Persist at that boundary while the original activity scope still exists.
+	require.Equal(t, []string{"agent-1"}, svc.Output.invalidateExitedProcessSessionInfo("agent-1", root))
+	assert.False(t, agent.TranscriptFrameIsCurrent(admitted))
+	result, err := agent.CaptureTranscriptFrame(root, admitted, agent.SpanInfo{SpanID: "call", Closing: true})
+	require.NoError(t, err)
+	require.NoError(t, result.PersistTurnEnd())
+	retainedSpans.CloseSpan("call")
+	require.NoError(t, root.RetractMessagesByIdempotencyKey(claim, []string{"evicted"}))
+
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the retained result survives and the admitted retraction removes its target")
+	assert.True(t, rows[0].TranscriptOnly)
+	assert.Equal(t, "s-1", rows[0].AgentSessionID)
+	var lines []SpanLine
+	require.NoError(t, json.Unmarshal([]byte(rows[0].SpanLines), &lines))
+	require.Len(t, lines, 1)
+	assert.Equal(t, SpanLineConnectorEnd, lines[0].Type)
+	assert.Empty(t, requireRootOutputSink(t, svc.Output, "agent-1").currentSpanTracker().ActiveSpans())
+	assert.Equal(t, [][]int64{{1}}, retractedSeqs(t, watcher))
+	for _, stream := range watcher.streamsSnapshot() {
+		var event leapmuxv1.WatchEventsResponse
+		require.NoError(t, proto.Unmarshal(stream.GetPayload(), &event))
+		assert.Nil(t, event.GetAgentEvent().GetTurnEnd())
+	}
 }

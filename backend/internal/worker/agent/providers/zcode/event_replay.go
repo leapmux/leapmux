@@ -79,8 +79,14 @@ func (a *Agent) storePendingZCodeEventLocked(event zcodeEventEnvelope) {
 	if a.replay.pending == nil {
 		a.replay.init()
 	}
-	if previous, exists := a.replay.pending[event.Seq]; exists && (!previous.archive || event.archive) {
-		return
+	if previous, exists := a.replay.pending[event.Seq]; exists {
+		// Live events take precedence. A current gap fetch can also replace
+		// an archive copy that arrived without foreground retry authority.
+		replacesArchive := previous.archive && (!event.archive ||
+			previous.retryReplayTurnGeneration == 0 && event.retryReplayTurnGeneration != 0)
+		if !replacesArchive {
+			return
+		}
 	}
 	a.replay.pending[event.Seq] = event
 	a.replay.highWatermark = max(a.replay.highWatermark, event.Seq)
@@ -210,6 +216,10 @@ func (a *Agent) replayZCodeEvents(ctx context.Context) error {
 		}
 		a.Mu.Lock()
 		afterSeq, sessionID := a.lastSeq, a.sessionID
+		var retryTurnGeneration uint64
+		if owner := a.foregroundZCodeTurnLocked(); owner != nil {
+			retryTurnGeneration = owner.generation
+		}
 		a.Mu.Unlock()
 		generation := a.replay.generation
 		requestedThrough := a.replay.highWatermark
@@ -239,6 +249,7 @@ func (a *Agent) replayZCodeEvents(ctx context.Context) error {
 		a.replay.highWatermark = max(a.replay.highWatermark, high)
 		a.markZCodeCanonicalRecoveryLocked()
 		for _, event := range fetched {
+			event.retryReplayTurnGeneration = retryTurnGeneration
 			a.storePendingZCodeEventLocked(event)
 		}
 		// Only the checkpoint known before this request is covered. Mapping the

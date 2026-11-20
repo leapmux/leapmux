@@ -22,8 +22,9 @@ const diracSteerMethod = "dev.dirac/whisper"
 // Agent manages one Dirac ACP process.
 type Agent struct {
 	acp.Base
+	profileMu             sync.RWMutex
 	root                  string
-	checkpointProfile     string
+	profileObserved       bool
 	openCheckpointArchive func(string) (sessionstore.ArchiveRoot, error)
 	resumedSession        string
 	clock                 quartz.Clock
@@ -35,6 +36,20 @@ type Agent struct {
 	// observer consumed (see observeDiracNotice).
 	claimedMu    sync.Mutex
 	claimedCards map[string]struct{}
+}
+
+func (a *Agent) archiveProfile() (root string, observed bool) {
+	a.profileMu.RLock()
+	defer a.profileMu.RUnlock()
+	return a.root, a.profileObserved
+}
+
+func (a *Agent) checkpointProfile() string {
+	root, observed := a.archiveProfile()
+	if observed {
+		return root
+	}
+	return ""
 }
 
 // This assertion makes a missing Agent method a compile error.

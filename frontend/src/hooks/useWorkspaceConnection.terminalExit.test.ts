@@ -1,6 +1,5 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
-import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
@@ -22,15 +21,12 @@ import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
-import { createTestWatchHandle } from '~/test-support/watchEvents'
+import { testWatchStreams } from '~/test-support/watchEvents'
 
 const WS = 'ws-shell-exit'
 const WORKER = 'w-1'
 
-const watchHandle = createTestWatchHandle()
-function deliverWatchEvent(frame: Parameters<UseWatchEventsStreamsOpts['onEvent']>[1]): void {
-  streamOpts().onEvent(WORKER, frame, watchHandle)
-}
+const deliverWatchEvent = testWatchStreams.deliverFor(WORKER)
 
 const QUAKE_TERMINAL = 'q1'
 const TERMINAL_TAB = 't1'
@@ -114,30 +110,18 @@ vi.mock('~/lib/terminal', async (importOriginal) => {
 })
 
 // Capture the stream hook's options so each test sends frames through the dispatcher.
-const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
-
-vi.mock('~/hooks/useWatchEventsStreams', () => ({
-  useWatchEventsStreams: (opts: unknown) => {
-    streams.opts = opts
-    return {
-      abortSignalFor: () => undefined,
-    }
-  },
-}))
+vi.mock('~/hooks/useWatchEventsStreams', async () => {
+  const { testWatchStreams } = await import('~/test-support/watchEvents')
+  return { useWatchEventsStreams: testWatchStreams.useWatchEventsStreams }
+})
 
 beforeEach(() => {
-  streams.opts = undefined
+  testWatchStreams.reset()
   terminalView.instances.clear()
   terminalView.readyListeners.clear()
   terminalView.disposed.length = 0
   written.length = 0
 })
-
-function streamOpts(): UseWatchEventsStreamsOpts {
-  if (!streams.opts)
-    throw new Error('useWorkspaceConnection did not open its watch streams')
-  return streams.opts as UseWatchEventsStreamsOpts
-}
 
 /** The tab whose working directory the quake panel belongs to. */
 const AGENT_TAB: Tab = {

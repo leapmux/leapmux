@@ -349,9 +349,9 @@ type messageEmitter func(*leapmuxv1.AgentChatMessage) error
 // matching Subscription.dispatch, so a late WatchEvents frame for the same seq
 // cannot race the drain and be forwarded twice. If emission fails, the error is
 // returned and the follow command stops instead of reconnecting past data stdout
-// never accepted. The `before` re-read guards against a server returning rows at
-// or below the bound: without it a hasMore=true page that fails to advance the
-// cursor would spin forever.
+// never accepted. The read cursor advances over retracted rows in a stale
+// page without moving the delivery cursor. A page that fails to advance the
+// read cursor ends the drain even if it reports more rows.
 //
 // Returns whether it emitted any message, so the reconnect loop can count a drain
 // that forwarded real history as session activity: a transport that serves the
@@ -362,20 +362,23 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 	fetch messagePager, emit messageEmitter,
 ) (bool, error) {
 	emitted := false
+	readThrough := cursor.Get(agentID)
 	for {
 		if ctx.Err() != nil {
 			return emitted, nil
 		}
-		before := cursor.Get(agentID)
+		before := max(readThrough, cursor.Get(agentID))
 		msgs, hasMore, err := fetch(ctx, before)
 		if err != nil || len(msgs) == 0 {
 			return emitted, nil
 		}
+		readThrough = before
 		for _, m := range msgs {
 			// Only persisted rows (seq >= 0) advance the cursor; the fetch returns
 			// only persisted rows, but the guard mirrors the subscription dedup.
 			if seq := m.GetSeq(); seq >= 0 {
-				if !cursor.Advance(agentID, seq) {
+				readThrough = max(readThrough, seq)
+				if seq <= before || !cursor.Advance(agentID, seq) {
 					continue
 				}
 			}
@@ -384,7 +387,7 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 			}
 			emitted = true
 		}
-		if !hasMore || cursor.Get(agentID) <= before {
+		if !hasMore || readThrough <= before {
 			return emitted, nil
 		}
 	}

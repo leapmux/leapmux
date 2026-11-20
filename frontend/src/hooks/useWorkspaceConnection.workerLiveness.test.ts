@@ -1,6 +1,5 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
-import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,7 +23,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
-import { createTestWatchHandle } from '~/test-support/watchEvents'
+import { testWatchStreams } from '~/test-support/watchEvents'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -56,16 +55,10 @@ vi.mock('~/components/common/Toast', () => ({
 
 // Capture the stream hook's options so each test reports the worker's
 // liveness and sends frames itself.
-const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
-
-vi.mock('~/hooks/useWatchEventsStreams', () => ({
-  useWatchEventsStreams: (opts: unknown) => {
-    streams.opts = opts
-    return {
-      abortSignalFor: () => undefined,
-    }
-  },
-}))
+vi.mock('~/hooks/useWatchEventsStreams', async () => {
+  const { testWatchStreams } = await import('~/test-support/watchEvents')
+  return { useWatchEventsStreams: testWatchStreams.useWatchEventsStreams }
+})
 
 /** The xterm instances, which a test fills by hand. */
 const terminalView = vi.hoisted(() => ({
@@ -83,25 +76,16 @@ vi.mock('~/components/terminal/TerminalView', async (importOriginal) => {
 const listTerminals = vi.mocked(workerTerminal.listTerminals)
 
 beforeEach(() => {
-  streams.opts = undefined
+  testWatchStreams.reset()
   terminalView.instances.clear()
   listTerminals.mockReset()
   listTerminals.mockResolvedValue({ terminals: [], verdicts: [] } as never)
 })
 
-function streamOpts(): UseWatchEventsStreamsOpts {
-  if (!streams.opts)
-    throw new Error('useWorkspaceConnection did not open its watch streams')
-  return streams.opts as UseWatchEventsStreamsOpts
-}
-
 const WS = 'ws-worker-liveness'
 const WORKER = 'w-1'
 
-const watchHandle = createTestWatchHandle()
-function deliverWatchEvent(frame: Parameters<UseWatchEventsStreamsOpts['onEvent']>[1]): void {
-  streamOpts().onEvent(WORKER, frame, watchHandle)
-}
+const deliverWatchEvent = testWatchStreams.deliverFor(WORKER)
 
 const OTHER_WORKER = 'w-2'
 
@@ -192,9 +176,9 @@ function terminalReply(terminals: { id: string, status: TerminalStatus }[]) {
 describe('useWorkspaceConnection worker liveness', () => {
   it('reports a worker that comes back once, with its id', () => {
     const s = mount([])
-    streamOpts().onWorkerOnline(WORKER, false)
-    streamOpts().onWorkerOnline(WORKER, true)
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
 
     expect(s.onWorkerReconnected).toHaveBeenCalledExactlyOnceWith(WORKER)
     s.dispose()
@@ -202,7 +186,7 @@ describe('useWorkspaceConnection worker liveness', () => {
 
   it('reports no reconnect for a worker that was never offline', () => {
     const s = mount([])
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
 
     expect(s.onWorkerReconnected).not.toHaveBeenCalled()
     s.dispose()
@@ -210,8 +194,8 @@ describe('useWorkspaceConnection worker liveness', () => {
 
   it('reports no reconnect for an empty worker id', () => {
     const s = mount([])
-    streamOpts().onWorkerOnline('', false)
-    streamOpts().onWorkerOnline('', true)
+    testWatchStreams.getOptions().onWorkerOnline('', false)
+    testWatchStreams.getOptions().onWorkerOnline('', true)
 
     expect(s.onWorkerReconnected).not.toHaveBeenCalled()
     s.dispose()
@@ -229,11 +213,11 @@ describe('useWorkspaceConnection worker liveness', () => {
         meta: { agentStatus: AgentStatus.ACTIVE },
       },
     ])
-    streamOpts().onWorkerOnline(OTHER_WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(OTHER_WORKER, false)
     expect(s.forget, 'the sweep clears the agent of the offline worker').toHaveBeenCalledExactlyOnceWith('a-offline')
 
-    streamOpts().onWorkerOnline(WORKER, true)
-    streamOpts().onWorkerOnline(OTHER_WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(OTHER_WORKER, false)
 
     expect(s.forget, 'neither report changed which workers are offline').toHaveBeenCalledOnce()
     s.dispose()
@@ -254,8 +238,8 @@ describe('useWorkspaceConnection worker liveness', () => {
         meta: { agentStatus: AgentStatus.ACTIVE },
       },
     ])
-    streamOpts().onWorkerOnline(OTHER_WORKER, false)
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(OTHER_WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
 
     expect(s.view.getAgentTab('a-1')?.agentStatus).toBe(AgentStatus.INACTIVE)
     expect(s.view.getAgentTab('a-2')?.agentStatus).toBe(AgentStatus.INACTIVE)
@@ -277,13 +261,13 @@ describe('useWorkspaceConnection worker liveness', () => {
     await flush()
     expect(listTerminals, 'a hydrated EXITED tab asks for nothing on its own').not.toHaveBeenCalled()
 
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
     expect(s.shown('t-exited'), 'only a READY terminal shows DISCONNECTED').toBe(TerminalStatus.EXITED)
 
     listTerminals.mockResolvedValue(terminalReply([
       { id: 't-exited', status: TerminalStatus.READY },
     ]))
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     await flush()
     await flush()
 
@@ -348,7 +332,7 @@ describe('useWorkspaceConnection worker liveness', () => {
         },
       },
     ])
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
     listTerminals.mockResolvedValue({
       terminals: [
         create(TerminalInfoSchema, {
@@ -361,7 +345,7 @@ describe('useWorkspaceConnection worker liveness', () => {
       verdicts: [],
     } as never)
 
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     await flush()
     await flush()
     expect(listTerminals).toHaveBeenCalledOnce()
@@ -410,7 +394,7 @@ describe('useWorkspaceConnection worker liveness', () => {
         meta: { hydrated: true, terminalStatus: TerminalStatus.EXITED },
       },
     ])
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
     expect(s.shown('t-ready')).toBe(TERMINAL_DISCONNECTED)
     await flush()
 
@@ -420,7 +404,7 @@ describe('useWorkspaceConnection worker liveness', () => {
       { id: 't-failed', status: TerminalStatus.READY },
       { id: 't-ready', status: TerminalStatus.READY },
     ]))
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     await flush()
     await flush()
 
@@ -450,7 +434,7 @@ describe('useWorkspaceConnection worker liveness', () => {
       },
     ])
 
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
 
     expect(s.view.getTerminalTab('t-ready')?.status).toBe(TerminalStatus.READY)
     expect(s.metadata.get('t-ready')?.terminalStatus).toBe(TerminalStatus.READY)
@@ -475,12 +459,12 @@ describe('useWorkspaceConnection worker liveness', () => {
     ])
     expect(s.shown('t-ready')).toBe(TerminalStatus.READY)
 
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
     expect(s.shown('t-ready')).toBe(TERMINAL_DISCONNECTED)
     expect(s.shown('t-other'), 'another worker keeps its terminals').toBe(TerminalStatus.READY)
 
     // Before any reply: the worker reporting back is the whole of the transition.
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     expect(s.shown('t-ready')).toBe(TerminalStatus.READY)
     s.dispose()
   })
@@ -495,7 +479,7 @@ describe('useWorkspaceConnection worker liveness', () => {
       },
     ])
 
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
 
     expect(s.shown('t-starting')).toBe(TerminalStatus.STARTING)
     s.dispose()
@@ -511,7 +495,7 @@ describe('useWorkspaceConnection worker liveness', () => {
       },
     ])
 
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
     await flush()
     await flush()
     expect(listTerminals, 'an offline worker cannot answer').not.toHaveBeenCalled()
@@ -519,7 +503,7 @@ describe('useWorkspaceConnection worker liveness', () => {
     listTerminals.mockResolvedValue(terminalReply([
       { id: 't-ready', status: TerminalStatus.READY },
     ]))
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     await flush()
     await flush()
     expect(listTerminals, 'the reconnect still re-asks').toHaveBeenCalledOnce()
@@ -535,13 +519,13 @@ describe('useWorkspaceConnection worker liveness', () => {
         meta: { hydrated: true, terminalStatus: TerminalStatus.READY },
       },
     ])
-    streamOpts().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
     expect(s.shown('t-ready')).toBe(TERMINAL_DISCONNECTED)
 
     listTerminals.mockResolvedValue(terminalReply([
       { id: 't-ready', status: TerminalStatus.EXITED },
     ]))
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     expect(s.shown('t-ready'), 'the reply has not landed yet').toBe(TerminalStatus.READY)
     await flush()
     await flush()
@@ -562,13 +546,13 @@ describe('useWorkspaceConnection worker liveness', () => {
     listTerminals.mockResolvedValue(terminalReply([
       { id: 't-exited', status: TerminalStatus.EXITED },
     ]))
-    streamOpts().onWorkerOnline(WORKER, false)
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, false)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     await flush()
     await flush()
     expect(listTerminals).toHaveBeenCalledOnce()
 
-    streamOpts().onWorkerOnline(WORKER, true)
+    testWatchStreams.getOptions().onWorkerOnline(WORKER, true)
     await flush()
     await flush()
 

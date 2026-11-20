@@ -300,6 +300,83 @@ func TestZCodeEventReplay_GapHoldsPendingUntilReplayRecoversIt(t *testing.T) {
 	assert.Equal(t, 0, pending, "the pending set must drain")
 }
 
+func TestZCodeEventReplay_RecoversCurrentForegroundModelRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	const turnID = "turn-1"
+	const schedule = `{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L"}}`
+	a.HandleOutput(zcodeTurnEventLine(t, 0, turnID, contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	responses := []json.RawMessage{
+		zcodeEventsReply(t, 3,
+			zcodeFetchedModelStatus(t, turnID, 1, `{"type":"model_request_started","requestId":"A","attempt":1,"maxAttempts":5,"modelCall":{"logicalCallId":"L"}}`),
+			zcodeFetchedModelStatus(t, turnID, 2, schedule)),
+		zcodeEventsReply(t, 6, zcodeFetchedModelStatus(t, turnID, 5, `{"type":"model_request_completed","requestId":"B","modelCall":{"logicalCallId":"L"}}`)),
+	}
+	requests := 0
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		if request.Method != MethodSessionEvents {
+			return nil
+		}
+		require.Less(t, requests, len(responses))
+		response := responses[requests]
+		requests++
+		return response
+	})
+	archiveCopy := zcodeTestSequencedEvent(2, contracts.ZCodeEventSessionUpdated, schedule)
+	archiveCopy.TurnID = turnID
+	archiveCopy.archive = true
+	a.dispatchZCodeEventOrdered(archiveCopy)
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionTitleUpdated, `{}`))
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	require.NoError(t, a.replayZCodeEvents(t.Context()))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, turnID, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L"}}`))
+	want := []any{
+		map[string]any{"phase": contracts.ModelAPIRetryPhaseWaiting, "attempt": int64(2), "max_attempts": int64(5)},
+		map[string]any{"phase": contracts.ModelAPIRetryPhaseRunning, "attempt": int64(2), "max_attempts": int64(5)},
+	}
+	assert.Equal(t, want, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionTitleUpdated, `{}`))
+	require.NoError(t, a.replayZCodeEvents(t.Context()))
+	assert.Equal(t, 2, requests)
+	assert.Equal(t, append(want, nil), sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+func TestZCodeEventReplay_DoesNotApplyRetryToAReplacementTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	const turnID = "turn-1"
+	a.HandleOutput(zcodeTurnEventLine(t, 0, turnID, contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	start := zcodeFetchedModelStatus(t, turnID, 1,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L"}}`)
+	schedule := zcodeFetchedModelStatus(t, turnID, 2,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"modelCall":{"logicalCallId":"L"}}`)
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		if request.Method != MethodSessionEvents {
+			return nil
+		}
+		a.HandleOutput(zcodeTurnEventLine(t, 0, turnID, contracts.ZCodeEventTurnStarted, `{"turnNumber":2}`))
+		return zcodeEventsReply(t, 3, start, schedule)
+	})
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionTitleUpdated, `{}`))
+	require.NoError(t, a.replayZCodeEvents(t.Context()))
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	assert.Equal(t, int64(3), a.lastSeq, "the rejected retry still belongs to the recovered sequence range")
+}
+
+func zcodeFetchedModelStatus(t *testing.T, turnID string, seq int64, payload string) json.RawMessage {
+	t.Helper()
+	event := zcodeTestSequencedEvent(seq, contracts.ZCodeEventSessionUpdated, payload)
+	event.TurnID = turnID
+	encoded, err := json.Marshal(event)
+	require.NoError(t, err)
+	return encoded
+}
+
 // A failed replay leaves later live events pending rather than advancing the
 // cursor across the gap.
 func TestZCodeEventReplay_FailedReplayLeavesLaterEventsPending(t *testing.T) {

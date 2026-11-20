@@ -413,15 +413,10 @@ func (s *Sink) RetractMessagesByIdempotencyKey(captured agent.MessageContent, ke
 	}
 	base := s.messageIdentityLocked(captured)
 	record := MessageRetraction{AgentSessionID: base.sessionID, Keys: append([]string(nil), keys...)}
-	seen := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		if key == "" {
 			continue
 		}
-		if _, repeat := seen[key]; repeat {
-			continue
-		}
-		seen[key] = struct{}{}
 		identity := nativeMessageIdentity{sessionID: base.sessionID, key: key}
 		if _, exists := s.retractedKeys[identity]; exists {
 			continue
@@ -2247,6 +2242,18 @@ func (sink *Sink) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
 func (nop) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
 	return agent.ValidateTranscriptOutputTicket(ticket)
 }
+
+func (owner *testTranscriptOwner) IsTranscriptFrameCurrent() bool {
+	owner.sink.mu.Lock()
+	defer owner.sink.mu.Unlock()
+	return owner.currentNativeStateSourceLocked()
+}
+
+func (owner *testTranscriptOwner) TranscriptFrameSpans() agent.SpanServices {
+	return owner.sink
+}
+
+var _ agent.TranscriptFrameOwner = (*testTranscriptOwner)(nil)
 
 // SnapshotTranscriptFrame records geometry when an admitted frame executes.
 func (owner *testTranscriptOwner) SnapshotTranscriptFrame(agent.SpanInfo) agent.TranscriptPublication {

@@ -103,25 +103,14 @@ func readDiracTaskletHistory(profile string, expected diracTaskletRecord) (api, 
 	if err := validateOwner(); err != nil {
 		return nil, nil, err
 	}
-	baseline, err := readOptionalDiracFile(chain.Root(), "api_conversation_history.baseline.jsonl")
-	if err != nil {
-		return nil, nil, err
-	}
-	var snapshot []byte
-	if baseline == nil {
-		snapshot, err = readOptionalDiracFile(chain.Root(), "api_conversation_history.json")
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	operations, err := readOptionalDiracFile(chain.Root(), "api_conversation_history.jsonl")
+	files, err := readDiracAPIHistoryFiles(chain.Root())
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := validateOwner(); err != nil {
 		return nil, nil, err
 	}
-	api, err = decodeDiracAPIHistory(snapshot, baseline, operations)
+	api, err = decodeDiracAPIHistory(files.snapshot, files.baseline, files.operations)
 	if err != nil {
 		return nil, nil, err
 	}

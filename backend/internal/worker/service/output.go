@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -899,9 +900,9 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 	var retiredIDs []string
 	if replaced {
 		previousSink := previous.(*agentOutputSink)
-		previousSink.sessionInfoMu.Lock()
-		h.invalidateCachedLiveSessionInfoLocked(previousSink, contracts.SessionInfoKeyModelAPIRetry)
-		previousSink.sessionInfoMu.Unlock()
+		for _, retired := range previousSink.originalSinkTree() {
+			h.clearProcessSessionInfo(retired)
+		}
 		retiredIDs = append([]string{agentID}, previousSink.retireRegisteredTree()...)
 	}
 	h.enqueueProgressClears(retiredIDs)
@@ -943,10 +944,7 @@ func (s *agentOutputSink) closeProgressTree() []string {
 		return nil
 	}
 	s.childMu.Lock()
-	children := make([]*agentOutputSink, 0, len(s.childSinks))
-	for _, child := range s.childSinks {
-		children = append(children, child)
-	}
+	children := slices.Collect(maps.Values(s.childSinks))
 	s.childSinks = nil
 	s.progressClosed = true
 	s.childMu.Unlock()
@@ -977,10 +975,7 @@ func (s *agentOutputSink) retireRegisteredTree() []string {
 
 func (s *agentOutputSink) originalSinkTree() []*agentOutputSink {
 	s.childMu.Lock()
-	children := make([]*agentOutputSink, 0, len(s.childSinks))
-	for _, child := range s.childSinks {
-		children = append(children, child)
-	}
+	children := slices.Collect(maps.Values(s.childSinks))
 	s.childMu.Unlock()
 	sinks := []*agentOutputSink{s}
 	for _, child := range children {
@@ -996,10 +991,7 @@ func (s *agentOutputSink) detachChildSink(agentID string) *agentOutputSink {
 		s.childMu.Unlock()
 		return child
 	}
-	children := make([]*agentOutputSink, 0, len(s.childSinks))
-	for _, child := range s.childSinks {
-		children = append(children, child)
-	}
+	children := slices.Collect(maps.Values(s.childSinks))
 	s.childMu.Unlock()
 	for _, child := range children {
 		if found := child.detachChildSink(agentID); found != nil {
@@ -1057,11 +1049,12 @@ type agentOutputSink struct {
 	// recursive `reflect.DeepEqual`. The wire encoding of these values
 	// is JSON anyway, so the cached bytes line up exactly with what the
 	// frontend would observe.
-	sessionInfoMu              sync.Mutex
-	lastSessionInfo            map[string][]byte
-	modelAPIRetryProcessExited bool
-	activePermissionChecks     map[permissionCheckKey]json.RawMessage
-	progress                   *generationProgressPublisher
+	sessionInfoMu   sync.Mutex
+	lastSessionInfo map[string][]byte
+	// The root mutation lock and sessionInfoMu both protect retirement writes.
+	processOutputRetired   atomic.Bool
+	activePermissionChecks map[permissionCheckKey]json.RawMessage
+	progress               *generationProgressPublisher
 
 	// catalogMu protects comparison identity and final catalog admission.
 	// A nested no-op replaces the identity without storing another catalog value.
@@ -1218,7 +1211,8 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	// sink, which is what a launch adopts.
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()
-	if !s.registeredCurrent() || !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
+	if !s.registeredCurrent() || s.turnPublisherSink().processOutputRetired.Load() ||
+		!s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
 		mutation.Unlock()
 		return
 	}

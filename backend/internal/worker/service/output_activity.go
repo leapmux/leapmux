@@ -1403,18 +1403,23 @@ func (h *OutputHandler) invalidateExitedProcessSessionInfo(rootAgentID string, o
 		if !sink.registeredCurrent() {
 			continue
 		}
-		sink.sessionInfoMu.Lock()
-		sink.modelAPIRetryProcessExited = true
-		cleared := false
-		for _, key := range processExitSessionInfoKeys {
-			cleared = h.invalidateCachedLiveSessionInfoLocked(sink, key) || cleared
-		}
-		sink.sessionInfoMu.Unlock()
-		if cleared {
+		if h.clearProcessSessionInfo(sink) {
 			clearedAgents = append(clearedAgents, sink.agentID)
 		}
 	}
 	return clearedAgents
+}
+
+// clearProcessSessionInfo retires the live metadata of this exact sink.
+func (h *OutputHandler) clearProcessSessionInfo(sink *agentOutputSink) bool {
+	sink.sessionInfoMu.Lock()
+	defer sink.sessionInfoMu.Unlock()
+	sink.processOutputRetired.Store(true)
+	cleared := false
+	for _, key := range processExitSessionInfoKeys {
+		cleared = h.invalidateCachedLiveSessionInfoLocked(sink, key) || cleared
+	}
+	return cleared
 }
 
 // NoteAgentProcessStarted forces the agent idle as a NEW process takes over.

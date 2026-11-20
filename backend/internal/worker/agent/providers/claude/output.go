@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -284,6 +286,100 @@ type contentBlock struct {
 	Text      string          `json:"text"`
 	ToolUseID string          `json:"tool_use_id"`
 	Input     json.RawMessage `json:"input"`
+}
+
+// claudeFrameRouting reads only the metadata that can change transcript ownership.
+type claudeFrameRouting struct {
+	sessionID    string
+	subtype      string
+	scope        string
+	isReplay     bool
+	supersedes   json.RawMessage
+	retractedIDs json.RawMessage
+}
+
+func decodeClaudeFrameRouting(content []byte) claudeFrameRouting {
+	decoder := jsontext.NewDecoder(bytes.NewReader(content), jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
+	if token, err := decoder.ReadToken(); err != nil || token.Kind() != '{' {
+		return claudeFrameRouting{}
+	}
+	var route claudeFrameRouting
+	for decoder.PeekKind() != '}' {
+		key, err := decoder.ReadToken()
+		if err != nil || key.Kind() != '"' {
+			return claudeFrameRouting{}
+		}
+		name := key.String()
+		switch name {
+		case "session_id", "subtype", "scope", "isReplay", "supersedes", "retracted_message_uuids":
+			value, err := decoder.ReadValue()
+			if err != nil {
+				return claudeFrameRouting{}
+			}
+			switch name {
+			case "session_id":
+				route.sessionID, _ = providerkit.RawString(json.RawMessage(value))
+			case "subtype":
+				route.subtype, _ = providerkit.RawString(json.RawMessage(value))
+			case "scope":
+				route.scope, _ = providerkit.RawString(json.RawMessage(value))
+			case "isReplay":
+				route.isReplay = !bytes.Equal(bytes.TrimSpace(value), []byte("false"))
+			case "supersedes":
+				route.supersedes = append(route.supersedes[:0], value...)
+			case "retracted_message_uuids":
+				route.retractedIDs = append(route.retractedIDs[:0], value...)
+			}
+		default:
+			if decoder.SkipValue() != nil {
+				return claudeFrameRouting{}
+			}
+		}
+	}
+	if _, err := decoder.ReadToken(); err != nil {
+		return claudeFrameRouting{}
+	}
+	if _, err := decoder.ReadToken(); !errors.Is(err, io.EOF) {
+		return claudeFrameRouting{}
+	}
+	return route
+}
+
+// claudeEvictionKeys returns the normalized target keys one frame evicts.
+// Drop the carrying frame's own UUID, as well as empty, repeated and malformed
+// entries. A fallback's plural field accepts only a list.
+func (route claudeFrameRouting) claudeEvictionKeys(msgType, self string) []string {
+	var targets []string
+	switch msgType {
+	case claudeMsgTypeSystem:
+		var many []json.RawMessage
+		if route.subtype != contracts.ClaudeSystemSubtypeModelRefusalFallback ||
+			json.Unmarshal(route.retractedIDs, &many) != nil {
+			return nil
+		}
+		targets = claudeStringListEntries(many)
+	case claudeMsgTypeAssistant:
+		targets = claudeStringList(route.supersedes)
+	default:
+		return nil
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, value := range targets {
+		key := claudeTranscriptKey(value)
+		if key == "" || key == self {
+			continue
+		}
+		if _, repeat := seen[key]; repeat {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // messageEnvelope is the shared top-level structure parsed once for
@@ -659,7 +755,7 @@ func (a *Agent) prepareClaudeSystemWrite(content []byte, subtype string) claudeR
 	if claudeIsConsolidatable(content) {
 		message.notification = true
 		if subtype == contracts.ClaudeSystemSubtypeApiRetry {
-			message.persisted = a.apiRetry.NoteRetry
+			message.apiRetry = true
 		}
 	} else {
 		var env messageEnvelope
@@ -1088,6 +1184,9 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 	a.Mu.Lock()
 	expected := a.sessionID
 	a.sessionID = initMsg.SessionID
+	if previousTranscriptSession != initMsg.SessionID {
+		a.inferredTurnEvidence = nil
+	}
 	a.Mu.Unlock()
 	if expected != "" && expected != initMsg.SessionID {
 		slog.Warn("Claude Code reported a different session ID", "agent_id", a.AgentID(), "expected_session_id", expected, "session_id", initMsg.SessionID)

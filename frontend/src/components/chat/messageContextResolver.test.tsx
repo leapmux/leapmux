@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
+import { settle } from '~/test-support/async'
 import { createDrawnRequestRows } from '~/test-support/messageContext'
 import { createMessageContextResolver, createMessageRenderSources } from './messageContextResolver'
 import './providers/codex/plugin'
@@ -837,6 +838,73 @@ describe('message context resolver', () => {
     expect(fetchSpan).toHaveBeenCalledTimes(2)
     expect(fetchMessage).toHaveBeenCalledTimes(2)
     expect(resolver.request(opener)?.message.id).toBe(opener.id)
+    releasePoint()
+    releaseSpan()
+  })
+
+  it('refreshes a retained result evicted after full watch promotion', async () => {
+    const opener = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const revised = { ...result, supplementalRevision: 1n }
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const release = f.resolver.retainSpan(opener)
+    f.fetchSpan.mockResolvedValueOnce([opener, result]).mockResolvedValue([opener, revised])
+    await f.resolver.loadResult(opener)
+    f.replaceMessages([opener, result])
+
+    f.changeWindow({ kind: 'promotion', signal: new AbortController().signal })
+    f.replaceMessages([opener])
+    await settle()
+
+    expect(f.resolver.result(opener)?.message.supplementalRevision).toBe(1n)
+    release()
+  })
+
+  it('shares promotion revalidation between a retained point and its known span', async () => {
+    const opener = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const revised = { ...result, supplementalRevision: 1n }
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const releaseSpan = f.resolver.retainSpan(opener)
+    const releasePoint = f.resolver.retainMessage(result.seq)
+    f.fetchSpan.mockResolvedValueOnce([opener, result]).mockResolvedValue([opener, revised])
+    f.fetchMessage.mockResolvedValue(result)
+    await f.resolver.loadResult(opener)
+    f.fetchMessage.mockClear()
+
+    f.changeWindow({ kind: 'promotion', signal: new AbortController().signal })
+    await settle()
+
+    expect(f.fetchSpan).toHaveBeenCalledTimes(2)
+    expect(f.fetchMessage).not.toHaveBeenCalled()
+    expect(f.resolver.peek(result.seq)?.message.supplementalRevision).toBe(1n)
+    releasePoint()
+    releaseSpan()
+  })
+
+  it('reads the retained point when its refreshed span no longer supplies it', async () => {
+    const opener = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const revised = { ...result, spanId: 'updated-span', supplementalRevision: 1n }
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const releaseSpan = f.resolver.retainSpan(opener)
+    const releasePoint = f.resolver.retainMessage(result.seq)
+    f.fetchSpan.mockResolvedValueOnce([opener, result]).mockResolvedValue([opener])
+    f.fetchMessage.mockResolvedValue(revised)
+    await f.resolver.loadResult(opener)
+
+    f.changeWindow({ kind: 'promotion', signal: new AbortController().signal })
+    await settle()
+
+    expect(f.fetchSpan).toHaveBeenCalledTimes(2)
+    expect(f.fetchMessage).toHaveBeenCalledExactlyOnceWith(result.seq, expect.any(AbortSignal))
+    expect(f.resolver.peek(result.seq)?.message).toEqual(revised)
     releasePoint()
     releaseSpan()
   })

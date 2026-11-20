@@ -168,7 +168,7 @@ func TestDiracLaunchObservationRequiresExactExportedInputs(t *testing.T) {
 	}
 	raw, err := json.Marshal(valid)
 	require.NoError(t, err)
-	snapshot, ok := decodeDiracEnvironmentObservation(base64.RawURLEncoding.EncodeToString(raw))
+	snapshot, ok := diracProfileProbe.DecodeObservation(base64.RawURLEncoding.EncodeToString(raw))
 	require.True(t, ok)
 	assert.Equal(t, valid, snapshot)
 
@@ -198,7 +198,7 @@ func TestDiracLaunchObservationRequiresExactExportedInputs(t *testing.T) {
 			wire[tc.field] = tc.value
 			raw, err := json.Marshal(wire)
 			require.NoError(t, err)
-			_, ok := decodeDiracEnvironmentObservation(base64.RawURLEncoding.EncodeToString(raw))
+			_, ok := diracProfileProbe.DecodeObservation(base64.RawURLEncoding.EncodeToString(raw))
 			assert.False(t, ok, string(raw))
 		})
 	}
@@ -305,8 +305,19 @@ func TestDiracStopConfirmsTheLaunchedProfileBeforeEOF(t *testing.T) {
 	cwd, err := filepath.EvalSymlinks(events[0].CWD)
 	require.NoError(t, err)
 	profile := filepath.Join(cwd, events[0].Profile)
-	require.Equal(t, profile, a.checkpointProfile)
+	require.Equal(t, profile, a.checkpointProfile())
 	assert.Equal(t, "profile banner", a.PreambleOutput())
+
+	// Only the archive selected by the launch shell has this tasklet.
+	writeDiracTaskletStore(t, profile)
+	writeDiracCheckpointStore(t, profile, diracStartupSessionID,
+		runtimeConfig("native-root", "act"), matchingHistory("native-root", diracStartupSessionID), "native-root", nil)
+	metadata, err := readDiracTaskletMetadata(a.root, diracStartupSessionID)
+	require.NoError(t, err)
+	require.Len(t, metadata.Tasklets, 1)
+	assert.Equal(t, "Witten", metadata.Tasklets[0].Record.ID)
+	require.NoError(t, os.Remove(filepath.Join(profile, "data", "acp-session-runtime-configs", diracStartupSessionID+".json")))
+
 	require.NoError(t, a.SendInput("hold the model response", nil))
 
 	// A valid old checkpoint in the Worker's assumed archive cannot satisfy this stop.
@@ -386,7 +397,7 @@ dirac_test_callable() {
 	events := diracStartupEvents(t, logPath, "test/launch")
 	require.Len(t, events, 1)
 	assert.Equal(t, redirect, events[0].Profile)
-	assert.Empty(t, a.checkpointProfile)
+	assert.Empty(t, a.checkpointProfile())
 	assert.Equal(t, fallback, a.root, "child archive history keeps the Worker fallback")
 	require.NoError(t, a.SendInput("hold the model response", nil))
 	writeDiracCheckpointStore(t, fallback, diracStartupSessionID, runtimeConfig("task", "act"), `[]`, "task", nil)
@@ -427,7 +438,7 @@ exec "$LEAPMUX_TEST_DIRAC_PEER" "$@"
 	events := diracStartupEvents(t, logPath, "test/launch")
 	require.Len(t, events, 1)
 	assert.Equal(t, redirect, events[0].Profile)
-	assert.Equal(t, observed, a.checkpointProfile)
+	assert.Equal(t, observed, a.checkpointProfile())
 	require.NoError(t, a.SendInput("hold the model response", nil))
 	writeDiracCheckpointStore(t, observed, "old-session", runtimeConfig("task", "act"),
 		matchingHistory("task", diracStartupSessionID), "task", map[string]string{
@@ -475,7 +486,7 @@ export USERPROFILE="$HOME/wrong-profile"
 	events := diracStartupEvents(t, logPath, "test/launch")
 	require.Len(t, events, 1)
 	assert.Empty(t, events[0].Profile)
-	assert.Equal(t, filepath.Join(home, ".dirac"), a.checkpointProfile)
+	assert.Equal(t, filepath.Join(home, ".dirac"), a.checkpointProfile())
 }
 
 type closeNotifyingDiracArchive struct {
@@ -564,7 +575,7 @@ func TestDiracLaunchProfileMatchesTheNativePathRules(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(started.Stop)
 			require.Len(t, diracStartupEvents(t, logPath, acp.MethodSessionNew), 1)
-			assert.Equal(t, filepath.Join(physicalWork, filepath.FromSlash(tc.want)), started.(*Agent).checkpointProfile)
+			assert.Equal(t, filepath.Join(physicalWork, filepath.FromSlash(tc.want)), started.(*Agent).checkpointProfile())
 		})
 	}
 }
