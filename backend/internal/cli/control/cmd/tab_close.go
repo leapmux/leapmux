@@ -77,11 +77,9 @@ func runTabClose(inv *cli.Invocation) (any, error) {
 	// tombstone in between. Hoisting one Noise_NK channel over the sequence
 	// pays the handshake once rather than per call.
 	//
-	// Opening is best-effort on purpose: a failure must not abort the
-	// close, because a tab whose worker is gone still has to be
-	// tombstoneable. withBestEffortWorkerChannel falls back to opening per
-	// call, which reproduces the exact channel_open_failed code this
-	// command's unreachable-worker fallback keys on.
+	// Channel creation is best-effort so the operator can still remove a tab
+	// on an unreachable Worker with the applicable override. Each call can
+	// report why the channel could not open.
 	//
 	// The whole close runs inside the body, because the channel closes when
 	// the body returns.
@@ -149,31 +147,28 @@ func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got tabTa
 		return nil, cli.Usagef("%s", msg)
 	}
 
-	// Busy-tab gate, BEFORE the tombstone for the same reason the discard
-	// refusal is: after the tab is destroyed a refusal has nowhere to go.
-	//
-	// Only when the worktree gate did NOT fire. The two prompts are mutually
-	// exclusive, and the worktree one wins: its forced --worktree choice
-	// already makes the user state an intent for this close, and stacking a
-	// second required flag on the same command would send them back twice for
-	// one close. The browser splits the same two dialogs on the same rule.
+	if inspected.GetShouldPrompt() && wt == closeWorktreeUnspecified {
+		return nil, lastTabPromptError(inspected)
+	}
+
+	// A worktree choice and permission to interrupt work apply to different
+	// parts of the close. Check both before pushing or tombstoning the tab.
 	busyOverridden := false
-	// Skipped entirely when the inspect failed: the worker is unreachable, so
-	// the busy probe would only spend two more round trips to learn the same
-	// thing, and it fails open regardless.
-	if ierr == nil && !inspected.GetShouldPrompt() {
-		if busy := inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.ID}}); len(busy) > 0 {
+	if tabNeedsBusyProbe(tt) {
+		var busy []tabBusyReason
+		probeErr := ierr
+		if probeErr == nil {
+			busy, probeErr = inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.ID}})
+		}
+		if refusal := busyCloseRefusal(busy, probeErr); refusal != nil {
 			if !allowBusy {
-				return nil, errTabBusyRefused(busy)
+				return nil, refusal
 			}
 			busyOverridden = true
 		}
 	}
 
 	if inspected.GetShouldPrompt() {
-		if wt == closeWorktreeUnspecified {
-			return nil, lastTabPromptError(inspected)
-		}
 		if wt == closeWorktreePush {
 			if !inspected.GetGitState().GetCanPush() {
 				return nil, cli.Usagef("cannot push: %s", pushBlockedReason(inspected))

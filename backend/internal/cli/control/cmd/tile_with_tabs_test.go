@@ -229,7 +229,7 @@ func TestRunTileCloseRecursiveProtectsTheCallingTabInADescendant(t *testing.T) {
 					leafNode("own-leaf", "inner", "a").
 					leafNode("other-leaf", "inner", "b").
 					leafNode("survivor", "root", "b").
-					tab("agent-1", "own-leaf", leapmuxv1.TabType_TAB_TYPE_AGENT).
+					tabOnWorker("agent-1", "own-leaf", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
 					st,
 			}
 			startSpawnIPC(t, hub, &closeDispatcher{})

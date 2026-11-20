@@ -313,6 +313,8 @@ Three guards refuse a command that would lose work the caller may not mean to lo
 | Busy tab | `tab_busy_refused` | `--allow-busy` | `tab close` of an agent in the middle of a turn, or of a terminal with a process running |
 | Last tab of a worktree | `usage` | `--worktree keep\|push\|discard` | `tab close` of the last tab of a git worktree or branch, until you say what happens to it |
 
+The busy check also applies when a tile or grid removal closes its tabs. A failed check reports the Worker error. Use `--allow-busy` to close when you intend to proceed without a confirmed activity state. Closing the last tab of a worktree with running work can require both `--worktree` and `--allow-busy`.
+
 `rpc` bypasses all three guards; see [Calling a procedure directly](#calling-a-procedure-directly).
 
 The self-target guard does not fire for `--with-tabs move`, because the tabs survive the move. It also does not fire inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), which has no tab to protect. Closing the *last* tab in the panel's working directory still ends the panel's shell, including one you type the command into.

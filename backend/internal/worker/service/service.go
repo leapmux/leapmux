@@ -94,6 +94,7 @@ type Service struct {
 	// points, and only the background one takes a startup permit.
 	startBackgroundAgentFn func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	scanTerminalProcesses  func(context.Context, []string) ([]terminal.TerminalProcesses, error)
 	// beforeAgentCloseTeardownFn holds a close after admission closes in tests.
 	beforeAgentCloseTeardownFn func(string)
 	// beforeWorktreeRemovalFn controls the final removal boundary in tests.

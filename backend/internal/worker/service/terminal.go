@@ -107,12 +107,15 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 			// One process-table scan for the whole batch, and the manager omits
 			// every terminal that is running nothing.
-			running, err := svc.Terminals.DescendantProcesses(ctx, ids)
+			scan := svc.Terminals.DescendantProcesses
+			if svc.scanTerminalProcesses != nil {
+				scan = svc.scanTerminalProcesses
+			}
+			running, err := scan(ctx, ids)
 			if err != nil {
-				// A scan the OS refused answers "nothing running" rather than an
-				// error. A guard that cannot answer has to let the close through,
-				// and an error here would instead make the whole close fail.
 				slog.Warn("inspect terminal processes", "terminal_ids", len(ids), "error", err)
+				sendUnavailable(sender, "the Worker could not scan terminal processes")
+				return
 			}
 			out := make([]*leapmuxv1.TerminalProcesses, 0, len(running))
 			for _, t := range running {

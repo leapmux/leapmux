@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,7 +28,7 @@ import (
 
 // allowBusyFlagHelp is the one spelling of the flag's help text, so `tab close`
 // and the `tile` verbs cannot describe the same override differently.
-const allowBusyFlagHelp = "close even if a tab has work in progress (an agent turn, or processes running in the terminal)"
+const allowBusyFlagHelp = "close even if work is in progress or the Worker cannot verify the tab's activity"
 
 // tabBusyReason is what one tab is running, already rendered.
 type tabBusyReason struct {
@@ -67,7 +68,7 @@ func errTabBusyRefused(reasons []tabBusyReason) error {
 
 // agentBusyDetail renders a working agent's reason, or "" when it is idle.
 //
-// Reads AgentInfo.busy, which the Worker derives from the provider's own turn
+// Reads AgentInfo.activity_state, which the Worker derives from the provider's own turn
 // bookkeeping, the background-task registry, the pending control requests and
 // the process state. The CLI does not re-derive any of that; there is one
 // definition and it lives on the Worker.
@@ -139,17 +140,14 @@ func terminalBusyDetail(t *leapmuxv1.TerminalProcesses) string {
 	return detail
 }
 
-// inspectTabsBusy asks the worker which of these tabs are running work.
+// inspectTabsBusy asks the Worker which tabs are running work. The error
+// states which activity it could not verify.
 //
 // Two reads, because the two tab families answer from different places: an agent
-// carries `busy` on the row `ListAgents` already returns, and a terminal's
+// carries activity on the row `ListAgents` already returns, and a terminal's
 // process tree is asked for once, at the moment of the close. Both are batched,
 // so a tile of eight tabs costs at most two round trips.
-//
-// FAILS OPEN, like the browser's probe: a worker that cannot answer lets the
-// close proceed unwarned rather than refusing one nobody can confirm. The caller
-// keeps its own unreachable-worker handling for the git preflight.
-func inspectTabsBusy(call workerCaller, tabs []tabRef) []tabBusyReason {
+func inspectTabsBusy(call workerCaller, tabs []tabRef) ([]tabBusyReason, error) {
 	var agentIDs, terminalIDs []string
 	for _, t := range tabs {
 		switch t.tabType {
@@ -163,19 +161,40 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) []tabBusyReason {
 	}
 
 	details := make(map[string]string)
+	var probeErrors []error
 	if len(agentIDs) > 0 {
 		resp := &leapmuxv1.ListAgentsResponse{}
-		if err := call(leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: agentIDs}, resp); err == nil {
+		if err := call(leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: agentIDs}, resp); err != nil {
+			probeErrors = append(probeErrors, err)
+		} else {
+			known := map[string]bool{}
 			for _, a := range resp.GetAgents() {
+				known[a.GetId()] = a.GetParentAgentId() != "" || a.GetActivityState() != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED
 				if d := agentBusyDetail(a); d != "" {
 					details[a.GetId()] = d
 				}
+			}
+			for _, verdict := range resp.GetVerdicts() {
+				if verdict.GetStatus() == leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_ABSENT {
+					known[verdict.GetTabId()] = true
+				}
+			}
+			var unknown []string
+			for _, id := range agentIDs {
+				if !known[id] {
+					unknown = append(unknown, id)
+				}
+			}
+			if len(unknown) > 0 {
+				probeErrors = append(probeErrors, cli.Newf(cli.CodeUnavailable, "the Worker did not report activity for %s", strings.Join(unknown, ", ")))
 			}
 		}
 	}
 	if len(terminalIDs) > 0 {
 		resp := &leapmuxv1.InspectTerminalProcessesResponse{}
-		if err := call(leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: terminalIDs}, resp); err == nil {
+		if err := call(leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: terminalIDs}, resp); err != nil {
+			probeErrors = append(probeErrors, err)
+		} else {
 			for _, t := range resp.GetTerminals() {
 				if d := terminalBusyDetail(t); d != "" {
 					details[t.GetTerminalId()] = d
@@ -192,7 +211,21 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) []tabBusyReason {
 			out = append(out, tabBusyReason{tabID: t.tabID, detail: d})
 		}
 	}
-	return out
+	return out, errors.Join(probeErrors...)
+}
+
+func busyCloseRefusal(busy []tabBusyReason, probeErr error) error {
+	if len(busy) > 0 {
+		return errTabBusyRefused(busy)
+	}
+	if probeErr != nil {
+		return cli.FromError(probeErr).WithHint("pass --allow-busy to close even if activity cannot be verified")
+	}
+	return nil
+}
+
+func tabNeedsBusyProbe(tabType leapmuxv1.TabType) bool {
+	return tabType == leapmuxv1.TabType_TAB_TYPE_AGENT || tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL
 }
 
 // tabRef is one tab to ask the busy probe about.
@@ -225,9 +258,8 @@ func pluralize(count int, singular string, plural ...string) string {
 //
 // One PROBE per worker -- at most two RPCs, ListAgents and
 // InspectTerminalProcesses, as inspectTabsBusy states -- and in first-seen tab
-// order, so the refusal reads in the order the close would have run. A worker
-// that cannot answer contributes nothing: the guard fails open rather than
-// blocking a close nobody can confirm.
+// order, so the refusal reads in the order the close would have run. A
+// failed check requires an explicit override to close the tabs.
 func guardTabsBusy(cc *crdtCall, tabs []crdt.TabRef, allowBusy bool) error {
 	if allowBusy || len(tabs) == 0 {
 		return nil
@@ -235,9 +267,12 @@ func guardTabsBusy(cc *crdtCall, tabs []crdt.TabRef, allowBusy bool) error {
 	var order []string
 	byWorker := map[string][]tabRef{}
 	for _, t := range tabs {
+		if !tabNeedsBusyProbe(t.TabType) {
+			continue
+		}
 		workerID := cc.bs.State.GetTabs()[t.TabID].GetWorkerId().GetValue()
 		if workerID == "" {
-			continue
+			return busyCloseRefusal(nil, cli.Newf(cli.CodeUnavailable, "tab %s has no Worker to verify its activity", t.TabID))
 		}
 		if _, seen := byWorker[workerID]; !seen {
 			order = append(order, workerID)
@@ -246,17 +281,18 @@ func guardTabsBusy(cc *crdtCall, tabs []crdt.TabRef, allowBusy bool) error {
 	}
 
 	var busy []tabBusyReason
+	var probeErrors []error
 	for _, workerID := range order {
 		refs := byWorker[workerID]
-		_ = withBestEffortWorkerChannel(cc.ctx, cc.c, workerID, func(w workerCall) error {
-			busy = append(busy, inspectTabsBusy(func(method string, in, out proto.Message) error {
+		if err := withBestEffortWorkerChannel(cc.ctx, cc.c, workerID, func(w workerCall) error {
+			reasons, err := inspectTabsBusy(func(method string, in, out proto.Message) error {
 				return w.Call(cc.ctx, method, in, out)
-			}, refs)...)
-			return nil
-		})
+			}, refs)
+			busy = append(busy, reasons...)
+			return err
+		}); err != nil {
+			probeErrors = append(probeErrors, err)
+		}
 	}
-	if len(busy) == 0 {
-		return nil
-	}
-	return errTabBusyRefused(busy)
+	return busyCloseRefusal(busy, errors.Join(probeErrors...))
 }

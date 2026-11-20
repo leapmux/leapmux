@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
@@ -600,10 +601,10 @@ func TestDiscardRefusalMessage_EmptyReasonAllowsDiscard(t *testing.T) {
 // reached.
 type closeDispatcher struct {
 	inspect *leapmuxv1.InspectLastTabCloseResponse
-	// agents / terminals arm the busy gate's two reads. Both empty by default,
-	// which is what an idle tab looks like.
+	// agents and terminals specify the rows returned by the busy probes.
 	agents    []*leapmuxv1.AgentInfo
 	terminals []*leapmuxv1.TerminalProcesses
+	busyError *connect.Error
 	// closeTab, when non-nil, answers CloseTab, for a test that needs the whole
 	// close to succeed. Otherwise CloseTab fails as any other method does.
 	closeTab *leapmuxv1.CloseTabResponse
@@ -616,13 +617,34 @@ func (d *closeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req 
 	d.mu.Lock()
 	d.methods = append(d.methods, req.GetMethod())
 	d.mu.Unlock()
+	if d.busyError != nil && (req.GetMethod() == leapmuxv1connect.WorkerAgentServiceListAgentsProcedure ||
+		req.GetMethod() == leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure) {
+		_ = w.SendError(int32(d.busyError.Code()), d.busyError.Message())
+		return
+	}
 	var reply proto.Message
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure:
 		reply = d.inspect
 	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
-		// The busy gate's agent branch. Empty (an idle agent) unless a test arms it.
-		reply = &leapmuxv1.ListAgentsResponse{Agents: d.agents}
+		var input leapmuxv1.ListAgentsRequest
+		if err := proto.Unmarshal(req.GetPayload(), &input); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		response := &leapmuxv1.ListAgentsResponse{Agents: d.agents}
+		known := map[string]bool{}
+		for _, agent := range d.agents {
+			known[agent.GetId()] = true
+		}
+		for _, id := range input.GetTabIds() {
+			if !known[id] {
+				response.Verdicts = append(response.Verdicts, &leapmuxv1.TabHydrationVerdict{
+					TabId: id, Status: leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_ABSENT,
+				})
+			}
+		}
+		reply = response
 	case leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure:
 		reply = &leapmuxv1.InspectTerminalProcessesResponse{Terminals: d.terminals}
 	case leapmuxv1connect.WorkerTabServiceCloseTabProcedure:
@@ -790,7 +812,7 @@ func TestRunTabClose_HubClientTombstonesTheTabOfAnUnreachableWorker(t *testing.T
 	hub.refuseChannelOpen = connect.NewError(connect.CodeUnavailable, "worker is offline")
 	harness := startHubChannelHarness(t, hub, disp)
 
-	o := runControl(t, tabCloseArgs(harness.url)...)
+	o := runControl(t, append(tabCloseArgs(harness.url), "--allow-busy")...)
 	require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
 	data := o.Data(t)
 	assert.Equal(t, true, data["tombstoned"])
@@ -799,6 +821,16 @@ func TestRunTabClose_HubClientTombstonesTheTabOfAnUnreachableWorker(t *testing.T
 	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
 	assert.Empty(t, disp.called(), "no call reached the worker")
 	assert.Zero(t, harness.channelOpens())
+}
+
+func TestRunTabClose_RequiresAnOverrideWhenTheWorkerIsUnreachable(t *testing.T) {
+	hub := tabCloseHub()
+	hub.refuseChannelOpen = connect.NewError(connect.CodeUnavailable, "worker is offline")
+	harness := startHubChannelHarness(t, hub, &closeDispatcher{})
+	out := runControl(t, tabCloseArgs(harness.url)...)
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	failure := out.requireFailure(t, cli.CodeWorkerOffline)
+	assert.Contains(t, strings.Join(failure.Hints, "\n"), "--allow-busy")
 }
 
 // recordedWorkerCall is one inner-RPC dispatchWorkerClose issued.

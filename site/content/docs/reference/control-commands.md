@@ -301,7 +301,7 @@ leapmux control tab close <tab> [flags]
 | Flag | Description |
 |---|---|
 | `--worktree string` | what happens to the git worktree when this is its last tab; required in that case (one of: keep, push, discard) |
-| `--allow-busy` | close even if a tab has work in progress (an agent turn, or processes running in the terminal) |
+| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
 | `--allow-self` | close the tab even when it is this tab, which ends this command's own process |
 
 ```sh
@@ -1944,7 +1944,7 @@ leapmux control tile close <tile> [flags]
 |---|---|
 | `--with-tabs string` | what happens to the tabs on the tile: "close" closes them; "move" moves them to the neighbouring tile; required when the tile has tabs (one of: close, move) |
 | `--recursive` | close a split or a grid with every tile in it |
-| `--allow-busy` | close even if a tab has work in progress (an agent turn, or processes running in the terminal) |
+| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
 | `--allow-self` | close the tile even when this tab sits on it, which ends this command's own process |
 
 ```sh
@@ -1994,7 +1994,7 @@ leapmux control tile remove-grid <tile> [flags]
 | Flag | Description |
 |---|---|
 | `--with-tabs string` | what happens to the tabs in the grid: "close" closes them; "move" turns the grid into one tile that holds them; required when the grid has tabs (one of: close, move) |
-| `--allow-busy` | close even if a tab has work in progress (an agent turn, or processes running in the terminal) |
+| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
 | `--allow-self` | remove the grid even when this tab sits in it, which ends this command's own process |
 
 ```sh
