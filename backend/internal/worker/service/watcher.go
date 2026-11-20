@@ -20,6 +20,7 @@ type registration struct {
 	channelID string
 	sender    channel.ResponseWriter
 	mode      leapmuxv1.WatchMode
+	geometry  bool
 	replay    agentReplayTuple
 
 	// gen identifies this registration. Each registration receives a new generation, including registrations for a previously removed channel.
@@ -40,9 +41,10 @@ type agentReplayTuple struct {
 
 // watchEntry states one entity's mode and its fixed replay request.
 type watchEntry struct {
-	id     string
-	mode   leapmuxv1.WatchMode
-	replay agentReplayTuple
+	id       string
+	mode     leapmuxv1.WatchMode
+	geometry bool
+	replay   agentReplayTuple
 }
 
 // watcherRegistry stores entity ID -> channel ID -> registration for one entity kind.
@@ -95,6 +97,7 @@ func (r *watcherRegistry) replaceWatchesLocked(channelID string, entries []watch
 			channelID: channelID,
 			sender:    sender,
 			mode:      entry.mode,
+			geometry:  entry.geometry,
 			replay:    entry.replay,
 			gen:       r.nextGen,
 		}
@@ -105,7 +108,7 @@ func (r *watcherRegistry) entriesForChannelLocked(channelID string) map[string]w
 	entries := make(map[string]watchEntry)
 	for entityID, byChannel := range r.byEntity {
 		if registration, exists := byChannel[channelID]; exists {
-			entries[entityID] = watchEntry{id: entityID, mode: registration.mode, replay: registration.replay}
+			entries[entityID] = watchEntry{id: entityID, mode: registration.mode, replay: registration.replay, geometry: registration.geometry}
 		}
 	}
 	return entries
@@ -251,6 +254,7 @@ type eventClass uint8
 const (
 	classContent eventClass = iota
 	classNotify
+	classGeometry
 )
 
 func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
@@ -291,6 +295,8 @@ func terminalEventClass(e *leapmuxv1.TerminalEvent) eventClass {
 		return classNotify
 	case *leapmuxv1.TerminalEvent_Data:
 		return classContent
+	case *leapmuxv1.TerminalEvent_ScreenGeometry:
+		return classGeometry
 	default:
 		return classContent
 	}
@@ -304,7 +310,7 @@ func modeIsFull(mode leapmuxv1.WatchMode) bool {
 // Content events skip the snapshot and serialization when no FULL subscription exists.
 // Callers use this shared mode check. Serialization runs once, when the first eligible subscription needs the payload.
 func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEventsResponse, class eventClass) {
-	if class == classContent && !r.hasFullWatcher(entityID) {
+	if class != classNotify && !r.hasFullWatcher(entityID) {
 		return
 	}
 	watchers := r.snapshot(entityID)
@@ -318,7 +324,7 @@ func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEvents
 		dead    []registration
 	)
 	for _, w := range watchers {
-		if class == classContent && !modeIsFull(w.mode) {
+		if class != classNotify && !modeIsFull(w.mode) || class == classGeometry && !w.geometry {
 			continue
 		}
 		if payload == nil {
@@ -440,9 +446,11 @@ func (m *WatcherManager) AgentModesForChannel(channelID string) map[string]leapm
 	return m.agents.modesForChannel(channelID)
 }
 
-// TerminalModesForChannel returns the current terminal watch modes for channelID.
-func (m *WatcherManager) TerminalModesForChannel(channelID string) map[string]leapmuxv1.WatchMode {
-	return m.terminals.modesForChannel(channelID)
+// TerminalWatchesForChannel returns the current terminal interests.
+func (m *WatcherManager) TerminalWatchesForChannel(channelID string) map[string]watchEntry {
+	m.terminals.mu.RLock()
+	defer m.terminals.mu.RUnlock()
+	return m.terminals.entriesForChannelLocked(channelID)
 }
 
 // UnwatchAll clears channel ownership and every subscription when the channel closes or releases its local stream.

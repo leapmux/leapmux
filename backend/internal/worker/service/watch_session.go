@@ -129,9 +129,8 @@ type resolveResult struct {
 	agentRows []db.Agent
 	agentReqs []*leapmuxv1.WatchAgentEntry
 	// Terminal-only (set by resolveTerminals; ignored for agents).
-	termRows    []db.Terminal
-	termIDs     []string
-	termOffsets map[string]int64
+	termRows []db.Terminal
+	termReqs []*leapmuxv1.WatchTerminalEntry
 }
 
 func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
@@ -162,7 +161,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 
 	// Snapshot prior modes from the registry BEFORE replacing watches so
 	// promotion detection has a single source of truth (no session-local maps).
-	prevTermModes := s.svc.Watchers.TerminalModesForChannel(s.channelID)
+	previousTerminals := s.svc.Watchers.TerminalWatchesForChannel(s.channelID)
 	previousAgents, currentAgents, owned, err := s.svc.Watchers.ApplyAgentWatchesForSession(s.channelID, s.sessionID, agentResult.entries, agentResult.applied, s.sender)
 	if !owned {
 		return
@@ -217,21 +216,19 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 		}
 	}
 
-	var promotedTermIDs []string
+	var promotedTerminals []*leapmuxv1.WatchTerminalEntry
 	var promotedTermRows []db.Terminal
-	var promotedOffsets map[string]int64
 	if termResult.applied {
-		promotedOffsets = make(map[string]int64)
 		for i, e := range termResult.entries {
-			if isModePromotion(e.mode, prevTermModes[e.id]) {
-				promotedTermIDs = append(promotedTermIDs, e.id)
+			previous := previousTerminals[e.id]
+			if isModePromotion(e.mode, previous.mode) || modeIsFull(e.mode) && e.geometry != previous.geometry {
+				promotedTerminals = append(promotedTerminals, termResult.termReqs[i])
 				promotedTermRows = append(promotedTermRows, termResult.termRows[i])
-				promotedOffsets[e.id] = termResult.termOffsets[e.id]
 			}
 		}
 	}
 
-	if len(promotedAgents) == 0 && len(promotedTermIDs) == 0 {
+	if len(promotedAgents) == 0 && len(promotedTerminals) == 0 {
 		return
 	}
 
@@ -278,11 +275,11 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	// immediately minimizes it, and keeps screen restore from waiting behind
 	// the concurrent git batch or a multi-page agent replay on the same
 	// revision.
-	for i, termID := range promotedTermIDs {
+	for i, entry := range promotedTerminals {
 		if !sink.alive() {
 			break
 		}
-		s.svc.replayTerminalCatchUp(sink, termID, promotedOffsets[termID], promotedTermRows[i])
+		s.svc.replayTerminalCatchUp(sink, entry, promotedTermRows[i])
 	}
 
 	if gitDone != nil {
@@ -396,20 +393,18 @@ func (s *watchSession) resolveAgents(agents []*leapmuxv1.WatchAgentEntry) resolv
 
 func (s *watchSession) resolveTerminals(terminals []*leapmuxv1.WatchTerminalEntry) resolveResult {
 	requestedIDs := make([]string, 0, len(terminals))
-	offsets := make(map[string]int64, len(terminals))
-	modes := make(map[string]leapmuxv1.WatchMode, len(terminals))
+	requests := make(map[string]*leapmuxv1.WatchTerminalEntry, len(terminals))
 	for _, t := range terminals {
 		id := t.GetTerminalId()
-		if _, dup := offsets[id]; dup {
+		if _, dup := requests[id]; dup {
 			continue
 		}
 		requestedIDs = append(requestedIDs, id)
-		offsets[id] = t.GetAfterOffset()
-		modes[id] = normalizeMode(t.GetMode())
+		requests[id] = t
 	}
 
 	if len(requestedIDs) == 0 {
-		return resolveResult{applied: true, termOffsets: offsets}
+		return resolveResult{applied: true}
 	}
 
 	rows, err := s.svc.Queries.ListTerminalsByIDs(bgCtx(), requestedIDs)
@@ -426,7 +421,7 @@ func (s *watchSession) resolveTerminals(terminals []*leapmuxv1.WatchTerminalEntr
 	var (
 		outEntries []watchEntry
 		outRows    []db.Terminal
-		outIDs     []string
+		outReqs    []*leapmuxv1.WatchTerminalEntry
 		rejections []*leapmuxv1.WatchRejection
 	)
 	for _, id := range requestedIDs {
@@ -438,17 +433,18 @@ func (s *watchSession) resolveTerminals(terminals []*leapmuxv1.WatchTerminalEntr
 			})
 			continue
 		}
-		outEntries = append(outEntries, watchEntry{id: id, mode: modes[id]})
+		request := requests[id]
+		mode := normalizeMode(request.GetMode())
+		outEntries = append(outEntries, watchEntry{id: id, mode: mode, geometry: modeIsFull(mode) && request.GetScreenGeometry()})
 		outRows = append(outRows, row)
-		outIDs = append(outIDs, id)
+		outReqs = append(outReqs, request)
 	}
 	return resolveResult{
-		applied:     true,
-		entries:     outEntries,
-		termRows:    outRows,
-		termIDs:     outIDs,
-		termOffsets: offsets,
-		rejections:  rejections,
+		applied:    true,
+		entries:    outEntries,
+		termRows:   outRows,
+		termReqs:   outReqs,
+		rejections: rejections,
 	}
 }
 

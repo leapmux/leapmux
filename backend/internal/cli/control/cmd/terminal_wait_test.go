@@ -347,6 +347,98 @@ func TestAwaitScreenText_EndsWhenTheOutputShowsTheText(t *testing.T) {
 	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "ready", Reached: true, Line: "--- PASS: TestX"}, result)
 }
 
+func TestAwaitScreenTextUsesTheGeometryBeforeNewOutput(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	spec := textSpec(t, "READY")
+	screen := newTestScreen(t, 6, 2, "", spec.match)
+	base := &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2}
+	resize := &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 2, Cols: 12, Rows: 2}
+	const output = "\x1b[1;8HREADY\x1b[2;1HNOPE"
+	data := dataEvent(output, int64(len(output)), false)
+	data.GetData().ScreenEpoch, data.GetData().GeometryRevision = "screen", 2
+	items := screenItems(
+		eventItem(&leapmuxv1.TerminalEvent{TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+			IsSnapshot: true, ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{Base: base},
+		}}}),
+		eventItem(&leapmuxv1.TerminalEvent{TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_ScreenGeometry{ScreenGeometry: resize}}),
+		eventItem(data),
+		eventItem(statusEvent(terminalExited, "")),
+	)
+	result, outcome, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), items, screen, newTerminalWaiter("t-1", spec))
+	require.NoError(t, err)
+	assert.Equal(t, terminalWaitHeld, outcome)
+	assert.Contains(t, result.Line, "READY")
+}
+
+func TestScreenResizePreservesTheEligibleCellsOfAWrappedLine(t *testing.T) {
+	screen := newTestScreen(t, 4, 2, "0123456789AB\r\nP", matching(t, `^89AB$`))
+	assert.Equal(t, "89AB", requireCheck(t, screen))
+	screen.position.epoch, screen.position.revision = "screen", 1
+	require.NoError(t, screen.applyScreenGeometry(&leapmuxv1.TerminalScreenGeometry{
+		Epoch: "screen", Revision: 2, Offset: screen.position.offset, Cols: 12, Rows: 2,
+	}, true))
+	assert.Equal(t, "89AB", requireCheck(t, screen))
+	screen.match = matching(t, `^0123456789AB$`)
+	assert.Empty(t, requireCheck(t, screen))
+	screen.match = matching(t, `^READY$`)
+	requireWrite(t, screen, "\x1b[2J\x1b[1;1HREADY")
+	assert.Equal(t, "READY", requireCheck(t, screen))
+}
+
+func TestScreenTimelineReplaysSeveralResizesAtOneOffset(t *testing.T) {
+	screen := newTestScreen(t, 6, 2, "", containing(t, "READY"))
+	const output = "\x1b[1;8HREADY\x1b[2;1HNOPE"
+	require.NoError(t, screen.replayScreenTimeline(&leapmuxv1.TerminalData{
+		IsSnapshot: true,
+		Data:       []byte(output),
+		EndOffset:  int64(len(output)),
+		ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{
+			Base: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2},
+			Changes: []*leapmuxv1.TerminalScreenGeometry{
+				{Epoch: "screen", Revision: 2, Cols: 9, Rows: 2},
+				{Epoch: "screen", Revision: 3, Cols: 12, Rows: 2},
+			},
+		},
+	}, nil))
+	assert.Contains(t, requireCheck(t, screen), "READY")
+	assert.Equal(t, terminalScreenPosition{epoch: "screen", revision: 3, offset: int64(len(output))}, screen.position)
+}
+
+func TestScreenWatchReportsGeometryThatCannotReconstructRetainedBytes(t *testing.T) {
+	info := screenInfo(12, 2, "READY")
+	info.ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{
+		Base:        &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Offset: 5, Revision: 2, Cols: 12, Rows: 2},
+		StartOffset: 5,
+	}
+	screen, err := newScreenWatch(info, containing(t, "READY"), false)
+	if screen != nil {
+		defer screen.dispose()
+	}
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+}
+
+func TestAwaitScreenTextChecksContinuationBeforeAResize(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	spec := textSpec(t, "READY")
+	screen := newTestScreen(t, 6, 2, "", spec.match)
+	screen.position = terminalScreenPosition{epoch: "screen", revision: 1}
+	const before = "READY"
+	body := before + "\x1b[2J\x1b[1;1HNOPE"
+	continuation := dataEvent(body, int64(len(body)), false)
+	continuation.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{
+		Base: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2},
+		Changes: []*leapmuxv1.TerminalScreenGeometry{
+			{Epoch: "screen", Offset: int64(len(before)), Revision: 2, Cols: 12, Rows: 2},
+		},
+	}
+	items := screenItems(eventItem(continuation), eventItem(closedEvent(17)))
+	result, outcome, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), items, screen, newTerminalWaiter("t-1", spec))
+	require.NoError(t, err)
+	assert.Equal(t, terminalWaitHeld, outcome)
+	assert.Equal(t, "READY", result.Line)
+}
+
 func TestAwaitScreenText_ReplaysASnapshotFromScratch(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	spec := textSpec(t, "ready")

@@ -67,8 +67,8 @@ const screenFeedReconnectTimerTag = "screen-feed-reconnect"
 // backoff, so the Worker replays the bytes that the gap lost, or the whole
 // state when its buffer no longer holds them. When the first subscription
 // fails, the feed sends screenFeedFailed and ends.
-func startScreenFeed(ctx context.Context, wg *sync.WaitGroup, source screenFeedSource, terminalID string, afterOffset int64, out chan<- screenFeedItem) {
-	f := &screenFeed{source: source, terminalID: terminalID, afterOffset: afterOffset, out: out}
+func startScreenFeed(ctx context.Context, wg *sync.WaitGroup, source screenFeedSource, terminalID string, position terminalScreenPosition, out chan<- screenFeedItem) {
+	f := &screenFeed{source: source, terminalID: terminalID, position: position, out: out}
 	wg.Go(func() { f.connect(ctx) })
 }
 
@@ -76,10 +76,9 @@ func startScreenFeed(ctx context.Context, wg *sync.WaitGroup, source screenFeedS
 type screenFeed struct {
 	source     screenFeedSource
 	terminalID string
-	// afterOffset belongs to the feed goroutine. It records the last byte
-	// handed to the waiter, including the initial screen.
-	afterOffset int64
-	out         chan<- screenFeedItem
+	// position records what the feed handed to the waiter, including geometry.
+	position terminalScreenPosition
+	out      chan<- screenFeedItem
 }
 
 // connect keeps one subscription open until ctx ends.
@@ -119,7 +118,7 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 	defer release()
 	streamCtx, stop := context.WithCancel(ctx)
 	frames := make(chan screenFeedItem)
-	afterOffset := f.afterOffset
+	forward := screenReplayForwarder{feed: f, position: f.position}
 	var forwarder sync.WaitGroup
 	forwarder.Go(func() {
 		for {
@@ -127,11 +126,9 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 			case <-streamCtx.Done():
 				return
 			case frame := <-frames:
-				if !f.send(streamCtx, frame) {
+				if !forward.receive(streamCtx, frame) {
+					stop()
 					return
-				}
-				if data := frame.event.GetData(); data != nil {
-					afterOffset = data.GetEndOffset()
 				}
 			}
 		}
@@ -159,25 +156,22 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 			}
 		}
 	}
-	// Incoming frames advance this stream's own cursor. The feed resumes from
-	// afterOffset, which the forwarder advances only when the waiter receives
-	// a frame. A blocked callback from this stream cannot advance the next.
-	cursor := streamevents.NewTerminalCursor()
-	cursor.Track(f.terminalID, f.afterOffset)
-	sub := streamevents.NewSubscription(transport, streamevents.NewAgentCursor(), cursor, nil, onTerminal, nil,
-		streamevents.WithUpdateAck(onAck), streamevents.WithClock(f.source.clock))
+	// The forwarder owns both cursors. A callback can arrive before replay or
+	// block during delivery. Neither case advances the next subscription.
+	sub := streamevents.NewSubscription(transport, streamevents.NewAgentCursor(), streamevents.NewTerminalCursor(), nil, onTerminal, nil,
+		streamevents.WithUpdateAck(onAck), streamevents.WithClock(f.source.clock), streamevents.WithUntrimmedTerminalData())
 	defer func() {
 		stop()
 		forwarder.Wait()
 		sub.Cancel()
-		f.afterOffset = afterOffset
+		f.position = forward.position
 	}()
 	if err := sub.Update(streamCtx, f.interest()); err != nil {
 		return false, err
 	}
 	onSubscribed()
 	select {
-	case <-ctx.Done():
+	case <-streamCtx.Done():
 		return delivered.Load(), nil
 	case <-sub.Done():
 		err := sub.EndErr()
@@ -192,9 +186,12 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 // feed delivered to the waiter.
 func (f *screenFeed) interest() *leapmuxv1.WatchEventsRequest {
 	return &leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{{
-		TerminalId:  f.terminalID,
-		AfterOffset: f.afterOffset,
-		Mode:        leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		TerminalId:            f.terminalID,
+		AfterOffset:           f.position.offset,
+		Mode:                  leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		ScreenGeometry:        true,
+		ScreenEpoch:           f.position.epoch,
+		AfterGeometryRevision: f.position.revision,
 	}}}
 }
 

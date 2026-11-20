@@ -166,13 +166,14 @@ func TestEventMapping_EveryTerminalEventHasADecision(t *testing.T) {
 		event *leapmuxv1.TerminalEvent
 		kind  string
 	}{
-		"data":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("ls\n")}}}, ""},
-		"closed":        {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: int32Ptr(3)}}}, kindTerminalExit},
-		"status_change": {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY}}}, kindTerminalStatus},
-		"bell":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}}}, kindTerminalBell},
-		"notification":  {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Notification{Notification: &leapmuxv1.TerminalNotification{Body: "done"}}}, kindTerminalNotification},
-		"title_changed": {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_TitleChanged{TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: "vim"}}}, kindTerminalTitle},
-		"progress":      {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Progress{Progress: &leapmuxv1.TerminalProgress{State: leapmuxv1.TerminalProgress_STATE_NORMAL, Percent: 5}}}, kindTerminalProgress},
+		"data":            {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("ls\n")}}}, ""},
+		"screen_geometry": {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_ScreenGeometry{ScreenGeometry: &leapmuxv1.TerminalScreenGeometry{Cols: 120, Rows: 40}}}, ""},
+		"closed":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: int32Ptr(3)}}}, kindTerminalExit},
+		"status_change":   {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY}}}, kindTerminalStatus},
+		"bell":            {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}}}, kindTerminalBell},
+		"notification":    {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Notification{Notification: &leapmuxv1.TerminalNotification{Body: "done"}}}, kindTerminalNotification},
+		"title_changed":   {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_TitleChanged{TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: "vim"}}}, kindTerminalTitle},
+		"progress":        {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Progress{Progress: &leapmuxv1.TerminalProgress{State: leapmuxv1.TerminalProgress_STATE_NORMAL, Percent: 5}}}, kindTerminalProgress},
 	}
 	assert.ElementsMatch(t, oneofFields(&leapmuxv1.TerminalEvent{}, "event"), slices.Collect(maps.Keys(cases)),
 		"every arm of TerminalEvent needs a decision here")

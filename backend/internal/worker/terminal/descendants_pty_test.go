@@ -33,7 +33,7 @@ func startShellPastInit(t *testing.T, m *Manager, id string) string {
 		WorkingDir: workingDir,
 		Cols:       200,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {}, nil))
+	}, func(Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	const marker = "descendants_ready_marker"

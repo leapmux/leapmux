@@ -118,6 +118,11 @@ message WatchTerminalEntry {
   // WATCH_MODE_FULL. Ignored otherwise.
   int64 after_offset = 2;
   WatchMode mode = 3;
+  // Include PTY geometry and a screen replay ordered across resizes.
+  bool screen_geometry = 4;
+  // The epoch and geometry revision most recently applied by the watcher.
+  string screen_epoch = 5;
+  uint64 after_geometry_revision = 6;
 }
 
 message WatchEventsResponse {
@@ -372,5 +377,6 @@ message TerminalEvent {
     TerminalNotification notification = 6;
     TerminalTitleChanged title_changed = 7;
     TerminalProgress progress = 8;
+    TerminalScreenGeometry screen_geometry = 9;
   }
 }

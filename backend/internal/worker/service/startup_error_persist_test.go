@@ -117,7 +117,7 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	// 5. No registry, no DB column, a live shell → READY.
 	require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{
 		ID: "term-1", Shell: testutil.TestShell(), WorkingDir: t.TempDir(), Cols: 80, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, "term-1")
 	state = svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, state.status)

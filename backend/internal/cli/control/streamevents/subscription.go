@@ -72,6 +72,7 @@ type Subscription struct {
 	// terminalNotifications passes the notification-class frames of a
 	// terminal to onTerminal. See WithTerminalNotifications.
 	terminalNotifications bool
+	terminalDataUntrimmed bool
 
 	lifecycleMu sync.Mutex
 	// closed is set by Cancel under lifecycleMu and read by Update under the
@@ -178,6 +179,12 @@ func WithTerminalNotifications() SubscriptionOption {
 	return func(s *Subscription) {
 		s.terminalNotifications = true
 	}
+}
+
+// WithUntrimmedTerminalData lets the consumer order catch-up and live screen
+// frames before clipping them. Geometry-aware consumers also track resizes.
+func WithUntrimmedTerminalData() SubscriptionOption {
+	return func(s *Subscription) { s.terminalDataUntrimmed = true }
 }
 
 // LOOKUP_FAILED retry policy. The eventsRejection policy in
@@ -752,7 +759,7 @@ func (s *Subscription) dispatchTerminalEvent(te *leapmuxv1.TerminalEvent) {
 			return
 		}
 	}
-	if data := te.GetData(); data != nil {
+	if data := te.GetData(); data != nil && !s.terminalDataUntrimmed {
 		te = s.acceptTerminalData(te, data)
 		if te == nil {
 			return
@@ -786,13 +793,35 @@ func (s *Subscription) acceptTerminalData(event *leapmuxv1.TerminalEvent, data *
 	if !advanced {
 		return nil
 	}
+	return ClipTerminalOutput(event, previous)
+}
+
+// ClipTerminalOutput returns the bytes that extend after previous. It keeps
+// a replacement snapshot intact because its prefix has no PTY offset.
+func ClipTerminalOutput(event *leapmuxv1.TerminalEvent, previous int64) *leapmuxv1.TerminalEvent {
+	data := event.GetData()
+	if data == nil {
+		return event
+	}
+	end := data.GetEndOffset()
+	if end < 0 {
+		return nil
+	}
+	if data.GetIsSnapshot() {
+		return event
+	}
+	start := end - int64(len(data.GetData()))
+	if end <= previous || start < 0 {
+		return nil
+	}
 	if previous <= start {
 		return event
 	}
 	return &leapmuxv1.TerminalEvent{
-		TerminalId: id,
+		TerminalId: event.GetTerminalId(),
 		Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
 			Data: data.GetData()[previous-start:], EndOffset: end,
+			ScreenEpoch: data.GetScreenEpoch(), GeometryRevision: data.GetGeometryRevision(),
 		}},
 	}
 }

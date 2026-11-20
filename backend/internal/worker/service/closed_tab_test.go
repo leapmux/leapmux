@@ -440,7 +440,7 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID: id, Shell: testutil.TestShell(), WorkingDir: workingDir,
 		Cols: 80, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -969,7 +969,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 		ShellStartDir: "",
 		Cols:          80,
 		Rows:          24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 
 	require.True(t, svc.Terminals.UpdateTitle("term-1", "user@host: ~/dir"))
 
@@ -1698,7 +1698,7 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 	exitFn := svc.makeTerminalExitFn()
 	require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
 		ID: terminalID, Shell: testutil.TestShell(), WorkingDir: workingDir, Cols: 200, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, func(id string, exitCode int) {
+	}, func(terminal.Output) {}, func(id string, exitCode int) {
 		close(exitEntered)
 		<-exitRelease
 		exitFn(id, exitCode)
@@ -2013,7 +2013,7 @@ func TestRestartTerminalRefusesUntilPriorExitHandlerFinishes(t *testing.T) {
 		exitFn := svc.makeTerminalExitFn()
 		require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
 			ID: id, WorkingDir: workingDir, Shell: testutil.TestShell(), Cols: 80, Rows: 24,
-		}, func([]byte, int64, []terminal.Signal) {}, func(terminalID string, code int) {
+		}, func(terminal.Output) {}, func(terminalID string, code int) {
 			close(entered)
 			<-released
 			exitFn(terminalID, code)
@@ -2067,7 +2067,7 @@ func TestSuccessfulTerminalExitHelperJoinsItsCallback(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
 		finish := sync.OnceFunc(func() { close(release) })
 		defer finish()
-		require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24}, func([]byte, int64, []terminal.Signal) {}, func(string, int) { close(entered); <-release }))
+		require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24}, func(terminal.Output) {}, func(string, int) { close(entered); <-release }))
 		testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 		sendShellLine(t, dispatcher, id, []byte("exit 0"+testutil.TestShellEnter()))
 		<-entered

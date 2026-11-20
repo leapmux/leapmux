@@ -1390,9 +1390,9 @@ echo 'go test ./...' | leapmux control terminal run 4cbb3f34 -
 ### `leapmux control terminal read`
 
 Print what a terminal shows, as plain text. The CLI replays the bytes that
-the Worker retains through a terminal emulator at the terminal's size. The
-emulator is a Go port of xterm.js, which the browser uses, so the text is the
-text that the browser shows. Colors and other attributes do not print.
+the Worker retains through a terminal emulator and applies recorded size
+changes in order. The emulator is a Go port of xterm.js, which the browser
+uses. Colors and other attributes do not print.
 
 Each row loses its trailing blanks, and the empty rows at the end of the
 screen do not print, so a short output does not end in empty lines.
@@ -1453,7 +1453,8 @@ at once, it prints the lowest one.
 The text that the screen shows when the wait begins counts, so a wait for a
 text that the terminal already shows ends at once. Each line that appears
 later counts too, even one that scrolls off the screen before the CLI reads
-it. Use --scrollback to include the retained history from before the wait.
+it. The wait follows size changes and applies them in order after reconnect.
+Use --scrollback to include the retained history from before the wait.
 To wait for the output of a new command only, use the default screen scope
 and clear the screen first, or wait for a line that the command text does not
 show. In the second example, the echoed command line holds "echo DONE".

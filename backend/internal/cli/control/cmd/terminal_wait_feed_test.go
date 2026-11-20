@@ -39,7 +39,7 @@ func startTestScreenFeed(t *testing.T, ctx context.Context, tr *fakeWatchTranspo
 	startScreenFeed(ctx, &wg, screenFeedSource{
 		openTransport: func(context.Context) (streamevents.Transport, func(), error) { return tr, func() {}, nil },
 		clock:         clock,
-	}, "t-1", afterOffset, out)
+	}, "t-1", terminalScreenPosition{offset: afterOffset}, out)
 	return out
 }
 
@@ -63,7 +63,14 @@ func requireTerminalEntry(t *testing.T, req *leapmuxv1.WatchEventsRequest, after
 	entry := req.GetTerminals()[0]
 	assert.Equal(t, "t-1", entry.GetTerminalId())
 	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, entry.GetMode())
+	assert.True(t, entry.GetScreenGeometry())
 	assert.Equal(t, afterOffset, entry.GetAfterOffset())
+}
+
+func replayDataEvent(output string, endOffset int64, snapshot bool) *leapmuxv1.TerminalEvent {
+	event := dataEvent(output, endOffset, snapshot)
+	event.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{}
+	return event
 }
 
 func TestScreenFeed_WatchesTheBytesAfterTheRecordThatTheWaitRead(t *testing.T) {
@@ -73,7 +80,7 @@ func TestScreenFeed_WatchesTheBytesAfterTheRecordThatTheWaitRead(t *testing.T) {
 	receive(t, ctx, tr.opened)
 	requireTerminalEntry(t, tr.lastRequest(), 42)
 
-	tr.push(terminalFrame("t-1", dataEvent("abc", 45, false)))
+	tr.push(terminalFrame("t-1", replayDataEvent("abc", 45, false)))
 	item := receive(t, ctx, items)
 	assert.Equal(t, screenFeedEvent, item.kind)
 	assert.Equal(t, "abc", string(item.event.GetData().GetData()))
@@ -87,7 +94,7 @@ func TestScreenFeed_ResumesAfterTheLastChunkWhenTheStreamEnds(t *testing.T) {
 	tr := newFakeWatchTransport()
 	items := startTestScreenFeed(t, ctx, tr, clock, 42)
 	receive(t, ctx, tr.opened)
-	tr.push(terminalFrame("t-1", dataEvent("abc", 45, false)))
+	tr.push(terminalFrame("t-1", replayDataEvent("abc", 45, false)))
 	receive(t, ctx, items)
 
 	tr.endStream()
@@ -108,7 +115,7 @@ func TestScreenFeed_ASnapshotMovesTheCursorBack(t *testing.T) {
 	tr := newFakeWatchTransport()
 	items := startTestScreenFeed(t, ctx, tr, clock, 900)
 	receive(t, ctx, tr.opened)
-	tr.push(terminalFrame("t-1", dataEvent("$ ", 12, true)))
+	tr.push(terminalFrame("t-1", replayDataEvent("$ ", 12, true)))
 	assert.True(t, receive(t, ctx, items).event.GetData().GetIsSnapshot())
 
 	tr.endStream()
@@ -123,6 +130,8 @@ func TestScreenFeed_IgnoresTheEventsOfAnotherTerminal(t *testing.T) {
 	items := startTestScreenFeed(t, ctx, tr, testutil.NewQuartzMock(t), 0)
 	receive(t, ctx, tr.opened)
 	tr.push(terminalFrame("t-2", dataEvent("x", 1, false)))
+	tr.push(terminalFrame("t-1", replayDataEvent("", 0, true)))
+	require.NotNil(t, receive(t, ctx, items).event.GetData().GetScreenTimeline())
 	tr.push(terminalFrame("t-1", closedEvent(0)))
 	assert.NotNil(t, receive(t, ctx, items).event.GetClosed(), "the event of t-2 never reached the wait")
 }
@@ -228,14 +237,14 @@ func TestScreenFeedResumesAfterBytesDeliveredToTheWaiter(t *testing.T) {
 		startScreenFeed(ctx, &wg, screenFeedSource{
 			openTransport: func(context.Context) (streamevents.Transport, func(), error) { return tr, func() {}, nil },
 			clock:         clock,
-		}, "t-1", 42, out)
+		}, "t-1", terminalScreenPosition{offset: 42}, out)
 		<-tr.opened
 		requireTerminalEntry(t, tr.lastRequest(), 42)
 
 		oldCallbackDone := make(chan struct{})
 		go func() {
 			defer close(oldCallbackDone)
-			tr.push(terminalFrame("t-1", dataEvent("abc", 45, false)))
+			tr.push(terminalFrame("t-1", replayDataEvent("abc", 45, false)))
 		}()
 		synctest.Wait()
 		tr.endStream()
@@ -254,9 +263,89 @@ func TestScreenFeedResumesAfterBytesDeliveredToTheWaiter(t *testing.T) {
 		}
 		assert.True(t, retired, "the ended stream must release its blocked callback")
 		if retired {
-			go tr.push(terminalFrame("t-1", dataEvent("abc", 45, false)))
+			go tr.push(terminalFrame("t-1", replayDataEvent("abc", 45, false)))
 			item := <-out
 			assert.Equal(t, "abc", string(item.event.GetData().GetData()))
 		}
 	})
+}
+
+func TestScreenFeedReplaysBeforeClippingLiveOutputAndResumesGeometry(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	timer := clock.Trap().NewTimer(screenFeedReconnectTimerTag)
+	defer timer.Close()
+	tr := newFakeWatchTransport()
+	items := startTestScreenFeed(t, ctx, tr, clock, 10)
+	receive(t, ctx, tr.opened)
+	const epoch = "screen"
+	live := dataEvent("abcdef", 16, false)
+	live.GetData().ScreenEpoch, live.GetData().GeometryRevision = epoch, 1
+	tr.push(terminalFrame("t-1", live))
+	base := &leapmuxv1.TerminalScreenGeometry{Epoch: epoch, Revision: 1, Cols: 6, Rows: 2}
+	resize := &leapmuxv1.TerminalScreenGeometry{Epoch: epoch, Revision: 2, Offset: 16, Cols: 12, Rows: 2}
+	tr.push(terminalFrame("t-1", &leapmuxv1.TerminalEvent{
+		Event: &leapmuxv1.TerminalEvent_ScreenGeometry{ScreenGeometry: resize},
+	}))
+	replay := dataEvent("abc", 13, true)
+	replay.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{Base: base, StartOffset: 10}
+	tr.push(terminalFrame("t-1", replay))
+	assert.Equal(t, "abc", string(receive(t, ctx, items).event.GetData().GetData()))
+	assert.Equal(t, "def", string(receive(t, ctx, items).event.GetData().GetData()))
+	assert.Equal(t, uint64(2), receive(t, ctx, items).event.GetScreenGeometry().GetRevision())
+
+	tr.endStream()
+	clock.Advance(testutil.WaitForTimer(t, ctx, timer)).MustWait(ctx)
+	receive(t, ctx, tr.opened)
+	request := tr.lastRequest()
+	requireTerminalEntry(t, request, 16)
+	assert.Equal(t, epoch, request.GetTerminals()[0].GetScreenEpoch())
+	assert.Equal(t, uint64(2), request.GetTerminals()[0].GetAfterGeometryRevision())
+}
+
+func TestScreenFeedReplaysAgainWhenLiveOutputSkippedAResize(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	timer := clock.Trap().NewTimer(screenFeedReconnectTimerTag)
+	defer timer.Close()
+	tr := newFakeWatchTransport()
+	items := startTestScreenFeed(t, ctx, tr, clock, 0)
+	receive(t, ctx, tr.opened)
+	base := &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2}
+	replay := dataEvent("abc", 3, true)
+	replay.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{Base: base}
+	tr.push(terminalFrame("t-1", replay))
+	require.NotNil(t, receive(t, ctx, items).event.GetData().GetScreenTimeline())
+	missed := dataEvent("def", 6, false)
+	missed.GetData().ScreenEpoch, missed.GetData().GeometryRevision = "screen", 2
+	tr.push(terminalFrame("t-1", missed))
+	clock.Advance(testutil.WaitForTimer(t, ctx, timer)).MustWait(ctx)
+	receive(t, ctx, tr.opened)
+	request := tr.lastRequest()
+	requireTerminalEntry(t, request, 3)
+	assert.Equal(t, uint64(1), request.GetTerminals()[0].GetAfterGeometryRevision())
+	requireNoScreenItem(t, items)
+}
+
+func TestScreenReplayPreservesAnExitThatArrivedBeforeCatchUp(t *testing.T) {
+	out := make(chan screenFeedItem, 2)
+	forward := screenReplayForwarder{feed: &screenFeed{terminalID: "t-1", out: out}}
+	require.True(t, forward.receive(t.Context(), eventItem(closedEvent(17))))
+	require.True(t, forward.receive(t.Context(), eventItem(replayDataEvent("", 0, true))))
+	require.Len(t, out, 2)
+	assert.NotNil(t, (<-out).event.GetData().GetScreenTimeline())
+	closed := (<-out).event.GetClosed()
+	require.NotNil(t, closed)
+	assert.Equal(t, int32(17), closed.GetExitCode())
+}
+
+func TestScreenFeedValidatesEpochBeforeClippingOffsets(t *testing.T) {
+	out := make(chan screenFeedItem, 1)
+	previous := terminalScreenPosition{epoch: "old", offset: 100, revision: 2}
+	forward := screenReplayForwarder{feed: &screenFeed{terminalID: "t-1", out: out}, position: previous, replayed: true}
+	newEpoch := dataEvent("abc", 3, false)
+	newEpoch.GetData().ScreenEpoch, newEpoch.GetData().GeometryRevision = "new", 1
+	assert.False(t, forward.receive(t.Context(), eventItem(newEpoch)), "the new epoch needs replay")
+	assert.Equal(t, previous, forward.position)
+	assert.Empty(t, out)
 }

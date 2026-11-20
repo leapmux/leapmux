@@ -446,7 +446,7 @@ A script that loses the answer of `agent send` or `agent open`, for a timeout or
 - `terminal open --command <command>` opens a terminal whose new shell runs the command line once the shell is ready. The Worker pastes it and presses Enter, as `terminal run` does. The shell is ready when its line editor turns on bracketed paste, which zsh, fish and bash 5.1 or later do. A shell that never does, such as `sh`, gets the command after a short wait. `--command -` reads the command line from stdin. A restart of the terminal does not run the command again. The command does not wait for the program to finish: `T=$(leapmux control terminal open -q --command 'make test; exit') && leapmux control terminal wait "$T" --exit`.
 - `terminal get` prints `exit_code` once the shell ended.
 - `terminal wait <terminal>` waits until the shell ends or the terminal shows a text; see [Waiting for terminals](#waiting-for-terminals).
-- `terminal read [terminal]` prints what the terminal shows, as plain text. It replays the bytes that the Worker retains through a Go port of xterm.js at the terminal's size, so the text matches the browser.
+- `terminal read [terminal]` prints what the terminal shows as plain text. It replays retained output and recorded resizes through the same terminal emulator as `terminal wait`.
   - Each row loses its trailing blanks, and the empty rows at the end of the screen do not print.
   - `--scrollback` adds the lines above the screen: at most 1000, and only those that the retained bytes still hold. A full-screen program on the alternate screen has none.
   - `--lines N` keeps the last N lines.
@@ -462,7 +462,7 @@ A script that loses the answer of `agent send` or `agent open`, for a timeout or
   - A shell that ended before the wait began ends the wait at once, and the command prints the exit code that the Worker kept. When the Worker holds no record of the code, because it was killed while the shell ran, the command prints no code, says so on stderr, and still exits `0`.
   - `--exit` refuses the terminal that runs the command with `usage`, because its shell cannot end while the wait runs in it.
 - **`terminal wait <terminal> --text <text>`** and **`--regex <pattern>`** wait until a line of the terminal holds the text, or matches the RE2 pattern, and print that line.
-  - The CLI replays the output through the emulator of `terminal read`, so it matches what the browser shows. An escape sequence, or a text that arrives in two chunks, cannot break a match.
+  - The CLI replays output and size changes in order. A reconnect resumes after the last received bytes and resize. If the Worker cannot reconstruct the needed history, the command returns `unavailable`.
   - The match is per line. A line that the terminal wraps at its width counts as one line, and it loses its trailing blanks, so `^` and `$` match at its ends. When several lines match at once, the command prints the lowest one.
   - The visible screen counts when the wait begins. Lines that appear later count even if they scroll off the screen. Pass `--scrollback` to include the retained history from before the wait.
   - To wait for the output of a new command only, clear the screen first, or match a line that the echoed command line does not hold: after `terminal run "$T" 'make test; echo DONE'`, wait with `--regex '^DONE$'`.

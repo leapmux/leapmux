@@ -636,6 +636,17 @@ func (m *Manager) ScreenSnapshotSince(terminalID string, afterOffset int64) (dat
 	return t.ScreenSnapshotSince(afterOffset)
 }
 
+// ScreenReplaySince reads retained bytes and geometry from one screen buffer.
+func (m *Manager) ScreenReplaySince(terminalID, epoch string, offset int64, revision uint64) (ScreenReplay, bool) {
+	m.mu.RLock()
+	terminal, found := m.currentTerminalLocked(terminalID)
+	m.mu.RUnlock()
+	if !found {
+		return ScreenReplay{}, false
+	}
+	return terminal.screenBuf.ScreenReplaySince(epoch, offset, revision)
+}
+
 // ScreenHasSuffix reports whether the live terminal's retained screen
 // ends with needle. Returns false if the terminal is unknown.
 func (m *Manager) ScreenHasSuffix(terminalID string, needle []byte) bool {
@@ -716,15 +727,16 @@ type TerminalEntry struct {
 	// after_offset so resubscribes pick up exactly where the snapshot
 	// left off instead of replaying Screen.
 	ScreenEndOffset int64
+	ScreenTimeline  *ScreenTimeline
 	Exited          bool
 }
 
 // buildEntryLocked snapshots one coherent current registration. The caller
 // holds m.mu for reading or writing.
 func (m *Manager) buildEntryLocked(registration *terminalRegistration) TerminalEntry {
-	screen, offset := registration.terminal.ScreenSnapshot()
+	screen, offset, timeline := registration.terminal.screenBuf.snapshotWithTimeline()
 	return TerminalEntry{ID: registration.id, Meta: registration.meta, Screen: screen,
-		ScreenEndOffset: offset, Exited: registration.terminal.IsExited()}
+		ScreenEndOffset: offset, ScreenTimeline: timeline, Exited: registration.terminal.IsExited()}
 }
 
 // ListByIDs returns terminals matching the given IDs.

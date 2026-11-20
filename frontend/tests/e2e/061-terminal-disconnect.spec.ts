@@ -61,14 +61,12 @@ test.describe('Terminal Disconnection', () => {
       await openTerminalViaUI(page)
       await terminalTabs(page).click()
 
-      // Wait for the terminal to be genuinely ready -- a shell prompt in the
-      // xterm buffer -- not a flat 2s. Stopping the worker while the terminal
-      // session is still being set up tears it down before it has a buffer to
-      // write the disconnect notice into, and 2s is not enough on a box running
-      // eight of these at once.
-      await expect(async () => {
-        expect(await getTerminalText(page)).toMatch(/[$%#>]\s*$/)
-      }).toPass()
+      // The first prompt can come from the initial snapshot. Wait for a new
+      // command's output so the terminal has caught up through its watch.
+      await waitForTerminalReady(page)
+      const marker = 'DISCONNECT_WATCH_READY'
+      expect(await sendActiveTerminalInput(page, `echo ${marker.slice(0, 8)}""${marker.slice(8)}\r`)).toBe(true)
+      await waitForTerminalText(page, marker)
 
       // Stop the worker
       await stopWorker(separateHubWorker)

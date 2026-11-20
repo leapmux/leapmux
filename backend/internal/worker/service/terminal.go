@@ -578,6 +578,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Rows:            e.Meta.Rows,
 				Screen:          e.Screen,
 				ScreenEndOffset: e.ScreenEndOffset,
+				ScreenTimeline:  terminalScreenTimelineProto(e.ScreenTimeline),
 				WorkingDir:      e.Meta.WorkingDir,
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
@@ -1182,11 +1183,15 @@ func (svc *Service) deriveTerminalStatus(t *db.Terminal) terminalState {
 	return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, exitCode: exitCode}
 }
 
-// derivedTerminalStatusEvent builds the status change that deriveTerminalStatus
-// states for t. A status change carries no exit code: TerminalClosed reports
-// the exit of a shell, and ListTerminals reports it to a reader that missed it.
-func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal) *leapmuxv1.TerminalEvent {
+// derivedTerminalStatusEvent reports the current shell state. Screen replay
+// can report a recorded exit with the same event as the live shell exit.
+func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal, reportExit bool) *leapmuxv1.TerminalEvent {
 	state := svc.deriveTerminalStatus(t)
+	if reportExit && state.status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
+		return &leapmuxv1.TerminalEvent{
+			TerminalId: t.ID, Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: state.exitCode}},
+		}
+	}
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: t.ID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
@@ -1259,7 +1264,7 @@ func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
 func (svc *Service) broadcastTerminalStatusAfterStartup(terminalID string) {
 	row := db.Terminal{ID: terminalID}
 	svc.Watchers.PublishDerivedTerminalStatus(terminalID, func() *leapmuxv1.TerminalEvent {
-		return svc.derivedTerminalStatusEvent(&row)
+		return svc.derivedTerminalStatusEvent(&row, false)
 	})
 }
 
@@ -1280,23 +1285,29 @@ const notificationBodyByteLimit = 512
 // makeTerminalOutputFn builds the OutputHandler closure that broadcasts
 // data events to subscribers and pings the wake lock.
 func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandler {
-	return func(data []byte, endOffset int64, signals []terminal.Signal) {
-		if svc.WakeLock != nil {
-			svc.WakeLock.RecordActivity()
+	return func(output terminal.Output) {
+		if output.Resize != nil {
+			svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+				TerminalId: terminalID,
+				Event:      &leapmuxv1.TerminalEvent_ScreenGeometry{ScreenGeometry: terminalScreenGeometryProto(*output.Resize)},
+			})
 		}
-		// TerminalData is classContent, so BroadcastTerminalEvent restricts itself:
-		// when nobody watches this terminal in FULL it short-circuits before
-		// the snapshot/marshal, and NOTIFY-only watchers receive just signals.
-		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
-			TerminalId: terminalID,
-			Event: &leapmuxv1.TerminalEvent_Data{
-				Data: &leapmuxv1.TerminalData{
-					Data:      data,
-					EndOffset: endOffset,
+		if len(output.Data) != 0 {
+			if svc.WakeLock != nil {
+				svc.WakeLock.RecordActivity()
+			}
+			// A notification-only watcher receives no screen data.
+			svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+				TerminalId: terminalID,
+				Event: &leapmuxv1.TerminalEvent_Data{
+					Data: &leapmuxv1.TerminalData{
+						Data: output.Data, EndOffset: output.EndOffset,
+						ScreenEpoch: output.ScreenEpoch, GeometryRevision: output.GeometryRevision,
+					},
 				},
-			},
-		})
-		for _, sig := range signals {
+			})
+		}
+		for _, sig := range output.Signals {
 			svc.broadcastTerminalSignal(terminalID, sig)
 		}
 	}

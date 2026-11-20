@@ -67,6 +67,11 @@ func (w *watchedTerminalWorker) DispatchWith(ctx context.Context, _ channel.Call
 		sendWatchFrame(rw, &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{
 			UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: in.GetUpdateId()},
 		}})
+		for _, entry := range in.GetTerminals() {
+			if entry.GetScreenGeometry() {
+				sendWatchFrame(rw, terminalFrame(entry.GetTerminalId(), replayDataEvent("", entry.GetAfterOffset(), false)))
+			}
+		}
 		w.watched <- &in
 		for {
 			select {
@@ -329,6 +334,33 @@ func TestTerminalWaitTextOverIPC_MatchesOutputThatArrivesInParts(t *testing.T) {
 
 	data := runControl(t, "terminal", "wait", id, "--text", "PASS").Data(t)
 	assert.Equal(t, map[string]any{"id": id, "status": "ready", "reached": true, "line": "ok  PASS pkg"}, data)
+}
+
+func TestTerminalWaitTextOverIPCUsesResizeWhileWatching(t *testing.T) {
+	id := fullTestID("term-1")
+	record := terminalRecord(id, terminalReady, "")
+	record.Cols, record.Rows = 6, 2
+	w := newWatchedTerminalWorker(record)
+	startWatchedTerminalWorker(t, w, id)
+	ctx := testutil.DeadlineContext(t)
+	go func() {
+		request := receive(t, ctx, w.watched)
+		require.Len(t, request.GetTerminals(), 1)
+		assert.True(t, request.GetTerminals()[0].GetScreenGeometry())
+		for index, cols := range []uint32{6, 12} {
+			w.push(id, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_ScreenGeometry{
+				ScreenGeometry: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: uint64(index + 1), Cols: cols, Rows: 2},
+			}})
+		}
+		const output = "\x1b[1;8HREADY\x1b[2;1HNOPE"
+		data := dataEvent(output, int64(len(output)), false)
+		data.GetData().ScreenEpoch, data.GetData().GeometryRevision = "screen", 2
+		w.push(id, data)
+		w.push(id, closedEvent(17))
+	}()
+	result := runControl(t, "terminal", "wait", id, "--text", "READY").Data(t)
+	assert.Equal(t, true, result["reached"])
+	assert.Contains(t, result["line"], "READY")
 }
 
 func TestTerminalWaitRegexOverIPC_SkipsTheEchoedCommandLine(t *testing.T) {

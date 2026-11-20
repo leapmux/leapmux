@@ -112,7 +112,7 @@ func TestSendInput_EncodesAPasteForTheModesOfTheProgram(t *testing.T) {
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
 		ID: "term-paste", Shell: shell, WorkingDir: workingDir, Cols: 80, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, "term-paste")
 	require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
 		ID: "term-paste", WorkingDir: workingDir, Cols: 80, Rows: 24, Screen: []byte{},

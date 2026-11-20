@@ -16,9 +16,9 @@ import (
 // terminalReadLong is the help of `terminal read`. The scrollback limit
 // comes from the contract that the browser's terminal reads too.
 var terminalReadLong = fmt.Sprintf(`Print what a terminal shows, as plain text. The CLI replays the bytes that
-the Worker retains through a terminal emulator at the terminal's size. The
-emulator is a Go port of xterm.js, which the browser uses, so the text is the
-text that the browser shows. Colors and other attributes do not print.
+the Worker retains through a terminal emulator and applies recorded size
+changes in order. The emulator is a Go port of xterm.js, which the browser
+uses. Colors and other attributes do not print.
 
 Each row loses its trailing blanks, and the empty rows at the end of the
 screen do not print, so a short output does not end in empty lines.
@@ -163,8 +163,10 @@ const rawScreenHint = "pass --raw to print the bytes that it retains"
 // `terminal read` and `terminal wait` both replay a screen, so both check its
 // size here.
 func renderSize(info *leapmuxv1.TerminalInfo, hints ...string) (cols, rows int, err error) {
-	id := info.GetTerminalId()
-	c, r := info.GetCols(), info.GetRows()
+	return renderDimensions(info.GetTerminalId(), info.GetCols(), info.GetRows(), hints...)
+}
+
+func renderDimensions(id string, c, r uint32, hints ...string) (cols, rows int, err error) {
 	var refusal *cli.Error
 	switch {
 	case c == 0 || r == 0:
@@ -187,10 +189,6 @@ func renderSize(info *leapmuxv1.TerminalInfo, hints ...string) (cols, rows int, 
 // size that info reports, and reads the text of its rows.
 func renderScreen(info *leapmuxv1.TerminalInfo, opts screenReadOptions) (screen renderedScreen, err error) {
 	id := info.GetTerminalId()
-	cols, rows, err := renderSize(info, rawScreenHint)
-	if err != nil {
-		return renderedScreen{}, err
-	}
 	// The bytes come from whatever the program printed, and the emulator is a
 	// young port. A panic on a sequence that it mishandles fails this one
 	// command with the way out, rather than crash with a stack trace.
@@ -201,15 +199,16 @@ func renderScreen(info *leapmuxv1.TerminalInfo, opts screenReadOptions) (screen 
 				WithHint("%s", rawScreenHint)
 		}
 	}()
-	term := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(contracts.TerminalScrollbackLines))
-	defer term.Dispose()
-	if _, writeErr := term.Write(info.GetScreen()); writeErr != nil {
-		return renderedScreen{}, cli.Wrap(cli.CodeInternal, writeErr, fmt.Sprintf("replay the screen of terminal %s", id))
+	watch, err := newScreenWatch(info, nil, opts.scrollback)
+	if err != nil {
+		return renderedScreen{}, cli.FromError(err).WithHint("%s", rawScreenHint)
 	}
+	defer watch.dispose()
+	term := watch.term
 	return renderedScreen{
 		ID:              id,
-		Cols:            info.GetCols(),
-		Rows:            info.GetRows(),
+		Cols:            uint32(watch.cols),
+		Rows:            uint32(watch.rows),
 		ScreenEndOffset: info.GetScreenEndOffset(),
 		AlternateScreen: term.IsAltBufferActive(),
 		// The cursor stands past the last column after the program wrote

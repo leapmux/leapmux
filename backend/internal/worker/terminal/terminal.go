@@ -61,12 +61,13 @@ type ScreenBuffer struct {
 	// runs with mu released so a handler can read the buffer.
 	deliverMu sync.Mutex
 
-	mu      sync.Mutex
-	buf     []byte
-	pos     int
-	full    bool
-	total   int64 // Total bytes ever written (monotonic within a PTY session).
-	tracker modeTracker
+	mu       sync.Mutex
+	buf      []byte
+	pos      int
+	full     bool
+	total    int64 // Total bytes ever written (monotonic within a PTY session).
+	tracker  modeTracker
+	geometry screenGeometryHistory
 	// bracketedPasteSet closes at the next DECSET 2004 in the output.
 	// nextBracketedPasteSet creates it, and Write closes it and clears the
 	// slot, so the next caller waits for the sequence after that one. Nil
@@ -99,7 +100,10 @@ func NewScreenBufferWithOffset(initialOffset int64) *ScreenBuffer {
 func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
+	return sb.writeLocked(data)
+}
 
+func (sb *ScreenBuffer) writeLocked(data []byte) (int64, []Signal) {
 	// Observe the bytes for sticky-mode tracking before the ring copy.
 	// Order is irrelevant for correctness (feed is a pure function of
 	// data), but feeding first reads naturally and keeps the tracker
@@ -156,12 +160,19 @@ func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 // not a new way to block: the PTY reader already calls its handler
 // synchronously between reads, and AppendOutput already ran the same
 // handler on its own goroutine.
-func (sb *ScreenBuffer) WriteAndDeliver(data []byte, deliver OutputHandler) {
+func (sb *ScreenBuffer) WriteAndDeliver(owner uint64, data []byte, deliver OutputHandler) {
 	sb.deliverMu.Lock()
 	defer sb.deliverMu.Unlock()
 
-	endOffset, signals := sb.Write(data)
-	deliver(data, endOffset, signals)
+	sb.mu.Lock()
+	if owner != sb.geometry.owner {
+		sb.mu.Unlock()
+		return
+	}
+	endOffset, signals := sb.writeLocked(data)
+	geometry := sb.geometry.current()
+	sb.mu.Unlock()
+	deliver(Output{Data: data, EndOffset: endOffset, Signals: signals, ScreenEpoch: geometry.Epoch, GeometryRevision: geometry.Revision})
 }
 
 // InputModes returns the modes that the program in the terminal enabled and
@@ -328,7 +339,17 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 // forward it to watchers as the resume cursor for this event. Signals
 // carry notification-class escape sequences (bell, title, notification,
 // progress) interpreted worker-side from this chunk.
-type OutputHandler func(data []byte, endOffset int64, signals []Signal)
+type OutputHandler func(Output)
+
+// Output is one observation from the screen buffer. A resize has no PTY bytes.
+type Output struct {
+	Data             []byte
+	EndOffset        int64
+	Signals          []Signal
+	ScreenEpoch      string
+	GeometryRevision uint64
+	Resize           *ScreenGeometry
+}
 
 // Terminal manages a single PTY session.
 type Terminal struct {
@@ -366,9 +387,11 @@ type Terminal struct {
 	// cumulative offset to the user-provided OutputHandler, through
 	// ScreenBuffer.WriteAndDeliver so those two writers cannot deliver
 	// their chunks out of offset order.
-	outputFn  func(data []byte)
-	screenBuf *ScreenBuffer
-	mu        sync.Mutex
+	outputFn     func(data []byte)
+	screenBuf    *ScreenBuffer
+	screenOwner  uint64
+	screenOutput OutputHandler
+	mu           sync.Mutex
 	// managedResizeMu serializes the manager's dimension comparison, native
 	// resize, and metadata commit for this instance. Other terminals stay independent.
 	managedResizeMu sync.Mutex
@@ -550,14 +573,11 @@ func startWithScreenBuffer(
 		return nil, fmt.Errorf("start pty: %w", err)
 	}
 
-	// The buffer owns the serialization, not this closure: Respawn hands
-	// the same ScreenBuffer to the next incarnation, whose reader can
-	// start while the previous one still drains (an exited terminal is
-	// not a drained one — see readDoneCh). A mutex captured here would be
-	// a fresh one for each incarnation and would leave that overlap
-	// unserialized.
+	// Respawn can reuse the screen while the previous reader drains. The
+	// buffer orders both readers and accepts only the current owner's bytes.
+	screenOwner := screenBuf.beginGeometry(cols, rows, outputFn)
 	wrappedOutput := func(data []byte) {
-		screenBuf.WriteAndDeliver(data, outputFn)
+		screenBuf.WriteAndDeliver(screenOwner, data, outputFn)
 	}
 
 	t := &Terminal{
@@ -568,6 +588,8 @@ func startWithScreenBuffer(
 		ptmx:              ptmx,
 		outputFn:          wrappedOutput,
 		screenBuf:         screenBuf,
+		screenOwner:       screenOwner,
+		screenOutput:      outputFn,
 		exitCh:            make(chan struct{}),
 		readDoneCh:        make(chan struct{}),
 		childSideClosedCh: make(chan struct{}),
@@ -623,9 +645,11 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 	}
 	t.mu.Unlock()
 
-	t.ptyMu.RLock()
-	defer t.ptyMu.RUnlock()
-	return t.ptmx.Resize(int(cols), int(rows))
+	return t.screenBuf.resizeWithGeometry(t.screenOwner, cols, rows, func() error {
+		t.ptyMu.RLock()
+		defer t.ptyMu.RUnlock()
+		return t.ptmx.Resize(int(cols), int(rows))
+	}, t.screenOutput)
 }
 
 // Stop terminates the terminal session and every process spawned beneath

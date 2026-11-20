@@ -141,6 +141,20 @@ func TestRenderScreen_AlternateScreen(t *testing.T) {
 	assert.Equal(t, []string{"status line"}, prefixed.Lines)
 }
 
+func TestRenderScreenUsesRetainedGeometryBeforeResize(t *testing.T) {
+	const output = "\x1b[1;8HREADY\x1b[2;1HNOPE"
+	info := screenOf(12, 2, output)
+	info.ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{
+		Base: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2},
+		Changes: []*leapmuxv1.TerminalScreenGeometry{
+			{Epoch: "screen", Offset: int64(len(output)), Revision: 2, Cols: 12, Rows: 2},
+		},
+	}
+	got := render(t, info, screenReadOptions{})
+	assert.NotContains(t, strings.Join(got.Lines, "\n"), "READY")
+	assert.Contains(t, strings.Join(got.Lines, "\n"), "NOPE")
+}
+
 func TestRenderScreen_ScrollbackAndLines(t *testing.T) {
 	info := screenOf(20, 5, numberedLines(8)+"$ ")
 	for name, tc := range map[string]struct {

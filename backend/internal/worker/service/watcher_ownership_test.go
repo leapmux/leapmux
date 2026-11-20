@@ -16,7 +16,7 @@ func TestWatcherOwnershipRejectsAnUninitializedSession(t *testing.T) {
 	require.NoError(t, manager.SetAgentWatchesForSession("channel", 0, []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, sender))
 	manager.SetTerminalWatchesForSession("channel", 0, []watchEntry{{id: "terminal", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, sender)
 	require.Empty(t, manager.AgentModesForChannel("channel"))
-	require.Empty(t, manager.TerminalModesForChannel("channel"))
+	require.Empty(t, manager.TerminalWatchesForChannel("channel"))
 }
 
 // Concurrent stream replacement must leave both subscriptions on the latest session.

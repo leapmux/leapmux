@@ -214,6 +214,9 @@ message TerminalInfo {
   // when the Worker holds no record of the exit: the Worker was killed while
   // the shell ran, so it never saw the shell end.
   optional int32 exit_code = 14;
+  // Geometry of the retained real bytes in screen. Its mode prefix also
+  // appears at the start of screen.
+  TerminalScreenTimeline screen_timeline = 15;
 }
 
 message TerminalData {
@@ -223,11 +226,34 @@ message TerminalData {
   // client's after_offset is behind the backend's retention window, or
   // on a cold subscribe. Live-data chunks set this to false.
   bool is_snapshot = 2;
-  // Cumulative byte offset at the end of `data`. Monotonically
-  // increases within a single PTY session and resets when the PTY is
-  // recreated. Clients persist the highest value they have observed
-  // and echo it back as WatchTerminalEntry.after_offset on resubscribe.
+  // Cumulative PTY byte offset at the end of data. It increases within the
+  // screen epoch. A replacement screen can choose a different offset.
+  // Clients send the last applied value as WatchTerminalEntry.after_offset.
   int64 end_offset = 3;
+  // Geometry-aware catch-up carries only real PTY bytes in data and puts
+  // any synthesized mode bytes in the timeline.
+  TerminalScreenTimeline screen_timeline = 4;
+  // Live bytes carry the geometry in effect when the Worker observed them.
+  string screen_epoch = 5;
+  uint64 geometry_revision = 6;
+}
+
+message TerminalScreenGeometry {
+  string epoch = 1;
+  int64 offset = 2; // The size applies after this many bytes.
+  uint64 revision = 3;
+  uint32 cols = 4;
+  uint32 rows = 5;
+}
+
+message TerminalScreenTimeline {
+  // The size when this replay starts. Changes are in revision order.
+  TerminalScreenGeometry base = 1;
+  repeated TerminalScreenGeometry changes = 2;
+  int64 start_offset = 3;
+  bytes mode_prefix = 4;
+  // Resize eviction left some retained bytes without their original geometry.
+  bool history_truncated = 5;
 }
 
 message TerminalClosed {

@@ -38,7 +38,8 @@ at once, it prints the lowest one.
 The text that the screen shows when the wait begins counts, so a wait for a
 text that the terminal already shows ends at once. Each line that appears
 later counts too, even one that scrolls off the screen before the CLI reads
-it. Use --scrollback to include the retained history from before the wait.
+it. The wait follows size changes and applies them in order after reconnect.
+Use --scrollback to include the retained history from before the wait.
 To wait for the output of a new command only, use the default screen scope
 and clear the screen first, or wait for a line that the command text does not
 show. In the second example, the echoed command line holds "echo DONE".
@@ -318,14 +319,15 @@ func (w *terminalWaiter) screenChanged(screen *screenWatch) (terminalWaitOutcome
 // output feeds one chunk of the terminal to the screen, and checks it. A
 // chunk that replaces the whole state resets the screen first.
 func (w *terminalWaiter) output(screen *screenWatch, data *leapmuxv1.TerminalData) (terminalWaitOutcome, bool, error) {
-	var err error
-	if data.GetIsSnapshot() {
-		err = screen.reset(data.GetData())
-	} else {
-		err = screen.write(data.GetData())
-	}
-	if err != nil {
-		return 0, false, err
+	var outcome terminalWaitOutcome
+	var done bool
+	err := screen.consumeScreenOutput(data, func() (bool, error) {
+		var checkErr error
+		outcome, done, checkErr = w.screenChanged(screen)
+		return done, checkErr
+	})
+	if done || err != nil {
+		return outcome, done, err
 	}
 	return w.screenChanged(screen)
 }
@@ -519,7 +521,7 @@ func waitForScreenText(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, sp
 	defer wg.Wait()
 	defer cancel()
 	items := make(chan screenFeedItem, 16)
-	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, t.WorkerID), t.ID, info.GetScreenEndOffset(), items)
+	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, t.WorkerID), t.ID, screen.position, items)
 	return awaitScreenText(ctx, quartz.NewReal(), items, screen, w)
 }
 
@@ -543,6 +545,10 @@ func awaitScreenText(ctx context.Context, clock quartz.Clock, items <-chan scree
 			var err error
 			if data := item.event.GetData(); data != nil {
 				outcome, done, err = w.output(screen, data)
+			} else if geometry := item.event.GetScreenGeometry(); geometry != nil {
+				if err = screen.applyLiveScreenGeometry(geometry); err == nil {
+					outcome, done, err = w.screenChanged(screen)
+				}
 			} else {
 				outcome, done = w.event(item.event)
 			}

@@ -48,7 +48,12 @@ func TestTerminal_ShellRunsTheWorkerCLIByName(t *testing.T) {
 		Shell:      shell,
 		WorkingDir: t.TempDir(),
 		ExtraEnv:   []string{"LEAPMUX_CONTROL_SOCK=unix:/fresh/sock", controlenv.CLIVariable + "=" + cli},
-	}, quartz.NewReal(), func(data []byte, _ int64, _ []Signal) {
+	}, quartz.NewReal(), func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+
 		mu.Lock()
 		defer mu.Unlock()
 		output.Write(data)
