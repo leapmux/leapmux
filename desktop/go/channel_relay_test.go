@@ -611,6 +611,7 @@ func TestSendChannelMessageRequestCancelDoesNotForceCloseRelay(t *testing.T) {
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	relay := &ChannelRelay{wsRelay: wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: func(*desktoppb.Event) {}}}
+	relay.stampOwner(1)
 	go relay.runReadLoop()
 	connCtx, connStop := context.WithCancel(app.ctx)
 	app.connection = &desktopConnection{ctx: connCtx, stop: connStop, relay: relay}
@@ -619,10 +620,11 @@ func TestSendChannelMessageRequestCancelDoesNotForceCloseRelay(t *testing.T) {
 	// entry gate without ever writing under a request-bound context.
 	cancelledCtx, cancelReq := context.WithCancel(context.Background())
 	cancelReq()
-	require.Error(t, app.SendChannelMessage(cancelledCtx, []byte("first")))
+	require.Error(t, app.SendChannelMessage(cancelledCtx, 1, []byte("first")))
+	require.ErrorContains(t, app.SendChannelMessage(context.Background(), 2, []byte("stale")), "owner changed")
 
 	// The shared relay survived: a fresh request still delivers its message.
-	require.NoError(t, app.SendChannelMessage(context.Background(), []byte("second")))
+	require.NoError(t, app.SendChannelMessage(context.Background(), 1, []byte("second")))
 	select {
 	case data := <-received:
 		require.Equal(t, []byte("second"), data)

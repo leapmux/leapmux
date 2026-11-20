@@ -455,7 +455,7 @@ describe('resetHubSettingsViaAPI', () => {
     return requests
   }
 
-  it('elevates the session and resets every customized key outside the baseline in one request', async () => {
+  it('resets every customized key outside the baseline in one request', async () => {
     const requests = settingsResponses([
       { ...altcha, customized: true },
       { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
@@ -469,15 +469,40 @@ describe('resetHubSettingsViaAPI', () => {
     expect(requests).toEqual([
       { method: 'ListSettings', body: {} },
       {
-        method: 'ElevateSession',
-        body: { currentPassword: 'secret' },
-      },
-      {
         method: 'ResetSettings',
         body: {
           keys: ['smtp', 'open_app_registration'],
         },
       },
+    ])
+  })
+
+  it('elevates once and retries a reset refused for an expired window', async () => {
+    let resetCalls = 0
+    const requests = recordedRequests((method) => {
+      if (method === 'AdminSettingsService/ListSettings') {
+        return Response.json({
+          values: [
+            { key: 'smtp', valueJson: '{}', customized: true },
+          ],
+        })
+      }
+      if (method === 'AdminSettingsService/ResetSettings' && resetCalls++ === 0) {
+        return new Response('window ended', {
+          status: 403,
+          headers: { 'Leapmux-Elevation-Required': '1' },
+        })
+      }
+      return Response.json({})
+    })
+
+    await resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' })
+
+    expect(requests.map(request => request.method)).toEqual([
+      'AdminSettingsService/ListSettings',
+      'AdminSettingsService/ResetSettings',
+      'UserService/ElevateSession',
+      'AdminSettingsService/ResetSettings',
     ])
   })
 
@@ -518,7 +543,6 @@ describe('resetHubSettingsViaAPI', () => {
 
   it.each([
     { method: 'ListSettings', message: 'listCustomizedHubSettingsViaAPI failed: AdminSettingsService/ListSettings returned HTTP 403: refused ListSettings' },
-    { method: 'ElevateSession', message: 'elevateSessionViaAPI failed: UserService/ElevateSession returned HTTP 403: refused ElevateSession' },
     { method: 'ResetSettings', message: 'resetHubSettingsViaAPI(smtp) failed: AdminSettingsService/ResetSettings returned HTTP 403: refused ResetSettings' },
   ])('reports a refused $method with its status and body', async ({ method, message }) => {
     settingsResponses([
@@ -1026,13 +1050,6 @@ describe('elevatedAdminSessionViaAPI', () => {
           captcha: { payload: 'solved-captcha', honeypot: '' },
         },
       ],
-      // A sign-in opens a five-minute window, so the session drops it first
-      // and the elevation below is the one the helper promises.
-      [
-        'UserService/DropElevation',
-        'leapmux-session=own',
-        {},
-      ],
       [
         'UserService/ElevateSession',
         'leapmux-session=own',
@@ -1046,9 +1063,7 @@ describe('elevatedAdminSessionViaAPI', () => {
       ? new Response('{}', {
           headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' },
         })
-      : method === 'UserService/DropElevation'
-        ? Response.json({})
-        : new Response('{"code":"permission_denied"}', { status: 403 }))
+      : new Response('{"code":"permission_denied"}', { status: 403 }))
     await expect(elevatedAdminSessionViaAPI(hubUrl)).rejects.toThrow('elevateSessionViaAPI failed')
   })
 })

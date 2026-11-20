@@ -1,5 +1,6 @@
 import type { RelayReceiver } from '~/api/platformBridge'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -226,6 +227,23 @@ describe('TauriRelayWebSocket', () => {
     await vi.waitFor(() => expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1))
   })
 
+  it('reaps a predecessor that closes before its pending successor fails', async () => {
+    bridgeMocks.openChannelRelay.mockResolvedValueOnce(undefined)
+    const predecessor = new TauriRelayWebSocket()
+    await vi.waitFor(() => expect(predecessor.readyState).toBe(WebSocket.OPEN))
+
+    const pending = deferred<void>()
+    bridgeMocks.openChannelRelay.mockReturnValueOnce(pending.promise)
+    const successor = new TauriRelayWebSocket()
+    await vi.waitFor(() => expect(bridgeMocks.openChannelRelay).toHaveBeenCalledTimes(2))
+
+    predecessor.close()
+    await vi.waitFor(() => expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1))
+    pending.reject(new Error('successor failed before adoption'))
+    await vi.waitFor(() => expect(successor.readyState).toBe(WebSocket.CLOSED))
+    expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1)
+  })
+
   // A native WebSocket fires BOTH 'error' and 'close' when a connection fails, and
   // ChannelManager.ensureWebSocket drains channels in its close handler -- so the
   // relay wrapper must emit both when its open rejects, not just 'error'.
@@ -373,10 +391,12 @@ describe('TauriRelayWebSocket', () => {
 
     // Pre-OPEN sends must buffer, not dispatch to a not-yet-open relay.
     expect(socket.readyState).toBe(WebSocket.CONNECTING)
-    const first = new Uint8Array([1, 2, 3])
+    const backing = new Uint8Array([0, 1, 2, 3, 9])
+    const first = new Uint8Array(backing.buffer, 1, 3)
     const second = new Uint8Array([4, 5, 6])
     socket.send(first)
     socket.send(second)
+    first.fill(8)
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(bridgeMocks.sendChannelMessage).not.toHaveBeenCalled()
 
@@ -384,11 +404,15 @@ describe('TauriRelayWebSocket', () => {
     await vi.waitFor(() => expect(socket.readyState).toBe(WebSocket.OPEN))
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    // Both buffered frames flushed, in send order, after OPEN -- and each passes
-    // through unchanged: raw bytes over the Tauri IPC, no encode at the boundary.
+    // Both buffered frames flush in send order after OPEN. The first one is the
+    // nonzero-offset view as it was when send() returned, before its caller
+    // reused the backing storage.
     expect(bridgeMocks.sendChannelMessage).toHaveBeenCalledTimes(2)
-    expect(bridgeMocks.sendChannelMessage.mock.calls[0]?.[0]).toBe(first)
-    expect(bridgeMocks.sendChannelMessage.mock.calls[1]?.[0]).toBe(second)
+    const relayId = bridgeMocks.openChannelRelay.mock.calls[0]![0]
+    expect(bridgeMocks.sendChannelMessage.mock.calls[0]?.[0]).toBe(relayId)
+    expect(Array.from(bridgeMocks.sendChannelMessage.mock.calls[0]?.[1] as Uint8Array)).toEqual([1, 2, 3])
+    expect(bridgeMocks.sendChannelMessage.mock.calls[1]?.[0]).toBe(relayId)
+    expect(Array.from(bridgeMocks.sendChannelMessage.mock.calls[1]?.[1] as Uint8Array)).toEqual([4, 5, 6])
   })
 
   it('drops sends after close', async () => {
@@ -468,7 +492,7 @@ describe('TauriRelayWebSocket', () => {
 
   // A frame can reach the channel handler after close() released this
   // wrapper's relay id: the sidecar's delivery slot clears asynchronously and
-  // an in-flight frame still names this channel. A frame for a stale relay id
+  // an in-flight frame still identifies this channel. A frame for a stale relay id
   // must not deliver.
   it('does not deliver a frame for a stale relay id', async () => {
     bridgeMocks.openChannelRelay.mockResolvedValueOnce(undefined)
@@ -477,7 +501,7 @@ describe('TauriRelayWebSocket', () => {
     socket.addEventListener('message', listener)
     await vi.waitFor(() => expect(socket.readyState).toBe(WebSocket.OPEN))
 
-    // The wrapper closes, releasing its relay id (the close RPC names it).
+    // The wrapper closes, releasing its relay id (the close RPC identifies it).
     socket.close()
     expect(socket.readyState).toBe(WebSocket.CLOSED)
     await vi.waitFor(() => expect(bridgeMocks.closeChannelRelay).toHaveBeenCalledTimes(1))

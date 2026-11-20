@@ -551,9 +551,11 @@ describe('emitters', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const EVENT_SIDECAR_LOG: &str = "sidecar:log"')
     expect(rs).toContain('pub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
+    expect(rs).toContain('pub const IPC_HEADER_RELAY_ID: &str = "relay-id"')
     const ts = emitTsDesktop(d)
     expect(ts).toContain('TAURI_EVENT_SIDECAR_LOG = "sidecar:log"')
     expect(ts).toContain('TAURI_EVENT_MENU_SHOW_PREFERENCES = "menu:show-preferences"')
+    expect(ts).toContain('TAURI_IPC_HEADER_REQUEST_ID = "request-id"')
   })
 
   it('shields the macOS-only menu consts from dead_code off macOS', () => {

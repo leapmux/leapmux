@@ -758,12 +758,15 @@ describe('PreferencesDialog admin unlock', () => {
     expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
     cleanup()
 
-    listSettings.mockResolvedValue({ descriptors: [], values: [] })
+    const emptyCatalogue = deferred<{ descriptors: never[], values: never[] }>()
+    listSettings.mockReturnValueOnce(emptyCatalogue.promise)
     renderDialog()
-    await waitFor(() => expect(listSettings).toHaveBeenCalled())
-    // The settled reply has reached the store and the render. An absence
-    // cannot be waited on, so the wait is on the call plus a turn of the queue.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await waitFor(() => expect(listSettings).toHaveBeenCalledTimes(2))
+    emptyCatalogue.resolve({ descriptors: [], values: [] })
+    await waitFor(() => {
+      const error = screen.queryAllByRole('alert').find(el => el.getAttribute('data-variant') === 'error')
+      expect(error).toBeUndefined()
+    })
     expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
     cleanup()
 
@@ -1491,7 +1494,7 @@ describe('PreferencesDialog verified-session state', () => {
     expect(screen.getByTestId('elevation-drop')).toBeTruthy()
   })
 
-  it('hides the gated group while the session is unverified', async () => {
+  it('hides the protected group while the session is unverified', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue(adminGeneralSettings())
 

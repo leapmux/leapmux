@@ -8,6 +8,11 @@ import { isElevationRequired, promptForElevation } from '~/lib/elevationPrompt'
 
 // Callbacks for auth state changes (set by AuthContext)
 let onAuthError: (() => void) | null = null
+let authSessionEpoch = 0
+
+export function advanceAuthSessionEpoch(): void {
+  authSessionEpoch++
+}
 
 export function setOnAuthError(callback: () => void): void {
   onAuthError = callback
@@ -41,12 +46,13 @@ export function isSessionEnded(err: unknown): boolean {
     && err.metadata.get(CREDENTIAL_REJECTED_HEADER) === null
 }
 
-const errorInterceptor: Interceptor = next => async (req) => {
+export const sessionErrorInterceptor: Interceptor = next => async (req) => {
+  const requestEpoch = authSessionEpoch
   try {
     return await next(req)
   }
   catch (err) {
-    if (isSessionEnded(err))
+    if (isSessionEnded(err) && requestEpoch === authSessionEpoch)
       onAuthError?.()
     throw err
   }
@@ -289,7 +295,7 @@ export const transport = createConnectTransport({
   // for the other's case: an elevation refusal is FailedPrecondition and a
   // dead session is Unauthenticated. The deadline interceptor sits inside
   // BOTH, so the retry's own response is the one it reads -- see its comment.
-  interceptors: [errorInterceptor, elevationInterceptor, elevationDeadlineInterceptor],
+  interceptors: [sessionErrorInterceptor, elevationInterceptor, elevationDeadlineInterceptor],
   fetch: getTransportFetch(),
   defaultTimeoutMs: 30_000,
 })
@@ -330,7 +336,7 @@ export const unloadTransport = createConnectTransport({
   // unloads, so there is nobody to answer a prompt and nothing left to render
   // one in; an op enqueued at unload is not a sensitive mutation, so it slides
   // no window, and there is no surface left to show a deadline on.
-  interceptors: [errorInterceptor],
+  interceptors: [sessionErrorInterceptor],
   // No timeout: the page unloads, so there is nothing left to time out
   // INTO. The browser limits the request itself once the document is gone.
 })

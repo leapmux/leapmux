@@ -139,7 +139,8 @@ func TestFrame_roundTrip_channelMessage(t *testing.T) {
 				Id: 1,
 				Method: &desktoppb.Request_SendChannelMessage{
 					SendChannelMessage: &desktoppb.SendChannelMessageRequest{
-						Data: data,
+						RelayId: 9,
+						Data:    data,
 					},
 				},
 			},
@@ -154,6 +155,7 @@ func TestFrame_roundTrip_channelMessage(t *testing.T) {
 
 	req := got.GetRequest()
 	require.NotNil(t, req)
+	assert.Equal(t, uint64(9), req.GetSendChannelMessage().GetRelayId())
 	assert.Equal(t, data, req.GetSendChannelMessage().Data)
 }
 

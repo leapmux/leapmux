@@ -92,6 +92,7 @@ func TestClose_ClosesAnActiveCallbackThatDoesNotFinish(t *testing.T) {
 	called := make(chan struct{})
 	stopped := make(chan struct{})
 	flow := &Flow{
+		ready: make(chan struct{}),
 		timer: testutil.NewQuartzMock(t).NewTimer(Timeout, timeoutTag),
 		srv: &http.Server{Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			close(called)
@@ -130,4 +131,45 @@ func TestClose_ClosesAnActiveCallbackThatDoesNotFinish(t *testing.T) {
 			t.Fatal("Close did not finish an active callback")
 		}
 	}
+}
+
+func TestClose_ResolvesAPendingFlow(t *testing.T) {
+	flow, err := Start(Request{HubBaseURL: "https://hub.example", App: ControlCLI})
+	require.NoError(t, err)
+	t.Cleanup(flow.Close)
+
+	flow.Close()
+
+	select {
+	case <-flow.ready:
+	default:
+		t.Fatal("closing the flow did not publish a result")
+	}
+	code, err := flow.Wait(testutil.DeadlineContext(t))
+	assert.ErrorIs(t, err, ErrClosed)
+	assert.Empty(t, code)
+}
+
+func TestWait_ServesTheRegisteredCallbackPath(t *testing.T) {
+	app := ControlCLI
+	app.RedirectURI = "http://127.0.0.1/desktop/complete"
+	flow, err := Start(Request{HubBaseURL: "https://hub.example", App: app})
+	require.NoError(t, err)
+	t.Cleanup(flow.Close)
+
+	authorize, err := url.Parse(flow.AuthorizeURL())
+	require.NoError(t, err)
+	registered, err := url.Parse(authorize.Query().Get("redirect_uri"))
+	require.NoError(t, err)
+	require.Equal(t, "/desktop/complete", registered.Path)
+
+	params := url.Values{"state": {flow.state}, "code": {"approved-code"}}
+	response := httptest.NewRecorder()
+	flow.callbackHandler().ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet, registered.Path+"?"+params.Encode(), nil,
+	))
+	require.Equal(t, http.StatusOK, response.Code)
+	code, err := flow.Wait(testutil.DeadlineContext(t))
+	require.NoError(t, err)
+	assert.Equal(t, "approved-code", code)
 }

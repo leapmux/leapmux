@@ -47,7 +47,7 @@ const ceremonyConfigModules = import.meta.glob(
  * The module-path keys of `ceremonyConfigModules` as route addresses: the file
  * path under the group minus its extension, with a trailing `index` naming its
  * directory. `recover-account/index.tsx` is `/recover-account`; every other
- * file names its own segment. Lowercased because the router matches a static
+ * file supplies its own segment. Lowercased because the router matches a static
  * segment case-insensitively, so the lookup must read `/Login` as `/login`.
  */
 function routeAddress(modulePath: string): string {

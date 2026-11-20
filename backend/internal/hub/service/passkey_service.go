@@ -615,15 +615,16 @@ func recheckActingCredentialUnderLock(ctx context.Context, tx store.Store, p ste
 	if p.userInfo.SoloAuthenticated() {
 		return nil
 	}
-	sessionID, apiTokenID, ok := p.userInfo.Credential.ElevatableRow()
-	switch {
-	case !ok:
+	ref := p.userInfo.Credential.ElevatableRef()
+	switch ref.Kind {
+	case store.CredentialRefKindNone:
 		return stepUpStateMovedError()
-	case sessionID != "":
-		return recheckActingSessionUnderLock(ctx, tx, sessionID, p, now)
-	default:
-		return recheckActingAPITokenUnderLock(ctx, tx, apiTokenID, p, now)
+	case store.CredentialRefKindSession:
+		return recheckActingSessionUnderLock(ctx, tx, ref.ID, p, now)
+	case store.CredentialRefKindToken:
+		return recheckActingAPITokenUnderLock(ctx, tx, ref.ID, p, now)
 	}
+	return stepUpStateMovedError()
 }
 
 // recheckActingSessionUnderLock is the session branch of the re-check.
@@ -1145,9 +1146,17 @@ func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
 	if err != nil {
 		return 0, err
 	}
-	// ok is false for a credential that carries no window: it keeps nothing,
-	// so both ids stay empty and both statements address the whole set.
-	actingSessionID, actingAPITokenID, _ := acting.ElevatableRow()
+	// A credential that carries no window keeps nothing, so both ids stay empty
+	// and both statements address the whole set.
+	actingRef := acting.ElevatableRef()
+	var actingSessionID, actingAPITokenID string
+	switch actingRef.Kind {
+	case store.CredentialRefKindSession:
+		actingSessionID = actingRef.ID
+	case store.CredentialRefKindToken:
+		actingAPITokenID = actingRef.ID
+	case store.CredentialRefKindNone:
+	}
 	if err := tx.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
 		UserID: rowUID,
 		KeepID: actingSessionID,
@@ -1157,7 +1166,7 @@ func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
 	if _, _, err := auth.RevokeUserCredentialsExceptAPIToken(ctx, tx, rowUID, actingAPITokenID); err != nil {
 		return 0, err
 	}
-	if err := restampActingCredential(ctx, tx, rowUID, actingSessionID, actingAPITokenID); err != nil {
+	if err := restampActingCredential(ctx, tx, rowUID, actingRef); err != nil {
 		return 0, err
 	}
 	updatedUser, err := tx.Users().GetByID(ctx, userID)
@@ -1175,23 +1184,21 @@ func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
 // A free function rather than two branches inline, so the rule that each
 // preserved kind takes a restamp reads once. See the caller for why the
 // restamp is half of "preserve", and for what n==0 means.
-func restampActingCredential(
-	ctx context.Context, tx store.Store, userID userid.UserID, sessionID, apiTokenID string,
-) error {
+func restampActingCredential(ctx context.Context, tx store.Store, userID userid.UserID, ref store.CredentialRef) error {
 	var n int64
 	var err error
-	switch {
-	case sessionID != "":
+	switch ref.Kind {
+	case store.CredentialRefKindSession:
 		n, err = tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
-			SessionID: sessionID,
+			SessionID: ref.ID,
 			UserID:    userID,
 		})
-	case apiTokenID != "":
+	case store.CredentialRefKindToken:
 		n, err = tx.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
-			TokenID: apiTokenID,
+			TokenID: ref.ID,
 			UserID:  userID,
 		})
-	default:
+	case store.CredentialRefKindNone:
 		return nil
 	}
 	if err != nil {

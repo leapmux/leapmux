@@ -43,6 +43,10 @@ const (
 	// proves nothing here: its factor is the password or the passkey, and
 	// the provider sign-in did not present it.
 	SignInProvedFactor SignInProof = 2
+	// SignInProvedFactorWithFullWindow is the solo first-password setup. The
+	// local operator already controls the Hub, and the existing contract grants
+	// the ordinary two-hour window in the session's insert transaction.
+	SignInProvedFactorWithFullWindow SignInProof = 3
 )
 
 // ElevationMaxTotal caps the total life of ONE elevation, measured from the
@@ -155,7 +159,7 @@ func (u *UserInfo) ElevationDeadline(now time.Time) (time.Time, bool) {
 	if u == nil {
 		return time.Time{}, false
 	}
-	if _, _, ok := u.Credential.ElevatableRow(); !ok {
+	if u.Credential.ElevatableRef().IsZero() {
 		return time.Time{}, false
 	}
 	return u.Elevation.Deadline(now)
@@ -261,8 +265,8 @@ func RequireElevation(userInfo *UserInfo, now time.Time) error {
 // elevation at all.
 //
 // TWO kinds can: a session cookie, and a command-line credential, which
-// proves its factor in a browser through the /oauth/step-up
-// leg. Each has a row to stamp and a person who can be prompted. A
+// proves its factor through the browser path at /oauth/step-up. Each has a
+// row to stamp and a person who can be prompted. A
 // DELEGATION bearer has neither -- a worker mints it for an agent that reads
 // untrusted input -- and neither does solo mode, which authenticates a
 // synthetic user against no row.
@@ -278,7 +282,7 @@ func RequireElevation(userInfo *UserInfo, now time.Time) error {
 // slipped past would turn a refusal into a handler panic here.
 func RequireElevatableCredential(userInfo *UserInfo) error {
 	if userInfo != nil {
-		if _, _, ok := userInfo.Credential.ElevatableRow(); ok {
+		if !userInfo.Credential.ElevatableRef().IsZero() {
 			return nil
 		}
 	}
@@ -290,7 +294,7 @@ func RequireElevatableCredential(userInfo *UserInfo) error {
 //
 // The narrower rule, and the two service callers need it. The elevation RPCs
 // collect a factor and stamp a row: a bearer that could call them would
-// elevate ITSELF, which is exactly the property the browser leg exists to
+// elevate ITSELF, which is exactly the property the browser verification exists to
 // prevent (the factor must be proven somewhere the credential file cannot
 // reach). requireElevatedSessionForDurableAuthority needs it for its own
 // reason, which it states.

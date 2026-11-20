@@ -614,7 +614,7 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 			return
 		}
 
-		h.loginOAuthUser(w, r, user.ID, providerID, tokenSet, oauthState.RedirectURI)
+		h.loginOAuthUser(w, r, user.ID, providerID, claims.Subject, "", tokenSet, oauthState.RedirectURI)
 		return
 	}
 	if !errors.Is(err, store.ErrNotFound) {
@@ -639,25 +639,8 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 			return
 		}
 		if emailErr == nil && existingUser.EmailVerified {
-			linkUID, mintOK := userid.New(existingUser.ID)
-			if !mintOK {
-				slog.Error("oauth: matched user row has a blank id")
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			if err := h.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-				UserID:          linkUID,
-				ProviderID:      providerID,
-				ProviderSubject: claims.Subject,
-			}); err != nil {
-				slog.Error("oauth: create user link for auto-link", "error", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-
-			slog.Info("oauth: auto-linked provider to existing account by verified email",
-				"user_id", existingUser.ID, "provider_id", providerID, "email", claims.Email)
-			h.loginOAuthUser(w, r, existingUser.ID, providerID, tokenSet, oauthState.RedirectURI)
+			h.loginOAuthUser(w, r, existingUser.ID, providerID, claims.Subject, claims.Email,
+				tokenSet, oauthState.RedirectURI)
 			return
 		}
 	}
@@ -773,6 +756,10 @@ func (h *IdPHandler) completeOAuthReauth(
 			http.Error(w, "your session ended during the verification; sign in again", http.StatusUnauthorized)
 			return
 		}
+		if errors.Is(err, errElevationAppNotAllowed) {
+			http.Error(w, errElevationAppNotAllowed.Error(), http.StatusForbidden)
+			return
+		}
 		slog.Error("oauth: record session elevation", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -794,24 +781,52 @@ func (h *IdPHandler) secureCookies(ctx context.Context) bool {
 // redirect forced a fresh authentication and the account holds only a
 // provider factor. The user-auth lock serializes the factor reads and the
 // session insert with password and passkey changes.
-func (h *IdPHandler) createOAuthLoginSession(ctx context.Context, userID userid.UserID, redirectURI string, lifetime time.Duration, meta auth.SessionMeta) (auth.CreatedSession, error) {
-	if !isConsentRoute(redirectURI) {
-		return auth.CreateSession(ctx, h.store, h.sessionHasher, userID, lifetime, auth.SignInProvedNoFactor, meta)
-	}
-
+func (h *IdPHandler) createOAuthLoginSession(
+	ctx context.Context,
+	userID userid.UserID,
+	providerID, providerSubject, autoLinkEmail, redirectURI string,
+	lifetime time.Duration,
+	meta auth.SessionMeta,
+) (auth.CreatedSession, error) {
 	var session auth.CreatedSession
 	if err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		user, err := tx.Users().GetByID(ctx, userID.String())
 		if err != nil {
 			return fmt.Errorf("load account for provider sign-in proof: %w", err)
 		}
-		providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, tx, user)
+		link, err := tx.OAuthUserLinks().Get(ctx, store.GetOAuthUserLinkParams{
+			ProviderID:      providerID,
+			ProviderSubject: providerSubject,
+		})
+		if errors.Is(err, store.ErrNotFound) && autoLinkEmail != "" {
+			if !user.EmailVerified || !strings.EqualFold(user.Email, autoLinkEmail) {
+				return errElevationProofChanged
+			}
+			if err := tx.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+				UserID:          userID,
+				ProviderID:      providerID,
+				ProviderSubject: providerSubject,
+			}); err != nil {
+				return fmt.Errorf("create user link for auto-link: %w", err)
+			}
+			link = &store.OAuthUserLink{UserID: userID.String(), ProviderID: providerID, ProviderSubject: providerSubject}
+			err = nil
+		}
 		if err != nil {
-			return fmt.Errorf("check account factors for provider sign-in proof: %w", err)
+			return err
+		}
+		if link.UserID != user.ID {
+			return errElevationProofChanged
 		}
 		proof := auth.SignInProvedNoFactor
-		if providerOnly {
-			proof = auth.SignInProvedFactor
+		if isConsentRoute(redirectURI) {
+			providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, tx, user)
+			if err != nil {
+				return fmt.Errorf("check account factors for provider sign-in proof: %w", err)
+			}
+			if providerOnly {
+				proof = auth.SignInProvedFactor
+			}
 		}
 		session, err = auth.CreateSession(ctx, tx, h.sessionHasher, userID, lifetime, proof, meta)
 		return err
@@ -823,12 +838,14 @@ func (h *IdPHandler) createOAuthLoginSession(ctx context.Context, userID userid.
 
 // loginOAuthUser stores tokens, creates a session, and redirects the user.
 // Both the existing-link and auto-link-by-email paths call it.
-func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, userID, providerID string, tokenSet *huboauth.TokenSet, redirectURI string) {
+func (h *IdPHandler) loginOAuthUser(
+	w http.ResponseWriter,
+	r *http.Request,
+	userID, providerID, providerSubject, autoLinkEmail string,
+	tokenSet *huboauth.TokenSet,
+	redirectURI string,
+) {
 	ctx := r.Context()
-
-	if err := h.storeTokens(ctx, userID, providerID, tokenSet); err != nil {
-		slog.Error("oauth: store tokens", "error", err)
-	}
 
 	loginUID, mintOK := userid.New(userID)
 	if !mintOK {
@@ -836,13 +853,22 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	session, sessionErr := h.createOAuthLoginSession(ctx, loginUID, redirectURI, settings.SessionDuration(h.set.Snapshot(ctx)), auth.SessionMeta{
-		UserAgent: r.UserAgent(),
-	})
+	session, sessionErr := h.createOAuthLoginSession(ctx, loginUID,
+		providerID, providerSubject, autoLinkEmail, redirectURI,
+		settings.SessionDuration(h.set.Snapshot(ctx)), auth.SessionMeta{
+			UserAgent: r.UserAgent(),
+		})
 	if sessionErr != nil {
 		slog.Error("oauth: create session", "error", sessionErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	if autoLinkEmail != "" {
+		slog.Info("oauth: auto-linked provider to existing account by verified email",
+			"user_id", userID, "provider_id", providerID, "email", autoLinkEmail)
+	}
+	if err := h.storeTokens(ctx, userID, providerID, tokenSet); err != nil {
+		slog.Error("oauth: store tokens", "error", err)
 	}
 
 	secure := h.secureCookies(ctx)

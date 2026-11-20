@@ -30,8 +30,8 @@ export const TEST_USER_ID = 'usertest' as HubUserId
 /**
  * The composed storage account the suite's keys resolve under:
  * `storageAccountFor(TEST_HUB, TEST_USER_ID)`, what `setStorageAccountForTests`
- * composes from `TEST_USER_ID`. A test that names the NAMESPACE takes this; a
- * test that names the raw identity takes `TEST_USER_ID`.
+ * composes from `TEST_USER_ID`. Use this value for tests that need the storage namespace.
+ * Use `TEST_USER_ID` for tests that need the raw Hub identity.
  */
 export const TEST_ACCOUNT = storageAccountFor(TEST_HUB, TEST_USER_ID)
 

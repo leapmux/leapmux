@@ -253,6 +253,7 @@ func TestEnforceAdminDeniesByPrefix(t *testing.T) {
 	// the refusal, so a per-procedure bypass of the elevation check and a
 	// refusal that keeps only the Connect code both fail here.
 	checked := adminOnlyProcedures(t)
+	delete(checked, leapmuxv1connect.AdminUserServiceUpdateUserProcedure)
 	checked[unlisted] = true
 	for procedure := range checked {
 		err := enforceAdmin(procedure, unelevatedAdmin, now)

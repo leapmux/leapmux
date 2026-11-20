@@ -183,7 +183,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ExpiresAt:     future,
 		Redemption:    store.RedemptionKindToken,
 	}))
-	_, err = st.OAuthAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
+	err = st.OAuthAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
 	require.NoError(t, err)
 
 	// device_authorizations: expires_at on Create, last_polled_at on

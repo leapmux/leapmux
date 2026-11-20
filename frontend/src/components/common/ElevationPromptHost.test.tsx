@@ -27,7 +27,7 @@ const PASSWORD_USER = {
 
 const mockUser = vi.fn<() => Record<string, unknown> | null>(() => PASSWORD_USER)
 const mockElevateWithPassword = vi.fn()
-const mockRefreshUser = vi.fn<() => Promise<void>>()
+const mockReloadUser = vi.fn<() => Promise<boolean>>()
 
 // The CONTEXT runs the ceremony and adopts the deadline, so this test mocks
 // the context at that seam.
@@ -36,7 +36,7 @@ vi.mock('~/context/AuthContext', () => ({
     user: mockUser,
     elevateWithPassword: (...a: unknown[]) => mockElevateWithPassword(...a),
     elevateWithPasskey: vi.fn(),
-    refreshUser: () => mockRefreshUser(),
+    reloadUser: () => mockReloadUser(),
   }),
 }))
 
@@ -146,8 +146,8 @@ describe('ElevationPromptHost', () => {
     mockUser.mockReturnValue(PASSWORD_USER)
     mockElevateWithPassword.mockResolvedValue(undefined)
     ceremoniesInBrowser.mockReturnValue(false)
-    mockRefreshUser.mockReset()
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockReloadUser.mockReset()
+    mockReloadUser.mockResolvedValue(true)
     bridgeMocks.openExternalUrl.mockReset()
     bridgeMocks.openExternalUrl.mockResolvedValue(undefined)
     bridgeMocks.startBrowserAuth.mockReset()
@@ -556,12 +556,12 @@ describe('ElevationPromptHost', () => {
   // triggers, so a caller can read the new state the moment it continues.
   it('settles the prompt true after a refresh of the user in remote mode', async () => {
     const { answered } = await startBrowserCeremony()
-    const refresh = deferred<void>()
-    mockRefreshUser.mockReturnValue(refresh.promise)
+    const refresh = deferred<boolean>()
+    mockReloadUser.mockReturnValue(refresh.promise)
 
     bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
 
-    await vi.waitFor(() => expect(mockRefreshUser).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledOnce())
     let settled = false
     void answered.then(() => {
       settled = true
@@ -569,16 +569,16 @@ describe('ElevationPromptHost', () => {
     await settle()
     expect(settled).toBe(false)
 
-    refresh.resolve()
+    refresh.resolve(true)
     await expect(answered).resolves.toBe(true)
   })
 
   it('keeps a successor prompt pending when a dismissed prompt finishes its refresh', async () => {
-    const refresh = deferred<void>()
-    mockRefreshUser.mockReturnValueOnce(refresh.promise)
+    const refresh = deferred<boolean>()
+    mockReloadUser.mockReturnValueOnce(refresh.promise)
     const { answered: first } = await startBrowserCeremony()
     bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
-    await vi.waitFor(() => expect(mockRefreshUser).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledOnce())
 
     dismissPrompt()
     await expect(first).resolves.toBe(false)
@@ -588,14 +588,14 @@ describe('ElevationPromptHost', () => {
     })
     const { answered: second } = await openBrowserPrompt()
 
-    refresh.resolve()
+    refresh.resolve(true)
     await settle()
 
     expect(promptDialog()).toBeInTheDocument()
     expect(elevationPrompting()).toBe(true)
     bridgeMocks.emit({ ceremonyId: 'c-2', ok: true, failure: '' })
     await expect(second).resolves.toBe(true)
-    expect(mockRefreshUser).toHaveBeenCalledTimes(2)
+    expect(mockReloadUser).toHaveBeenCalledTimes(2)
   })
 
   it('cancels the ceremony and settles the prompt false when the remote host unmounts', async () => {

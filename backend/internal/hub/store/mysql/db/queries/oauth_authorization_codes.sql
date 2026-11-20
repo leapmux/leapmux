@@ -5,11 +5,12 @@
 
 -- name: CreateOAuthAuthorizationCode :exec
 INSERT INTO oauth_authorization_codes (
-    code, user_id, client_id, code_challenge, redirect_uri, granted_scopes,
+    code, user_id, auth_generation, client_id, code_challenge, redirect_uri, granted_scopes,
     installation_name, expires_at, step_up_kind, step_up_ref_id, redemption_kind
 ) VALUES (
     sqlc.arg(code),
     sqlc.arg(user_id),
+    sqlc.arg(auth_generation),
     sqlc.arg(client_id),
     sqlc.arg(code_challenge),
     sqlc.arg(redirect_uri),
@@ -21,7 +22,7 @@ INSERT INTO oauth_authorization_codes (
     sqlc.narg(redemption_kind)
 );
 
--- name: MarkOAuthAuthorizationCodeMinted :exec
+-- name: MarkOAuthAuthorizationCodeMinted :execresult
 -- Records WHICH credential this code produced -- a session or an app
 -- credential, as the reference states -- so a replay of the same code can
 -- revoke it. RFC 6749 section 4.1.2 requires exactly that, and without the
@@ -29,7 +30,11 @@ INSERT INTO oauth_authorization_codes (
 UPDATE oauth_authorization_codes
 SET minted_kind = sqlc.narg(minted_kind),
     minted_ref_id = sqlc.arg(minted_ref_id)
-WHERE code = sqlc.arg(code);
+WHERE code = sqlc.arg(code)
+  AND consumed_at IS NOT NULL
+  AND step_up_kind IS NULL
+  AND minted_kind IS NULL
+  AND redemption_kind = sqlc.arg(expected_redemption_kind);
 
 -- name: GetActiveOAuthAuthorizationCode :one
 SELECT * FROM oauth_authorization_codes

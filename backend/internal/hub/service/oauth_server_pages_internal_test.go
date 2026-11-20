@@ -105,7 +105,7 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 			"a step-up must never read as an authorization that issues something")
 	})
 
-	t.Run("device page names an expired credential as expired", func(t *testing.T) {
+	t.Run("device page identifies an expired credential as expired", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		writePage(w, 200, devicePageTmpl, devicePageData{
 			UserCode:   "abc-123",

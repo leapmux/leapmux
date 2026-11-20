@@ -202,7 +202,7 @@ func (h *OAuthServerHandler) credentialElevationIsCurrent(ctx context.Context, t
 	return auth.NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt).IsCurrent(h.now()), nil
 }
 
-// tokenDisplayName names a command-line credential from the hub's OWN record
+// tokenDisplayName describes a command-line credential from the hub's OWN record
 // of it: the app's registered name and the INSTALLATION label, in that order.
 // The app is what the hub registered, and the installation is what the
 // requester called itself. Both the activation page and the consent page's
@@ -233,7 +233,7 @@ func tokenDisplayName(row *store.APIToken) string {
 // nothing rather than falling back to the requester's text. The approval
 // refuses that grant anyway; see errElevationGrantUnavailable. This freshness
 // is DELIBERATE here: the activation page renders on a poll, long after the
-// grant row named the credential, so the row may have been revoked or may have
+// grant row identified the credential, so the row may have been revoked or may have
 // expired in between. The consent page has no such gap -- parseStepUpTarget
 // loads and validates the row it displays -- so it builds its own display and
 // does not read through here.

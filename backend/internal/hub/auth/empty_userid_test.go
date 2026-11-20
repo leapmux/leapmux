@@ -36,6 +36,7 @@ var zeroUserIDDenyFuncs = []string{
 	"WorkspacesReadableByUser",
 	"WorkerCanUse",
 	"CreateSession",
+	"CreateSessionAt",
 	"ResolveDelegationWorkerScope",
 	"CheckDelegationWorkerScope",
 	"(*DelegationScopeCache).Resolve",
@@ -133,18 +134,26 @@ func TestZeroUserIDDenies(t *testing.T) {
 				got, err = auth.WorkspacesReadableByUser(ctx, st, zero, []string{workspaceID})
 				require.NoError(t, err)
 				assert.Empty(t, got, "a zero id must not resolve another user's workspace")
-			case "CreateSession":
+			case "CreateSession", "CreateSessionAt":
 				// Not an access predicate, but it takes the type, so the table
 				// requires it to state a contract: a session must never be
 				// written for an id that names no user -- that row would then
 				// authenticate as blank on every subsequent request.
-				_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), zero, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+				create := func(userID userid.UserID) (auth.CreatedSession, error) {
+					if name == "CreateSessionAt" {
+						return auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID,
+							auth.DefaultSessionDuration, auth.SignInProvedNoFactor, time.Now().UTC())
+					}
+					return auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID,
+						auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+				}
+				_, err := create(zero)
 				require.Error(t, err, "a zero UserID must not create a session")
 				// Control, per this test's own contract: without it the case
 				// passes if CreateSession ever starts erroring for an unrelated
 				// reason (a schema change, a newly-required column), proving
 				// nothing about the zero id.
-				_, err = auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), ownerID, auth.DefaultSessionDuration, auth.SignInProvedNoFactor)
+				_, err = create(ownerID)
 				require.NoError(t, err, "control: a real user's session is created")
 			case "WorkerCanUse":
 				w, ok, err := auth.WorkerCanUse(ctx, st, worker.ID, ownerID)

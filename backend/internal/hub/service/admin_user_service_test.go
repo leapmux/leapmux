@@ -80,11 +80,12 @@ func (e *adminUserEnv) awaitCredentialNotice(t *testing.T) mail.Message {
 // every method on CredentialLifecycleEffects is nil-safe by design, so a
 // dropped call and a delivered call read alike from outside.
 type recordingCredentialCloser struct {
-	mu       sync.Mutex
-	calls    []userRevocationCall
-	sessions []string
-	bearers  []auth.BearerRef
-	restamps []sessionRestampCall
+	mu                sync.Mutex
+	beforeUserRevoked func(userRevocationCall)
+	calls             []userRevocationCall
+	sessions          []string
+	bearers           []auth.BearerRef
+	restamps          []sessionRestampCall
 }
 
 type userRevocationCall struct {
@@ -98,9 +99,16 @@ type sessionRestampCall struct {
 }
 
 func (c *recordingCredentialCloser) CloseChannelsByUserRevocation(userID string, generation int64) int {
+	call := userRevocationCall{userID: userID, generation: generation}
+	c.mu.Lock()
+	before := c.beforeUserRevoked
+	c.mu.Unlock()
+	if before != nil {
+		before(call)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.calls = append(c.calls, userRevocationCall{userID: userID, generation: generation})
+	c.calls = append(c.calls, call)
 	return 0
 }
 

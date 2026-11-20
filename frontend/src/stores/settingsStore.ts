@@ -93,8 +93,7 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
    * the first outright. The same rule the per-key write guard below holds.
    */
   const loadSeq = createKeyedSeq()
-  const pendingWrites = new Set<Promise<SettingValue | undefined>>()
-  let latestLoad: Promise<void> | undefined
+  const writeSeq = createKeyedSeq()
   let accessGeneration = 0
 
   const guard = (): Error => new Error(ports.guardMessage)
@@ -115,7 +114,6 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
   const clear = () => {
     accessGeneration++
     loadSeq.next()
-    latestLoad = undefined
     setState(emptySettingsState())
   }
 
@@ -126,14 +124,10 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
     }
     const mySeq = loadSeq.next()
     const newest = () => loadSeq.isNewest(undefined, mySeq)
-    const precedingWrites = [...pendingWrites]
+    const writesAtIssue = writeSeq.snapshot()
     setState('loading', true)
     const read = async () => {
       try {
-        // A catalogue reads every key. Wait for earlier writes before asking
-        // the Hub for its snapshot, even across an elevation change.
-        if (precedingWrites.length > 0)
-          await Promise.allSettled(precedingWrites)
         if (!newest())
           return
         if (!allowed()) {
@@ -143,10 +137,25 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
         const resp = await ports.list()
         if (!newest())
           return
+        const responseValues = new Map(resp.values.map(value => [value.key, value]))
+        const values = new Map(state.values)
+        const keys = new Set([
+          ...values.keys(),
+          ...responseValues.keys(),
+        ])
+        for (const key of keys) {
+          if (!writeSeq.isNewest(key, writesAtIssue.get(key) ?? 0))
+            continue
+          const value = responseValues.get(key)
+          if (value)
+            values.set(key, value)
+          else
+            values.delete(key)
+        }
         setState({
           error: null,
           descriptors: resp.descriptors,
-          values: new Map(resp.values.map(value => [value.key, value])),
+          values,
         })
       }
       catch (err) {
@@ -158,15 +167,7 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
           setState({ loading: false, loaded: true })
       }
     }
-    const request = read()
-    latestLoad = request
-    try {
-      await request
-    }
-    finally {
-      if (latestLoad === request)
-        latestLoad = undefined
-    }
+    await read()
   }
 
   /**
@@ -180,8 +181,6 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
    * loads, and the same one `PreferencesContext` holds over the account
    * tier's writes.
    */
-  const writeSeq = createKeyedSeq()
-
   /**
    * The mutation REQUESTS in flight per key.
    *
@@ -205,38 +204,33 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
     // matches the order the user asked in.
     const mySeq = writeSeq.next(key)
     const generationAtIssue = accessGeneration
-    const precedingLoad = latestLoad
-    const newest = () => generationAtIssue === accessGeneration && writeSeq.isNewest(key, mySeq)
+    const currentAccess = () => generationAtIssue === accessGeneration && allowed()
+    const newestIntent = () => currentAccess() && writeSeq.isNewest(key, mySeq)
     const request = writeQueue.run(key, async () => {
-      if (precedingLoad)
-        await precedingLoad
-      if (generationAtIssue !== accessGeneration || !allowed())
+      if (!currentAccess())
         throw guard()
-      return call()
-    })
-    pendingWrites.add(request)
-    try {
-      const value = await request
-      // A superseded reply is still a SUCCESS — it just no longer describes
-      // what the user last asked for, so it must not clear the error of a
-      // later write nor put its own value back on screen.
-      if (!newest())
+      const value = await call()
+      if (!currentAccess())
         return
-      setState('writeError', null)
+
+      // The queue publishes each commit before the next write to this key.
+      // A later failed write leaves this value in the Hub and in the store.
       mergeValue(value)
+      if (newestIntent())
+        setState('writeError', null)
+    })
+    try {
+      await request
     }
     catch (err) {
       // The store keeps the server's truth and the row shows the failure.
-      if (newest()) {
+      if (newestIntent()) {
         setState('writeError', {
           key,
           message: formatErrorMessage(err, 'Failed to save setting'),
         })
       }
       throw err
-    }
-    finally {
-      pendingWrites.delete(request)
     }
   }
 

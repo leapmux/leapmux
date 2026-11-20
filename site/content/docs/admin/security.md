@@ -157,7 +157,7 @@ The Hub is trusted for *identity*: it authenticates the user and identifies them
 - Your identity provider
 - Anyone holding a stolen session cookie
 
-The browser and the desktop app check Worker identity through TOFU pinning, described below.
+The browser and the desktop app check Worker identity through trust on first use (TOFU) pinning, described below.
 
 What the channel does verify for itself is that it *works*. Before `OpenChannel` returns, the client round-trips a no-op `Ping` through the encrypted session. The handshake alone only proves the client can encrypt to the Worker's static key; the Ping proves the Worker's session decrypts and that its replies decrypt back.
 
@@ -388,8 +388,8 @@ Or open: https://hub.example.com/oauth/device?user_code=7XC-8DZ
 Three properties are worth stating:
 
 - **The credential cannot approve its own request.** Both ceremonies accept a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
-- **Step-up opens a window on the existing credential.** In the loopback ceremony, the Hub opens the window when the app successfully redeems the code. In the device-code ceremony, the Hub opens it when the account holder approves the request. Step-up issues no new credential and sends no app authorization email. During a loopback step-up, the CLI may refresh the bearer before redemption and save the updated tokens to its credential file. The window lasts {{< duration elevation-window >}} and has the same cap as a browser session. Sensitive changes slide the window. Reads do not slide it.
-- **A credential from the default login cannot be verified over SSH.** Its ceremony needs a browser on the CLI's own machine, and over SSH there is none. Sign in again with `--device-code` there: the device-code ceremony's browser can be on another machine, which is the flow headless hosts and containers use.
+- **Step-up opens a window on the existing credential.** In the loopback ceremony, the Hub opens the window when the app successfully redeems the code. In the device-code ceremony, the Hub opens it when the account holder approves the request. Step-up issues no new credential and sends no app authorization email. During a loopback step-up, the CLI may refresh the bearer before redemption and save the updated tokens to its credential file. The window lasts {{< duration elevation-window >}} and has the same cap as a browser session. A write slides the window only when its handler explicitly does so. Reads do not slide it.
+- **The default login requires a browser that can reach the CLI's loopback listener.** An SSH session can use the loopback ceremony when a browser on that machine can open the printed address. Sign in again with `--device-code` when the available browser runs on another machine. This is the flow for headless hosts and containers.
 
 An unattended job can use a narrowly scoped, short-lived credential while its elevation window is current. A person must approve a new window after it expires.
 

@@ -466,7 +466,7 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 // SessionMeta holds optional metadata for session creation.
 type SessionMeta struct {
 	UserAgent string
-	// IssuedToClient names the built-in app this session is issued to through
+	// IssuedToClient identifies the built-in app this session is issued to through
 	// the browser handoff. Empty stores NULL.
 	IssuedToClient string
 }
@@ -488,21 +488,27 @@ type CreatedSession struct {
 // value must still issue a usable session, not one that expired before the
 // response left the Hub.
 //
-// proof states whether the sign-in proved a factor. For SignInProvedFactor
-// the insert writes a FreshAuthenticationWindow-sized elevation pair. The
-// zero value is refused.
+// proof states whether the sign-in proved a factor and which initial window
+// that proof grants. The zero value is refused.
 func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, proof SignInProof, meta ...SessionMeta) (CreatedSession, error) {
+	return CreateSessionAt(ctx, st, hasher, userID, lifetime, proof, time.Now().UTC(), meta...)
+}
+
+// CreateSessionAt creates a session at the supplied Hub clock instant. Callers
+// use it when the surrounding transaction and its response must share one now.
+func CreateSessionAt(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, proof SignInProof, now time.Time, meta ...SessionMeta) (CreatedSession, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
 	if userID.IsZero() {
 		return CreatedSession{}, fmt.Errorf("create session: user id is required")
 	}
-	if proof != SignInProvedNoFactor && proof != SignInProvedFactor {
+	if proof != SignInProvedNoFactor && proof != SignInProvedFactor &&
+		proof != SignInProvedFactorWithFullWindow {
 		return CreatedSession{}, fmt.Errorf("create session: sign-in proof is required")
 	}
 	sessionID, secret := id.Generate(), id.Generate()
-	now := time.Now().UTC()
+	now = now.UTC()
 	expiresAt := sessionExpiry(now, lifetime)
 	params := store.CreateSessionParams{
 		ID:         sessionID,
@@ -512,8 +518,12 @@ func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, use
 		IPAddress:  peer.ClientIP(ctx),
 	}
 	var elevation Elevation
-	if proof == SignInProvedFactor {
-		until := now.Add(FreshAuthenticationWindow)
+	if proof == SignInProvedFactor || proof == SignInProvedFactorWithFullWindow {
+		window := FreshAuthenticationWindow
+		if proof == SignInProvedFactorWithFullWindow {
+			window = ElevationWindow
+		}
+		until := now.Add(window)
 		params.ElevationProvenAt = &now
 		params.ElevationExpiresAt = &until
 		elevation = Elevation{ExpiresAt: until}

@@ -7,6 +7,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,20 +168,20 @@ func TestProxyHTTPSetsDeadlineFromConnectTimeoutHeader(t *testing.T) {
 	installTestConnection(app, &HubProxy{client: &http.Client{Transport: rec}, baseURL: "http://hub.test"}, nil, "http://hub.test")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
+	before := time.Now()
 	_, _, err := app.ProxyHTTP(context.Background(), "GET", "/api/thing",
 		map[string]string{"Connect-Timeout-Ms": "30000"}, nil)
+	after := time.Now()
 	require.NoError(t, err)
 
 	require.NotNil(t, rec.req, "the proxy must send the request")
 	deadline, ok := rec.req.Context().Deadline()
 	require.True(t, ok, "the outgoing request's context must carry the proxy deadline")
-	// The deadline is the header's 30 seconds plus the 5-second grace, 35
-	// seconds in all. The window pins that value: a wrong wiring (the bare 30
-	// seconds, or the grace alone) lands outside it, and the gap below 35
-	// tolerates the scheduling between minting the deadline and the round trip.
-	remaining := time.Until(deadline)
-	assert.LessOrEqual(t, remaining, 35*time.Second)
-	assert.Greater(t, remaining, 32*time.Second)
+	// The deadline is the header's 30 seconds plus the 5-second grace. Bound
+	// its creation between the timestamps around the call without making test
+	// scheduling consume part of the expected duration.
+	assert.False(t, deadline.Before(before.Add(35*time.Second)))
+	assert.False(t, deadline.After(after.Add(35*time.Second)))
 }
 
 // Without Connect-Timeout-Ms the proxy sets no deadline of its own: only the
@@ -675,4 +676,34 @@ func TestNewProxy_PinsAndJarReachBothClients(t *testing.T) {
 	assert.Same(t, proxy.client.Jar, proxy.wsClient.Jar, "both lanes must share one cookie jar")
 	assert.Zero(t, proxy.client.Timeout, "the proxied calls include server streams")
 	assert.Zero(t, proxy.wsClient.Timeout, "a WebSocket outlives any client timeout")
+}
+
+func TestHubProxyDoLimitsSameOriginRedirects(t *testing.T) {
+	var requests atomic.Int32
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) <= 10 {
+			http.Redirect(w, r, "/cycle", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(hub.Close)
+
+	client := hub.Client()
+	client.CheckRedirect = pinRedirectsToOrigin(hub.URL)
+	proxy := &HubProxy{client: client, baseURL: hub.URL}
+
+	_, _, err := proxy.Do(t.Context(), http.MethodGet, "/cycle", nil, nil)
+	require.ErrorContains(t, err, "10 redirects")
+	assert.EqualValues(t, 10, requests.Load())
+}
+
+func TestPinRedirectsToOriginAcceptsEquivalentDNSSpellings(t *testing.T) {
+	check := pinRedirectsToOrigin("https://bücher.example:0443")
+	request, err := http.NewRequest(http.MethodGet, "https://xn--bcher-kva.example/dashboard", nil)
+	require.NoError(t, err)
+
+	assert.NoError(t, check(request, nil))
+	request.URL.Host = "xn--bcher-kva.example:0444"
+	assert.ErrorContains(t, check(request, nil), "leaves the origin")
 }

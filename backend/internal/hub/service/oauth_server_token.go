@@ -255,12 +255,22 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	// never a property of the app re-read at redeem time -- a registration
 	// that changed hands since the consent must not move the code off the path
 	// the page showed.
+	if !validAuthorizationCodePurpose(row) {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "authorization code has an invalid purpose")
+		return
+	}
 	if !row.StepUp.IsZero() {
 		h.handleStepUpCodeExchange(w, r, row)
 		return
 	}
-	if row.Redemption.IssuesSession() {
+	switch row.Redemption {
+	case store.RedemptionKindSession:
 		h.handleSessionCodeExchange(w, r, row, app, grantUID)
+		return
+	case store.RedemptionKindToken:
+		// Continue below.
+	default:
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "authorization code has an invalid purpose")
 		return
 	}
 	h.issueTokenResponse(w, r, consentedGrant{
@@ -270,6 +280,7 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 		installationName: row.InstallationName,
 		scopes:           scopes,
 		issuance:         store.APITokenIssuanceAuthorizationCode,
+		authGeneration:   row.AuthGeneration,
 		invalidGrantMsg:  "code expired or already consumed",
 		internalMsg:      "authorization code token issuance failed",
 		consume: func(tx store.Store) error {
@@ -283,6 +294,25 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			return nil
 		},
 	})
+}
+
+func validAuthorizationCodePurpose(row *store.OAuthAuthorizationCode) bool {
+	if !row.StepUp.IsZero() {
+		return row.Redemption == store.RedemptionKindNone &&
+			(row.StepUp.Kind == store.CredentialRefKindSession || row.StepUp.Kind == store.CredentialRefKindToken)
+	}
+	return row.Redemption == store.RedemptionKindSession || row.Redemption == store.RedemptionKindToken
+}
+
+func authorizationCodeGenerationMatches(ctx context.Context, tx store.Store, row *store.OAuthAuthorizationCode) error {
+	user, err := tx.Users().GetByID(ctx, row.UserID)
+	if err != nil {
+		return err
+	}
+	if user.AuthGeneration != row.AuthGeneration {
+		return errAuthorizationGrantUnavailable
+	}
+	return nil
 }
 
 // authorizationCodeProofFailure checks the redirect URI and PKCE proof shared
@@ -304,7 +334,7 @@ func authorizationCodeProofFailure(r *http.Request, row *store.OAuthAuthorizatio
 // consumeAuthorizationCode consumes the authorization code in the
 // transaction, mapping store.ErrNotFound to errAuthorizationCodeUnavailable.
 func consumeAuthorizationCode(ctx context.Context, tx store.Store, code string, now time.Time) error {
-	if _, err := tx.OAuthAuthorizationCodes().Consume(ctx, code, now); err != nil {
+	if err := tx.OAuthAuthorizationCodes().Consume(ctx, code, now); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errAuthorizationCodeUnavailable
 		}
@@ -333,24 +363,12 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "authentication required")
 		return
 	}
-	targetSessionID, targetTokenID, ok := userInfo.Credential.ElevatableRow()
-	if !ok {
+	target := userInfo.Credential.ElevatableRef()
+	if target.IsZero() {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential cannot be elevated")
 		return
 	}
-	var matches bool
-	switch row.StepUp.Kind {
-	case store.CredentialRefKindSession:
-		matches = targetSessionID == row.StepUp.ID
-	case store.CredentialRefKindToken:
-		matches = targetTokenID == row.StepUp.ID
-	case store.CredentialRefKindNone:
-		// Unreachable: this exchange runs only for a row that names a target.
-		// A reference that names nothing verifies nothing, so it matches
-		// nothing.
-		matches = false
-	}
-	if !matches {
+	if target != row.StepUp {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential does not match the step-up target")
 		return
 	}
@@ -364,14 +382,13 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		return
 	}
 	txErr := h.store.RunInUserAuthTransaction(r.Context(), uid, func(tx store.Store) error {
-		if row.StepUp.Kind.IsSession() {
-			// Hold the registration lock through the session stamp so a concurrent
-			// permission change and this redemption commit in the same order as
-			// their permission decisions. Lock the app before the code, as app
-			// deletion does.
-			if err := tx.OAuthClients().LockForElevation(r.Context(), row.ClientID); err != nil {
-				return fmt.Errorf("lock app for elevation: %w", err)
-			}
+		// Hold the registration lock through either credential stamp so a
+		// concurrent policy change and this grant commit in the same order.
+		if err := tx.OAuthClients().LockForElevation(r.Context(), row.ClientID); err != nil {
+			return fmt.Errorf("lock app for elevation: %w", err)
+		}
+		if err := authorizationCodeGenerationMatches(r.Context(), tx, row); err != nil {
+			return err
 		}
 		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
 			return err
@@ -390,8 +407,8 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 				return err
 			}
 		case store.CredentialRefKindNone:
-			// Unreachable: see the match above. A reference that names nothing
-			// names no credential to stamp.
+			// Unreachable: see the match above. A reference with no target
+			// identifies no credential to stamp.
 			return errElevationGrantUnavailable
 		}
 		return nil
@@ -403,7 +420,8 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		}
 		// The lock can find no live user or app with permission to elevate.
 		// The stamp can find no live credential. Each leaves the code unused.
-		if errors.Is(txErr, store.ErrNotFound) || errors.Is(txErr, errElevationSessionEnded) ||
+		if errors.Is(txErr, store.ErrNotFound) || errors.Is(txErr, errAuthorizationGrantUnavailable) ||
+			errors.Is(txErr, errElevationSessionEnded) ||
 			errors.Is(txErr, errElevationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that credential is no longer available")
 			return
@@ -423,6 +441,9 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 ) {
 	var created *auth.CreatedSession
 	txErr := h.store.RunInUserAuthTransaction(r.Context(), grantUID, func(tx store.Store) error {
+		if err := authorizationCodeGenerationMatches(r.Context(), tx, row); err != nil {
+			return err
+		}
 		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
 			return err
 		}
@@ -453,6 +474,10 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 		if errors.Is(txErr, errAuthorizationCodeUnavailable) {
 			h.revokeReplayedCode(r, row.Code, app)
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
+			return
+		}
+		if errors.Is(txErr, errAuthorizationGrantUnavailable) || errors.Is(txErr, store.ErrNotFound) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "account credentials changed after approval")
 			return
 		}
 		writeInternalError(w, "authorization code session issuance failed", txErr)
@@ -523,6 +548,9 @@ type consentedGrant struct {
 	// authorization-code exchange passes AUTHORIZATION_CODE, and a device-code
 	// exchange passes DEVICE_CODE.
 	issuance store.APITokenIssuance
+	// authGeneration is the account credential epoch at browser approval.
+	// Device grants use their own approval lifecycle and ignore this field.
+	authGeneration int64
 	// invalidGrantMsg answers a single-use grant that is already gone
 	// (errAuthorizationGrantUnavailable); internalMsg answers anything else.
 	invalidGrantMsg string
@@ -926,13 +954,17 @@ func (h *OAuthServerHandler) issueAPIToken(
 	}
 	var user *store.User
 	err = h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
-		if err := grant.consume(tx); err != nil {
-			return err
-		}
 		var err error
 		user, err = tx.Users().GetByID(ctx, userID.String())
 		if err != nil {
 			return fmt.Errorf("query token user: %w", err)
+		}
+		if grant.issuance == store.APITokenIssuanceAuthorizationCode &&
+			user.AuthGeneration != grant.authGeneration {
+			return errAuthorizationGrantUnavailable
+		}
+		if err := grant.consume(tx); err != nil {
+			return err
 		}
 		if err := tx.APITokens().Create(ctx, minted.Params); err != nil {
 			return fmt.Errorf("create api token: %w", err)

@@ -9,11 +9,11 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { createEffect, createSignal, on, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
-import { loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
+import { advanceAuthSessionEpoch, loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/proto/leapmux/v1/auth_pb'
 import { setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { hydrateStorageAccount, setStorageAccount, storageAccountFor } from '~/lib/browserStorage'
+import { prepareStorageAccount, setStorageAccount, storageAccountFor } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
@@ -226,6 +226,8 @@ export interface AuthState {
    * fail.
    */
   openUserAdoption: () => UserAdoption
+  /** Re-read the account and report whether this response was adopted. */
+  reloadUser: () => Promise<boolean>
   refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
 }
@@ -362,7 +364,7 @@ export const AuthProvider: ParentComponent = (props) => {
    * READ before the namespace may point at them -- `setStorageAccount` refuses
    * an account it was not hydrated for. Every caller of this already awaits the
    * hub round trip that produced the User, so the gate costs no extra hop; and
-   * `hydrateStorageAccount` never rejects, so a browser with no IndexedDB signs
+   * `prepareStorageAccount` never rejects, so a browser with no IndexedDB signs
    * in on defaults rather than failing to sign in.
    *
    * The two writes after that await stay ADJACENT and synchronous, which is the
@@ -390,12 +392,14 @@ export const AuthProvider: ParentComponent = (props) => {
     }
     if (next) {
       const account = storageAccountFor(hubOrigin(), next.id)
-      await hydrateStorageAccount(account)
+      const prepared = await prepareStorageAccount(account)
       // A later identity superseded this one while its rows were loading. It
       // owns the mirror now, so publishing this one would point the namespace
       // at an account the mirror no longer holds -- which `setStorageAccount`
       // would refuse anyway, loudly, in the middle of a sign-in.
       if (generation !== authGeneration)
+        return false
+      if (!prepared.commit())
         return false
       setStorageAccount(account)
     }
@@ -447,6 +451,7 @@ export const AuthProvider: ParentComponent = (props) => {
   }, { defer: true }))
 
   const clearAuthUser = () => {
+    advanceAuthSessionEpoch()
     // No await: the null branch takes none, so the signal still moves in this
     // turn. See `setUser`.
     void setUser(null)
@@ -545,11 +550,15 @@ export const AuthProvider: ParentComponent = (props) => {
     }
   }
 
+  const reloadUser = async (): Promise<boolean> => {
+    return (await readCurrentUser(supersededByAnyWrite())).outcome === 'adopted'
+  }
+
   const refreshUser = async () => {
     try {
       // Every outcome leaves the newest account state in place, which is all
       // a refresh asks for.
-      await readCurrentUser(supersededByAnyWrite())
+      await reloadUser()
     }
     catch {
       // Ignore — user state unchanged.
@@ -928,6 +937,7 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(true)
     try {
       const resp = await attempt()
+      advanceAuthSessionEpoch()
       // Through adoptSignInReport: setUser drives the eager release of the
       // previous user's pooled channels through the createEffect above,
       // rather than leaving them to the lazy per-request identity check
@@ -1011,6 +1021,7 @@ export const AuthProvider: ParentComponent = (props) => {
     // completion and the first solo password all land a NEW identity in a
     // document that may still hold the previous one's elevation.
     const op = beginOperation()
+    advanceAuthSessionEpoch()
     const outcome = await adoptSignInReport(report, op, opts)
     if (isCurrent(op))
       setLoading(false)
@@ -1035,6 +1046,7 @@ export const AuthProvider: ParentComponent = (props) => {
     retrySignInRecovery,
     finishSignInRecovery,
     openUserAdoption,
+    reloadUser,
     refreshUser,
     bootstrapError,
     retryBootstrap,

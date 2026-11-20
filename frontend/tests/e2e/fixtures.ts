@@ -320,12 +320,13 @@ export const test = base.extend<
   // session then fails. So the reset elevates the session again, also when no setting needs a reset.
   // Each workspace fixture depends on this reset, so the reset cannot remove
   // a workspace that the current test creates.
-  // The four steps are independent, so they run together, and the fixture reports every failure in one error.
+  // Restore the shared window first. The three cleanup operations are then
+  // independent and report every failure together.
   hubStateReset: [
     async ({ leapmuxServer }, use) => {
       const { hubUrl, adminToken, baselineHubSettings } = leapmuxServer
+      await elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD)
       await finishCleanup([
-        elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD),
         deleteAllWorkspacesViaAPI(hubUrl, adminToken),
         resetAllUserSettingsViaAPI(hubUrl, adminToken),
         resetHubSettingsViaAPI(hubUrl, adminToken, { baseline: baselineHubSettings, password: TEST_ADMIN_PASSWORD }),

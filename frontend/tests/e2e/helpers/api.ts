@@ -348,7 +348,7 @@ export async function dropElevationViaAPI(hubUrl: string, cookie: string): Promi
 
 /** A session of its own for the test administrator, elevated with the password. See `freshAdminSessionViaAPI`. */
 export async function elevatedAdminSessionViaAPI(hubUrl: string): Promise<string> {
-  const cookie = await freshAdminSessionViaAPI(hubUrl)
+  const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
   await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
   return cookie
 }
@@ -1012,16 +1012,17 @@ export async function listCustomizedHubSettingsViaAPI(hubUrl: string, cookie: st
     return await listCustomizedHubSettings(hubUrl, cookie)
   }
   catch (err) {
-    if (
-      password !== undefined
-      && err instanceof HubCallRefusedError
-      && err.responseHeaders.get('Leapmux-Elevation-Required')
-    ) {
+    if (password !== undefined && isElevationRequiredRefusal(err)) {
       await elevateSessionViaAPI(hubUrl, cookie, password)
       return await listCustomizedHubSettings(hubUrl, cookie)
     }
     throw err
   }
+}
+
+function isElevationRequiredRefusal(err: unknown): err is HubCallRefusedError {
+  return err instanceof HubCallRefusedError
+    && err.responseHeaders.get('Leapmux-Elevation-Required') !== null
 }
 
 async function listCustomizedHubSettings(hubUrl: string, cookie: string): Promise<CustomizedHubSetting[]> {
@@ -1083,8 +1084,19 @@ export async function resetHubSettingsViaAPI(
   }
   if (reset.length === 0)
     return
-  await elevateSessionViaAPI(hubUrl, cookie, options.password)
-  await callHub(hubUrl, 'AdminSettingsService/ResetSettings', { keys: reset }, { cookie, operation: `resetHubSettingsViaAPI(${reset.join(', ')})` })
+  const resetSettings = () => callHub(hubUrl, 'AdminSettingsService/ResetSettings', { keys: reset }, {
+    cookie,
+    operation: `resetHubSettingsViaAPI(${reset.join(', ')})`,
+  })
+  try {
+    await resetSettings()
+  }
+  catch (err) {
+    if (!isElevationRequiredRefusal(err))
+      throw err
+    await elevateSessionViaAPI(hubUrl, cookie, options.password)
+    await resetSettings()
+  }
 }
 
 /**

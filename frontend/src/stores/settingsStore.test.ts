@@ -148,7 +148,7 @@ describe('createSettingsStore load', () => {
     })
   })
 
-  it('reads the committed value after a pending write in the current window', async () => {
+  it('starts a catalogue read while a write is pending and keeps the later commit', async () => {
     const write = deferred<void>()
     let serverValue = '1'
     const list = vi.fn(async () => ({
@@ -173,7 +173,7 @@ describe('createSettingsStore load', () => {
       write.resolve()
       await Promise.all([pendingWrite, pendingLoad])
 
-      expect(listedWhileWriting).toBe(false)
+      expect(listedWhileWriting).toBe(true)
       expect(store.state.descriptors).toEqual([
         descriptor('smtp'),
       ])
@@ -215,13 +215,13 @@ describe('createSettingsStore load', () => {
       })
       await freshLoad
 
-      expect(listedBeforeWriteFinished).toBe(false)
+      expect(listedBeforeWriteFinished).toBe(true)
       expect(list).toHaveBeenCalledOnce()
       expect(store.values().get('smtp')?.effectiveJson).toBe('2')
     })
   })
 
-  it('issues a newer write after the pending catalogue read finishes', async () => {
+  it('issues a newer write without waiting for the pending catalogue read', async () => {
     const catalogue = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
     const update = vi.fn(async () => value('smtp', '2'))
     await withStore({
@@ -242,7 +242,7 @@ describe('createSettingsStore load', () => {
       })
       await Promise.all([load, write])
 
-      expect(wroteBeforeListFinished).toBe(false)
+      expect(wroteBeforeListFinished).toBe(true)
       expect(update).toHaveBeenCalledOnce()
       expect(store.values().get('smtp')?.effectiveJson).toBe('2')
     })
@@ -297,6 +297,41 @@ describe('createSettingsStore mutations', () => {
       expect(store.state.writeError).toBeNull()
     })
   })
+  it('keeps a committed value when a newer write to the same key fails', async () => {
+    const committed = deferred<SettingValue>()
+    const update = vi.fn<SettingsStorePorts['update']>()
+      .mockReturnValueOnce(committed.promise)
+      .mockRejectedValueOnce(new Error('the second setting is invalid'))
+    await withStore({
+      list: async () => ({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '1'),
+        ],
+      }),
+      update,
+    }, async (store) => {
+      await store.load()
+      const first = store.update('smtp', '2')
+      const refused = expect(store.update('smtp', '3')).rejects.toThrow('the second setting is invalid')
+
+      committed.resolve(value('smtp', '2'))
+      await first
+      await refused
+
+      expect(update.mock.calls).toEqual([
+        ['smtp', '2'],
+        ['smtp', '3'],
+      ])
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+      expect(store.state.writeError).toEqual({
+        key: 'smtp',
+        message: 'the second setting is invalid',
+      })
+    })
+  })
 
   it('records a failed write against the key that failed', async () => {
     await withStore({
@@ -312,15 +347,10 @@ describe('createSettingsStore mutations', () => {
     })
   })
 
-  // The reply guard is still needed beside the request queue, and what it
-  // decides is the WINDOW between the two replies. The queue holds the
-  // next REQUEST, so the replies now arrive in issue order and the value
-  // left at the end is the newest one either way. But each write takes its
-  // sequence when it is ISSUED, so the older reply lands while the newer
-  // write is still in flight. Applied, it puts the value the user just
-  // replaced back on the control until the newer reply arrives -- two fast
-  // clicks on a toggle, and it snaps back for that whole window.
-  it('ignores a superseded write reply while the newer write is in flight', async () => {
+  // The queue gives replies the same order as Hub commits. Publish the first
+  // commit while the second request is pending, then replace it when the Hub
+  // commits the second. If the second fails, the first remains authoritative.
+  it('publishes queued write replies in commit order', async () => {
     let releaseFirst: (v: SettingValue) => void = () => {}
     let releaseSecond: (v: SettingValue) => void = () => {}
     let call = 0
@@ -340,15 +370,12 @@ describe('createSettingsStore mutations', () => {
       },
     }, async (store) => {
       const first = store.update('flag', 'false')
-      // Issued while the first is still in flight, so it takes sequence 2
-      // and the first reply is stale before it even arrives.
+      // Issued while the first is in flight, so the queue sends it second.
       const second = store.update('flag', 'true')
       releaseFirst(value('flag', 'false'))
       await first
 
-      // The superseded reply carries the value the user replaced. Nothing
-      // has merged for the key yet, and nothing may.
-      expect(store.values().has('flag')).toBe(false)
+      expect(store.values().get('flag')?.effectiveJson).toBe('false')
 
       releaseSecond(value('flag', 'true'))
       await second

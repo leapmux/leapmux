@@ -149,10 +149,10 @@ enum ApiTokenIssuance {
   API_TOKEN_ISSUANCE_ADMIN = 3;
 }
 
-// CredentialRefKind is the kind of credential a reference names. Numbers
+// CredentialRefKind is the kind of credential a reference identifies. Numbers
 // oauth_authorization_codes.step_up_kind and oauth_authorization_codes.minted_kind.
 //
-// The reference is one pair of columns -- a kind and an id -- so a row names
+// The reference is one pair of columns -- a kind and an id -- so a row identifies
 // exactly one credential or none. NULL (this enum's UNSPECIFIED, which no
 // column stores) means no target: the CHECK range starts at 1, and the tie
 // keeps the id empty exactly then.

@@ -81,7 +81,7 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
   createEffect(() => {
     const workers = workerSnapshot()
     const owner = opts.metadata.state.userId
-    // The CRDT state names its tenant in RAW Hub user ids, while `owner` is the
+    // The CRDT state identifies its tenant by the raw Hub user ID, while `owner` is the
     // composed STORAGE account the metadata rows live under. The two must be
     // narrowed to one domain before they can be compared: `owner` stays the
     // account identity for "has the metadata account moved?", `ownerTenant` is

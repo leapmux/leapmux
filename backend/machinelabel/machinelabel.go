@@ -1,5 +1,5 @@
-// Package machinelabel names the machine a credential is recorded on: the
-// label a grant's Connected-apps list shows and the approval page names.
+// Package machinelabel supplies a machine label for a credential. The Connected
+// apps list and the approval page display this label.
 package machinelabel
 
 import "os"

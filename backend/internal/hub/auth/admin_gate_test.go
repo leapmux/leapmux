@@ -366,6 +366,17 @@ func TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 		"the refusal must be the one a step-up prompt can clear")
+
+	emailCtx, emailInfo := connect.NewClientContext(context.Background())
+	emailInfo.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err = f.adminUserClient.UpdateUser(emailCtx, &leapmuxv1.UpdateUserRequest{
+		User:  service.SelectUserByID(f.adminUserID),
+		Email: proto.String("admin@example.com"),
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Empty(t, emailInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"a browser session is required, so a bearer step-up cannot clear this refusal")
 }
 
 // TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the COMPOSITION

@@ -665,6 +665,7 @@ CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expir
 CREATE TABLE oauth_authorization_codes (
     code                  VARCHAR(255) PRIMARY KEY,
     user_id               VARCHAR(255) NOT NULL,
+    auth_generation       BIGINT NOT NULL,
     client_id             VARCHAR(255) NOT NULL,
     code_challenge        VARCHAR(255) NOT NULL,
     redirect_uri          VARCHAR(2048) NOT NULL DEFAULT '',
@@ -674,7 +675,7 @@ CREATE TABLE oauth_authorization_codes (
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
     -- The credential the exchange MINTED, stamped at consumption: one kind
-    -- and one id, so the reference names exactly one credential or none. See
+    -- and one id, so the reference identifies one credential or has no target. See
     -- the sqlite twin for the replay remedy this serves. A NULL kind means
     -- nothing was minted, and the column never stores 0.
     minted_kind           SMALLINT CHECK (minted_kind BETWEEN 1 AND 2),
@@ -687,12 +688,13 @@ CREATE TABLE oauth_authorization_codes (
     -- What this code redeems into, decided at consent and read at redeem. See
     -- the sqlite twin. A NULL kind means a step-up code.
     redemption_kind       SMALLINT CHECK (redemption_kind BETWEEN 1 AND 2),
-    -- The ties make the states structural: a kind names nothing without its
+    -- The ties make the states structural: a kind has no effect without its
     -- id, and a code verifies XOR redeems.
     -- OCTET_LENGTH tests emptiness without the collation's space padding.
     CHECK ((minted_kind IS NULL) = (OCTET_LENGTH(minted_ref_id) = 0)),
     CHECK ((step_up_kind IS NULL) = (OCTET_LENGTH(step_up_ref_id) = 0)),
     CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
+    CHECK (minted_kind IS NULL OR (consumed_at IS NOT NULL AND minted_kind = redemption_kind)),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;

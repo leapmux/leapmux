@@ -543,6 +543,28 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		}
 	}
 
+	t.Run("a metadata update preserves the dedicated elevation policy", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "metadata-policy")
+		ownerID := userid.MustNew(owner.ID)
+		clientID := seedApp(t, st, "metadata-policy-app", owner.ID, store.OAuthClientSourceUser)
+		rows, err := st.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+			ClientID: clientID, CallerUserID: ownerID, ElevationAllowed: false,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+
+		rows, err = st.OAuthClients().Update(ctx, store.UpdateOAuthClientParams{
+			ClientID: clientID, ClientName: "renamed", CallerUserID: ownerID,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+		app, err := st.OAuthClients().Get(ctx, clientID)
+		require.NoError(t, err)
+		assert.Equal(t, "renamed", app.ClientName)
+		assert.False(t, app.ElevationAllowed)
+	})
+
 	t.Run("a built-in registration refuses every write but its elevation", func(t *testing.T) {
 		st := s.NewStore(t)
 		admin := SeedUser(t, st, "builtin-admin")
@@ -800,6 +822,11 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
 				require.NoError(t, err)
 				assert.Equal(t, tc.expected, row.StepUp, "the reference must round-trip as exactly one kind and one id")
+				err = st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+				require.NoError(t, err)
+				assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code,
+					store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "must-not-mint"}),
+					store.ErrNotFound, "a step-up code cannot record a minted credential")
 			})
 		}
 	})
@@ -814,6 +841,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 			Code:             code,
 			UserID:           owner,
+			AuthGeneration:   42,
 			ClientID:         clientID,
 			CodeChallenge:    "challenge",
 			RedirectURI:      "https://app.example.com/callback",
@@ -822,8 +850,11 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			ExpiresAt:        time.Now().Add(time.Minute),
 			Redemption:       store.RedemptionKindSession,
 		}))
+		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "session-abc"}
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted), store.ErrNotFound,
+			"an active code cannot record a credential before consumption")
 
-		_, err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+		err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
 		require.NoError(t, err)
 
 		for _, ref := range []store.CredentialRef{
@@ -835,11 +866,18 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				"the minted reference CHECK must refuse a half-written reference: %#v", ref)
 		}
 
-		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "session-abc"}
+		wrongKind := store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-abc"}
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, wrongKind), store.ErrNotFound,
+			"the minted credential kind must match the consented redemption kind")
+
 		require.NoError(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted))
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted), store.ErrNotFound,
+			"a consumed issuance accepts exactly one minted credential")
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, "missing-code", minted), store.ErrNotFound)
 
 		row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
 		require.NoError(t, err)
+		assert.Equal(t, int64(42), row.AuthGeneration)
 		assert.Equal(t, minted, row.Minted, "the minted reference must read back on the consumed code")
 	})
 }

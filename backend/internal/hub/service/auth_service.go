@@ -324,29 +324,14 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 			return fmt.Errorf("store the initial solo password: %w", err)
 		}
 		reqInfo := serverCallInfo(ctx)
-		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, uid, settings.SessionDuration(snap), auth.SignInProvedFactor, auth.SessionMeta{
-			UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
-		})
+		session, err = auth.CreateSessionAt(ctx, tx, s.sessionHasher, uid, settings.SessionDuration(snap),
+			auth.SignInProvedFactorWithFullWindow, now, auth.SessionMeta{
+				UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
+			})
 		if err != nil {
 			return err
 		}
-		// The same row write every factor path takes, so the window, the
-		// parameters and the zero-row refusal have one home. The cache
-		// invalidation is NOT taken here: it must fire after the commit, or a
-		// concurrent reader refills the cache from the pre-commit row. See
-		// grantSessionElevation, which is that half.
-		//
-		// The session was created two statements above, inside this
-		// transaction, so a zero row count is an internal inconsistency rather
-		// than the ordinary "your session ended" the factor paths report.
-		elevatedUntil, live, err := elevateSessionRow(ctx, tx, session.ID, uid, now)
-		if err != nil {
-			return fmt.Errorf("elevate the initial solo session: %w", err)
-		}
-		if !live {
-			return fmt.Errorf("elevate the initial solo session: the session this transaction created is not active")
-		}
-		elevationExpiresAt = elevatedUntil
+		elevationExpiresAt = session.Elevation.ExpiresAt
 		userCopy := *lockedUser
 		userCopy.PasswordHash = hashed
 		storedUser = &userCopy

@@ -234,6 +234,47 @@ func TestConnectDistributedRollsBackWhenConfigSaveFails(t *testing.T) {
 	require.Empty(t, app.config.HubURL)
 }
 
+func TestConnectDistributedClosesTheEndpointAfterConfigSaveFails(t *testing.T) {
+	makeConfigUnwritable(t)
+	connected := make(chan struct{}, 1)
+	closed := make(chan struct{}, 1)
+	hub := hubtransporttest.NewUnstartedServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	hub.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			select {
+			case connected <- struct{}{}:
+			default:
+			}
+		case http.StateClosed, http.StateHijacked:
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	hub.Start()
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	deadline, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	require.Error(t, app.ConnectDistributed(t.Context(), hub.URL))
+	select {
+	case <-connected:
+	case <-deadline.Done():
+		t.Fatal("the Hub probe did not establish a connection")
+	}
+	select {
+	case <-closed:
+	case <-deadline.Done():
+		t.Fatal("the failed connection did not close its idle endpoint")
+	}
+}
+
 // TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedRequest
 // pins the wiring inside ConnectDistributed: the proxy that commits takes the
 // PERSISTENT jar over sessionsDir(), so a session file left by the previous run
@@ -545,6 +586,22 @@ func TestConnectRequiresLauncherState(t *testing.T) {
 	err := app.ConnectDistributed(context.Background(), "https://replacement.example")
 	require.ErrorContains(t, err, "already connected")
 	require.Equal(t, "https://original.example", app.connection.proxy.baseURL)
+}
+
+func TestConnectDistributedRepeatsTheCurrentCanonicalHub(t *testing.T) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	setTestHome(t)
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	require.NoError(t, app.ConnectDistributed(t.Context(), server.URL))
+	connection := app.connection
+	require.NoError(t, app.ConnectDistributed(t.Context(), server.URL))
+
+	assert.Same(t, connection, app.connection)
 }
 
 // The window mode crosses the wire as the CONTRACT TOKEN, unchanged. There is

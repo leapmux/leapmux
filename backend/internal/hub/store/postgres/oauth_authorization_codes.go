@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -18,6 +19,7 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 	return store.OAuthAuthorizationCode{
 		Code:             c.Code,
 		UserID:           c.UserID,
+		AuthGeneration:   c.AuthGeneration,
 		ClientID:         c.ClientID,
 		CodeChallenge:    c.CodeChallenge,
 		RedirectURI:      c.RedirectUri,
@@ -37,6 +39,7 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 	return mapErr(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
 		Code:             p.Code,
 		UserID:           p.UserID.String(),
+		AuthGeneration:   p.AuthGeneration,
 		ClientID:         p.ClientID,
 		CodeChallenge:    p.CodeChallenge,
 		RedirectUri:      p.RedirectURI,
@@ -61,16 +64,18 @@ func (s *oauthAuthorizationCodeStore) GetActive(ctx context.Context, code string
 	return &out, nil
 }
 
-func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) (*store.OAuthAuthorizationCode, error) {
-	row, err := s.conn.q.ConsumeOAuthAuthorizationCode(ctx, gendb.ConsumeOAuthAuthorizationCodeParams{
+func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) error {
+	rows, err := rowsAffected(s.conn.q.ConsumeOAuthAuthorizationCode(ctx, gendb.ConsumeOAuthAuthorizationCodeParams{
 		Code: code,
 		Now:  pgtime.New(now),
-	})
+	}))
 	if err != nil {
-		return nil, mapErr(err)
+		return err
 	}
-	out := fromDBOAuthAuthorizationCode(row)
-	return &out, nil
+	if rows != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 // Get returns the row whatever its state. See OAuthAuthorizationCodeStore.Get:
@@ -98,9 +103,21 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 
 func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
 	mintedKind, mintedRefID := minted.NullableKind()
-	return mapErr(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
-		Code:        code,
-		MintedKind:  mintedKind,
-		MintedRefID: mintedRefID,
+	if mintedKind == nil {
+		return store.ErrInvalidArgument
+	}
+	redemptionKind := leapmuxv1.RedemptionKind(*mintedKind)
+	rows, err := rowsAffected(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
+		Code:                   code,
+		MintedKind:             mintedKind,
+		MintedRefID:            mintedRefID,
+		ExpectedRedemptionKind: &redemptionKind,
 	}))
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }

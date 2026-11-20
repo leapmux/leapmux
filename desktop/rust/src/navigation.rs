@@ -14,27 +14,21 @@ use tauri::{Manager, Url};
 
 /// Whether the shell may navigate a webview to `url`.
 ///
-/// Accepts exactly the origins the bundled frontend is served from -- the
-/// `tauri://localhost` custom protocol on macOS and Linux, the `http(s)://
-/// tauri.localhost` hosts Windows WebView2 resolves it to -- plus the origin
-/// of the dev server when one is passed, and `about:blank` (a `window.open`
-/// stub before it is pointed at real content). Every other origin is refused:
+/// Accepts the one origin Tauri registered for this webview, the origin of the
+/// dev server when one is passed, and `about:blank` (a `window.open` stub before
+/// it is pointed at real content). Every other origin is refused:
 /// the shell never shows a Hub page or any other remote content in a webview.
 ///
 /// Origins are compared by scheme, host and port, so a look-alike host
 /// (`tauri.localhost.evil`) and a dev server on another port stay refused.
-pub(crate) fn is_app_url(url: &Url, dev_url: Option<&Url>) -> bool {
+pub(crate) fn is_app_url(url: &Url, app_origin: Option<&Url>, dev_url: Option<&Url>) -> bool {
     if url.as_str() == "about:blank" {
         return true;
     }
-    for (scheme, host) in [
-        ("tauri", "localhost"),
-        ("http", "tauri.localhost"),
-        ("https", "tauri.localhost"),
-    ] {
-        // No port: `url` drops the default port of a special scheme, and any
-        // other port is a different origin.
-        if (url.scheme(), url.host_str(), url.port()) == (scheme, Some(host), None) {
+    if let Some(origin) = app_origin {
+        if (url.scheme(), url.host_str(), url.port())
+            == (origin.scheme(), origin.host_str(), origin.port())
+        {
             return true;
         }
     }
@@ -60,7 +54,11 @@ pub(crate) fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             } else {
                 None
             };
-            let allowed = is_app_url(url, dev_url.as_ref());
+            let app_origin = webview
+                .convert_file_src("", Some("tauri"))
+                .ok()
+                .and_then(|origin| Url::parse(&origin).ok());
+            let allowed = is_app_url(url, app_origin.as_ref(), dev_url.as_ref());
             if !allowed {
                 crate::shell_log!("refusing navigation to {url}");
             }
@@ -77,19 +75,22 @@ mod tests {
         Url::parse(url).unwrap_or_else(|err| panic!("parse {url}: {err}"))
     }
 
-    // The origins the bundled frontend is served from, in every platform's
-    // spelling. A refusal on any of them leaves the app on a blank window.
     #[test]
-    fn app_origins_are_accepted() {
-        for url in [
+    fn only_the_registered_app_origin_is_accepted() {
+        let candidates = [
             "tauri://localhost/x",
             "http://tauri.localhost/",
             "https://tauri.localhost/a?b",
-        ] {
-            assert!(
-                is_app_url(&parse(url), None),
-                "the app origin must be accepted: {url}"
-            );
+        ];
+        for app in candidates {
+            let app_origin = parse(app);
+            for candidate in candidates {
+                assert_eq!(
+                    is_app_url(&parse(candidate), Some(&app_origin), None),
+                    parse(candidate).scheme() == app_origin.scheme(),
+                    "{candidate} under registered origin {app}",
+                );
+            }
         }
     }
 
@@ -100,11 +101,11 @@ mod tests {
     fn the_dev_origin_is_accepted_only_with_the_dev_url() {
         let dev = parse("http://localhost:4328/");
         assert!(
-            is_app_url(&parse("http://localhost:4328/"), Some(&dev)),
+            is_app_url(&parse("http://localhost:4328/"), None, Some(&dev)),
             "the dev origin must be accepted when the dev URL is passed"
         );
         assert!(
-            !is_app_url(&parse("http://localhost:4328/"), None),
+            !is_app_url(&parse("http://localhost:4328/"), None, None),
             "the dev origin must be refused when no dev URL is passed"
         );
     }
@@ -123,7 +124,7 @@ mod tests {
             "http://tauri.localhost.evil/",
         ] {
             assert!(
-                !is_app_url(&parse(url), Some(&dev)),
+                !is_app_url(&parse(url), None, Some(&dev)),
                 "an origin outside the allow-list must be refused: {url}"
             );
         }
@@ -133,6 +134,6 @@ mod tests {
     // content, and the hook sees those navigations too on macOS and Linux.
     #[test]
     fn about_blank_is_accepted() {
-        assert!(is_app_url(&parse("about:blank"), None));
+        assert!(is_app_url(&parse("about:blank"), None, None));
     }
 }

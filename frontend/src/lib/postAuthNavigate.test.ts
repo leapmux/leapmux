@@ -7,6 +7,7 @@ import {
   postAuthDestination,
   postAuthNavigate,
   postSignInDestination,
+  postVerificationDestination,
   VERIFY_EMAIL_PATH,
 } from './postAuthNavigate'
 
@@ -207,15 +208,33 @@ describe('normalizeRoutePath', () => {
 describe('postSignInDestination', () => {
   // Verification comes first, even over a consent redirect: the account must
   // verify its address before it continues anywhere.
-  it('sends an account that must verify to /verify-email, whatever the redirect', () => {
+  it('preserves a safe continuation while email verification runs first', () => {
+    expect(postSignInDestination(true, '/oauth/authorize?state=s')).toEqual({
+      kind: 'route',
+      path: `${VERIFY_EMAIL_PATH}?redirect=${encodeURIComponent('/oauth/authorize?state=s')}`,
+    })
+    expect(postSignInDestination(true, '/?from=cli')).toEqual({
+      kind: 'route',
+      path: `${VERIFY_EMAIL_PATH}?redirect=${encodeURIComponent('/?from=cli')}`,
+    })
+    expect(postVerificationDestination('/oauth/authorize?state=s')).toEqual({
+      kind: 'document',
+      path: '/oauth/authorize?state=s',
+    })
+  })
+
+  it('drops unsafe and recursive verification continuations', () => {
     for (const redirect of [
       undefined,
-      '/',
-      '/?from=cli',
-      '/oauth/authorize?state=s',
       'https://evil.example/',
-    ])
-      expect(postSignInDestination(true, redirect), String(redirect)).toEqual({ kind: 'route', path: VERIFY_EMAIL_PATH })
+      '//evil.example/',
+      '/verify-email?x=1',
+    ]) {
+      expect(postSignInDestination(true, redirect), String(redirect)).toEqual({
+        kind: 'route',
+        path: VERIFY_EMAIL_PATH,
+      })
+    }
   })
 
   it('continues to a hub-served redirect with a full-document load', () => {

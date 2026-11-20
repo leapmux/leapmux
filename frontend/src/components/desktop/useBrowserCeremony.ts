@@ -45,20 +45,23 @@ export function useBrowserCeremony(
     setPhase('waiting')
     try {
       const f = await runBrowserAuth(kind, signal)
-      if (signal.aborted)
-        return
-      setFlow(f)
+      if (!signal.aborted)
+        setFlow(f)
 
       const result = await f.result
-      if (signal.aborted)
-        return
-      setFlow(null)
+      if (!signal.aborted)
+        setFlow(null)
       if (!result.ok) {
+        if (signal.aborted)
+          return
         setPhase('idle')
         setFailure(result.failure)
         return
       }
 
+      // The sidecar may accept a code after this route requested cancellation.
+      // Persistent authentication belongs to the surviving provider, while
+      // onSuccess uses signal to suppress route-owned navigation and callbacks.
       await onSuccess(signal)
     }
     catch (err) {

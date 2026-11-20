@@ -1,17 +1,22 @@
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
+import { fromBinary } from '@bufbuild/protobuf'
 import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import {
   LAUNCH_VISIBILITY_HIDDEN,
   LAUNCH_VISIBILITY_MINIMIZED,
   LAUNCH_VISIBILITY_NORMAL,
   TAURI_EVENT_SIDECAR_LOG,
+  TAURI_IPC_HEADER_HEADERS,
+  TAURI_IPC_HEADER_METHOD,
+  TAURI_IPC_HEADER_PATH,
+  TAURI_IPC_HEADER_RELAY_ID,
+  TAURI_IPC_HEADER_REQUEST_ID,
   WINDOW_MODE_FULLSCREEN,
   WINDOW_MODE_MAXIMIZED,
   WINDOW_MODE_NORMAL,
 } from '~/generated/contracts/desktop'
-import { DEFAULT_MAX_MESSAGE_SIZE } from '~/generated/contracts/wire'
-import { BrowserAuthKind as ProtoBrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { BrowserAuthKind as ProtoBrowserAuthKind, ProxyHttpResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { arrayBufferToBase64 } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
@@ -178,73 +183,30 @@ export interface BrowserAuthStart {
 }
 
 /**
- * One proxied HTTP round trip, as the desktop sidecar's raw response envelope
- * decodes it: the status and headers from its meta block, and the body bytes
- * sliced out of the envelope buffer.
+ * One proxied HTTP round trip decoded from the generated protobuf response.
  */
 export interface ProxyHttpResponse {
   status: number
   headers: Record<string, string[]>
-  body: ArrayBuffer
+  body: Uint8Array<ArrayBuffer>
 }
 
-/**
- * The unary proxy response envelope, shared with the Rust shell's
- * `encode_proxy_response_envelope` (desktop/rust/src/main.rs):
- *
- *     [u32 LE meta_len][meta JSON][body]
- *
- * The meta JSON is `{"status": <int>, "headers": {<name>: [<value>, ...]}}`.
- * The 4-byte length prefix matches contracts/wire.json's
- * `framing.lengthPrefixBytes` (this envelope reads it LITTLE-endian, unlike
- * that contract's big-endian WebSocket frame prefix), and the meta block is
- * budgeted by the same contract's `maxMessageSizeBytes` frame budget. The
- * body follows the meta block verbatim -- no base64 anywhere on this path,
- * which is the whole point: for multi-MB payloads the encode/decode
- * round-trip was the dominant cost of the desktop transport.
- */
-export const PROXY_ENVELOPE_META_PREFIX_BYTES = 4
-
-/** Encode one proxied response into `[u32 LE meta_len][meta JSON][body]`. */
-export function encodeProxyResponseEnvelope(resp: ProxyHttpResponse): ArrayBuffer {
-  const meta = new TextEncoder().encode(JSON.stringify({
-    status: resp.status,
-    headers: resp.headers,
-  }))
-  if (meta.byteLength > DEFAULT_MAX_MESSAGE_SIZE)
-    throw new Error('proxy response meta exceeds the frame budget')
-  const out = new Uint8Array(PROXY_ENVELOPE_META_PREFIX_BYTES + meta.byteLength + resp.body.byteLength)
-  new DataView(out.buffer).setUint32(0, meta.byteLength, true)
-  out.set(meta, PROXY_ENVELOPE_META_PREFIX_BYTES)
-  out.set(new Uint8Array(resp.body), PROXY_ENVELOPE_META_PREFIX_BYTES + meta.byteLength)
-  return out.buffer
-}
-
-/**
- * Decode the raw envelope `proxy_http` resolves with, slicing the body out of
- * the buffer. The prefix and the meta block are validated before either is
- * trusted: the length is read little-endian, checked against the frame budget
- * (contracts/wire.json `maxMessageSizeBytes`) and against the bytes actually
- * present, so a corrupt prefix cannot make the slice read past the buffer.
- */
-export function decodeProxyResponseEnvelope(bytes: ArrayBuffer): ProxyHttpResponse {
-  if (bytes.byteLength < PROXY_ENVELOPE_META_PREFIX_BYTES)
-    throw new Error('proxy response envelope is truncated')
-  const metaLen = new DataView(bytes).getUint32(0, true)
-  if (metaLen > DEFAULT_MAX_MESSAGE_SIZE)
-    throw new Error('proxy response meta exceeds the frame budget')
-  const bodyStart = PROXY_ENVELOPE_META_PREFIX_BYTES + metaLen
-  if (bodyStart > bytes.byteLength)
-    throw new Error('proxy response envelope is truncated')
-  const meta: { status?: unknown, headers?: unknown } = JSON.parse(
-    new TextDecoder().decode(new Uint8Array(bytes, PROXY_ENVELOPE_META_PREFIX_BYTES, metaLen)),
+/** Decode the generated ProxyHttpResponse carried by the raw Tauri reply. */
+export function decodeProxyResponse(bytes: ArrayBuffer | Uint8Array): ProxyHttpResponse {
+  const decoded = fromBinary(
+    ProxyHttpResponseSchema,
+    bytes instanceof Uint8Array
+      ? bytes
+      : new Uint8Array(bytes),
   )
   return {
-    status: typeof meta.status === 'number'
-      ? meta.status
-      : 200,
-    headers: (meta.headers ?? {}) as Record<string, string[]>,
-    body: bytes.slice(bodyStart),
+    status: decoded.status,
+    headers: Object.fromEntries(
+      Object.entries(decoded.headers).map(([name, values]) => [name, values.values]),
+    ),
+    // ipcBytes always supplies an ArrayBuffer-backed view. protobuf-es keeps
+    // bytes fields as subarrays of that input.
+    body: decoded.body as Uint8Array<ArrayBuffer>,
   }
 }
 
@@ -1063,8 +1025,7 @@ export const platformBridge = {
    * invoke header value must stay visible ASCII, so the map rides
    * base64-encoded JSON -- the `filename-b64` pattern.
    *
-   * Resolves with the raw response envelope (see
-   * `decodeProxyResponseEnvelope`), never a JSON body.
+   * Resolves with raw ProxyHttpResponse protobuf bytes, never a JSON body.
    */
   async proxyHttp(method: string, path: string, headers: Record<string, string>, body: ArrayBuffer | Uint8Array | string | null | undefined): Promise<ArrayBuffer> {
     const bytes = body === null || body === undefined
@@ -1072,13 +1033,18 @@ export const platformBridge = {
       : typeof body === 'string'
         ? new TextEncoder().encode(body)
         : body
-    return tauriInvoke<ArrayBuffer>('proxy_http', bytes, {
+    const response = await tauriInvoke<unknown>('proxy_http', bytes, {
       headers: {
-        method,
-        path,
-        'headers-b64': arrayBufferToBase64(JSON.stringify(headers)),
+        [TAURI_IPC_HEADER_METHOD]: method,
+        [TAURI_IPC_HEADER_PATH]: path,
+        [TAURI_IPC_HEADER_HEADERS]: arrayBufferToBase64(JSON.stringify(headers)),
+        [TAURI_IPC_HEADER_REQUEST_ID]: crypto.randomUUID(),
       },
     })
+    const responseBytes = ipcBytes(response)
+    if (responseBytes === null)
+      throw new Error('native HTTP proxy returned no byte response')
+    return responseBytes
   },
   // Returns null off-Tauri or off-macOS so callers can skip the IPC.
   async cliPathStatus(): Promise<CliPathStatus | null> {
@@ -1098,8 +1064,13 @@ export const platformBridge = {
   async openChannelRelay(relayId: number, receiver: RelayReceiver): Promise<boolean> {
     return openRelay('open_channel_relay', { relayId }, receiver)
   },
-  async sendChannelMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
-    await tauriInvoke('send_channel_message', data)
+  async sendChannelMessage(relayId: number, data: ArrayBuffer | Uint8Array): Promise<void> {
+    await tauriInvoke('send_channel_message', data, {
+      headers: {
+        [TAURI_IPC_HEADER_RELAY_ID]: String(relayId),
+        [TAURI_IPC_HEADER_REQUEST_ID]: crypto.randomUUID(),
+      },
+    })
   },
   async closeChannelRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_channel_relay', { relayId })
@@ -1219,6 +1190,25 @@ interface RelayClosePayload {
 
 type RelayMessage = ArrayBuffer | RelayClosePayload
 
+function ipcBytes(payload: unknown): ArrayBuffer | null {
+  if (payload instanceof ArrayBuffer)
+    return payload
+  if (ArrayBuffer.isView(payload)) {
+    const view = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
+    return new Uint8Array(view).buffer
+  }
+  if (!Array.isArray(payload))
+    return null
+  const bytes = new Uint8Array(payload.length)
+  for (let index = 0; index < payload.length; index++) {
+    const value = payload[index]
+    if (!Number.isInteger(value) || value < 0 || value > 255)
+      throw new Error('native IPC byte array contains an invalid value')
+    bytes[index] = value
+  }
+  return bytes.buffer
+}
+
 export interface RelayReceiver {
   isAbandoned: () => boolean
   onMessage: (message: RelayMessage) => void
@@ -1236,9 +1226,8 @@ async function openRelay(
   // Attach the handler before invoking the open. The first frame can arrive
   // before the open reply, and the channel does not replay it.
   const channel = new Channel<unknown>((message) => {
-    receiver.onMessage(message instanceof ArrayBuffer
-      ? message
-      : parseRelayClosePayload(message))
+    const bytes = ipcBytes(message)
+    receiver.onMessage(bytes ?? parseRelayClosePayload(message))
   })
   try {
     await invoke(command, { ...args, channel })
@@ -1310,11 +1299,14 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
     if (onAbort)
       signal?.removeEventListener('abort', onAbort)
   }
-  const resp = decodeProxyResponseEnvelope(envelope)
+  const resp = decodeProxyResponse(envelope)
   const responseHeaders = Object.entries(resp.headers).flatMap(([name, values]) =>
     values.map(value => [name, value] as [string, string]),
   )
-  return new Response(resp.body, {
+  const responseBody = resp.status === 204 || resp.status === 205 || resp.status === 304
+    ? null
+    : resp.body
+  return new Response(responseBody, {
     status: resp.status,
     headers: responseHeaders,
   })

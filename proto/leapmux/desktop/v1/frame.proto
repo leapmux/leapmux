@@ -202,7 +202,8 @@ message ProxyHttpRequest {
 }
 
 message SendChannelMessageRequest {
-  bytes data = 1;
+  uint64 relay_id = 1;
+  bytes data = 2;
 }
 
 message CreateTunnelRequest {

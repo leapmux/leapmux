@@ -10,6 +10,7 @@ require (
 	github.com/leapmux/leapmux v0.0.0-20260806144509-6b7d44fbd401
 	github.com/stretchr/testify v1.12.1
 	github.com/things-go/go-socks5 v0.1.4
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.50.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -86,7 +87,6 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0 // indirect
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.38.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/text v0.44.0 // indirect

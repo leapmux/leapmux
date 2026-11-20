@@ -30,10 +30,17 @@ export async function runBrowserAuth(
   // result of a superseded ceremony.
   const earlyResults: { ceremonyId: string, ok: boolean, failure: string }[] = []
   let ownCeremonyId: string | null = null
+  let resultSettled = false
   let resolveResult!: (r: BrowserAuthResult) => void
   const resultPromise = new Promise<BrowserAuthResult>((resolve) => {
     resolveResult = resolve
   })
+  const settleResult = (result: BrowserAuthResult) => {
+    if (resultSettled)
+      return
+    resultSettled = true
+    resolveResult(result)
+  }
 
   // `onEvent` hands the callback the emitted payload -- the fields of
   // `BrowserAuthResultEvent`, as the shell forwards them. The Tauri event
@@ -47,7 +54,7 @@ export async function runBrowserAuth(
       earlyResults.push({ ceremonyId: p.ceremonyId, ok: p.ok, failure: p.failure })
       return
     }
-    resolveResult({ ok: p.ok, failure: p.failure })
+    settleResult({ ok: p.ok, failure: p.failure })
   }
 
   const off = await platformBridge.onEvent(TAURI_EVENT_BROWSER_AUTH_RESULT, handleEvent)
@@ -73,7 +80,7 @@ export async function runBrowserAuth(
     // carries another ceremony id is stale and must not settle this call.
     const early = earlyResults.find(r => r.ceremonyId === start.ceremonyId)
     if (early)
-      resolveResult({ ok: early.ok, failure: early.failure })
+      settleResult({ ok: early.ok, failure: early.failure })
     earlyResults.length = 0
 
     const cancel = async (): Promise<void> => {
@@ -82,7 +89,7 @@ export async function runBrowserAuth(
       }
       catch {
         // The result may never arrive when the cancel command fails.
-        resolveResult({ ok: false, failure: '' })
+        settleResult({ ok: false, failure: '' })
       }
     }
 
@@ -99,7 +106,11 @@ export async function runBrowserAuth(
     else {
       onAbort = requestCancel
       signal?.addEventListener('abort', onAbort, { once: true })
-      await openExternalUrl(start.authorizeUrl)
+      if (!resultSettled) {
+        // The flow is already cancellable and copyable. The OS opener is a
+        // best-effort side effect and must not withhold that recovery surface.
+        void openExternalUrl(start.authorizeUrl).catch(() => {})
+      }
     }
 
     return {

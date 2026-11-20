@@ -50,7 +50,7 @@ const ControlCLIScopes = "account:read account:write workspace:read workspace:wr
 
 // ControlCLIGrantTypes is the flow set the CLI's seeded registration runs.
 // See ControlCLIScopes for why it is a constant.
-const ControlCLIGrantTypes = "authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code"
+const ControlCLIGrantTypes = GrantTypeAuthorizationCode + " " + GrantTypeRefreshToken + " " + GrantTypeDeviceCode
 
 // The three grant types /oauth/token serves, as RFC-defined wire identifiers.
 // They live in this package beside the built-in ids because it is the
@@ -99,14 +99,23 @@ const DesktopRedirectURI = "http://127.0.0.1/callback"
 // built-in registrations cannot be deleted or edited, because their fields are
 // constants of the build rather than rows an administrator owns.
 func IsBuiltIn(clientID string) bool {
-	return clientID == ControlCLIClientID || clientID == ServiceAccountClientID ||
-		clientID == DesktopClientID
+	for _, app := range BuiltInRegistrations() {
+		if app.ClientID == clientID {
+			return true
+		}
+	}
+	return false
 }
 
 // BuiltInClientIDs lists them in a stable order, for a test or a listing that
 // must cover all of them.
 func BuiltInClientIDs() []string {
-	return []string{ControlCLIClientID, ServiceAccountClientID, DesktopClientID}
+	apps := BuiltInRegistrations()
+	ids := make([]string, len(apps))
+	for index, app := range apps {
+		ids[index] = app.ClientID
+	}
+	return ids
 }
 
 // DesktopIssuesSessions records that an authorization for the desktop mints a
@@ -118,3 +127,42 @@ func BuiltInClientIDs() []string {
 // Minting a session hands out the account itself, so this is a constant of the
 // build and not a registration field any caller can turn on.
 const DesktopIssuesSessions = true
+
+// BuiltInRegistration is the immutable half of one registration this build
+// ships. The store adds timestamps, source, and the operator-owned elevation
+// setting when it reconciles these descriptors.
+type BuiltInRegistration struct {
+	ClientID       string
+	ClientName     string
+	ClientURI      string
+	RedirectURIs   string
+	Scopes         string
+	GrantTypes     string
+	IssuesSessions bool
+}
+
+// BuiltInRegistrations lists the build-owned registrations in stable order.
+func BuiltInRegistrations() []BuiltInRegistration {
+	return []BuiltInRegistration{
+		{
+			ClientID:     ControlCLIClientID,
+			ClientName:   ControlCLIName,
+			RedirectURIs: ControlCLIRedirectURI,
+			Scopes:       ControlCLIScopes,
+			GrantTypes:   ControlCLIGrantTypes,
+		},
+		{
+			ClientID:   ServiceAccountClientID,
+			ClientName: ServiceAccountName,
+			Scopes:     ServiceAccountScopes,
+		},
+		{
+			ClientID:       DesktopClientID,
+			ClientName:     DesktopName,
+			RedirectURIs:   DesktopRedirectURI,
+			Scopes:         DesktopScopes,
+			GrantTypes:     DesktopGrantTypes,
+			IssuesSessions: DesktopIssuesSessions,
+		},
+	}
+}

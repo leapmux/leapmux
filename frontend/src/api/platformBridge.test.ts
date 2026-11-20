@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { create, toBinary } from '@bufbuild/protobuf'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { deferred, settle } from '~/test-support/async'
-import { decodeProxyResponseEnvelope, desktopFetch, desktopHub, encodeProxyResponseEnvelope, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
@@ -22,6 +23,24 @@ vi.mock('~/lib/shortcuts/platform', () => ({
 // the MESSAGE it reports -- not oat's DOM, which jsdom has no host for.
 const showWarnToastWithLoggedCause = vi.hoisted(() => vi.fn())
 vi.mock('~/components/common/Toast', () => ({ showWarnToastWithLoggedCause }))
+
+function encodeProxyResponseEnvelope(response: {
+  status: number
+  headers: Record<string, string[]>
+  body: ArrayBuffer
+}): ArrayBuffer {
+  const bytes = toBinary(ProxyHttpResponseSchema, create(ProxyHttpResponseSchema, {
+    status: response.status,
+    headers: Object.fromEntries(
+      Object.entries(response.headers).map(([name, values]) => [
+        name,
+        create(HeaderValuesSchema, { values }),
+      ]),
+    ),
+    body: new Uint8Array(response.body),
+  }))
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
 
 describe('desktopFetch', () => {
   beforeEach(() => {
@@ -49,6 +68,45 @@ describe('desktopFetch', () => {
 
     const response = await desktopFetch('https://hub.example/test')
     expect(response.headers.get('x-repeated')).toBe('one, two')
+  })
+
+  it('accepts raw response bytes serialized by Tauri fallback IPC', async () => {
+    const wire = encodeProxyResponseEnvelope({
+      status: 200,
+      headers: {
+        'content-type': [
+          'text/plain',
+        ],
+      },
+      body: new TextEncoder().encode('fallback').buffer,
+    })
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http')
+        return Array.from(new Uint8Array(wire))
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const response = await desktopFetch('https://hub.example/test')
+
+    expect(await response.text()).toBe('fallback')
+  })
+
+  it('constructs a bodyless response for status 204', async () => {
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http') {
+        return encodeProxyResponseEnvelope({
+          status: 204,
+          headers: {},
+          body: new ArrayBuffer(0),
+        })
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const response = await desktopFetch('https://hub.example/no-content')
+
+    expect(response.status).toBe(204)
+    expect(await response.text()).toBe('')
   })
 
   it('rejects with AbortError when the signal aborts while the call is in flight', async () => {
@@ -155,10 +213,7 @@ describe('desktopFetch', () => {
   })
 })
 
-// The envelope is the one structure the webview parses by position out of the
-// sidecar's raw response bytes; the framing must match the Rust shell's
-// `encode_proxy_response_envelope` exactly.
-describe('proxy response envelope', () => {
+describe('ProxyHttpResponse wire data', () => {
   it('round-trips meta and a multi-KB binary body through encode and decode', () => {
     const body = new Uint8Array(4096)
     for (let i = 0; i < body.length; i++)
@@ -197,8 +252,8 @@ describe('proxy response envelope', () => {
       headers: {},
       body: new ArrayBuffer(0),
     })
-    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 2))).toThrow(/truncated/)
-    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 3))).toThrow(/truncated/)
+    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 2))).toThrow()
+    expect(() => decodeProxyResponseEnvelope(new Uint8Array([0x1A, 0x05, 0x01]))).toThrow()
   })
 })
 
@@ -1021,6 +1076,33 @@ describe('channel relay bridge', () => {
     expect(delivered).toEqual([frame, close])
     expect(delivered[0]).toBe(frame)
     expect(tauri.callbacks.has(channelId)).toBe(false)
+  })
+
+  it('accepts a raw frame serialized by Tauri fallback IPC', async () => {
+    let channelId!: number
+    mockIPC((cmd, args) => {
+      if (cmd === 'open_channel_relay' && args) {
+        channelId = (args as { channel: { id: number } }).channel.id
+        return null
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+    const socket = new TauriRelayWebSocket()
+    const opened = deferred<void>()
+    const frame = deferred<ArrayBuffer>()
+    socket.onopen = () => opened.resolve()
+    socket.onmessage = event => frame.resolve(event.data as ArrayBuffer)
+    await opened.promise
+
+    const tauri = window.__TAURI_INTERNALS__ as {
+      runCallback: (id: number, payload: unknown) => void
+    }
+    tauri.runCallback(channelId, {
+      index: 0,
+      message: [1, 2, 3],
+    })
+
+    expect(Array.from(new Uint8Array(await frame.promise))).toEqual([1, 2, 3])
   })
 
   it('skips allocating a channel when the attempt ends before IPC starts', async () => {

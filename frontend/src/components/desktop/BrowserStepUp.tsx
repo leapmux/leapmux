@@ -15,7 +15,8 @@ export const BrowserStepUp: Component<{
 }> = (props) => {
   const auth = useAuth()
   const { phase, failure, flow, start } = useBrowserCeremony('step-up', async (signal) => {
-    await auth.refreshUser()
+    if (!await auth.reloadUser())
+      throw new Error('LeapMux could not read the verified session. Try again.')
     if (!signal.aborted)
       props.onElevated()
   })

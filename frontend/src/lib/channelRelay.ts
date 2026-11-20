@@ -150,6 +150,7 @@ export class ChannelRelay {
       const timer = setTimeout(() => {
         ws.removeEventListener('open', onOpen)
         ws.removeEventListener('error', onError)
+        ws.removeEventListener('close', onClose)
         ws.close()
         if (this.dialing === ws)
           this.dialing = null
@@ -163,6 +164,7 @@ export class ChannelRelay {
       const onOpen = () => {
         clearTimeout(timer)
         ws.removeEventListener('error', onError)
+        ws.removeEventListener('close', onClose)
         if (this.dialing === ws)
           this.dialing = null
         // closeWebSocket / a newer dial bumped dialGeneration — abandon this socket.
@@ -204,6 +206,7 @@ export class ChannelRelay {
       const onError = (event: Event) => {
         clearTimeout(timer)
         ws.removeEventListener('open', onOpen)
+        ws.removeEventListener('close', onClose)
         if (this.dialing === ws)
           this.dialing = null
         if (this.dialGeneration === dialGeneration) {
@@ -215,10 +218,34 @@ export class ChannelRelay {
           : 'WebSocket connection failed'
         reject(new ChannelError('transport', message))
       }
+
+      const onClose = (event: CloseEvent) => {
+        clearTimeout(timer)
+        ws.removeEventListener('open', onOpen)
+        ws.removeEventListener('error', onError)
+        if (this.dialing === ws)
+          this.dialing = null
+        if (this.dialGeneration === dialGeneration) {
+          this.ws = null
+          this.wsPromise = null
+        }
+        const reason = event.reason ?? ''
+        if (isFinalCloseCode(event.code)) {
+          const fatal = { code: event.code, reason }
+          const first = this.fatalClose === null
+          this.fatalClose = fatal
+          if (first)
+            this.deps.onFatalClose?.(fatal)
+          reject(fatalCloseError(fatal))
+          return
+        }
+        reject(new ChannelError('transport', reason || 'WebSocket closed before opening'))
+      }
       /* eslint-enable ts/no-use-before-define */
 
       ws.addEventListener('open', onOpen, { once: true })
       ws.addEventListener('error', onError, { once: true })
+      ws.addEventListener('close', onClose, { once: true })
     })
 
     return this.wsPromise

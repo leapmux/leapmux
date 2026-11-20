@@ -45,7 +45,5 @@ func TestInstallationName_FallsBackToUSERNAME(t *testing.T) {
 func TestInstallationName_FallsBackToTheHostname(t *testing.T) {
 	t.Setenv("USER", "")
 	t.Setenv("USERNAME", "")
-	got := machinelabel.InstallationName()
-	assert.NotEmpty(t, got)
-	assert.NotContains(t, got, "@", "with no account the label is the hostname alone")
+	assert.Equal(t, mustHost(t), machinelabel.InstallationName())
 }

@@ -272,10 +272,13 @@ var dialChannelRelay = func(ctx context.Context, proxy *HubProxy) (*websocket.Co
 	if err := proxy.requireWSClient("channel relay"); err != nil {
 		return nil, err
 	}
+	client := *proxy.wsClient
+	if proxy.jar != nil {
+		client.Jar = proxy.jar.requestJar(proxy.base)
+	}
 	opts := &websocket.DialOptions{
 		Subprotocols: []string{contracts.WSSubprotocolChannelRelay},
-		HTTPHeader:   proxy.cookieHeader(),
-		HTTPClient:   proxy.wsClient,
+		HTTPClient:   &client,
 	}
 	ws, _, err := websocket.Dial(ctx, wsURL, opts)
 	if err != nil {
@@ -313,7 +316,7 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 		if connection.relay == nil {
 			return false, nil
 		}
-		return connection.relay.adoptChannelOwner(relayID)
+		return connection.relay.adoptOwner(relayID)
 	}
 	return a.openRelay(requestCtx, relayOpenSpec{
 		policy:     adoptLiveRelay,
@@ -332,7 +335,13 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 	})
 }
 
-func (a *App) SendChannelMessage(requestCtx context.Context, data []byte) error {
+func (r *ChannelRelay) adoptOwner(relayID uint64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.adoptChannelOwner(relayID)
+}
+
+func (a *App) SendChannelMessage(requestCtx context.Context, relayID uint64, data []byte) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
@@ -364,6 +373,9 @@ func (a *App) SendChannelMessage(requestCtx context.Context, data []byte) error 
 	}
 	relay.mu.Lock()
 	defer relay.mu.Unlock()
+	if relay.ownerNow() != relayID {
+		return fmt.Errorf("channel relay owner changed")
+	}
 	if err := relay.ctx.Err(); err != nil {
 		return fmt.Errorf("channel relay closed: %w", err)
 	}

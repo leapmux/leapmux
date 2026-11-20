@@ -1070,7 +1070,7 @@ describe('useCrdtRuntime worker list changes', () => {
     createRoot((d) => {
       dispose = d
       useCrdtRuntime({
-        storageAccount: () => 'user-a' as StorageAccount,
+        storageAccount: () => accountOf('user-a'),
         hubUserId: () => 'user-a' as HubUserId,
         getWorkspaceId: () => 'ws-1',
         activeClient: createActiveClientStore(),

@@ -23,8 +23,12 @@ var dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []s
 	if err := proxy.requireWSClient("userevents relay"); err != nil {
 		return nil, err
 	}
+	client := *proxy.wsClient
+	if proxy.jar != nil {
+		client.Jar = proxy.jar.requestJar(proxy.base)
+	}
 	return channelwire.OpenUserEventsWSWithHeader(
-		ctx, proxy.wsClient, proxy.baseURL, proxy.cookieHeader(), workspaceIDs, cursor, epoch,
+		ctx, &client, proxy.baseURL, nil, workspaceIDs, cursor, epoch,
 	)
 }
 

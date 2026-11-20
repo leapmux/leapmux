@@ -38,11 +38,12 @@ WHERE s.id = ?
   AND u.deleted_at IS NULL
   AND s.auth_generation >= u.auth_generation;
 
--- Elevation ("sudo mode"). Three statements own every write to
--- elevation_proven_at / elevation_expires_at; no other query touches those columns.
+-- Elevation ("sudo mode"). CreateUserSession and the three update statements
+-- below own every write to elevation_proven_at / elevation_expires_at.
 --
--- elevation_proven_at is the instant a step-up factor was proven and is rewritten
--- ONLY by ElevateUserSession. elevation_expires_at slides forward on each
+-- elevation_proven_at is the instant a factor was proven. CreateUserSession
+-- can set it for a factor sign-in; ElevateUserSession replaces it on step-up.
+-- elevation_expires_at slides forward on each
 -- successful sensitive action.
 --
 -- TWO writers hold the absolute cap, and both bind store.ElevationMaxTotal.

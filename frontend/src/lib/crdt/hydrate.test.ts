@@ -374,8 +374,8 @@ describe('loadHydrationState', () => {
     ])
 
     expect(await loadHydrationState(U, CLIENT)).toBeNull()
-    // Wiped, so the poison record cannot be re-adopted on the next reload.
-    expect(await loadHydrationState(U, CLIENT)).toBeNull()
+    expect((await readCheckpoint(U, CLIENT)).status).toBe('miss')
+    expect(await countOwnerRows('opLog', U, CLIENT)).toBe(0)
   })
 
   it('wipes both stores and returns null when the checkpoint identifies NO tenant', async () => {
@@ -390,7 +390,8 @@ describe('loadHydrationState', () => {
     ])
 
     expect(await loadHydrationState(U, CLIENT)).toBeNull()
-    expect(await loadHydrationState(U, CLIENT)).toBeNull()
+    expect((await readCheckpoint(U, CLIENT)).status).toBe('miss')
+    expect(await countOwnerRows('opLog', U, CLIENT)).toBe(0)
   })
 
   it('hydrates a checkpoint keyed by a COMPOSED storage account when the blob identifies the raw Hub user id', async () => {
@@ -417,7 +418,7 @@ describe('loadHydrationState', () => {
     await seed(account, CLIENT, stateOf('other-user', 5n))
 
     expect(await loadHydrationState(account, CLIENT)).toBeNull()
-    expect(await loadHydrationState(account, CLIENT)).toBeNull()
+    expect((await readCheckpoint(account, CLIENT)).status).toBe('miss')
   })
 
   // The epoch two lines below this check has always been range-checked; the
@@ -430,7 +431,7 @@ describe('loadHydrationState', () => {
     await seed(U, CLIENT, stateOf('u', 5n), { physical: 2n ** 63n, logical: 0n, clientId: 'c' })
 
     expect(await loadHydrationState(U, CLIENT)).toBeNull()
-    expect(await loadHydrationState(U, CLIENT)).toBeNull()
+    expect((await readCheckpoint(U, CLIENT)).status).toBe('miss')
   })
 
   it('carries the store\'s over-cap truncation through to the caller', async () => {
@@ -528,6 +529,16 @@ async function openDbRaw(): Promise<IDBDatabase> {
     const r = indexedDB.open('leapmux-crdt-state')
     r.onsuccess = () => resolve(r.result)
     r.onerror = () => reject(r.error)
+  })
+}
+
+async function countOwnerRows(storeName: 'opLog', userId: StorageAccount, clientId: string): Promise<number> {
+  const db = await openDbRaw()
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly')
+    const request = tx.objectStore(storeName).index('[userId+clientId]').count([userId, clientId])
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
   })
 }
 

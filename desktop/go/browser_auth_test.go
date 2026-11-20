@@ -38,11 +38,15 @@ const (
 
 // testSessionToken is a well-formed session token for a jar to hold.
 func testSessionToken() string {
-	return strings.Repeat("i", 48) + "_" + strings.Repeat("k", 48)
+	return testSessionTokenFor('i', 'k')
+}
+
+func testSessionTokenFor(identity, secret byte) string {
+	return strings.Repeat(string(identity), 48) + "_" + strings.Repeat(string(secret), 48)
 }
 
 // testSessionID is the identity half of testSessionToken: what a step-up
-// names as session:<id>.
+// identifies as session:<id>.
 func testSessionID() string {
 	return strings.Repeat("i", 48)
 }
@@ -171,8 +175,9 @@ func seedSessionCookie(proxy *HubProxy, name string) string {
 }
 
 func TestBrowserAuthSignInStoresTheSession(t *testing.T) {
+	issued := testSessionTokenFor('a', 'b')
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "issued-session", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: issued, Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
 	proxy := mustNewProxy(t, hub.URL)
@@ -197,8 +202,26 @@ func TestBrowserAuthSignInStoresTheSession(t *testing.T) {
 	assert.Empty(t, events, "the completed ceremony emitted exactly one result")
 	assert.True(t, evt.Ok)
 	assert.Empty(t, evt.Failure)
-	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"=issued-session",
+	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"="+issued,
 		"the jar holds the cookie")
+}
+
+func TestBrowserAuthSignInRequiresANewSessionCookie(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"signed_in": true}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+	event := requireBrowserAuthEvent(t, events)
+
+	assert.Equal(t, id, event.CeremonyId)
+	assert.False(t, event.Ok)
+	assert.Equal(t, "the Hub did not provide a new session", event.Failure)
+	assert.Empty(t, proxy.cookieHeader())
 }
 
 func TestBrowserAuthStepUpCarriesTheSessionIdentity(t *testing.T) {
@@ -354,7 +377,7 @@ func TestBrowserAuthHubDoesNotConfirmStepUp(t *testing.T) {
 }
 
 // The three failure classes of the token exchange must carry three distinct
-// messages. Each names its own failure:
+// messages. Each describes its own failure:
 //   - a non-200 with no readable error body
 //   - a 200 whose body does not decode
 //   - a 200 without the confirmation
@@ -426,11 +449,12 @@ func TestBrowserAuthTokenRedirectStaysOnTheHub(t *testing.T) {
 func TestBrowserAuthTokenRedirectReadsPendingCookieChanges(t *testing.T) {
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
+			rotated := testSessionTokenFor('r', 's')
 			nextCookie := make(chan string, 1)
 			server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/oauth/token":
-					http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "rotated", Path: "/"})
+					http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: rotated, Path: "/"})
 					http.SetCookie(w, &http.Cookie{Name: "removed", Path: "/", MaxAge: -1})
 					http.Redirect(w, r, "/oauth/confirmation", status)
 				case "/oauth/confirmation":
@@ -461,7 +485,7 @@ func TestBrowserAuthTokenRedirectReadsPendingCookieChanges(t *testing.T) {
 			require.True(t, evt.GetOk(), evt.GetFailure())
 			select {
 			case cookies := <-nextCookie:
-				assert.Equal(t, testSessionCookieName+"=rotated", cookies)
+				assert.Equal(t, testSessionCookieName+"="+rotated, cookies)
 			default:
 				t.Fatal("the exchange did not reach the confirmation endpoint")
 			}
@@ -483,8 +507,9 @@ func (j *pausedSessionCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) 
 }
 
 func TestBrowserAuthCommitsCookiesOutsideTheLifecycleLock(t *testing.T) {
+	confirmed := testSessionTokenFor('c', 'd')
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "confirmed-session", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: confirmed, Path: "/"})
 		_, _ = io.WriteString(w, `{"signed_in": true}`)
 	})
 	endpoint, err := hubtransport.New(hub.URL)
@@ -563,7 +588,9 @@ func TestBrowserAuthSecondStartEndsTheFirst(t *testing.T) {
 }
 
 func TestBrowserAuthCancelOnlyEndsTheMatchingCeremony(t *testing.T) {
+	issued := testSessionTokenFor('a', 'b')
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: issued, Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
 	proxy := mustNewProxy(t, hub.URL)
@@ -671,8 +698,9 @@ func blockNextBrowserAuthTokenBody(t *testing.T, proxy *HubProxy) (<-chan contex
 }
 
 func TestBrowserAuthCancelDuringRedemptionKeepsAcceptedConfirmation(t *testing.T) {
+	issued := testSessionTokenFor('a', 'b')
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "issued-session", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: issued, Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
 	proxy := mustNewProxy(t, hub.URL)
@@ -698,7 +726,7 @@ func TestBrowserAuthCancelDuringRedemptionKeepsAcceptedConfirmation(t *testing.T
 	assert.Equal(t, id, event.CeremonyId)
 	assert.True(t, event.Ok, "the Hub accepted the code")
 	assert.Empty(t, event.Failure)
-	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"=issued-session")
+	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"="+issued)
 }
 
 func TestBrowserAuthReplacementSerializesRedemptionOnTheSameJar(t *testing.T) {
@@ -708,7 +736,8 @@ func TestBrowserAuthReplacementSerializesRedemptionOnTheSameJar(t *testing.T) {
 			http.Error(w, "invalid form", http.StatusBadRequest)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: r.Form.Get("code"), Path: "/"})
+		token := testSessionTokenFor(r.Form.Get("code")[0], 'z')
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: token, Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
 	proxy := mustNewProxy(t, hub.URL)
@@ -746,13 +775,14 @@ func TestBrowserAuthReplacementSerializesRedemptionOnTheSameJar(t *testing.T) {
 	assert.Empty(t, results[firstID].Failure)
 	assert.True(t, results[secondID].Ok)
 	assert.Empty(t, results[secondID].Failure)
-	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"=second")
+	assert.Contains(t, proxy.cookieHeader().Get("Cookie"), testSessionCookieName+"="+testSessionTokenFor('s', 'z'))
 }
 
 func TestBrowserAuthReplacementDiscardsDecodedConfirmation(t *testing.T) {
 	clock := newBrowserAuthClock(t)
+	superseded := testSessionTokenFor('s', 'u')
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "superseded-session", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: superseded, Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
 	proxy := mustNewProxy(t, hub.URL)
@@ -960,8 +990,9 @@ func TestBrowserAuthTokenAnswerAtDeadlineLosesBeforeTimerDelivery(t *testing.T) 
 	for _, delay := range []time.Duration{0, time.Nanosecond} {
 		t.Run(delay.String(), func(t *testing.T) {
 			clock := newBrowserAuthClock(t)
+			late := testSessionTokenFor('l', 't')
 			hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
-				http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "late-session", Path: "/"})
+				http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: late, Path: "/"})
 				_, _ = w.Write([]byte(`{"signed_in": true}`))
 			})
 			proxy := mustNewProxy(t, hub.URL)
@@ -991,8 +1022,9 @@ func TestBrowserAuthTokenAnswerAtDeadlineLosesBeforeTimerDelivery(t *testing.T) 
 
 func TestBrowserAuthTokenAnswerBeforeDeadlineSurvivesDelayedSettlement(t *testing.T) {
 	clock := newBrowserAuthClock(t)
+	accepted := testSessionTokenFor('a', 'c')
 	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: "accepted-session", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: accepted, Path: "/"})
 		_, _ = w.Write([]byte(`{"signed_in": true}`))
 	})
 	proxy := mustNewProxy(t, hub.URL)
@@ -1021,5 +1053,70 @@ func TestBrowserAuthTokenAnswerBeforeDeadlineSurvivesDelayedSettlement(t *testin
 	assert.Equal(t, id, event.CeremonyId)
 	assert.True(t, event.Ok)
 	assert.Empty(t, event.Failure)
-	assert.Equal(t, testSessionCookieName+"=accepted-session", proxy.cookieHeader().Get("Cookie"))
+	assert.Equal(t, testSessionCookieName+"="+accepted, proxy.cookieHeader().Get("Cookie"))
+}
+
+func TestBrowserAuthDoesNotAdmitAnOldProxyResponseAfterSignIn(t *testing.T) {
+	oldToken := testSessionToken()
+	newToken := strings.Repeat("n", 48) + "_" + strings.Repeat("r", 48)
+	reachedHub := make(chan string, 1)
+	releaseResponse := make(chan struct{})
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/delayed":
+			reachedHub <- r.Header.Get("Cookie")
+			select {
+			case <-releaseResponse:
+			case <-r.Context().Done():
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: oldToken, Path: "/"})
+		case "/oauth/token":
+			http.SetCookie(w, &http.Cookie{Name: testSessionCookieName, Value: newToken, Path: "/"})
+			_, _ = w.Write([]byte("{\"signed_in\":true}"))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(hub.Close)
+
+	setTestHome(t)
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	events := recordBrowserAuthEvents(app)
+	ctx := browserAuthTestContext(t)
+	require.NoError(t, app.ConnectDistributed(ctx, hub.URL))
+	proxy := app.connection.proxy
+	seedSessionCookie(proxy, testSessionCookieName)
+
+	finished := make(chan error, 1)
+	go func() {
+		_, _, err := app.ProxyHTTP(ctx, http.MethodGet, "/delayed", nil, nil)
+		finished <- err
+	}()
+	select {
+	case header := <-reachedHub:
+		require.Equal(t, testSessionCookieName+"="+oldToken, header)
+	case <-ctx.Done():
+		t.Fatal("the original request did not reach the Hub")
+	}
+
+	_, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "accepted-code")
+	event := requireBrowserAuthEvent(t, events)
+	require.True(t, event.Ok, event.Failure)
+	assert.Equal(t, testSessionCookieName+"="+newToken, proxy.cookieHeader().Get("Cookie"))
+	close(releaseResponse)
+	select {
+	case err := <-finished:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the original request did not return")
+	}
+
+	assert.Equal(t, testSessionCookieName+"="+newToken, proxy.cookieHeader().Get("Cookie"))
+	storedCookies := openPersistentJar(proxy.base, sessionsDir()).Cookies(proxy.base)
+	require.Len(t, storedCookies, 1)
+	assert.Equal(t, newToken, storedCookies[0].Value)
 }

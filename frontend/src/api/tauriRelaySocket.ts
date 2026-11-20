@@ -193,13 +193,17 @@ export class TauriRelayWebSocket {
       log.warn('channel relay send after close, dropping frame')
       return
     }
-    // The frame passes through unchanged -- raw bytes over the Tauri IPC, no
-    // base64 (see platformBridge.sendChannelMessage).
+    // Snapshot exactly the selected bytes now. WebSocket.send consumes its
+    // input during the call, while native dispatch can run in a later turn.
+    const view = data instanceof Uint8Array
+      ? data
+      : new Uint8Array(data)
+    const frame = new Uint8Array(view)
     if (this.readyState !== WebSocket.OPEN) {
-      this.pendingSends.push(data)
+      this.pendingSends.push(frame)
       return
     }
-    this.dispatchSend(data)
+    this.dispatchSend(frame)
   }
 
   // dispatchSend serializes a single frame through the promise chain
@@ -208,7 +212,7 @@ export class TauriRelayWebSocket {
   // protocol's sequential nonce counter).
   private dispatchSend(data: ArrayBuffer | Uint8Array): void {
     this.sendQueue = this.sendQueue.then(
-      () => platformBridge.sendChannelMessage(data),
+      () => platformBridge.sendChannelMessage(this.wrapperId, data),
     ).catch((err) => {
       log.warn('channel relay send failed', {
         error: String(err),
@@ -258,11 +262,12 @@ export class TauriRelayWebSocket {
   private releaseRelay(): void {
     if (this.relayReleased)
       return
-    if (!relayClaim.releaseIfClaimable(this.wrapperId))
-      return
     this.relayReleased = true
+    relayClaim.releaseIfClaimable(this.wrapperId)
     // If the close fails, the sidecar may keep its Hub WebSocket open.
-    // A successor open can adopt or replace that relay.
+    // Go checks this wrapper id, so a successor that already adopted the relay
+    // remains untouched. Sending even while a successor only CLAIMS ownership
+    // reaps this predecessor if that successor later fails before adoption.
     platformBridge.closeChannelRelay(this.wrapperId).catch((err) => {
       log.warn('channel relay close failed; leaving relay for successor adoption', {
         error: String(err),

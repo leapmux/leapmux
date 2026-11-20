@@ -56,11 +56,15 @@ func (p providerElevationProof) validate(ctx context.Context, tx store.Store, cu
 }
 
 type passkeyElevationProof struct {
-	identity webauthn.VerifiedCredentialIdentity
+	identity       webauthn.VerifiedCredentialIdentity
+	authGeneration int64
 }
 
 func (p passkeyElevationProof) validate(ctx context.Context, tx store.Store, current *store.User) error {
 	if p.identity.RowID == "" || len(p.identity.CredentialID) == 0 {
+		return errElevationProofChanged
+	}
+	if current.AuthGeneration != p.authGeneration {
 		return errElevationProofChanged
 	}
 	credential, err := tx.PasskeyCredentials().GetByID(ctx, p.identity.RowID)

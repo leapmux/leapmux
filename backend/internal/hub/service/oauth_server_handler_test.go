@@ -3540,6 +3540,28 @@ func TestSessionCodeExchange_WrongVerifierIssuesNoSession(t *testing.T) {
 	assert.Zero(t, row.Minted, "a failed proof must mint no session")
 }
 
+func TestSessionCodeExchange_RefusesApprovalFromAnOlderCredentialGeneration(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env, "laptop")
+	uid := userid.MustNew(env.userID)
+	require.NoError(t, env.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		_, _, err := auth.RevokeAllUserCredentials(ctx, tx, uid)
+		return err
+	}))
+
+	resp := exchangeSessionCode(t, env, code, verifier)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, resp)["error"])
+	assertNoCallbackSession(t, resp)
+
+	row, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Zero(t, row.Minted)
+}
+
 // setDesktopIssuesSessions reconciles the desktop's registration to the value
 // given, through the seed's own writer: issues_sessions is a constant of the
 // build and nothing else may turn it.

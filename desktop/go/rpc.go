@@ -450,7 +450,7 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 		s.writeErrOrOK(id, s.app.OpenChannelRelay(ctx, m.OpenChannelRelay.GetRelayId()))
 
 	case *desktoppb.Request_SendChannelMessage:
-		s.writeErrOrOK(id, s.app.SendChannelMessage(ctx, m.SendChannelMessage.Data))
+		s.writeErrOrOK(id, s.app.SendChannelMessage(ctx, m.SendChannelMessage.GetRelayId(), m.SendChannelMessage.Data))
 
 	case *desktoppb.Request_CloseChannelRelay:
 		s.writeErrOrOK(id, s.app.CloseChannelRelay(m.CloseChannelRelay.GetRelayId()))

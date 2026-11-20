@@ -1136,7 +1136,11 @@ const DEVICE_NAMES = namesWhere(spec => spec.scope === 'device')
  * session, so this gate is already ahead of it, and doing the work here keeps
  * the module free of asynchronous side effects at import time.
  */
-export async function hydrateStorageAccount(account: StorageAccount): Promise<void> {
+export interface PreparedStorageAccount {
+  commit: () => boolean
+}
+
+export async function prepareStorageAccount(account: StorageAccount): Promise<PreparedStorageAccount> {
   const token = ++hydrationToken
   // ALREADY HYDRATED FOR THIS ACCOUNT: nothing to do. The token still moves
   // first, so a hydration for a DIFFERENT account that is still in flight
@@ -1149,8 +1153,11 @@ export async function hydrateStorageAccount(account: StorageAccount): Promise<vo
   // mirror from disk, discarding any write this tab issued but has not flushed.
   // The BroadcastChannel keeps the mirror current across tabs, and the sweep
   // publishes its own evictions, so a re-read buys nothing.
-  if (mirroredAccount === account)
-    return
+  if (mirroredAccount === account) {
+    return {
+      commit: () => token === hydrationToken,
+    }
+  }
   let rows: KvRow[] = []
   try {
     rows = await readSyncRows(account)
@@ -1161,9 +1168,19 @@ export async function hydrateStorageAccount(account: StorageAccount): Promise<vo
   // A newer identity started hydrating while this one was in flight. Installing
   // now would put the outgoing account's rows under the incoming account's
   // namespace -- the exact leak the scoping exists to close.
-  if (token !== hydrationToken)
-    return
-  installMirror(account, rows)
+  return {
+    commit: () => {
+      if (token !== hydrationToken)
+        return false
+      installMirror(account, rows)
+      return true
+    },
+  }
+}
+
+export async function hydrateStorageAccount(account: StorageAccount): Promise<void> {
+  const prepared = await prepareStorageAccount(account)
+  prepared.commit()
 }
 
 /**

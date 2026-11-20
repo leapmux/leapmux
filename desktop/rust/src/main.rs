@@ -70,6 +70,7 @@ mod navigation;
 mod tabfix_linux;
 
 use base64::Engine;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -97,7 +98,7 @@ use crate::sidecar::connect_and_handshake_dev_sidecar;
 #[cfg(all(unix, test))]
 use std::os::unix::net::UnixStream;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{self, BufReader, Read, Write},
     path::PathBuf,
     process::Child,
@@ -108,6 +109,102 @@ use std::{
     thread,
     time::Duration,
 };
+
+const RAW_INVOKE_CACHE_CAPACITY: usize = 1024;
+const RAW_INVOKE_CACHE_MAX_BYTES: usize = MAX_FRAME_SIZE_BYTES as usize * 2;
+
+#[derive(Clone)]
+enum RawInvokeResult {
+    Proxy(Result<Vec<u8>, String>),
+    Send(Result<(), String>),
+}
+
+impl RawInvokeResult {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Proxy(Ok(body)) => body.len(),
+            Self::Proxy(Err(message)) | Self::Send(Err(message)) => message.len(),
+            Self::Send(Ok(())) => 0,
+        }
+    }
+}
+
+enum RawInvokeEntry {
+    InFlight(&'static str),
+    Complete(RawInvokeResult),
+}
+
+struct RawInvokeCache {
+    entries: HashMap<String, RawInvokeEntry>,
+    completed: VecDeque<(String, usize)>,
+    completed_bytes: usize,
+}
+
+struct RawInvokeRegistry {
+    cache: Mutex<RawInvokeCache>,
+    capacity: usize,
+    max_completed_bytes: usize,
+}
+
+impl Default for RawInvokeRegistry {
+    fn default() -> Self {
+        Self::with_limits(RAW_INVOKE_CACHE_CAPACITY, RAW_INVOKE_CACHE_MAX_BYTES)
+    }
+}
+
+impl RawInvokeRegistry {
+    fn with_limits(capacity: usize, max_completed_bytes: usize) -> Self {
+        Self {
+            cache: Mutex::new(RawInvokeCache {
+                entries: HashMap::new(),
+                completed: VecDeque::new(),
+                completed_bytes: 0,
+            }),
+            capacity,
+            max_completed_bytes,
+        }
+    }
+
+    fn begin(
+        &self,
+        request_id: &str,
+        kind: &'static str,
+    ) -> Result<Option<RawInvokeResult>, String> {
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err("raw invoke request id is invalid".to_string());
+        }
+        let mut cache = recover(&self.cache);
+        match cache.entries.get(request_id) {
+            Some(RawInvokeEntry::InFlight(existing)) => {
+                return Err(format!("{existing} request is already in progress"));
+            }
+            Some(RawInvokeEntry::Complete(result)) => return Ok(Some(result.clone())),
+            None => {}
+        }
+        cache
+            .entries
+            .insert(request_id.to_string(), RawInvokeEntry::InFlight(kind));
+        Ok(None)
+    }
+
+    fn finish(&self, request_id: String, result: RawInvokeResult) {
+        let retained_bytes = request_id.len() + result.retained_bytes();
+        let mut cache = recover(&self.cache);
+        cache
+            .entries
+            .insert(request_id.clone(), RawInvokeEntry::Complete(result));
+        cache.completed.push_back((request_id, retained_bytes));
+        cache.completed_bytes += retained_bytes;
+        while cache.completed.len() > self.capacity
+            || (cache.completed_bytes > self.max_completed_bytes && cache.completed.len() > 1)
+        {
+            if let Some((expired, expired_bytes)) = cache.completed.pop_front() {
+                cache.completed_bytes -= expired_bytes;
+                cache.entries.remove(&expired);
+            }
+        }
+    }
+}
 // `Command` is used only by the macOS relaunch helper (it shells out to
 // `/usr/bin/open -n` via LaunchServices); restrict it to macOS so the other
 // targets do not trip `-D unused-imports`.
@@ -201,7 +298,8 @@ mod contracts_generated {
 }
 pub(crate) use contracts_generated::{
     DEV_FRONTEND_URL, ENV_AGENT_HELPER, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND,
-    MAX_FRAME_SIZE_BYTES,
+    IPC_HEADER_HEADERS, IPC_HEADER_METHOD, IPC_HEADER_PATH, IPC_HEADER_RELAY_ID,
+    IPC_HEADER_REQUEST_ID, MAX_FRAME_SIZE_BYTES,
 };
 
 /// The shell's own record of the dev sidecar it last bootstrapped, written for
@@ -977,48 +1075,32 @@ async fn connect_distributed(
     Ok(())
 }
 
-// --- Unary proxy response envelope ---
-//
-// `proxy_http` returns its response as raw bytes over the Tauri IPC
-// (`InvokeResponseBody::Raw`), the `file_save_write` pattern: for multi-MB
-// payloads the base64 round-trip the JSON payload took was the dominant cost
-// and added ~33% wire bloat. The structured part of an HTTP response -- the
-// status and the headers -- rides in a meta block in front of the body:
-//
-//     [u32 LE meta_len][meta JSON][body]
-//
-// The meta JSON is `{"status": <int>, "headers": {<name>: [<value>, ...]}}`.
-// The 4-byte length prefix matches contracts/wire.json's
-// `framing.lengthPrefixBytes` (this envelope reads it LITTLE-endian, unlike
-// that contract's big-endian WebSocket frame prefix), and the meta block is
-// validated against the same contract's `maxMessageSizeBytes` frame budget.
-// The webview parses the identical envelope in
-// `frontend/src/api/platformBridge.ts` (`decodeProxyResponseEnvelope`); the
-// two spellings must stay in step.
-const PROXY_ENVELOPE_META_PREFIX_LEN: usize = 4;
-/// The meta block budget: contracts/wire.json `maxMessageSizeBytes` (16 MiB).
-/// Hardcoded because that contract generates into Go and TypeScript only --
-/// the Rust module carries contracts/desktop.json's vocabulary alone.
-const PROXY_ENVELOPE_META_MAX_LEN: usize = 16_777_216;
-
-/// Builds `[u32 LE meta_len][meta JSON][body]` for one proxied response.
-fn encode_proxy_response_envelope(
-    status: i32,
-    headers: &HashMap<String, Vec<String>>,
-    body: &[u8],
-) -> Result<Vec<u8>, String> {
-    let meta = serde_json::to_vec(&json!({ "status": status, "headers": headers }))
-        .map_err(|err| format!("serialize proxy response meta: {err}"))?;
-    if meta.len() > PROXY_ENVELOPE_META_MAX_LEN {
-        return Err("proxy response meta exceeds the frame budget".to_string());
+fn read_raw_invoke_body(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(values)) => json_bytes(values),
+        _ => Err("expected raw bytes body".to_string()),
     }
-    // Safe: the budget check above bounds meta.len() far below u32::MAX.
-    let meta_len = meta.len() as u32;
-    let mut out = Vec::with_capacity(PROXY_ENVELOPE_META_PREFIX_LEN + meta.len() + body.len());
-    out.extend_from_slice(&meta_len.to_le_bytes());
-    out.extend_from_slice(&meta);
-    out.extend_from_slice(body);
-    Ok(out)
+}
+
+fn json_bytes(values: &[serde_json::Value]) -> Result<Vec<u8>, String> {
+    if values.len() > MAX_FRAME_SIZE_BYTES as usize {
+        return Err("raw invoke body exceeds the frame limit".to_string());
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|byte| *byte <= u8::MAX as u64)
+                .map(|byte| byte as u8)
+                .ok_or_else(|| "raw invoke byte array contains an invalid value".to_string())
+        })
+        .collect()
+}
+
+fn raw_response(bytes: Vec<u8>) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(bytes))
 }
 
 /// One proxied HTTP round trip. The request body crosses the Tauri IPC as the
@@ -1026,50 +1108,64 @@ fn encode_proxy_response_envelope(
 /// base64 round-trip was the dominant cost for multi-MB payloads. The method,
 /// the path and the proxied headers ride InvokeOptions headers instead (the
 /// `file_save_open` pattern), because the invoke-args slot holds the raw body.
-/// The response comes back as the raw envelope above.
+/// The response comes back as the existing ProxyHttpResponse protobuf. The raw
+/// Tauri body avoids base64 while the generated schema keeps Rust and the
+/// webview on one framing definition.
 #[tauri::command]
 async fn proxy_http(
     shell: State<'_, Arc<DesktopShell>>,
+    registry: State<'_, RawInvokeRegistry>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<tauri::ipc::Response, String> {
-    let method = read_header_str(&request, "method")?.to_string();
-    let path = read_header_str(&request, "path")?.to_string();
-    // The proxied headers are arbitrary Unicode key/value pairs (the JSON body
-    // used to carry them as-is), and an invoke header value must stay visible
-    // ASCII, so the map rides base64-encoded -- the `filename-b64` pattern.
-    let headers: HashMap<String, String> =
-        serde_json::from_str(&read_b64_header(&request, "headers-b64")?)
-            .map_err(|err| format!("parse proxy headers: {err}"))?;
-    let body = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
-        _ => return Err("expected raw bytes body".to_string()),
+    let request_id = read_header_str(&request, IPC_HEADER_REQUEST_ID)?.to_string();
+    if let Some(cached) = registry.begin(&request_id, "HTTP proxy")? {
+        return match cached {
+            RawInvokeResult::Proxy(result) => result.map(raw_response),
+            RawInvokeResult::Send(_) => {
+                Err("raw invoke request id was reused by another command".to_string())
+            }
+        };
+    }
+
+    let parsed = (|| {
+        let method = read_header_str(&request, IPC_HEADER_METHOD)?.to_string();
+        let path = read_header_str(&request, IPC_HEADER_PATH)?.to_string();
+        // The proxied headers are arbitrary Unicode key/value pairs (the JSON body
+        // used to carry them as-is), and an invoke header value must stay visible
+        // ASCII, so the map rides base64-encoded -- the `filename-b64` pattern.
+        let headers: HashMap<String, String> =
+            serde_json::from_str(&read_b64_header(&request, IPC_HEADER_HEADERS)?)
+                .map_err(|err| format!("parse proxy headers: {err}"))?;
+        let body = read_raw_invoke_body(&request)?;
+        Ok::<_, String>((method, path, headers, body))
+    })();
+    let (method, path, headers, body) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            registry.finish(request_id, RawInvokeResult::Proxy(Err(error.clone())));
+            return Err(error);
+        }
     };
 
-    let resp = check_response(
-        shell
-            .send_request_async(proto::request::Method::ProxyHttp(proto::ProxyHttpRequest {
-                method,
-                path,
-                headers,
-                body,
-            }))
-            .await?,
-    )?;
-
-    match resp.result {
-        Some(proto::response::Result::ProxyHttp(r)) => {
-            let headers: HashMap<String, Vec<String>> = r
-                .headers
-                .into_iter()
-                .map(|(name, values)| (name, values.values))
-                .collect();
-            let envelope = encode_proxy_response_envelope(r.status, &headers, &r.body)?;
-            Ok(tauri::ipc::Response::new(
-                tauri::ipc::InvokeResponseBody::Raw(envelope),
-            ))
+    let result = async {
+        let resp = check_response(
+            shell
+                .send_request_async(proto::request::Method::ProxyHttp(proto::ProxyHttpRequest {
+                    method,
+                    path,
+                    headers,
+                    body,
+                }))
+                .await?,
+        )?;
+        match resp.result {
+            Some(proto::response::Result::ProxyHttp(r)) => Ok(r.encode_to_vec()),
+            _ => Err("unexpected response for proxy_http".to_string()),
         }
-        _ => Err("unexpected response for proxy_http".to_string()),
     }
+    .await;
+    registry.finish(request_id, RawInvokeResult::Proxy(result.clone()));
+    result.map(raw_response)
 }
 
 // --- CLI PATH integration (macOS only at the sidecar level) ---
@@ -1187,6 +1283,7 @@ type RelayChannel = tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>;
 #[derive(Default)]
 struct RelayReceivers {
     accepted: Option<u64>,
+    closed_through: u64,
     channels: HashMap<u64, RelayChannel>,
 }
 
@@ -1197,9 +1294,16 @@ struct RelayReceivers {
 struct RelayChannelSlot(Mutex<RelayReceivers>);
 
 impl RelayChannelSlot {
+    fn is_accepted(&self, relay_id: u64) -> bool {
+        recover(&self.0).accepted == Some(relay_id)
+    }
+
     fn register(&self, relay_id: u64, channel: RelayChannel) -> bool {
         let mut receivers = recover(&self.0);
-        if relay_id == 0 || receivers.accepted.is_some_and(|active| active >= relay_id) {
+        if relay_id == 0
+            || relay_id <= receivers.closed_through
+            || receivers.accepted.is_some_and(|active| active >= relay_id)
+        {
             return false;
         }
         if let std::collections::hash_map::Entry::Vacant(entry) = receivers.channels.entry(relay_id)
@@ -1278,6 +1382,7 @@ impl RelayChannelSlot {
 
     fn close_if_owner(&self, relay_id: u64) -> bool {
         let mut receivers = recover(&self.0);
+        receivers.closed_through = receivers.closed_through.max(relay_id);
         if receivers.accepted == Some(relay_id) {
             receivers.accepted = None;
         }
@@ -1298,14 +1403,18 @@ struct RelaySlots {
 async fn open_channel_relay(
     shell: State<'_, Arc<DesktopShell>>,
     slots: State<'_, RelaySlots>,
+    webview: tauri::Webview,
     relay_id: u64,
-    channel: RelayChannel,
+    channel: tauri::ipc::JavaScriptChannelId,
 ) -> Result<(), String> {
+    if slots.channel.is_accepted(relay_id) {
+        return Ok(());
+    }
     slots
         .channel
         .open(
             relay_id,
-            channel,
+            channel.channel_on(webview),
             shell.send_request_async(proto::request::Method::OpenChannelRelay(
                 proto::OpenChannelRelayRequest { relay_id },
             )),
@@ -1319,25 +1428,51 @@ async fn open_channel_relay(
 #[tauri::command]
 async fn send_channel_message(
     shell: State<'_, Arc<DesktopShell>>,
+    registry: State<'_, RawInvokeRegistry>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
     // The frame crosses the Tauri IPC as the raw invoke body, the
     // `file_save_write` pattern -- no base64 round-trip. Relay frames are
     // Noise ciphertext chunks (contracts/wire.json's
-    // maxCiphertextForChunkBytes), so the one copy below is bounded.
-    let data = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
-        _ => return Err("expected raw bytes body".to_string()),
+    // maxCiphertextForChunkBytes), which limits the size of this copy.
+    let request_id = read_header_str(&request, IPC_HEADER_REQUEST_ID)?.to_string();
+    if let Some(cached) = registry.begin(&request_id, "channel send")? {
+        return match cached {
+            RawInvokeResult::Send(result) => result,
+            RawInvokeResult::Proxy(_) => {
+                Err("raw invoke request id was reused by another command".to_string())
+            }
+        };
+    }
+
+    let parsed = (|| {
+        let data = read_raw_invoke_body(&request)?;
+        let relay_id = read_header_str(&request, IPC_HEADER_RELAY_ID)?
+            .parse::<u64>()
+            .map_err(|err| format!("parse relay id: {err}"))?;
+        Ok::<_, String>((relay_id, data))
+    })();
+    let (relay_id, data) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            registry.finish(request_id, RawInvokeResult::Send(Err(error.clone())));
+            return Err(error);
+        }
     };
 
-    check_response(
-        shell
-            .send_request_async(proto::request::Method::SendChannelMessage(
-                proto::SendChannelMessageRequest { data },
-            ))
-            .await?,
-    )?;
-    Ok(())
+    let result = async {
+        check_response(
+            shell
+                .send_request_async(proto::request::Method::SendChannelMessage(
+                    proto::SendChannelMessageRequest { relay_id, data },
+                ))
+                .await?,
+        )?;
+        Ok(())
+    }
+    .await;
+    registry.finish(request_id, RawInvokeResult::Send(result.clone()));
+    result
 }
 
 #[tauri::command]
@@ -1359,21 +1494,29 @@ async fn close_channel_relay(
     Ok(())
 }
 
+// Tauri injects the shell state, relay state and webview, then maps the five
+// user-events fields by name. Grouping them would change the command's IPC
+// shape, so this framework boundary must exceed Clippy's ordinary limit.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn open_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
     slots: State<'_, RelaySlots>,
+    webview: tauri::Webview,
     relay_id: u64,
-    channel: RelayChannel,
+    channel: tauri::ipc::JavaScriptChannelId,
     workspace_ids: Vec<String>,
     resume_hlc: Option<String>,
     resume_epoch: Option<String>,
 ) -> Result<(), String> {
+    if slots.user_events.is_accepted(relay_id) {
+        return Ok(());
+    }
     slots
         .user_events
         .open(
             relay_id,
-            channel,
+            channel.channel_on(webview),
             shell.send_request_async(proto::request::Method::OpenUserEventsRelay(
                 proto::OpenUserEventsRelayRequest {
                     relay_id,
@@ -1889,7 +2032,7 @@ struct BrowserAuthStart {
 }
 
 /// The `kind` argument of the one start command, validated against the
-/// proto enum. `Unspecified` names no ceremony, and an unknown value can
+/// proto enum. `Unspecified` identifies no ceremony, and an unknown value can
 /// only come from a webview built against another enum. Both fail here
 /// rather than reach the sidecar with a kind nobody chose.
 fn parse_browser_auth_kind(kind: i32) -> Result<proto::BrowserAuthKind, String> {
@@ -2292,6 +2435,7 @@ fn main() {
             // through. Managed BEFORE `DesktopShell::connect`, whose reader
             // thread starts delivering the moment the sidecar speaks.
             app.manage(RelaySlots::default());
+            app.manage(RawInvokeRegistry::default());
             let shell = Arc::new(DesktopShell::connect(app.handle().clone())?);
 
             // The handshake and the device cache of the Desktop preferences,
@@ -2528,69 +2672,107 @@ mod tests {
         })
     }
 
-    // The envelope framing is the one thing the webview parses by position:
-    // `[u32 LE meta_len][meta JSON][body]`. This pins the layout with a
-    // multi-KB binary body, so a change to the prefix or the endianness
-    // reddens here and not as a corrupt connect-web response.
-    #[test]
-    fn proxy_response_envelope_frames_meta_then_body() {
-        let mut headers = HashMap::new();
-        headers.insert(
-            "x-repeated".to_string(),
-            vec!["one".to_string(), "two".to_string()],
-        );
-        let body: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
-        let envelope =
-            encode_proxy_response_envelope(200, &headers, &body).expect("encode the envelope");
-
-        let meta_len = u32::from_le_bytes(
-            envelope[0..PROXY_ENVELOPE_META_PREFIX_LEN]
-                .try_into()
-                .expect("a 4-byte prefix"),
-        ) as usize;
-        assert_eq!(
-            envelope.len(),
-            PROXY_ENVELOPE_META_PREFIX_LEN + meta_len + body.len()
-        );
-        let meta: serde_json::Value =
-            serde_json::from_slice(&envelope[PROXY_ENVELOPE_META_PREFIX_LEN..][..meta_len])
-                .expect("parse the meta JSON");
-        assert_eq!(meta["status"], 200);
-        assert_eq!(meta["headers"]["x-repeated"], json!(["one", "two"]));
-        assert_eq!(
-            &envelope[PROXY_ENVELOPE_META_PREFIX_LEN + meta_len..],
-            body.as_slice(),
-            "the body must follow the meta block byte for byte"
-        );
+    fn recording_body_channel(
+        delivered: &Arc<Mutex<Vec<tauri::ipc::InvokeResponseBody>>>,
+    ) -> tauri::ipc::Channel<tauri::ipc::InvokeResponseBody> {
+        let delivered = Arc::clone(delivered);
+        tauri::ipc::Channel::new(move |body| {
+            recover(&delivered).push(body);
+            Ok(())
+        })
     }
 
+    // `proxy_http` sends the existing protobuf over a raw Tauri response. This
+    // pins the generated wire data and its binary body through the IPC wrapper.
     #[test]
-    fn proxy_response_envelope_carries_an_empty_body() {
-        let envelope =
-            encode_proxy_response_envelope(204, &HashMap::new(), b"").expect("encode the envelope");
-        let meta_len = u32::from_le_bytes(
-            envelope[0..PROXY_ENVELOPE_META_PREFIX_LEN]
-                .try_into()
-                .expect("a 4-byte prefix"),
-        ) as usize;
-        assert_eq!(envelope.len(), PROXY_ENVELOPE_META_PREFIX_LEN + meta_len);
-    }
-
-    // `proxy_http` answers with `tauri::ipc::Response`, which the Tauri IPC
-    // delivers to the webview as an ArrayBuffer. This pins the raw
-    // construction: the envelope bytes must survive the response wrapper.
-    #[test]
-    fn proxy_response_wraps_the_envelope_as_raw_ipc_bytes() {
+    fn proxy_response_wraps_generated_wire_data_as_raw_ipc_bytes() {
         use tauri::ipc::IpcResponse;
 
-        let envelope =
-            encode_proxy_response_envelope(204, &HashMap::new(), b"payload").expect("encode");
-        let response =
-            tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(envelope.clone()));
+        let response = proto::ProxyHttpResponse {
+            status: 204,
+            headers: HashMap::from([(
+                "x-repeated".to_string(),
+                proto::HeaderValues {
+                    values: vec!["one".to_string(), "two".to_string()],
+                },
+            )]),
+            body: b"payload".to_vec(),
+        };
+        let wire = response.encode_to_vec();
+        let response = tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(wire.clone()));
         match response.body().expect("the response body") {
-            tauri::ipc::InvokeResponseBody::Raw(bytes) => assert_eq!(bytes, envelope),
+            tauri::ipc::InvokeResponseBody::Raw(bytes) => {
+                assert_eq!(bytes, wire);
+                let decoded = proto::ProxyHttpResponse::decode(bytes.as_slice())
+                    .expect("decode the generated response");
+                assert_eq!(decoded.status, 204);
+                assert_eq!(decoded.headers["x-repeated"].values, ["one", "two"]);
+                assert_eq!(decoded.body, b"payload");
+            }
             tauri::ipc::InvokeResponseBody::Json(_) => panic!("expected a raw response body"),
         }
+    }
+
+    #[test]
+    fn raw_invoke_fallback_accepts_only_byte_arrays() {
+        assert_eq!(
+            json_bytes(&[json!(0), json!(127), json!(255)]).expect("valid bytes"),
+            [0, 127, 255]
+        );
+        assert!(json_bytes(&[json!(-1)]).is_err());
+        assert!(json_bytes(&[json!(256)]).is_err());
+        assert!(json_bytes(&[json!(1.5)]).is_err());
+    }
+
+    #[test]
+    fn raw_invoke_replay_returns_the_first_result() {
+        let registry = RawInvokeRegistry::default();
+        assert!(registry
+            .begin("request-1", "HTTP proxy")
+            .expect("admit first request")
+            .is_none());
+        registry.finish(
+            "request-1".to_string(),
+            RawInvokeResult::Proxy(Ok(vec![1, 2, 3])),
+        );
+
+        match registry
+            .begin("request-1", "HTTP proxy")
+            .expect("replay cached request")
+            .expect("cached result")
+        {
+            RawInvokeResult::Proxy(result) => assert_eq!(result.expect("cached reply"), [1, 2, 3]),
+            RawInvokeResult::Send(_) => panic!("cached the wrong command result"),
+        }
+    }
+
+    #[test]
+    fn raw_invoke_replay_evicts_the_oldest_body_at_the_byte_budget() {
+        let registry = RawInvokeRegistry::with_limits(10, 8);
+        for request_id in ["r1", "r2"] {
+            assert!(registry
+                .begin(request_id, "HTTP proxy")
+                .expect("admit request")
+                .is_none());
+            registry.finish(
+                request_id.to_string(),
+                RawInvokeResult::Proxy(Ok(vec![1, 2, 3])),
+            );
+        }
+
+        let cache = recover(&registry.cache);
+        assert!(!cache.entries.contains_key("r1"));
+        assert!(cache.entries.contains_key("r2"));
+        assert_eq!(cache.completed_bytes, 5);
+    }
+
+    #[test]
+    fn relay_close_before_registration_refuses_that_open() {
+        let slot = RelayChannelSlot::default();
+        assert!(!slot.close_if_owner(7));
+        let delivered = Arc::default();
+        assert!(!slot.register(7, recording_channel(&delivered)));
+        assert!(slot.register(8, recording_channel(&delivered)));
     }
 
     #[tokio::test]
@@ -2655,8 +2837,8 @@ mod tests {
 
         let slots = RelaySlots::default();
         for slot in [&slots.channel, &slots.user_events] {
-            let stale = Arc::default();
-            assert!(slot.register(1, recording_channel(&stale)));
+            let stale: Arc<Mutex<Vec<InvokeResponseBody>>> = Arc::default();
+            assert!(slot.register(1, recording_body_channel(&stale)));
             assert!(slot.accept(1));
 
             let delivered: Arc<Mutex<Vec<InvokeResponseBody>>> = Arc::default();

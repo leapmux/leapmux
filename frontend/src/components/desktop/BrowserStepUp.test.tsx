@@ -34,11 +34,11 @@ vi.mock('~/api/platformBridge', () => ({
   },
 }))
 
-const mockRefreshUser = vi.hoisted(() => vi.fn<() => Promise<void>>())
+const mockReloadUser = vi.hoisted(() => vi.fn<() => Promise<boolean>>())
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     loading: () => false,
-    refreshUser: () => mockRefreshUser(),
+    reloadUser: () => mockReloadUser(),
   }),
 }))
 
@@ -74,8 +74,8 @@ describe('BrowserStepUp', () => {
     bridgeMocks.handlers.length = 0
     copyTextToClipboard.mockReset()
     copyTextToClipboard.mockResolvedValue(true)
-    mockRefreshUser.mockReset()
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockReloadUser.mockReset()
+    mockReloadUser.mockResolvedValue(true)
   })
 
   it('shows the reason and keeps the button on a failure', async () => {
@@ -87,7 +87,29 @@ describe('BrowserStepUp', () => {
     expect(await screen.findByText('the code expired')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Verify in your browser' })).toBeInTheDocument()
     expect(onElevated).not.toHaveBeenCalled()
-    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockReloadUser).not.toHaveBeenCalled()
+  })
+
+  it('unlocks only after the verified session is reloaded', async () => {
+    const { onElevated } = renderStepUp()
+    await startCeremony()
+
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+
+    await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledTimes(1))
+    expect(onElevated).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a usable retry when the verified session cannot be reloaded', async () => {
+    mockReloadUser.mockResolvedValue(false)
+    const { onElevated } = renderStepUp()
+    await startCeremony()
+
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+
+    expect(await screen.findByText(/could not read the verified session/i)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Verify in your browser' })).toBeInTheDocument()
+    expect(onElevated).not.toHaveBeenCalled()
   })
 
   it('opens the same URL again and starts no second ceremony', async () => {

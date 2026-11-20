@@ -601,6 +601,7 @@ CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expir
 CREATE TABLE oauth_authorization_codes (
     code                  TEXT COLLATE "C" PRIMARY KEY,
     user_id               TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    auth_generation       BIGINT NOT NULL,
     client_id             TEXT COLLATE "C" NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
     code_challenge        TEXT NOT NULL,
     redirect_uri          TEXT NOT NULL DEFAULT '',
@@ -610,7 +611,7 @@ CREATE TABLE oauth_authorization_codes (
     expires_at            TIMESTAMPTZ NOT NULL,
     consumed_at           TIMESTAMPTZ,
     -- The credential the exchange MINTED, stamped at consumption: one kind
-    -- and one id, so the reference names exactly one credential or none. See
+    -- and one id, so the reference identifies one credential or has no target. See
     -- the sqlite twin for the replay remedy this serves. A NULL kind means
     -- nothing was minted, and the column never stores 0.
     minted_kind           SMALLINT CHECK (minted_kind BETWEEN 1 AND 2),
@@ -623,11 +624,12 @@ CREATE TABLE oauth_authorization_codes (
     -- What this code redeems into, decided at consent and read at redeem. See
     -- the sqlite twin. A NULL kind means a step-up code.
     redemption_kind       SMALLINT CHECK (redemption_kind BETWEEN 1 AND 2),
-    -- The ties make the states structural: a kind names nothing without its
+    -- The ties make the states structural: a kind has no effect without its
     -- id, and a code verifies XOR redeems.
     CHECK ((minted_kind IS NULL) = (minted_ref_id = '')),
     CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')),
-    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL))
+    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
+    CHECK (minted_kind IS NULL OR (consumed_at IS NOT NULL AND minted_kind = redemption_kind))
 );
 CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 

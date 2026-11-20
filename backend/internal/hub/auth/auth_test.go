@@ -154,6 +154,24 @@ func TestCreateSession_SignInProvedFactorStampsTheSignInWindow(t *testing.T) {
 		"the window ends five minutes after elevation_proven_at")
 }
 
+func TestCreateSessionAt_FullWindowUsesTheSuppliedInstant(t *testing.T) {
+	st := setupStore(t)
+	userID := userid.MustNew(createTestUser(t, st))
+	ctx := context.Background()
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+
+	created, err := auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID,
+		time.Hour, auth.SignInProvedFactorWithFullWindow, now)
+	require.NoError(t, err)
+	row, err := st.Sessions().GetByID(ctx, created.ID, now)
+	require.NoError(t, err)
+	require.NotNil(t, row.ElevationProvenAt)
+	require.NotNil(t, row.ElevationExpiresAt)
+	assert.Equal(t, now, *row.ElevationProvenAt)
+	assert.Equal(t, now.Add(auth.ElevationWindow), *row.ElevationExpiresAt)
+	assert.Equal(t, now.Add(auth.ElevationWindow), created.Elevation.ExpiresAt)
+}
+
 // TestCreateSession_SignInProvedNoFactorStampsNoWindow pins the other side:
 // a sign-in that proved no factor writes no elevation pair at all.
 func TestCreateSession_SignInProvedNoFactorStampsNoWindow(t *testing.T) {

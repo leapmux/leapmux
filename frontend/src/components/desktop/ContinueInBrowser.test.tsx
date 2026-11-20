@@ -14,11 +14,11 @@ vi.mock('~/lib/systemInfo', () => ({
   loadSystemInfo: (force?: boolean) => mockLoadSystemInfo(force),
 }))
 
-const mockRefreshUser = vi.hoisted(() => vi.fn<() => Promise<void>>())
+const mockReloadUser = vi.hoisted(() => vi.fn<() => Promise<boolean>>())
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     loading: () => false,
-    refreshUser: () => mockRefreshUser(),
+    reloadUser: () => mockReloadUser(),
   }),
 }))
 
@@ -41,8 +41,8 @@ describe('ContinueInBrowser', () => {
     mockOpenExternalUrl.mockResolvedValue(undefined)
     mockLoadSystemInfo.mockReset()
     mockLoadSystemInfo.mockResolvedValue(undefined)
-    mockRefreshUser.mockReset()
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockReloadUser.mockReset()
+    mockReloadUser.mockResolvedValue(true)
   })
 
   it('opens the Hub URL with the current path and query', async () => {
@@ -63,7 +63,7 @@ describe('ContinueInBrowser', () => {
 
     await vi.waitFor(() => {
       expect(mockLoadSystemInfo).toHaveBeenCalledExactlyOnceWith(true)
-      expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+      expect(mockReloadUser).toHaveBeenCalledTimes(1)
     })
   })
 

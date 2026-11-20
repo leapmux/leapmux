@@ -13,19 +13,17 @@ import * as styles from './ContinueInBrowser.css'
  * the Hub's origin (sign-up, setup, recovery, email verification, step-up).
  * Opens the corresponding Hub page in the system browser.
  */
-export const ContinueInBrowser: Component = () => {
+export const ContinueInBrowser: Component<{
+  onCheck?: () => Promise<void>
+}> = (props) => {
   const navigate = useNavigate()
   const auth = useAuth()
   const [error, setError] = createSignal('')
   const [checking, setChecking] = createSignal(false)
 
-  const currentPath = (): string => {
-    return `${window.location.pathname}${window.location.search}`
-  }
-
   const handleOpen = async (): Promise<void> => {
     try {
-      await openHubPage(currentPath())
+      await openHubPage(`${window.location.pathname}${window.location.search}`)
     }
     catch (err) {
       setError(formatErrorMessage(err))
@@ -36,8 +34,17 @@ export const ContinueInBrowser: Component = () => {
     setChecking(true)
     setError('')
     try {
-      await loadSystemInfo(true)
-      await auth.refreshUser()
+      if (props.onCheck) {
+        await props.onCheck()
+      }
+      else {
+        const [, adopted] = await Promise.all([
+          loadSystemInfo(true),
+          auth.reloadUser(),
+        ])
+        if (!adopted)
+          throw new Error('The account changed while LeapMux checked it. Try again.')
+      }
     }
     catch (err) {
       setError(formatErrorMessage(err))

@@ -759,7 +759,7 @@ type OAuthAuthorizationCodeStore interface {
 	// consumed row names that credential.
 	Get(ctx context.Context, code string) (*OAuthAuthorizationCode, error)
 	GetActive(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
-	Consume(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
+	Consume(ctx context.Context, code string, now time.Time) error
 	// MarkMinted records which credential the exchange produced -- an app
 	// credential or a session, as the reference states -- so a later replay of
 	// the same code can revoke it. RFC 6749 section 4.1.2 requires exactly

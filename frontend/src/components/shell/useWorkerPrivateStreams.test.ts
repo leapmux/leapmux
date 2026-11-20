@@ -126,7 +126,7 @@ describe('useWorkerPrivateStreams', () => {
     // `UserCrdtState.userId` keeps the raw Hub user id `bootstrap` copies off
     // `UserMaterialized`. The open gate compares the state's id against the
     // metadata account to decide the CRDT state is these rows' account, so it
-    // must take the user id the account names: the two values themselves never
+    // must take the user ID the account identifies: the two values themselves never
     // match, and no stream ever opens.
     setStorageAccountForTests(TEST_USER_ID)
     await createRoot(async (dispose) => {

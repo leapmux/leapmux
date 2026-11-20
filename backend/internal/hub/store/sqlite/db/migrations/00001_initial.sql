@@ -750,6 +750,9 @@ CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expir
 CREATE TABLE oauth_authorization_codes (
     code                  TEXT PRIMARY KEY,
     user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- The credential epoch that approved the grant. Redemption compares it
+    -- under the user-auth lock, so a credential reset spends outstanding codes.
+    auth_generation       INTEGER NOT NULL CHECK (typeof(auth_generation) = 'integer'),
     -- WHICH APP the code was issued to. RFC 6749 section 4.1.3 requires the
     -- token leg to refuse a code presented by a different client, and there
     -- was no such check while every code belonged to the CLI.
@@ -768,7 +771,7 @@ CREATE TABLE oauth_authorization_codes (
     expires_at            DATETIME NOT NULL,
     consumed_at           DATETIME,
     -- The credential the exchange MINTED, stamped at consumption: one kind
-    -- and one id, so the reference names exactly one credential or none.
+    -- and one id, so the reference identifies one credential or has no target.
     --
     -- It is what makes a code REPLAY destructive rather than merely refused:
     -- RFC 6749 section 4.1.2 requires the server to revoke the credential a
@@ -789,11 +792,12 @@ CREATE TABLE oauth_authorization_codes (
     -- from a registration that changed hands since. A NULL kind means a
     -- step-up code, which redeems into an elevation and mints nothing.
     redemption_kind       INTEGER CHECK (redemption_kind IS NULL OR typeof(redemption_kind) = 'integer') CHECK (redemption_kind BETWEEN 1 AND 2),
-    -- The ties make the states structural: a kind names nothing without its
+    -- The ties make the states structural: a kind has no effect without its
     -- id, and a code verifies XOR redeems.
     CHECK ((minted_kind IS NULL) = (minted_ref_id = '')),
     CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')),
-    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL))
+    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
+    CHECK (minted_kind IS NULL OR (consumed_at IS NOT NULL AND minted_kind = redemption_kind))
 );
 CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 

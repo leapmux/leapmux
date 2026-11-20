@@ -196,7 +196,7 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 		return nil, ErrElevationUnsupported
 	}
 	// 400 is the credential kind the device ceremony cannot carry: a
-	// browser-issued credential gets the refusal that identifies the browser leg,
+	// browser-issued credential gets the refusal that identifies the browser ceremony,
 	// and every other 400 is a credential kind that carries no window at
 	// all. Both are permanent for the device ceremony -- but the first one
 	// has a working alternative, so it is a sentinel rather than a failure.

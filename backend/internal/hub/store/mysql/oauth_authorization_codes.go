@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -18,6 +19,7 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 	return store.OAuthAuthorizationCode{
 		Code:             c.Code,
 		UserID:           c.UserID,
+		AuthGeneration:   c.AuthGeneration,
 		ClientID:         c.ClientID,
 		CodeChallenge:    c.CodeChallenge,
 		RedirectURI:      c.RedirectUri,
@@ -37,6 +39,7 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 	return s.conn.queryError(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
 		Code:             p.Code,
 		UserID:           p.UserID.String(),
+		AuthGeneration:   p.AuthGeneration,
 		ClientID:         p.ClientID,
 		CodeChallenge:    p.CodeChallenge,
 		RedirectUri:      p.RedirectURI,
@@ -65,23 +68,18 @@ func (s *oauthAuthorizationCodeStore) GetActive(ctx context.Context, code string
 // the row as consumed (returning rows-affected); if anything was affected,
 // re-read the row to return its contents. RETURNING is unavailable on
 // MySQL.
-func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) (*store.OAuthAuthorizationCode, error) {
+func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) error {
 	rows, err := s.conn.rowsAffected(s.conn.q.ConsumeOAuthAuthorizationCode(ctx, gendb.ConsumeOAuthAuthorizationCodeParams{
 		Code: code,
 		Now:  sqltime.NewMySQLTime(now),
 	}))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if rows == 0 {
-		return nil, store.ErrNotFound
+		return store.ErrNotFound
 	}
-	row, err := s.conn.q.GetOAuthAuthorizationCode(ctx, code)
-	if err != nil {
-		return nil, s.conn.queryError(err)
-	}
-	out := fromDBOAuthAuthorizationCode(row)
-	return &out, nil
+	return nil
 }
 
 // Get returns the row whatever its state. See OAuthAuthorizationCodeStore.Get:
@@ -109,9 +107,21 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 
 func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
 	mintedKind, mintedRefID := minted.NullableKind()
-	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
-		Code:        code,
-		MintedKind:  mintedKind,
-		MintedRefID: mintedRefID,
+	if mintedKind == nil {
+		return store.ErrInvalidArgument
+	}
+	redemptionKind := leapmuxv1.RedemptionKind(*mintedKind)
+	rows, err := s.conn.rowsAffected(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
+		Code:                   code,
+		MintedKind:             mintedKind,
+		MintedRefID:            mintedRefID,
+		ExpectedRedemptionKind: &redemptionKind,
 	}))
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }

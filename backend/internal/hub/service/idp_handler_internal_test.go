@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func TestSanitizeRedirectURI(t *testing.T) {
@@ -267,6 +268,17 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
+	const providerID = "duration-provider"
+	const providerSubject = "duration-subject"
+	secret, err := ks.Encrypt([]byte("client-secret"), keystore.ProviderAAD(providerID))
+	require.NoError(t, err)
+	require.NoError(t, st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
+		ID: providerID, ProviderType: huboauth.ProviderTypeGitHub, Name: "Duration Provider",
+		ClientID: "client-id", ClientSecret: secret, Enabled: true,
+	}))
+	require.NoError(t, st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
+		UserID: userid.MustNew(userID), ProviderID: providerID, ProviderSubject: providerSubject,
+	}))
 
 	set := settings.NewManager(st, nil, settings.CoreDescriptors())
 	require.NoError(t, set.Load(context.Background()))
@@ -277,7 +289,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/idp/test/callback", nil)
 	before := time.Now()
-	h.loginOAuthUser(rec, req, userID, "", &huboauth.TokenSet{
+	h.loginOAuthUser(rec, req, userID, providerID, providerSubject, "", &huboauth.TokenSet{
 		AccessToken: "access", RefreshToken: "refresh", TokenType: "bearer",
 		ExpiresAt: time.Now().Add(time.Hour),
 	}, "")

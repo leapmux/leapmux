@@ -1,14 +1,17 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -55,11 +58,14 @@ type sessionFile struct {
 type persistentJar struct {
 	inner http.CookieJar
 
-	mu       sync.Mutex
-	base     *url.URL
-	path     string // empty means memory only
-	record   map[sessionCookieKey]persistedCookie
-	lastJSON string // last marshalled record; skip write when unchanged
+	mu        sync.Mutex
+	base      *url.URL
+	path      string // empty means memory only
+	record    map[sessionCookieKey]persistedCookie
+	order     map[sessionCookieKey]uint64
+	nextOrder uint64
+	lastJSON  string // last marshalled record; skip write when unchanged
+	diskDirty bool
 }
 
 // newHubCookieJar creates an in-memory jar and its record for exchange snapshots.
@@ -68,6 +74,7 @@ func newHubCookieJar(base *url.URL) *persistentJar {
 		inner:  mustNewMemoryJar(),
 		base:   base,
 		record: make(map[sessionCookieKey]persistedCookie),
+		order:  make(map[sessionCookieKey]uint64),
 	}
 }
 
@@ -107,7 +114,10 @@ func openPersistentJar(base *url.URL, dir string) *persistentJar {
 			continue
 		}
 		c := pc.toHTTP()
-		j.record[cookieKey(base, &c)] = pc
+		key := cookieKey(base, &c)
+		j.record[key] = pc
+		j.order[key] = j.nextOrder
+		j.nextOrder++
 		j.inner.SetCookies(base, []*http.Cookie{&c})
 	}
 	j.lastJSON = string(data)
@@ -124,31 +134,15 @@ func sessionsDir() string {
 	return filepath.Join(filepath.Dir(p), "sessions")
 }
 
-// sessionFileName returns the file name for base's origin:
-// <scheme>_<host>_<port>.json, with the host lower-cased and each unsafe byte
-// written as _ plus two hex digits.
+// sessionFileName returns a fixed-size file name derived from base's origin.
+// The file stores the complete Hub URL and rejects a digest collision on read.
 func sessionFileName(base *url.URL) string {
-	return base.Scheme + "_" + encodeHost(base.Hostname()) + "_" + effectivePort(base) + ".json"
-}
-
-// encodeHost lower-cases the host and encodes every byte outside [a-z0-9.-]
-// as _ plus two hex digits. Two different origins never share a file name.
-func encodeHost(host string) string {
-	host = strings.ToLower(host)
-	var sb strings.Builder
-	for i := 0; i < len(host); i++ {
-		b := host[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= '0' && b <= '9', b == '.', b == '-':
-			sb.WriteByte(b)
-		default:
-			sb.WriteByte('_')
-			const hexDigits = "0123456789abcdef"
-			sb.WriteByte(hexDigits[b>>4])
-			sb.WriteByte(hexDigits[b&0x0f])
-		}
+	origin, err := canonicalHubOrigin(base)
+	if err != nil {
+		origin = strings.ToLower(base.String())
 	}
-	return sb.String()
+	digest := sha256.Sum256([]byte(origin))
+	return fmt.Sprintf("session_%x.json", digest)
 }
 
 // SetCookies forwards to the inner jar and, for the Hub's origin, records each
@@ -172,6 +166,7 @@ func (j *persistentJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		if expired {
 			if _, ok := j.record[k]; ok {
 				delete(j.record, k)
+				delete(j.order, k)
 				changed = true
 			}
 			continue
@@ -179,10 +174,17 @@ func (j *persistentJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		if old, ok := j.record[k]; ok && old.equal(pc) {
 			continue
 		}
+		if _, ok := j.record[k]; !ok {
+			j.order[k] = j.nextOrder
+			j.nextOrder++
+		}
 		j.record[k] = pc
 		changed = true
 	}
-	if !changed {
+	if changed {
+		j.diskDirty = true
+	}
+	if !j.diskDirty {
 		return
 	}
 	j.persistLocked()
@@ -241,7 +243,7 @@ func (j *persistentJar) snapshot() http.CookieJar {
 
 	snapshot := mustNewMemoryJar()
 	cookies := make([]*http.Cookie, 0, len(j.record))
-	for _, record := range j.sortedCookies() {
+	for _, record := range j.orderedCookies() {
 		cookie := record.toHTTP()
 		cookies = append(cookies, &cookie)
 	}
@@ -252,6 +254,7 @@ func (j *persistentJar) snapshot() http.CookieJar {
 // persistLocked writes or removes the session file. The caller holds j.mu.
 func (j *persistentJar) persistLocked() {
 	if j.path == "" {
+		j.diskDirty = false
 		return
 	}
 	// The inner jar drops a clock-expired cookie at read time, but the
@@ -262,27 +265,32 @@ func (j *persistentJar) persistLocked() {
 	for k, pc := range j.record {
 		if pc.Expires != nil && !pc.Expires.After(now) {
 			delete(j.record, k)
+			delete(j.order, k)
+			j.diskDirty = true
 		}
 	}
 	if len(j.record) == 0 {
 		if err := os.Remove(j.path); err != nil && !os.IsNotExist(err) {
 			slog.Warn("session store: remove session file", "path", j.path, "err", err)
+			return
 		}
 		if err := atomicfile.RemoveTempFiles(j.path); err != nil {
 			slog.Warn("session store: remove temp files", "path", j.path, "err", err)
+			return
 		}
 		// The removal leaves no file behind, so drop the memo of the
 		// last write: a later change that marshals to those same bytes
 		// must still write.
 		j.lastJSON = ""
+		j.diskDirty = false
 		return
 	}
-	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: j.sortedCookies()}, "", "  ")
+	data, err := json.MarshalIndent(sessionFile{HubURL: j.base.String(), Cookies: j.orderedCookies()}, "", "  ")
 	if err != nil {
 		slog.Warn("session jar: cannot encode session record; keeping cookies in memory only", "error", err)
 		return
 	}
-	if string(data) == j.lastJSON {
+	if !j.diskDirty && string(data) == j.lastJSON {
 		return
 	}
 	dir := filepath.Dir(j.path)
@@ -295,24 +303,27 @@ func (j *persistentJar) persistLocked() {
 		return
 	}
 	j.lastJSON = string(data)
+	j.diskDirty = false
 }
 
-// sortedCookies keeps replays and persisted bytes independent of map order.
+// orderedCookies preserves the standard jar's creation-order tie breaker.
 // The caller holds j.mu.
-func (j *persistentJar) sortedCookies() []persistedCookie {
-	cookies := make([]persistedCookie, 0, len(j.record))
-	for _, pc := range j.record {
-		cookies = append(cookies, pc)
+func (j *persistentJar) orderedCookies() []persistedCookie {
+	type orderedCookie struct {
+		cookie persistedCookie
+		order  uint64
 	}
-	sort.Slice(cookies, func(a, b int) bool {
-		if cookies[a].Name != cookies[b].Name {
-			return cookies[a].Name < cookies[b].Name
-		}
-		if cookies[a].Path != cookies[b].Path {
-			return cookies[a].Path < cookies[b].Path
-		}
-		return cookies[a].Domain < cookies[b].Domain
+	ordered := make([]orderedCookie, 0, len(j.record))
+	for key, cookie := range j.record {
+		ordered = append(ordered, orderedCookie{cookie: cookie, order: j.order[key]})
+	}
+	slices.SortFunc(ordered, func(a, b orderedCookie) int {
+		return cmp.Compare(a.order, b.order)
 	})
+	cookies := make([]persistedCookie, len(ordered))
+	for index, item := range ordered {
+		cookies[index] = item.cookie
+	}
 	return cookies
 }
 

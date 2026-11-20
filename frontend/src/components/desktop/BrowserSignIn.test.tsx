@@ -1,7 +1,7 @@
 import type { SignInOptions } from '~/context/AuthContext'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { createSignal, onCleanup } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuth } from '~/context/AuthContext'
 import { deferred, settle } from '~/test-support/async'
@@ -100,6 +100,14 @@ function RecoveryProbe() {
   )
 }
 
+function SignInHarness() {
+  let mounted = true
+  onCleanup(() => {
+    mounted = false
+  })
+  return <BrowserSignIn isCurrentArrival={() => mounted} />
+}
+
 /**
  * Renders the sign-in at `initialPath` and records every navigation the view
  * causes. The listener attaches after the initial entry is in place, so
@@ -113,7 +121,7 @@ function renderSignIn(initialPath = '/login') {
   const result = render(() => (
     <>
       <MemoryRouter history={history}>
-        <Route path="/login" component={() => <BrowserSignIn isCurrentArrival={() => true} />} />
+        <Route path="/login" component={SignInHarness} />
         <Route path="/" component={() => <div data-testid="app-home" />} />
         <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
       </MemoryRouter>
@@ -253,8 +261,8 @@ describe('BrowserSignIn', () => {
     expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
   })
 
-  it('does not adopt a successful result after the view unmounts', async () => {
-    const { unmount } = renderSignIn()
+  it('adopts a successful result after unmount without navigating', async () => {
+    const { unmount, navigations } = renderSignIn()
     await startCeremony()
 
     unmount()
@@ -262,7 +270,8 @@ describe('BrowserSignIn', () => {
     await settle()
 
     expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
-    expect(mockAdopt).not.toHaveBeenCalled()
+    expect(mockAdopt).toHaveBeenCalledOnce()
+    expect(navigations).toEqual([])
   })
 
   it('disables the wait actions until the flow is ready and after its result arrives', async () => {

@@ -3,19 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/util/ctxutil"
+	"golang.org/x/net/idna"
 )
 
 // ProxyResponse is the response metadata returned from ProxyHTTP.
@@ -40,6 +44,103 @@ type HubProxy struct {
 	// origin, so parsing it once (rather than re-parsing the constant string on
 	// every proxied RPC and every WS dial) keeps the hot path allocation-free.
 	base *url.URL
+	jar  *connectionJar
+}
+
+// connectionJar prevents a detached connection from reading or changing the
+// session store after its replacement becomes current. Retire waits for a
+// cookie operation that already entered the delegate, so reopening the same
+// Hub always observes its completed state.
+type connectionJar struct {
+	mu         sync.RWMutex
+	active     bool
+	generation uint64
+	owner      http.CookieJar
+	base       *url.URL
+}
+
+func newConnectionJar(owner http.CookieJar, base *url.URL) *connectionJar {
+	return &connectionJar{active: true, owner: owner, base: base}
+}
+
+func (j *connectionJar) Cookies(u *url.URL) []*http.Cookie {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if !j.active {
+		return nil
+	}
+	return j.owner.Cookies(u)
+}
+
+func (j *connectionJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.active {
+		j.owner.SetCookies(u, cookies)
+		j.generation++
+	}
+}
+
+func (j *connectionJar) requestJar(seed *url.URL) http.CookieJar {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return &requestCookieJar{
+		connection: j,
+		view:       j.snapshotLocked(seed),
+		generation: j.generation,
+	}
+}
+
+func (j *connectionJar) snapshot(seed *url.URL) http.CookieJar {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.snapshotLocked(seed)
+}
+
+func (j *connectionJar) snapshotLocked(seed *url.URL) http.CookieJar {
+	view := mustNewMemoryJar()
+	if j.active {
+		if persistent, ok := j.owner.(*persistentJar); ok {
+			return persistent.snapshot()
+		} else {
+			view.SetCookies(seed, j.owner.Cookies(seed))
+		}
+	}
+	return view
+}
+
+func (j *connectionJar) apply(generation uint64, u *url.URL, cookies []*http.Cookie) (uint64, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.active || j.generation != generation {
+		return j.generation, false
+	}
+	j.owner.SetCookies(u, cookies)
+	j.generation++
+	return j.generation, true
+}
+
+func (j *connectionJar) retire() {
+	j.mu.Lock()
+	j.active = false
+	j.mu.Unlock()
+}
+
+type requestCookieJar struct {
+	connection *connectionJar
+	view       http.CookieJar
+	generation uint64
+}
+
+func (j *requestCookieJar) Cookies(u *url.URL) []*http.Cookie {
+	return j.view.Cookies(u)
+}
+
+func (j *requestCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	j.view.SetCookies(u, cookies)
+	if generation, accepted := j.connection.apply(j.generation, u, cookies); accepted {
+		j.generation = generation
+	}
 }
 
 // newProxy returns a proxy for hubURL, which may be a remote `http(s)://`
@@ -90,22 +191,32 @@ func newProxyForEndpoint(endpoint *hubtransport.Endpoint, jar http.CookieJar) *H
 	// because a local-IPC endpoint presents the placeholder origin that its
 	// transport dials, and the pin compares against what the request carries.
 	baseURL := endpoint.BaseURL()
-	session := func(c *http.Client) *http.Client {
-		c.Jar = jar
+	base := mustParseURL(baseURL)
+	connectionCookies := newConnectionJar(jar, base)
+	sessionClient := func(c *http.Client) *http.Client {
+		c.Jar = connectionCookies
 		c.CheckRedirect = pinRedirectsToOrigin(baseURL)
 		return c
 	}
 
-	return &HubProxy{
+	proxy := &HubProxy{
 		// StreamClient, not a timed unary client: the proxied ConnectRPC calls
 		// include server streams, and an http.Client timeout covers the body
 		// read, so it would end a stream on a clock. The webview's own request
 		// supplies the limit -- ProxyHTTP passes its context down.
-		client:   session(endpoint.StreamClient()),
-		wsClient: session(endpoint.WebSocketClient()),
+		client:   sessionClient(endpoint.StreamClient()),
+		wsClient: sessionClient(endpoint.WebSocketClient()),
 		endpoint: endpoint,
 		baseURL:  baseURL,
-		base:     mustParseURL(baseURL),
+		base:     base,
+		jar:      connectionCookies,
+	}
+	return proxy
+}
+
+func (p *HubProxy) retireSession() {
+	if p != nil && p.jar != nil {
+		p.jar.retire()
 	}
 }
 
@@ -184,6 +295,10 @@ func (p *HubProxy) requireWSClient(label string) error {
 // "hub.example:443" (https) as the one origin they are.
 func effectivePort(u *url.URL) string {
 	if p := u.Port(); p != "" {
+		port, err := strconv.ParseUint(p, 10, 16)
+		if err == nil && port != 0 {
+			return strconv.FormatUint(port, 10)
+		}
 		return p
 	}
 	switch u.Scheme {
@@ -194,6 +309,31 @@ func effectivePort(u *url.URL) string {
 	default:
 		return ""
 	}
+}
+
+// canonicalHubOrigin returns the one spelling used for identity, redirect
+// checks, and persisted sessions. Network transports already apply IDNA and
+// parse numeric ports, so keeping the configured spelling would give one Hub
+// more than one local identity.
+func canonicalHubOrigin(u *url.URL) (string, error) {
+	if u == nil {
+		return "", errors.New("hub URL is missing")
+	}
+	host := strings.TrimSuffix(u.Hostname(), ".")
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	} else {
+		ascii, err := idna.Lookup.ToASCII(host)
+		if err != nil {
+			return "", fmt.Errorf("normalize Hub host: %w", err)
+		}
+		host = strings.ToLower(ascii)
+	}
+	port := effectivePort(u)
+	if port == "" {
+		return "", fmt.Errorf("hub URL scheme %q has no default port", u.Scheme)
+	}
+	return strings.ToLower(u.Scheme) + "://" + net.JoinHostPort(host, port), nil
 }
 
 // sameHubOrigin reports whether u shares base's origin: same scheme, same
@@ -209,9 +349,9 @@ func effectivePort(u *url.URL) string {
 // origin and must be followed rather than refused as an off-origin bounce. The
 // scheme is already lowercased by url.Parse, so a plain == is correct there.
 func sameHubOrigin(u, base *url.URL) bool {
-	return u.Scheme == base.Scheme &&
-		strings.EqualFold(u.Hostname(), base.Hostname()) &&
-		effectivePort(u) == effectivePort(base)
+	left, leftErr := canonicalHubOrigin(u)
+	right, rightErr := canonicalHubOrigin(base)
+	return leftErr == nil && rightErr == nil && left == right
 }
 
 // pinRedirectsToOrigin returns a CheckRedirect that refuses any redirect whose
@@ -232,7 +372,10 @@ func pinRedirectsToOrigin(baseURL string) func(*http.Request, []*http.Request) e
 			return fmt.Errorf("hub base URL %q is unparseable; refusing redirect to %q", baseURL, req.URL.Redacted())
 		}
 	}
-	return func(req *http.Request, _ []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
 		if !sameHubOrigin(req.URL, base) {
 			return fmt.Errorf("refusing hub redirect that leaves the origin, to %q", req.URL.Redacted())
 		}
@@ -376,7 +519,11 @@ func (p *HubProxy) Do(ctx context.Context, method, path string, headers map[stri
 		req.Header.Set(k, v)
 	}
 
-	resp, err := p.client.Do(req)
+	client := *p.client
+	if p.jar != nil {
+		client.Jar = p.jar.requestJar(req.URL)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("proxy request: %w", err)
 	}
@@ -475,7 +622,14 @@ func (p *HubProxy) cookieHeader() http.Header {
 	if err != nil {
 		return nil
 	}
-	cookies := p.client.Jar.Cookies(base)
+	return cookieHeaderFor(p.client.Jar, base)
+}
+
+func cookieHeaderFor(jar http.CookieJar, base *url.URL) http.Header {
+	if jar == nil || base == nil {
+		return nil
+	}
+	cookies := jar.Cookies(base)
 	if len(cookies) == 0 {
 		return nil
 	}

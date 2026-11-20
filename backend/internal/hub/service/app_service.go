@@ -254,15 +254,14 @@ func (s *AppService) UpdateApp(
 	}
 
 	next := store.UpdateOAuthClientParams{
-		ClientID:         app.ClientID,
-		ClientName:       app.ClientName,
-		ClientURI:        app.ClientURI,
-		RedirectURIs:     app.RedirectURIs,
-		Scopes:           app.Scopes,
-		GrantTypes:       app.GrantTypes,
-		ElevationAllowed: app.ElevationAllowed,
-		CallerUserID:     user.ID,
-		CallerIsAdmin:    user.IsAdmin,
+		ClientID:      app.ClientID,
+		ClientName:    app.ClientName,
+		ClientURI:     app.ClientURI,
+		RedirectURIs:  app.RedirectURIs,
+		Scopes:        app.Scopes,
+		GrantTypes:    app.GrantTypes,
+		CallerUserID:  user.ID,
+		CallerIsAdmin: user.IsAdmin,
 	}
 	if msg.ClientName != nil {
 		name := validate.CleanNameTo(msg.GetClientName(), clientNameByteLimit)

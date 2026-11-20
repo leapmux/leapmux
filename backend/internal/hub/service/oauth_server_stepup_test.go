@@ -438,7 +438,7 @@ func TestCLIStepUp_TheActivationPageIdentifiesTheStoredCredential(t *testing.T) 
 // activation page, and the page must say so. The approval refuses it (the
 // elevate step matches only a live row), and a person must not prove a factor
 // for something that grants nothing -- the same reason a revoked credential is
-// named as revoked.
+// identified as revoked.
 func TestCLIStepUp_TheActivationPageSaysAnExpiredCredentialGrantsNothing(t *testing.T) {
 	env := setupAPIAuth(t)
 	soon := env.now().Add(time.Minute)
@@ -706,7 +706,7 @@ func TestAuthorizeStepUp_RevokedToken(t *testing.T) {
 }
 
 // An expired token is as dead as a revoked one. It must fail the parse: the
-// consent page names no row the elevation write will refuse, and the person
+// consent page identifies no row the elevation write will refuse, and the person
 // must not prove a factor first.
 func TestAuthorizeStepUp_ExpiredToken(t *testing.T) {
 	t.Parallel()

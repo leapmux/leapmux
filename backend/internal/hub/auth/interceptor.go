@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -1082,6 +1083,14 @@ func IsSessionOnlyAdminProcedure(procedure string) bool {
 	return sessionOnlyAdminProcedures[procedure]
 }
 
+// UpdateUserRequiresSession identifies the variants that change recovery
+// authority. The mixed RPC keeps ordinary profile edits available to an
+// elevated bearer, while email and verification changes require a browser
+// session.
+func UpdateUserRequiresSession(req *leapmuxv1.UpdateUserRequest) bool {
+	return req != nil && (req.Email != nil || req.EmailVerified != nil)
+}
+
 // enforceAdmin rejects a non-admin caller from an admin procedure, in the
 // shape of enforceEmailVerification so the two checks read as one family.
 // The unauthenticated case never reaches here: both callers sit behind a
@@ -1127,11 +1136,16 @@ func enforceAdmin(procedure string, userInfo *UserInfo, now time.Time) error {
 	if userInfo.SoloAuthenticated() {
 		return nil
 	}
+	// UpdateUser's credential requirement depends on its optional fields. Its
+	// handler applies that rule before reading the target and the elevation
+	// response interceptor adds the recoverable marker only to profile edits.
+	if procedure == leapmuxv1connect.AdminUserServiceUpdateUserProcedure {
+		return nil
+	}
 	// A session-only procedure refuses every non-session credential before
 	// the elevation check, so no client starts a step-up that cannot help.
 	if sessionOnlyAdminProcedures[procedure] {
-		sessionID, _, _ := userInfo.Credential.ElevatableRow()
-		if sessionID == "" {
+		if userInfo.Credential.SessionID() == "" {
 			return CredentialNotElevatableError()
 		}
 	}

@@ -45,7 +45,9 @@ func callbackParts(t *testing.T, flow *loopbackauth.Flow) (redirectURI, state st
 // getCallback performs one callback request and reads its answer.
 func getCallback(t *testing.T, redirectURI, query string) (status int, body string) {
 	t.Helper()
-	resp, err := http.Get(redirectURI + "?" + query)
+	req, err := http.NewRequestWithContext(testutil.DeadlineContext(t), http.MethodGet, redirectURI+"?"+query, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
@@ -256,7 +258,7 @@ func TestAuthorizeURL_CarriesStepUpAndTheBoundPort(t *testing.T) {
 		return u.Query()
 	}
 	qWith, qWithout := parse(withStepUp), parse(without)
-	assert.Equal(t, "token:abc", qWith.Get("step_up"), "a step-up names its target")
+	assert.Equal(t, "token:abc", qWith.Get("step_up"), "a step-up identifies its target")
 	assert.False(t, qWithout.Has("step_up"), "a plain sign-in carries no step_up")
 
 	// The redirect URI derives from the app's registered form with the BOUND
@@ -383,7 +385,7 @@ func TestReadOAuthError_ReportsTheZeroValueOnABodyItCannotRead(t *testing.T) {
 }
 
 // TestPostForm_SendsAFormBodyAndTheCallersHeaders pins the one request shape
-// every leg of the hub's auth surface uses.
+// every path on the Hub's auth surface uses.
 func TestPostForm_SendsAFormBodyAndTheCallersHeaders(t *testing.T) {
 	type received struct {
 		method      string

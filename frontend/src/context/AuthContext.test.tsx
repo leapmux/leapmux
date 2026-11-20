@@ -108,7 +108,7 @@ vi.mock('~/lib/systemInfo', () => ({
 }))
 
 /**
- * While set, holds each `hydrateStorageAccount` open after its real work, so a
+ * While set, holds each `prepareStorageAccount` open after its real work, so a
  * test can land a write inside the window in which `setUser` loads an
  * account's rows. Unset, the hydration passes straight through.
  */
@@ -117,13 +117,14 @@ vi.mock('~/lib/browserStorage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/browserStorage')>()
   return {
     ...actual,
-    hydrateStorageAccount: async (userId: StorageAccount) => {
-      await actual.hydrateStorageAccount(userId)
+    prepareStorageAccount: async (userId: StorageAccount) => {
+      const prepared = await actual.prepareStorageAccount(userId)
       const hold = hydrationHold
       if (hold) {
         hold.entered()
         await hold.release
       }
+      return prepared
     },
   }
 })

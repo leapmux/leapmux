@@ -220,18 +220,41 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	before, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 
-	resp, err := env.client.RevokeUserSessions(authedReq(ctx, &leapmuxv1.RevokeUserSessionsRequest{
-		User: service.SelectUserByID(userID),
-	}, env.token))
-	require.NoError(t, err)
+	lifecycleCall := make(chan userRevocationCall, 1)
+	releaseLifecycle := make(chan struct{})
+	env.revocations.beforeUserRevoked = func(call userRevocationCall) {
+		lifecycleCall <- call
+		<-releaseLifecycle
+	}
+	type revokeResult struct {
+		response *leapmuxv1.RevokeUserSessionsResponse
+		err      error
+	}
+	result := make(chan revokeResult, 1)
+	go func() {
+		response, err := env.client.RevokeUserSessions(authedReq(ctx, &leapmuxv1.RevokeUserSessionsRequest{
+			User: service.SelectUserByID(userID),
+		}, env.token))
+		result <- revokeResult{response: response, err: err}
+	}()
+
+	firstCommitted := <-lifecycleCall
+	rows, secondRevokeErr := env.st.Users().RevokeUserTokens(ctx, userid.MustNew(userID))
+	close(releaseLifecycle)
+	completed := <-result
+	require.NoError(t, secondRevokeErr)
+	require.Equal(t, int64(1), rows)
+	require.NoError(t, completed.err)
+	resp := completed.response
 	assert.Equal(t, int64(1), resp.GetApiTokensRevoked())
 	assert.Equal(t, int64(1), resp.GetDelegationTokensRevoked())
 
 	after, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 	assert.Greater(t, after.AuthGeneration, before.AuthGeneration)
+	require.Greater(t, after.AuthGeneration, firstCommitted.generation)
 
-	require.Equal(t, []userRevocationCall{{userID: userID, generation: after.AuthGeneration}},
+	require.Equal(t, []userRevocationCall{{userID: userID, generation: firstCommitted.generation}},
 		env.revocations.recorded())
 	assert.Empty(t, env.revocations.restampedSessions(),
 		"the administrator surface spares no session")

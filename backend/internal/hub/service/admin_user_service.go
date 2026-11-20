@@ -437,10 +437,6 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 // `leapmux control admin user update --display-name` for no gain.
 func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.UpdateUserRequest) (*leapmuxv1.UpdateUserResponse, error) {
 	msg := req
-	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
-	if err != nil {
-		return nil, err
-	}
 	updateDisplayName := msg.DisplayName != nil
 	updateEmail := msg.Email != nil
 	updateEmailVerified := msg.EmailVerified != nil
@@ -449,11 +445,19 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 		return nil, connect.NewError(connect.CodeInvalidArgument, "no fields to update")
 	}
 	var actor *auth.UserInfo
-	if updateEmail || updateEmailVerified {
+	var err error
+	if auth.UpdateUserRequiresSession(msg) {
 		actor, err = requireElevatedSessionForDurableAuthority(ctx, s.now())
 	} else {
 		actor, err = requireElevatedActor(ctx, s.now())
 	}
+	if err != nil {
+		if errors.Is(err, auth.ErrElevationRequired) {
+			serverCallInfo(ctx).ResponseHeader().Set(ElevationRequiredHeader, "1")
+		}
+		return nil, err
+	}
+	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
 	if err != nil {
 		return nil, err
 	}

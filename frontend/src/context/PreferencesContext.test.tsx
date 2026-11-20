@@ -1686,7 +1686,7 @@ describe('PreferencesContext — cross-tab sync', () => {
     })
     setStorageAccountForTests(TEST_USER_ID)
     // The row lives under the COMPOSED account `setStorageAccountForTests`
-    // wrote, so the announcement names that key -- the bare spelling would name
+    // wrote, so the announcement identifies that key. The bare spelling would identify
     // a key no writer produces, and the ignore would hold for the wrong reason.
     announceWrite(accountStorageKey(storageAccountFor(TEST_HUB, 'someoneelse'), KEY_BROWSER_PREFS))
 

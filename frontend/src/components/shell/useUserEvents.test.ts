@@ -1555,11 +1555,12 @@ describe('useUserEvents (desktop bridge path)', () => {
 
       setUserId('user-2')
       await settleBridge()
+      const liveReceiver = bridge.receivers[1]!
 
       const evt = create(WatchUserEventSchema, {
         event: {
           case: 'initial',
-          value: create(UserMaterializedSchema, { userId: 'user-1', currentEpoch: 3n }),
+          value: create(UserMaterializedSchema, { userId: 'user-2', currentEpoch: 3n }),
         },
       })
       const payload = toBinary(WatchUserEventSchema, evt)
@@ -1570,6 +1571,9 @@ describe('useUserEvents (desktop bridge path)', () => {
       await settleBridge()
 
       expect(pending.bootstrap).not.toHaveBeenCalled()
+      liveReceiver.onMessage(framed)
+      await settleBridge()
+      expect(pending.bootstrap).toHaveBeenCalledOnce()
       dispose()
     })
   })

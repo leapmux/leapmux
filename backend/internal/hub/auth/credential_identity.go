@@ -1,6 +1,10 @@
 package auth
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/leapmux/leapmux/internal/hub/store"
+)
 
 // CredentialIdentity is the immutable authentication credential attached to a
 // request or long-lived channel. The zero value represents synthetic solo-mode
@@ -96,7 +100,7 @@ func (c CredentialIdentity) SessionID() string {
 // input, so it must never carry a window and must never mark a row as the
 // caller's own.
 //
-// ElevatableRow below answers the same question for both elevatable kinds at
+// ElevatableRef below answers the same question for both elevatable kinds at
 // once, and every rule that must treat a session and a command-line
 // credential alike reads that instead.
 func (c CredentialIdentity) APITokenID() string {
@@ -106,20 +110,20 @@ func (c CredentialIdentity) APITokenID() string {
 	return ""
 }
 
-// ElevatableRow returns the row a step-up window may be stamped on: a session
+// ElevatableRef returns the row a step-up window may be stamped on: a session
 // or a command-line credential, whichever this identity specifies.
 //
 // ONE answer for the three places that ask -- the admission, the slide, and
 // the grant -- so a credential kind cannot be elevatable to one of them and
 // not to another. The zero value (solo) and a delegation bearer report false.
-func (c CredentialIdentity) ElevatableRow() (sessionID, apiTokenID string, ok bool) {
+func (c CredentialIdentity) ElevatableRef() store.CredentialRef {
 	switch c.kind {
 	case credentialSession:
-		return c.id, "", true
+		return store.CredentialRef{Kind: store.CredentialRefKindSession, ID: c.id}
 	case credentialAPI:
-		return "", c.id, true
+		return store.CredentialRef{Kind: store.CredentialRefKindToken, ID: c.id}
 	default:
-		return "", "", false
+		return store.CredentialRef{}
 	}
 }
 

@@ -591,25 +591,27 @@ func slideElevation(ctx context.Context, st store.Store, userInfo *auth.UserInfo
 	// a CLI that runs one protected command every minute would otherwise
 	// return to the browser every two hours, on the rule that says an
 	// uninterrupted work session asks for one factor and not one per action.
-	sessionID, apiTokenID, ok := userInfo.Credential.ElevatableRow()
-	if !ok {
+	ref := userInfo.Credential.ElevatableRef()
+	if ref.IsZero() {
 		return
 	}
 	var n int64
 	var err error
-	switch {
-	case sessionID != "":
+	switch ref.Kind {
+	case store.CredentialRefKindSession:
 		n, err = st.Sessions().SlideElevation(ctx, store.SlideSessionElevationParams{
-			SessionID:      sessionID,
+			SessionID:      ref.ID,
 			UserID:         userInfo.ID,
 			WindowDeadline: now.Add(auth.ElevationWindow),
 		}, now)
-	default:
+	case store.CredentialRefKindToken:
 		n, err = st.APITokens().SlideElevation(ctx, store.SlideAPITokenElevationParams{
-			TokenID:        apiTokenID,
+			TokenID:        ref.ID,
 			UserID:         userInfo.ID,
 			WindowDeadline: now.Add(auth.ElevationWindow),
 		}, now)
+	case store.CredentialRefKindNone:
+		return
 	}
 	if err != nil {
 		slog.WarnContext(ctx, "could not slide the elevation window", "err", err)
@@ -623,7 +625,7 @@ func slideElevation(ctx context.Context, st store.Store, userInfo *auth.UserInfo
 	if n == 0 {
 		return
 	}
-	if until, ok := storedElevationDeadline(ctx, st, sessionID, apiTokenID, now); ok {
+	if until, ok := storedElevationDeadline(ctx, st, ref, now); ok {
 		recordElevationSlide(ctx, until)
 	}
 }
@@ -660,22 +662,25 @@ func slideElevation(ctx context.Context, st store.Store, userInfo *auth.UserInfo
 // one the hub enforces. A read failure reports nothing, which leaves the
 // client's copy where it was: this report can improve that copy and must never
 // make it worse.
-func storedElevationDeadline(ctx context.Context, st store.Store, sessionID, apiTokenID string, now time.Time) (time.Time, bool) {
+func storedElevationDeadline(ctx context.Context, st store.Store, ref store.CredentialRef, now time.Time) (time.Time, bool) {
 	var provenAt, expiresAt *time.Time
-	if sessionID != "" {
-		row, err := st.Sessions().GetByID(ctx, sessionID, now)
+	switch ref.Kind {
+	case store.CredentialRefKindSession:
+		row, err := st.Sessions().GetByID(ctx, ref.ID, now)
 		if err != nil {
 			slog.WarnContext(ctx, "could not re-read the slid elevation window", "err", err)
 			return time.Time{}, false
 		}
 		provenAt, expiresAt = row.ElevationProvenAt, row.ElevationExpiresAt
-	} else {
-		row, err := st.APITokens().GetByID(ctx, apiTokenID)
+	case store.CredentialRefKindToken:
+		row, err := st.APITokens().GetByID(ctx, ref.ID)
 		if err != nil {
 			slog.WarnContext(ctx, "could not re-read the slid elevation window", "err", err)
 			return time.Time{}, false
 		}
 		provenAt, expiresAt = row.ElevationProvenAt, row.ElevationExpiresAt
+	case store.CredentialRefKindNone:
+		return time.Time{}, false
 	}
 	return auth.NewElevation(provenAt, expiresAt).Deadline(now)
 }
@@ -750,6 +755,8 @@ func accountShapeElevatesOnlyThroughAProvider(passwordSet bool, passkeyCount int
 // stamp. Every factor path reports it, and each maps it to its own transport:
 // an RPC answers Unauthenticated, the OAuth leg answers 401.
 var errElevationSessionEnded = errors.New("your session ended; sign in again")
+
+var errElevationAppNotAllowed = errors.New("this app does not allow identity verification")
 
 // elevateSessionRow stamps a fresh window on one session and reports the new
 // deadline. It is the ONE place that writes an elevation, so the window, the
@@ -829,6 +836,14 @@ func grantSessionElevation(
 		if session.UserID != current.ID || session.AuthGeneration < current.AuthGeneration {
 			return errElevationSessionEnded
 		}
+		if session.IssuedToClient != "" {
+			if err := tx.OAuthClients().LockForElevation(ctx, session.IssuedToClient); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return errElevationAppNotAllowed
+				}
+				return err
+			}
+		}
 		var live bool
 		until, live, err = elevateSessionRow(ctx, tx, sessionID, userID, now)
 		if err != nil {
@@ -864,6 +879,8 @@ func (s *UserService) grantElevation(ctx context.Context, userInfo *auth.UserInf
 		return time.Time{}, wrappedConnectError(connect.CodeUnauthenticated, err)
 	case errors.Is(err, errElevationProofChanged):
 		return time.Time{}, wrappedConnectError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, errElevationAppNotAllowed):
+		return time.Time{}, wrappedConnectError(connect.CodePermissionDenied, err)
 	case err != nil:
 		return time.Time{}, wrappedConnectError(connect.CodeInternal, err)
 	}
@@ -988,7 +1005,10 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *leapmuxv1
 	if err != nil {
 		return nil, mapElevationAssertionError(ctx, user.ID, err)
 	}
-	until, err := s.grantElevation(ctx, userInfo, actingSessionID, passkeyElevationProof{identity: identity})
+	until, err := s.grantElevation(ctx, userInfo, actingSessionID, passkeyElevationProof{
+		identity:       identity,
+		authGeneration: userInfo.UserAuthGeneration,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1042,21 +1062,24 @@ func (s *UserService) DropElevation(ctx context.Context, _ *leapmuxv1.DropElevat
 	if err := rejectSoloElevation(userInfo); err != nil {
 		return nil, err
 	}
-	sessionID, apiTokenID, ok := userInfo.Credential.ElevatableRow()
-	if !ok {
+	ref := userInfo.Credential.ElevatableRef()
+	if ref.IsZero() {
 		return nil, auth.CredentialNotElevatableError()
 	}
 	var n int64
-	if sessionID != "" {
+	switch ref.Kind {
+	case store.CredentialRefKindSession:
 		n, err = s.store.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
-			SessionID: sessionID,
+			SessionID: ref.ID,
 			UserID:    userInfo.ID,
 		})
-	} else {
+	case store.CredentialRefKindToken:
 		n, err = s.store.APITokens().DropElevation(ctx, store.DropAPITokenElevationParams{
-			TokenID: apiTokenID,
+			TokenID: ref.ID,
 			UserID:  userInfo.ID,
 		})
+	case store.CredentialRefKindNone:
+		return nil, auth.CredentialNotElevatableError()
 	}
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("drop elevation: %w", err))

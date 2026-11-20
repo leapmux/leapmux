@@ -64,7 +64,7 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
-	user, err := wa.FinishLogin(ctx, ceremonyID, credentialJSON)
+	user, identity, err := wa.FinishLogin(ctx, ceremonyID, credentialJSON)
 	if err != nil {
 		switch classifyWebAuthnError(err) {
 		case webAuthnErrorClone:
@@ -102,7 +102,27 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx), auth.SignInProvedFactor)
+	var session auth.CreatedSession
+	err = s.store.RunInUserAuthTransaction(ctx, loginUID, func(tx store.Store) error {
+		current, err := tx.Users().GetByID(ctx, loginUID.String())
+		if err != nil {
+			return err
+		}
+		proof := passkeyElevationProof{
+			identity:       identity,
+			authGeneration: user.AuthGeneration,
+		}
+		if err := proof.validate(ctx, tx, current); err != nil {
+			return err
+		}
+		user = current
+		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, loginUID,
+			s.sessionDuration(ctx), auth.SignInProvedFactor)
+		return err
+	})
+	if errors.Is(err, errElevationProofChanged) || errors.Is(err, store.ErrNotFound) {
+		return nil, credentialRejectedError(ctx, errElevationProofChanged)
+	}
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}

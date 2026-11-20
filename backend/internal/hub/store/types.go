@@ -1775,15 +1775,14 @@ type UpsertBuiltInClientParams struct {
 // caller runs first: a read-then-write pair would leave a window in which the
 // row changes hands between the two.
 type UpdateOAuthClientParams struct {
-	ClientID         string
-	ClientName       string
-	ClientURI        string
-	RedirectURIs     string
-	Scopes           string
-	GrantTypes       string
-	ElevationAllowed bool
-	CallerUserID     userid.UserID
-	CallerIsAdmin    bool
+	ClientID      string
+	ClientName    string
+	ClientURI     string
+	RedirectURIs  string
+	Scopes        string
+	GrantTypes    string
+	CallerUserID  userid.UserID
+	CallerIsAdmin bool
 }
 
 // ApplyTo writes the editable columns onto a row, so a response projected
@@ -1796,7 +1795,6 @@ func (p UpdateOAuthClientParams) ApplyTo(row *OAuthClient) {
 	row.RedirectURIs = p.RedirectURIs
 	row.Scopes = p.Scopes
 	row.GrantTypes = p.GrantTypes
-	row.ElevationAllowed = p.ElevationAllowed
 }
 
 // SetOAuthClientElevationAllowedParams toggles the one field the app list
@@ -1892,29 +1890,29 @@ type APITokenRef struct {
 }
 
 // CredentialRefKind is a defined type over leapmuxv1.CredentialRefKind: which
-// table a credential reference names. oauth_authorization_codes.step_up_kind
+// table a credential reference identifies. oauth_authorization_codes.step_up_kind
 // and minted_kind store the ordinal, and SQL NULL (the zero value here) means
-// the reference names nothing -- the column never stores UNSPECIFIED.
+// the reference has no target -- the column never stores UNSPECIFIED.
 type CredentialRefKind leapmuxv1.CredentialRefKind
 
 const (
-	// CredentialRefKindNone is the Go spelling of a reference that names
+	// CredentialRefKindNone is the Go spelling of a reference that identifies
 	// nothing. It stores as SQL NULL, never as a 0 ordinal.
 	CredentialRefKindNone    CredentialRefKind = CredentialRefKind(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_UNSPECIFIED)
 	CredentialRefKindSession CredentialRefKind = CredentialRefKind(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_SESSION)
 	CredentialRefKindToken   CredentialRefKind = CredentialRefKind(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_TOKEN)
 )
 
-// IsSession reports whether the reference names a user_sessions row.
+// IsSession reports whether the reference identifies a user_sessions row.
 func (k CredentialRefKind) IsSession() bool { return k == CredentialRefKindSession }
 
-// IsToken reports whether the reference names an api_tokens row.
+// IsToken reports whether the reference identifies an api_tokens row.
 func (k CredentialRefKind) IsToken() bool { return k == CredentialRefKindToken }
 
-// CredentialRef names one credential an authorization code row points at: the
+// CredentialRef identifies one credential an authorization code row points at: the
 // credential a step-up VERIFIES, or the credential the exchange MINTED.
 //
-// The zero value names nothing. A present reference carries exactly one kind
+// The zero value has no target. A present reference carries exactly one kind
 // and one id -- there is no second id field, so "at most one target" is
 // structural rather than a CHECK over a column pair. The row's tie CHECK keeps
 // the id empty exactly when the kind is unset.
@@ -1923,7 +1921,7 @@ type CredentialRef struct {
 	ID   string
 }
 
-// IsZero reports whether the reference names no credential.
+// IsZero reports whether the reference has no target.
 func (r CredentialRef) IsZero() bool { return r.Kind == CredentialRefKindNone }
 
 // StoredRef reads one credential reference from its column pair. A nil kind is
@@ -1986,8 +1984,9 @@ func (k RedemptionKind) NullableKind() *leapmuxv1.RedemptionKind {
 
 // OAuthAuthorizationCode is a one-shot RFC 6749 section 4.1 code.
 type OAuthAuthorizationCode struct {
-	Code   string
-	UserID string
+	Code           string
+	UserID         string
+	AuthGeneration int64
 	// ClientID is the app the code was issued TO. The token stage refuses a
 	// code presented by a different one (RFC 6749 section 4.1.3).
 	ClientID      string
@@ -2163,6 +2162,7 @@ type ApproveDeviceAuthorizationByUserCodeParams struct {
 type CreateOAuthAuthorizationCodeParams struct {
 	Code             string
 	UserID           userid.UserID
+	AuthGeneration   int64
 	ClientID         string
 	CodeChallenge    string
 	RedirectURI      string
@@ -2175,7 +2175,7 @@ type CreateOAuthAuthorizationCodeParams struct {
 	StepUp CredentialRef
 	// Redemption is what this code redeems into, the decision the consent
 	// page showed. RedemptionKindNone means a step-up code; the row's tie
-	// CHECK holds it exactly when StepUp names something.
+	// CHECK holds it exactly when StepUp identifies a credential.
 	Redemption RedemptionKind
 }
 

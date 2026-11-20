@@ -1054,7 +1054,7 @@ describe('tabMetadata', () => {
 
 // The RAW Hub user id each account-replacement case runs as. The storage
 // namespace is the composed account around it, which `setStorageAccountForTests`
-// builds; the sweep state names the raw id. A test about the mix-up risk passes
+// builds; the sweep state uses the raw ID. A test about the mix-up risk passes
 // distinct values in the two domains instead (see the composed-account test of
 // `useMetadataSweep` above).
 const ACCOUNT_A = 'account-a' as HubUserId

@@ -10,7 +10,7 @@ import { answerElevationPrompt, loginViaToken, openSettingsAt } from './helpers/
 const APP_HOME_URL_RE = /\/$/
 
 test.describe('425-admin-requires-step-up', () => {
-  test('an administrator whose window was dropped sees the unlock entry and no prompt', async ({ page, leapmuxServer }) => {
+  test('shows the unlock entry without a prompt after dropping an administrator\'s window', async ({ page, leapmuxServer }) => {
     const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
     await loginViaToken(page, cookie)
     await page.goto(`${leapmuxServer.hubUrl}/?prefs=admin`)
@@ -19,7 +19,7 @@ test.describe('425-admin-requires-step-up', () => {
     await expect(page.getByText('Verify your identity')).not.toBeVisible()
   })
 
-  test('selecting the unlock entry reveals admin settings until verification ends', async ({ page, leapmuxServer }) => {
+  test('reveals admin settings on unlock until verification ends', async ({ page, leapmuxServer }) => {
     const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
     await loginViaToken(page, cookie)
     const requestedSection = new URL('/?prefs=admin-general', leapmuxServer.hubUrl).href
@@ -40,7 +40,7 @@ test.describe('425-admin-requires-step-up', () => {
     await expect(page).toHaveURL(requestedSection)
   })
 
-  test('an administrator who signed in through the page sees admin groups at once', async ({ page, leapmuxServer }) => {
+  test('shows admin groups immediately after an administrator signs in through the page', async ({ page, leapmuxServer }) => {
     await page.goto(`${leapmuxServer.hubUrl}/login`)
     await page.getByLabel(/username/i).fill(TEST_ADMIN_USERNAME)
     await page.getByLabel(/password/i).fill(TEST_ADMIN_PASSWORD)

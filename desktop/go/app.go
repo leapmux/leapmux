@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -611,6 +612,7 @@ func (a *App) beginDisconnect() (*desktopConnection, func()) {
 	// with the relays: it closes connections nobody is using, so it cannot cut
 	// short the traffic phase B is waiting to let through.
 	if connection.proxy != nil {
+		connection.proxy.retireSession()
 		connection.proxy.closeIdleConnections()
 	}
 	return connection, finish
@@ -802,12 +804,6 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 	defer done()
 	a.beginTransition()
 	defer a.endTransition()
-	a.lifecycleMu.Lock()
-	if err := a.rejectIfCannotConnect(); err != nil {
-		a.lifecycleMu.Unlock()
-		return err
-	}
-	a.lifecycleMu.Unlock()
 	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
 	if hubURL == "" {
 		return fmt.Errorf("hub URL is required")
@@ -815,6 +811,24 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 	if !strings.HasPrefix(hubURL, "http://") && !strings.HasPrefix(hubURL, "https://") {
 		hubURL = "https://" + hubURL
 	}
+	parsedHubURL, err := url.Parse(hubURL)
+	if err != nil {
+		return fmt.Errorf("unsupported Hub URL %q: %w", hubURL, err)
+	}
+	hubURL, err = canonicalHubOrigin(parsedHubURL)
+	if err != nil {
+		return fmt.Errorf("unsupported Hub URL %q: %w", hubURL, err)
+	}
+	a.lifecycleMu.Lock()
+	if connection := a.connection; connection != nil && connection.solo == nil && connection.hubURL == hubURL {
+		a.lifecycleMu.Unlock()
+		return nil
+	}
+	if err := a.rejectIfCannotConnect(); err != nil {
+		a.lifecycleMu.Unlock()
+		return err
+	}
+	a.lifecycleMu.Unlock()
 
 	// ONE endpoint for the whole connect: the probe below and the proxy that
 	// commits share its h2c verdict and its connection pools, so the hub is
@@ -823,6 +837,12 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 	if err != nil {
 		return fmt.Errorf("unsupported hub URL %q: %w", hubURL, err)
 	}
+	endpointAdopted := false
+	defer func() {
+		if !endpointAdopted {
+			hubEndpoint.CloseIdleConnections()
+		}
+	}()
 	probeCtx, cancelProbe := ctxutil.WithLinkedCancel(a.ctx, ctx)
 	defer cancelProbe()
 	if err := probeHub(probeCtx, hubEndpoint); err != nil {
@@ -867,6 +887,7 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 		proxy:  proxy,
 		hubURL: hubURL,
 	}
+	endpointAdopted = true
 	return nil
 }
 

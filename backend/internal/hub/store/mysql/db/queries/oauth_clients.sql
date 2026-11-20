@@ -108,7 +108,6 @@ SET client_name = sqlc.arg(client_name),
     redirect_uris = sqlc.arg(redirect_uris),
     scopes = sqlc.arg(scopes),
     grant_types = sqlc.arg(grant_types),
-    elevation_allowed = sqlc.arg(elevation_allowed),
     updated_at = CURRENT_TIMESTAMP(3)
 WHERE client_id = sqlc.arg(client_id)
   AND revoked_at IS NULL

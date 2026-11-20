@@ -1,6 +1,7 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setElevationPrompter } from '~/lib/elevationPrompt'
+import { deferred } from '~/test-support/async'
 import * as transportModule from './transport'
 
 // The desktop's sidecar fetch. WRAPPED rather than faked, so the test observes
@@ -76,6 +77,36 @@ describe('transport', () => {
 
   it('does not export TOKEN_KEY', () => {
     expect('TOKEN_KEY' in transportModule).toBe(false)
+  })
+})
+
+describe('sessionErrorInterceptor', () => {
+  afterEach(() => {
+    transportModule.setOnAuthError(() => {})
+  })
+
+  it('ignores an unauthenticated reply from a replaced session', async () => {
+    const reply = deferred<never>()
+    const onAuthError = vi.fn()
+    transportModule.setOnAuthError(onAuthError)
+    const request = transportModule.sessionErrorInterceptor(() => reply.promise)({} as never)
+
+    transportModule.advanceAuthSessionEpoch()
+    reply.reject(new ConnectError('old session ended', Code.Unauthenticated))
+
+    await expect(request).rejects.toThrow('old session ended')
+    expect(onAuthError).not.toHaveBeenCalled()
+  })
+
+  it('clears the current session on its unauthenticated reply', async () => {
+    const onAuthError = vi.fn()
+    transportModule.setOnAuthError(onAuthError)
+    const request = transportModule.sessionErrorInterceptor(async () => {
+      throw new ConnectError('current session ended', Code.Unauthenticated)
+    })({} as never)
+
+    await expect(request).rejects.toThrow('current session ended')
+    expect(onAuthError).toHaveBeenCalledTimes(1)
   })
 })
 

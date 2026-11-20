@@ -1400,9 +1400,9 @@ func linkedProviderUser(t *testing.T, st store.Store, providerID, subject, email
 	return userID
 }
 
-// beginLogin walks the sign-in start leg and returns the flow's state, its
-// browser binding cookie, and the provider URL the leg sent the browser to.
-// beginReauth is the re-authentication leg's twin.
+// beginLogin starts sign-in and returns the flow's state, its
+// browser binding cookie, and the URL the browser received from the Hub.
+// beginReauth starts reauthentication and returns the same fields.
 func beginLogin(t *testing.T, server *httptest.Server, providerID, redirect string) (string, *http.Cookie, *url.URL) {
 	t.Helper()
 	target := server.URL + "/auth/idp/" + providerID + "/login"
@@ -1608,7 +1608,7 @@ func TestOAuthLogin_ANonConsentRoutePromptsNothingAndStampsNoWindow(t *testing.T
 	t.Parallel()
 
 	server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
-		return proofReadFailingStore{Store: s, failUserLookup: true, failPasskeyCount: true}
+		return proofReadFailingStore{Store: s, failPasskeyCount: true}
 	})
 	const subject = "plain-login-subject"
 	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "plain-login@example.com", subject)
@@ -1626,7 +1626,7 @@ func TestOAuthLogin_ANonConsentRoutePromptsNothingAndStampsNoWindow(t *testing.T
 	assert.Nil(t, row.ElevationExpiresAt)
 }
 
-// The consent routes are the exact paths the consent leg serves. A longer
+// The consent routes are the exact paths the consent handler serves. A longer
 // path is a different page and /oauth/token is not a consent at all, so
 // neither may ask the provider for a fresh authentication or open a window.
 func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {

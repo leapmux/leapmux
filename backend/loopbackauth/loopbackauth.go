@@ -2,7 +2,7 @@
 // code flow with PKCE against a loopback redirect (RFC 8252 section 7.3).
 //
 // It binds an ephemeral 127.0.0.1 port, hands out the authorize URL, and
-// answers the Hub's redirect on /callback until one request carries the
+// answers the Hub's registered callback until one request carries the
 // state it issued. The control CLI and the desktop sidecar both import it,
 // so the ceremony -- including its timeout and its callback discipline --
 // has one implementation. The token-surface wire helpers the two clients
@@ -15,9 +15,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +85,9 @@ const Timeout = 10 * time.Minute
 // ErrTimeout reports a flow whose browser never answered within Timeout.
 var ErrTimeout = errors.New("the browser did not answer in time")
 
+// ErrClosed reports a flow that closed before the browser answered.
+var ErrClosed = errors.New("the browser authorization closed")
+
 // timeoutTag labels the timeout timer for the clock's traps.
 const timeoutTag = "loopbackauth.Timeout"
 
@@ -100,11 +105,12 @@ type Flow struct {
 	verifier     string
 	state        string
 	redirectURI  string
+	callbackPath string
 	authorizeURL string
 
 	clock    quartz.Clock
 	deadline time.Time
-	// callbackMu orders publication between the callback and the timeout.
+	// callbackMu orders publication by the callback, timeout, and listener.
 	callbackMu sync.Mutex
 	result     callbackResult
 	ready      chan struct{}
@@ -114,9 +120,21 @@ type Flow struct {
 	closeOnce sync.Once
 }
 
-// Start binds the loopback listener, draws the PKCE verifier and the state,
-// and serves /callback. Close releases both.
+// Start serves the registered callback on an ephemeral loopback port and
+// prepares the OAuth authorization URL. Close releases the listener.
 func Start(req Request) (*Flow, error) {
+	redirect, err := url.Parse(req.App.RedirectURI)
+	if err != nil {
+		return nil, fmt.Errorf("parse the registered callback: %w", err)
+	}
+	if redirect.Scheme != "http" || redirect.Hostname() != "127.0.0.1" ||
+		redirect.User != nil || strings.Contains(req.App.RedirectURI, "#") {
+		return nil, errors.New("the registered callback must use HTTP on 127.0.0.1 without credentials or a fragment")
+	}
+	callbackPath := redirect.EscapedPath()
+	if callbackPath == "" {
+		callbackPath = "/"
+	}
 	clock := req.Clock
 	if clock == nil {
 		clock = quartz.NewReal()
@@ -124,19 +142,21 @@ func Start(req Request) (*Flow, error) {
 	verifier := oauth2.GenerateVerifier()
 	state := id.Generate()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(redirect.Hostname(), "0"))
 	if err != nil {
 		return nil, err
 	}
-	redirectURI := registeredRedirectWithPort(req.App.RedirectURI, ln.Addr().(*net.TCPAddr).Port)
+	redirect.Host = net.JoinHostPort(redirect.Hostname(), strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
+	redirectURI := redirect.String()
 
 	f := &Flow{
-		app:         req.App,
-		verifier:    verifier,
-		state:       state,
-		redirectURI: redirectURI,
-		clock:       clock,
-		ready:       make(chan struct{}),
+		app:          req.App,
+		verifier:     verifier,
+		state:        state,
+		redirectURI:  redirectURI,
+		callbackPath: callbackPath,
+		clock:        clock,
+		ready:        make(chan struct{}),
 	}
 	params := url.Values{
 		"client_id":             {req.App.ClientID},
@@ -156,12 +176,14 @@ func Start(req Request) (*Flow, error) {
 	// The callback and the waiter share the deadline established at Start.
 	f.deadline = clock.Now().Add(Timeout)
 	f.timer = clock.AfterFunc(clock.Until(f.deadline), func() {
-		f.callbackMu.Lock()
-		defer f.callbackMu.Unlock()
-		f.publishResultLocked(callbackResult{err: ErrTimeout})
+		f.finish(callbackResult{err: ErrTimeout})
 	}, timeoutTag)
 	f.srv = &http.Server{Handler: f.callbackHandler()}
-	go func() { _ = f.srv.Serve(ln) }()
+	go func() {
+		if err := f.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			f.finish(callbackResult{err: fmt.Errorf("serve the browser callback: %w", err)})
+		}
+	}()
 	return f, nil
 }
 
@@ -171,6 +193,7 @@ func (f *Flow) AuthorizeURL() string { return f.authorizeURL }
 // Wait returns the authorization code the callback delivered.
 //
 // It returns ErrTimeout when no matching callback arrives within Timeout.
+// It returns ErrClosed when the flow closes before a result is available.
 // It returns ctx.Err() when the caller cancels the wait.
 func (f *Flow) Wait(ctx context.Context) (string, error) {
 	select {
@@ -228,6 +251,8 @@ type OAuthErrorBody struct {
 	ErrorDescription string `json:"error_description"`
 }
 
+const maxOAuthErrorBodyBytes = 64 * 1024
+
 // Message renders the body as one line: the error code, and the hub's
 // description after it when it sent one.
 func (b OAuthErrorBody) Message() string {
@@ -235,6 +260,15 @@ func (b OAuthErrorBody) Message() string {
 		return b.Error
 	}
 	return b.Error + ": " + b.ErrorDescription
+}
+
+// CallbackError carries the OAuth refusal sent to the loopback listener.
+type CallbackError struct {
+	OAuthErrorBody
+}
+
+func (e *CallbackError) Error() string {
+	return "authorization failed: " + e.Message()
 }
 
 // ReadOAuthError decodes the error body of a refused response.
@@ -247,7 +281,7 @@ func (b OAuthErrorBody) Message() string {
 // ": " and hides the transport failure that produced it.
 func ReadOAuthError(resp *http.Response) OAuthErrorBody {
 	var body OAuthErrorBody
-	if json.NewDecoder(resp.Body).Decode(&body) != nil {
+	if json.NewDecoder(io.LimitReader(resp.Body, maxOAuthErrorBodyBytes)).Decode(&body) != nil {
 		return OAuthErrorBody{}
 	}
 	return body
@@ -257,6 +291,7 @@ func ReadOAuthError(resp *http.Response) OAuthErrorBody {
 // requests time to finish, then closes their connections. It is idempotent.
 func (f *Flow) Close() {
 	f.closeOnce.Do(func() {
+		f.finish(callbackResult{err: ErrClosed})
 		f.timer.Stop(timeoutTag)
 		ctx, cancel := context.WithTimeout(context.Background(), closeGracePeriod)
 		defer cancel()
@@ -268,14 +303,23 @@ func (f *Flow) Close() {
 
 // recordCallback publishes the first validated callback received before the
 // deadline. A retry can still receive a browser reply without replacing it.
-func (f *Flow) recordCallback(result callbackResult) bool {
+func (f *Flow) recordCallback(result callbackResult) error {
 	f.callbackMu.Lock()
 	defer f.callbackMu.Unlock()
+	if f.result.err == ErrClosed {
+		return ErrClosed
+	}
 	if !f.clock.Now().Before(f.deadline) {
-		return false
+		return ErrTimeout
 	}
 	f.publishResultLocked(result)
-	return true
+	return nil
+}
+
+func (f *Flow) finish(result callbackResult) {
+	f.callbackMu.Lock()
+	defer f.callbackMu.Unlock()
+	f.publishResultLocked(result)
 }
 
 // publishResultLocked wakes all waiters and keeps the first result.
@@ -288,11 +332,11 @@ func (f *Flow) publishResultLocked(result callbackResult) {
 	}
 }
 
-// callbackHandler serves /callback and replies to the browser after recording
+// callbackHandler serves the registered path and replies after recording
 // the outcome, so writing the reply cannot affect the deadline check.
 func (f *Flow) callbackHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/callback" {
+		if r.URL.EscapedPath() != f.callbackPath {
 			http.NotFound(w, r)
 			return
 		}
@@ -318,18 +362,17 @@ func (f *Flow) callbackHandler() http.Handler {
 		result := callbackResult{code: gotCode}
 		var refusal string
 		if gotErr := q.Get("error"); gotErr != "" {
-			msg := gotErr
-			if desc := q.Get("error_description"); desc != "" {
-				msg = gotErr + ": " + desc
-			}
-			result = callbackResult{err: fmt.Errorf("authorization failed: %s", msg)}
+			result = callbackResult{err: &CallbackError{OAuthErrorBody{
+				Error:            gotErr,
+				ErrorDescription: q.Get("error_description"),
+			}}}
 			refusal = "authorization refused"
 		} else if gotCode == "" {
 			result.err = errors.New("callback carried neither a code nor an error")
 			refusal = "invalid callback"
 		}
-		if !f.recordCallback(result) {
-			http.Error(w, ErrTimeout.Error(), http.StatusGone)
+		if err := f.recordCallback(result); err != nil {
+			http.Error(w, err.Error(), http.StatusGone)
 			return
 		}
 		if refusal != "" {
@@ -340,10 +383,8 @@ func (f *Flow) callbackHandler() http.Handler {
 	})
 }
 
-// successName is what the success page names as the place to return to. The
-// control CLI reads "the CLI": the page is a detour of the CLI's own login,
-// and its consent-screen name reads like a third party there. Every other
-// app is named by App.Name.
+// successName is the destination the success page tells the person to return to.
+// The control CLI uses “the CLI” instead of its full consent screen label.
 func (a App) successName() string {
 	if a.Name == ControlCLI.Name {
 		return "the CLI"
@@ -351,28 +392,12 @@ func (a App) successName() string {
 	return a.Name
 }
 
-// registeredRedirectWithPort binds the ephemeral port onto the REGISTERED
-// loopback redirect rather than a local literal: the Hub matches the callback
-// against the registration (scheme, host and path exact; only the port free
-// per RFC 8252 section 7.3), so the path here is whatever the constant says,
-// and a future edit to the registration cannot silently break every login.
-func registeredRedirectWithPort(registered string, port int) string {
-	u, err := url.Parse(registered)
-	if err != nil {
-		// Unreachable for a registered constant's shape; the fallback keeps
-		// the registered host and path rather than inventing a third spelling.
-		return fmt.Sprintf("http://127.0.0.1:%d/callback", port)
-	}
-	u.Host = fmt.Sprintf("127.0.0.1:%d", port)
-	return u.String()
-}
-
-// StepUpForToken spells the step_up value that names an app credential.
+// StepUpForToken builds the step_up value that identifies an app credential.
 func StepUpForToken(tokenID string) string {
 	return oauthapp.StepUpTokenPrefix + tokenID
 }
 
-// StepUpForSessionCookieHeader spells the step_up value that names the
+// StepUpForSessionCookieHeader builds the step_up value that identifies the
 // session a Cookie header carries. The reader accepts both spellings of the
 // cookie name -- __Host-leapmux-session first and leapmux-session second --
 // because the sidecar cannot know the Hub's secure_cookies setting, and the

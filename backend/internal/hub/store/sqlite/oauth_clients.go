@@ -167,15 +167,14 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 		return 0, store.ErrInvalidArgument
 	}
 	return s.conn.rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
-		BuiltinSource:    store.OAuthClientSourceBuiltin,
-		ClientID:         p.ClientID,
-		ClientName:       p.ClientName,
-		ClientUri:        p.ClientURI,
-		RedirectUris:     p.RedirectURIs,
-		Scopes:           p.Scopes,
-		GrantTypes:       p.GrantTypes,
-		ElevationAllowed: p.ElevationAllowed,
-		CallerIsAdmin:    p.CallerIsAdmin,
+		BuiltinSource: store.OAuthClientSourceBuiltin,
+		ClientID:      p.ClientID,
+		ClientName:    p.ClientName,
+		ClientUri:     p.ClientURI,
+		RedirectUris:  p.RedirectURIs,
+		Scopes:        p.Scopes,
+		GrantTypes:    p.GrantTypes,
+		CallerIsAdmin: p.CallerIsAdmin,
 		// An unminted caller matches no OWNED row, because no users.id is ever
 		// empty -- so the hub-wide arm (which needs CallerIsAdmin) is the only
 		// one such a caller could satisfy, and only if the service really did

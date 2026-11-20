@@ -178,7 +178,7 @@ Open **Preferences → Account** — it is the first section, and the one the di
 | **Remove passkey** | Deletes one credential. | A verified session. Removing your **last** passkey from an account with **no password** also sets a password in the same step. |
 | **Disable passkey sign-in** | Deletes **all** credentials at once (offered once at least one passkey exists). | A verified session. A passkey-only account sets a password as part of the same flow. |
 
-Every action above is sensitive. The first one in a sitting opens the **Verify your identity** dialog, and one answer covers every further sensitive change for a while — except in the {{< duration fresh-authentication-window >}} after a sign-in with a password or a passkey: that sign-in proved a factor itself, so nothing asks again inside that window. What counts as sensitive, how long the answer lasts, and what you can prove it with are covered once, in [Session elevation](/docs/admin/security/#session-elevation).
+Every action above is sensitive. The first one after the verification window ends opens the **Verify your identity** dialog, and one answer covers further sensitive changes until that window ends — except in the {{< duration fresh-authentication-window >}} after a sign-in with a password or a passkey: that sign-in proved a factor itself, so nothing asks again inside that window. What counts as sensitive, how long the answer lasts, and what you can prove it with are covered once, in [Session elevation](/docs/admin/security/#session-elevation).
 
 In the desktop app's remote-Hub mode, passkeys are added in the browser: the panel offers **Open in browser** and disables **Add passkey**.
 
@@ -312,7 +312,7 @@ While the session is verified, a panel at the top of the section says so and off
 ### Password
 
 - The button reads **Change Password** if you already have a password, or **Set Password** if your account is OAuth-only or passkey-only.
-- Changing your password needs a **verified session**: the first sensitive change in a sitting opens a **Verify your identity** dialog, and the next {{< duration elevation-window >}} are covered — except in the {{< duration fresh-authentication-window >}} after a sign-in with a password or a passkey, which already proved a factor. You do not retype your current password into this form.
+- Changing your password needs a **verified session**. The first sensitive change after the verification window ends opens a **Verify your identity** dialog. The next {{< duration elevation-window >}} are covered, except in the {{< duration fresh-authentication-window >}} after a sign-in with a password or a passkey, which already proved a factor. You do not retype your current password into this form.
 - An account with no password and no passkey sets its first password without a prompt, but only within {{< duration fresh-authentication-window >}} of signing in.
 - On success the dialog confirms that it changed the password, or that it set the first one.
 

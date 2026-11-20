@@ -68,9 +68,11 @@ export const SignInRecoveryGate: ParentComponent = (props) => {
       return
     }
     const destination = postSignInDestination(verificationRequired, redirect ?? undefined)
-    if (destination.kind === 'route')
+    const followed = followDestination(navigate, destination)
+    if (followed === 'route')
       setArriving(destination.path)
-    followDestination(navigate, destination)
+    else if (followed === 'external-browser')
+      setArriving('/')
   }))
 
   createEffect(() => {

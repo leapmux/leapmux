@@ -232,7 +232,7 @@ Administrators see **ADMINISTRATION** below the user categories. Before step-up,
 
 The Hub requires a current step-up window to read or change instance settings. Hub-wide app registrations follow the rules in [App Authorization](/docs/admin/app-authorization/). See [Session elevation](/docs/admin/security/#session-elevation).
 
-Most rows apply without a restart. The Hub that serves the write applies the change at once, and another Hub on the same database picks it up within ~30 seconds. The dialog re-reads the Hub's state after every accepted write. For example, publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
+Most rows apply without a restart. The serving Hub applies hot settings when the write commits. A replacement Hub loads stored settings when it starts. The dialog re-reads the Hub's state after every accepted write. For example, publish the Hub's URL and **Add passkey** in the **Account** category stops being disabled, with no page reload. The two rows that apply only after a Hub restart carry a **Requires Restart** badge. Solo mode omits the categories a single-user Hub has no use for; each category below states what stays.
 
 ### General
 

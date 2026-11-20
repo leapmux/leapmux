@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -31,12 +30,6 @@ const browserAuthTokenTimeout = 30 * time.Second
 const browserAuthTokenTimerTag = "browserAuth.TokenTimeout"
 
 const browserAuthTokenTimeoutFailure = "the Hub did not answer in time"
-
-// loopbackauth reports a callback that carried an OAuth error as
-// "authorization failed: <error>: <description>". The result event carries
-// the OAuth message itself -- the same shape a refused token request takes --
-// so the strip is what keeps the one failure format the contract states.
-const loopbackAuthCallbackErrorPrefix = "authorization failed: "
 
 // browserAuthCeremony is one browser ceremony, from its start to its result
 // event. Its lifetime is a child of the connection that started it.
@@ -249,12 +242,25 @@ func (a *App) completeBrowserAuth(c *browserAuthCeremony) (bool, string) {
 	}
 	if outcome.cookies != nil {
 		outcome.cookies.commit()
+		if c.kind == desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN {
+			a.retireConnectionRelays(c.connection)
+		}
 		return true, ""
 	}
 	if cancelRequested {
 		return false, ""
 	}
 	return false, outcome.failure
+}
+
+func (a *App) retireConnectionRelays(connection *desktopConnection) {
+	a.lifecycleMu.Lock()
+	if a.connection == connection {
+		_ = closeChannelRelayOn(connection)
+		_ = closeUserEventsRelayOn(connection)
+		a.tunnels.CloseAll()
+	}
+	a.lifecycleMu.Unlock()
 }
 
 // awaitBrowserAuth waits for the callback and exchanges its code. Neither
@@ -271,10 +277,14 @@ func (a *App) awaitBrowserAuth(c *browserAuthCeremony) browserAuthOutcome {
 // without a code: the OAuth message the redirect carried, in the one format
 // the result event uses.
 func browserAuthCallbackFailure(err error) string {
-	return strings.TrimPrefix(err.Error(), loopbackAuthCallbackErrorPrefix)
+	var refusal *loopbackauth.CallbackError
+	if errors.As(err, &refusal) {
+		return refusal.Message()
+	}
+	return err.Error()
 }
 
-// browserAuthUnconfirmedMessage names the confirmation the Hub did not give.
+// browserAuthUnconfirmedMessage describes the confirmation the Hub did not give.
 // The wording is kind-aware: "signed in" for a sign-in ceremony, "elevated"
 // for a step-up.
 func browserAuthUnconfirmedMessage(kind desktoppb.BrowserAuthKind) string {
@@ -343,9 +353,10 @@ type browserAuthOutcome struct {
 // see earlier response cookies in that snapshot, and the live proxy receives
 // them only after the ceremony admits the confirmation.
 type browserAuthCookieJar struct {
-	live    *persistentJar
-	view    http.CookieJar
-	pending []*http.Cookie
+	live           *connectionJar
+	view           http.CookieJar
+	pending        []*http.Cookie
+	initialSession string
 }
 
 func (j *browserAuthCookieJar) Cookies(u *url.URL) []*http.Cookie {
@@ -380,11 +391,19 @@ func (j *browserAuthCookieJar) commit() {
 // transport and redirect pin while staging the cookie updates.
 func postBrowserAuthToken(ctx context.Context, c *browserAuthCeremony, code string) browserAuthOutcome {
 	client := *c.proxy.client
-	live, ok := client.Jar.(*persistentJar)
-	if !ok {
+	live := c.proxy.jar
+	if live == nil {
 		return browserAuthOutcome{failure: "the Hub has no session cookie store"}
 	}
-	jar := &browserAuthCookieJar{live: live, view: live.snapshot()}
+	view := live.snapshot(c.proxy.base)
+	initialSession, _ := loopbackauth.StepUpForSessionCookieHeader(
+		cookieHeaderFor(view, c.proxy.base).Get("Cookie"),
+	)
+	jar := &browserAuthCookieJar{
+		live:           live,
+		view:           view,
+		initialSession: initialSession,
+	}
 	client.Jar = jar
 	resp, err := loopbackauth.PostForm(ctx, &client,
 		locallisten.JoinPath(c.proxy.baseURL, "/oauth/token"),
@@ -414,6 +433,14 @@ func postBrowserAuthToken(ctx context.Context, c *browserAuthCeremony, code stri
 	}
 	if !confirmed {
 		return browserAuthOutcome{failure: browserAuthUnconfirmedMessage(c.kind)}
+	}
+	if c.kind == desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN {
+		currentSession, err := loopbackauth.StepUpForSessionCookieHeader(
+			cookieHeaderFor(jar.view, c.proxy.base).Get("Cookie"),
+		)
+		if err != nil || currentSession == jar.initialSession {
+			return browserAuthOutcome{failure: "the Hub did not provide a new session"}
+		}
 	}
 	return browserAuthOutcome{cookies: jar}
 }

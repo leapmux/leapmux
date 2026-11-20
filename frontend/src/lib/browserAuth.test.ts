@@ -94,6 +94,7 @@ describe('runBrowserAuth', () => {
     const flow = await flowPromise
 
     await expect(flow.result).resolves.toEqual({ ok: true, failure: '' })
+    expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
   })
 
   // A stale result of a superseded ceremony may land before this call's
@@ -288,15 +289,16 @@ describe('runBrowserAuth', () => {
     expect(bridgeMocks.unlistens[0]).toHaveBeenCalledOnce()
   })
 
-  it('removes both listeners when opening the browser fails', async () => {
+  it('keeps the flow usable when opening the browser fails', async () => {
     const controller = new AbortController()
     bridgeMocks.openExternalUrl.mockRejectedValue(new Error('no browser'))
 
-    await expect(runBrowserAuth('sign-in', controller.signal)).rejects.toThrow('no browser')
+    const flow = await runBrowserAuth('sign-in', controller.signal)
+    expect(bridgeMocks.handlers).toHaveLength(1)
     controller.abort()
 
-    expect(bridgeMocks.cancelBrowserAuth).not.toHaveBeenCalled()
-    expect(bridgeMocks.unlistens[0]).toHaveBeenCalledOnce()
+    expect(flow.url).toBe(START.authorizeUrl)
+    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
   })
 
   // The abort listener must be up before the URL opens: an abort during the

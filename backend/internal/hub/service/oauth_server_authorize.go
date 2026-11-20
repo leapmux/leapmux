@@ -37,7 +37,7 @@ type authorizeRequest struct {
 	stepUp        stepUpTarget
 }
 
-// stepUpTarget names the credential an authorization VERIFIES rather than
+// stepUpTarget identifies the credential an authorization VERIFIES rather than
 // issues, and carries what the consent page shows for it.
 type stepUpTarget struct {
 	ref       store.CredentialRef
@@ -169,7 +169,7 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 const consentCredentialAddedLayout = "2006-01-02 15:04"
 
 // parseStepUpTarget validates a `step_up` parameter and resolves the
-// credential it names. Every failure is redirectable with `access_denied`.
+// credential it identifies. Every failure is redirectable with `access_denied`.
 //
 // The row it loads is the one the consent page shows. The display is built
 // HERE, from that row, so the name and the date a person reads are the values
@@ -407,6 +407,7 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 	if err := h.store.OAuthAuthorizationCodes().Create(r.Context(), store.CreateOAuthAuthorizationCodeParams{
 		Code:             code,
 		UserID:           user.ID,
+		AuthGeneration:   user.UserAuthGeneration,
 		ClientID:         req.app.ClientID,
 		CodeChallenge:    req.codeChallenge,
 		RedirectURI:      req.redirectURI,
