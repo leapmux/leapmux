@@ -90,6 +90,8 @@ func TestCodedRPCError_CLIError(t *testing.T) {
 		{"wrapped channel open", fmt.Errorf("context: %w", &codedRPCError{Code: "channel_open_failed"}), cli.CodeWorkerOffline},
 		{"channel open refused by the hub", &codedRPCError{Code: "channel_open_failed", Cause: connect.NewError(connect.CodePermissionDenied, "not yours")}, cli.CodePermissionDenied},
 		{"channel open to an unknown worker", &codedRPCError{Code: "channel_open_failed", Cause: connect.NewError(connect.CodeNotFound, "no worker")}, cli.CodeNotFound},
+		{"hub does not implement channel open", &codedRPCError{Code: "channel_open_failed", Cause: connect.NewError(connect.CodeUnimplemented, "no channel open method")}, cli.CodeVersionMismatch},
+		{"hub rejects channel arguments", &codedRPCError{Code: "channel_open_failed", Cause: connect.NewError(connect.CodeInvalidArgument, "invalid channel request")}, cli.CodeInvalidArgument},
 		{"worker refusal", &codedRPCError{Code: "rpc_error", Cause: connect.NewError(connect.CodeNotFound, "no such agent")}, cli.CodeNotFound},
 		{"failed call", &codedRPCError{Code: "rpc_failed", Cause: errors.New("channel closed")}, cli.CodeInternal},
 		{"marshal failure", &codedRPCError{Code: "marshal_failed", Cause: errors.New("bad")}, cli.CodeInternal},

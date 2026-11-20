@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -63,7 +64,7 @@ func runVersion(inv *cli.Invocation) (any, error) {
 		// No hub is selected, which is not a failure of this command.
 		return out, nil
 	}
-	hubBuild, err := fetchHubVersion(hub)
+	hubBuild, err := fetchHubVersion(inv.Context, hub)
 	if err != nil {
 		out.HubError = err.Error()
 		return out, nil
@@ -103,13 +104,17 @@ func buildInfoOf(b *leapmuxv1.BuildInfo) buildInfo {
 // a hand-built client cannot dial a `unix:`/`npipe:` hub, so this command used
 // to answer "unsupported protocol scheme" against a hub reached over its IPC
 // listener.
-func fetchHubVersion(hubURL string) (buildInfo, error) {
+func fetchHubVersion(ctx context.Context, hubURL string) (buildInfo, error) {
 	endpoint, err := hubtransport.New(hubURL)
 	if err != nil {
 		return buildInfo{}, err
 	}
 	client := endpoint.UnaryClient(hubVersionTimeout)
-	resp, err := client.Get(locallisten.JoinPath(endpoint.BaseURL(), "/version"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, locallisten.JoinPath(endpoint.BaseURL(), "/version"), nil)
+	if err != nil {
+		return buildInfo{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return buildInfo{}, err
 	}

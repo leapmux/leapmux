@@ -43,6 +43,8 @@ type fakeAdminHub struct {
 	leapmuxv1connect.UnimplementedAdminWorkerServiceHandler
 
 	mu sync.Mutex
+	// versionHandler serves the public build endpoint when a test needs it.
+	versionHandler http.HandlerFunc
 
 	// values and descriptors answer ListSettings.
 	values      []*leapmuxv1.SettingValue
@@ -352,6 +354,9 @@ func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 
 	mux := http.NewServeMux()
+	if hub.versionHandler != nil {
+		mux.HandleFunc("/version", hub.versionHandler)
+	}
 	server := connect.NewServer()
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(server, hub)
 	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)

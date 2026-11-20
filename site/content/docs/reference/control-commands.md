@@ -2374,6 +2374,7 @@ of an agent.
 
 Inside a LeapMux tab, the socket of the tab relays these hub procedures
 alone:
+  - leapmux.v1.SystemService/GetSystemInfo
   - leapmux.v1.UserCRDT/GetMaterialized
   - leapmux.v1.UserCRDT/SubmitOps
   - leapmux.v1.UserCRDT/UpdatePresence

@@ -10,9 +10,11 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/tunnel"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 // callInnerRPC selects the transport for an inner remote procedure call (RPC).
@@ -40,13 +42,17 @@ type codedRPCError struct {
 func (e *codedRPCError) CLIError() *cli.Error {
 	switch e.Code {
 	case "channel_open_failed":
-		switch connect.CodeOf(e.Cause) {
-		case connect.CodePermissionDenied, connect.CodeUnauthenticated, connect.CodeNotFound:
-			return cli.FromError(e.Cause)
-		default:
-			return cli.Wrap(cli.CodeWorkerOffline, e, "the worker cannot be reached").
-				WithHint(`run "leapmux control worker list" to see which workers are online`)
+		var refusal *connect.Error
+		if errors.As(e.Cause, &refusal) {
+			switch refusal.Code() {
+			case connect.CodeUnavailable, connect.CodeDeadlineExceeded:
+				// The channel could not reach the requested Worker.
+			default:
+				return cli.FromError(e.Cause)
+			}
 		}
+		return cli.Wrap(cli.CodeWorkerOffline, e, "the worker cannot be reached").
+			WithHint(`run "leapmux control worker list" to see which workers are online`)
 	case "invalid_request":
 		return cli.Wrap(cli.CodeUsage, e, "")
 	case "marshal_failed", "unmarshal_failed":
@@ -98,6 +104,36 @@ type workerCall struct {
 
 // Call invokes method and returns errors with their original codes for callers that combine operation results.
 func (w workerCall) Call(ctx context.Context, method string, in, out proto.Message) error {
+	return w.withVersion(ctx, method, w.call(ctx, method, in, out))
+}
+
+func (w workerCall) withVersion(ctx context.Context, method string, err error) error {
+	if !needsVersionDiagnostic(err) {
+		return err
+	}
+	peer := "Worker"
+	if w.workerID != "" {
+		peer += " " + w.workerID
+	}
+	var ipcError *codedRPCError
+	if w.c.IsWorkerIPC() && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
+		// An IPC refusal before dispatch came from the local socket.
+		peer = "Worker IPC"
+		w.workerID = ""
+	}
+	if method == leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure {
+		return withPeerVersion(ctx, err, peer, nil)
+	}
+	return withPeerVersion(ctx, err, peer, func(ctx context.Context) string {
+		var response leapmuxv1.GetWorkerSystemInfoResponse
+		if err := w.call(ctx, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &response); err != nil {
+			return ""
+		}
+		return version.FormatBuild(response.GetBuild())
+	})
+}
+
+func (w workerCall) call(ctx context.Context, method string, in, out proto.Message) error {
 	if w.ch == nil && w.perCallChannel {
 		return callInnerRPCBest(ctx, w.c, w.workerID, method, in, out)
 	}
@@ -155,7 +191,7 @@ func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, 
 	}
 	ch, err := c.OpenE2EEChannel(ctx, context.WithoutCancel(ctx), workerID)
 	if err != nil {
-		return &codedRPCError{Code: "channel_open_failed", Cause: err}
+		return withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
 	}
 	defer ch.Close()
 	return body(workerCall{c: c, workerID: workerID, ch: ch})

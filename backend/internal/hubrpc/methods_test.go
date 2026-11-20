@@ -29,6 +29,7 @@ import (
 // worker session.
 func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 	expected := []string{
+		leapmuxv1connect.SystemServiceGetSystemInfoProcedure,
 		// WorkspaceService surface.
 		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,

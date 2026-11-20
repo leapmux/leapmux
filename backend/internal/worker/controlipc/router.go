@@ -134,7 +134,11 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		}
 		out, err := r.Hub.CallInner(ctx, r.UserID, stripNamespace(method), payload)
 		if err != nil {
-			return nil, relayError(err)
+			failure := relayError(err)
+			if failure.Code() == connect.CodeUnimplemented {
+				failure = channelwire.WithHubRelayOrigin(failure)
+			}
+			return nil, failure
 		}
 		return channelwire.NewPayloadResponse(out), nil
 	default:
@@ -173,7 +177,7 @@ func (r *Router) relayRequest(ctx context.Context, info TokenInfo, method string
 // call. Callers use these codes to distinguish missing resources from
 // unavailable workers. These failures carry a nil response. An error that a
 // worker's handler answers stays in-band instead, as dispatchLocal's does.
-func relayError(err error) error {
+func relayError(err error) *connect.Error {
 	// Preserve upstream codes. A plain error has CodeUnknown and maps to CodeInternal.
 	code := connect.CodeOf(err)
 	if code == connect.CodeUnknown {

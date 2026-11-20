@@ -375,13 +375,13 @@ func callHubProcedure(ctx context.Context, c *control.Client, p rpcProcedure, in
 			return cli.Usagef("the socket of this LeapMux tab does not relay %s to the hub", p.name()).
 				WithHint(`pass --hub <url> to call it with your own login; "leapmux control rpc --help" lists the procedures that the socket relays`)
 		}
-		return hubCallLocalIPC(ctx, c, p.path, in, out)
+		return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, p.path, in, out))
 	}
 	client := connect.NewClient(
 		connecthttp.NewTransport(c.HTTPClient, c.ConnectURL(), connecthttp.WithReadMaxBytes(0)),
 		c.AuthInterceptor(),
 	)
-	return client.CallUnary(ctx, connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: p.path}, in, out)
+	return withHubVersion(ctx, c, client.CallUnary(ctx, connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: p.path}, in, out))
 }
 
 // callWorkerProcedure resolves the Worker workerInput and calls the Worker

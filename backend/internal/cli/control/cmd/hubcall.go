@@ -35,9 +35,9 @@ import (
 // renamed one fails to compile here.
 func hubCallUnary(ctx context.Context, c *control.Client, procedure string, in proto.Message, out proto.Message) error {
 	if !c.IsWorkerIPC() {
-		return hubCallDirect(ctx, c, procedure, in, out)
+		return withHubVersion(ctx, c, hubCallDirect(ctx, c, procedure, in, out))
 	}
-	return hubCallLocalIPC(ctx, c, procedure, in, out)
+	return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, procedure, in, out))
 }
 
 func hubCallLocalIPC(ctx context.Context, c *control.Client, procedure string, in proto.Message, out proto.Message) error {
@@ -54,7 +54,10 @@ func hubCallLocalIPC(ctx context.Context, c *control.Client, procedure string, i
 		Payload: payload,
 	})
 	if err != nil {
-		return err
+		if channelwire.IsHubRelayError(err) {
+			return err
+		}
+		return &codedRPCError{Code: "rpc_failed", Cause: err}
 	}
 	if err := channelwire.ErrorOf(resp.GetError()); err != nil {
 		// Keep the in-band code: cli.FromError reads connect.CodeOf, so

@@ -55,6 +55,7 @@ type Descriptor struct {
 // Registry is the single source of truth for hub methods, keyed by the full
 // procedure path. Adding a method only requires one entry.
 var Registry = registry(
+	entry[leapmuxv1.GetSystemInfoRequest, leapmuxv1.GetSystemInfoResponse](leapmuxv1connect.SystemServiceGetSystemInfoProcedure),
 	entry[leapmuxv1.LocateTabRequest, leapmuxv1.LocateTabResponse](leapmuxv1connect.WorkspaceServiceLocateTabProcedure),
 	entry[leapmuxv1.LocateTileRequest, leapmuxv1.LocateTileResponse](leapmuxv1connect.WorkspaceServiceLocateTileProcedure),
 	entry[leapmuxv1.ListTabsRequest, leapmuxv1.ListTabsResponse](leapmuxv1connect.WorkspaceServiceListTabsProcedure),

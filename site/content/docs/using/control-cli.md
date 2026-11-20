@@ -161,7 +161,7 @@ The exit status states the class of the failure, so a script can branch without 
 | `7` | `worker_offline`, `unavailable` | The Worker or the Hub cannot answer now; a retry can succeed |
 | `130` | | You interrupted the command |
 
-`version_mismatch` (status `1`) means that the Hub or the Worker does not know the call, because its version differs from the CLI's. Compare them with `leapmux control version`.
+`version_mismatch` (status `1`) means that the Hub or the Worker does not implement the call. The error reports the CLI build and the peer build when it can read it. Use `leapmux control version` to inspect the Hub and `leapmux control worker info` to inspect a Worker.
 
 ## Choosing the Hub
 

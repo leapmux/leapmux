@@ -48,7 +48,7 @@ func runWhoami(inv *cli.Invocation) (any, error) {
 		defer cancel()
 		resp, err := ipc.Whoami(ctx, &leapmuxv1.WhoamiRequest{})
 		if err != nil {
-			return nil, err
+			return nil, (workerCall{c: c}).withVersion(ctx, "", err)
 		}
 		// No workspace_id and no scope: the bearer is scoped to the user and
 		// to the minting worker, not to a workspace, and the spawn context
