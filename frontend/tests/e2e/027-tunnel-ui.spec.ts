@@ -1,6 +1,16 @@
 import { expect } from '@playwright/test'
+import { decodeProxyResponse } from '~/api/platformBridge'
 import { test } from './fixtures'
+import { encodeDesktopProxyResponse, encodeDesktopRelayRead } from './helpers/desktopProxyMock'
 import { expandSidebarSection, loginViaToken, openWorkspace, sidebarSectionHeader } from './helpers/ui'
+
+type RelayDeliveryForEncoding = {
+  cursor: string
+  data: number[]
+} | {
+  cursor: string
+  close: { code: number, reason: string, wasClean: boolean }
+}
 
 // The tunnel feature requires desktop capabilities, which aren't available in
 // normal browser E2E runs. These tests inject a mock desktop bridge before page
@@ -12,8 +22,26 @@ import { expandSidebarSection, loginViaToken, openWorkspace, sidebarSectionHeade
  * channel and user-events relays, because under Tauri the page routes hub
  * traffic through the bridge.
  */
-function addTunnelMockInitScript(page: import('@playwright/test').Page) {
-  return page.addInitScript(() => {
+async function addTunnelMockInitScript(page: import('@playwright/test').Page) {
+  const encoderBinding = `__leapmuxEncodeProxyResponse${crypto.randomUUID().replaceAll('-', '')}`
+  const relayEncoderBinding = `__leapmuxEncodeRelayRead${crypto.randomUUID().replaceAll('-', '')}`
+  await page.exposeFunction(encoderBinding, (response: {
+    status: number
+    headers: Record<string, string[]>
+    body: number[]
+  }) => Array.from(new Uint8Array(encodeDesktopProxyResponse({
+    ...response,
+    body: Uint8Array.from(response.body),
+  }))))
+  await page.exposeFunction(relayEncoderBinding, (delivery: RelayDeliveryForEncoding) => Array.from(new Uint8Array(encodeDesktopRelayRead(
+    BigInt(delivery.cursor),
+    'data' in delivery
+      ? {
+          data: Uint8Array.from(delivery.data),
+        }
+      : { close: delivery.close },
+  ))))
+  return page.addInitScript(({ encoderBinding, relayEncoderBinding }) => {
     const win = window as any
     const tunnels: Array<{
       id: string
@@ -28,6 +56,12 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
     interface RelaySocket {
       relayId: number
       socket: WebSocket
+      nextCursor: bigint
+      deliveries: Array<{
+        cursor: bigint
+        message: ArrayBuffer | { code: number, reason: string, wasClean: boolean }
+      }>
+      waiters: Set<() => void>
     }
     let userEventsRelay: RelaySocket | undefined
     let channelRelay: RelaySocket | undefined
@@ -38,24 +72,68 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
         return relay
       intentionallyClosedSockets.add(relay.socket)
       relay.socket.close()
+      for (const waiter of relay.waiters)
+        waiter()
+      relay.waiters.clear()
       return undefined
     }
 
-    const attachRelayChannel = (socket: WebSocket, channelId: number) => {
-      let index = 0
-      socket.binaryType = 'arraybuffer'
-      socket.addEventListener('message', (event) => {
-        win.__TAURI_INTERNALS__.runCallback(channelId, { index: index++, message: event.data })
+    const pushRelayMessage = (
+      relay: RelaySocket,
+      message: ArrayBuffer | { code: number, reason: string, wasClean: boolean },
+    ) => {
+      relay.deliveries.push({ cursor: relay.nextCursor++, message })
+      for (const waiter of relay.waiters)
+        waiter()
+      relay.waiters.clear()
+    }
+
+    const attachRelaySocket = (relay: RelaySocket) => {
+      relay.socket.binaryType = 'arraybuffer'
+      relay.socket.addEventListener('message', (event) => {
+        pushRelayMessage(relay, event.data)
       })
-      socket.addEventListener('close', (event) => {
-        if (!intentionallyClosedSockets.has(socket)) {
-          win.__TAURI_INTERNALS__.runCallback(channelId, {
-            index: index++,
-            message: { code: event.code, reason: event.reason, wasClean: event.wasClean },
+      relay.socket.addEventListener('close', (event) => {
+        if (!intentionallyClosedSockets.has(relay.socket)) {
+          pushRelayMessage(relay, {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
           })
         }
-        win.__TAURI_INTERNALS__.runCallback(channelId, { index, end: true })
       })
+    }
+
+    const readRelay = async (
+      current: () => RelaySocket | undefined,
+      relayId: number,
+      afterCursor: string,
+    ): Promise<number[]> => {
+      const acknowledged = BigInt(afterCursor)
+      while (true) {
+        const relay = current()
+        if (!relay || relay.relayId !== relayId)
+          throw new Error('relay receiver is closed or superseded')
+        while (true) {
+          const first = relay.deliveries[0]
+          if (!first || first.cursor > acknowledged)
+            break
+          relay.deliveries.shift()
+        }
+        const delivery = relay.deliveries[0]
+        if (delivery) {
+          return win[relayEncoderBinding](delivery.message instanceof ArrayBuffer
+            ? {
+                cursor: delivery.cursor.toString(),
+                data: Array.from(new Uint8Array(delivery.message)),
+              }
+            : {
+                cursor: delivery.cursor.toString(),
+                close: delivery.message,
+              })
+        }
+        await new Promise<void>(resolve => relay.waiters.add(resolve))
+      }
     }
 
     win.__TAURI_INVOKE__ = (cmd: string, args?: any, options?: any) => {
@@ -99,9 +177,8 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
             },
           })
         // The raw-byte contract: the request body rides the invoke body, the
-        // metadata rides InvokeOptions headers, and the reply is the raw
-        // envelope `[u32 LE meta_len][meta JSON][body]` (see
-        // decodeProxyResponseEnvelope in ~/api/platformBridge).
+        // metadata rides InvokeOptions headers, and the reply is a raw
+        // ProxyHttpResponse protobuf byte array.
         case 'proxy_http': {
           const method = options?.headers?.method ?? 'POST'
           const path = options?.headers?.path ?? '/'
@@ -122,16 +199,11 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
             response.headers.forEach((value, name) => {
               (responseHeaders[name] ??= []).push(value)
             })
-            const metaBytes = new TextEncoder().encode(JSON.stringify({
+            return win[encoderBinding]({
               status: response.status,
               headers: responseHeaders,
-            }))
-            const bodyBytes = new Uint8Array(await response.arrayBuffer())
-            const out = new Uint8Array(4 + metaBytes.byteLength + bodyBytes.byteLength)
-            new DataView(out.buffer).setUint32(0, metaBytes.byteLength, true)
-            out.set(metaBytes, 4)
-            out.set(bodyBytes, 4 + metaBytes.byteLength)
-            return out.buffer
+              body: Array.from(new Uint8Array(await response.arrayBuffer())),
+            })
           })
         }
         case 'open_channel_relay': {
@@ -143,13 +215,21 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
             `${protocol}//${window.location.host}/ws/channel`,
             ['channel-relay'],
           )
-          channelRelay = { relayId: args.relayId, socket }
-          attachRelayChannel(socket, args.channel.id)
+          channelRelay = {
+            relayId: args.relayId,
+            socket,
+            nextCursor: 1n,
+            deliveries: [],
+            waiters: new Set(),
+          }
+          attachRelaySocket(channelRelay)
           return new Promise<void>((resolve, reject) => {
             socket.addEventListener('open', () => resolve(), { once: true })
             socket.addEventListener('error', () => reject(new Error('channel relay failed')), { once: true })
           })
         }
+        case 'read_channel_relay':
+          return readRelay(() => channelRelay, args.relayId, args.afterCursor)
         case 'send_channel_message':
           channelRelay?.socket.send(args instanceof Uint8Array
             ? args
@@ -173,13 +253,21 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
               : ''}`,
             ['userevents-relay'],
           )
-          userEventsRelay = { relayId: args.relayId, socket }
-          attachRelayChannel(socket, args.channel.id)
+          userEventsRelay = {
+            relayId: args.relayId,
+            socket,
+            nextCursor: 1n,
+            deliveries: [],
+            waiters: new Set(),
+          }
+          attachRelaySocket(userEventsRelay)
           return new Promise<void>((resolve, reject) => {
             socket.addEventListener('open', () => resolve(), { once: true })
             socket.addEventListener('error', () => reject(new Error('userevents relay failed')), { once: true })
           })
         }
+        case 'read_userevents_relay':
+          return readRelay(() => userEventsRelay, args.relayId, args.afterCursor)
         case 'close_userevents_relay':
           userEventsRelay = closeRelay(userEventsRelay, args.relayId)
           return Promise.resolve()
@@ -242,7 +330,7 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       },
     }
     win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener }
-  })
+  }, { encoderBinding, relayEncoderBinding })
 }
 
 /** Open the worker context menu in the Workers sidebar section. */
@@ -322,14 +410,15 @@ test.describe('Tunnel UI', () => {
       }
     })
 
-    const reply = await page.evaluate(async () => {
-      const reply: ArrayBuffer = await (window as any).__TAURI_INTERNALS__.invoke(
+    const replyBytes = await page.evaluate(async () => {
+      const reply: number[] = await (window as any).__TAURI_INTERNALS__.invoke(
         'proxy_http',
         new TextEncoder().encode('{}'),
         {
           headers: {
             'method': 'POST',
             'path': '/leapmux.v1.SystemService/GetSystemInfo',
+            'request-id': crypto.randomUUID(),
             'headers-b64': btoa(JSON.stringify({
               'Content-Type': 'application/json',
               'Connect-Protocol-Version': '1',
@@ -337,18 +426,12 @@ test.describe('Tunnel UI', () => {
           },
         },
       )
-      const metadataEnd = 4 + new DataView(reply).getUint32(0, true)
-      const decoder = new TextDecoder()
-      const metadata = JSON.parse(decoder.decode(reply.slice(4, metadataEnd)))
-      return {
-        status: metadata.status,
-        contentType: metadata.headers['content-type']?.[0],
-        body: decoder.decode(reply.slice(metadataEnd)),
-      }
+      return reply
     })
+    const reply = decodeProxyResponse(Uint8Array.from(replyBytes))
     expect(reply.status).toBe(200)
-    expect(reply.contentType).toContain('application/json')
-    expect(JSON.parse(reply.body)).toHaveProperty('build')
+    expect(reply.headers['content-type']?.[0]).toContain('application/json')
+    expect(JSON.parse(new TextDecoder().decode(reply.body))).toHaveProperty('build')
 
     const { dialog } = await openAddTunnelDialog(page)
     await dialog.getByTestId('target-port').fill('3000')
