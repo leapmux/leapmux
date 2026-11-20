@@ -70,7 +70,7 @@ func resolveDeps(c *control.Client) resolve.Deps {
 func targetListing(c *control.Client, deps resolve.Deps) resolve.Listing {
 	return resolve.Listing{
 		Tabs: func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
-			return listAllTabs(ctx, c)
+			return listTabsInWorkspaces(ctx, c, nil)
 		},
 		TabTitles: func(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string {
 			details := fetchTabDetails(ctx, c, tabs)
@@ -119,10 +119,10 @@ func targetListing(c *control.Client, deps resolve.Deps) resolve.Listing {
 	}
 }
 
-// listAllTabs lists every tab of every workspace that the caller can read.
-func listAllTabs(ctx context.Context, c *control.Client) ([]*leapmuxv1.WorkspaceTab, error) {
+// listTabsInWorkspaces lists visible tabs. Nil selects every readable workspace.
+func listTabsInWorkspaces(ctx context.Context, c *control.Client, workspaceIDs []string) ([]*leapmuxv1.WorkspaceTab, error) {
 	var resp leapmuxv1.ListTabsResponse
-	if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceListTabsProcedure, &leapmuxv1.ListTabsRequest{}, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceListTabsProcedure, &leapmuxv1.ListTabsRequest{WorkspaceIds: workspaceIDs}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.GetTabs(), nil

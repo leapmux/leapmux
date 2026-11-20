@@ -389,6 +389,82 @@ func TestEventsOverIPC_WatchesTheWorkspaceThatItSelects(t *testing.T) {
 	assert.Equal(t, cli.ExitOK, receive(t, ctx, run.code), "nothing can happen in a deleted workspace")
 }
 
+func TestEventsOverIPC_WatchesOnlyTheSelectedTabAcrossAMove(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	worker := newEventsWorker()
+	userEvents := startEventsIPC(t, worker, newEventsWorker())
+	run := runControlLive(t, "events", "--tab", "id:tm-1", "--json")
+	var hub *fakeHubSession
+	select {
+	case hub = <-userEvents.sessions:
+	case code := <-run.code:
+		t.Fatalf("events exited with code %d before opening the stream", code)
+	case <-ctx.Done():
+		t.Fatal("events did not open the Hub stream")
+	}
+	assert.Empty(t, receive(t, ctx, userEvents.workspaceIDs), "the Hub subscription follows the tab across workspaces")
+	hub.send(snapshotEvent([]string{"ws-1", "ws-2"},
+		terminalTabRecord("tm-1", "ws-1", "worker-A"), terminalTabRecord("tm-2", "ws-1", "worker-A")))
+	watch := receive(t, ctx, worker.watches)
+	assert.Equal(t, []string{"tm-1"}, watchedTerminals(t, receive(t, ctx, watch.seen)))
+	ready := run.next(t, ctx)
+	require.Equal(t, kindStreamReady, ready.Kind)
+	assert.Equal(t, &scopeCounts{Workspaces: 1, Tabs: 1, Workers: 1, WorkersLive: 1, HubLive: true}, ready.Scope)
+
+	watch.frames <- bellFrame("tm-2")
+	watch.frames <- bellFrame("tm-1")
+	bell := run.next(t, ctx)
+	assert.Equal(t, []string{kindTerminalBell, "tm-1", "ws-1"}, []string{bell.Kind, bell.TabID, bell.WorkspaceID})
+
+	hub.send(workspaceRenamedEvent("ws-2", "Unrelated change"))
+	hub.send(batchEvent(moveTabOp(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "tm-1", "ws-2", 20)))
+	hub.send(batchEndEvent())
+	moved := run.next(t, ctx)
+	assert.Equal(t, []string{kindTabMoved, "tm-1", "ws-2"}, []string{moved.Kind, moved.TabID, moved.WorkspaceID})
+	watch.frames <- bellFrame("tm-1")
+	assert.Equal(t, "ws-2", run.next(t, ctx).WorkspaceID)
+
+	hub.send(batchEvent(closeTabOp(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "tm-1", 21)))
+	hub.send(batchEndEvent())
+	closed := run.next(t, ctx)
+	assert.Equal(t, []string{kindTabClosed, "tm-1"}, []string{closed.Kind, closed.TabID})
+	assert.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
+}
+
+func TestEventsOverIPC_RefusesATabOutsideTheSelectedWorkspace(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	worker := newEventsWorker()
+	userEvents := startEventsIPC(t, worker, newEventsWorker())
+	run := runControlLive(t, "events", "--tab", "id:tm-1", "--workspace", "title:First", "--json")
+	var hub *fakeHubSession
+	select {
+	case hub = <-userEvents.sessions:
+	case code := <-run.code:
+		t.Fatalf("events exited with code %d before receiving the workspace snapshot", code)
+	case <-ctx.Done():
+		t.Fatal("events did not open the Hub stream")
+	}
+	assert.Equal(t, []string{"ws-1"}, receive(t, ctx, userEvents.workspaceIDs))
+	hub.send(snapshotEvent([]string{"ws-1", "ws-2"}, terminalTabRecord("tm-1", "ws-2", "worker-A")))
+	assert.Equal(t, cli.ExitNotFound, receive(t, ctx, run.code))
+	assert.Contains(t, receive(t, ctx, run.out.lines), `"code":"not_found"`)
+	assert.Empty(t, worker.watches, "an out-of-scope tab cannot start a Worker watch")
+}
+
+func TestEventsOverIPC_ClosesTheSelectedTabWhenItsWorkspaceIsDeleted(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	userEvents := startEventsIPC(t, newEventsWorker(), newEventsWorker())
+	run := runControlLive(t, "events", "--tab", "id:tm-1", "--json")
+	hub := receive(t, ctx, userEvents.sessions)
+	hub.send(snapshotEvent([]string{"ws-1"}, terminalTabRecord("tm-1", "ws-1", "worker-A")))
+	require.Equal(t, kindStreamReady, run.next(t, ctx).Kind)
+
+	hub.send(workspaceDeletedEvent("ws-1"))
+	closed := run.next(t, ctx)
+	assert.Equal(t, []string{kindTabClosed, "tm-1", "ws-1"}, []string{closed.Kind, closed.TabID, closed.WorkspaceID})
+	assert.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
+}
+
 // --workspace refuses an input that selects no workspace before the stream
 // starts, so the run fails at once instead of watching nothing.
 func TestEventsOverIPC_RefusesAWorkspaceThatDoesNotExist(t *testing.T) {

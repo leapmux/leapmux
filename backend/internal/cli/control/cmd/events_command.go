@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -27,9 +29,11 @@ func newEventsCommand() *cobra.Command {
 			{Comment: "Print the turn ends and the requests of the agents in this workspace, as JSON.", Command: "leapmux control events --workspace self --kind agent.turn_end --kind agent.request --json"},
 			{Comment: "Wait for the next request of any agent, and print it.", Command: "leapmux control events --kind agent.request --limit 1 --json"},
 			{Comment: "Watch every terminal, with a heartbeat that shows the stream runs.", Command: "leapmux control events --kind terminal --heartbeat 30s"},
+			{Comment: "Watch a single terminal as it moves between workspaces.", Command: "leapmux control events --tab 87a19d5f --kind terminal --json"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("workspace", "", `watch only this workspace: an id, a prefix, "title:<title>" or "self" (default: every workspace)`)
+			fs.String("tab", "", `watch only this tab: an id, a prefix, "id:<id>", "title:<title>" or "self"`)
 			fs.StringSlice("kind", nil, `print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind)`)
 			cli.SetEnum(fs, "kind", kindFlagValues()...)
 			fs.Int("limit", 0, "end the stream after this many events; 0 runs without a limit")
@@ -52,13 +56,14 @@ status 0.
 
 The stream watches every workspace, or the one that --workspace selects. A
 tab that opens while the stream runs joins it, and a tab that closes leaves
-it. The stream ends when the workspace that --workspace selects is deleted.
+it. With --tab, the stream watches that tab only and follows its moves between
+workspaces. If --workspace also selects a workspace, the stream ends when
+the tab leaves it. The stream also ends when the selected tab closes or
+the selected workspace is deleted.
 
-The first stream.ready line says that the stream watches every source. Read
-the state that you need after it, such as "leapmux control agent list": every
-change after that read reaches the stream. The stream has no cursor, because
-a Worker keeps no record of these events, so a new run starts from the
-present.
+The first stream.ready line reports the sources that the stream watches and
+which of them can deliver. Read the state that you need after it, such as
+"leapmux control agent list". A new run starts from the present.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints
@@ -84,6 +89,8 @@ type eventsOptions struct {
 	heartbeat time.Duration
 	// workspace is the value of --workspace, or "" for every workspace.
 	workspace string
+	// tab is the value of --tab, or "" for every tab in the workspace scope.
+	tab string
 }
 
 // eventsOptionsOf reads the flags of `events`, before anything is sent.
@@ -114,14 +121,12 @@ func eventsOptionsOf(inv *cli.Invocation) (eventsOptions, error) {
 	if heartbeat < 0 || (heartbeat > 0 && heartbeat < minEventHeartbeat) {
 		return eventsOptions{}, cli.Usagef("--heartbeat must be 0 or at least %s", minEventHeartbeat)
 	}
-	workspace := ""
-	if inv.Changed("workspace") {
-		workspace = stringFlag(inv, "workspace")
-		if strings.TrimSpace(workspace) == "" {
-			return eventsOptions{}, cli.Usagef("--workspace is empty")
+	for _, name := range []string{"workspace", "tab"} {
+		if blankTargetFlag(inv.Command, name) {
+			return eventsOptions{}, cli.Usagef("--%s is empty", name)
 		}
 	}
-	return eventsOptions{filter: filter, limit: limit, heartbeat: heartbeat, workspace: workspace}, nil
+	return eventsOptions{filter: filter, limit: limit, heartbeat: heartbeat, workspace: stringFlag(inv, "workspace"), tab: stringFlag(inv, "tab")}, nil
 }
 
 // runEvents streams the events of the scope until the user stops it.
@@ -135,7 +140,7 @@ func runEvents(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	workspaceID, err := eventsWorkspace(s, opts.workspace)
+	workspaceID, tabID, err := resolveEventScope(s, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +152,7 @@ func runEvents(inv *cli.Invocation) (any, error) {
 		printer:    &eventPrinter{p: inv.Printer, filter: opts.filter, limit: opts.limit},
 		clock:      quartz.NewReal(),
 		workspace:  workspaceID,
+		tabID:      tabID,
 		heartbeat:  opts.heartbeat,
 		hubSession: hubUserEvents(s.c, workspaceIDs),
 		workerSource: func(workerID string) workerFeedSource {
@@ -156,18 +162,33 @@ func runEvents(inv *cli.Invocation) (any, error) {
 	return nil, stream.run(s.ctx)
 }
 
-// eventsWorkspace resolves the input of --workspace, or returns "" for every
-// workspace when the input is "". The resolution has a deadline, so it
-// cannot hang while the stream itself runs until the user stops it.
-func eventsWorkspace(s *session, input string) (string, error) {
-	if input == "" {
-		return "", nil
+// resolveEventScope resolves the selectors with a deadline independent of the
+// stream's lifetime. A tab title or prefix searches the selected workspace.
+func resolveEventScope(s *session, opts eventsOptions) (workspaceID, tabID string, err error) {
+	if opts.workspace == "" && opts.tab == "" {
+		return "", "", nil
 	}
 	bounded := s.bounded()
 	defer bounded.Close()
-	ws, err := bounded.resolveOne(resolve.KindWorkspace, input)
-	if err != nil {
-		return "", err
+	if opts.workspace != "" {
+		workspace, err := bounded.resolveOne(resolve.KindWorkspace, opts.workspace)
+		if err != nil {
+			return "", "", err
+		}
+		workspaceID = workspace.ID
 	}
-	return ws.ID, nil
+	if opts.tab != "" {
+		listing := bounded.listing()
+		if workspaceID != "" {
+			listing.Tabs = func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
+				return listTabsInWorkspaces(ctx, s.c, []string{workspaceID})
+			}
+		}
+		tab, err := resolve.Canonical(bounded.ctx, listing, resolve.KindTab, opts.tab)
+		if err != nil {
+			return "", "", err
+		}
+		tabID = tab.ID
+	}
+	return workspaceID, tabID, nil
 }

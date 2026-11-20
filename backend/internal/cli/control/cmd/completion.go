@@ -24,7 +24,7 @@ import (
 const completionTimeout = 2 * time.Second
 
 func registerScopeCompletions(cmd *cobra.Command) {
-	for _, name := range []string{"workspace", "worker", "tile"} {
+	for _, name := range []string{"workspace", "worker", "tile", "tab"} {
 		if cmd.Flags().Lookup(name) == nil {
 			continue
 		}

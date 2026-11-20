@@ -20,7 +20,7 @@ var targetArguments = map[string]resolve.Kind{
 	"worker":    resolve.KindWorker,
 }
 
-var scopeTargetFlags = []string{"hub", "workspace", "worker", "tile", "before", "after"}
+var scopeTargetFlags = []string{"hub", "workspace", "worker", "tile", "tab", "before", "after"}
 
 func configureTargetArguments(root *cobra.Command) {
 	help := map[string]string{"text": `The text, or "-" to read it from standard input.`}

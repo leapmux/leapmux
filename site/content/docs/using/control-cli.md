@@ -463,6 +463,7 @@ A script that loses the answer of `agent send` or `agent open`, for a timeout or
   - To wait for the output of a new command only, clear the screen first, or match a line that the echoed command line does not hold: after `terminal run "$T" 'make test; echo DONE'`, wait with `--regex '^DONE$'`.
 - **The command prints its result even when the condition did not hold, and exits `6`**: `--timeout` passed, the shell ended before the terminal showed the text, or the shell failed to start. `--json` prints `status`, `reached`, and `exit_code` once the shell ended. A terminal that closes during the wait fails with `not_found` and exits `6`.
 - `leapmux control events --kind terminal` prints the exits, bells, titles, notifications and progress reports of every terminal as they happen.
+- `leapmux control events --tab "$T" --kind terminal` watches one terminal. The stream follows the tab across workspaces unless `--workspace` limits it to one.
 
 ### Telling the user
 
@@ -535,7 +536,7 @@ To follow an agent's chat, use `agent messages --follow` instead.
 
 - **`--kind` selects what prints**: a kind such as `agent.request`, or a family such as `agent`. Repeat it, or separate the values with commas. An unknown value fails with `usage` and lists the known ones.
 - **`--workspace` narrows the scope** to one workspace. Without it, the stream watches every workspace. A tab that opens while the stream runs joins it, and a tab that closes leaves it. The stream ends with status `0` when the watched workspace is deleted.
-- **Read the state after `stream.ready`.** The stream has no cursor, because a Worker keeps no record of these events, so each run starts from the present. A state that you read after `stream.ready`, such as `agent list`, misses no later change.
+- **Read the state after `stream.ready`.** Each run starts from the present. The ready event reports which sources can deliver. If a source drops afterward, `stream.gap` reports the possible loss when it reconnects.
 - **The stream survives drops.**
   - When the Hub or a Worker cannot deliver, the stream prints `stream.unavailable` and retries. It watches an offline Worker again as soon as the Hub reports that a Worker came online.
   - A Worker that refuses for good, such as for a missing permission, prints `retrying: false`, and the stream goes on without it.

@@ -2234,13 +2234,14 @@ status 0.
 
 The stream watches every workspace, or the one that --workspace selects. A
 tab that opens while the stream runs joins it, and a tab that closes leaves
-it. The stream ends when the workspace that --workspace selects is deleted.
+it. With --tab, the stream watches that tab only and follows its moves between
+workspaces. If --workspace also selects a workspace, the stream ends when
+the tab leaves it. The stream also ends when the selected tab closes or
+the selected workspace is deleted.
 
-The first stream.ready line says that the stream watches every source. Read
-the state that you need after it, such as "leapmux control agent list": every
-change after that read reaches the stream. The stream has no cursor, because
-a Worker keeps no record of these events, so a new run starts from the
-present.
+The first stream.ready line reports the sources that the stream watches and
+which of them can deliver. Read the state that you need after it, such as
+"leapmux control agent list". A new run starts from the present.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints
@@ -2281,6 +2282,7 @@ leapmux control events [flags]
 | Flag | Description |
 |---|---|
 | `--workspace string` | watch only this workspace: an id, a prefix, "title:&lt;title&gt;" or "self" (default: every workspace) |
+| `--tab string` | watch only this tab: an id, a prefix, "id:&lt;id&gt;", "title:&lt;title&gt;" or "self" |
 | `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, stream.ready, stream.unavailable, stream.gap, stream.heartbeat; repeatable) |
 | `--limit int` | end the stream after this many events; 0 runs without a limit |
 | `--heartbeat duration` | print a stream.heartbeat event at this interval, such as 30s; 0 prints none (default: 0s) |
@@ -2296,6 +2298,9 @@ leapmux control events --kind agent.request --limit 1 --json
 
 # Watch every terminal, with a heartbeat that shows the stream runs.
 leapmux control events --kind terminal --heartbeat 30s
+
+# Watch a single terminal as it moves between workspaces.
+leapmux control events --tab 87a19d5f --kind terminal --json
 ```
 
 ### `leapmux control notify`

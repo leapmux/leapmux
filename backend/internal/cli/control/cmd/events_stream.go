@@ -18,7 +18,7 @@ import (
 )
 
 // errStreamDone ends the stream without a failure: --limit printed its last
-// event, or the workspace that --workspace selects was deleted.
+// event, or the selected tab or workspace left the scope.
 var errStreamDone = errors.New("the event stream is done")
 
 // eventHeartbeatTimerTag identifies the heartbeat ticker to a test clock.
@@ -32,6 +32,8 @@ type eventStreamConfig struct {
 	// workspace is the workspace that --workspace selects, or "" for every
 	// workspace.
 	workspace string
+	// tabID selects a single tab within the workspace scope when set.
+	tabID string
 	// heartbeat is the interval of stream.heartbeat, or 0 for none.
 	heartbeat time.Duration
 	// hubSession runs one subscription to the hub's user events.
@@ -195,6 +197,9 @@ func (s *eventStream) now() time.Time { return s.clock.Now() }
 
 // emit stamps ev with the time and prints it.
 func (s *eventStream) emit(ev streamEvent) error {
+	if s.tabID != "" && ev.TabID != s.tabID && kindFamily(ev.Kind) != "stream" {
+		return nil
+	}
 	ev.Time = s.now().UTC()
 	return s.printer.print(ev)
 }
@@ -327,6 +332,9 @@ func (s *eventStream) onSnapshot(m *leapmuxv1.UserMaterialized) error {
 		s.hub = sourceHealth{live: true, everLive: true}
 		s.workspaces = snapshotWorkspaces
 		s.tabs = s.project()
+		if s.tabID != "" && len(s.tabs) == 0 {
+			return cli.Newf(cli.CodeNotFound, "no such tab in the event scope: %s", s.tabID)
+		}
 		s.syncFeeds()
 		return s.maybeReady()
 	}
@@ -370,6 +378,7 @@ func (s *eventStream) reproject() error {
 // for.
 func (s *eventStream) applyProjection(reconciled bool) error {
 	next := s.project()
+	leftScope := s.tabID != "" && len(s.tabs) != 0 && len(next) == 0
 	events := s.tabEvents(s.tabs, next, reconciled)
 	for id := range s.tabs {
 		if _, kept := next[id]; !kept {
@@ -386,6 +395,9 @@ func (s *eventStream) applyProjection(reconciled bool) error {
 	if err := s.emitAll(events); err != nil {
 		return err
 	}
+	if leftScope {
+		return errStreamDone
+	}
 	return s.maybeReady()
 }
 
@@ -393,7 +405,7 @@ func (s *eventStream) applyProjection(reconciled bool) error {
 func (s *eventStream) project() map[string]scopedTab {
 	out := map[string]scopedTab{}
 	for _, t := range crdt.Project(s.state).OwnedTabs {
-		if !s.inScope(t.WorkspaceID) {
+		if !s.inScope(t.WorkspaceID) || (s.tabID != "" && t.TabID != s.tabID) {
 			continue
 		}
 		out[t.TabID] = scopedTab{ID: t.TabID, Type: t.TabType, WorkspaceID: t.WorkspaceID, WorkerID: t.WorkerID}
@@ -489,9 +501,8 @@ func (s *eventStream) workspaceRenamed(r *leapmuxv1.WorkspaceRenamed) error {
 	return s.emit(streamEvent{Kind: kindWorkspaceRenamed, WorkspaceID: id, Title: r.GetTitle(), Summary: fmt.Sprintf("to %q", r.GetTitle())})
 }
 
-// workspaceDeleted prints workspace.deleted once, and ends the stream when
-// the workspace is the one that --workspace selects: nothing can happen in
-// it any more.
+// workspaceDeleted reports the deletion and ends the stream if it removes
+// the selected workspace or the tab that the stream follows.
 func (s *eventStream) workspaceDeleted(id string, reconciled bool) error {
 	if !s.workspaces[id] {
 		return nil
@@ -499,6 +510,15 @@ func (s *eventStream) workspaceDeleted(id string, reconciled bool) error {
 	delete(s.workspaces, id)
 	if err := s.emit(streamEvent{Kind: kindWorkspaceDeleted, WorkspaceID: id, Summary: "deleted", Reconciled: reconciled}); err != nil {
 		return err
+	}
+	if tab, selected := s.tabs[s.tabID]; selected && tab.WorkspaceID == id {
+		ev := tabStreamEvent(kindTabClosed, tab)
+		ev.Summary = "its workspace was deleted"
+		ev.Reconciled = reconciled
+		if err := s.emit(ev); err != nil {
+			return err
+		}
+		return errStreamDone
 	}
 	if id == s.workspace {
 		return errStreamDone
@@ -921,6 +941,9 @@ func (s *eventStream) maybeReady() error {
 // scopeCounts counts what the stream watches now.
 func (s *eventStream) scopeCounts() *scopeCounts {
 	counts := &scopeCounts{Workspaces: len(s.workspaces), Tabs: len(s.tabs), Workers: len(s.feeds), HubLive: s.hub.live}
+	if s.tabID != "" {
+		counts.Workspaces = len(s.tabs)
+	}
 	for _, fs := range s.feeds {
 		if fs.health.live {
 			counts.WorkersLive++
