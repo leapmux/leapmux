@@ -3617,7 +3617,9 @@ describe('useWorkspaceConnection replay ownership', () => {
     await flushStream()
     const listMessages = vi.mocked(workerAgent.listAgentMessages)
     listMessages.mockResolvedValue(create(ListAgentMessagesResponseSchema, {
-      messages: [...state.chatStore.getMessages(state.agentId)],
+      messages: [
+        ...state.chatStore.getMessages(state.agentId),
+      ],
       latestSeq: 23n,
     }))
     emitCatchUpStart(state, 23n, { replayPageLimit: 8, messageReplaySkipped: false })
@@ -3729,7 +3731,9 @@ describe('useWorkspaceConnection replay ownership', () => {
       agentId: state.agentId,
       event: {
         case: 'messagesRetracted',
-        value: { seqs: [7n] },
+        value: {
+          seqs: [7n],
+        },
       },
     }))
     expect(state.chatStore.getMessages(state.agentId)).toEqual([])
