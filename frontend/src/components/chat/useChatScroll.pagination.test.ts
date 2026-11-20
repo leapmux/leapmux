@@ -2,7 +2,7 @@ import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { batch, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { inRoot } from '~/test-support/async'
+import { deferred, inRoot } from '~/test-support/async'
 
 import { FOLLOW_TOLERANCE_PX, maxScrollTopOf } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
@@ -794,6 +794,8 @@ describe('useChatScroll the per-window state of the buffer fill', () => {
       }
       const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
       const [hasNewer, setHasNewer] = createSignal(false)
+      const [landingRefillPages, setLandingRefillPages] = createSignal<0 | 1>()
+      const jump = deferred<boolean>()
       let olderLoads = 0
       let newerLoads = 0
       const hook = useChatScroll(withStaticAdmission({
@@ -801,9 +803,11 @@ describe('useChatScroll the per-window state of the buffer fill', () => {
         messages,
         hasOlderMessages: () => true,
         hasNewerMessages: hasNewer,
+        landingRefillPages,
+        onSetLandingRefillPages: setLandingRefillPages,
         onLoadOlderMessages: () => { olderLoads++ },
         onLoadNewerMessages: () => { newerLoads++ },
-        onJumpToOldest: () => new Promise<boolean>(() => {}),
+        onJumpToOldest: () => jump.promise,
       }))
       hook.attachListRef(div.el)
       const settle = async (): Promise<void> => {
@@ -823,9 +827,22 @@ describe('useChatScroll the per-window state of the buffer fill', () => {
       hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key: 'Home', cancelable: true }))
       setHasNewer(true)
       await settle()
-
-      expect(olderLoads).toBeGreaterThan(olderLoadsWhileStuck)
+      expect(olderLoads).toBe(olderLoadsWhileStuck)
       expect(newerLoads).toBe(0)
+
+      setLandingRefillPages(1)
+      jump.resolve(true)
+      await settle()
+      expect(olderLoads).toBe(olderLoadsWhileStuck + 1)
+      expect(newerLoads).toBe(0)
+
+      setMessages(prev => [...prev, {} as AgentChatMessage])
+      await settle()
+      expect(olderLoads).toBe(olderLoadsWhileStuck + 1)
+      expect(newerLoads).toBe(0)
+
+      hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+      expect(newerLoads).toBe(1)
     }))
 })
 

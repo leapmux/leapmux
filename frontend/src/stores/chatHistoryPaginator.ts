@@ -1,11 +1,25 @@
 import type { SetStoreFunction } from 'solid-js/store'
 import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
+import type { LandingRefillPages } from './chatTypes'
 import type { AgentChatMessage, ListAgentMessagesResponse, AgentGoal as ProtoAgentGoal, AgentGoalAction as ProtoAgentGoalAction, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import { batch } from 'solid-js'
 import { workerAgent } from '~/api/workerRpc'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { MessagePageAnchor } from '~/generated/proto/leapmux/v1/agent_pb'
 import { exceedsCatchUpGapLimit } from './chatLiveTail'
+
+/** Approximate the number of rows for a viewport. A landing can contain hidden rows. */
+const ESTIMATED_LANDING_ROW_HEIGHT_PX = 48
+const MIN_LANDING_PAGE_LIMIT = 8
+const DEFAULT_LANDING_PAGE_LIMIT = 16
+
+export function landingPageLimit(viewportHeight: number | undefined): number {
+  if (viewportHeight === undefined || !Number.isFinite(viewportHeight) || viewportHeight <= 0)
+    return DEFAULT_LANDING_PAGE_LIMIT
+  return Math.min(MESSAGE_PAGE_LIMIT, Math.max(MIN_LANDING_PAGE_LIMIT, Math.ceil(viewportHeight / ESTIMATED_LANDING_ROW_HEIGHT_PX)))
+}
+
 /**
  * Max forward-fill rounds before forwardFillToLiveTail settles regardless, so a
  * genuinely-vanished live seq stops the loop instead of spinning.
@@ -207,6 +221,7 @@ export interface HistoryPaginatorDeps {
   ) => Promise<T>
   mergeFetchedMessages: (agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') => void
   applyMessages: (agentId: string, messages: AgentChatMessage[], hasMore: boolean) => void
+  setLandingRefillPages: (agentId: string, pages: LandingRefillPages) => void
   /** The live-tail tracker: recorded-tail reads + the settle/empty-reset clamps. */
   liveTail: LiveTailTracker
   /** Window cap for the live-tail-following state (MAX_LOADED_CHAT_MESSAGES). */
@@ -224,6 +239,7 @@ export interface HistoryPaginatorDeps {
   getFirstMessageSeq: (agentId: string) => bigint | undefined
   getLastMessageSeq: (agentId: string) => bigint | undefined
   caughtUpToLiveTail: (agentId: string) => boolean
+  getViewportHeight: (agentId: string) => number | undefined
   addMessage: (agentId: string, message: AgentChatMessage) => void
   trimOldestEnd: (agentId: string, maxCount: number) => void
   trimNewestEnd: (agentId: string, maxCount: number) => void
@@ -335,15 +351,15 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     if (signal.aborted || captured.length === 0)
       return
     const identities = new Map(captured.map(message => [message.id, message.seq]))
-    const tail = captured.at(-1)!.seq
     let cursor = captured[0]!.seq - 1n
+    let nextCaptured = 0
     try {
-      while (!signal.aborted) {
+      while (!signal.aborted && nextCaptured < captured.length) {
         const resp = await workerAgent.listAgentMessages(workerId, {
           agentId,
           anchor: MessagePageAnchor.AFTER,
           cursorSeq: cursor,
-          limit: MESSAGE_PAGE_LIMIT,
+          limit: Math.min(MESSAGE_PAGE_LIMIT, captured.length - nextCaptured),
         }, { signal })
         if (signal.aborted)
           return
@@ -363,8 +379,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         }
         if (updates.length > 0)
           deps.mergeFetchedMessages(agentId, updates, 'newer')
-        if (!resp.hasMore || cursor >= tail)
+        if (!resp.hasMore)
           return
+        while (nextCaptured < captured.length && captured[nextCaptured]!.seq <= cursor)
+          nextCaptured++
       }
     }
     catch (err) {
@@ -522,6 +540,14 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // discard this page so the superseding fetch owns the tail.
         if (signal.aborted)
           return
+        // The reconciler replaces this window when the gap exceeds the limit. Compare
+        // against the current window before this page advances its tail.
+        const latestSeq = resp.latestSeq
+        if (state.hasMoreNewer[agentId] || (latestSeq !== undefined && exceedsCatchUpGapLimit(latestSeq, deps.getLastSeq(agentId)))) {
+          if (latestSeq !== undefined)
+            deps.liveTail.bump(agentId, latestSeq)
+          return
+        }
         for (const msg of resp.messages) {
           deps.addMessage(agentId, msg)
         }
@@ -538,11 +564,6 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // (trimOldestToViewport) brings a FOLLOWED tail back to the lean base; a
         // scrolled-up reader keeps their buffer up to the ceiling.
         deps.trimOldestEnd(agentId, deps.maxLoadedCeiling)
-        // An over-limit gap keeps the recorded tail for the scheduler, which
-        // re-anchors on LATEST (see reconcileLaggingTails). Return before the
-        // stale-tail clamp below: it must not erase a gap the scheduler needs.
-        if (resp.latestSeq !== undefined && exceedsCatchUpGapLimit(resp.latestSeq, deps.getLastSeq(agentId)))
-          return
         if (!resp.hasMore || resp.messages.length === 0)
           break
         // The server returns each page ordered ascending by seq (ORDER BY seq
@@ -839,10 +860,18 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // Always re-anchor on a fresh latest page so the window is contiguous
       // up to the tail regardless of how far it had drifted. The request carries
       // `signal`, so an abort ends it at the transport, and frees the fetch flag at once.
-      const latest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT }, { signal })
+      const limit = landingPageLimit(deps.getViewportHeight(agentId))
+      const latest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit }, { signal })
       if (signal.aborted)
         return false
-      applyLatestPage(agentId, latest)
+      batch(() => {
+        applyLatestPage(agentId, latest)
+        // A forward read for concurrently arriving messages uses the remaining page.
+        const remainingPages = deps.caughtUpToLiveTail(agentId)
+          ? 1
+          : 0
+        deps.setLandingRefillPages(agentId, remainingPages)
+      })
       // An empty LATEST page with no more pages proves that no messages exist.
       // Clear a stale live tail so caughtUpToLiveTail resolves.
       // settleToWindow cannot clear a transient empty window during a fetch.
@@ -874,27 +903,27 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     return runHistoryJump(agentId, 'fetchingOlder', async (signal) => {
       // The request carries `signal`, so an abort ends it at the transport rather than
       // only discarding what it returns.
-      const oldest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT }, { signal })
+      const limit = landingPageLimit(deps.getViewportHeight(agentId))
+      const oldest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit }, { signal })
       if (signal.aborted)
         return false
       // applyMessages sets hasMoreOlder from its `hasMore` argument and
       // hasMoreNewer=false; override the latter since newer messages DO exist
       // beyond the earliest page.
-      deps.applyMessages(agentId, oldest.messages, false)
-      setState('hasMoreNewer', agentId, oldest.hasMore)
+      batch(() => {
+        deps.setLandingRefillPages(agentId, 1)
+        deps.applyMessages(agentId, oldest.messages, false)
+        setState('hasMoreNewer', agentId, oldest.hasMore)
+      })
       return true
     }, abortSignal)
   }
 
   /**
-   * Replace the window with a page CENTERED on `seq` -- the scroll-rail's seek/jump
-   * target. Two disjoint anchored fetches run in parallel: BEFORE cursor=seq+1n (rows
-   * with seq <= seq, INCLUDING the target when it exists -- the bound is exclusive;
-   * LATEST is used instead at int64 max because seq+1 is not a valid backend cursor) and
-   * AFTER cursor=seq (rows with seq > seq). Both come back ascending, so their
-   * concatenation is one contiguous ascending window with the target ~mid-window and
-   * ~50 rows of padding on each side (under the 150 cap), so the buffer filler's first
-   * pass fetches BACKGROUND pages rather than tripping the hard-edge stall indicators.
+   * Replace the window with a small page around the rail's target sequence. BEFORE
+   * seq + 1 includes the target and gives the reader some older context. AFTER seq
+   * supplies the newer rows that fill most of the viewport. At int64 max, LATEST
+   * supplies the target because seq + 1 exceeds the Worker's cursor range.
    *
    * A deleted target seq lands on the nearest survivors (BEFORE returns the highest
    * seq <= target); the scroll hook's nearest-row-by-seq landing does the rest. When
@@ -911,13 +940,15 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // Snapshot the recorded live tail before the swap: a message broadcast DURING the
       // fetch raises it past this, and hasMoreNewer/resetToEmptyIfStale must respect that.
       const liveSeqAtEntry = deps.liveTail.get(agentId)
-      const beforeRequest = seq >= MAX_INT64_SEQ
-        ? { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT }
+      const limit = landingPageLimit(deps.getViewportHeight(agentId))
+      const atSequenceLimit = seq >= MAX_INT64_SEQ
+      const beforeRequest = atSequenceLimit
+        ? { agentId, anchor: MessagePageAnchor.LATEST, limit }
         : {
             agentId,
             anchor: MessagePageAnchor.BEFORE,
             cursorSeq: seq + 1n,
-            limit: MESSAGE_PAGE_LIMIT,
+            limit: Math.ceil(limit / 2),
           }
       // Both requests carry `signal`, so an abort ends them at the transport rather than only
       // discarding what they return. That is what makes a seek genuinely abandonable: the caller
@@ -925,34 +956,33 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // of paying for a page it will throw away.
       const [before, after] = await Promise.all([
         workerAgent.listAgentMessages(workerId, beforeRequest, { signal }),
-        workerAgent.listAgentMessages(workerId, {
-          agentId,
-          anchor: MessagePageAnchor.AFTER,
-          cursorSeq: seq,
-          limit: MESSAGE_PAGE_LIMIT,
-        }, { signal }),
+        atSequenceLimit
+          ? undefined
+          : workerAgent.listAgentMessages(workerId, {
+              agentId,
+              anchor: MessagePageAnchor.AFTER,
+              cursorSeq: seq,
+              limit,
+            }, { signal }),
       ])
       if (signal.aborted)
         return false
       const rows = [
         ...before.messages,
-        ...after.messages,
+        ...(after?.messages ?? []),
       ]
-      if (rows.length === 0) {
-        // No rows on either side: the history around (and beyond) the target is gone.
-        // Empty the window and clear a stale recorded tail (skipped if a mid-fetch
-        // broadcast raised a genuinely-reachable seq -- forward-fill will pull it).
-        deps.applyMessages(agentId, [], false)
-        deps.liveTail.resetToEmptyIfStale(agentId, liveSeqAtEntry)
-        return true
-      }
-      // One window swap. applyMessages sets hasMoreOlder from before.hasMore (more
-      // history exists below the loaded page) and defaults hasMoreNewer=false.
-      deps.applyMessages(agentId, rows, before.hasMore)
-      // Override hasMoreNewer: after.hasMore covers server rows past the page; the
-      // !caughtUpToLiveTail term (mirroring loadNewerPage) covers a live message that
-      // bumped the recorded tail during the fetch, so the window can't claim the tail.
-      setState('hasMoreNewer', agentId, after.hasMore || !deps.caughtUpToLiveTail(agentId))
+      batch(() => {
+        deps.setLandingRefillPages(agentId, atSequenceLimit ? 1 : 0)
+        if (rows.length === 0) {
+          // Clear the stale tail unless a broadcast raised it during the fetch.
+          deps.applyMessages(agentId, [], false)
+          deps.liveTail.resetToEmptyIfStale(agentId, liveSeqAtEntry)
+          return
+        }
+        deps.applyMessages(agentId, rows, before.hasMore)
+        // The recorded tail can advance during the fetch.
+        setState('hasMoreNewer', agentId, after?.hasMore === true || !deps.caughtUpToLiveTail(agentId))
+      })
       return true
     }, abortSignal)
   }

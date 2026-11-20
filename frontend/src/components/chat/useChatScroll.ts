@@ -4,7 +4,7 @@ import type { AnchorRow } from './chatScrollAnchor'
 import type { ChatScrollController } from './chatScrollPreserve'
 import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
 import type { AgentChatMessage, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
+import type { LandingRefillPages, SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
 import { trailingDebounce } from '~/lib/debounce'
 import { monotonicNow } from '~/lib/monotonicNow'
@@ -13,7 +13,7 @@ import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { messageIdOfRow } from './chatPendingRows'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
-import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
+import { cannotScroll, clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createHmrSettleWindow } from './chatScrollHmrSettleWindow'
 import { createScrollInput, isListScrollKey } from './chatScrollInput'
 import { createScrollInputActivity } from './chatScrollInputActivity'
@@ -472,12 +472,14 @@ export function computeBufferAwareKeepNewest(
 /**
  * The pagination action callbacks the host (TileRenderer -> ChatView) wires to the
  * store's windowing methods. Shared by `ChatViewProps` and `UseChatScrollOptions`
- * so the five-callback contract is declared once and can't drift between the two
+ * so the callback contract is declared once and can't drift between the two
  * layers. The boolean SIGNALS (hasOlder/hasNewer/fetching*) are deliberately NOT
  * shared: ChatView passes them as plain values while the hook takes accessors, so
  * their wrapper types genuinely differ.
  */
 export interface PaginationCallbacks {
+  /** Spend the remaining landing refill or clear the limit after reader input. */
+  onSetLandingRefillPages?: (pages: LandingRefillPages | undefined) => void
   /** Called when the user scrolls near the top and older messages should be loaded. */
   onLoadOlderMessages?: () => void
   /** Called when the user scrolls near the bottom and newer messages should be loaded. */
@@ -511,6 +513,7 @@ export interface PaginationCallbacks {
 
 export interface UseChatScrollOptions extends PaginationCallbacks {
   messages: Accessor<AgentChatMessage[]>
+  landingRefillPages?: Accessor<LandingRefillPages | undefined>
   messageVersion?: Accessor<number | undefined>
   agentWorking?: Accessor<boolean | undefined>
   /**
@@ -567,6 +570,8 @@ export interface UseChatScrollOptions extends PaginationCallbacks {
 export interface UseChatScrollResult {
   /** Whether the view is at the bottom of the content, as of the last position check. */
   atBottom: Accessor<boolean>
+  /** The current request to follow the live tail, including while its rows are pending. */
+  followRequestedTracked: Accessor<boolean>
   /**
    * Follow mode: the reader place is the tail (a tail that waits does not count), the tail
    * is loaded, the jump to the latest page of the request settled, and the view did not
@@ -854,6 +859,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // fling or a slow scroll resumes pre-fetching; the pause does not block the explicit
   // wheel/key-at-edge loads, so the user can always still page at the very edge.
   let bufferFillPaused = false
+  const landingRefillPages = () => untrack(() => opts.landingRefillPages?.())
+  const resumePrefetchAfterLanding = (): void => {
+    if (landingRefillPages() !== undefined)
+      opts.onSetLandingRefillPages?.(undefined)
+  }
   // DEV-SERVER-ONLY: the buffer fill of a mount after an HMR module swap waits until the
   // re-measure of the whole list settles (see createHmrSettleWindow). A move of the reader
   // and a command of the reader end the window sooner.
@@ -1398,6 +1408,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   function takeReaderInput(): void {
     if (awaitingFirstView())
       return
+    resumePrefetchAfterLanding()
     abandonHistoryJump()
   }
 
@@ -1514,6 +1525,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    */
   const retakeScrollControl = () => {
     bufferFillPaused = false
+    resumePrefetchAfterLanding()
     hmrSettle.end()
   }
 
@@ -1731,6 +1743,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // A move resumes the buffer-fill pre-fetch a forced stop OR the dev HMR settle
       // window paused (see cancelPendingScroll and createHmrSettleWindow).
       bufferFillPaused = false
+      resumePrefetchAfterLanding()
       hmrSettle.end()
       velocity.sample(st)
       const dir = inferScrollDirection(baseline, st)
@@ -2087,6 +2100,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // view at the top and paging older history to exhaustion (the reload climb-to-top
   // runaway). While the place of the mount waits for its rows, the filler fetches nothing
   // (see `placeWaits`), and it fills after the placement.
+  const loadBufferedPage = (load: () => boolean): void => {
+    if (landingRefillPages() === 1)
+      opts.onSetLandingRefillPages?.(0)
+    load()
+  }
+  const landingPrefetchPaused = (): boolean => {
+    const pages = landingRefillPages()
+    return pages === 0 || (pages === 1 && messageListRef !== undefined && !cannotScroll(messageListRef))
+  }
   const bufferFiller = createScrollBufferFiller({
     getEl: () => messageListRef,
     // Each geometry read below is untracked. The geometry and the layout shift change on
@@ -2100,15 +2122,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     hasNewer: hasNewerMessages,
     fetchingOlder: () => !!opts.fetchingOlder?.(),
     fetchingNewer: () => !!opts.fetchingNewer?.(),
-    onLoadOlder: loadOlderMessages,
-    onLoadNewer: loadNewerMessages,
+    onLoadOlder: () => loadBufferedPage(loadOlderMessages),
+    onLoadNewer: () => loadBufferedPage(loadNewerMessages),
     lastScrollDir: () => lastScrollDir,
-    paused: () => bufferFillPaused || hmrSettle.isSettling(),
+    paused: () => bufferFillPaused || hmrSettle.isSettling() || landingPrefetchPaused(),
     suppressOlder: paginationPolicy.suppressOlderPrefetchAtLiveTail,
     atCeiling: () => !!opts.atWindowCeiling?.(),
     stagedOlder,
     stagedNewer,
-    placeWaits: () => readerPlace().kind === 'waiting',
+    placeWaits: () => historyJump() !== null || readerPlace().kind === 'waiting',
     // Both sides' progress is measured against a stable reference row, not raw
     // scrollTop/distFromBottom, so a mid-fetch scroll in either direction can't mask a
     // productive load. The content top of the viewport-top row is the height ABOVE it, and
@@ -2268,6 +2290,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   return {
     atBottom,
+    followRequestedTracked: () => {
+      readerPlaceSignal()
+      return followRequested()
+    },
     isFollowing,
     isFollowingTracked,
     stalledOlder,

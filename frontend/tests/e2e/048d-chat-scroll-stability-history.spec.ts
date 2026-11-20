@@ -5,7 +5,7 @@ import { ROW_ALIGN_OFFSET_PX } from '~/components/chat/chatLayoutShift'
 import { MESSAGE_PAGE_LIMIT } from '../../src/generated/contracts/chat-history'
 import { test } from './fixtures'
 import { RAIL, RAIL_DOT } from './helpers/chatScrollRail'
-import { clearStoredChatHeightsAndRenders, expectNoVisibleHeightChange, expectRowMoved, expectStoredRowHeight, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { clearStoredChatHeightsAndRenders, expectNoVisibleHeightChange, expectRowMoved, expectStoredRowHeight, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordPremeasureCommits, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, waitForAgentStarted } from './helpers/ui'
 
@@ -132,7 +132,18 @@ test.describe('chat scroll stability while the history above the reader changes'
     // The target of the seek is the second prompt, so its page holds the rows of the first turn above it.
     const targetSeq = await readRowSeqWithText(page, 'Turn 2:')
     expect(targetSeq, 'the row of the second prompt is mounted').not.toBeNull()
-    const turns = await sendTurnsUntilPastOnePage(page, modelScript, Number(targetSeq), 2)
+    // Pick a newer prompt past the amount a 600px pane fetches for a seek.
+    let sent = 2
+    let skippedSeq = targetSeq!
+    while (Number(skippedSeq) <= Number(targetSeq) + 16) {
+      sent++
+      expect(sent).toBeLessThanOrEqual(MAX_SEED_TURNS)
+      await sendScriptedTurn(page, modelScript, shortTurn(sent))
+      const seq = await readRowSeqWithText(page, `Turn ${sent}:`)
+      expect(seq, 'the candidate prompt is mounted').not.toBeNull()
+      skippedSeq = seq!
+    }
+    const turns = await sendTurnsUntilPastOnePage(page, modelScript, Number(skippedSeq), sent)
 
     // Open the chat again as a browser does that never showed it. No row has a stored height then, so the rows of the
     // page of the seek measure for the first time.
@@ -144,6 +155,7 @@ test.describe('chat scroll stability while the history above the reader changes'
     await expect(userBubbles(page).filter({ hasText: 'Turn 2:' }), 'the second prompt is not loaded').toHaveCount(0)
 
     const mark = page.locator(`${RAIL_DOT}[data-seq="${targetSeq}"]`)
+    const premeasure = await recordPremeasureCommits(page)
     // Hover first: the pointer on the strip keeps the rail lit for the click.
     await mark.hover()
     await expect(page.locator(RAIL)).toHaveCSS('opacity', '1')
@@ -163,6 +175,7 @@ test.describe('chat scroll stability while the history above the reader changes'
     await expect(userBubbles(page).filter({ hasText: 'Turn 1:' }), 'the first turn joins the list above the prompt').toHaveCount(1)
     await waitForScrollRest(page)
     expect(await distanceFromPlace(), 'the prompt stays where it landed').toBeLessThanOrEqual(1)
+    expect(await premeasure.commitOf(skippedSeq), 'the browser leaves the distant prompt for normal scrolling').toBeNull()
   })
 
   test('keeps every row in view mounted while an older page with stored heights arrives', async ({ page, authenticatedWorkspace, modelScript }) => {

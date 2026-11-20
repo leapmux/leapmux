@@ -1661,7 +1661,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: BigInt(MESSAGE_PAGE_LIMIT + 99),
-            limit: MESSAGE_PAGE_LIMIT,
+            limit: 2,
           }, { signal })
           dispose()
         })
@@ -3102,7 +3102,7 @@ describe('createChatStore', () => {
           // The request carries the signal of the fetch, so an abort ends it at the transport.
           expect(mockListAgentMessages).toHaveBeenCalledWith(
             'w1',
-            { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT },
+            { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: 16 },
             {
               signal: expect.any(AbortSignal),
             },
@@ -3402,7 +3402,7 @@ describe('createChatStore', () => {
           // The request carries the signal of the fetch, so an abort ends it at the transport.
           expect(mockListAgentMessages).toHaveBeenCalledWith(
             'w1',
-            { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT },
+            { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: 16 },
             {
               signal: expect.any(AbortSignal),
             },

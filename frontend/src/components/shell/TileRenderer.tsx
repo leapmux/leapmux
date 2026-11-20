@@ -1136,6 +1136,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       onTrimOldMessages: minKeep => chatStore.trimOldestToViewport(agentId, minKeep),
                       hasNewerMessages: chatStore.hasNewerMessages(agentId),
                       fetchingNewer: chatStore.isFetchingNewer(agentId),
+                      landingRefillPages: chatStore.landingRefillPages.get(agentId),
+                      onSetLandingRefillPages: pages => chatStore.landingRefillPages.set(agentId, pages),
                       atWindowCeiling: chatStore.atWindowCeiling(agentId),
                       onLoadNewerMessages: () => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId),
                       onJumpToLatest: signal => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId, signal),
@@ -1152,6 +1154,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     // entry back for a dead agent, while a workspace switch-away (which
                     // only scopes the tab out) still saves. See saveViewportScrollForRemount.
                     onSaveViewportScroll={state => chatStore.saveViewportScrollForRemount(agentId, state)}
+                    onViewportChange={(height, followsTail) => chatStore.reportViewport(agentId, height, followsTail)}
                     onScrollApiReady={(api) => {
                       agentScrollStates.set(agentId, api.getScrollState)
                       agentScrollToBottoms.set(agentId, api.forceScrollToBottom)

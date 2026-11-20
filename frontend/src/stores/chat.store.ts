@@ -3,7 +3,7 @@ import type { ChatRailData } from './chatMessageMarks'
 import type { PromptSuggestion } from './chatPromptSuggestion'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { TurnRetryOffer } from './chatTurnRetryOffer'
-import type { SavedViewportScroll } from './chatTypes'
+import type { LandingRefillPages, SavedViewportScroll } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity, ToolSpanSide } from '~/lib/messageSpan'
 import { toBinary } from '@bufbuild/protobuf'
@@ -11,7 +11,7 @@ import { batch, untrack } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
 import { invalidateMessageClassificationCache } from '~/components/chat/messageClassifier'
-import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
+import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
@@ -32,12 +32,10 @@ import { createToolProgressStore } from './chatToolProgress'
 import { createTurnRetryOfferStore } from './chatTurnRetryOffer'
 
 /**
- * Limit the loaded messages in a visible agent window.
- * CATCH_UP_GAP_LIMIT supplies this limit and controls when reconciliation loads the latest page instead of draining a large gap.
- * The window removes older rows while following the live tail. See contracts/chat-history.json.
- * This value also sets the eight-times ceiling, so a catch-up limit change changes the maximum memory for each tab.
+ * Limit the loaded messages while following the live tail. The reader can scroll
+ * through this retained history before the buffer fetches an older page.
  */
-export const MAX_LOADED_CHAT_MESSAGES = Number(CATCH_UP_GAP_LIMIT)
+export const MAX_LOADED_CHAT_MESSAGES = 150
 
 /** What happened to messages that a resolver may hold outside the loaded window. */
 export type ChatWindowChange
@@ -191,6 +189,9 @@ export function createChatStore() {
   // - clear.
   // It has no additional domain logic, so use createPerAgentStore directly.
   const viewportScroll = createPerAgentStore<SavedViewportScroll | undefined>(undefined)
+  const landingRefillPages = createPerAgentStore<LandingRefillPages | undefined>(undefined)
+  // Keep the last visible viewport available while its pane is hidden.
+  const visibleViewports = new Map<string, { height: number, followsTail: boolean }>()
   // Track the highest observed server sequence, including messages outside the loaded window.
   // createLiveTailTracker owns its increase, reconciliation, and removal rules.
   const liveTail = createLiveTailTracker()
@@ -295,6 +296,7 @@ export function createChatStore() {
     }))
     // Drop the agent's entry in each composed per-agent sub-store.
     liveTail.forget(agentId)
+    visibleViewports.delete(agentId)
     messageMarks.forget(agentId)
     markSeeder.forget(agentId)
     // The hover-preview cache survives scroll-rail remounts because it belongs to the module.
@@ -310,6 +312,7 @@ export function createChatStore() {
     liveCompaction.clear(agentId)
     promptSuggestion.clear(agentId)
     viewportScroll.remove(agentId)
+    landingRefillPages.remove(agentId)
   }
 
   /**
@@ -985,6 +988,7 @@ export function createChatStore() {
     runHistoryFetch: historyFetches.runHistoryFetch,
     mergeFetchedMessages,
     applyMessages,
+    setLandingRefillPages: landingRefillPages.set,
     liveTail,
     maxLoaded: MAX_LOADED_CHAT_MESSAGES,
     maxLoadedCeiling: MAX_LOADED_CHAT_MESSAGES_CEILING,
@@ -993,6 +997,7 @@ export function createChatStore() {
     getFirstMessageSeq: agentId => firstMessageSeq(state.messagesByAgent[agentId] ?? []),
     getLastMessageSeq: agentId => lastMessageSeq(state.messagesByAgent[agentId] ?? []),
     caughtUpToLiveTail: agentId => baseStore.caughtUpToLiveTail(agentId),
+    getViewportHeight: agentId => visibleViewports.get(agentId)?.height,
     addMessage: (agentId, message) => baseStore.addMessage(agentId, message),
     trimOldestEnd: (agentId, maxCount) => baseStore.trimOldestEnd(agentId, maxCount),
     trimNewestEnd: (agentId, maxCount) => baseStore.trimNewestEnd(agentId, maxCount),
@@ -1014,6 +1019,20 @@ export function createChatStore() {
     backgroundTasks,
     goal,
     viewportScroll,
+    landingRefillPages,
+    reportViewport(agentId: string, height: number, followsTail: boolean) {
+      if (Number.isFinite(height) && height > 0)
+        visibleViewports.set(agentId, { height, followsTail })
+    },
+    keepsReadingPosition(agentId: string): boolean {
+      const saved = viewportScroll.get(agentId)
+      return saved === undefined
+        ? visibleViewports.get(agentId)?.followsTail === false
+        : !saved.atBottom
+    },
+    keepHistoryWindow(agentId: string) {
+      setState('hasMoreNewer', agentId, true)
+    },
     /**
      * Return reactive scroll-rail data for this agent:
      * - The marked sequences.

@@ -452,6 +452,13 @@ describe('checkChatHistory', () => {
     })).not.toThrow()
   })
 
+  it('rejects a catch-up gap above two pages', () => {
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: 2 * CHAT_HISTORY.messagePageLimit + 1 }),
+      'catchUpGapLimit must fit in two message pages',
+    )
+  })
+
   it('rejects fractional limits', () => {
     expectContractError(
       () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 1.5 }),
@@ -601,10 +608,10 @@ describe('emitters', () => {
   it('emits the chat history limits for Go and TypeScript', () => {
     const go = emitGoChatHistory(CHAT_HISTORY)
     expect(go).toContain('MessagePageLimit = 50')
-    expect(go).toContain('CatchUpGapLimit  = 150')
+    expect(go).toContain('CatchUpGapLimit  = 100')
     const ts = emitTsChatHistory(CHAT_HISTORY)
     expect(ts).toContain('MESSAGE_PAGE_LIMIT = 50 as const')
-    expect(ts).toContain('CATCH_UP_GAP_LIMIT = 150n')
+    expect(ts).toContain('CATCH_UP_GAP_LIMIT = 100n')
   })
 
   it('emits the multiplier on the Go side too, so both sides can consume it', () => {

@@ -125,6 +125,10 @@ export function clearOfflineAgentState(
   clearPerTurnLiveState(agentId, stores)
 }
 
+function needsTailReanchor(lastSeq: bigint, liveSeq: bigint, mayReplaceWindow: boolean): boolean {
+  return lastSeq === 0n || (mayReplaceWindow && exceedsCatchUpGapLimit(liveSeq, lastSeq))
+}
+
 export function reconcileLaggingTails(deps: {
   agentTabs: () => ReadonlyArray<{ id: string, workerId: string }>
   hasNewerMessages: (agentId: string) => boolean
@@ -133,6 +137,9 @@ export function reconcileLaggingTails(deps: {
   getLastSeq: (agentId: string) => bigint
   getLiveTailSeq: (agentId: string) => bigint
   isFetchingNewer: (agentId: string) => boolean
+  isReplaying: (agentId: string) => boolean
+  keepsReadingPosition: (agentId: string) => boolean
+  keepHistoryWindow: (agentId: string) => void
   catchUpToTail: (workerId: string, agentId: string, afterSeq: bigint) => void
   resumeDeferredTailFill: (workerId: string, agentId: string) => void
   jumpToLatest: (workerId: string, agentId: string) => void
@@ -140,8 +147,7 @@ export function reconcileLaggingTails(deps: {
   for (const tab of deps.agentTabs()) {
     if (!tab.workerId)
       continue
-    const caughtUp = deps.caughtUpToLiveTail(tab.id)
-    if (caughtUp)
+    if (deps.caughtUpToLiveTail(tab.id) || deps.isFetchingNewer(tab.id))
       continue
     const lastSeq = deps.getLastSeq(tab.id)
     const atTail = !deps.hasNewerMessages(tab.id)
@@ -150,11 +156,16 @@ export function reconcileLaggingTails(deps: {
     // Forward paging and deferred catch-up cannot cross a gap that large.
     // Retain a history window that the user chose by scrolling away from the tail.
     // The user can return through normal history paging.
-    if (lastSeq === 0n || (exceedsCatchUpGapLimit(deps.getLiveTailSeq(tab.id), lastSeq) && (atTail || deferred))) {
-      if (!deps.isFetchingNewer(tab.id))
+    if (needsTailReanchor(lastSeq, deps.getLiveTailSeq(tab.id), atTail || deferred)) {
+      if (lastSeq > 0n && !deferred && deps.keepsReadingPosition(tab.id))
+        deps.keepHistoryWindow(tab.id)
+      else
         deps.jumpToLatest(tab.workerId, tab.id)
       continue
     }
+    // WatchEvents supplies the first page of a small gap. Read any remainder after replay.
+    if (deps.isReplaying(tab.id))
+      continue
     if (atTail)
       deps.catchUpToTail(tab.workerId, tab.id, lastSeq)
     else if (deferred)
@@ -574,8 +585,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         })
         break
       }
-      case 'catchUpStart':
+      case 'catchUpStart': {
         chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTail)
+        // Refresh revisions only when the browser will retain the loaded window.
+        // The latest page of a re-anchor supplies fresh copies of its own rows.
+        if (requested && requested.cursorSeq > 0n && chatStore.isInitialLoadComplete(agentId)) {
+          const deferred = chatStore.isTailFillDeferred(agentId)
+          const mayReplaceWindow = deferred || (!chatStore.hasNewerMessages(agentId) && !chatStore.keepsReadingPosition(agentId))
+          const willReanchor = needsTailReanchor(chatStore.getLastSeq(agentId), chatStore.liveTail.get(agentId), mayReplaceWindow)
+          const signal = agentReplaySignal(streamWorkerId, agentId)
+          if (!willReanchor && signal && !signal.aborted)
+            void chatStore.refreshLoadedMessages(streamWorkerId, agentId, signal).catch(warnChatHistoryLoadFailed)
+        }
         // Restore an unclaimed valid activity level without an alert.
         // A valid live publication retains its activity claim until replay ends.
         // Tail reconciliation still applies when that claim refuses the older baseline.
@@ -583,18 +604,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if (!requested?.liveClaims.has('activity') && isPublishedActivityState(inner.value.activityState))
           agentActivityStore.seedPublished(agentId, inner.value.activityState)
         break
+      }
       case 'catchUpComplete':
         requested?.liveClaims.clear()
         agentSessionStore.retireReplay(agentId, replayId)
-        chatStore.setCatchingUp(agentId, false)
-        chatStore.reconcileAuthoritativeTail(
-          agentId,
-          inner.value.latestSeq,
-          inner.value.startTailSeq === undefined
-            ? resumeTail
-            : inner.value.startTailSeq,
-          true,
-        )
+        batch(() => {
+          chatStore.reconcileAuthoritativeTail(
+            agentId,
+            inner.value.latestSeq,
+            inner.value.startTailSeq === undefined
+              ? resumeTail
+              : inner.value.startTailSeq,
+            true,
+          )
+          chatStore.setCatchingUp(agentId, false)
+        })
         void chatStore.loadMessageMarks(
           view.getAgentTab(agentId)?.workerId ?? '',
           agentId,
@@ -787,10 +811,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const signal = agentReplaySignal(workerId, agentId)
         if (!signal || signal.aborted)
           continue
-        const load = chatStore.isInitialLoadComplete(agentId)
-          ? chatStore.refreshLoadedMessages(workerId, agentId, signal)
-          : chatStore.loadInitialMessages(workerId, agentId)
-        void load.catch(warnChatHistoryLoadFailed)
+        if (!chatStore.isInitialLoadComplete(agentId))
+          void chatStore.loadInitialMessages(workerId, agentId).catch(warnChatHistoryLoadFailed)
         void chatStore.loadMessageMarks(workerId, agentId, abortSignalFor(workerId))
       }
     },
@@ -858,6 +880,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     getLastSeq: id => chatStore.getLastSeq(id),
     getLiveTailSeq: id => chatStore.liveTail.get(id),
     isFetchingNewer: id => chatStore.isFetchingNewer(id),
+    isReplaying: id => chatStore.state.catchingUp[id] === true,
+    keepsReadingPosition: chatStore.keepsReadingPosition,
+    keepHistoryWindow: chatStore.keepHistoryWindow,
     catchUpToTail: (workerId, agentId, afterSeq) => {
       void chatStore.catchUpToTail(workerId, agentId, afterSeq, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)
     },

@@ -370,6 +370,7 @@ vi.mock('./useChatScroll', async () => {
           onPointerCancel: vi.fn(),
         },
         atBottom: () => true,
+        followRequestedTracked: isFollowing,
         // As the real hook does: `isFollowing` gives its caller no dependency on follow
         // mode, and only the tracked accessor runs a memo again.
         isFollowing: () => untrack(isFollowing),
@@ -5396,6 +5397,23 @@ describe('chat view virtualized with stubbed deps', () => {
   })
 
   describe('chat view scroll bindings', () => {
+    it('reports the visible pane height and its live-tail request', () => {
+      const onViewportChange = vi.fn()
+      const [active, setActive] = createSignal(true)
+      render(() => <ChatView messages={[]} tabActive={active()} onViewportChange={onViewportChange} />)
+      viewportSizeObserverState.onHeight!(400)
+      expect(onViewportChange).toHaveBeenLastCalledWith(400, true)
+
+      mockState.setIsFollowing!(false)
+      viewportSizeObserverState.onHeight!(1200)
+      expect(onViewportChange).toHaveBeenLastCalledWith(1200, false)
+
+      setActive(false)
+      onViewportChange.mockClear()
+      viewportSizeObserverState.onHeight!(0)
+      expect(onViewportChange).not.toHaveBeenCalled()
+    })
+
     it('writes a toggle without a scroll call', async () => {
       virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (

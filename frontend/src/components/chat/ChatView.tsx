@@ -13,6 +13,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { LiveCompaction } from '~/stores/chatCompaction'
 import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
+import type { LandingRefillPages } from '~/stores/chatTypes'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
@@ -134,6 +135,7 @@ export interface ChatScrollApi {
  * share the same object -- see PaginationCallbacks).
  */
 export interface ChatPaginationProps extends PaginationCallbacks {
+  landingRefillPages?: LandingRefillPages | undefined
   /** Whether there are older messages available to fetch. */
   hasOlderMessages?: boolean
   /** Whether a fetch for older messages is in progress. */
@@ -255,6 +257,7 @@ interface ChatViewProps {
    * unmount (its tab-switch save must survive).
    */
   onSaveViewportScroll?: (state: ChatScrollState) => void
+  onViewportChange?: (height: number, followsTail: boolean) => void
   /**
    * Receives the imperative scroll API once the chat viewport mounts.
    * The host (TileRenderer) needs this for tab-switch viewport save,
@@ -1011,6 +1014,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     onTrimOldMessages: minKeep => props.pagination?.onTrimOldMessages?.(minKeep),
     hasNewerMessages: () => props.pagination?.hasNewerMessages,
     fetchingNewer: () => props.pagination?.fetchingNewer,
+    landingRefillPages: () => props.pagination?.landingRefillPages,
+    onSetLandingRefillPages: pages => props.pagination?.onSetLandingRefillPages?.(pages),
     atWindowCeiling: () => props.pagination?.atWindowCeiling,
     onLoadNewerMessages: () => props.pagination?.onLoadNewerMessages?.(),
     onJumpToLatest: signal => props.pagination?.onJumpToLatest?.(signal),
@@ -1031,6 +1036,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Now that the scroll hook (which owns follow mode) exists, point the virtualizer's
   // bottom pin and the getter of the admission at it (see `scrollHook` above).
   scrollHook = scroll
+  createEffect(() => {
+    const report = props.onViewportChange
+    const height = viewportHeight()
+    if (report && !scroll.paneHidden() && props.tabActive && height > 0)
+      report(height, scroll.followRequestedTracked())
+  })
 
   // Resolve which scrollbar owns the viewport ONCE, here -- ChatView holds the single
   // viewport CONTENT-box height (viewportHeight(), the ResizeObserver's contentRect, the same

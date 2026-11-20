@@ -13,7 +13,7 @@ import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchEventsViaChannel, workerAgent } from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessagePageAnchor, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import {
@@ -1850,10 +1850,13 @@ describe('reconcileLaggingTails', () => {
     getLastSeq?: (id: string) => bigint
     getLiveTailSeq?: (id: string) => bigint
     isFetchingNewer?: (id: string) => boolean
+    isReplaying?: (id: string) => boolean
+    keepsReadingPosition?: (id: string) => boolean
   }) {
     const catchUp: Array<{ workerId: string, agentId: string, afterSeq: bigint }> = []
     const resume: Array<{ workerId: string, agentId: string }> = []
     const jumps: Array<{ workerId: string, agentId: string }> = []
+    const kept: string[] = []
     reconcileLaggingTails({
       agentTabs: () => overrides.agentTabs,
       hasNewerMessages: overrides.hasNewerMessages ?? (() => false),
@@ -1863,11 +1866,14 @@ describe('reconcileLaggingTails', () => {
       getLastSeq: overrides.getLastSeq ?? (() => 1n),
       getLiveTailSeq: overrides.getLiveTailSeq ?? (() => 1n),
       isFetchingNewer: overrides.isFetchingNewer ?? (() => false),
+      isReplaying: overrides.isReplaying ?? (() => false),
+      keepsReadingPosition: overrides.keepsReadingPosition ?? (() => false),
+      keepHistoryWindow: id => kept.push(id),
       catchUpToTail: (workerId, agentId, afterSeq) => catchUp.push({ workerId, agentId, afterSeq }),
       resumeDeferredTailFill: (workerId, agentId) => resume.push({ workerId, agentId }),
       jumpToLatest: (workerId, agentId) => jumps.push({ workerId, agentId }),
     })
-    return { catchUp, resume, jumps }
+    return { catchUp, resume, jumps, kept }
   }
 
   it('forward-fills ONLY an agent that lags its live tail while AT the tail', () => {
@@ -1920,6 +1926,38 @@ describe('reconcileLaggingTails', () => {
       { workerId: 'w1', agentId: 'a', afterSeq: 10n },
       { workerId: 'w2', agentId: 'b', afterSeq: 20n },
     ])
+  })
+
+  it('lets watch replay supply a short gap before fetching the remainder', () => {
+    const agentTabs = [
+      { id: 'a', workerId: 'w1' },
+    ]
+    const options = {
+      agentTabs,
+      caughtUpToLiveTail: () => false,
+      getLiveTailSeq: () => 30n,
+    }
+    expect(run({
+      ...options,
+      isReplaying: () => true,
+    }).catchUp).toEqual([])
+    expect(run(options).catchUp).toEqual([
+      { workerId: 'w1', agentId: 'a', afterSeq: 1n },
+    ])
+  })
+
+  it('keeps a scrolled-up window when the worker skips a large gap', () => {
+    const { kept, jumps, catchUp } = run({
+      agentTabs: [
+        { id: 'a', workerId: 'w1' },
+      ],
+      keepsReadingPosition: () => true,
+      caughtUpToLiveTail: () => false,
+      getLiveTailSeq: () => CATCH_UP_GAP_LIMIT + 2n,
+    })
+    expect(kept).toEqual(['a'])
+    expect(jumps).toEqual([])
+    expect(catchUp).toEqual([])
   })
 
   it('resumes an exhaustion-forced deferred fill, but not a plain scrolled-away wall', () => {
@@ -5067,16 +5105,24 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
   })
 
-  it('refreshes a loaded row revision when its watch returns to full delivery', async () => {
+  it.each([
+    { gap: 0n, anchor: MessagePageAnchor.AFTER, limit: 1 },
+    { gap: CATCH_UP_GAP_LIMIT + 1n, anchor: MessagePageAnchor.LATEST, limit: 24 },
+  ])('reads the needed history when its watch returns with a sequence gap of $gap', async ({ gap, anchor, limit }) => {
     const state = mountReplay({ seq: 7n })
     await flushStream()
+    state.chatStore.reportViewport('a1', 1152, true)
+    state.chatStore.reportViewport('a1', 0, false)
     const original = state.chatStore.getMessages('a1')[0]!
-    vi.mocked(workerAgent.listAgentMessages).mockResolvedValue(create(ListAgentMessagesResponseSchema, {
-      messages: [
-        { ...original, completion: MessageCompletion.INTERRUPTED, supplementalRevision: 1n },
-      ],
+    const latestSeq = 7n + gap
+    const returned = gap === 0n
+      ? { ...original, completion: MessageCompletion.INTERRUPTED, supplementalRevision: 1n }
+      : create(AgentChatMessageSchema, { id: 'newest', seq: latestSeq, source: MessageSource.USER })
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+      messages: [returned],
       hasMore: false,
-      latestSeq: 7n,
+      latestSeq,
     }))
     const handle = state.handles[0]!
     const emitResponse = vi.mocked(handle.handle.onEvent).mock.calls[0]?.[0]
@@ -5090,21 +5136,21 @@ describe('useWorkspaceConnection replay ownership', () => {
         },
       },
     }))
+    handle.emit(receivedEvent({
+      agentId: 'a1',
+      replay: true,
+      replayId: handle.requestId(),
+      event: {
+        case: 'catchUpStart',
+        value: { latestSeq },
+      },
+    }))
     await flushStream()
-    expect(state.chatStore.getMessages('a1').map(message => [
-      message.id,
-      message.seq,
-      message.completion,
-      message.supplementalRevision,
-    ]))
-      .toEqual([
-        [
-          'initial',
-          7n,
-          MessageCompletion.INTERRUPTED,
-          1n,
-        ],
-      ])
+    expect(listMessages).toHaveBeenCalledExactlyOnceWith('w1', expect.objectContaining({ anchor, limit }), expect.anything())
+    expect(state.chatStore.getMessages('a1')).toEqual([returned])
+    expect(state.chatStore.landingRefillPages.get('a1')).toBe(anchor === MessagePageAnchor.LATEST
+      ? 1
+      : undefined)
   })
 
   it('retains the transmitted cursor when live rows precede the ACK', async () => {
