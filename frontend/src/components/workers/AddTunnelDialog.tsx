@@ -4,7 +4,7 @@ import type { TunnelKeyApproval } from '~/api/workerRpc'
 import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
-import { TunnelKeyApprovalExpiredError } from '~/api/workerRpc'
+import { TunnelKeyApprovalExpiredError, TunnelKeyPinMissingError } from '~/api/workerRpc'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
@@ -15,12 +15,15 @@ import { formatErrorMessage } from '~/lib/errors'
 import { isLoopbackAddress, isValidPort, normalizeBindAddr } from '~/lib/ipAddress'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './AddTunnelDialog.css'
-import { verifyWorkerKey } from './verifyWorkerKey'
+import { trustWorkerOnFirstContact, verifyWorkerKey, WorkerKeyPinMissingError, WorkerKeyPinPresentError } from './verifyWorkerKey'
 
 export interface AddTunnelTarget {
   worker: Worker
   scope: WorkerTrustScope
-  replacement?: { config: TunnelConfig, approval: TunnelKeyApproval }
+  replacement?: { config: TunnelConfig } & (
+    | { approval: TunnelKeyApproval, firstContactRequired?: never }
+    | { approval?: never, firstContactRequired: true }
+  )
 }
 
 interface AddTunnelDialogProps {
@@ -32,6 +35,7 @@ interface AddTunnelDialogProps {
 type FormTrust
   = | { kind: 'ordinary' }
     | { kind: 'needsReview' }
+    | { kind: 'needsFirstContact' }
     | { kind: 'approved', approval: TunnelKeyApproval }
 
 export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
@@ -50,9 +54,11 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   const [bindPort, setBindPort] = createSignal(original
     ? String(original.bindPort)
     : '')
-  const [trust, setTrust] = createSignal<FormTrust>(target.replacement
-    ? { kind: 'approved', approval: target.replacement.approval }
-    : { kind: 'ordinary' })
+  const [trust, setTrust] = createSignal<FormTrust>(target.replacement?.firstContactRequired
+    ? { kind: 'needsFirstContact' }
+    : target.replacement?.approval
+      ? { kind: 'approved', approval: target.replacement.approval }
+      : { kind: 'ordinary' })
   const [submissionError, setSubmissionError] = createSignal<string | null>(null)
   const [mismatch, setMismatch] = createSignal<TunnelKeyMismatch | null>(null)
   const [verifying, setVerifying] = createSignal(false)
@@ -64,7 +70,9 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
     onError: (err) => {
       if (!identityIsLive())
         return
-      if (err instanceof TunnelKeyApprovalExpiredError)
+      if (err instanceof TunnelKeyPinMissingError)
+        setTrust({ kind: 'needsFirstContact' })
+      else if (err instanceof TunnelKeyApprovalExpiredError)
         setTrust({ kind: 'needsReview' })
       setSubmissionError(formatErrorMessage(err, 'Could not create the tunnel. Adjust the fields and try again.'))
     },
@@ -122,7 +130,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   })
 
   const isDisabled = createMemo(() => {
-    if (submitting.loading() || verifying() || trust().kind === 'needsReview')
+    if (submitting.loading() || verifying() || trust().kind === 'needsReview' || trust().kind === 'needsFirstContact')
       return true
     if (bindAddrError() || bindPortError())
       return true
@@ -130,20 +138,30 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   })
 
   const handleVerify = async () => {
-    if (!identityIsLive() || verifying() || trust().kind !== 'needsReview')
+    const currentTrust = trust()
+    if (!identityIsLive() || verifying()
+      || (currentTrust.kind !== 'needsReview' && currentTrust.kind !== 'needsFirstContact')) {
       return
+    }
     setVerifying(true)
     setSubmissionError(null)
     try {
-      const approval = await verifyWorkerKey(workerId, scope, reviewLifetime.signal)
+      const approval = currentTrust.kind === 'needsFirstContact'
+        ? await trustWorkerOnFirstContact(workerId, scope, reviewLifetime.signal)
+        : await verifyWorkerKey(workerId, scope, reviewLifetime.signal)
       if (!identityIsLive())
         return
       setTrust({ kind: 'approved', approval })
       setMismatch(null)
     }
     catch (err) {
-      if (identityIsLive())
+      if (identityIsLive()) {
+        if (err instanceof WorkerKeyPinMissingError)
+          setTrust({ kind: 'needsFirstContact' })
+        else if (err instanceof WorkerKeyPinPresentError)
+          setTrust({ kind: 'needsReview' })
         setSubmissionError(formatErrorMessage(err, 'Could not verify the Worker key.'))
+      }
     }
     finally {
       if (identityIsLive())
@@ -155,7 +173,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
     if (!identityIsLive() || !tunnelStore)
       return
     const currentTrust = trust()
-    if (currentTrust.kind === 'needsReview')
+    if (currentTrust.kind === 'needsReview' || currentTrust.kind === 'needsFirstContact')
       return
 
     setSubmissionError(null)
@@ -318,6 +336,24 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
             >
               <Show when={verifying()}><Spinner /></Show>
               Verify Worker key
+            </button>
+          </div>
+        </Show>
+
+        <Show when={trust().kind === 'needsFirstContact'}>
+          <div class={styles.trustRow}>
+            <p>
+              The stored Worker key was removed. Establish trust deliberately for the key in the Hub's first announcement. Create remains a separate action after the proof.
+            </p>
+            <button
+              type="button"
+              class="outline"
+              disabled={verifying()}
+              onClick={handleVerify}
+              data-testid="tunnel-trust-first-contact"
+            >
+              <Show when={verifying()}><Spinner /></Show>
+              Trust Worker on first contact
             </button>
           </div>
         </Show>

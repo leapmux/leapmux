@@ -932,6 +932,18 @@ func (a *App) CreateTunnel(requestCtx context.Context, config TunnelConfig) (*Tu
 		return nil, fmt.Errorf("not connected")
 	}
 	config.HubURL = connection.proxy.baseURL
+	if (config.HubCookieHeader == "") != (config.HubCookieOrigin == "") {
+		unlock()
+		return nil, fmt.Errorf("the Hub cookie and its source origin must be supplied together")
+	}
+	if config.HubCookieHeader != "" {
+		cookieOrigin, parseErr := url.Parse(config.HubCookieOrigin)
+		if parseErr != nil || !sameHubOrigin(cookieOrigin, connection.proxy.base) {
+			unlock()
+			return nil, fmt.Errorf("the Hub cookie source does not match the current connection")
+		}
+		config.channelOptions, config.credentialKey = connection.proxy.tunnelChannelOptions(config.HubCookieHeader)
+	}
 	lifetimeCtx := connection.ctx
 	// The returned unlock, not a bare RUnlock: mixing the two here is what
 	// acquireLifecycleRLock's doc says the helper exists to prevent, and a

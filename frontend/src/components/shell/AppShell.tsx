@@ -24,6 +24,7 @@ import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transpor
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { BootSplash } from '~/components/common/BootSplash'
+import { TunnelResetRecovery } from '~/components/common/TunnelResetRecovery'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { focusedTerminalId, setTerminalScreenSink, writeToFocusedTerminal } from '~/components/terminal/TerminalView'
@@ -1886,6 +1887,7 @@ export const AppShell: Component = () => {
   return (
     <AvailableProvidersContext.Provider value={agentOps.providerStore}>
       <TunnelProvider store={workerSection.tunnelStore}>
+        <TunnelResetRecovery />
         {/*
         Rendered unconditionally. There used to be a "workspace not found" case
         here, for a URL identifying a workspace the user does not own. No URL identifies

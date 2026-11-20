@@ -124,6 +124,13 @@ export class TunnelKeyApprovalExpiredError extends Error {
   }
 }
 
+export class TunnelKeyPinMissingError extends Error {
+  constructor() {
+    super('The approved Worker key was removed. Establish first-contact trust again.')
+    this.name = 'TunnelKeyPinMissingError'
+  }
+}
+
 function requireTunnelTrustAccount(scope: WorkerTrustScope): string {
   scope.signal.throwIfAborted()
   if (!scope.userId || getCurrentWorkerTrustScope() !== scope)
@@ -143,6 +150,8 @@ export async function resolveTunnelTrust(workerId: string, scope: WorkerTrustSco
   const { pin, removalRevision } = await readWorkerKeyPin(workerId, storageScope)
   requireTunnelTrustAccount(scope)
   if (approval) {
+    if (pin === null)
+      throw new TunnelKeyPinMissingError()
     if (removalRevision !== approval.pinSnapshot.removalRevision
       || pin?.publicKeyHex !== approval.pinSnapshot.pin?.publicKeyHex
       || pin?.firstSeen !== approval.pinSnapshot.pin?.firstSeen) {
@@ -164,8 +173,23 @@ export async function resolveTunnelTrust(workerId: string, scope: WorkerTrustSco
 }
 
 export async function refreshWorkerTrustForTunnel(workerId: string, scope: WorkerTrustScope, operationSignal?: AbortSignal): Promise<TunnelKeyApproval> {
+  return reviewWorkerTrustForTunnel(workerId, scope, operationSignal, false)
+}
+
+export async function establishWorkerTrustForTunnel(workerId: string, scope: WorkerTrustScope, operationSignal?: AbortSignal): Promise<TunnelKeyApproval> {
+  return reviewWorkerTrustForTunnel(workerId, scope, operationSignal, true)
+}
+
+async function reviewWorkerTrustForTunnel(
+  workerId: string,
+  scope: WorkerTrustScope,
+  operationSignal: AbortSignal | undefined,
+  firstContact: boolean,
+): Promise<TunnelKeyApproval> {
   const expectedUserId = requireTunnelTrustAccount(scope)
-  const review = await channelManager.openChannelForKeyReview(workerId, operationSignal)
+  const review = firstContact
+    ? await channelManager.openChannelForFirstContactReview(workerId, operationSignal)
+    : await channelManager.openChannelForKeyReview(workerId, operationSignal)
   requireTunnelTrustAccount(scope)
   if (review.scope !== scope)
     throw new TunnelKeyApprovalExpiredError()

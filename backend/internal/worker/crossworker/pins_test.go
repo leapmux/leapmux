@@ -22,7 +22,7 @@ func TestWorkerPins_AutoPinOnFirstContact(t *testing.T) {
 	commit, err := store.Resolve(ctx, "target-worker", []byte("x"), []byte("m"), []byte("s"))
 	require.NoError(t, err)
 	require.NoError(t, commit(ctx))
-	pins, err := store.List(ctx)
+	pins, err := store.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Contains(t, pins, "target-worker")
 }
@@ -36,7 +36,7 @@ func TestWorkerPins_ResolveAloneRecordsNoPin(t *testing.T) {
 	_, err = store.Resolve(ctx, "target-worker", []byte("x"), []byte("m"), []byte("s"))
 	require.NoError(t, err)
 
-	pins, err := store.List(ctx)
+	pins, err := store.Snapshot(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, pins)
 }
@@ -79,7 +79,7 @@ func TestWorkerPins_RemovePreservesUnrelatedPins(t *testing.T) {
 	}
 
 	require.NoError(t, store.Remove(ctx, "worker-A"))
-	pins, err := store.List(ctx)
+	pins, err := store.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Contains(t, pins, "worker-B")
 	assert.NotContains(t, pins, "worker-A")
@@ -94,7 +94,7 @@ func TestWorkerPins_ListSurfacesAnUnreadableFile(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "cross_worker_pins.json"), []byte("{ not json"), 0o600))
 
-	_, err = store.List(context.Background())
+	_, err = store.Snapshot(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse pins")
 }
@@ -110,7 +110,7 @@ func TestWorkerPins_PersistsAcrossOpens(t *testing.T) {
 
 	second, err := crossworker.NewPinStore(dir)
 	require.NoError(t, err)
-	pins, err := second.List(ctx)
+	pins, err := second.Snapshot(ctx)
 	require.NoError(t, err)
 	assert.Contains(t, pins, "worker-A")
 }

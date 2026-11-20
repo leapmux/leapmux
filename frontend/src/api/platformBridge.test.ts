@@ -730,6 +730,8 @@ describe('platformBridge tunnel operations', () => {
     const retryStarted = deferred<void>()
     const calls: Array<[string, unknown]> = []
     let resets = 0
+    const resetStatuses: Array<unknown | null> = []
+    const stopResetStatus = platformBridge.onTunnelResetStatusChange(status => resetStatuses.push(status))
     mockIPC((cmd, args) => {
       calls.push([cmd, args])
       switch (cmd) {
@@ -796,6 +798,11 @@ describe('platformBridge tunnel operations', () => {
     retryReset.resolve()
     await expect(create).resolves.toEqual({ kind: 'created', info })
     await remove
+    stopResetStatus()
+    expect(resetStatuses).toHaveLength(3)
+    expect(resetStatuses[0]).toBeNull()
+    expect(resetStatuses[1]).toBeInstanceOf(Error)
+    expect(resetStatuses[2]).toBeNull()
     expect(calls).toContainEqual([
       'create_tunnel',
       {
@@ -829,6 +836,7 @@ describe('platformBridge tunnel operations', () => {
       cause: expect.objectContaining({ message: 'desktop unavailable' }),
     })
     adopt('successor')
+    await platformBridge.retryTunnelReset()
     await platformBridge.deleteTunnel('tunnel', scope)
     expect(calls).toEqual([
       [

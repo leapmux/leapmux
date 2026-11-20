@@ -25,12 +25,13 @@ export interface ChannelOpenScope {
   assertCurrent: () => void
 }
 
-export type ChannelOpenMode = 'ordinary' | 'review'
+export type ChannelOpenMode = 'ordinary' | 'review' | 'first-contact-review'
 
 function createWorkerOpenFlights() {
   return {
     ordinary: createInflightCache<string, string>(),
     review: createInflightCache<string, string>(),
+    firstContactReview: createInflightCache<string, string>(),
   }
 }
 
@@ -138,15 +139,19 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
       flights = createWorkerOpenFlights()
       this.openingChannels.set(scope, flights)
     }
-    // An explicit review waits for an earlier ordinary open before obtaining a
-    // fresh announcement. An ordinary open arriving later waits before taking
-    // its own pin decision, so it retains the ordinary refusal policy.
-    const previous = flights[mode === 'ordinary'
-      ? 'review'
-      : 'ordinary'].get(workerId)
-    return flights[mode].run(workerId, async () => {
-      if (previous !== undefined) {
-        await previous.catch(() => undefined)
+    // Different policies serialize but never share a result. Each one must
+    // read trust again after the preceding policy finishes. Calls with the
+    // same policy still share one flight.
+    const flightMode = mode === 'first-contact-review'
+      ? 'firstContactReview'
+      : mode
+    const previous = Object.entries(flights)
+      .filter(([candidate]) => candidate !== flightMode)
+      .map(([, cache]) => cache.get(workerId))
+      .filter((flight): flight is Promise<string> => flight !== undefined)
+    return flights[flightMode].run(workerId, async () => {
+      if (previous.length > 0) {
+        await Promise.all(previous.map(flight => flight.catch(() => undefined)))
         scope.assertCurrent()
       }
       return factory()

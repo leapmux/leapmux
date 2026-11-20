@@ -761,6 +761,32 @@ func TestResetTunnelsReplayOfRetiredEpochIsANoOp(t *testing.T) {
 		"a replay must not rotate the successor epoch")
 }
 
+func TestCreateTunnelRejectsCookieFromPreviousHubOrigin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hub.Close)
+	proxy := mustNewProxy(t, hub.URL)
+	app := NewApp("")
+	installTestConnection(app, proxy, nil, hub.URL)
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	_, err := app.CreateTunnel(t.Context(), TunnelConfig{
+		WorkerID:        "worker",
+		Type:            tunnelTypeSocks5,
+		BindAddr:        "127.0.0.1",
+		ExpectedUserID:  testTunnelOwner,
+		ChannelEpoch:    app.tunnels.currentEpoch(),
+		HubCookieHeader: "leapmux-session=old-session",
+		HubCookieOrigin: "https://previous.example",
+	})
+	require.ErrorContains(t, err, "cookie source does not match")
+	assert.Zero(t, requests.Load(), "the current Hub must not receive a credential from another origin")
+}
+
 // TestResetTunnelsRejectedDuringShutdown confirms the reset rides the same
 // operation gate as every other RPC: once shutdown begins it is refused
 // instead of racing the teardown.

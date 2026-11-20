@@ -2233,6 +2233,16 @@ export const DESKTOP_RS_EVENT_NAMES = {
   tunnelsChanged: 'EVENT_TUNNELS_CHANGED',
 }
 
+export const DESKTOP_GO_SESSION_COOKIE_NAMES = {
+  plain: 'SessionCookieName',
+  secure: 'SecureSessionCookieName',
+}
+
+export const DESKTOP_RS_SESSION_COOKIE_NAMES = {
+  plain: 'SESSION_COOKIE_NAME',
+  secure: 'SECURE_SESSION_COOKIE_NAME',
+}
+
 // Tauri events whose only Rust emission sites sit inside
 // #[cfg(target_os = "macos")] code (the native app menu; Linux and Windows
 // render the menu in the webview). Their consts carry a non-macOS
@@ -2370,6 +2380,10 @@ export function checkDesktop(d) {
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
     ['DESKTOP_TS_EVENT_NAMES', DESKTOP_TS_EVENT_NAMES],
   ])
+  checkTableCoverage('desktop.json', 'sessionCookies', Object.keys(d.sessionCookies), [
+    ['DESKTOP_GO_SESSION_COOKIE_NAMES', DESKTOP_GO_SESSION_COOKIE_NAMES],
+    ['DESKTOP_RS_SESSION_COOKIE_NAMES', DESKTOP_RS_SESSION_COOKIE_NAMES],
+  ])
   mustBe(
     d.ipcHeaders && typeof d.ipcHeaders === 'object' && !Array.isArray(d.ipcHeaders),
     'desktop.json',
@@ -2432,6 +2446,13 @@ const (
 ${goConstBlock(Object.keys(DESKTOP_GO_ENV_NAMES).map(k => ({
   name: DESKTOP_GO_ENV_NAMES[k],
   value: jsonString(d.envVars[k]),
+})))}
+)
+
+const (
+${goConstBlock(Object.keys(DESKTOP_GO_SESSION_COOKIE_NAMES).map(k => ({
+  name: DESKTOP_GO_SESSION_COOKIE_NAMES[k],
+  value: jsonString(d.sessionCookies[k]),
 })))}
 )
 
@@ -2524,6 +2545,9 @@ export function emitRsDesktop(d) {
   const ipcHeaders = Object.keys(DESKTOP_RS_IPC_HEADER_NAMES)
     .map(k => `pub const ${DESKTOP_RS_IPC_HEADER_NAMES[k]}: &str = ${rustString(d.ipcHeaders[k])};`)
     .join('\n')
+  const sessionCookies = Object.keys(DESKTOP_RS_SESSION_COOKIE_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_SESSION_COOKIE_NAMES[k]}: &str = ${rustString(d.sessionCookies[k])};`)
+    .join('\n')
   const behavior = Object.entries(flattenBehavior(d.windowBehavior))
     .map(([k, v]) => `pub const ${DESKTOP_RS_BEHAVIOR_NAMES[k]}: &str = ${rustString(v)};`)
     .join('\n')
@@ -2548,6 +2572,9 @@ ${events}
 /// Header names of raw Tauri invokes. The TypeScript sender imports the same
 /// values from its generated desktop contract.
 ${ipcHeaders}
+
+/// Session cookie spellings shared with the Go Hub.
+${sessionCookies}
 
 /// Frame cap the shell enforces on the sidecar IPC wire (the Go twin is
 /// contracts.MaxFrameSizeBytes).

@@ -544,6 +544,12 @@ message TunnelConfig {
   string expected_worker_keys_hex = 7;
   string expected_user_id = 8;
   string channel_epoch = 9;
+  // Set only by the trusted Rust shell from cookies for the configured Hub
+  // origin. The webview cannot supply or read this value.
+  string hub_cookie_header = 10;
+  // The canonical origin that supplied hub_cookie_header. The Go sidecar
+  // compares it with the current connection before it constructs a client.
+  string hub_cookie_origin = 11;
 }
 
 message TunnelInfo {

@@ -413,6 +413,19 @@ export class ChannelManager {
 
   /** Verify the current announcement through a fresh open for a user-initiated review. */
   async openChannelForKeyReview(workerId: string, operationSignal?: AbortSignal): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
+    return this.openChannelForReview(workerId, 'review', operationSignal)
+  }
+
+  /** Establish trust through a deliberate first-contact review of an unpinned Worker. */
+  async openChannelForFirstContactReview(workerId: string, operationSignal?: AbortSignal): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
+    return this.openChannelForReview(workerId, 'first-contact-review', operationSignal)
+  }
+
+  private async openChannelForReview(
+    workerId: string,
+    mode: 'review' | 'first-contact-review',
+    operationSignal?: AbortSignal,
+  ): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
     const captured = this.captureOpenScope()
     const identity = captured.identity
     if (identity === undefined || identity.userId === null)
@@ -429,7 +442,7 @@ export class ChannelManager {
             operationSignal.throwIfAborted()
           },
         }
-    const channelId = await this.openScopedChannel(workerId, scope, 'review')
+    const channelId = await this.openScopedChannel(workerId, scope, mode)
     const channel = this.verifiedChannel(channelId, scope)
     if (channel.committedPin === undefined)
       throw new ChannelError('client', 'The reviewed Worker key has no committed pin state.')

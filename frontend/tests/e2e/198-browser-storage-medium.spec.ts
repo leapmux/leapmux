@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_CLIENT_ID, storageAccountFor } from '../../src/lib/browserStorage'
+import { IDB_TRUST_DATABASE_NAME } from '../../src/lib/idb'
 import { test } from './fixtures'
 import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { databaseStores, readEntry, webStorageKeys } from './helpers/storage'
@@ -22,9 +23,10 @@ import { openAppAs } from './helpers/ui'
  * real tab covers the join.
  */
 
-/** The three databases this app declares, and the stores each one must hold. */
+/** The four databases this app declares, and the stores each one must hold. */
 const DECLARED = {
   'leapmux-kv': ['entries'],
+  [IDB_TRUST_DATABASE_NAME]: ['entries'],
   'leapmux-crdt-state': ['checkpointChunks', 'checkpoints', 'opLog'],
   'leapmux-render-cache': ['artifacts'],
 } as const
@@ -43,6 +45,10 @@ test.describe('browser storage medium', () => {
       async () => (await databaseStores(page, 'leapmux-kv')) ?? [],
       'the key-value database must exist with its declared store',
     ).toEqual([...DECLARED['leapmux-kv']])
+    await expect.poll(
+      async () => (await databaseStores(page, IDB_TRUST_DATABASE_NAME)) ?? [],
+      'the strict trust database must exist with its declared store',
+    ).toEqual([...DECLARED[IDB_TRUST_DATABASE_NAME]])
 
     // THE HEADLINE. Every `leapmux:` key lives in IndexedDB now, and the
     // retirement sweep deletes anything the old build left in localStorage. A

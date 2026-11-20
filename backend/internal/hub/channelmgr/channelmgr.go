@@ -51,6 +51,7 @@ type channel struct {
 	// pointer nil-ness to keep in sync and no zero-vs-unset ambiguity.
 	pendingExpiry auth.CredentialDeadline
 	onExpire      func(ClosedChannel)
+	unboundTimer  *time.Timer
 	cancel        context.CancelFunc
 }
 
@@ -173,6 +174,30 @@ func (m *Manager) RegisterWithAuthInfo(
 	}
 	m.channels[channelID] = ch
 	m.indexChannel(ch)
+	return true
+}
+
+// ScheduleUnboundExpiry closes a channel that no authorized relay binds before
+// the setup deadline. The first bind cancels the timer under the manager lock.
+func (m *Manager) ScheduleUnboundExpiry(channelID string, delay time.Duration, onExpire func(ClosedChannel)) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch := m.channels[channelID]
+	if ch == nil || ch.closed {
+		return false
+	}
+	if ch.ConnID != "" {
+		return true
+	}
+	if ch.unboundTimer != nil {
+		return true
+	}
+	ch.unboundTimer = time.AfterFunc(delay, func() {
+		closed := m.CloseByIDIf(channelID, func(info ChannelInfo) bool { return info.ConnID == "" })
+		for _, item := range closed {
+			onExpire(item)
+		}
+	})
 	return true
 }
 
@@ -668,6 +693,10 @@ func (m *Manager) removeChannelIf(channelID string, predicate func(*channel) boo
 		return removedChannel{}, false
 	}
 	ch.closed = true
+	if ch.unboundTimer != nil {
+		ch.unboundTimer.Stop()
+		ch.unboundTimer = nil
+	}
 	delete(m.channels, channelID)
 	m.unindexChannel(ch)
 	if ch.expiryIndex >= 0 {

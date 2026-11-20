@@ -18,6 +18,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 // mustNewProxy builds the proxy for hubURL and fails the test if the URL is
 // one hubtransport refuses. Every caller passes a literal or an httptest URL.
 func mustNewProxy(t *testing.T, hubURL string) *HubProxy {
@@ -66,6 +72,66 @@ func TestCookieHeader_InvalidURL(t *testing.T) {
 	proxy := &HubProxy{client: &http.Client{Jar: jar}, baseURL: "://invalid"}
 	h := proxy.cookieHeader()
 	assert.Nil(t, h)
+}
+
+func TestTunnelChannelOptionsKeepWebviewCookiesOnTheHubOrigin(t *testing.T) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "leapmux-session=native", request.Header.Get("Cookie"))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	proxy := mustNewProxy(t, server.URL)
+	opts, credentialKey := proxy.tunnelChannelOptions("leapmux-session=native")
+	assert.NotEqual(t, [32]byte{}, credentialKey)
+	assert.Nil(t, proxy.cookieHeader(), "the webview credential must not enter the shared proxy jar")
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/check", nil)
+	require.NoError(t, err)
+	response, err := opts.HTTPClient.Do(request)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+
+	offOrigin, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.invalid/check", nil)
+	require.NoError(t, err)
+	_, err = opts.HTTPClient.Do(offOrigin)
+	require.ErrorContains(t, err, "refuse Hub cookie outside")
+}
+
+func TestFixedCookieTransportUsesEffectiveHubOrigin(t *testing.T) {
+	base, err := url.Parse("https://Hub.example")
+	require.NoError(t, err)
+	received := ""
+	transport := fixedCookieTransport{
+		base: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			received = request.Header.Get("Cookie")
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       http.NoBody,
+				Header:     make(http.Header),
+				Request:    request,
+			}, nil
+		}),
+		origin: base,
+		header: "leapmux-session=native",
+	}
+
+	sameOrigin, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://hub.example:443/check", nil)
+	require.NoError(t, err)
+	_, err = transport.RoundTrip(sameOrigin)
+	require.NoError(t, err)
+	assert.Equal(t, "leapmux-session=native", received)
+
+	for _, target := range []string{
+		"http://hub.example/check",
+		"https://other.example/check",
+		"https://hub.example:444/check",
+	} {
+		request, requestErr := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+		require.NoError(t, requestErr)
+		_, requestErr = transport.RoundTrip(request)
+		assert.ErrorContains(t, requestErr, "refuse Hub cookie outside", target)
+	}
 }
 
 func TestProxyHTTPRejectsResponseLargerThanFrameBudget(t *testing.T) {

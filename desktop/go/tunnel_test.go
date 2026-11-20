@@ -538,19 +538,11 @@ func TestTunnelManager_CloseAllFencesInflightTunnelCreation(t *testing.T) {
 	})
 }
 
-func TestTunnelManager_DefaultDialNormalizesNilConnectionOnFailure(t *testing.T) {
-	m := NewTunnelManager()
-	tun := &tunnel{admittedEpoch: m.currentEpoch()}
-	channel, _ := newTestManagedChannel()
-	var target net.Conn
-	var err error
-	require.NotPanics(t, func() {
-		// The default adapter calls the real backend API. Its nil result
-		// must survive conversion from *Conn to net.Conn.
-		target, err = m.dialTunnelTarget(t.Context(), tun, channel, "target", 80)
-	})
+func TestNativeChannelTransportNormalizesNilConnectionOnFailure(t *testing.T) {
+	transport := &nativeChannelTransport{}
+	target, err := transport.DialTunnelContext(t.Context(), "target", 80)
 	require.ErrorContains(t, err, "channel is required")
-	assert.Nil(t, target)
+	assert.True(t, target == nil, "a nil *tunnel.Conn must remain a nil net.Conn interface")
 }
 
 func TestTunnelManager_ClosesReturnedConnectionOnDialFailure(t *testing.T) {
@@ -812,6 +804,9 @@ func (f *fakeChannel) Close() {
 func (f *fakeChannel) CloseDone() <-chan struct{} { return f.closeDone }
 
 func (f *fakeChannel) Context() context.Context { return f.ctx }
+func (f *fakeChannel) DialTunnelContext(context.Context, string, uint32) (net.Conn, error) {
+	return nil, errors.New("the test channel has no target dial")
+}
 
 // newTestManagedChannel returns a cached-channel double and the flag reporting
 // whether it has been closed. Its concrete channel is nil: every test using it also
@@ -819,7 +814,7 @@ func (f *fakeChannel) Context() context.Context { return f.ctx }
 func newTestManagedChannel() (*managedChannel, *atomic.Bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := &fakeChannel{ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
-	return &managedChannel{handle: fake}, &fake.closed
+	return &managedChannel{transport: fake}, &fake.closed
 }
 
 func TestTunnelManager_DefaultBindPort_PortForward(t *testing.T) {
@@ -1996,14 +1991,14 @@ func TestTunnelManager_DeleteWaitsForDialHandoff(t *testing.T) {
 }
 
 type heldChannelReadyCheck struct {
-	channelHandle
+	managedChannelTransport
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
 func (c *heldChannelReadyCheck) Closed() bool {
-	closed := c.channelHandle.Closed()
+	closed := c.managedChannelTransport.Closed()
 	c.once.Do(func() {
 		close(c.entered)
 		<-c.release
@@ -2016,11 +2011,11 @@ func TestTunnelManager_ResetBetweenChannelOpenAndBind(t *testing.T) {
 	t.Cleanup(m.CloseAll)
 
 	opened, _ := newTestManagedChannel()
-	ready := &heldChannelReadyCheck{channelHandle: opened.handle, entered: make(chan struct{}), release: make(chan struct{})}
+	ready := &heldChannelReadyCheck{managedChannelTransport: opened.transport, entered: make(chan struct{}), release: make(chan struct{})}
 	var opens atomic.Int32
 	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 		if opens.Add(1) == 1 {
-			return &managedChannel{handle: ready}, nil
+			return &managedChannel{transport: ready}, nil
 		}
 		fresh, _ := newTestManagedChannel()
 		return fresh, nil
@@ -2144,7 +2139,7 @@ func TestTunnelManager_HeldReconnectCannotPopulateSuccessorEpoch(t *testing.T) {
 }
 
 type heldChannelClose struct {
-	channelHandle
+	managedChannelTransport
 	entered chan struct{}
 	release chan struct{}
 }
@@ -2152,16 +2147,16 @@ type heldChannelClose struct {
 func (c *heldChannelClose) Close() {
 	close(c.entered)
 	<-c.release
-	c.channelHandle.Close()
+	c.managedChannelTransport.Close()
 }
 
 func TestTunnelManager_ResetReleasesManagerLockWhileClosingChannel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := NewTunnelManager()
 		ch, _ := newTestManagedChannel()
-		held := &heldChannelClose{channelHandle: ch.handle, entered: make(chan struct{}), release: make(chan struct{})}
+		held := &heldChannelClose{managedChannelTransport: ch.transport, entered: make(chan struct{}), release: make(chan struct{})}
 		m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-			return &managedChannel{handle: held}, nil
+			return &managedChannel{transport: held}, nil
 		}
 		oldEpoch := m.currentEpoch()
 		_, err := m.pool.getOrOpen(t.Context(), oldEpoch, "http://hub", "worker", channelExpectation{})
@@ -2189,7 +2184,7 @@ func TestTunnelManager_ResetReleasesManagerLockWhileClosingChannel(t *testing.T)
 // independentlyClosingChannel models a transport whose first close retires
 // usability immediately but releases the connection only on the test signal.
 type independentlyClosingChannel struct {
-	channelHandle
+	managedChannelTransport
 	closing atomic.Bool
 	started chan struct{}
 	release chan struct{}
@@ -2200,7 +2195,7 @@ func (c *independentlyClosingChannel) Close() {
 	if !c.closing.CompareAndSwap(false, true) {
 		return
 	}
-	c.channelHandle.Close()
+	c.managedChannelTransport.Close()
 	close(c.started)
 	<-c.release
 	close(c.done)
@@ -2215,12 +2210,12 @@ func TestTunnelManager_ResetWaitsForAnEvictedChannelClose(t *testing.T) {
 		m := NewTunnelManager()
 		ch, _ := newTestManagedChannel()
 		held := &independentlyClosingChannel{
-			channelHandle: ch.handle,
-			started:       make(chan struct{}),
-			release:       make(chan struct{}),
-			done:          make(chan struct{}),
+			managedChannelTransport: ch.transport,
+			started:                 make(chan struct{}),
+			release:                 make(chan struct{}),
+			done:                    make(chan struct{}),
 		}
-		opened := &managedChannel{handle: held}
+		opened := &managedChannel{transport: held}
 		fresh, _ := newTestManagedChannel()
 		m.pool.openCh = func(context.Context, string, string, *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 			return opened, nil

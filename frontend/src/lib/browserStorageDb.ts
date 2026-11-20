@@ -28,8 +28,9 @@
  */
 import type { Table } from 'dexie'
 import type Dexie from 'dexie'
+import type { IdbConnection } from './idb'
 import { tryCreateBroadcastChannel } from './broadcastChannel'
-import { createIdbConnection, isIndexedDbAvailable } from './idb'
+import { createIdbConnection, IDB_TRUST_DATABASE_NAME, isIndexedDbAvailable } from './idb'
 import { randomUUID } from './idGenerator'
 import { createLogger } from './logger'
 
@@ -66,8 +67,8 @@ const STORES = {
   [TABLE]: `k, ${EXPIRES_INDEX}`,
 }
 
-// This database holds authoritative pin rows alongside cached preferences.
-const connection = createIdbConnection<KvDb>(DB_NAME, STORES, { onSchemaMismatch: 'reject' })
+const connection = createIdbConnection<KvDb>(DB_NAME, STORES)
+const trustConnection = createIdbConnection<KvDb>(IDB_TRUST_DATABASE_NAME, STORES, { onSchemaMismatch: 'reject' })
 
 /**
  * Whether the environment reported that it has no IndexedDB at all, or an open
@@ -177,12 +178,34 @@ export interface KvRowTransaction {
  * check rather than a hopeful one.
  */
 export async function updateKvTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return updateTransaction(connection, body, signal)
+}
+
+/** Strict transaction in the authoritative Worker-trust database. */
+export async function updateTrustTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return updateTransaction(trustConnection, body, signal)
+}
+
+/** Direct trust-row access for corruption and schema tests only. */
+export async function writeTrustRowForTests(row: KvRow): Promise<void> {
+  await updateTrustTransaction(async tx => tx.put(row))
+}
+
+export async function readTrustRowForTests(key: string): Promise<KvRow | undefined> {
+  return updateTrustTransaction(async tx => tx.get(key))
+}
+
+async function updateTransaction<T>(
+  target: IdbConnection<KvDb>,
+  body: (tx: KvRowTransaction) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   signal?.throwIfAborted()
   let abort: (() => void) | undefined
   try {
     if (!isIndexedDbAvailable())
       throw new Error('Browser storage is unavailable.')
-    const db = await connection.open()
+    const db = await target.open()
     signal?.throwIfAborted()
     return await db.transaction('rw', db[TABLE], async (transaction) => {
       signal?.throwIfAborted()
@@ -573,7 +596,45 @@ export async function sweepKv(
     expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
   },
 ): Promise<string[]> {
-  const db = await openKv()
+  return sweepConnection(connection, now, isRegistered, opts, false)
+}
+
+/** Sweep authoritative trust rows without sharing a transaction with preferences. */
+export async function sweepTrustKv(
+  now: number,
+  isRegistered: (key: string) => boolean,
+  opts: {
+    checkRegistrations: boolean
+    isExemptFromExpiry?: (key: string) => boolean
+    expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
+  },
+): Promise<string[]> {
+  return sweepConnection(trustConnection, now, isRegistered, opts, true)
+}
+
+async function sweepConnection(
+  target: IdbConnection<KvDb>,
+  now: number,
+  isRegistered: (key: string) => boolean,
+  opts: {
+    checkRegistrations: boolean
+    isExemptFromExpiry?: (key: string) => boolean
+    expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
+  },
+  strict: boolean,
+): Promise<string[]> {
+  let db: KvDb | null
+  try {
+    db = isIndexedDbAvailable()
+      ? await target.open()
+      : null
+  }
+  catch (err) {
+    if (strict)
+      throw err
+    reportUnavailable(err)
+    return []
+  }
   if (!db)
     return []
   const deleted: string[] = []
@@ -602,6 +663,8 @@ export async function sweepKv(
     })
   }
   catch (err) {
+    if (strict)
+      throw err
     log.warn('browser storage sweep failed; the rows are left for the next attempt', err)
     return []
   }
@@ -803,4 +866,5 @@ export function resetKvForTests(): void {
   flushInFlight = null
   loggedUnavailable = false
   connection.reset()
+  trustConnection.reset()
 }

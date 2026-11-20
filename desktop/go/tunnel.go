@@ -52,13 +52,15 @@ var channelOpenTimeout = tunnelpkg.DefaultChannelOpenTimeout
 // injected from the authenticated desktop connection, never accepted from the
 // frontend request.
 type TunnelConfig struct {
-	WorkerID   string
-	Type       string // "port_forward" or "socks5"
-	TargetAddr string // port_forward only
-	TargetPort int    // port_forward only
-	BindAddr   string
-	BindPort   int
-	HubURL     string
+	WorkerID        string
+	Type            string // "port_forward" or "socks5"
+	TargetAddr      string // port_forward only
+	TargetPort      int    // port_forward only
+	BindAddr        string
+	BindPort        int
+	HubURL          string
+	HubCookieHeader string
+	HubCookieOrigin string
 	// The Worker identity this tunnel admits: the user every channel must
 	// authenticate as and the exact Worker keys the Hub must announce (the
 	// composite hex NewExpectedWorkerKeyPin decodes). Both come from the
@@ -67,6 +69,8 @@ type TunnelConfig struct {
 	ExpectedUserID        string
 	ExpectedWorkerKeysHex string
 	expectedWorkerKeyPin  tunnelpkg.KeyPinStore
+	channelOptions        *tunnelpkg.OpenChannelOptions
+	credentialKey         [32]byte
 	// ChannelEpoch is the channel epoch the caller read from a tunnel
 	// listing. The create is admitted against that exact epoch: a submission
 	// fenced on a listing that a reset has since invalidated is refused before
@@ -326,12 +330,7 @@ func NewTunnelManager() *TunnelManager {
 			return wrapChannel(ch), nil
 		}),
 		dial: func(ctx context.Context, ch *managedChannel, targetAddr string, targetPort uint32) (net.Conn, error) {
-			target, err := tunnelpkg.DialTunnelContext(ctx, ch.channel, targetAddr, targetPort)
-			if target == nil {
-				// Preserve nil when converting from *tunnel.Conn to net.Conn.
-				return nil, err
-			}
-			return target, err
+			return ch.transport.DialTunnelContext(ctx, targetAddr, targetPort)
 		},
 	}
 }
@@ -365,9 +364,11 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 		return nil, err
 	}
 	expect := channelExpectation{
-		userID:  cfg.ExpectedUserID,
-		keysHex: cfg.ExpectedWorkerKeysHex,
-		pin:     cfg.expectedWorkerKeyPin,
+		userID:         cfg.ExpectedUserID,
+		keysHex:        cfg.ExpectedWorkerKeysHex,
+		pin:            cfg.expectedWorkerKeyPin,
+		channelOptions: cfg.channelOptions,
+		credentialKey:  cfg.credentialKey,
 	}
 
 	// Ensure we have an E2EE channel to the worker.

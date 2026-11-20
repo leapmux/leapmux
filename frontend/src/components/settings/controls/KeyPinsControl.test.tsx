@@ -1,11 +1,24 @@
 import type { KeyPinEntry } from '~/lib/keyPinStore'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { setStorageAccountForTests, storageAccountId } from '~/lib/browserStorage'
+import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, setStorageAccountForTests, storageAccountId } from '~/lib/browserStorage'
+import { writeTrustRowForTests } from '~/lib/browserStorageDb'
 import { deferred, settle } from '~/test-support/async'
 import { seedKeyPin, testKeyPinHex } from '~/test-support/keyPins'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { KeyPinsControl } from './KeyPinsControl'
+
+const authState = vi.hoisted(() => ({
+  setUserId: undefined as undefined | ((id: string | undefined) => void),
+}))
+vi.mock('~/context/AuthContext', async () => {
+  const { createTestWorkerTrustState } = await import('~/test-support/workerTrust')
+  const state = createTestWorkerTrustState()
+  authState.setUserId = state.setUserId
+  return {
+    useAuth: () => ({ workerTrustScope: state.scope }),
+  }
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {},
@@ -61,6 +74,7 @@ vi.mock('~/lib/keyPinStore', async (importOriginal) => {
 useTestStorage()
 
 beforeEach(() => {
+  authState.setUserId?.(storageAccountId() ?? undefined)
   pinIo.failList = false
   pinIo.failRemove = false
   pinIo.nextList = undefined
@@ -122,6 +136,21 @@ describe('KeyPinsControl', () => {
 
     fireEvent.click(remove)
     expect(remove).toHaveAccessibleName('Confirm?')
+  })
+
+  it('requires confirmation before discarding a corrupt account pin map', async () => {
+    await writeTrustRowForTests({
+      k: accountStorageKey(storageAccountId()!, KEY_KEY_PINS),
+      v: 'corrupt',
+      e: Date.now() + 60_000,
+    })
+    render(() => <KeyPinsControl />)
+    const discard = await screen.findByTestId('key-pins-discard-corrupt')
+    expect(discard).toHaveTextContent('Discard corrupt pin map')
+    fireEvent.click(discard)
+    expect(discard).toHaveTextContent('Confirm?')
+    fireEvent.click(discard)
+    await vi.waitFor(async () => expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 1 }))
   })
 
   it('puts the worker id above the date and Remove actions', async () => {

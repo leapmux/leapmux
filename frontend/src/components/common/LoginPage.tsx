@@ -8,6 +8,7 @@ import { AuthMethodPillGroup } from '~/components/common/AuthMethodPillGroup'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { Spinner } from '~/components/common/Spinner'
+import { TunnelResetRecovery } from '~/components/common/TunnelResetRecovery'
 import { useAuth } from '~/context/AuthContext'
 import { USERNAME_SOLO } from '~/generated/contracts/validate'
 import { createAuthMethodSelection } from '~/lib/authMethodSelection'
@@ -159,6 +160,7 @@ export const LoginPage: Component = () => {
     <div class={styles.container}>
       <div class={pageCard}>
         <h1>LeapMux</h1>
+        <TunnelResetRecovery />
         <Show when={oauthProviders().length > 0}>
           <OAuthProviderList
             providers={oauthProviders()}

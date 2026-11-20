@@ -49,7 +49,7 @@ func runWorkerCrossWorkerPins(args []string) error {
 	defer cancel()
 	switch sub {
 	case "list":
-		pins, err := store.List(ctx)
+		pins, err := store.Snapshot(ctx)
 		if err != nil {
 			return fmt.Errorf("list: %w", err)
 		}
@@ -58,7 +58,7 @@ func runWorkerCrossWorkerPins(args []string) error {
 		if targetWorkerID == "" {
 			return fmt.Errorf("--target-worker-id is required for show")
 		}
-		pins, err := store.List(ctx)
+		pins, err := store.Snapshot(ctx)
 		if err != nil {
 			return fmt.Errorf("list: %w", err)
 		}

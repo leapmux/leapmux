@@ -27,7 +27,10 @@ type ChannelService struct {
 	pending         *workermgr.PendingRequests
 	authFreshness   AuthFreshnessChecker
 	closeDispatcher *workerCloseDispatcher
+	scheduleUnbound func(string, time.Duration, func(channelmgr.ClosedChannel)) bool
 }
+
+const unboundChannelRegistrationTimeout = 30 * time.Second
 
 // workerUnreachableMetaKey marks a CodeUnavailable as the Hub's own verdict about
 // a specific WORKER, as opposed to the many transport-shaped Unavailables a client
@@ -91,7 +94,17 @@ func NewChannelService(
 		pending:         pr,
 		closeDispatcher: newWorkerCloseDispatcher(wMgr),
 		authFreshness:   freshness,
+		scheduleUnbound: cMgr.ScheduleUnboundExpiry,
 	}
+}
+
+// WithUnboundSchedulerForTest replaces the setup-deadline scheduler. Tests use
+// it to trigger expiry after OpenChannel commits without waiting on wall time.
+func (s *ChannelService) WithUnboundSchedulerForTest(
+	schedule func(string, time.Duration, func(channelmgr.ClosedChannel)) bool,
+) *ChannelService {
+	s.scheduleUnbound = schedule
+	return s
 }
 
 // GetWorkerHandshakeParams returns the public keys and the encryption mode a
@@ -292,6 +305,14 @@ func (s *ChannelService) OpenChannel(
 			return nil, currentErr
 		}
 		return nil, connect.Errorf(connect.CodeUnavailable, "channel closed before expiry scheduling completed")
+	}
+	if !s.scheduleUnbound(channelID, unboundChannelRegistrationTimeout, func(closed channelmgr.ClosedChannel) {
+		s.notifyWorkersClosed([]channelmgr.ClosedChannel{closed})
+	}) {
+		if currentErr := s.validateCurrentAuth(user); currentErr != nil {
+			return nil, currentErr
+		}
+		return nil, connect.Errorf(connect.CodeUnavailable, "channel closed before relay binding deadline was scheduled")
 	}
 	registrationCommitted = true
 

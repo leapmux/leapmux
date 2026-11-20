@@ -22,7 +22,7 @@ import { useTunnel } from '~/context/TunnelContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { errorText } from '~/styles/shared.css'
 import { TunnelContextMenu } from './TunnelContextMenu'
-import { verifyWorkerKey } from './verifyWorkerKey'
+import { verifyWorkerKey, WorkerKeyPinMissingError } from './verifyWorkerKey'
 import { WorkerContextMenu } from './WorkerContextMenu'
 import * as styles from './workerSection.css'
 
@@ -182,6 +182,26 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
       })
     }
     catch (err) {
+      if (err instanceof WorkerKeyPinMissingError && identityIsLive(scope)
+        && tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
+        const { type, targetAddr, targetPort, bindAddr, bindPort } = stopped
+        props.onAddTunnel({
+          worker,
+          scope,
+          replacement: {
+            config: {
+              workerId: worker.id,
+              type,
+              targetAddr,
+              targetPort,
+              bindAddr,
+              bindPort,
+            },
+            firstContactRequired: true,
+          },
+        })
+        return
+      }
       if (identityIsLive(scope)
         && tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
         setVerifyError({

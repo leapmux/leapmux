@@ -32,6 +32,7 @@ const seams = vi.hoisted(() => ({
   readPin: vi.fn<typeof import('~/lib/keyPinStore')['readWorkerKeyPin']>(),
   ordinaryOpen: vi.fn(),
   reviewOpen: vi.fn(),
+  firstContactOpen: vi.fn(),
 }))
 
 vi.mock('~/lib/channel', async (importOriginal) => {
@@ -42,6 +43,7 @@ vi.mock('~/lib/channel', async (importOriginal) => {
       callWorker = callWorkerMock
       openChannel = seams.ordinaryOpen
       openChannelForKeyReview = seams.reviewOpen
+      openChannelForFirstContactReview = seams.firstContactOpen
       setConfirmKeyPin = () => () => {}
       readonly captureOpenScope: () => ReturnType<InstanceType<typeof actual.ChannelManager>['captureOpenScope']>
 
@@ -95,6 +97,7 @@ beforeEach(() => {
   seams.readPin.mockReset()
   seams.ordinaryOpen.mockReset()
   seams.reviewOpen.mockReset()
+  seams.firstContactOpen.mockReset()
   vi.useRealTimers()
 })
 
@@ -664,16 +667,25 @@ describe('resolveTunnelTrust', () => {
   })
 
   it.each([
-    { pin: null, removalRevision: 1 },
     {
-      pin: { publicKeyHex: 'committed', firstSeen: 3000 },
-      removalRevision: 1,
+      snapshot: { pin: null, removalRevision: 1 },
+      message: 'approved Worker key was removed',
     },
     {
-      pin: { publicKeyHex: 'replacement', firstSeen: 1000 },
-      removalRevision: 0,
+      snapshot: {
+        pin: { publicKeyHex: 'committed', firstSeen: 3000 },
+        removalRevision: 1,
+      },
+      message: 'Verify the Worker key again',
     },
-  ])('refuses an approved pin that was removed or replaced, without first contact', async (snapshot) => {
+    {
+      snapshot: {
+        pin: { publicKeyHex: 'replacement', firstSeen: 1000 },
+        removalRevision: 0,
+      },
+      message: 'Verify the Worker key again',
+    },
+  ])('refuses an approved pin that was removed or replaced, without first contact', async ({ snapshot, message }) => {
     const { refreshWorkerTrustForTunnel, resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
     const scope = { userId: 'account', generation: 2, signal: new AbortController().signal }
     const dispose = setExpectedUserId(() => scope)
@@ -690,8 +702,34 @@ describe('resolveTunnelTrust', () => {
       expect(seams.reviewOpen).toHaveBeenCalledExactlyOnceWith(workerId, undefined)
       seams.readPin.mockResolvedValueOnce(savedPin).mockResolvedValueOnce(snapshot)
       await expect(resolveTunnelTrust(workerId, scope, approval)).resolves.toBe('committed')
-      await expect(resolveTunnelTrust(workerId, scope, approval)).rejects.toThrow('Verify the Worker key again')
+      await expect(resolveTunnelTrust(workerId, scope, approval)).rejects.toThrow(message)
       expect(seams.ordinaryOpen).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+})
+
+describe('establishWorkerTrustForTunnel', () => {
+  it('returns the exact pin snapshot committed by deliberate first contact', async () => {
+    const { establishWorkerTrustForTunnel, setExpectedUserId } = await import('./workerRpc')
+    const scope = { userId: 'account', generation: 3, signal: new AbortController().signal }
+    const dispose = setExpectedUserId(() => scope)
+    const pinSnapshot = {
+      pin: { publicKeyHex: 'committed', firstSeen: 1000 },
+      removalRevision: 4,
+    }
+    seams.firstContactOpen.mockResolvedValueOnce({ publicKeyHex: 'committed', scope, pinSnapshot })
+    try {
+      await expect(establishWorkerTrustForTunnel('worker', scope)).resolves.toEqual({
+        workerId: 'worker',
+        expectedUserId: 'account',
+        identityGeneration: 3,
+        publicKeyHex: 'committed',
+        pinSnapshot,
+      })
+      expect(seams.firstContactOpen).toHaveBeenCalledExactlyOnceWith('worker', undefined)
     }
     finally {
       dispose()

@@ -4,7 +4,8 @@ import { batch, createEffect, createSignal, For, onCleanup, Show } from 'solid-j
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
-import { onStorageAccountChange } from '~/lib/browserStorage'
+import { useAuth } from '~/context/AuthContext'
+import { CorruptKeyPinMapError, discardCorruptKeyPinMap, onStorageAccountChange } from '~/lib/browserStorage'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { formatErrorMessage } from '~/lib/errors'
 import { clearAllKeyPins, clearKeyPin, listKeyPins, onKeyPinsChanged } from '~/lib/keyPinStore'
@@ -34,14 +35,17 @@ import * as styles from './KeyPinsControl.css'
  * document no longer holds.
  */
 export const KeyPinsControl: Component = () => {
+  const auth = useAuth()
   const [revision, setRevision] = createSignal(0)
   const [known, setKnown] = createSignal<KeyPinEntry[] | null>(null)
   const [readError, setReadError] = createSignal<string | null>(null)
+  const [corruptMap, setCorruptMap] = createSignal(false)
   const [removeError, setRemoveError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
 
   let accountGeneration = 0
   let latestReadId = 0
+  const componentLifetime = new AbortController()
 
   function refreshPins(): void {
     setRevision(value => value + 1)
@@ -56,11 +60,14 @@ export const KeyPinsControl: Component = () => {
       batch(() => {
         setKnown(pins)
         setReadError(null)
+        setCorruptMap(false)
       })
     }
     catch (err) {
-      if (readId === latestReadId)
+      if (readId === latestReadId) {
         setReadError(formatErrorMessage(err, 'Could not read the trusted worker keys.'))
+        setCorruptMap(err instanceof CorruptKeyPinMapError)
+      }
     }
   }
 
@@ -77,17 +84,29 @@ export const KeyPinsControl: Component = () => {
     batch(() => {
       setKnown(null)
       setReadError(null)
+      setCorruptMap(false)
       setRemoveError(null)
       setBusy(false)
     })
   })
   const stopChanges = onKeyPinsChanged(refreshPins)
   onCleanup(() => {
+    componentLifetime.abort()
     stopAccount()
     stopChanges()
     accountGeneration++
     latestReadId++
   })
+
+  async function discardCorruptPins(): Promise<void> {
+    const scope = auth.workerTrustScope()
+    if (!scope.userId)
+      throw new Error('Sign in before discarding trusted Worker keys.')
+    await discardCorruptKeyPinMap({
+      accountId: scope.userId,
+      signal: AbortSignal.any([scope.signal, componentLifetime.signal]),
+    })
+  }
 
   async function removePins(remove: () => Promise<void>, failureMessage: string): Promise<void> {
     if (busy())
@@ -119,6 +138,20 @@ export const KeyPinsControl: Component = () => {
           <button type="button" class="outline" onClick={refreshPins} data-testid="key-pins-retry">
             Retry
           </button>
+          <Show when={corruptMap()}>
+            <p>This discards every trusted Worker key in the corrupt map for this account. Each Worker will require trust to be established again.</p>
+            <ConfirmButton
+              data-variant="danger"
+              disabled={busy()}
+              data-testid="key-pins-discard-corrupt"
+              onClick={() => void removePins(
+                discardCorruptPins,
+                'Could not discard the corrupt trusted Worker keys. The stored data was preserved.',
+              )}
+            >
+              Discard corrupt pin map
+            </ConfirmButton>
+          </Show>
         </div>
       </Show>
       <Show when={removeError()}>

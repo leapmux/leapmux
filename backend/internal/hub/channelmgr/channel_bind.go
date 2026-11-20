@@ -121,6 +121,10 @@ func (m *Manager) bindConnWithWriteLock(
 	if ch.ConnID != bindConnID {
 		ch.ConnID = bindConnID
 	}
+	if ch.unboundTimer != nil {
+		ch.unboundTimer.Stop()
+		ch.unboundTimer = nil
+	}
 	return channelInfo(ch), true
 }
 

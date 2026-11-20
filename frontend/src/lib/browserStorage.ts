@@ -86,7 +86,8 @@ import {
   REFUSED_WRITE,
   resetKvForTests,
   sweepKv,
-  updateKvTransaction,
+  sweepTrustKv,
+  updateTrustTransaction,
 } from './browserStorageDb'
 import { cancelIdle, requestIdle } from './idleCallback'
 import { createLogger } from './logger'
@@ -1659,6 +1660,27 @@ export interface KeyPinStorageScope {
   signal?: AbortSignal
 }
 
+export class CorruptKeyPinMapError extends Error {
+  constructor() {
+    super('The stored key pin map is corrupt. It requires valid pin records and a finite expiration time.')
+    this.name = 'CorruptKeyPinMapError'
+  }
+}
+
+export class KeyPinPresentFirstContactError extends Error {
+  constructor() {
+    super('A Worker key was recorded before first-contact review completed. Verify the stored key instead.')
+    this.name = 'KeyPinPresentFirstContactError'
+  }
+}
+
+export class KeyPinMissingReviewError extends Error {
+  constructor() {
+    super('The Worker has no stored key to review.')
+    this.name = 'KeyPinMissingReviewError'
+  }
+}
+
 /**
  * One pin-state mutation for `updateKeyPinState`.
  *
@@ -1682,6 +1704,8 @@ export type KeyPinStateChange
     pin: WorkerKeyPinRecord
     expectRevision: number
     expectPin: WorkerKeyPinRecord | null
+    /** Reject even an identical concurrent pin. Deliberate first contact uses this. */
+    requireAbsent?: boolean
   }
   | {
     /** Revalidate a decision whose key already matches; writes nothing. */
@@ -1759,7 +1783,7 @@ async function loadKeyPinState(
   let freshMapRow: KvRow | undefined
   if (mapRow !== undefined) {
     if (!isValidPinMapRow(mapRow))
-      throw new Error('The stored key pin map is corrupt. It requires valid pin records and a finite expiration time.')
+      throw new CorruptKeyPinMapError()
     if (mapRow.e <= now) {
       await tx.delete(keys.pins)
       expiredPins = true
@@ -1799,7 +1823,7 @@ async function loadKeyPinState(
  */
 export async function readKeyPinState({ accountId = storageAccount, signal }: KeyPinStorageScope = {}): Promise<KeyPinState> {
   const keys = resolvePinKeys(accountId)
-  const { state, hint } = await updateKvTransaction(async (tx) => {
+  const { state, hint } = await updateTrustTransaction(async (tx) => {
     const loaded = await loadKeyPinState(tx, keys, signal)
     if (loaded.freshMapRow !== undefined && shouldRefreshExpiration(loaded.freshMapRow.e, keys.pinsTtl, loaded.now))
       await tx.put({ ...loaded.freshMapRow, e: loaded.now + keys.pinsTtl })
@@ -1833,10 +1857,10 @@ export async function updateKeyPinState(
   { accountId = storageAccount, signal }: KeyPinStorageScope = {},
 ): Promise<KeyPinState> {
   const keys = resolvePinKeys(accountId)
-  const { state, hint } = await updateKvTransaction(async (tx) => {
+  const { state, hint } = await updateTrustTransaction(async (tx) => {
     const { state, expiredPins, now } = await loadKeyPinState(tx, keys, signal)
-    const removalRevision = nextRemovalRevision(state.removalRevision, change)
     const map = applyKeyPinMap(state.pins, change)
+    const removalRevision = nextRemovalRevision(state.removalRevision, change)
     const bumpRevision = removalRevision !== state.removalRevision
     if (map.kind === 'write')
       await tx.put({ k: keys.pins, v: map.pins, e: now + keys.pinsTtl })
@@ -1869,6 +1893,35 @@ export async function updateKeyPinState(
   return state
 }
 
+/** Deliberately discard a still-corrupt pin map for one captured account. */
+export async function discardCorruptKeyPinMap(
+  { accountId = storageAccount, signal }: KeyPinStorageScope = {},
+): Promise<void> {
+  const keys = resolvePinKeys(accountId)
+  const hint = await updateTrustTransaction(async (tx) => {
+    const [mapRow, revisionRow] = await Promise.all([
+      tx.get(keys.pins),
+      tx.get(keys.revision),
+    ])
+    signal?.throwIfAborted()
+    if (mapRow === undefined || isValidPinMapRow(mapRow))
+      throw new Error('The stored key pin map is no longer corrupt. Refresh the list before changing it.')
+    const revision = revisionRow === undefined
+      ? 0
+      : parseRemovalRevision(revisionRow.v)
+    if (revision >= Number.MAX_SAFE_INTEGER)
+      throw new Error('The key pin removal revision cannot advance past its maximum. The corrupt map was preserved.')
+    await tx.delete(keys.pins)
+    await tx.put({
+      k: keys.revision,
+      v: revision + 1,
+      e: Number.POSITIVE_INFINITY,
+    })
+    return { k: keys.pins, invalidate: true as const }
+  }, signal)
+  commitPinInvalidations([hint])
+}
+
 /** What the transaction does to the pin map row. */
 type PinMapAction
   = | { kind: 'unchanged' }
@@ -1897,7 +1950,9 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
     ? pins[change.workerId] ?? null
     : null
   if (change.kind === 'revalidate') {
-    if (current === null || !sameKeyPinRecord(current, change.expectPin)) {
+    if (current === null)
+      throw new KeyPinMissingReviewError()
+    if (!sameKeyPinRecord(current, change.expectPin)) {
       throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
     }
     return { kind: 'unchanged' }
@@ -1905,6 +1960,8 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
   if (!isWorkerKeyPinRecord(change.pin))
     throw new Error('Cannot store an invalid pin record.')
   if (change.expectPin === null && current !== null) {
+    if (change.requireAbsent)
+      throw new KeyPinPresentFirstContactError()
     if (current.publicKeyHex === change.pin.publicKeyHex) {
       // A concurrent first contact installed the same keys. Its `firstSeen`
       // stands, and this commit is the idempotent one.
@@ -2126,36 +2183,37 @@ export async function runCleanup(opts: { checkRegistrations: boolean } = { check
   // re-earned on the next load, and carrying them would mean maintaining a
   // translation between two layouts for the sake of one release.
   sweepStorage(() => localStorage, () => false)
-  const deleted = await sweepKv(Date.now(), isRegisteredLocalKey, {
-    ...opts,
-    // The one nonexpiring row: expiry may not take the removal revision, or a
-    // stale pin commit would re-validate against a revision that restarted.
-    isExemptFromExpiry: isPinRemovalRevisionStoredKey,
-    // A corrupt pin row must remain visible to the strict read as a failure.
-    expiryValidatorForKey: key => isPinStoredKey(key)
-      ? isValidPinMapRow
-      : undefined,
-  })
-  if (deleted.length === 0)
-    return
+  const now = Date.now()
+  const deleted = await sweepKv(now, isRegisteredLocalKey, opts)
   // Drop what the sweep deleted from the mirror, so a synchronous read cannot
   // serve a value that is no longer on disk. Pin rows are never mirrored.
   for (const key of deleted)
     mirror.delete(key)
+  // Notify peers about every preference deletion, including unmirrored rows
+  // for another account. That peer may still hold the deleted row in memory.
+  publishKvRemovals(deleted)
+
+  let deletedPins: string[]
+  try {
+    deletedPins = await sweepTrustKv(now, isRegisteredLocalKey, {
+      ...opts,
+      // The one nonexpiring row: expiry may not take the removal revision, or a
+      // stale pin commit would re-validate against a revision that restarted.
+      isExemptFromExpiry: isPinRemovalRevisionStoredKey,
+      // A corrupt pin row must remain visible to the strict read as a failure.
+      expiryValidatorForKey: key => isPinStoredKey(key)
+        ? isValidPinMapRow
+        : undefined,
+    })
+  }
+  catch (err) {
+    log.warn('trusted Worker key cleanup failed; the trust rows were preserved', err)
+    return
+  }
   // A PIN ROW goes through the pin notification path even here, so a pin map
   // the sweep expired is announced exactly like a committed removal -- and
   // including when this tab is the one sweeping it.
-  const pinKeys = deleted.filter(isPinStoredKey)
-  const otherKeys = deleted.filter(key => !isPinStoredKey(key))
-  commitPinInvalidations(pinKeys.map(k => ({ k, invalidate: true as const })))
-  // Tell the other tabs about EVERY OTHER deletion, not only the ones this tab
-  // mirrored. The sweep's expiry arm reaches across accounts, so a peer signed
-  // in as somebody else is exactly the tab that still holds the row this one
-  // just reclaimed -- and it would serve it from memory, then refresh it back
-  // onto disk. A removal carries no value, so the reason the unmirrored tier
-  // publishes nothing (a user's draft prose on a channel every tab receives)
-  // does not apply, and the receiver already drops what it does not mirror.
-  publishKvRemovals(otherKeys)
+  commitPinInvalidations(deletedPins.map(k => ({ k, invalidate: true as const })))
 }
 
 // ---------------------------------------------------------------------------
@@ -2372,9 +2430,11 @@ export function initStorageCleanup(): () => void {
     sweeping = true
     const withRegistrations = checkRegistrations
     checkRegistrations = false
-    void runCleanup({ checkRegistrations: withRegistrations }).finally(() => {
-      sweeping = false
-    })
+    void runCleanup({ checkRegistrations: withRegistrations })
+      .catch(err => log.warn('browser storage cleanup failed; the next scheduled sweep will retry', err))
+      .finally(() => {
+        sweeping = false
+      })
   }
   // EVERY sweep waits for an idle window, not only the first. The two Web
   // Storage walks are synchronous main-thread work, so an hourly one that fired

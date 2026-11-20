@@ -445,6 +445,10 @@ struct TunnelConfigInput {
     expected_worker_keys_hex: String,
     expected_user_id: String,
     channel_epoch: String,
+    #[serde(skip)]
+    hub_cookie_header: String,
+    #[serde(skip)]
+    hub_cookie_origin: String,
 }
 
 // --- Sidecar process ---
@@ -1751,8 +1755,63 @@ fn create_tunnel_request(config: TunnelConfigInput) -> proto::request::Method {
             expected_worker_keys_hex: config.expected_worker_keys_hex,
             expected_user_id: config.expected_user_id,
             channel_epoch: config.channel_epoch,
+            hub_cookie_header: config.hub_cookie_header,
+            hub_cookie_origin: config.hub_cookie_origin,
         }),
     })
+}
+
+async fn distributed_tunnel_cookie_header(
+    shell: &DesktopShell,
+    window: &WebviewWindow,
+) -> Result<(String, String), String> {
+    let runtime = shell.runtime_state();
+    if runtime.shell_mode != ShellMode::Distributed {
+        return Ok((String::new(), String::new()));
+    }
+    if !runtime.connected {
+        return Err("the distributed desktop is not connected".to_string());
+    }
+    let hub_url = Url::parse(&runtime.hub_url).map_err(|err| format!("parse Hub URL: {err}"))?;
+    let page_url = window
+        .url()
+        .map_err(|err| format!("read webview URL: {err}"))?;
+    require_same_hub_origin(&page_url, &hub_url)?;
+    let hub_origin = hub_url.origin().ascii_serialization();
+    let window = window.clone();
+    let cookies = tokio::task::spawn_blocking(move || window.cookies_for_url(hub_url))
+        .await
+        .map_err(|err| format!("read Hub cookies task: {err}"))?
+        .map_err(|err| format!("read Hub cookies: {err}"))?;
+    let pairs = cookies
+        .into_iter()
+        .map(|cookie| (cookie.name().to_string(), cookie.value().to_string()))
+        .collect::<Vec<_>>();
+    let header = format_cookie_header(&pairs);
+    if header.is_empty() {
+        return Err("the authenticated Hub session cookie is missing".to_string());
+    }
+    Ok((header, hub_origin))
+}
+
+fn require_same_hub_origin(page_url: &Url, hub_url: &Url) -> Result<(), String> {
+    if page_url.origin() != hub_url.origin() {
+        return Err("the webview origin does not match the connected Hub".to_string());
+    }
+    Ok(())
+}
+
+fn format_cookie_header(cookies: &[(String, String)]) -> String {
+    cookies
+        .iter()
+        .filter(|(name, value)| {
+            !value.is_empty()
+                && (name == contracts_generated::SESSION_COOKIE_NAME
+                    || name == contracts_generated::SECURE_SESSION_COOKIE_NAME)
+        })
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn delete_tunnel_request(
@@ -1778,8 +1837,13 @@ fn list_tunnels_request(expected_user_id: String) -> proto::request::Method {
 #[tauri::command]
 async fn create_tunnel(
     shell: State<'_, Arc<DesktopShell>>,
+    window: WebviewWindow,
     config: TunnelConfigInput,
 ) -> Result<CreateTunnelOutcome, String> {
+    let mut config = config;
+    let (cookie_header, cookie_origin) = distributed_tunnel_cookie_header(&shell, &window).await?;
+    config.hub_cookie_header = cookie_header;
+    config.hub_cookie_origin = cookie_origin;
     let resp = check_response(
         shell
             .send_request_async(create_tunnel_request(config))
@@ -3308,7 +3372,7 @@ mod tests {
 
     #[test]
     fn tunnel_requests_preserve_trust_and_epoch_from_the_webview() {
-        let config: TunnelConfigInput = serde_json::from_value(json!({
+        let mut config: TunnelConfigInput = serde_json::from_value(json!({
             "workerId": "worker-a",
             "type": "port_forward",
             "targetAddr": "target",
@@ -3317,9 +3381,14 @@ mod tests {
             "bindPort": 3001,
             "expectedWorkerKeysHex": "010203",
             "expectedUserId": "user-a",
-            "channelEpoch": "epoch-a"
+            "channelEpoch": "epoch-a",
+            "hubCookieHeader": "attacker-controlled"
         }))
         .expect("deserialize the webview configuration");
+        assert!(config.hub_cookie_header.is_empty());
+        assert!(config.hub_cookie_origin.is_empty());
+        config.hub_cookie_header = "leapmux-session=native".to_string();
+        config.hub_cookie_origin = "https://hub.example.com".to_string();
 
         assert_eq!(
             create_tunnel_request(config),
@@ -3334,6 +3403,8 @@ mod tests {
                     expected_worker_keys_hex: "010203".into(),
                     expected_user_id: "user-a".into(),
                     channel_epoch: "epoch-a".into(),
+                    hub_cookie_header: "leapmux-session=native".into(),
+                    hub_cookie_origin: "https://hub.example.com".into(),
                 }),
             })
         );
@@ -3356,6 +3427,29 @@ mod tests {
             proto::request::Method::ResetTunnels(proto::ResetTunnelsRequest {
                 channel_epoch: "epoch-a".into(),
             })
+        );
+    }
+
+    #[test]
+    fn distributed_tunnel_credentials_require_the_connected_hub_origin() {
+        let hub = Url::parse("https://hub.example.com:8443/base").unwrap();
+        let same = Url::parse("https://hub.example.com:8443/workspace").unwrap();
+        let other_port = Url::parse("https://hub.example.com/workspace").unwrap();
+        let other_scheme = Url::parse("http://hub.example.com:8443/workspace").unwrap();
+        require_same_hub_origin(&same, &hub).unwrap();
+        assert!(require_same_hub_origin(&other_port, &hub).is_err());
+        assert!(require_same_hub_origin(&other_scheme, &hub).is_err());
+    }
+
+    #[test]
+    fn distributed_tunnel_cookie_header_keeps_only_nonempty_cookies() {
+        assert_eq!(
+            format_cookie_header(&[
+                ("leapmux-session".into(), "token".into()),
+                ("empty".into(), String::new()),
+                ("preference".into(), "value".into()),
+            ]),
+            "leapmux-session=token"
         );
     }
 

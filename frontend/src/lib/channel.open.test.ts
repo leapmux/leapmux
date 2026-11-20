@@ -25,7 +25,7 @@ import { seedKeyPin, testKeyPinHex, testWorkerKeyBundle } from '~/test-support/k
 import { useTestStorage } from '~/test-support/persistentStorage'
 import * as browserStorage from './browserStorage'
 import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, setStorageAccountForTests, storageAccountId } from './browserStorage'
-import { enqueueKvPut, readKvRow } from './browserStorageDb'
+import { readTrustRowForTests, writeTrustRowForTests } from './browserStorageDb'
 import { ChannelError } from './channel'
 import {
   acceptingKeyPins,
@@ -51,7 +51,7 @@ import {
 } from './channel.test-support'
 import { frameAssociatedData } from './channelFraming'
 import { keyFingerprintHex } from './fingerprint'
-import { KeyPinRejectedError, KeyPinStore } from './keyPinStore'
+import { KeyPinMissingReviewError, KeyPinPresentFirstContactError, KeyPinRejectedError, KeyPinStore } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
 import { procedureOf } from './rpcProcedure'
 
@@ -120,7 +120,7 @@ describe('ChannelManager openChannel', () => {
       },
       e: Date.now() + 60_000,
     }
-    await enqueueKvPut(row, { publish: false }).durable
+    await writeTrustRowForTests(row)
     const confirm = vi.fn().mockRejectedValue(new Error('must not prompt'))
     const handshake1 = vi.fn(mockHandshake1)
     const open = vi.spyOn(h.transport, 'openChannel')
@@ -134,7 +134,7 @@ describe('ChannelManager openChannel', () => {
       expect(confirm).not.toHaveBeenCalled()
       expect(handshake1).not.toHaveBeenCalled()
       expect(open).not.toHaveBeenCalled()
-      expect(await readKvRow(row.k)).toEqual(row)
+      expect(await readTrustRowForTests(row.k)).toEqual(row)
     }
     finally {
       manager.closeAll()
@@ -1070,7 +1070,11 @@ describe('ChannelManager open-time verification', () => {
         expect(outcome).toMatchObject({
           status: 'rejected',
           reason: expect.objectContaining({
-            message: expect.stringContaining('changed since the decision'),
+            name: 'ChannelError',
+            source: 'client',
+            message: expect.stringContaining(change === 'removal'
+              ? 'no stored key to review'
+              : 'changed since the decision'),
           }),
         })
       }
@@ -1461,10 +1465,157 @@ describe('ChannelManager openChannelForKeyReview', () => {
   it('requires an existing pin when reviewing a key', async () => {
     const h = setup()
     try {
-      await expect(h.cm.openChannelForKeyReview('worker')).rejects.toThrow('The Worker has no stored key to review.')
+      await expect(h.cm.openChannelForKeyReview('worker')).rejects.toBeInstanceOf(KeyPinMissingReviewError)
       expect(h.transport.openChannel).not.toHaveBeenCalled()
       expect(h.confirmKeyPin).not.toHaveBeenCalled()
       expect((await readKeyPinState()).pins).toEqual({})
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('reports a pin removed after review proof but before commit', async () => {
+    const h = setup()
+    await seedKeyPin('worker', {
+      publicKeyHex: testKeyPinHex('02'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    const resolve = h.keyPins.resolve.bind(h.keyPins)
+    vi.spyOn(h.keyPins, 'resolve').mockImplementationOnce(async (...args) => {
+      const decision = await resolve(...args)
+      return {
+        ...decision,
+        commit: async () => {
+          await writeTrustRowForTests({
+            k: accountStorageKey('user-1', KEY_KEY_PINS),
+            v: {},
+            e: Date.now() + 60_000,
+          })
+          return decision.commit()
+        },
+      }
+    })
+
+    try {
+      const review = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it.each([2, 3])('rejects a concurrent key %i during deliberate first-contact commit', async (keyByte) => {
+    const h = setup()
+    const candidate = testKeyPinHex('02')
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    const resolve = h.keyPins.resolve.bind(h.keyPins)
+    vi.spyOn(h.keyPins, 'resolve').mockImplementationOnce(async (...args) => {
+      const decision = await resolve(...args)
+      return {
+        ...decision,
+        commit: async () => {
+          await writeTrustRowForTests({
+            k: accountStorageKey('user-1', KEY_KEY_PINS),
+            v: {
+              worker: {
+                publicKeyHex: testKeyPinHex(keyByte.toString(16).padStart(2, '0')),
+                firstSeen: 7,
+              },
+            },
+            e: Date.now() + 60_000,
+          })
+          return decision.commit()
+        },
+      }
+    })
+
+    try {
+      const review = h.cm.openChannelForFirstContactReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).rejects.toBeInstanceOf(KeyPinPresentFirstContactError)
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(keyByte === 2
+        ? candidate
+        : testKeyPinHex('03'))
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('does not share an existing-key review with deliberate first contact', async () => {
+    const h = setup()
+    await seedKeyPin('worker', {
+      publicKeyHex: testKeyPinHex('02'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    try {
+      const review = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      const firstContact = h.cm.openChannelForFirstContactReview('worker')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+      })
+      await expect(firstContact).rejects.toBeInstanceOf(KeyPinPresentFirstContactError)
+      expect(h.transport.openChannel).toHaveBeenCalledOnce()
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('does not share deliberate first contact with an existing-key review', async () => {
+    const h = setup()
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    try {
+      const firstContact = h.cm.openChannelForFirstContactReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      const review = h.cm.openChannelForKeyReview('worker')
+      const ws = await h.socket.promise
+      await simulatePingAcceptOnWs(ws, 'ch-1')
+      await expect(firstContact).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+      })
+
+      await waitForPendingChannel(h.cm, 'ch-2')
+      await simulatePingAcceptOnWs(ws, 'ch-2')
+      await expect(review).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+      })
+      expect(h.transport.openChannel).toHaveBeenCalledTimes(2)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('commits deliberate first-contact review only while the Worker stays unpinned', async () => {
+    const h = setup()
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    try {
+      const review = h.cm.openChannelForFirstContactReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+        pinSnapshot: {
+          pin: expect.objectContaining({
+            publicKeyHex: testKeyPinHex('02'),
+          }),
+          removalRevision: 0,
+        },
+      })
+      expect(h.confirmKeyPin).not.toHaveBeenCalled()
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(testKeyPinHex('02'))
+
+      await expect(h.cm.openChannelForFirstContactReview('worker')).rejects.toThrow('recorded before first-contact review')
     }
     finally {
       h.cm.closeAll()

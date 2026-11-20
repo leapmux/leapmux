@@ -592,6 +592,8 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			ExpectedUserID:        cfg.ExpectedUserId,
 			ExpectedWorkerKeysHex: cfg.ExpectedWorkerKeysHex,
 			ChannelEpoch:          cfg.ChannelEpoch,
+			HubCookieHeader:       cfg.HubCookieHeader,
+			HubCookieOrigin:       cfg.HubCookieOrigin,
 		})
 		if err != nil {
 			// A typed Worker key mismatch is a RESULT, not an error response:

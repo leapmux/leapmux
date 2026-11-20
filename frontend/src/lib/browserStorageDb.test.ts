@@ -3,12 +3,14 @@ import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   accountStorageKey,
+  discardCorruptKeyPinMap,
   flushStorageWrites,
   hydrateStorageAccount,
   KEY_BROWSER_PREFS,
   KEY_CHANNEL_RELAY_SEQ,
   KEY_KEY_PINS,
   KEY_KEY_PINS_REMOVAL_REVISION,
+  KeyPinMissingReviewError,
   LOCAL_KEY_SPECS,
   localStorageGet,
   localStorageLoad,
@@ -32,7 +34,8 @@ import {
   TEST_HUB,
   updateKeyPinState,
 } from '~/lib/browserStorage'
-import { enqueueKvPut, kvInstanceIdForTests, peekKvPending, readKvRow } from '~/lib/browserStorageDb'
+import { enqueueKvPut, kvInstanceIdForTests, peekKvPending, readKvRow, readTrustRowForTests, writeTrustRowForTests } from '~/lib/browserStorageDb'
+import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '~/lib/idb'
 import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
 import { seedKeyPin, testKeyPinHex } from '~/test-support/keyPins'
 
@@ -894,7 +897,7 @@ describe('cross-tab changes', () => {
   it('routes a swept pin map through the pin notification path', async () => {
     const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
     const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
-    enqueueKvPut({
+    await writeTrustRowForTests({
       k: mapKey,
       v: {
         w1: {
@@ -903,9 +906,8 @@ describe('cross-tab changes', () => {
         },
       },
       e: Date.now() - 1000,
-    }, { publish: false })
-    enqueueKvPut({ k: revisionKey, v: 7, e: Date.now() - 1000 }, { publish: false })
-    await flushStorageWrites()
+    })
+    await writeTrustRowForTests({ k: revisionKey, v: 7, e: Date.now() - 1000 })
 
     const hints: string[] = []
     const stopHint = onKeyPinsInvalidated(change => hints.push(change.k))
@@ -927,7 +929,7 @@ describe('cross-tab changes', () => {
       },
     ])
     // Inspect the physical rows before a gateway read can expire the map itself.
-    const db = await idbRequestResult(indexedDB.open('leapmux-kv'))
+    const db = await idbRequestResult(indexedDB.open(IDB_TRUST_DATABASE_NAME))
     try {
       const store = db.transaction('entries', 'readonly').objectStore('entries')
       const [map, revision] = await Promise.all([
@@ -939,6 +941,46 @@ describe('cross-tab changes', () => {
     }
     finally {
       db.close()
+    }
+  })
+
+  it('finishes preference cleanup when the strict trust database is malformed', async () => {
+    const stored = storedKeyFor(SYNC_KEY)!
+    localStorageSet(SYNC_KEY, 'cached')
+    await flushStorageWrites()
+    enqueueKvPut({ k: stored, v: 'cached', e: Date.now() - 1 }, { publish: false })
+    await flushStorageWrites()
+    expect(mirrorEntryForTests(stored)?.v).toBe('cached')
+
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(IDB_TRUST_DATABASE_NAME, IDB_NATIVE_SCHEMA_VERSION)
+      request.onerror = () => reject(request.error)
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('wrong-store')
+      }
+      request.onsuccess = () => {
+        request.result.close()
+        resolve()
+      }
+    })
+
+    const { seen, drain, stop } = recordPublished()
+    try {
+      await expect(runCleanup()).resolves.toBeUndefined()
+      await drain()
+      expect(await readKvRow(stored)).toBeUndefined()
+      expect(mirrorEntryForTests(stored)).toBeUndefined()
+      expect(seen).toEqual([
+        {
+          from: kvInstanceIdForTests(),
+          changes: [
+            { k: stored, removed: true },
+          ],
+        },
+      ])
+    }
+    finally {
+      stop()
     }
   })
 })
@@ -1121,7 +1163,7 @@ describe('the pin gateway', () => {
     const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
     const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
     const revision = { k: revisionKey, v: 7, e: Number.POSITIVE_INFINITY }
-    await enqueueKvPut(revision, { publish: false }).durable
+    await writeTrustRowForTests(revision)
     const invalidation = vi.fn()
     const stop = onKeyPinsInvalidated(invalidation)
     const originalPut = IDBObjectStore.prototype.put
@@ -1151,7 +1193,7 @@ describe('the pin gateway', () => {
         pins: { [WORKER]: firstContact.pin },
         removalRevision: revision.v,
       })
-      expect(await readKvRow(revisionKey)).toEqual(revision)
+      expect(await readTrustRowForTests(revisionKey)).toEqual(revision)
       expect(invalidation).toHaveBeenCalledExactlyOnceWith({ k: mapKey, invalidate: true })
     }
     finally {
@@ -1212,7 +1254,7 @@ describe('the pin gateway', () => {
     const stop = onKeyPinsInvalidated(invalidation)
     try {
       await expect(updateKeyPinState({ ...firstContact, pin })).rejects.toThrow(/invalid pin record/)
-      expect(await readKvRow(mapKey)).toBeUndefined()
+      expect(await readTrustRowForTests(mapKey)).toBeUndefined()
       expect(invalidation).not.toHaveBeenCalled()
 
       const expiration = Date.now() - 1
@@ -1227,15 +1269,15 @@ describe('the pin gateway', () => {
         e: expiration,
       }
       await Promise.all([
-        enqueueKvPut(corrupt, { publish: false }).durable,
-        enqueueKvPut(valid, { publish: false }).durable,
+        writeTrustRowForTests(corrupt),
+        writeTrustRowForTests(valid),
       ])
 
       await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
       await expect(updateKeyPinState({ kind: 'removeAll' })).rejects.toThrow(/corrupt/)
       await runCleanup()
-      expect(await readKvRow(otherMapKey)).toBeUndefined()
-      expect(await readKvRow(mapKey)).toEqual(corrupt)
+      expect(await readTrustRowForTests(otherMapKey)).toBeUndefined()
+      expect(await readTrustRowForTests(mapKey)).toEqual(corrupt)
       await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
       expect(invalidation).not.toHaveBeenCalled()
     }
@@ -1248,6 +1290,62 @@ describe('the pin gateway', () => {
     const pin = { ...firstContact.pin, firstSeen }
     await updateKeyPinState({ ...firstContact, pin })
     expect((await readKeyPinState()).pins[WORKER]).toEqual(pin)
+  })
+
+  it('discards a still-corrupt account pin map and advances its valid revision', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    await writeTrustRowForTests({ k: mapKey, v: 'corrupt', e: Date.now() + 60_000 })
+    await writeTrustRowForTests({ k: revisionKey, v: 6, e: Number.POSITIVE_INFINITY })
+
+    await discardCorruptKeyPinMap()
+    await expect(readKeyPinState()).resolves.toEqual({ pins: {}, removalRevision: 7 })
+    expect(await readTrustRowForTests(mapKey)).toBeUndefined()
+  })
+
+  it('preserves a corrupt pin map when its identity scope has retired', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    const corrupt = { k: mapKey, v: 'corrupt', e: Date.now() + 60_000 }
+    const revision = { k: revisionKey, v: 6, e: Number.POSITIVE_INFINITY }
+    await Promise.all([
+      writeTrustRowForTests(corrupt),
+      writeTrustRowForTests(revision),
+    ])
+    const lifetime = new AbortController()
+    lifetime.abort()
+
+    await expect(discardCorruptKeyPinMap({ accountId: ACCOUNT, signal: lifetime.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await readTrustRowForTests(mapKey)).toEqual(corrupt)
+    expect(await readTrustRowForTests(revisionKey)).toEqual(revision)
+  })
+
+  it('rolls back corrupt-map discard when the identity retires during its reads', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    const corrupt = { k: mapKey, v: 'corrupt', e: Date.now() + 60_000 }
+    const revision = { k: revisionKey, v: 6, e: Number.POSITIVE_INFINITY }
+    await Promise.all([
+      writeTrustRowForTests(corrupt),
+      writeTrustRowForTests(revision),
+    ])
+    const lifetime = new AbortController()
+    const retired = new Error('the account retired during discard')
+    const originalGet = IDBObjectStore.prototype.get
+    const get = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = originalGet.apply(this, args)
+      if (args[0] === mapKey)
+        request.addEventListener('success', () => lifetime.abort(retired), { once: true })
+      return request
+    })
+    try {
+      await expect(discardCorruptKeyPinMap({ accountId: ACCOUNT, signal: lifetime.signal })).rejects.toThrow(retired)
+    }
+    finally {
+      get.mockRestore()
+    }
+    expect(await readTrustRowForTests(mapKey)).toEqual(corrupt)
+    expect(await readTrustRowForTests(revisionKey)).toEqual(revision)
   })
 
   it.each([
@@ -1269,11 +1367,11 @@ describe('the pin gateway', () => {
       const now = vi.spyOn(Date, 'now').mockReturnValue(initialTime)
       const originalGet = IDBObjectStore.prototype.get
       if (operation !== 'record') {
-        await enqueueKvPut({
+        await writeTrustRowForTests({
           k: mapKey,
           v: { [WORKER]: pin },
           e: expiration,
-        }, { publish: false }).durable
+        })
       }
       const diskRead = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
         const request = originalGet.apply(this, args)
@@ -1297,7 +1395,7 @@ describe('the pin gateway', () => {
             workerId: WORKER,
             expectRevision: 0,
             expectPin: pin,
-          })).rejects.toThrow(/changed since the decision/)
+          })).rejects.toBeInstanceOf(KeyPinMissingReviewError)
         }
         else if (operation === 'refresh') {
           await expect(readKeyPinState()).resolves.toEqual({
@@ -1318,44 +1416,36 @@ describe('the pin gateway', () => {
         now.mockRestore()
       }
       if (operation === 'revalidate') {
-        expect(await readKvRow(mapKey)).toEqual({
+        expect(await readTrustRowForTests(mapKey)).toEqual({
           k: mapKey,
           v: { [WORKER]: pin },
           e: expiration,
         })
       }
       else if (operation === 'record' || operation === 'refresh') {
-        expect((await readKvRow(mapKey))?.e).toBe(initialTime + 2 + LOCAL_KEY_SPECS[KEY_KEY_PINS].ttlMs)
+        expect((await readTrustRowForTests(mapKey))?.e).toBe(initialTime + 2 + LOCAL_KEY_SPECS[KEY_KEY_PINS].ttlMs)
       }
       else {
-        expect(await readKvRow(mapKey)).toBeUndefined()
+        expect(await readTrustRowForTests(mapKey)).toBeUndefined()
       }
     },
   )
 
   it('rejects a stored pin map that does not parse instead of reading it as empty', async () => {
-    enqueueKvPut(
-      {
-        k: accountStorageKey(ACCOUNT, KEY_KEY_PINS),
-        v: 'nonsense',
-        e: Date.now() + 60_000,
-      },
-      { publish: false },
-    )
-    await flushStorageWrites()
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS),
+      v: 'nonsense',
+      e: Date.now() + 60_000,
+    })
     await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
   })
 
   it('rejects a stored pin map holding a record that does not parse', async () => {
-    enqueueKvPut(
-      {
-        k: accountStorageKey(ACCOUNT, KEY_KEY_PINS),
-        v: { w1: 'pin' },
-        e: Date.now() + 60_000,
-      },
-      { publish: false },
-    )
-    await flushStorageWrites()
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS),
+      v: { w1: 'pin' },
+      e: Date.now() + 60_000,
+    })
     await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
   })
 
@@ -1393,12 +1483,11 @@ describe('the pin gateway', () => {
     })),
   ])('rejects $description before and after the expiry sweep', async ({ v, expiration }) => {
     const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
-    enqueueKvPut({
+    await writeTrustRowForTests({
       k: mapKey,
       v,
       e: expiration(Date.now()) as number,
-    }, { publish: false })
-    await flushStorageWrites()
+    })
 
     await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
     await runCleanup()
@@ -1416,7 +1505,7 @@ describe('the pin gateway', () => {
     ],
     [
       11,
-      { message: 'IndexedDB schema does not match the declaration for leapmux-kv.' },
+      { message: `IndexedDB schema does not match the declaration for ${IDB_TRUST_DATABASE_NAME}.` },
     ],
   ] as const)('leaves pin rows intact when hydration opens an incoherent database at native version %i', async (version, refusal) => {
     const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
@@ -1430,7 +1519,7 @@ describe('the pin gateway', () => {
       },
       e: Date.now() + 60_000,
     }
-    const request = indexedDB.open('leapmux-kv', version)
+    const request = indexedDB.open(IDB_TRUST_DATABASE_NAME, version)
     request.onupgradeneeded = () => {
       const db = request.result
       const store = db.createObjectStore('entries', { keyPath: 'k' })
@@ -1449,7 +1538,7 @@ describe('the pin gateway', () => {
     await expect(readKeyPinState({ accountId: ACCOUNT })).rejects.toMatchObject(refusal)
     await expect(updateKeyPinState(firstContact, { accountId: ACCOUNT })).rejects.toMatchObject(refusal)
 
-    const db = await idbRequestResult(indexedDB.open('leapmux-kv'))
+    const db = await idbRequestResult(indexedDB.open(IDB_TRUST_DATABASE_NAME))
     try {
       expect(db.version).toBe(version)
       expect(db.objectStoreNames.contains('extra')).toBe(version === 1)
@@ -1462,16 +1551,32 @@ describe('the pin gateway', () => {
     }
   })
 
+  it('repairs the preferences database without changing strict trust rows', async () => {
+    await updateKeyPinState(firstContact)
+    const request = indexedDB.open('leapmux-kv', 1)
+    request.onupgradeneeded = () => request.result.createObjectStore('wrong')
+    const broken = await idbRequestResult(request)
+    broken.close()
+
+    setStorageAccountForTests(OTHER)
+    await hydrateStorageAccount(ACCOUNT)
+    setStorageAccount(ACCOUNT)
+    expect((await readKeyPinState()).pins[WORKER]).toEqual(firstContact.pin)
+    const repaired = await idbRequestResult(indexedDB.open('leapmux-kv'))
+    try {
+      expect(Array.from(repaired.objectStoreNames)).toEqual(['entries'])
+    }
+    finally {
+      repaired.close()
+    }
+  })
+
   it('rejects a stored removal revision that does not parse', async () => {
-    enqueueKvPut(
-      {
-        k: accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION),
-        v: -1,
-        e: Number.POSITIVE_INFINITY,
-      },
-      { publish: false },
-    )
-    await flushStorageWrites()
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION),
+      v: -1,
+      e: Number.POSITIVE_INFINITY,
+    })
     await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
   })
 
@@ -1573,15 +1678,11 @@ describe('the pin gateway', () => {
   })
 
   it('refuses a removal that would overflow the removal revision', async () => {
-    enqueueKvPut(
-      {
-        k: accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION),
-        v: Number.MAX_SAFE_INTEGER,
-        e: Number.POSITIVE_INFINITY,
-      },
-      { publish: false },
-    )
-    await flushStorageWrites()
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION),
+      v: Number.MAX_SAFE_INTEGER,
+      e: Number.POSITIVE_INFINITY,
+    })
     await seedKeyPin('w1', {
       publicKeyHex: testKeyPinHex('aa'),
       firstSeen: 1,
@@ -1597,28 +1698,24 @@ describe('the pin gateway', () => {
   it('treats an expired pin map as confirmed absence and notices the expiry', async () => {
     const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
     const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
-    enqueueKvPut(
-      {
-        k: mapKey,
-        v: {
-          w1: {
-            publicKeyHex: testKeyPinHex('aa'),
-            firstSeen: 1,
-          },
+    await writeTrustRowForTests({
+      k: mapKey,
+      v: {
+        w1: {
+          publicKeyHex: testKeyPinHex('aa'),
+          firstSeen: 1,
         },
-        e: Date.now() - 1000,
       },
-      { publish: false },
-    )
-    enqueueKvPut({ k: revisionKey, v: 3, e: Number.POSITIVE_INFINITY }, { publish: false })
-    await flushStorageWrites()
+      e: Date.now() - 1000,
+    })
+    await writeTrustRowForTests({ k: revisionKey, v: 3, e: Number.POSITIVE_INFINITY })
 
     const hints: string[] = []
     const stop = onKeyPinsInvalidated(change => hints.push(change.k))
     expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 3 })
     stop()
 
-    expect(await readKvRow(mapKey)).toBeUndefined()
+    expect(await readTrustRowForTests(mapKey)).toBeUndefined()
     expect(hints).toEqual([mapKey])
   })
 

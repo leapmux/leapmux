@@ -140,6 +140,8 @@ export interface AuthState {
   onAccountEnd: (listener: (account: StorageAccount) => void) => () => void
   loading: () => boolean
   error: () => string | null
+  tunnelResetError: () => string | null
+  retryTunnelReset: () => Promise<void>
   /**
    * When the hub accepts another request for a verification email; undefined
    * when no cooldown is known.
@@ -401,7 +403,13 @@ export const AuthProvider: ParentComponent = (props) => {
     signal: trustController.signal,
   }
   const [trustScope, setTrustScopeSignal] = createSignal<WorkerTrustScope>(initialTrustScope)
+  const [tunnelResetError, setTunnelResetError] = createSignal<string | null>(null)
   onCleanup(platformBridge.setTunnelTrustScope(() => untrack(trustScope)))
+  onCleanup(platformBridge.onTunnelResetStatusChange((failure) => {
+    setTunnelResetError(failure === null
+      ? null
+      : formatErrorMessage(failure, 'Desktop tunnel cleanup did not finish.'))
+  }))
 
   /** Abort the live scope's signal. Its decisions are now cancellations. */
   const retireWorkerTrustScope = () => {
@@ -543,6 +551,10 @@ export const AuthProvider: ParentComponent = (props) => {
     // Reset the phase so any BootSplash during the next bootstrap does not
     // show a finished checklist left over from the previous shell session.
     setBootPhase('initializing')
+  }
+
+  const retryTunnelReset = async () => {
+    await platformBridge.retryTunnelReset()
   }
 
   /**
@@ -1119,6 +1131,8 @@ export const AuthProvider: ParentComponent = (props) => {
     onAccountEnd,
     loading,
     error,
+    tunnelResetError,
+    retryTunnelReset,
     verificationResendAvailableAt,
     elevationExpiresAt,
     elevateWithPassword,

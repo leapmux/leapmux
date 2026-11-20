@@ -22,6 +22,8 @@ import type { KeyPinStateChange, KeyPinStorageScope, WorkerKeyPinRecord } from '
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import {
+  KeyPinMissingReviewError,
+  KeyPinPresentFirstContactError,
   onKeyPinsInvalidated,
   onStorageAccountChange,
   readKeyPinState,
@@ -69,6 +71,8 @@ export class KeyPinRejectedError extends Error {
     this.name = 'KeyPinRejectedError'
   }
 }
+
+export { KeyPinMissingReviewError, KeyPinPresentFirstContactError } from './browserStorage'
 
 /**
  * Read the current durable pin for one worker.
@@ -133,6 +137,7 @@ export interface KeyPinStoreOpts {
 interface KeyPinResolveOpts extends KeyPinStorageScope {
   identitySignal?: AbortSignal
   review?: boolean
+  firstContactReview?: boolean
   assertCurrent?: () => void
 }
 
@@ -208,7 +213,7 @@ export class KeyPinStore {
   async resolve(
     workerId: string,
     keyBundle: KeyPinKeyBundle,
-    { accountId = storageAccountId(), signal, identitySignal, review, assertCurrent }: KeyPinResolveOpts = {},
+    { accountId = storageAccountId(), signal, identitySignal, review, firstContactReview, assertCurrent }: KeyPinResolveOpts = {},
   ): Promise<ResolvedKeyPin> {
     const registration = this.confirmation
     const storageScope = signal === undefined
@@ -240,6 +245,9 @@ export class KeyPinStore {
               },
               expectRevision: removalRevision,
               expectPin: pin,
+              ...(firstContactReview
+                ? { requireAbsent: true }
+                : {}),
             }
         const committed = await updateKeyPinState(change, storageScope)
         const committedPin = Object.hasOwn(committed.pins, workerId)
@@ -255,10 +263,13 @@ export class KeyPinStore {
     }
 
     if (pin === null) {
-      if (review)
-        throw new Error('The Worker has no stored key to review.')
+      if (review && !firstContactReview)
+        throw new KeyPinMissingReviewError()
       return result
     }
+
+    if (firstContactReview)
+      throw new KeyPinPresentFirstContactError()
 
     if (pin.publicKeyHex === publicKeyHex)
       return result

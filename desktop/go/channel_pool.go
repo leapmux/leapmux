@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
@@ -43,24 +44,42 @@ type channelHandle interface {
 	Context() context.Context
 }
 
-// managedChannel is one cached E2EE channel.
-type managedChannel struct {
-	// channel is the concrete channel the DEFAULT dial seam needs:
-	// tunnelpkg.DialTunnelContext takes a *tunnelpkg.Channel and nothing narrower.
-	// It is nil under test, where the fake handle is paired with an overridden
-	// TunnelManager.dial that never looks at it.
-	channel *tunnelpkg.Channel
-	// handle is what the pool itself uses, and is always set.
-	handle channelHandle
+type managedChannelTransport interface {
+	channelHandle
+	DialTunnelContext(context.Context, string, uint32) (net.Conn, error)
 }
 
-func (m *managedChannel) closed() bool          { return m.handle.Closed() }
-func (m *managedChannel) close()                { m.handle.Close() }
-func (m *managedChannel) done() <-chan struct{} { return m.handle.Context().Done() }
+type nativeChannelTransport struct {
+	channel *tunnelpkg.Channel
+}
+
+func (t *nativeChannelTransport) Closed() bool               { return t.channel.Closed() }
+func (t *nativeChannelTransport) Close()                     { t.channel.Close() }
+func (t *nativeChannelTransport) CloseDone() <-chan struct{} { return t.channel.CloseDone() }
+func (t *nativeChannelTransport) Context() context.Context   { return t.channel.Context() }
+func (t *nativeChannelTransport) DialTunnelContext(ctx context.Context, address string, port uint32) (net.Conn, error) {
+	target, err := tunnelpkg.DialTunnelContext(ctx, t.channel, address, port)
+	if target == nil {
+		// Preserve nil before converting *tunnel.Conn to net.Conn. Converting a
+		// nil pointer first creates a non-nil interface that the error path would
+		// try to close.
+		return nil, err
+	}
+	return target, err
+}
+
+// managedChannel is one cached E2EE channel.
+type managedChannel struct {
+	transport managedChannelTransport
+}
+
+func (m *managedChannel) closed() bool          { return m.transport.Closed() }
+func (m *managedChannel) close()                { m.transport.Close() }
+func (m *managedChannel) done() <-chan struct{} { return m.transport.Context().Done() }
 
 func (m *managedChannel) closeAndWait() {
 	m.close()
-	<-m.handle.CloseDone()
+	<-m.transport.CloseDone()
 }
 
 func wrapChannel(ch *tunnelpkg.Channel) *managedChannel {
@@ -69,7 +88,7 @@ func wrapChannel(ch *tunnelpkg.Channel) *managedChannel {
 		// runChannelOpen's `ch == nil` check only sees the non-nil *managedChannel.
 		return nil
 	}
-	return &managedChannel{channel: ch, handle: ch}
+	return &managedChannel{transport: &nativeChannelTransport{channel: ch}}
 }
 
 type channelKey struct {
@@ -77,6 +96,7 @@ type channelKey struct {
 	workerID       string
 	expectedUserID string
 	expectedKeys   string // the composite hex identifying the expected Worker key set
+	credentialKey  [32]byte
 }
 
 // channelExpectation is the Worker identity one admitted tunnel proves on
@@ -84,8 +104,10 @@ type channelKey struct {
 // the exact Worker key set the Hub must announce. Two opens share a cached
 // channel only when their expectations are equal.
 type channelExpectation struct {
-	userID string
-	pin    tunnelpkg.KeyPinStore
+	userID         string
+	pin            tunnelpkg.KeyPinStore
+	channelOptions *tunnelpkg.OpenChannelOptions
+	credentialKey  [32]byte
 	// keysHex is the composite encoding NewExpectedWorkerKeyPin decodes. It is
 	// the input for the per-open pin and, once normalized to lowercase, for
 	// the cache identity. Empty means no expectation:
@@ -246,6 +268,7 @@ func (p *channelPool) getOrOpen(
 		workerID:       workerID,
 		expectedUserID: expect.userID,
 		expectedKeys:   strings.ToLower(expect.keysHex),
+		credentialKey:  expect.credentialKey,
 	}
 	if ch := activeEpoch.cache[key]; ch != nil {
 		if !ch.closed() {
@@ -266,7 +289,9 @@ func (p *channelPool) getOrOpen(
 		activeEpoch.inflight[key] = open
 		activeEpoch.opening.Add(1)
 		opts := tunnelpkg.OpenChannelOptions{}
-		if activeEpoch.chanOpts != nil {
+		if expect.channelOptions != nil {
+			opts = *expect.channelOptions
+		} else if activeEpoch.chanOpts != nil {
 			opts = *activeEpoch.chanOpts
 		}
 		opts.LifetimeContext = activeEpoch.ctx
@@ -368,7 +393,7 @@ func (p *channelPool) watchChannelClose(epoch *channelEpoch, key channelKey, ch 
 	}
 	p.mu.Unlock()
 
-	<-ch.handle.CloseDone()
+	<-ch.transport.CloseDone()
 	p.mu.Lock()
 	if epoch == p.epoch {
 		delete(epoch.channels, ch)

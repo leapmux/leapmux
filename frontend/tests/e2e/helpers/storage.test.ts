@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, resetBrowserStorageForTests } from '~/lib/browserStorage'
-import { IDB_NATIVE_SCHEMA_VERSION } from '~/lib/idb'
+import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '~/lib/idb'
 import { testKeyPinHex } from '~/test-support/keyPins'
 import { countRows, databaseStores, deleteEntries, readEntry, storageKeys, waitForStoredEntry, writeEntry } from './storage'
 
@@ -58,6 +58,33 @@ async function databaseNames(): Promise<string[]> {
   return (await indexedDB.databases()).map(database => database.name ?? '').sort()
 }
 
+/** Read one physical database without using the helper's key router. */
+function rawEntry(dbName: string, key: string): Promise<{ v: unknown, e: number } | null> {
+  return new Promise((resolve) => {
+    const request = indexedDB.open(dbName)
+    request.onerror = () => resolve(null)
+    request.onupgradeneeded = () => request.transaction?.abort()
+    request.onsuccess = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains('entries')) {
+        db.close()
+        resolve(null)
+        return
+      }
+      const get = db.transaction('entries', 'readonly').objectStore('entries').get(key)
+      get.onerror = () => {
+        db.close()
+        resolve(null)
+      }
+      get.onsuccess = () => {
+        const row = get.result as { v: unknown, e: number } | undefined
+        db.close()
+        resolve(row ?? null)
+      }
+    }
+  })
+}
+
 describe('pin storage fixture', () => {
   const accountId = 'user-1'
   const key = accountStorageKey(accountId, KEY_KEY_PINS)
@@ -85,7 +112,7 @@ describe('pin storage fixture', () => {
   })
 
   it('refuses cleanup of an absent database without blocking the first pin open', async () => {
-    await expect(deleteEntries(page, [key])).rejects.toThrow('the database leapmux-kv has no object store entries')
+    await expect(deleteEntries(page, [key])).rejects.toThrow(`the database ${IDB_TRUST_DATABASE_NAME} has no object store entries`)
     await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins: {}, removalRevision: 0 })
   })
 
@@ -102,7 +129,7 @@ describe('pin storage fixture', () => {
 
   it('rejects and closes the database when the declared store has the wrong key path', async () => {
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open('leapmux-kv', IDB_NATIVE_SCHEMA_VERSION)
+      const request = indexedDB.open(IDB_TRUST_DATABASE_NAME, IDB_NATIVE_SCHEMA_VERSION)
       request.onerror = () => reject(request.error)
       request.onupgradeneeded = () => {
         request.result.createObjectStore('entries', { keyPath: 'wrong' }).createIndex('e', 'e')
@@ -115,7 +142,7 @@ describe('pin storage fixture', () => {
 
     await expect(writeEntry(page, key, {}, NEVER)).rejects.toMatchObject({ name: 'DataError' })
     await expect(new Promise<void>((resolve, reject) => {
-      const request = indexedDB.deleteDatabase('leapmux-kv')
+      const request = indexedDB.deleteDatabase(IDB_TRUST_DATABASE_NAME)
       request.onerror = () => reject(request.error)
       request.onblocked = () => reject(new Error('the failed write left the database open'))
       request.onsuccess = () => resolve()
@@ -161,6 +188,26 @@ describe('deleteEntries', () => {
     await storeRows()
     await expect(deleteEntries(page, [heights, theme])).resolves.toBe(2)
     expect(await storageKeys(page)).toEqual([draft])
+  })
+
+  it('deletes preference and trust rows from their owning databases', async () => {
+    const pin = accountStorageKey('user-1', KEY_KEY_PINS)
+    await writeEntry(page, draft, 'draft', NEVER)
+    await writeEntry(page, pin, {}, NEVER)
+
+    await expect(deleteEntries(page, [draft, pin])).resolves.toBe(2)
+    await expect(readEntry(page, draft)).resolves.toBeNull()
+    await expect(readEntry(page, pin)).resolves.toBeNull()
+  })
+
+  it('keeps a variable preference suffix that resembles a pin in preferences', async () => {
+    const lookalike = accountStorageKey('user-1', 'files-show-hidden:w1:/repo/:key-pins')
+    await writeEntry(page, lookalike, true, NEVER)
+
+    const preference = await rawEntry('leapmux-kv', lookalike)
+    const trust = await rawEntry(IDB_TRUST_DATABASE_NAME, lookalike)
+    expect(preference).toMatchObject({ v: true })
+    expect(trust).toBeNull()
   })
 
   it('does not count a listed key that holds no row, nor a key that the list repeats', async () => {

@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { IDB_NATIVE_SCHEMA_VERSION } from '../../../src/lib/idb'
+import { KEY_KEY_PINS, KEY_KEY_PINS_REMOVAL_REVISION, parseStoredKey } from '../../../src/lib/browserStorage'
+import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '../../../src/lib/idb'
 
 /**
  * The browser-storage databases, as an E2E spec reaches them.
@@ -22,6 +23,14 @@ import { IDB_NATIVE_SCHEMA_VERSION } from '../../../src/lib/idb'
 
 const DB_NAME = 'leapmux-kv'
 const TABLE = 'entries'
+
+function databaseForStoredKey(storedKey: string): string {
+  const parsed = parseStoredKey(storedKey)
+  return parsed?.scope === 'account'
+    && (parsed.name === KEY_KEY_PINS || parsed.name === KEY_KEY_PINS_REMOVAL_REVISION)
+    ? IDB_TRUST_DATABASE_NAME
+    : DB_NAME
+}
 
 /** One stored row, as the gateway writes it. */
 export interface StoredEntry {
@@ -56,7 +65,11 @@ export async function readEntry(page: Page, storedKey: string): Promise<StoredEn
           : { v: row.v, e: row.e })
       }
     }
-  }), [DB_NAME, TABLE, storedKey] as const)
+  }), [
+    databaseForStoredKey(storedKey),
+    TABLE,
+    storedKey,
+  ] as const)
 }
 
 /**
@@ -104,7 +117,7 @@ export async function writeEntry(page: Page, storedKey: string, value: unknown, 
       }
     }
   }), [
-    DB_NAME,
+    databaseForStoredKey(storedKey),
     IDB_NATIVE_SCHEMA_VERSION,
     TABLE,
     storedKey,
@@ -115,8 +128,19 @@ export async function writeEntry(page: Page, storedKey: string, value: unknown, 
 
 /** Every stored key, sorted. For a spec asserting which keys exist at all. */
 export async function storageKeys(page: Page): Promise<string[]> {
-  return page.evaluate(([dbName, table]) => new Promise<string[]>((resolve) => {
-    const request = indexedDB.open(dbName)
+  const [ordinary, trust] = await Promise.all([
+    storageKeysFromDatabase(page, DB_NAME),
+    storageKeysFromDatabase(page, IDB_TRUST_DATABASE_NAME),
+  ])
+  return [
+    ...ordinary,
+    ...trust,
+  ].sort()
+}
+
+async function storageKeysFromDatabase(page: Page, dbName: string): Promise<string[]> {
+  return page.evaluate(([name, table]) => new Promise<string[]>((resolve) => {
+    const request = indexedDB.open(name)
     request.onerror = () => resolve([])
     request.onupgradeneeded = () => request.transaction?.abort()
     request.onsuccess = () => {
@@ -136,7 +160,7 @@ export async function storageKeys(page: Page): Promise<string[]> {
         resolve((keys.result as string[]).slice().sort())
       }
     }
-  }), [DB_NAME, TABLE] as const)
+  }), [dbName, TABLE] as const)
 }
 
 /**
@@ -147,6 +171,22 @@ export async function storageKeys(page: Page): Promise<string[]> {
  * zero count would hide that the caller never reached the store it meant to clean.
  */
 export async function deleteEntries(page: Page, storedKeys: readonly string[]): Promise<number> {
+  if (storedKeys.length === 0)
+    return deleteEntriesFromDatabase(page, DB_NAME, [])
+  const groups = new Map<string, string[]>()
+  for (const key of storedKeys) {
+    const database = databaseForStoredKey(key)
+    const keys = groups.get(database) ?? []
+    keys.push(key)
+    groups.set(database, keys)
+  }
+  let deleted = 0
+  for (const [database, keys] of groups)
+    deleted += await deleteEntriesFromDatabase(page, database, keys)
+  return deleted
+}
+
+async function deleteEntriesFromDatabase(page: Page, dbName: string, storedKeys: readonly string[]): Promise<number> {
   return page.evaluate(([dbName, table, keys]) => new Promise<number>((resolve, reject) => {
     const request = indexedDB.open(dbName)
     let missingDatabase = false
@@ -187,17 +227,19 @@ export async function deleteEntries(page: Page, storedKeys: readonly string[]): 
         reject(new Error(`could not delete from ${table}`))
       }
     }
-  }), [DB_NAME, TABLE, storedKeys] as const)
+  }), [dbName, TABLE, storedKeys] as const)
 }
 
 /** Delete the whole database, so a spec can prove nothing in it holds a session. */
 export async function deleteStorageDatabase(page: Page): Promise<void> {
-  await page.evaluate(dbName => new Promise<void>((resolve) => {
-    const request = indexedDB.deleteDatabase(dbName)
-    request.onsuccess = () => resolve()
-    request.onerror = () => resolve()
-    request.onblocked = () => resolve()
-  }), DB_NAME)
+  for (const database of [DB_NAME, IDB_TRUST_DATABASE_NAME]) {
+    await page.evaluate(dbName => new Promise<void>((resolve) => {
+      const request = indexedDB.deleteDatabase(dbName)
+      request.onsuccess = () => resolve()
+      request.onerror = () => resolve()
+      request.onblocked = () => resolve()
+    }), database)
+  }
 }
 
 /**

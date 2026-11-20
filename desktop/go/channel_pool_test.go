@@ -179,7 +179,7 @@ func TestChannelPool_LiveReResolvesWhenLifetimeCancelled(t *testing.T) {
 	defer func() { p.rotate().close() }()
 
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
-	dying := &managedChannel{handle: &fakeChannel{ctx: lifetimeCtx, cancel: cancelLifetime, closeDone: make(chan struct{})}}
+	dying := &managedChannel{transport: &fakeChannel{ctx: lifetimeCtx, cancel: cancelLifetime, closeDone: make(chan struct{})}}
 	fresh, _ := newTestManagedChannel()
 	channels := []*managedChannel{dying, fresh}
 	openCalls := 0

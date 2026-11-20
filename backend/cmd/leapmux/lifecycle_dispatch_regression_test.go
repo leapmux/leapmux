@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
@@ -31,7 +32,7 @@ func TestWorkerPinListForwardsItsArguments(t *testing.T) {
 	for _, args := range [][]string{{"--data-dir", selected}, {"--data-dir=" + selected}} {
 		result := invokeLifecycleCLI(t, home, append([]string{"worker", "cross-worker-pins", "list"}, args...)...)
 		require.Zero(t, result.exitCode, result.stderr)
-		var pins map[string]crossworker.PinEntry
+		var pins map[string]tofupins.Entry
 		require.NoError(t, json.Unmarshal([]byte(result.stdout), &pins))
 		require.Contains(t, pins, "selected-worker")
 		assert.NotContains(t, pins, "default-worker")
@@ -51,7 +52,7 @@ func TestWorkerPinRemoveUpdatesAnExistingHandle(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, commit(t.Context()))
 	}
-	before, err := store.List(t.Context())
+	before, err := store.Snapshot(t.Context())
 	require.NoError(t, err)
 	require.Len(t, before, 2)
 	waitingCommit, err := store.Resolve(t.Context(), "worker-to-remove", []byte{1}, []byte{2}, []byte{3})
@@ -62,9 +63,9 @@ func TestWorkerPinRemoveUpdatesAnExistingHandle(t *testing.T) {
 	require.Zero(t, result.exitCode, result.stderr)
 	assert.JSONEq(t, `{"removed_target_worker_id":"worker-to-remove"}`, result.stdout)
 	require.ErrorContains(t, waitingCommit(t.Context()), "removal revision changed")
-	after, err := store.List(t.Context())
+	after, err := store.Snapshot(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, map[string]crossworker.PinEntry{"worker-to-keep": before["worker-to-keep"]}, after)
+	assert.Equal(t, map[string]tofupins.Entry{"worker-to-keep": before["worker-to-keep"]}, after)
 }
 
 func TestWorkerPinListAndShowDistinguishReadErrorsFromMissingPins(t *testing.T) {

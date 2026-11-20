@@ -21,6 +21,7 @@ import { deferred, settle } from '~/test-support/async'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
 import { testTunnelKeyApproval as approve } from '~/test-support/workerTrust'
+import { WorkerKeyPinMissingError } from './verifyWorkerKey'
 import { WorkerSectionContent } from './WorkerSectionContent'
 
 /** A port-forward tunnel, whose label is the one that carries the arrow. */
@@ -55,7 +56,10 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 // The verify button's one action: the browser channel path that resolves the
 // Worker key pin. Mocked so a test sees the call without opening a channel.
 const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
-vi.mock('./verifyWorkerKey', () => ({ verifyWorkerKey }))
+vi.mock('./verifyWorkerKey', async importOriginal => ({
+  ...await importOriginal<typeof import('./verifyWorkerKey')>(),
+  verifyWorkerKey,
+}))
 
 const authState = vi.hoisted(() => ({
   setUserId: undefined as undefined | ((id: string | undefined) => void),
@@ -469,6 +473,35 @@ describe('WorkerSectionContent stopped tunnel rows', () => {
         approval: approve(scope),
       },
     })
+  })
+
+  it('preserves the stopped-row config when its pin was removed', async () => {
+    const worker = makeWorker('w1')
+    verifyWorkerKey.mockRejectedValueOnce(new WorkerKeyPinMissingError())
+    const { onAddTunnel } = renderSection({
+      workers: [worker],
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+
+    const scope = authState.scope!()
+    await vi.waitFor(() => expect(onAddTunnel).toHaveBeenCalledExactlyOnceWith({
+      worker,
+      scope,
+      replacement: {
+        config: {
+          workerId: 'w1',
+          type: 'port_forward',
+          bindAddr: '127.0.0.1',
+          bindPort: 3000,
+          targetAddr: '10.0.0.1',
+          targetPort: 8080,
+        },
+        firstContactRequired: true,
+      },
+    }))
   })
 
   it('ignores review completion after a new scope adopts the same Worker', async () => {

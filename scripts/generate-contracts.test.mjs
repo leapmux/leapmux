@@ -3521,6 +3521,10 @@ describe('checkWorkerVocab / checkDesktop', () => {
     maximized: 'maximized',
     fullscreen: 'fullscreen',
   })
+  const cookies = () => ({
+    plain: 'session',
+    secure: '__Host-session',
+  })
 
   // Supply every event when a fixture must pass the tauriEvents coverage check.
   const events = () => ({
@@ -3548,6 +3552,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -3563,6 +3568,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         devFrontend: 'C_Z',
         agentHelper: 'E_V',
       },
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3577,6 +3583,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: '',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3659,6 +3666,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: {
         ...events(),
         sidecarLog: 'same:event',
@@ -3680,6 +3688,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3698,6 +3707,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         extra: 'D_W',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3712,6 +3722,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: {
         ...events(),
         extra: 'e:x',
@@ -3729,6 +3740,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: {
@@ -3753,6 +3765,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
           agentHelper: 'E_V',
         },
         devFrontendUrl: 'http://localhost:4328',
+        sessionCookies: cookies(),
         tauriEvents: events(),
         ipcHeaders: ipcHeaders(),
         windowBehavior: behavior(),
@@ -3773,6 +3786,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: {
@@ -3796,6 +3810,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: {
@@ -3828,6 +3843,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3848,6 +3864,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3871,6 +3888,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       devFrontendUrl: 'http://localhost:4328',
+      sessionCookies: cookies(),
       tauriEvents: events(),
       ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
@@ -3915,6 +3933,18 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expect(d.envVars.devFrontend).toBe('LEAPMUX_HUB_DEV_FRONTEND')
     expect(emitGoDesktop(d)).toContain('EnvDevFrontend = "LEAPMUX_HUB_DEV_FRONTEND"')
     expect(emitRsDesktop(d)).toContain('pub const ENV_DEV_FRONTEND: &str = "LEAPMUX_HUB_DEV_FRONTEND"')
+  })
+
+  it('emits the Hub session-cookie names to Go and Rust', () => {
+    const d = readContract('desktop')
+    expect(d.sessionCookies).toEqual({
+      plain: 'leapmux-session',
+      secure: '__Host-leapmux-session',
+    })
+    expect(emitGoDesktop(d)).toMatch(/SessionCookieName += "leapmux-session"/)
+    expect(emitGoDesktop(d)).toMatch(/SecureSessionCookieName += "__Host-leapmux-session"/)
+    expect(emitRsDesktop(d)).toContain('pub const SESSION_COOKIE_NAME: &str = "leapmux-session";')
+    expect(emitRsDesktop(d)).toContain('pub const SECURE_SESSION_COOKIE_NAME: &str = "__Host-leapmux-session";')
   })
 
   it('emits the agent helper env var to Go and Rust', () => {

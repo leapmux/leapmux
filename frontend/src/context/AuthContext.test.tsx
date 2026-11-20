@@ -69,6 +69,11 @@ vi.mock('~/api/workerRpc', () => ({
 
 const mockSetTunnelTrustScope = vi.fn<(read: () => WorkerTrustScope) => () => void>(() => () => {})
 const mockResetTunnels = vi.fn<(outgoing: WorkerTrustScope) => Promise<void>>().mockResolvedValue(undefined)
+const mockRetryTunnelReset = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+const mockTunnelResetStatus = vi.hoisted(() => ({
+  failure: null as unknown | null,
+  listener: undefined as undefined | ((failure: unknown | null) => void),
+}))
 // The connected Hub's identity, which `hubOrigin` derives the storage account
 // from. Null is the browser (and solo) case; a remote-Hub-mode test replaces it.
 const mockDesktopHub = vi.hoisted(() => vi.fn<() => { kind: 'solo' } | { kind: 'remote', url: string } | null>(() => null))
@@ -89,7 +94,38 @@ vi.mock('~/api/platformBridge', () => ({
   isTauriApp: () => false,
   platformBridge: {
     setTunnelTrustScope: (read: () => WorkerTrustScope) => mockSetTunnelTrustScope(read),
-    resetTunnels: (outgoing: WorkerTrustScope) => mockResetTunnels(outgoing),
+    onTunnelResetStatusChange: (listener: (failure: unknown | null) => void) => {
+      mockTunnelResetStatus.listener = listener
+      listener(mockTunnelResetStatus.failure)
+      return () => {
+        if (mockTunnelResetStatus.listener === listener)
+          mockTunnelResetStatus.listener = undefined
+      }
+    },
+    resetTunnels: async (outgoing: WorkerTrustScope) => {
+      try {
+        await mockResetTunnels(outgoing)
+        mockTunnelResetStatus.failure = null
+        mockTunnelResetStatus.listener?.(null)
+      }
+      catch (err) {
+        mockTunnelResetStatus.failure = err
+        mockTunnelResetStatus.listener?.(err)
+        throw err
+      }
+    },
+    retryTunnelReset: async () => {
+      try {
+        await mockRetryTunnelReset()
+        mockTunnelResetStatus.failure = null
+        mockTunnelResetStatus.listener?.(null)
+      }
+      catch (err) {
+        mockTunnelResetStatus.failure = err
+        mockTunnelResetStatus.listener?.(err)
+        throw err
+      }
+    },
   },
 }))
 
@@ -220,6 +256,8 @@ describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockResetTunnels.mockReset().mockResolvedValue(undefined)
+    mockRetryTunnelReset.mockReset().mockResolvedValue(undefined)
+    mockTunnelResetStatus.failure = null
     mockLoadSystemInfo.mockResolvedValue(undefined)
     mockPasswordSetupGate.mockReturnValue(false)
   })
@@ -1169,6 +1207,10 @@ describe('AuthContext', () => {
     await settle()
 
     expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
+    expect(auth().tunnelResetError()).toContain('sidecar gone')
+    await auth().retryTunnelReset()
+    expect(mockRetryTunnelReset).toHaveBeenCalledOnce()
+    expect(auth().tunnelResetError()).toBeNull()
   })
 
   describe('workerTrustScope', () => {

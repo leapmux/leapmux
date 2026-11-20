@@ -46,6 +46,9 @@
 import type { DBCoreCursor } from 'dexie'
 import Dexie from 'dexie'
 
+/** Dedicated database for authoritative Worker trust decisions. */
+export const IDB_TRUST_DATABASE_NAME = 'leapmux-trust'
+
 /** Whether persistence can work here at all -- callers short-circuit synchronously on false. */
 export function isIndexedDbAvailable(): boolean {
   return typeof indexedDB !== 'undefined'

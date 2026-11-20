@@ -18,7 +18,7 @@ import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contr
 import { ChannelError } from './channelError'
 import { FIRST_REQUEST_ID } from './channelSessionProtocol'
 import { formatErrorMessage } from './errors'
-import { KeyPinRejectedError } from './keyPinStore'
+import { KeyPinMissingReviewError, KeyPinPresentFirstContactError, KeyPinRejectedError } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
 
 /** Transport slice the open path needs (matches ChannelTransport). */
@@ -103,18 +103,12 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
           ? {}
           : { identitySignal: scope.identity.signal }),
         review: mode === 'review',
+        firstContactReview: mode === 'first-contact-review',
         assertCurrent: scope.assertCurrent,
       })
     }
     catch (err) {
-      signal.throwIfAborted()
-      if (mode === 'review' && err instanceof KeyPinRejectedError)
-        throw err
-      throw err instanceof ChannelError
-        ? err
-        : new ChannelError('client', err instanceof Error
-            ? err.message
-            : formatErrorMessage(err))
+      this.throwPinFailure(err, mode, signal)
     }
 
     // 3. Build handshake message 1 based on encryption mode. Completing the
@@ -238,7 +232,12 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         // 5. Prove the session and commit its pin before offering it to callers.
         await this.deps.verifySession(opening)
         assertOpening()
-        opening.committedPin = await pin.commit()
+        try {
+          opening.committedPin = await pin.commit()
+        }
+        catch (err) {
+          this.throwPinFailure(err, mode, signal)
+        }
         assertOpening()
         opening.state = 'verified'
       }
@@ -288,5 +287,21 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       return { payload, reassembled }
     }
     throw new ChannelError('transport', 'open channel: hub returned no max_message_size', { disconnected: false })
+  }
+
+  private throwPinFailure(err: unknown, mode: ChannelOpenMode, signal: AbortSignal): never {
+    signal.throwIfAborted()
+    if (
+      (mode === 'review'
+        && (err instanceof KeyPinRejectedError || err instanceof KeyPinMissingReviewError))
+      || (mode === 'first-contact-review' && err instanceof KeyPinPresentFirstContactError)
+    ) {
+      throw err
+    }
+    throw err instanceof ChannelError
+      ? err
+      : new ChannelError('client', err instanceof Error
+          ? err.message
+          : formatErrorMessage(err))
   }
 }

@@ -1029,6 +1029,20 @@ interface ScopedTunnelReads {
 
 let scopedTunnelReads: ScopedTunnelReads | undefined
 let pendingTunnelReset: TunnelReset | undefined
+let tunnelResetFailure: unknown | null = null
+const tunnelResetListeners = new Set<(failure: unknown | null) => void>()
+
+function publishTunnelResetFailure(failure: unknown | null): void {
+  tunnelResetFailure = failure
+  for (const listener of tunnelResetListeners)
+    listener(failure)
+}
+
+function onTunnelResetStatusChange(listener: (failure: unknown | null) => void): () => void {
+  tunnelResetListeners.add(listener)
+  listener(tunnelResetFailure)
+  return () => tunnelResetListeners.delete(listener)
+}
 
 function setTunnelTrustScope(readScope: () => WorkerTrustScope): () => void {
   const dispose = setWorkerTrustScopeReader(readScope)
@@ -1102,10 +1116,13 @@ async function performTunnelReset(reset: TunnelReset): Promise<void> {
     reset.channelEpoch ??= (await readNativeTunnels(invoke, reset.outgoingUserId)).channelEpoch
     await invokeTunnel<void>(invoke, 'reset_tunnels', { channelEpoch: reset.channelEpoch })
     pendingTunnelReset = undefined
+    publishTunnelResetFailure(null)
   }
   catch (cause) {
     reset.failed = true
-    throw new Error('Retry the tunnel action to finish the desktop tunnel reset.', { cause })
+    const failure = new Error('Retry the tunnel action to finish the desktop tunnel reset.', { cause })
+    publishTunnelResetFailure(failure)
+    throw failure
   }
 }
 
@@ -1144,6 +1161,10 @@ async function waitForTunnelReset(explicit: boolean): Promise<void> {
     reset.attempt = performTunnelReset(reset)
   }
   await reset.attempt
+}
+
+async function retryTunnelReset(): Promise<void> {
+  await waitForTunnelReset(true)
 }
 
 async function mutateTunnels<T>(
@@ -1314,7 +1335,9 @@ export const platformBridge = {
     await refreshRuntimeState()
   },
   setTunnelTrustScope,
+  onTunnelResetStatusChange,
   resetTunnels,
+  retryTunnelReset,
   createTunnel(config: TunnelConfig, scope: WorkerTrustScope, resolveTrust: () => Promise<string>): Promise<CreateTunnelResult> {
     return mutateTunnels(scope, async (invoke, { channelEpoch }) => {
       const expectedWorkerKeysHex = await resolveTrust()

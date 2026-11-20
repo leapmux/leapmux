@@ -6,12 +6,13 @@ import type { TunnelStore } from '~/stores/tunnel.store'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TunnelKeyApprovalExpiredError } from '~/api/workerRpc'
+import { TunnelKeyApprovalExpiredError, TunnelKeyPinMissingError } from '~/api/workerRpc'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { deferred, settle } from '~/test-support/async'
 import { testTunnelKeyApproval as approve } from '~/test-support/workerTrust'
 import { AddTunnelDialog } from './AddTunnelDialog'
+import { WorkerKeyPinMissingError, WorkerKeyPinPresentError } from './verifyWorkerKey'
 
 beforeAll(() => {
   HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
@@ -37,7 +38,12 @@ vi.mock('~/context/AuthContext', async () => {
 })
 
 const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
-vi.mock('./verifyWorkerKey', () => ({ verifyWorkerKey }))
+const trustWorkerOnFirstContact = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
+vi.mock('./verifyWorkerKey', async importOriginal => ({
+  ...await importOriginal<typeof import('./verifyWorkerKey')>(),
+  trustWorkerOnFirstContact,
+  verifyWorkerKey,
+}))
 
 function createMockTunnelStore(overrides?: Partial<TunnelStore>): TunnelStore {
   return {
@@ -112,6 +118,8 @@ beforeEach(() => {
   authState.setUserId?.('user-1')
   verifyWorkerKey.mockReset()
   verifyWorkerKey.mockImplementation(async (_worker, scope) => approve(scope))
+  trustWorkerOnFirstContact.mockReset()
+  trustWorkerOnFirstContact.mockImplementation(async (_worker, scope) => approve(scope))
 })
 
 afterEach(() => vi.useRealTimers())
@@ -482,6 +490,125 @@ describe('AddTunnelDialog key trust', () => {
     expect(screen.getByTestId('tunnel-create')).toBeDisabled()
     submit()
     expect(add).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a replacement through explicit first-contact recovery', async () => {
+    vi.useFakeTimers()
+    const scope = authState.scope!()
+    const replacement = {
+      config: {
+        workerId: 'w1',
+        type: 'port_forward' as const,
+        targetAddr: 'internal.example',
+        targetPort: 8443,
+        bindAddr: '127.0.0.1',
+        bindPort: 9443,
+      },
+      approval: approve(scope),
+    }
+    const add = vi.fn()
+      .mockRejectedValueOnce(new TunnelKeyPinMissingError())
+      .mockResolvedValueOnce({
+        kind: 'created',
+        info: { id: 'created' },
+      })
+    const { onCreated } = renderDialog({
+      replacement,
+      store: { add },
+    })
+
+    submit()
+    await vi.advanceTimersByTimeAsync(0)
+    const trust = screen.getByTestId('tunnel-trust-first-contact')
+    expect(screen.getByTestId('target-addr')).toHaveValue('internal.example')
+    fireEvent.click(trust)
+    await vi.waitFor(() => expect(trustWorkerOnFirstContact).toHaveBeenCalledExactlyOnceWith(
+      'w1',
+      scope,
+      expect.any(AbortSignal),
+    ))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(screen.getByTestId('tunnel-create')).toBeEnabled()
+    expect(add).toHaveBeenCalledOnce()
+
+    submit()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(add).toHaveBeenLastCalledWith(replacement.config, scope, approve(scope))
+    expect(onCreated).toHaveBeenCalledOnce()
+  })
+
+  it('switches a replacement review to first contact when its pin disappears', async () => {
+    const scope = authState.scope!()
+    const replacement = {
+      config: {
+        workerId: 'w1',
+        type: 'port_forward' as const,
+        targetAddr: 'internal.example',
+        targetPort: 8443,
+        bindAddr: '127.0.0.1',
+        bindPort: 9443,
+      },
+      approval: approve(scope),
+    }
+    const add = vi.fn().mockRejectedValueOnce(new TunnelKeyApprovalExpiredError())
+    verifyWorkerKey.mockRejectedValueOnce(new WorkerKeyPinMissingError())
+    renderDialog({
+      replacement,
+      store: { add },
+    })
+
+    fireEvent.input(screen.getByTestId('target-addr'), {
+      target: { value: 'edited.internal' },
+    })
+    submit()
+    await screen.findByTestId('tunnel-verify-key')
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+
+    expect(await screen.findByTestId('tunnel-trust-first-contact')).toBeInTheDocument()
+    expect(screen.getByTestId('target-addr')).toHaveValue('edited.internal')
+    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
+  })
+
+  it('switches first contact to stored-key review when another tab pins the Worker', async () => {
+    const scope = authState.scope!()
+    const approval = approve(scope)
+    const replacement = {
+      config: {
+        workerId: 'w1',
+        type: 'port_forward' as const,
+        targetAddr: 'internal.example',
+        targetPort: 8443,
+        bindAddr: '127.0.0.1',
+        bindPort: 9443,
+      },
+      firstContactRequired: true as const,
+    }
+    const add = vi.fn().mockResolvedValue({
+      kind: 'created',
+      info: { id: 'created' },
+    })
+    trustWorkerOnFirstContact.mockRejectedValueOnce(new WorkerKeyPinPresentError())
+    verifyWorkerKey.mockResolvedValueOnce(approval)
+    renderDialog({
+      replacement,
+      store: { add },
+    })
+
+    fireEvent.input(screen.getByTestId('target-addr'), {
+      target: { value: 'edited.internal' },
+    })
+    fireEvent.click(screen.getByTestId('tunnel-trust-first-contact'))
+    expect(await screen.findByTestId('tunnel-verify-key')).toBeInTheDocument()
+    expect(screen.getByTestId('target-addr')).toHaveValue('edited.internal')
+
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+    await vi.waitFor(() => expect(screen.getByTestId('tunnel-create')).toBeEnabled())
+    submit()
+    await vi.waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith(
+      { ...replacement.config, targetAddr: 'edited.internal' },
+      scope,
+      approval,
+    ))
   })
 
   it('aborts a pending review when the form closes', async () => {
