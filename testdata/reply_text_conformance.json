@@ -651,6 +651,80 @@
       "reply": null
     },
     {
+      "name": "kimi: reads a canonical assistant item",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "\ufeff The first reply. \n"}},
+      "reply": "The first reply."
+    },
+    {
+      "name": "kimi: uses a correction for the same native item",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "\ufeff The first reply. \n"}},
+      "supplemental": {"provider": {"kimi_conversation": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "The corrected reply."}}}},
+      "reply": "The corrected reply."
+    },
+    {
+      "name": "kimi: ignores a correction from another step",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "\ufeff The first reply. \n"}},
+      "supplemental": {"provider": {"kimi_conversation": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 2, "text": "The corrected reply."}}}},
+      "reply": "The first reply."
+    },
+    {
+      "name": "kimi: ignores a correction from another row session",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "other-session",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "\ufeff The first reply. \n"}},
+      "supplemental": {"provider": {"kimi_conversation": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "The corrected reply."}}}},
+      "reply": "The first reply."
+    },
+    {
+      "name": "kimi: hides a hook result on a blocked turn",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "<hook_result hook_event=\"UserPromptSubmit\">\nUse the workspace policy.\n</hook_result>"}},
+      "supplemental": {"provider": {"kimi_conversation": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "<hook_result hook_event=\"UserPromptSubmit\">\nUse the workspace policy.\n</hook_result>"}, "turn_context": {"turn_id": "turn-kimi", "kind": "agent", "status": "ended", "outcome": "failed", "end_reason": "blocked"}}}},
+      "reply": null
+    },
+    {
+      "name": "kimi: keeps hook markup in an ordinary reply",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "<hook_result hook_event=\"UserPromptSubmit\">\nUse the workspace policy.\n</hook_result>"}},
+      "reply": "<hook_result hook_event=\"UserPromptSubmit\">\nUse the workspace policy.\n</hook_result>"
+    },
+    {
+      "name": "kimi: keeps plain assistant text from a blocked turn",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "An ordinary reply from the blocked turn."}, "turn_context": {"turn_id": "turn-kimi", "kind": "agent", "status": "ended", "outcome": "failed", "end_reason": "blocked"}},
+      "reply": "An ordinary reply from the blocked turn."
+    },
+    {
+      "name": "kimi: excludes reasoning",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "reasoning", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "\ufeff The first reply. \n", "started_at": "2026-11-20T00:00:00Z"}},
+      "reply": null
+    },
+    {
+      "name": "kimi: excludes a blank assistant item",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": "\n \ufeff"}},
+      "reply": null
+    },
+    {
+      "name": "kimi: excludes a malformed assistant item",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "agent_session_id": "session-kimi",
+      "content": {"type": "leapmux.kimi.item", "session_id": "session-kimi", "agent_id": "agent-0", "turn_id": "turn-kimi", "role": "item", "item": {"type": "assistant_message", "item_id": "reply-item", "created_at": "2026-11-20T00:00:00Z", "status": "ended", "step_index": 1, "text": 42}},
+      "reply": null
+    },
+    {
       "name": "mimo: an assembled text row",
       "provider": "AGENT_PROVIDER_MIMO_CODE",
       "content": { "type": "assembled_message", "kind": "text", "text": "The change is ready.", "completion": "complete" },
