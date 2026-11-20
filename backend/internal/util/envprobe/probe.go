@@ -18,6 +18,8 @@ import (
 
 const Argument = "--leapmux-internal-env-probe"
 
+const ObservationKey = "environment"
+
 const responsePrefix = "\x00__LEAPMUX_NATIVE_ENV__\x00"
 
 var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -38,6 +40,8 @@ type Snapshot struct {
 	Values     map[string]string `json:"values"`
 	WorkingDir string            `json:"workingDir"`
 	Paths      map[string]string `json:"paths,omitempty"`
+	// Present distinguishes an unset variable from an exported empty value in a launch observation.
+	Present map[string]bool `json:"present,omitempty"`
 }
 
 func (r Request) Validate() error {
@@ -116,8 +120,12 @@ func Run(args []string, stdout, stderr io.Writer) (exitCode int, handled bool) {
 			// Observation record: a leading newline, then the prefixed record,
 			// then a trailing newline. The consumer parses this before the
 			// ready delimiter.
-			encoded := requestEncoding.EncodeToString(mustJSON(snapshot))
-			_, err = fmt.Fprintf(stdout, "\n%senvironment=%s\n", request.ObservationPrefix, encoded)
+			var snapshotJSON []byte
+			snapshotJSON, err = json.Marshal(snapshot)
+			if err == nil {
+				encoded := requestEncoding.EncodeToString(snapshotJSON)
+				_, err = fmt.Fprintf(stdout, "\n%s%s=%s\n", request.ObservationPrefix, ObservationKey, encoded)
+			}
 		} else {
 			_, err = io.WriteString(stdout, responsePrefix)
 			if err == nil {
@@ -135,14 +143,6 @@ func Run(args []string, stdout, stderr io.Writer) (exitCode int, handled bool) {
 	return 0, true
 }
 
-func mustJSON(v any) []byte {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return data
-}
-
 func capture(request Request) (Snapshot, error) {
 	// os.Getwd can return logical PWD on Unix. Native runtimes use the actual
 	// process directory, so read it directly from the operating system instead.
@@ -151,12 +151,22 @@ func capture(request Request) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	snapshot := Snapshot{Values: map[string]string{}, WorkingDir: workingDir, Paths: map[string]string{}}
+	if request.ObservationPrefix != "" {
+		snapshot.Present = make(map[string]bool, len(request.Variables)+len(request.PathVariables))
+	}
+	readVariable := func(name string) string {
+		value, present := os.LookupEnv(name)
+		snapshot.Values[name] = value
+		if snapshot.Present != nil {
+			snapshot.Present[name] = present
+		}
+		return value
+	}
 	for _, name := range request.Variables {
-		snapshot.Values[name] = os.Getenv(name)
+		readVariable(name)
 	}
 	for name, cutset := range request.PathVariables {
-		value := os.Getenv(name)
-		snapshot.Values[name] = value
+		value := readVariable(name)
 		value = strings.Trim(value, cutset)
 		if value == "" {
 			snapshot.Paths[name] = ""

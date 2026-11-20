@@ -7,17 +7,47 @@ import (
 
 // TranscriptWriteReceipt derives one reset boundary from a committed storage result.
 type TranscriptWriteReceipt struct {
-	orderedMu       sync.Mutex
-	ordered         *orderedOutputRecord
-	messageSequence atomic.Int64
-	created         atomic.Bool
-	resetClaimed    atomic.Bool
-	sourceClaimed   atomic.Bool
-	usageClaimed    atomic.Bool
-	outputClaimed   atomic.Bool
+	orderedMu        sync.Mutex
+	ordered          *orderedOutputRecord
+	messageSequence  atomic.Int64
+	messageAdmission atomic.Uint32
+	created          atomic.Bool
+	resetClaimed     atomic.Bool
+	sourceClaimed    atomic.Bool
+	usageClaimed     atomic.Bool
+	outputClaimed    atomic.Bool
 }
 
 func NewTranscriptWriteReceipt() *TranscriptWriteReceipt { return &TranscriptWriteReceipt{} }
+
+const (
+	transcriptAdmissionAccepted uint32 = iota + 1
+	transcriptAdmissionRetracted
+)
+
+// AdmitMessage reads a revocable frame's receipt at its active queue position.
+// Storage failure leaves the admission unset for retry before any effects.
+func (receipt *TranscriptWriteReceipt) AdmitMessage(writer TranscriptServices, content MessageContent) (bool, error) {
+	if content.IdempotencyKey == "" {
+		return true, nil
+	}
+	switch receipt.messageAdmission.Load() {
+	case transcriptAdmissionAccepted:
+		return true, nil
+	case transcriptAdmissionRetracted:
+		return false, nil
+	}
+	retracted, err := writer.IsMessageRetracted(content, content.IdempotencyKey)
+	if err != nil {
+		return false, err
+	}
+	if retracted {
+		receipt.messageAdmission.Store(transcriptAdmissionRetracted)
+		return false, nil
+	}
+	receipt.messageAdmission.Store(transcriptAdmissionAccepted)
+	return true, nil
+}
 
 // RecordStoredMessage fixes the first committed sequence before message publication.
 // This data changes no effect eligibility or claim.

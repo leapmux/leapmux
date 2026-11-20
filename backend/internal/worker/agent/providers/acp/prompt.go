@@ -28,6 +28,9 @@ func (b *Base) SendPreparedPrompt(content string, attachments []*leapmuxv1.Attac
 
 // The response wait runs separately and does not hold sessionMu.
 func (b *Base) sendPreparedPromptForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, prepare func(string) error) error {
+	if b.inputAdmissionClosed() {
+		return errors.New("agent is stopped")
+	}
 	releaseOperation, operationErr := b.rootCallbacks.acquire()
 	if operationErr != nil {
 		return operationErr
@@ -91,7 +94,7 @@ func (b *Base) claimPromptLocked(expected *string) (string, error) {
 	if b.sessionID == "" {
 		return "", fmt.Errorf("agent has no active session")
 	}
-	if b.StoppedLocked() {
+	if b.inputAdmissionClosedLocked() {
 		return "", fmt.Errorf("agent is stopped")
 	}
 	if b.promptActive {
@@ -167,11 +170,14 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 
 // SendPromptDetached keeps validation and the write in the captured root session.
 func (b *Base) SendPromptDetached(sessionID, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	if b.inputAdmissionClosed() {
+		return errors.New("agent is stopped")
+	}
 	b.sessionMu.Lock()
 	defer b.sessionMu.Unlock()
 	b.Mu.Lock()
 	err := providerkit.CheckInputSession(&sessionID, b.sessionID)
-	stopped := b.StoppedLocked()
+	stopped := b.inputAdmissionClosedLocked()
 	b.Mu.Unlock()
 	if err != nil {
 		return err
@@ -261,7 +267,7 @@ func (b *Base) preparePromptBlocks(sessionID, content string, attachments []*lea
 // the answer when the turn ends. The provider's PromptParams hook does not
 // run: it states the settings of the main session.
 func (b *Base) SendChildPromptDetached(target ChildSessionTarget, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
-	if !target.valid() {
+	if !target.valid() || b.inputAdmissionClosed() {
 		return agent.ErrChildRouteNotReady
 	}
 	release, admitted := b.childDispatch.acquire(b.Context())
@@ -272,7 +278,7 @@ func (b *Base) SendChildPromptDetached(target ChildSessionTarget, content string
 	b.sessionMu.Lock()
 	defer b.sessionMu.Unlock()
 	b.Mu.Lock()
-	current := b.sessionID == target.RootSessionID && !b.StoppedLocked()
+	current := b.sessionID == target.RootSessionID && !b.inputAdmissionClosedLocked()
 	b.Mu.Unlock()
 	if !current || b.childSessionRow(target.SessionID) != target.RowKey {
 		return agent.ErrChildRouteNotReady

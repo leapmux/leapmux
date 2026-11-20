@@ -13,6 +13,7 @@ import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { parseMessageContent } from '~/lib/messageParser'
 import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
+import { linkWatchSignal } from '~/stores/chatHistoryPaginator'
 import { preferNewerSupplement } from '~/stores/chatMessageOrder'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createFileImageResolver, NO_FILE_IMAGES } from './fileImageResolver'
@@ -201,6 +202,7 @@ interface InflightLookup {
   controller: AbortController
   promise: Promise<unknown>
   retractions: RetractedMessage[]
+  target: { span: MessageSpanIdentity } | { seq: bigint }
 }
 
 function newestRelatedMessage(first: AgentChatMessage | undefined, second: AgentChatMessage | undefined): AgentChatMessage | undefined {
@@ -226,6 +228,8 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   // These pairs coexisted in the window before one side was evicted.
   const retainedPairs = new Set<string>()
   const leases = new Map<string, number>()
+  // A settled lookup can leave no cache entries while its reader still needs it.
+  const spanDemand = new Map<string, MessageSpanIdentity>()
   const renderGraceSpans = new Set<string>()
   const messageLeases = new Map<bigint, number>()
   const inflight = new Map<string, InflightLookup>()
@@ -250,6 +254,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     loadedSpans.clear()
     retainedPairs.clear()
     leases.clear()
+    spanDemand.clear()
     renderGraceSpans.clear()
     messageLeases.clear()
     spans.reindex(source.scopeKey, [])
@@ -459,6 +464,10 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (!retainedIds.has(id))
         resolved.delete(id)
     }
+    for (const spanId of spanDemand.keys()) {
+      if (!leases.has(spanId) && !renderGraceSpans.has(spanId))
+        spanDemand.delete(spanId)
+    }
     for (const spanId of loadedSpans) {
       if (!retainedSpans.has(spanId))
         loadedSpans.delete(spanId)
@@ -536,13 +545,66 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       publishCacheChange(true)
   }
 
+  function revalidateOnPromotion(signal: AbortSignal): void {
+    if (signal.aborted)
+      return
+    const spansToReload = new Map<string, MessageSpanIdentity>()
+    const pointsToReload = new Set<bigint>()
+    for (const [key, identity] of spanDemand) {
+      if (!source.spanMessage(identity, 'request') || !source.spanMessage(identity, 'result'))
+        spansToReload.set(key, identity)
+    }
+    for (const { target, controller } of inflight.values()) {
+      controller.abort()
+      if ('span' in target)
+        spansToReload.set(messageSpanKey(target.span), target.span)
+      else
+        pointsToReload.add(target.seq)
+    }
+    inflight.clear()
+    for (const seq of messageLeases.keys()) {
+      if (!source.messageBySeq(seq))
+        pointsToReload.add(seq)
+    }
+
+    // Invalidating the off-window cache also removes pairs retained by a trim.
+    // A resident row still belongs to the history window's reconciliation.
+    let changed = false
+    for (const [id, cached] of fetched) {
+      if (source.messageBySeq(cached.seq)?.id === id)
+        continue
+      if (cached.spanId) {
+        const identity = messageSpanIdentity(cached)
+        const key = messageSpanKey(identity)
+        if (leases.has(key) || renderGraceSpans.has(key) || source.spanMessage(identity, 'request') || source.spanMessage(identity, 'result'))
+          spansToReload.set(key, identity)
+        loadedSpans.delete(key)
+        retainedPairs.delete(key)
+      }
+      changed = removeFetched(id) || changed
+    }
+    if (changed)
+      publishCacheChange(true)
+
+    const reportFailure = (error: unknown): void => {
+      if (!disposed && !signal.aborted)
+        console.warn('Failed to refresh a related message', error)
+    }
+    for (const identity of spansToReload.values())
+      void fetchWholeSpan(identity, signal).catch(reportFailure)
+    for (const seq of pointsToReload)
+      void message(seq, signal).catch(reportFailure)
+  }
+
   const unsubscribeWindow = source.subscribeWindowChanges?.(change => untrack(() => {
     if (disposed)
       return
     if (change.kind === 'eviction')
       retainEvictedPairs(change.dropped, change.kept)
-    else
+    else if (change.kind === 'retraction')
       retract(change.includes)
+    else
+      batch(() => revalidateOnPromotion(change.signal))
   }))
   const unsubscribe = source.subscribe(message => untrack(() => {
     if (disposed)
@@ -595,15 +657,18 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
    * Fetch every message of the span of `identity`, and mark the span as settled. A second
    * caller while the fetch runs shares it.
    */
-  function fetchWholeSpan(identity: MessageSpanIdentity): Promise<void> {
+  function fetchWholeSpan(identity: MessageSpanIdentity, watchSignal?: AbortSignal): Promise<void> {
     const spanId = messageSpanKey(identity)
     // Fetching must not subscribe the caller to cache changes that the fetch causes.
     return untrack(async () => {
+      if (leases.has(spanId) || renderGraceSpans.has(spanId))
+        spanDemand.set(spanId, messageSpanIdentity(identity))
       const key = `span:${spanId}`
       const running = inflight.get(key)
       if (running)
         return running.promise as Promise<void>
       const controller = new AbortController()
+      const unlinkWatch = linkWatchSignal(controller, watchSignal)
       const retractions: RetractedMessage[] = []
       const promise = source.fetchSpan(identity, controller.signal).then((messages) => {
         if (disposed || controller.signal.aborted)
@@ -624,15 +689,21 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
           remember(accepted)
         })
       }).finally(() => {
+        unlinkWatch()
         if (inflight.get(key)?.controller === controller)
           inflight.delete(key)
       })
-      inflight.set(key, { controller, promise, retractions })
+      inflight.set(key, {
+        controller,
+        promise,
+        retractions,
+        target: { span: identity },
+      })
       return promise
     })
   }
 
-  function message(seq: bigint): Promise<ResolvedMessage | undefined> {
+  function message(seq: bigint, watchSignal?: AbortSignal): Promise<ResolvedMessage | undefined> {
     return untrack(async () => {
       if (seq <= 0n)
         return undefined
@@ -646,6 +717,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (running)
         return running.promise as Promise<ResolvedMessage | undefined>
       const controller = new AbortController()
+      const unlinkWatch = linkWatchSignal(controller, watchSignal)
       const retractions: RetractedMessage[] = []
       const promise = source.fetchMessage(seq, controller.signal).then((fetchedMessage) => {
         if (disposed || controller.signal.aborted)
@@ -665,10 +737,16 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
           remember([selected])
         return reference(selected, undefined, false)
       }).finally(() => {
+        unlinkWatch()
         if (inflight.get(key)?.controller === controller)
           inflight.delete(key)
       })
-      inflight.set(key, { controller, promise, retractions })
+      inflight.set(key, {
+        controller,
+        promise,
+        retractions,
+        target: { seq },
+      })
       return promise
     })
   }

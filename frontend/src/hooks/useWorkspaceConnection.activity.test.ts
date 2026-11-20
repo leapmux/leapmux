@@ -19,6 +19,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
+import { createTestWatchHandle } from '~/test-support/watchEvents'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -71,6 +72,11 @@ function streamOpts(): UseWatchEventsStreamsOpts {
 
 const WS = 'ws-activity-dispatch'
 const WORKER = 'w-1'
+
+const watchHandle = createTestWatchHandle()
+function deliverWatchEvent(frame: Parameters<UseWatchEventsStreamsOpts['onEvent']>[1]): void {
+  streamOpts().onEvent(WORKER, frame, watchHandle)
+}
 
 /**
  * Two agent tabs on one worker, with the activity store and the alert exposed.
@@ -176,7 +182,7 @@ describe('useWorkspaceConnection catchUpStart activity', () => {
     // The client watched this turn start.
     activity.apply('a1', AgentActivityState.WORKING)
 
-    streamOpts().onEvent(WORKER, agentEvent('a1', {
+    deliverWatchEvent(agentEvent('a1', {
       case: 'catchUpStart',
       value: { activityState: AgentActivityState.IDLE },
     }))
@@ -189,7 +195,7 @@ describe('useWorkspaceConnection catchUpStart activity', () => {
   it('paints the spinner from the replay baseline before the burst', () => {
     const { dispose, activity, settled } = mountConnection()
 
-    streamOpts().onEvent(WORKER, agentEvent('a1', {
+    deliverWatchEvent(agentEvent('a1', {
       case: 'catchUpStart',
       value: { activityState: AgentActivityState.WORKING },
     }))
@@ -205,11 +211,11 @@ describe('useWorkspaceConnection catchUpStart activity', () => {
     const { dispose, activity, settled } = mountConnection()
     activity.apply('a1', AgentActivityState.WORKING)
 
-    streamOpts().onEvent(WORKER, agentEvent('a1', {
+    deliverWatchEvent(agentEvent('a1', {
       case: 'catchUpStart',
       value: { activityState: AgentActivityState.WORKING },
     }))
-    streamOpts().onEvent(WORKER, agentEvent('a1', {
+    deliverWatchEvent(agentEvent('a1', {
       case: 'activityChanged',
       value: { state: AgentActivityState.IDLE },
     }))
@@ -228,7 +234,7 @@ describe('useWorkspaceConnection replay marking', () => {
   it('badges an off-screen tab for a live control request that races a replay', () => {
     const { dispose, controlStore, tabHasNotification } = mountConnection()
 
-    streamOpts().onEvent(WORKER, agentEvent('a1', {
+    deliverWatchEvent(agentEvent('a1', {
       case: 'controlRequest',
       value: {
         requestId: 'req-1',
@@ -244,7 +250,7 @@ describe('useWorkspaceConnection replay marking', () => {
   it('does not badge for the same request replayed', () => {
     const { dispose, controlStore, tabHasNotification } = mountConnection()
 
-    streamOpts().onEvent(WORKER, agentEvent('a1', {
+    deliverWatchEvent(agentEvent('a1', {
       case: 'controlRequest',
       value: {
         requestId: 'req-1',

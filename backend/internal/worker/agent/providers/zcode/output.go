@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -284,10 +285,6 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	state = providerkit.PublishTurnStateTo(a.sink, state, seq)
-	// Every turn-state publication also refreshes the live model API retry, so
-	// settlement, replacement and the stopped-turn window clear a retiring
-	// owner's indicator without a call of their own.
-	a.publishZCodeModelAPIRetry()
 	if !state.Active {
 		if a.hasPendingZCodeSteers() {
 			go a.withdrawZCodeSteersAfterTurnEnd()
@@ -412,6 +409,8 @@ func (a *Agent) dropZCodeTurnLocked(owner *zcodeTurnState) {
 // teardown. The caller holds a.Mu.
 func (a *Agent) clearZCodeTurnsLocked() {
 	for _, owner := range a.turns {
+		owner.modelAPIRetry = nil
+		owner.completedModelAPIRetryCalls = nil
 		a.stopZCodeTurnWatcherLocked(owner)
 	}
 	clear(a.turns)
@@ -444,17 +443,30 @@ func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) *zcodeTurnState {
 }
 
 func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
-	if previous := a.turns[a.foregroundTurnID]; previous != nil && !previous.settled && previous.pendingNative == nil && len(previous.deferredResponses) == 0 {
-		a.stopZCodeTurnWatcherLocked(previous)
-		for scopeID := range previous.contentByScope {
-			a.generationBuffer.Discard(scopeID)
+	if previous := a.turns[a.foregroundTurnID]; previous != nil {
+		a.retireZCodeForegroundTurnLocked(previous)
+		if !previous.settled && previous.pendingNative == nil && len(previous.deferredResponses) == 0 {
+			a.stopZCodeTurnWatcherLocked(previous)
+			for scopeID := range previous.contentByScope {
+				a.generationBuffer.Discard(scopeID)
+			}
+			delete(a.turns, previous.id)
 		}
-		delete(a.turns, previous.id)
 	}
 	a.cancelStoppedZCodeTurnLocked()
 	a.stopCancelledRequest = false
 	a.TurnToolUses = 0
 	a.foregroundTurnID = next.id
+}
+
+// retireZCodeForegroundTurnLocked clears retry ownership even if the turn
+// remains available for transcript reconciliation. The caller holds a.Mu.
+func (a *Agent) retireZCodeForegroundTurnLocked(owner *zcodeTurnState) {
+	owner.modelAPIRetry = nil
+	owner.completedModelAPIRetryCalls = nil
+	if a.turns[a.foregroundTurnID] == owner {
+		a.foregroundTurnID = ""
+	}
 }
 
 // adoptZCodeTurnIDLocked preserves ownership while replacing a provisional key.
@@ -482,7 +494,7 @@ func (a *Agent) adoptZCodeTurnIDLocked(owner *zcodeTurnState, nativeID string) b
 // a stop targets. The caller holds a.Mu.
 func (a *Agent) foregroundZCodeTurnLocked() *zcodeTurnState {
 	turn := a.turns[a.foregroundTurnID]
-	if turn == nil || turn.settled {
+	if turn == nil || turn.background || turn.settled {
 		return nil
 	}
 	return turn
@@ -545,6 +557,9 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	}
 	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
+	if !background {
+		a.publishZCodeModelAPIRetryLocked()
+	}
 	a.PublishTurnActive()
 	// A steer that ZCode moved to the ordinary queue runs as this turn's prompt.
 	a.observeZCodeSteerTurnStart(payload.InputID)
@@ -1501,7 +1516,6 @@ const zcodeSteerDiscardReasonPromoted = "promoted"
 //
 //   - `compact_boundary`.
 //   - The model anomaly warning.
-//   - The model request.
 //   - The follow-up, queue and steer bookkeeping.
 //   - Feedback.
 //   - Network requests.
@@ -1648,366 +1662,350 @@ const zcodeNetworkStatusRequestCompleted = "model_request_completed"
 // under the model_api_retry key: an object while a retry is active, and an
 // explicit null when it clears. Absence on the wire keeps the reader's value.
 
-// zcodeModelAPIRetryFacts are the live retry facts of one model network status
-// payload. They decode INDEPENDENTLY of the normalized history record under
-// `_meta.zcode.apiRetry`, which drives only the persisted retry notice: a
-// malformed but present history record keeps its own classification and never
-// corrupts the live state.
+// ZCode and the browser both represent these counters as JavaScript numbers.
+const zcodeMaxSafeRetryCount = 1<<53 - 1
+
+// zcodeModelAPIRetryCount distinguishes an absent field from a malformed field
+// and accepts only nonnegative safe integers.
+type zcodeModelAPIRetryCount struct {
+	value   int64
+	present bool
+	valid   bool
+}
+
+func (count *zcodeModelAPIRetryCount) UnmarshalJSON(raw []byte) error {
+	value, ok := providerkit.RawInt64(raw)
+	*count = zcodeModelAPIRetryCount{
+		value:   value,
+		present: true,
+		valid:   ok && value >= 0 && value <= zcodeMaxSafeRetryCount,
+	}
+	return nil
+}
+
+func (count zcodeModelAPIRetryCount) positive() bool {
+	return count.valid && count.value > 0
+}
+
+// zcodeModelAPIRetryFacts decodes the live facts independently of the history
+// classification. A malformed history record supplies no fallback budget.
 type zcodeModelAPIRetryFacts struct {
-	status        string
-	requestID     string
-	logicalCallID string
-	attempt       int
-	maxAttempts   int
-	nextAttempt   int
-	delayMs       int64
-	statusCode    int
-	message       string
-	retryable     bool
-	recovery      *zcodeModelAPIRetryRecovery
-	nested        *zcodeModelAPIRetryNested
+	Status    string `json:"type"`
+	RequestID string `json:"requestId"`
+	ModelCall struct {
+		LogicalCallID string `json:"logicalCallId"`
+	} `json:"modelCall"`
+	Attempt        zcodeModelAPIRetryCount `json:"attempt"`
+	MaxAttempts    zcodeModelAPIRetryCount `json:"maxAttempts"`
+	NextAttempt    zcodeModelAPIRetryCount `json:"nextAttempt"`
+	DelayMs        zcodeModelAPIRetryCount `json:"delayMs"`
+	StatusCode     zcodeModelAPIRetryCount `json:"statusCode"`
+	Message        json.RawMessage         `json:"message"`
+	Reason         json.RawMessage         `json:"reason"`
+	Retryable      json.RawMessage         `json:"retryable"`
+	StreamRecovery json.RawMessage         `json:"streamRecovery"`
+	Meta           json.RawMessage         `json:"_meta"`
 }
 
-// zcodeModelAPIRetryRecovery is a `model_request_started` streamRecovery record:
-// the typed retry record of a native stream-recovery successor.
 type zcodeModelAPIRetryRecovery struct {
-	retryNumber            int
-	maxRetries             int
-	recoveredFromRequestID string
+	AttemptID              string                  `json:"attemptId"`
+	RetryNumber            zcodeModelAPIRetryCount `json:"retryNumber"`
+	MaxRetries             zcodeModelAPIRetryCount `json:"maxRetries"`
+	RecoveredFromRequestID string                  `json:"recoveredFromRequestId"`
 }
 
-// zcodeModelAPIRetryNested is the `_meta.zcode.apiRetry` history record's failed
-// attempt and retry budget, the fallback when the outer facts are absent.
-type zcodeModelAPIRetryNested struct {
-	attempt    int
-	maxRetries int
+// zcodeModelAPIRetryRecoveryFrom validates the native proof and its actual
+// retry budget. The reported retry limit excludes the initial request.
+func zcodeModelAPIRetryRecoveryFrom(raw json.RawMessage) (*zcodeModelAPIRetryRecovery, bool) {
+	if !providerkit.RawPresent(raw) {
+		return nil, true
+	}
+	var recovery zcodeModelAPIRetryRecovery
+	if json.Unmarshal(raw, &recovery) != nil || recovery.AttemptID == "" ||
+		recovery.RecoveredFromRequestID == "" || !recovery.RetryNumber.positive() ||
+		!recovery.MaxRetries.valid || recovery.MaxRetries.value < recovery.RetryNumber.value ||
+		recovery.MaxRetries.value == zcodeMaxSafeRetryCount {
+		return nil, false
+	}
+	return &recovery, true
 }
 
-// decodeZCodeModelAPIRetryFacts reads the live facts of one payload. A fact of
-// the wrong JSON type, or one that overflows, is absent: the decode never fails
-// and never drops the other facts.
-func decodeZCodeModelAPIRetryFacts(payload json.RawMessage) zcodeModelAPIRetryFacts {
-	var raw struct {
-		Type      string `json:"type"`
-		RequestID string `json:"requestId"`
-		ModelCall struct {
-			LogicalCallID string `json:"logicalCallId"`
-		} `json:"modelCall"`
-		Attempt        json.RawMessage `json:"attempt"`
-		MaxAttempts    json.RawMessage `json:"maxAttempts"`
-		NextAttempt    json.RawMessage `json:"nextAttempt"`
-		DelayMs        json.RawMessage `json:"delayMs"`
-		StatusCode     json.RawMessage `json:"statusCode"`
-		Message        json.RawMessage `json:"message"`
-		Reason         json.RawMessage `json:"reason"`
-		Retryable      json.RawMessage `json:"retryable"`
-		StreamRecovery struct {
-			RetryNumber            json.RawMessage `json:"retryNumber"`
-			MaxRetries             json.RawMessage `json:"maxRetries"`
-			RecoveredFromRequestID string          `json:"recoveredFromRequestId"`
-		} `json:"streamRecovery"`
-		// Meta stays raw: a malformed but present history record must not fail
-		// the decode of the live facts beside it.
-		Meta json.RawMessage `json:"_meta"`
-	}
-	if json.Unmarshal(payload, &raw) != nil {
-		return zcodeModelAPIRetryFacts{}
-	}
-	facts := zcodeModelAPIRetryFacts{
-		status:        raw.Type,
-		requestID:     raw.RequestID,
-		logicalCallID: raw.ModelCall.LogicalCallID,
-	}
-	facts.attempt, _ = zcodeLivePositiveCount(raw.Attempt)
-	facts.maxAttempts, _ = zcodeLivePositiveCount(raw.MaxAttempts)
-	facts.nextAttempt, _ = zcodeLivePositiveCount(raw.NextAttempt)
-	facts.delayMs, _ = zcodeLiveNonnegativeCount(raw.DelayMs)
-	facts.statusCode, _ = zcodeLivePositiveCount(raw.StatusCode)
-	facts.message, _ = zcodeLiveText(raw.Message)
-	if facts.message == "" {
-		facts.message, _ = zcodeLiveText(raw.Reason)
-	}
-	var retryable bool
-	if json.Unmarshal(raw.Retryable, &retryable) == nil {
-		facts.retryable = retryable
-	}
-	if len(raw.StreamRecovery.RetryNumber) > 0 {
-		recovery := &zcodeModelAPIRetryRecovery{}
-		rn, _ := zcodeLivePositiveCount(raw.StreamRecovery.RetryNumber)
-		mr, _ := zcodeLiveNonnegativeCount(raw.StreamRecovery.MaxRetries)
-		recovery.retryNumber = int(rn)
-		recovery.maxRetries = int(mr)
-		recovery.recoveredFromRequestID = raw.StreamRecovery.RecoveredFromRequestID
-		if recovery.retryNumber > 0 {
-			facts.recovery = recovery
+func (facts zcodeModelAPIRetryFacts) scheduledAttempts() (attempt, maxAttempts int64, ok bool) {
+	if facts.NextAttempt.present || facts.MaxAttempts.present {
+		if !facts.NextAttempt.positive() {
+			return 0, 0, false
 		}
+		if !facts.MaxAttempts.present {
+			return facts.NextAttempt.value, 0, true
+		}
+		if !facts.MaxAttempts.positive() || facts.MaxAttempts.value < facts.NextAttempt.value {
+			return 0, 0, false
+		}
+		return facts.NextAttempt.value, facts.MaxAttempts.value, true
 	}
-	// The nested history record decodes on its own: a malformed but present
-	// record supplies no fallback and never fails the live facts beside it.
+
 	var meta struct {
 		ZCode struct {
 			APIRetry struct {
-				Attempt    json.RawMessage `json:"attempt"`
-				MaxRetries json.RawMessage `json:"maxRetries"`
+				Attempt    zcodeModelAPIRetryCount `json:"attempt"`
+				MaxRetries zcodeModelAPIRetryCount `json:"maxRetries"`
 			} `json:"apiRetry"`
 		} `json:"zcode"`
 	}
-	if json.Unmarshal(raw.Meta, &meta) == nil &&
-		(len(meta.ZCode.APIRetry.Attempt) > 0 || len(meta.ZCode.APIRetry.MaxRetries) > 0) {
-		nested := &zcodeModelAPIRetryNested{}
-		at, _ := zcodeLivePositiveCount(meta.ZCode.APIRetry.Attempt)
-		mr, _ := zcodeLiveNonnegativeCount(meta.ZCode.APIRetry.MaxRetries)
-		nested.attempt = at
-		nested.maxRetries = int(mr)
-		if nested.attempt > 0 || nested.maxRetries > 0 {
-			facts.nested = nested
-		}
+	if json.Unmarshal(facts.Meta, &meta) != nil {
+		return 0, 0, false
 	}
-	return facts
+	nested := meta.ZCode.APIRetry
+	if !nested.Attempt.positive() || !nested.MaxRetries.valid ||
+		nested.MaxRetries.value < nested.Attempt.value || nested.MaxRetries.value == zcodeMaxSafeRetryCount {
+		return 0, 0, false
+	}
+	return nested.Attempt.value + 1, nested.MaxRetries.value + 1, true
 }
 
-// zcodeLivePositiveCount reads a positive integer fact.
-func zcodeLivePositiveCount(raw json.RawMessage) (int, bool) {
-	var value int64
-	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value <= 0 || value > int64(maxInt) {
-		return 0, false
+func (facts zcodeModelAPIRetryFacts) errorText() *string {
+	message, hasMessage := providerkit.RawString(facts.Message)
+	if hasMessage && message != "" {
+		return &message
 	}
-	return int(value), true
+	if reason, ok := providerkit.RawString(facts.Reason); ok {
+		return &reason
+	}
+	if hasMessage {
+		return &message
+	}
+	return nil
 }
 
-// zcodeLiveNonnegativeCount reads a nonnegative integer fact.
-func zcodeLiveNonnegativeCount(raw json.RawMessage) (int64, bool) {
-	var value int64
-	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value < 0 {
-		return 0, false
-	}
-	return value, true
-}
-
-// zcodeLiveText reads a string fact.
-func zcodeLiveText(raw json.RawMessage) (string, bool) {
-	var value string
-	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
-		return "", false
-	}
-	return value, true
-}
-
-const maxInt = int(^uint(0) >> 1)
-
-// trackZCodeModelAPIRetry applies one main-query model network status to the
-// live foreground retry state and publishes the result. Only the exact
-// unsettled foreground owner carries the indicator: a side query is dropped by
-// the caller, a background owner's call is not the user's, and an archive event
-// is reconstructed replay whose statuses belong to the past.
+// trackZCodeModelAPIRetry applies one live main-query status to the exact
+// foreground turn. The caller holds dispatchMu.
 func (a *Agent) trackZCodeModelAPIRetry(event zcodeEventEnvelope) {
-	facts := decodeZCodeModelAPIRetryFacts(event.Payload)
+	var facts zcodeModelAPIRetryFacts
+	if json.Unmarshal(event.Payload, &facts) != nil || facts.RequestID == "" {
+		return
+	}
 	a.Mu.Lock()
-	owner := a.resolveZCodeTurnLocked(event, "")
-	if owner == nil || owner.background || owner.settled {
+	owner := a.foregroundZCodeTurnLocked()
+	if owner == nil || owner != a.resolveZCodeTurnLocked(event, "") ||
+		a.StoppedLocked() || a.OutputDispatchFinishedLocked() {
 		a.Mu.Unlock()
 		return
 	}
-	a.applyZCodeModelAPIRetryLocked(owner, facts)
+	owner.applyModelAPIRetry(facts)
 	a.Mu.Unlock()
-	// Re-read and publish outside a.Mu: the sink callbacks must never run under
-	// the provider state mutex. dispatchMu already orders this publication.
-	a.publishZCodeModelAPIRetry()
+	a.publishZCodeModelAPIRetryLocked()
 }
 
-// applyZCodeModelAPIRetryLocked records the live facts of one model network
-// status on the owner. The caller holds a.Mu.
-func (a *Agent) applyZCodeModelAPIRetryLocked(owner *zcodeTurnState, facts zcodeModelAPIRetryFacts) {
-	if facts.requestID == "" {
+// applyModelAPIRetry records one native status on the turn. The caller holds a.Mu.
+func (owner *zcodeTurnState) applyModelAPIRetry(facts zcodeModelAPIRetryFacts) {
+	if _, completed := owner.completedModelAPIRetryCalls[facts.ModelCall.LogicalCallID]; completed {
 		return
 	}
 	state := owner.modelAPIRetry
-	switch facts.status {
-	case "model_request_started":
-		if recovery := facts.recovery; recovery != nil {
-			// A native stream-recovery successor carries its typed retry record.
-			// Only a linked successor of this owner's retained failed request is
-			// admitted, and one predecessor proves one successor.
-			if facts.logicalCallID == "" || recovery.recoveredFromRequestID == "" ||
-				state == nil || state.LastFailedPhysicalID != recovery.recoveredFromRequestID ||
-				state.StreamRecoveryProof == recovery.recoveredFromRequestID {
-				return
-			}
-			owner.modelAPIRetry = &zcodeModelAPIRetryState{
-				LogicalCallID:       facts.logicalCallID,
-				PhysicalRequestID:   facts.requestID,
-				Phase:               contracts.ModelAPIRetryPhaseRunning,
-				Attempt:             recovery.retryNumber,
-				MaxAttempts:         max(recovery.maxRetries, recovery.retryNumber) + 1,
-				StreamRecoveryProof: recovery.recoveredFromRequestID,
-			}
-			return
+	if facts.Status == "model_request_started" {
+		owner.modelAPIRetry = startZCodeModelAPIRetry(state, facts)
+		return
+	}
+	// ZCode reports a retryable verification failure before the first model
+	// start. Record that request so its later retry schedule has an owner.
+	if state == nil && facts.Status == "model_request_failed" && providerkit.RawBool(facts.Retryable) &&
+		facts.Attempt.positive() && facts.Attempt.value == 1 &&
+		facts.ModelCall.LogicalCallID != "" && !providerkit.RawPresent(facts.StreamRecovery) {
+		owner.modelAPIRetry = &zcodeModelAPIRetryState{
+			LogicalCallID: facts.ModelCall.LogicalCallID, PhysicalRequestID: facts.RequestID, PhysicalAttempt: 1,
 		}
-		if facts.attempt <= 1 {
-			// An ordinary first attempt establishes the call with no active
-			// retry. An unrelated accepted call removes any retained proof.
-			owner.modelAPIRetry = &zcodeModelAPIRetryState{
-				LogicalCallID:     facts.logicalCallID,
-				PhysicalRequestID: facts.requestID,
-				Attempt:           1,
-				MaxAttempts:       facts.maxAttempts,
-			}
-			return
-		}
-		// A later attempt of the same logical call hands ownership to its new
-		// physical request. An absent or ambiguous logical ID transfers no
-		// authority across request IDs.
-		if state == nil || state.PhysicalRequestID == "" ||
-			facts.logicalCallID == "" || state.LogicalCallID == "" ||
-			facts.logicalCallID != state.LogicalCallID {
-			return
-		}
-		expected := state.Attempt
-		if state.Phase != contracts.ModelAPIRetryPhaseWaiting {
-			// The state records the attempt in flight; the next one is one later.
-			if expected <= 0 || expected == maxInt {
-				return
-			}
-			expected++
-		}
-		if facts.attempt != expected {
-			return
-		}
-		state.PhysicalRequestID = facts.requestID
-		state.Phase = contracts.ModelAPIRetryPhaseRunning
-		state.Attempt = facts.attempt
-		if facts.maxAttempts > 0 {
-			state.MaxAttempts = facts.maxAttempts
-		}
-	case "model_retry_scheduled":
-		// A newer retry of the current request renews the live state. A
-		// different logical call in the same turn cannot take over.
-		if state == nil || state.PhysicalRequestID == "" || facts.requestID != state.PhysicalRequestID {
-			return
-		}
-		if state.LogicalCallID != "" && facts.logicalCallID != "" && facts.logicalCallID != state.LogicalCallID {
-			return
-		}
-		// The outer nextAttempt and maxAttempts are authoritative. When they
-		// are absent, derive the next attempt and total from the valid nested
-		// failed attempt plus one and its retry budget plus one.
-		attempt := 0
-		if facts.nextAttempt > 0 {
-			attempt = facts.nextAttempt
-		} else if facts.nested != nil && facts.nested.attempt > 0 && facts.nested.attempt < maxInt {
-			attempt = facts.nested.attempt + 1
-		}
-		if attempt <= 0 {
-			return
-		}
-		maxAttempts := 0
-		if facts.maxAttempts > 0 {
-			maxAttempts = facts.maxAttempts
-		} else if facts.nested != nil && facts.nested.maxRetries >= 0 && facts.nested.maxRetries < maxInt {
-			maxAttempts = facts.nested.maxRetries + 1
-		}
-		if maxAttempts > 0 && maxAttempts < attempt {
-			// An impossible total rejects the update.
-			return
-		}
-		state.Phase = contracts.ModelAPIRetryPhaseWaiting
-		state.Attempt = attempt
-		state.MaxAttempts = maxAttempts
-		state.RetryDelayMs = facts.delayMs
-		if facts.statusCode > 0 {
-			state.ErrorStatus = facts.statusCode
-		}
-		if facts.message != "" {
-			state.Error = facts.message
-		}
+		return
+	}
+	// A delayed predecessor must leave the current physical request active.
+	if state == nil || facts.RequestID != state.PhysicalRequestID {
+		return
+	}
+	switch facts.Status {
+	case contracts.ZCodeNetworkStatusRetryScheduled:
+		state.schedule(facts)
 	case "model_request_failed":
-		if state == nil || state.PhysicalRequestID == "" || facts.requestID != state.PhysicalRequestID {
-			return
+		if !providerkit.RawBool(facts.Retryable) {
+			owner.modelAPIRetry = &zcodeModelAPIRetryState{LastFailedPhysicalID: state.PhysicalRequestID}
 		}
-		if facts.retryable {
-			// A retryable failure keeps current ownership; the next schedule
-			// updates the next attempt and delay.
-			return
-		}
-		// A terminal failure clears the indicator and retains the failed
-		// physical request ID for a linked stream-recovery successor.
-		state.LastFailedPhysicalID = state.PhysicalRequestID
-		state.PhysicalRequestID = ""
-		state.Phase = ""
 	case zcodeNetworkStatusRequestCompleted:
-		// Only the current physical request completes its indicator: a delayed
-		// completion of a handed-off predecessor leaves it active.
-		if state == nil || state.PhysicalRequestID == "" || facts.requestID != state.PhysicalRequestID {
-			return
+		if state.LogicalCallID != "" {
+			if owner.completedModelAPIRetryCalls == nil {
+				owner.completedModelAPIRetryCalls = make(map[string]struct{})
+			}
+			owner.completedModelAPIRetryCalls[state.LogicalCallID] = struct{}{}
 		}
-		state.PhysicalRequestID = ""
-		state.Phase = ""
+		owner.modelAPIRetry = nil
 	}
 }
 
-// publishZCodeModelAPIRetry publishes the live foreground model API retry, or an
-// explicit null when an active indicator must clear. It re-reads the owner under
-// a.Mu -- a caller cannot publish what the state does not say -- and calls the
-// sink outside it. Never call it with a.Mu held. The dispatch path orders
-// event-driven publications; the retirement sites call it after their unlocks.
-func (a *Agent) publishZCodeModelAPIRetry() {
+func startZCodeModelAPIRetry(state *zcodeModelAPIRetryState, facts zcodeModelAPIRetryFacts) *zcodeModelAPIRetryState {
+	logicalCallID := facts.ModelCall.LogicalCallID
+	if facts.Attempt.present && !facts.Attempt.positive() ||
+		facts.MaxAttempts.present && (!facts.MaxAttempts.positive() || facts.MaxAttempts.value < facts.Attempt.value) {
+		return state
+	}
+	recovery, valid := zcodeModelAPIRetryRecoveryFrom(facts.StreamRecovery)
+	if !valid {
+		return state
+	}
+
+	// A native recovery record persists across the physical attempts of one
+	// logical call. Only the first start spends the predecessor proof.
+	if state != nil && (facts.Attempt.value > 1 ||
+		state.Phase == contracts.ModelAPIRetryPhaseWaiting && state.ExpectedPhysicalAttempt == facts.Attempt.value) {
+		state.handoff(facts, recovery)
+		return state
+	}
+	if facts.Attempt.value > 1 {
+		return state
+	}
+	if recovery != nil {
+		if state == nil || state.LastFailedPhysicalID != recovery.RecoveredFromRequestID || logicalCallID == "" {
+			return state
+		}
+		return &zcodeModelAPIRetryState{
+			LogicalCallID:     logicalCallID,
+			PhysicalRequestID: facts.RequestID,
+			PhysicalAttempt:   1,
+			Phase:             contracts.ModelAPIRetryPhaseRunning,
+			Attempt:           recovery.RetryNumber.value,
+			MaxAttempts:       recovery.MaxRetries.value + 1,
+			StreamRecovery:    recovery,
+		}
+	}
+
+	// A valid first attempt can establish a new call after the prior retry
+	// clears. An active retry already belongs to its own logical call.
+	if !facts.Attempt.positive() || state != nil && state.Phase != "" {
+		return state
+	}
+	return &zcodeModelAPIRetryState{
+		LogicalCallID:     logicalCallID,
+		PhysicalRequestID: facts.RequestID,
+		PhysicalAttempt:   facts.Attempt.value,
+		MaxAttempts:       facts.MaxAttempts.value,
+	}
+}
+
+func (state *zcodeModelAPIRetryState) handoff(facts zcodeModelAPIRetryFacts, recovery *zcodeModelAPIRetryRecovery) {
+	if state.PhysicalRequestID == "" || state.LogicalCallID == "" || state.LogicalCallID != facts.ModelCall.LogicalCallID {
+		return
+	}
+	if recovery != nil && (state.StreamRecovery == nil || *state.StreamRecovery != *recovery) {
+		return
+	}
+	waiting := state.Phase == contracts.ModelAPIRetryPhaseWaiting
+	if waiting {
+		if facts.Attempt.value != state.ExpectedPhysicalAttempt {
+			return
+		}
+		// Only a repeated first attempt reuses the native request ID.
+		reusesRequestID := facts.RequestID == state.PhysicalRequestID
+		firstAttempt := state.PhysicalAttempt == 1
+		if facts.Attempt.value == state.PhysicalAttempt && reusesRequestID != firstAttempt {
+			return
+		}
+	} else {
+		if state.PhysicalAttempt == zcodeMaxSafeRetryCount || facts.Attempt.value != state.PhysicalAttempt+1 {
+			return
+		}
+		if state.StreamRecovery == nil {
+			maxAttempts := state.MaxAttempts
+			if facts.MaxAttempts.present {
+				maxAttempts = facts.MaxAttempts.value
+			}
+			if maxAttempts > 0 && maxAttempts < facts.Attempt.value {
+				return
+			}
+			state.Attempt = facts.Attempt.value
+			state.MaxAttempts = maxAttempts
+		}
+		state.ErrorStatus = 0
+		state.Error = nil
+	}
+	state.PhysicalRequestID = facts.RequestID
+	state.PhysicalAttempt = facts.Attempt.value
+	state.ExpectedPhysicalAttempt = 0
+	state.Phase = contracts.ModelAPIRetryPhaseRunning
+	state.RetryDelayMs = zcodeModelAPIRetryCount{}
+}
+
+func (state *zcodeModelAPIRetryState) schedule(facts zcodeModelAPIRetryFacts) {
+	if logicalCallID := facts.ModelCall.LogicalCallID; state.LogicalCallID != "" && logicalCallID != "" && state.LogicalCallID != logicalCallID {
+		return
+	}
+	if facts.Attempt.present && (!facts.Attempt.positive() || facts.Attempt.value != state.PhysicalAttempt) {
+		return
+	}
+	attempt, maxAttempts, ok := facts.scheduledAttempts()
+	if !ok || attempt <= state.PhysicalAttempt {
+		return
+	}
+	state.Phase = contracts.ModelAPIRetryPhaseWaiting
+	state.ExpectedPhysicalAttempt = attempt
+	if reason, _ := providerkit.RawString(facts.Reason); reason == "offpeak_queued" {
+		// A provider off-peak queue wait does not spend an attempt. ZCode
+		// announces the retry, then starts the same physical attempt number.
+		state.ExpectedPhysicalAttempt = state.PhysicalAttempt
+	}
+	state.Attempt = attempt
+	state.MaxAttempts = maxAttempts
+	state.RetryDelayMs = facts.DelayMs
+	state.ErrorStatus = 0
+	if facts.StatusCode.valid && facts.StatusCode.value >= http.StatusContinue && facts.StatusCode.value < 600 {
+		state.ErrorStatus = int(facts.StatusCode.value)
+	}
+	state.Error = facts.errorText()
+}
+
+// publishZCodeModelAPIRetryLocked publishes a changed value or an explicit
+// null. The caller holds dispatchMu, and the sink runs outside a.Mu.
+func (a *Agent) publishZCodeModelAPIRetryLocked() {
 	a.Mu.Lock()
 	value := a.zcodeModelAPIRetryValueLocked()
-	encoded := ""
+	a.Mu.Unlock()
+
+	var encoded string
+	var published any
 	if value != nil {
 		marshalled, err := json.Marshal(value)
-		if err == nil {
-			encoded = string(marshalled)
+		if err != nil {
+			slog.Error("encode ZCode model API retry", "agent_id", a.AgentID(), "error", err)
+			return
 		}
+		encoded = string(marshalled)
+		published = value
 	}
-	changed := encoded != a.modelAPIRetryPublished
-	a.modelAPIRetryPublished = encoded
-	a.Mu.Unlock()
-	if !changed {
+	if encoded == a.modelAPIRetryPublished {
 		return
 	}
-	// A nil value broadcasts as the explicit clear.
-	a.sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: value})
+	a.modelAPIRetryPublished = encoded
+	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyModelAPIRetry: published})
 }
 
-// zcodeModelAPIRetryValueLocked builds the model_api_retry object of the
-// foreground owner, or nil when no indicator is active. The caller holds a.Mu.
-func (a *Agent) zcodeModelAPIRetryValueLocked() map[string]interface{} {
-	owner := a.turns[a.foregroundTurnID]
-	if owner == nil || owner.background || owner.settled {
-		owner = nil
-		for _, turn := range a.turns {
-			if turn.background || turn.settled {
-				continue
-			}
-			owner = turn
-			break
-		}
-	}
-	if owner == nil {
+// zcodeModelAPIRetryValueLocked builds the foreground retry object. The
+// caller holds a.Mu.
+func (a *Agent) zcodeModelAPIRetryValueLocked() map[string]any {
+	owner := a.foregroundZCodeTurnLocked()
+	if owner == nil || owner.modelAPIRetry == nil || owner.modelAPIRetry.Phase == "" {
 		return nil
 	}
 	state := owner.modelAPIRetry
-	if state == nil || state.Phase == "" {
-		return nil
-	}
-	value := map[string]interface{}{
+	value := map[string]any{
 		contracts.ModelAPIRetryFieldPhase:   state.Phase,
 		contracts.ModelAPIRetryFieldAttempt: state.Attempt,
 	}
 	if state.MaxAttempts > 0 {
 		value[contracts.ModelAPIRetryFieldMaxAttempts] = state.MaxAttempts
 	}
-	if state.Phase == contracts.ModelAPIRetryPhaseWaiting {
-		// A zero delay stays zero: it is a scheduled wait with no duration.
-		// A running state carries no scheduled duration at all.
-		value[contracts.ModelAPIRetryFieldRetryDelayMs] = state.RetryDelayMs
+	if state.Phase == contracts.ModelAPIRetryPhaseWaiting && state.RetryDelayMs.valid {
+		value[contracts.ModelAPIRetryFieldRetryDelayMs] = state.RetryDelayMs.value
 	}
 	if state.ErrorStatus > 0 {
 		value[contracts.ModelAPIRetryFieldErrorStatus] = state.ErrorStatus
 	}
-	if state.Error != "" {
-		value[contracts.ModelAPIRetryFieldError] = state.Error
+	if state.Error != nil {
+		value[contracts.ModelAPIRetryFieldError] = *state.Error
 	}
 	return value
 }

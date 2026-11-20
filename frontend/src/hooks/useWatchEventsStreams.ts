@@ -73,7 +73,8 @@ interface WorkerStream {
 export interface UseWatchEventsStreamsOpts {
   view: TabView
   plans: () => Map<string, WatchPlan>
-  onEvent: (workerId: string, resp: WatchEventsResponse) => void
+  onEvent: (workerId: string, resp: WatchEventsResponse, handle: WatchEventsHandle) => void
+  onHandleRetired?: (handle: WatchEventsHandle) => void
   onWorkerOnline: (workerId: string, online: boolean) => void
   /** Report accepted FULL promotions to the caller that loads or refreshes messages. */
   onPromoted: (workerId: string, agentIds: string[]) => void
@@ -224,6 +225,15 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     return transmitted
   }
 
+  function retireHandle(s: WorkerStream): WatchEventsHandle | null {
+    const handle = s.handle
+    if (handle) {
+      s.handle = null
+      opts.onHandleRetired?.(handle)
+    }
+    return handle
+  }
+
   /** Clear stream authority and retire its exact replay receipts. */
   function resetForReconnect(workerId: string, s: WorkerStream): void {
     retireReplays(workerId, s, [
@@ -232,7 +242,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     if (streamProvedHealthy(s.openedAt))
       reconnectBackoff.reset(workerId)
     s.openedAt = undefined
-    s.handle = null
+    retireHandle(s)
     s.inflightPlan = null
     s.inflightUpdateId = 0n
     s.inflightKey = ''
@@ -346,7 +356,6 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     if (inflight && !needsRetry) {
       // Settle this requested plan after a durable refusal. Record only the acknowledged FULL
       // identities as accepted.
-
       commitAckedPlan(workerId, s, inflight, acceptedFull)
     }
     else if (needsRetry) {
@@ -400,7 +409,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         handle.close()
         return
       }
-      s.handle?.close()
+      retireHandle(s)?.close()
       s.handle = handle
       s.openedAt = Date.now()
       // 161-watch-stream-continuity.spec.ts counts successful stream opens.
@@ -430,7 +439,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
             }
           }
           // Unrelated traffic must preserve the LOOKUP_FAILED retry cap.
-          opts.onEvent(workerId, resp)
+          opts.onEvent(workerId, resp, handle)
         }
       })
       handle.onEnd(() => {
@@ -598,8 +607,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     // Reset this worker only. A sibling worker must retain its reconnect timer.
     reconnectBackoff.reset(workerId)
     rejectionBackoff.reset(workerId)
-    s.handle?.close()
-    s.handle = null
+    retireHandle(s)?.close()
     s.abort.abort()
     streams.delete(workerId)
   }

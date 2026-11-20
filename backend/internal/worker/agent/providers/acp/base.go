@@ -96,6 +96,8 @@ const (
 type Base struct {
 	pendingFollowUp *acpFollowUpPrompt
 	rootCallbacks   rootTranscriptCallbacks
+	// stopDone closes when the pre-stop owner finishes teardown. Mu protects its installation.
+	stopDone chan struct{}
 	// settingsPublications serializes complete settings callbacks, including reentrant writes.
 	settingsPublications agentapi.OutputQueue
 	nativeModeID         string
@@ -472,12 +474,19 @@ func (b *Base) HasAvailableCommand(command string) bool {
 // Then reapplySettings, when present, applies the provider settings to the new session, such as the model and permission mode.
 // A failed session/new leaves the outgoing session current with its turn stopped, as Stop does.
 func (b *Base) ClearContext() (string, error) {
+	if b.inputAdmissionClosed() {
+		return "", errors.New("agent is stopped")
+	}
 	resumeChildren := b.childDispatch.pause()
 	defer func() {
 		resumeChildren()
 		b.FlushRegistryObservations()
 	}()
 	b.sessionMu.Lock()
+	if b.inputAdmissionClosed() {
+		b.sessionMu.Unlock()
+		return "", errors.New("agent is stopped")
+	}
 	outgoingSessionID := b.CurrentSessionID()
 	if outgoingSessionID != "" {
 		if err := b.releaseOutgoingSession(outgoingSessionID); err != nil {
@@ -1379,11 +1388,17 @@ func (b *Base) SteerAdvertised(content string, attachments []*leapmuxv1.Attachme
 
 // SteerAdvertisedResult sends input and returns the native result after the same admission checks.
 func (b *Base) SteerAdvertisedResult(content string, attachments []*leapmuxv1.Attachment) (json.RawMessage, error) {
+	if b.inputAdmissionClosed() {
+		return nil, errors.New("agent is stopped")
+	}
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
 	b.Mu.Lock()
-	method, active, sessionID := b.steerMethod, b.promptActive, b.sessionID
+	method, active, sessionID, stopped := b.steerMethod, b.promptActive, b.sessionID, b.inputAdmissionClosedLocked()
 	b.Mu.Unlock()
+	if stopped {
+		return nil, errors.New("agent is stopped")
+	}
 	if method == "" {
 		return nil, agentapi.ErrSteeringUnsupported
 	}
@@ -1418,11 +1433,27 @@ func (b *Base) SteerAdvertisedResult(content string, attachments []*leapmuxv1.At
 //   - Release host terminals.
 //   - Stop the agent process.
 func (b *Base) Stop() {
+	if b.hooks.PrepareStop == nil {
+		b.stop()
+		return
+	}
+	b.Mu.Lock()
+	if done := b.stopDone; done != nil {
+		b.Mu.Unlock()
+		<-done
+		return
+	}
+	done := make(chan struct{})
+	b.stopDone = done
+	b.Mu.Unlock()
+	defer close(done)
+	b.stop()
+}
+
+func (b *Base) stop() {
 	defer b.FlushRegistryObservations()
-	b.NoteIntentionalStop()
 	b.rootCallbacks.closeAdmission()
-	// Run the pre-stop hook after closing prompt admission and marking
-	// intentional stop, and before terminal release or pipe EOF.
+	b.NoteIntentionalStop()
 	if b.hooks.PrepareStop != nil {
 		b.hooks.PrepareStop(b.stopSnapshot())
 	}
@@ -1443,29 +1474,59 @@ func (b *Base) Stop() {
 	b.clearActivePrompt()
 }
 
-// stopSnapshot captures the session state for a PrepareStop hook.
-// It tries the session lock and releases it after taking the snapshot.
-// If a prompt write or session swap still owns the lock, it returns an
-// empty snapshot and normal stop runs without waiting for that lock.
+func (b *Base) inputAdmissionClosed() bool {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.inputAdmissionClosedLocked()
+}
+
+func (b *Base) inputAdmissionClosedLocked() bool {
+	return b.stopDone != nil || b.StoppedLocked()
+}
+
+// WithActivePromptSession holds the current session while a provider sends
+// input to its active prompt. Shutdown closes admission before its pre-stop hook.
+func (b *Base) WithActivePromptSession(fn func(string) error) error {
+	if b.inputAdmissionClosed() {
+		return errors.New("agent is stopped")
+	}
+	return b.WithSessionID(func(sessionID string) error {
+		b.Mu.Lock()
+		stopped, active := b.inputAdmissionClosedLocked(), b.promptActive
+		b.Mu.Unlock()
+		if stopped {
+			return errors.New("agent is stopped")
+		}
+		if !active {
+			return agentapi.ErrNoActiveTurn
+		}
+		return fn(sessionID)
+	})
+}
+
+// stopSnapshot does not wait for a prompt write or session replacement that
+// owns sessionMu. An unstable session goes straight to ordinary teardown.
 func (b *Base) stopSnapshot() ACPStopSnapshot {
 	if !b.sessionMu.TryLock() {
 		return ACPStopSnapshot{}
 	}
-	sessionID := b.sessionID
-	promptActive := b.promptActive
-	b.sessionMu.Unlock()
-	return ACPStopSnapshot{
-		SessionID:    sessionID,
-		PromptActive: promptActive,
-		Cancel:       func() { b.sendStopCancellation() },
+	defer b.sessionMu.Unlock()
+	// The output lock protects the exact prompt target. A busy reader
+	// prevents cancellation attribution, but it cannot change the native
+	// session while the session lock is held.
+	haveTarget := b.turnMu.TryLock()
+	b.Mu.Lock()
+	snapshot := ACPStopSnapshot{SessionID: b.sessionID, PromptActive: b.promptActive}
+	b.Mu.Unlock()
+	if haveTarget {
+		target := b.promptTarget
+		b.turnMu.Unlock()
+		if snapshot.SessionID != "" && snapshot.PromptActive {
+			sessionID := snapshot.SessionID
+			snapshot.Cancel = sync.OnceFunc(func() { b.enqueueStopCancellation(sessionID, target) })
+		}
 	}
-}
-
-// sendStopCancellation sends a single ID-less cancellation notification
-// through the normal JSON-RPC writer. It queues a session.cancel notification
-// to make the native agent flush its state before the process stops.
-func (b *Base) sendStopCancellation() {
-	_, _ = b.Process.EnqueueNotification("session/cancel", map[string]any{})
+	return snapshot
 }
 
 // Wait blocks until the agent process exits, then releases host terminals that remain after a crash or natural exit.
@@ -2001,16 +2062,17 @@ func ParseAdvertisedMethod(initializeResponse []byte, namespace, expectedMethod 
 // Start runs the fixed launch and handshake sequence that every ACP agent shares.
 // The specification supplies only the differences between providers.
 type StartSpec[T any] struct {
-	Registration   agentapi.Registration                            // launch and option metadata of the provider
-	ProviderName   string                                           // process/log name, e.g. "cursor"
-	BaseArgs       []string                                         // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see reasonix.Start)
-	RCMarkerEnvKey string                                           // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
-	PinnedEnv      []string                                         // "KEY=value" assignments that REPLACE any inherited value and any value that the user's profile exports (see PinEnv and launch.WrapSpec.SetEnv); nil for none
-	SessionConfig  SessionConfig                                    // zero value -> acpDefaultSessionConfig
-	NewAgent       func() *T                                        // construct a zero-value concrete agent
-	Base           func(*T) *Base                                   // accessor for the agent's embedded Base
-	Configure      func(a *T, sink agentapi.ProviderServices) Hooks // the hooks of the provider; the start applies them before the process starts
-	AfterHandshake func(*T, *SessionResult, agentapi.Options) error // post-handshake apply step; nil for none
+	Registration       agentapi.Registration // launch and option metadata of the provider
+	ProviderName       string                // process/log name, e.g. "cursor"
+	BaseArgs           []string              // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see reasonix.Start)
+	RCMarkerEnvKey     string                // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
+	ObserveEnvironment *launch.ObservationRequest
+	PinnedEnv          []string                                         // "KEY=value" assignments that REPLACE any inherited value and any value that the user's profile exports (see PinEnv and launch.WrapSpec.SetEnv); nil for none
+	SessionConfig      SessionConfig                                    // zero value -> acpDefaultSessionConfig
+	NewAgent           func() *T                                        // construct a zero-value concrete agent
+	Base               func(*T) *Base                                   // accessor for the agent's embedded Base
+	Configure          func(a *T, sink agentapi.ProviderServices) Hooks // the hooks of the provider; the start applies them before the process starts
+	AfterHandshake     func(*T, *SessionResult, agentapi.Options) error // post-handshake apply step; nil for none
 }
 
 // Start starts an ACP agent process and performs the initialize and session handshakes that every ACP provider shares.
@@ -2037,7 +2099,7 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 		// The login shell runs the profile after the worker supplies cmd.Env.
 		// An export in that profile can replace a value specified only in cmd.Env.
 		// The shell wrapper therefore sets the specified values again after the profile runs.
-		SetEnv: spec.PinnedEnv,
+		SetEnv: spec.PinnedEnv, ObserveEnvironment: spec.ObserveEnvironment,
 	}
 	if spec.RCMarkerEnvKey != "" {
 		wrap.StripEnvKeys = []string{spec.RCMarkerEnvKey}
@@ -2078,7 +2140,12 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 	b := spec.Base(a)
 	// providerkit.NewProcess returns a fresh value.
 	// The call on the assignment's right side exempts it from copylocks, so assigning the embedded Process copies no held lock.
-	b.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: spec.ProviderName, ShutdownGrace: spec.Registration.ShutdownGrace}, pipes, ctx, cancel)
+	processLaunch := providerkit.ProcessLaunch{ProviderName: spec.ProviderName, ShutdownGrace: spec.Registration.ShutdownGrace}
+	if spec.ObserveEnvironment != nil {
+		processLaunch.PreambleDelimiter = prepared.Delimiter
+		processLaunch.PreambleMetaPrefix = prepared.MetaPrefix
+	}
+	b.Process = providerkit.NewProcess(opts, processLaunch, pipes, ctx, cancel)
 	b.sink = sink
 	b.bind(b)
 	b.wireTurnActive()

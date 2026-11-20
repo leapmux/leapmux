@@ -76,7 +76,15 @@ func buildXonshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 		fmt.Fprintf(&script, "if any(__xonsh__.env.get(name) for name in %s):\n    __leapmux_write(__lm_sys.stdout, %s)\nelse:\n    __leapmux_write(__lm_sys.stdout, %s)\n    __lm_args.extend(%s)\n",
 			pythonArguments(gate.EnvVars), pythonString("\n"+prepared.MetaPrefix+gate.MetaKey+"=false"), pythonString("\n"+prepared.MetaPrefix+gate.MetaKey+"=true"), pythonArguments(gate.Args))
 	}
-	script.WriteString(protocolLine("xonsh", prepared.Delimiter, spec.EnvGated == nil))
+	if len(prepared.environmentProbe) == 0 {
+		script.WriteString(protocolLine("xonsh", prepared.Delimiter, spec.EnvGated == nil))
+	} else {
+		script.WriteString("import subprocess as __lm_subprocess\n__lm_observed = False\nif __lm_selected[0] == 'external':\n    __lm_sys.stdout.flush()\n    try:\n")
+		fmt.Fprintf(&script, "        __lm_observed = (__lm_subprocess.call(%s, env=__xonsh__.env.detype()) == 0)\n", pythonArguments(prepared.environmentProbe))
+		script.WriteString("    except OSError:\n        pass\n")
+		fmt.Fprintf(&script, "if __lm_observed:\n    %selse:\n    %s",
+			protocolLine("xonsh", prepared.Delimiter, false), protocolLine("xonsh", prepared.Delimiter, spec.EnvGated == nil))
+	}
 	script.WriteString("raise SystemExit(![@([__lm_selected[1]] + __lm_args)].returncode)\n")
 	return script.String()
 }

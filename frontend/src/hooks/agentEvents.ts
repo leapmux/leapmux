@@ -5,7 +5,7 @@ import type { AgentSettledEventDetail } from '~/lib/agentSettledEvent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
-import type { createAgentSessionStore, LiveGenerationProgress, SessionMetadataDelivery } from '~/stores/agentSession.store'
+import type { createAgentSessionStore, LiveGenerationProgress, LiveModelAPIRetry, SessionMetadataDelivery } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
@@ -19,7 +19,7 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
+import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, MODEL_API_RETRY_FIELD, MODEL_API_RETRY_PHASE, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
@@ -252,6 +252,37 @@ export interface AgentMessageStores {
   getActiveWorkspaceId: () => string | null
 }
 
+function isSafeRetryInteger(value: unknown, minimum: number, maximum = Number.MAX_SAFE_INTEGER): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum && value <= maximum
+}
+
+function wireModelAPIRetry(value: unknown): LiveModelAPIRetry | undefined {
+  if (!isObject(value))
+    return undefined
+  const {
+    [MODEL_API_RETRY_FIELD.Phase]: phase,
+    [MODEL_API_RETRY_FIELD.Attempt]: attempt,
+    [MODEL_API_RETRY_FIELD.MaxAttempts]: maxAttempts,
+    [MODEL_API_RETRY_FIELD.RetryDelayMs]: retryDelayMs,
+    [MODEL_API_RETRY_FIELD.ErrorStatus]: errorStatus,
+    [MODEL_API_RETRY_FIELD.Error]: error,
+  } = value
+  if ((phase !== MODEL_API_RETRY_PHASE.Waiting && phase !== MODEL_API_RETRY_PHASE.Running)
+    || !isSafeRetryInteger(attempt, 1)
+    || (maxAttempts !== undefined && !isSafeRetryInteger(maxAttempts, attempt))
+    || (retryDelayMs !== undefined && !isSafeRetryInteger(retryDelayMs, 0))
+    || (errorStatus !== undefined && !isSafeRetryInteger(errorStatus, 100, 599))
+    || (error !== undefined && typeof error !== 'string')) {
+    return undefined
+  }
+  const retry: LiveModelAPIRetry = { phase, attempt }
+  assignDefined(retry, 'maxAttempts', maxAttempts)
+  assignDefined(retry, 'retryDelayMs', retryDelayMs)
+  assignDefined(retry, 'errorStatus', errorStatus)
+  assignDefined(retry, 'error', error)
+  return retry
+}
+
 /**
  * Consume an ephemeral agent_session_info message that the worker does not persist.
  * Translate the neutral snake_case payload into the frontend stores' camelCase fields at this boundary.
@@ -305,6 +336,15 @@ export function handleAgentSessionInfo(
         })
       }
     }
+  }
+  const wireRetry = info?.[SESSION_INFO_KEY.ModelAPIRetry]
+  if (wireRetry === null) {
+    agentSessionStore.clearModelAPIRetry(agentId, delivery)
+  }
+  else {
+    const retry = wireModelAPIRetry(wireRetry)
+    if (retry)
+      agentSessionStore.setModelAPIRetry(agentId, retry, delivery)
   }
   if (info && SESSION_INFO_KEY.Compaction in info) {
     const value = info[SESSION_INFO_KEY.Compaction]
@@ -714,6 +754,12 @@ export function buildAgentStatusTabUpdate(
   }
 }
 
+function statusMetadataDelivery(catchUpPhase: CatchUpPhase, replayId: bigint): SessionMetadataDelivery {
+  return catchUpPhase === 'live'
+    ? { phase: 'live' }
+    : { phase: 'replay', replayId }
+}
+
 /** Clear live turn state and unanswered prompts. Keep delivered responses until recording finishes. */
 export function handleAgentInactive(
   agentId: string,
@@ -721,9 +767,11 @@ export function handleAgentInactive(
   catchUpPhase: CatchUpPhase,
   // Reuse the message stores and add the control store that this handler requires.
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
+  replayId = 0n,
 ): void {
   stores.controlStore.clearProviderRequests(agentId)
   stores.chatStore.clearLiveCompaction(agentId)
+  stores.agentSessionStore.clearModelAPIRetry(agentId, statusMetadataDelivery(catchUpPhase, replayId))
   clearPerTurnLiveState(agentId, stores)
   // A process exit changes the worker's activity state. handleAgentSettled owns the resulting alert.
   // An INACTIVE status does not establish a turn boundary.
@@ -897,6 +945,7 @@ export function handleAgentStatusChange(
   /** Report the agent's worker online. Takes no argument: a status never reports a worker offline. */
   markWorkerOnline: () => void,
   streamWorkerId = '',
+  replayId = 0n,
 ): void {
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   // Only a live worker sends a status, so an explicit one reports it online.
@@ -918,11 +967,18 @@ export function handleAgentStatusChange(
   // Stop the aggregate settings spinner only when this agent has no pending change.
   // The separate pendingAxes set protects optimistic values for each axis.
   const pendingSettings = settingsLoading.isPending(agentId)
+  const previousSessionId = stores.view.getAgentTab(agentId)?.agentSessionId
+  // The FULL replay already opened a fresh retry receipt. Its session info
+  // precedes the status that confirms the same native lifetime.
+  if (catchUpPhase === 'live' && hasStatus && sc.status !== AgentStatus.INACTIVE && sc.agentSessionId
+    && previousSessionId && previousSessionId !== sc.agentSessionId) {
+    stores.agentSessionStore.clearModelAPIRetry(agentId, statusMetadataDelivery(catchUpPhase, replayId))
+  }
   applyAgentStatusTabUpdate(agentId, sc, stores, settingsLoading, streamWorkerId)
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)
-    handleAgentInactive(agentId, sc, catchUpPhase, stores)
+    handleAgentInactive(agentId, sc, catchUpPhase, stores, replayId)
 }
 
 /**

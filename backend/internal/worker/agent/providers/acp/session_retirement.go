@@ -229,6 +229,32 @@ func (b *Base) sendSessionCancel(sessionID string) error {
 	return b.SendNotification(MethodSessionCancel, params)
 }
 
+// enqueueStopCancellation attributes the interrupt before admitting a
+// notification for the captured prompt. Neither a stalled writer nor a full
+// queue can block the pre-stop hook.
+func (b *Base) enqueueStopCancellation(sessionID string, target *acpTranscriptTarget) {
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return
+	}
+	if !b.turnMu.TryLock() {
+		return
+	}
+	b.Mu.Lock()
+	if b.sessionID != sessionID || b.promptTarget != target || !b.promptActive || b.promptOutputDrained {
+		b.Mu.Unlock()
+		b.turnMu.Unlock()
+		return
+	}
+	b.interruptRequested = true
+	_, err = b.EnqueueNotification(MethodSessionCancel, params)
+	b.Mu.Unlock()
+	b.turnMu.Unlock()
+	if err != nil {
+		slog.Debug("could not queue ACP cancellation before shutdown", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+	}
+}
+
 // retireSession ends what the outgoing session of a context clear left behind.
 // ClearContext calls it after the swap, when sessionID is no longer current.
 //

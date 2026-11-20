@@ -404,9 +404,18 @@ func (h *OutputHandler) bgTaskCtx() context.Context {
 	return context.Background()
 }
 
-// ResetSpanTracker resets the span tracker for the given agent, clearing all
-// active spans. Used when the agent's context is cleared or plan execution restarts.
+// ResetSpanTracker clears live span geometry before a context replacement.
 func (h *OutputHandler) ResetSpanTracker(agentID string) {
+	mutation := h.transcriptMutationMutex(agentID)
+	mutation.Lock()
+	defer mutation.Unlock()
+	if value, found := h.rootSinks.Load(agentID); found {
+		sink := value.(*agentOutputSink)
+		if sink.usesLifetimeSpanTracker() {
+			sink.rebindSpanTracker()
+			return
+		}
+	}
 	h.trackers.reset(agentID)
 }
 
@@ -875,7 +884,11 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 		outputGeneration: source.OutputGeneration,
 		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
 	}
-	s.tracker = h.rootTracker(agentID)
+	if s.usesLifetimeSpanTracker() {
+		s.spanTracker.Store(h.trackers.replace(agentID, spanTrackerRoot))
+	} else {
+		s.spanTracker.Store(h.rootTracker(agentID))
+	}
 	s.progress = newGenerationProgressPublisher(&h.progressPublishers, func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	}, s.currentMessageSessionID)
@@ -885,7 +898,11 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 	unlockRootSinks()
 	var retiredIDs []string
 	if replaced {
-		retiredIDs = append([]string{agentID}, previous.(*agentOutputSink).retireRegisteredTree()...)
+		previousSink := previous.(*agentOutputSink)
+		previousSink.sessionInfoMu.Lock()
+		h.invalidateCachedLiveSessionInfoLocked(previousSink, contracts.SessionInfoKeyModelAPIRetry)
+		previousSink.sessionInfoMu.Unlock()
+		retiredIDs = append([]string{agentID}, previousSink.retireRegisteredTree()...)
 	}
 	h.enqueueProgressClears(retiredIDs)
 	mutation.Unlock()
@@ -1011,7 +1028,8 @@ type agentOutputSink struct {
 	outputGeneration int64
 	agentProvider    leapmuxv1.AgentProvider
 	plugin           agent.Provider
-	tracker          *SpanTracker
+	// A native lifetime can replace the live tracker while its captured frames finish.
+	spanTracker atomic.Pointer[SpanTracker]
 	// childSinks caches ChildSink results by child agent id so repeated
 	// PersistChild* / nested-spawn calls reuse the same child sink (and its
 	// span tracker). Guarded by childMu.
@@ -1039,10 +1057,11 @@ type agentOutputSink struct {
 	// recursive `reflect.DeepEqual`. The wire encoding of these values
 	// is JSON anyway, so the cached bytes line up exactly with what the
 	// frontend would observe.
-	sessionInfoMu          sync.Mutex
-	lastSessionInfo        map[string][]byte
-	activePermissionChecks map[permissionCheckKey]json.RawMessage
-	progress               *generationProgressPublisher
+	sessionInfoMu              sync.Mutex
+	lastSessionInfo            map[string][]byte
+	modelAPIRetryProcessExited bool
+	activePermissionChecks     map[permissionCheckKey]json.RawMessage
+	progress                   *generationProgressPublisher
 
 	// catalogMu protects comparison identity and final catalog admission.
 	// A nested no-op replaces the identity without storing another catalog value.
@@ -1073,7 +1092,7 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 	}
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.RLock()
-	result, err := s.h.persistPreparedMessage(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker, todoEvent)
+	result, err := s.h.persistPreparedMessage(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.currentSpanTracker(), todoEvent)
 	if err == nil && span.Closing && span.SpanID != "" && content.WriteReceipt.ClaimOutputCompletion() {
 		owner.dropOutputTail(span.SpanID)
 	}
@@ -1140,7 +1159,7 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 			return nil
 		}
 	}
-	result, err = s.h.persistPreparedMessage(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker, todoEvent)
+	result, err = s.h.persistPreparedMessage(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.currentSpanTracker(), todoEvent)
 	if err != nil {
 		return err
 	}
@@ -1328,31 +1347,47 @@ func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, co
 	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, source, content, mode)
 }
 
+func (s *agentOutputSink) usesLifetimeSpanTracker() bool {
+	return s.agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+}
+
+func (s *agentOutputSink) currentSpanTracker() *SpanTracker {
+	return s.spanTracker.Load()
+}
+
+func (s *agentOutputSink) rebindSpanTracker() {
+	kind := spanTrackerRoot
+	if s.root != nil {
+		kind = spanTrackerChild
+	}
+	s.spanTracker.Store(s.h.trackers.replace(s.agentID, kind))
+}
+
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
-	s.tracker.OpenSpan(spanID, parentSpanID)
+	s.currentSpanTracker().OpenSpan(spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	// The call behind a closed span keeps no live tail. See PersistMessage for why
 	// the drop sits on both events.
 	s.progress.dropTail(spanID)
-	s.tracker.CloseSpan(spanID)
+	s.currentSpanTracker().CloseSpan(spanID)
 }
 
 func (s *agentOutputSink) ResetSpans() {
-	s.tracker.Reset()
+	s.currentSpanTracker().Reset()
 }
 
 func (s *agentOutputSink) SetSpanType(spanID, spanType string) {
-	s.tracker.SetSpanType(spanID, spanType)
+	s.currentSpanTracker().SetSpanType(spanID, spanType)
 }
 
 func (s *agentOutputSink) GetSpanType(spanID string) string {
-	return s.tracker.GetSpanType(spanID)
+	return s.currentSpanTracker().GetSpanType(spanID)
 }
 
 func (s *agentOutputSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
-	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
+	return s.currentSpanTracker().ReserveSpanColor(spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) ReportProgress(update agent.ProgressUpdate) {
@@ -1565,6 +1600,9 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	nativeSessionChanged := newLifetime || s.messageSession == nil || s.messageSession.id != sessionID
 	if nativeSessionChanged {
 		s.messageSession = &nativeSessionFact{id: sessionID}
+		if s.usesLifetimeSpanTracker() {
+			s.rebindSpanTracker()
+		}
 	}
 	s.messageSessionMu.Unlock()
 	activity.mu.Unlock()
@@ -1572,12 +1610,9 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	if nativeSessionChanged {
 		delete(s.lastSessionInfo, contracts.SessionInfoKeyContextUsage)
 		delete(s.lastSessionInfo, contracts.SessionInfoKeyTotalCostUsd)
-		// A native session replacement, including a new lifetime of the same
-		// native ID, ends every cached live value: its explicit null is the
-		// authoritative clear for a browser that never saw the provider's own.
-		for _, key := range liveSessionInfoKeys {
-			liveCleared = s.h.invalidateCachedLiveSessionInfoLocked(s, key) || liveCleared
-		}
+		// A native session replacement ends the previous model retry, even
+		// when both lifetimes use the same native ID.
+		liveCleared = s.h.invalidateCachedLiveSessionInfoLocked(s, contracts.SessionInfoKeyModelAPIRetry)
 	}
 	for key := range s.activePermissionChecks {
 		if newLifetime || key.sessionID != sessionID {
@@ -1731,10 +1766,8 @@ var dedupExemptSessionInfoKeys = map[string]struct{}{
 	contracts.SessionInfoKeyRunningTool: {},
 }
 
-// liveSessionInfoKeys are the cached session-info values that describe live
-// state. A process exit or a native session replacement must replace each one
-// with its explicit null, because absence leaves the reader's value alone.
-var liveSessionInfoKeys = []string{
+// processExitSessionInfoKeys are cached live values cleared on process exit.
+var processExitSessionInfoKeys = []string{
 	contracts.SessionInfoKeyCompaction,
 	contracts.SessionInfoKeyModelAPIRetry,
 }
@@ -1767,17 +1800,34 @@ func (h *OutputHandler) invalidateCachedLiveSessionInfoLocked(sink *agentOutputS
 // rateLimits) compare as their canonical JSON encoding (Go marshals map
 // keys in sorted order). Any change inside a nested map ships the whole
 // sub-map, which matches the frontend store's per-key merge semantics
-// in agentSession.store.ts. A marshal failure is treated as "changed"
-// so the value still passes through to the broadcast.
+// in agentSession.store.ts. A marshal failure skips the broadcast.
 func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
+	var retrySource nativeSessionSource
+	if _, hasRetry := info[contracts.SessionInfoKeyModelAPIRetry]; hasRetry {
+		publisher := s.turnPublisherSink()
+		retrySource = nativeSessionSource{
+			sink: s, publisher: publisher, session: s.currentMessageSessionFact(),
+			publisherSession: publisher.currentMessageSessionFact(),
+		}
+	}
 	prepared, err := prepareSessionInfo(info)
 	if err != nil {
 		slog.Warn("marshal agent session info", "agent_id", s.agentID, "error", err)
 		return
 	}
-	changed := s.admitPreparedSessionInfo(prepared)
-	if len(changed) > 0 {
-		s.h.broadcastAgentSessionInfo(s.agentID, changed)
+	var enqueued bool
+	if retrySource.sink != nil {
+		release := retrySource.lock()
+		if !retrySource.currentLocked() {
+			delete(prepared, contracts.SessionInfoKeyModelAPIRetry)
+		}
+		enqueued = s.enqueuePreparedSessionInfo(prepared)
+		release()
+	} else {
+		enqueued = s.enqueuePreparedSessionInfo(prepared)
+	}
+	if enqueued {
+		s.h.watcher.DrainAgentEvents(s.agentID)
 	}
 }
 
@@ -2021,23 +2071,22 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
-	if tracker == nil {
-		// Read-only resolution: the nil-tracker callers (control-response
-		// echoes, synthetic user turns) target an agent that already owns a
-		// sink and thus a tracker. Seeding one here would mask a missing-sink
-		// bug; a fallback empty tracker renders "[]" for a genuinely unknown
-		// agent, and trackerForSnapshot logs the miss.
-		tracker = h.trackerForSnapshot(agentID)
-	}
-	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
-	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)
 	var owner *transcriptOwner
 	if content.Publication != nil {
 		owner, _ = content.Publication.Owner().(*transcriptOwner)
-		if owner != nil {
-			span = owner.span
-			depth, spanLines, connectorColor = owner.depth, owner.spanLines, owner.spanColor
+	}
+	var depth, connectorColor int32
+	var spanLines string
+	if owner != nil {
+		span = owner.span
+		depth, spanLines, connectorColor = owner.depth, owner.spanLines, owner.spanColor
+	} else {
+		if tracker == nil {
+			// Read-only snapshots resolve the active tracker without creating one.
+			tracker = h.trackerForSnapshot(agentID)
 		}
+		connector := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
+		depth, spanLines, connectorColor = tracker.Snapshot(span.ParentSpanID, connector, span.Closing)
 	}
 
 	// Resolve span color: if the span is already active (e.g. tool_result

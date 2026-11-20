@@ -389,7 +389,7 @@ func TestActivity_ProcessExitClearsEverythingAndSettles(t *testing.T) {
 
 	// HandleAgentProcessExit broadcasts no AgentStatusChange, so this is the only
 	// signal a client gets that a crashed agent stopped working.
-	h.NoteAgentProcessExited("agent-1")
+	h.NoteAgentProcessExited("agent-1", nil)
 	h.WaitActivityRefreshes()
 
 	// The settle half, which the name promises and nothing else covers: a dead
@@ -674,7 +674,7 @@ func TestActivity_AProcessBoundaryPublishesWithoutWaiting(t *testing.T) {
 	h.setTurnActive("agent-1", "agent-1", true)
 	require.Equal(t, []bool{true}, rec.busyStates())
 
-	h.NoteAgentProcessExited("agent-1")
+	h.NoteAgentProcessExited("agent-1", nil)
 	h.WaitActivityRefreshes()
 
 	assert.Equal(t, []bool{true, false}, rec.busyStates(), "the exit lands with no window")
@@ -1085,7 +1085,7 @@ func TestActivity_ShutdownJoinsTheDeferredTreeRefresh(t *testing.T) {
 		return false
 	}
 
-	svc.Output.NoteAgentProcessExited(rootID)
+	svc.Output.NoteAgentProcessExited(rootID, nil)
 	<-parked
 
 	done := make(chan struct{})

@@ -5,21 +5,25 @@ import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 
+const nativePathComponent = /^[a-z0-9][\w-]*$/i
+
 /** Check the task link that native session/load resolves through the history index. */
 export function hasDiracResumeCheckpoint(runtime: unknown, history: unknown, sessionId: string): boolean {
-  if (!sessionId.trim() || !isObject(runtime) || typeof runtime.taskId !== 'string' || !runtime.taskId.trim() || !Array.isArray(history))
+  if (!nativePathComponent.test(sessionId) || !isObject(runtime) || typeof runtime.taskId !== 'string'
+    || !nativePathComponent.test(runtime.taskId) || !isObject(runtime.settings)
+    || (runtime.settings.mode !== 'act' && runtime.settings.mode !== 'plan') || !Array.isArray(history)) {
     return false
+  }
   const matches = history.filter(row => isObject(row) && row.id === runtime.taskId)
   return matches.length === 1 && matches[0].ulid === sessionId
 }
 
 /**
- * Require a persisted native checkpoint before testing stored-context resume.
- * Dirac 0.5.20 exits on stdin EOF without flushing its debounced history index.
- * The immediate-close defect is tracked at https://github.com/leapmux/leapmux/issues/528.
+ * Wait for the native runtime link and its matching history row.
+ * The immediate-close regression calls this after the Worker closes the tab.
  */
 export async function waitForDiracCheckpoint(profileDir: string, sessionId: string): Promise<void> {
-  if (!isAbsolute(profileDir) || !/^[a-z0-9][\w-]*$/i.test(sessionId))
+  if (!isAbsolute(profileDir) || !nativePathComponent.test(sessionId))
     throw new Error('The Dirac checkpoint requires an absolute profile directory and a safe session ID.')
   const runDir = getGlobalState().tmpDir
   assertPrivateNativePath(profileDir, runDir)

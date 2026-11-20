@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,6 +225,20 @@ func TestSessionInfoReplay_CarriesTheLiveCompaction(t *testing.T) {
 	assert.Nil(t, info[contracts.SessionInfoKeyCompaction])
 }
 
+func TestSessionInfoReplay_NativeSessionAdoptionPreservesLiveCompaction(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, watcher := newSessionInfoServiceFixture(t)
+	sink.UpdateSessionID("A")
+	compaction := map[string]interface{}{contracts.CompactionFieldTrigger: "auto"}
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyCompaction: compaction})
+
+	sink.AdoptNativeSession("A")
+	info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	assert.Equal(t, compaction, info[contracts.SessionInfoKeyCompaction])
+	assert.Equal(t, []map[string]interface{}{{contracts.SessionInfoKeyCompaction: compaction}}, watcher.snapshot())
+}
+
 func TestProcessExitEndsTheLiveCompaction(t *testing.T) {
 	t.Parallel()
 	svc, root, _ := newSessionInfoServiceFixture(t)
@@ -231,7 +246,7 @@ func TestProcessExitEndsTheLiveCompaction(t *testing.T) {
 	for _, sink := range []agent.ProviderServices{root, child} {
 		sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyCompaction: map[string]interface{}{}})
 	}
-	svc.Output.NoteAgentProcessExited("agent-1")
+	svc.Output.NoteAgentProcessExited("agent-1", root)
 	svc.Output.WaitActivityRefreshes()
 	for _, id := range []string{"agent-1", "child-1"} {
 		info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents(id)[0])
@@ -240,59 +255,158 @@ func TestProcessExitEndsTheLiveCompaction(t *testing.T) {
 	}
 }
 
-// The live model API retry caches and replays like the other live state, and an
-// explicit null from the provider replays with it. A process exit and a new
-// lifetime of the same native ID each replace the active value with its
-// authoritative null and leave no active replay behind.
 func TestSessionInfoReplay_LiveModelAPIRetryClearsOnExitAndReplacement(t *testing.T) {
 	t.Parallel()
-	svc, sink, _ := newSessionInfoServiceFixture(t)
-	retry := map[string]interface{}{
-		"phase":        "waiting",
-		"attempt":      2,
-		"max_attempts": 5,
+
+	for _, tc := range []struct {
+		name  string
+		clear func(*Service, agent.ProviderServices)
+	}{
+		{
+			name: "process exit",
+			clear: func(svc *Service, sink agent.ProviderServices) {
+				svc.Output.NoteAgentProcessExited("agent-1", sink)
+				svc.Output.WaitActivityRefreshes()
+			},
+		},
+		{
+			name: "new lifetime with the same native ID",
+			clear: func(_ *Service, sink agent.ProviderServices) {
+				sink.AdoptNativeSession("A")
+			},
+		},
+		{
+			name: "provider null",
+			clear: func(_ *Service, sink agent.ProviderServices) {
+				sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: nil})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, sink, watcher := newSessionInfoServiceFixture(t)
+			sink.UpdateSessionID("A")
+			retry := map[string]interface{}{"phase": "waiting", "attempt": 2, "max_attempts": 5}
+			replayed := map[string]interface{}{"phase": "waiting", "attempt": float64(2), "max_attempts": float64(5)}
+			sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
+			info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+			assert.Equal(t, replayed, info[contracts.SessionInfoKeyModelAPIRetry])
+
+			tc.clear(svc, sink)
+			info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+			assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
+			assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry])
+			assert.Equal(t, []interface{}{replayed, nil}, watchModelAPIRetryValues(watcher))
+		})
 	}
-	// The replayed frame re-decodes JSON numbers as float64.
-	replayedRetry := map[string]interface{}{
-		"phase":        "waiting",
-		"attempt":      float64(2),
-		"max_attempts": float64(5),
-	}
-	sink.UpdateSessionID("A")
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
-	info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
-	assert.Equal(t, replayedRetry, info[contracts.SessionInfoKeyModelAPIRetry], "an active retry replays")
-
-	svc.Output.NoteAgentProcessExited("agent-1")
-	svc.Output.WaitActivityRefreshes()
-	info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
-	assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
-	assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry], "the exit emits the authoritative null")
-
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
-	sink.AdoptNativeSession("A")
-	info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
-	assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
-	assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry],
-		"a new lifetime of the same native ID emits the authoritative null")
-
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
-	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: nil})
-	info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
-	assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
-	assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry], "an explicit null from the provider also replays")
 }
 
-// A browser that missed the clear during NOTIFY and promotes after a fresh
-// same-ID sink replaced the old one sees an idle replay with no retry key. The
-// stale retry can only be reset, never restored by that replay.
-func TestSessionInfoReplay_ReplacementLeavesNoModelAPIRetryKey(t *testing.T) {
+type blockedModelAPIRetryInfo struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (value blockedModelAPIRetryInfo) MarshalJSON() ([]byte, error) {
+	close(value.entered)
+	<-value.release
+	return []byte(`{"phase":"running","attempt":2}`), nil
+}
+
+func watchModelAPIRetryValues(watcher *sessionInfoCapturingWriter) []interface{} {
+	var values []interface{}
+	for _, info := range watcher.snapshot() {
+		if value, present := info[contracts.SessionInfoKeyModelAPIRetry]; present {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func TestSessionInfoReplay_StaleModelAPIRetryCannotPublishAfterRetirement(t *testing.T) {
 	t.Parallel()
-	svc, sink, _ := newSessionInfoServiceFixture(t)
+
+	for _, tc := range []struct {
+		name   string
+		retire func(*testing.T, *Service, agent.ProviderServices)
+	}{
+		{
+			name: "same native ID",
+			retire: func(_ *testing.T, _ *Service, sink agent.ProviderServices) {
+				sink.AdoptNativeSession("A")
+			},
+		},
+		{
+			name: "new process sink",
+			retire: func(t *testing.T, svc *Service, _ agent.ProviderServices) {
+				newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+			},
+		},
+		{
+			name: "process exit",
+			retire: func(_ *testing.T, svc *Service, sink agent.ProviderServices) {
+				svc.Output.NoteAgentProcessExited("agent-1", sink)
+				svc.Output.WaitActivityRefreshes()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, sink, watcher := newSessionInfoServiceFixture(t)
+			sink.UpdateSessionID("A")
+			entered, unblock, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(unblock) })
+			t.Cleanup(release)
+			go func() {
+				defer close(done)
+				sink.BroadcastSessionInfo(map[string]interface{}{
+					contracts.SessionInfoKeyModelAPIRetry: blockedModelAPIRetryInfo{entered, unblock},
+				})
+			}()
+			select {
+			case <-entered:
+			case <-time.After(30 * time.Second):
+				t.Fatal("retry publication did not reach JSON preparation")
+			}
+
+			tc.retire(t, svc, sink)
+			release()
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("retry publication did not complete")
+			}
+			assert.Empty(t, watchModelAPIRetryValues(watcher))
+			assert.Empty(t, svc.Output.SessionInfoReplayEvents("agent-1"))
+		})
+	}
+}
+
+func TestSessionInfoReplay_RetiredProcessExitPreservesTheSuccessorRetry(t *testing.T) {
+	t.Parallel()
+
+	svc, previous, watcher := newSessionInfoServiceFixture(t)
+	current := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	current.AdoptNativeSession("A")
+	retry := map[string]interface{}{"phase": "running", "attempt": 2}
+	current.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
+
+	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: "agent-1", Output: previous, Stopped: true})
+	svc.Output.WaitActivityRefreshes()
+
+	info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	replayed := map[string]interface{}{"phase": "running", "attempt": float64(2)}
+	assert.Equal(t, replayed, info[contracts.SessionInfoKeyModelAPIRetry])
+	assert.Equal(t, []interface{}{replayed}, watchModelAPIRetryValues(watcher))
+}
+
+func TestSessionInfoReplay_SinkReplacementClearsModelAPIRetryOnTheLiveWatch(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, watcher := newSessionInfoServiceFixture(t)
 	sink.BroadcastSessionInfo(map[string]interface{}{
 		contracts.SessionInfoKeyModelAPIRetry: map[string]interface{}{"phase": "running", "attempt": 2},
 	})
 	newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	replayed := map[string]interface{}{"phase": "running", "attempt": float64(2)}
+	assert.Equal(t, []interface{}{replayed, nil}, watchModelAPIRetryValues(watcher))
 	assert.Nil(t, svc.Output.SessionInfoReplayEvents("agent-1"),
 		"the fresh same-ID sink replays an idle state with no retry key")
 }

@@ -4,14 +4,18 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -83,6 +87,7 @@ func newHandshakeRig(t *testing.T, peer *handshakePeer, hooks Hooks, clock quart
 	b.applyHooks(hooks)
 
 	go func() {
+		defer func() { _ = stdoutWriter.Close() }()
 		scanner := bufio.NewScanner(stdinReader)
 		for scanner.Scan() {
 			var request struct {
@@ -263,4 +268,236 @@ func TestStartACPHandshake_AControlRequestBeforeTheSessionAnswerKeepsItsSession(
 	published := sink.PublishedControls()
 	require.Len(t, published, 1, "a request of the session that the handshake opens reaches the reader")
 	assert.Equal(t, "session-9", published[0].AgentSessionID)
+}
+
+func TestACPStopClosesAdmissionAndRunsPrepareStopOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var hooks atomic.Int32
+		entered, release := make(chan struct{}), make(chan struct{})
+		peer := &handshakePeer{}
+		rig := newHandshakeRig(t, peer, Hooks{
+			PrepareStop: func(snapshot ACPStopSnapshot) {
+				if hooks.Add(1) == 1 {
+					close(entered)
+				}
+				<-release
+			},
+			AdvertisedSteerMethod: func([]byte) string { return "session/steer" },
+		}, nil, func(method string) json.RawMessage {
+			if method == MethodSessionNew {
+				return json.RawMessage(`{"sessionId":"session"}`)
+			}
+			return json.RawMessage(`{"protocolVersion":1}`)
+		})
+		_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
+		require.NoError(t, err)
+		child := ChildSessionTarget{RootSessionID: "session", SessionID: "child", RowKey: "child-row"}
+		require.True(t, rig.base.AttachChildSession(child))
+		rig.base.Mu.Lock()
+		rig.base.promptActive = true
+		rig.base.Mu.Unlock()
+
+		var stops sync.WaitGroup
+		stops.Go(rig.base.Stop)
+		<-entered
+		stops.Go(rig.base.Stop)
+		synctest.Wait()
+		assert.Equal(t, int32(1), hooks.Load())
+		_, err = rig.base.SteerAdvertisedResult("late steer", nil)
+		assert.Error(t, err)
+		_, err = rig.base.ClearContext()
+		assert.Error(t, err)
+		assert.Error(t, rig.base.SendInput("late root prompt", nil))
+		assert.ErrorIs(t, rig.base.SendChildPromptDetached(child, "late child prompt", nil, func(json.RawMessage, error) {}), agent.ErrChildRouteNotReady)
+		assert.Error(t, rig.base.SendPromptDetached("session", "late detached prompt", nil, func(json.RawMessage, error) {}))
+		assert.Len(t, peer.recorded(), 2, "no late operation can reach the ACP peer")
+
+		close(release)
+		stops.Wait()
+	})
+}
+
+func TestACPStopBypassesAnUnstableSessionSnapshot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		snapshots := make(chan ACPStopSnapshot, 1)
+		rig := newHandshakeRig(t, &handshakePeer{}, Hooks{
+			PrepareStop: func(snapshot ACPStopSnapshot) { snapshots <- snapshot },
+		}, nil, func(method string) json.RawMessage {
+			if method == MethodSessionNew {
+				return json.RawMessage(`{"sessionId":"session"}`)
+			}
+			return json.RawMessage(`{"protocolVersion":1}`)
+		})
+		_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
+		require.NoError(t, err)
+		rig.base.sessionMu.Lock()
+		defer rig.base.sessionMu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			rig.base.Stop()
+			close(done)
+		}()
+		synctest.Wait()
+		select {
+		case snapshot := <-snapshots:
+			assert.Empty(t, snapshot.SessionID)
+			assert.Nil(t, snapshot.Cancel)
+		default:
+			t.Error("the pre-stop hook waited for the session lock")
+		}
+		select {
+		case <-done:
+		default:
+			t.Error("ordinary teardown waited for the session lock")
+		}
+	})
+}
+
+func TestACPStopCancellationDoesNotWaitForStdin(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprintf("queue full=%t", full), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				promptReply := make(chan struct{})
+				releasePrompt := sync.OnceFunc(func() { close(promptReply) })
+				defer releasePrompt()
+				attributed, releaseHook := make(chan bool, 1), make(chan struct{})
+				resumeHook := sync.OnceFunc(func() { close(releaseHook) })
+				defer resumeHook()
+				var rig *handshakeRig
+				rig = newHandshakeRig(t, &handshakePeer{}, Hooks{
+					PrepareStop: func(snapshot ACPStopSnapshot) {
+						snapshot.Cancel()
+						snapshot.Cancel()
+						attributed <- rig.base.acpInterruptRequested()
+						<-releaseHook
+					},
+				}, nil, func(method string) json.RawMessage {
+					switch method {
+					case MethodSessionNew:
+						return json.RawMessage(`{"sessionId":"session"}`)
+					case MethodSessionPrompt:
+						<-promptReply
+						return json.RawMessage(`{"stopReason":"cancelled"}`)
+					default:
+						return json.RawMessage(`{"protocolVersion":1}`)
+					}
+				})
+				_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
+				require.NoError(t, err)
+				require.NoError(t, rig.base.SendInput("hold the native read", nil))
+				blocked, err := rig.base.EnqueueStdin([]byte("{}\n"))
+				require.NoError(t, err)
+				synctest.Wait()
+				if full {
+					for {
+						if _, err := rig.base.EnqueueStdin([]byte("{}\n")); err != nil {
+							break
+						}
+					}
+				}
+				finished := make(chan struct{})
+				go func() {
+					rig.base.Stop()
+					close(finished)
+				}()
+				synctest.Wait()
+				select {
+				case recorded := <-attributed:
+					assert.True(t, recorded)
+				default:
+					t.Error("queueing the captured cancellation blocked behind the stdin writer")
+				}
+				resumeHook()
+				synctest.Wait()
+				select {
+				case err := <-blocked:
+					assert.Error(t, err, "ordinary teardown closes the blocked stdin writer")
+				default:
+					t.Error("ordinary teardown did not close stdin")
+				}
+				releasePrompt()
+				<-finished
+			})
+		})
+	}
+}
+
+func TestACPStoppedRootPromptDoesNotWaitForTheSessionLock(t *testing.T) {
+	peer := &handshakePeer{}
+	rig := newHandshakeRig(t, peer, Hooks{PrepareStop: func(ACPStopSnapshot) {}}, nil, func(method string) json.RawMessage {
+		if method == MethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session"}`)
+		}
+		return json.RawMessage(`{"protocolVersion":1}`)
+	})
+	_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
+	require.NoError(t, err)
+	b := rig.base
+	b.sessionMu.Lock()
+	release := sync.OnceFunc(b.sessionMu.Unlock)
+	defer release()
+	// Reproduce the interval between Stop claiming teardown and closing the
+	// separate callback admission. The active session still owns its lock.
+	b.Mu.Lock()
+	b.stopDone = make(chan struct{})
+	b.Mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- b.SendInput("late root prompt", nil) }()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Error("a root prompt entering after the stop claim waited for the session lock")
+		release()
+		assert.Error(t, <-done)
+	}
+	assert.Len(t, peer.recorded(), 2, "the late prompt sends no native RPC")
+}
+
+func TestACPStopKeepsTheSessionSnapshotWhileOutputOwnsTheTurnLock(t *testing.T) {
+	snapshots := make(chan ACPStopSnapshot, 1)
+	resumeStop := make(chan struct{})
+	releaseStop := sync.OnceFunc(func() { close(resumeStop) })
+	defer releaseStop()
+	rig := newHandshakeRig(t, &handshakePeer{}, Hooks{
+		PrepareStop: func(snapshot ACPStopSnapshot) {
+			snapshots <- snapshot
+			<-resumeStop
+		},
+	}, nil, func(method string) json.RawMessage {
+		if method == MethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session"}`)
+		}
+		return json.RawMessage(`{"protocolVersion":1}`)
+	})
+	_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
+	require.NoError(t, err)
+	b := rig.base
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+	b.turnMu.Lock()
+	releaseOutput := sync.OnceFunc(b.turnMu.Unlock)
+	defer releaseOutput()
+	done := make(chan struct{})
+	go func() {
+		b.Stop()
+		close(done)
+	}()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case snapshot := <-snapshots:
+		assert.Equal(t, "session", snapshot.SessionID)
+		assert.True(t, snapshot.PromptActive)
+		assert.Nil(t, snapshot.Cancel)
+	case <-ctx.Done():
+		t.Error("turn output delayed the pre-stop snapshot")
+	}
+	releaseOutput()
+	releaseStop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Error("the ACP stop did not finish")
+	}
 }

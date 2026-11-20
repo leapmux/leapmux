@@ -19,7 +19,7 @@ const (
 )
 
 func safeDiracComponent(value string) bool {
-	return value != "" && value != "." && value != ".." && filepath.Base(value) == value && !strings.ContainsAny(value, `/\`)
+	return value != "." && filepath.IsLocal(value) && filepath.Base(value) == value && !strings.ContainsAny(value, "/\\\x00")
 }
 
 type diracArchiveFileOpener interface {

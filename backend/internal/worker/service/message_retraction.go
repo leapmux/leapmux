@@ -115,7 +115,7 @@ func (s *agentOutputSink) retractionAuthorityLocked(owner *transcriptOwner) bool
 	if s.turnPublisherSink().currentMessageSessionFact() != owner.publisherSession {
 		return false
 	}
-	if owner.activationLease != nil && s.childLifetime != owner.activationLease {
+	if s.childLifetime != owner.childLease || owner.sessionID != owner.session.id {
 		return false
 	}
 	return true

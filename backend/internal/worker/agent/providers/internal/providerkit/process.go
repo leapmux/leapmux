@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -284,21 +285,6 @@ func (p *Process) WriteStdin(data []byte) error {
 // Callers can check their own authority and enqueue under one state lock,
 // then wait for the returned result after releasing that lock.
 func (p *Process) EnqueueStdin(data []byte) (<-chan error, error) { return p.enqueueStdinResult(data) }
-
-// EnqueueNotification serializes a JSON-RPC notification (no id) and admits
-// it to the stdin queue without waiting. The method and params are encoded
-// as `{"jsonrpc":"2.0","method":"<method>","params":<params>}`.
-func (p *Process) EnqueueNotification(method string, params any) (<-chan error, error) {
-	frame, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"method":  method,
-		"params":  params,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return p.enqueueStdinResult(frame)
-}
 
 // enqueueStdinResult reports delivery without waiting or discarding queue refusals.
 func (p *Process) enqueueStdinResult(data []byte) (<-chan error, error) {
@@ -715,6 +701,7 @@ func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 	delimBytes := []byte(p.preambleDelimiter)
 	metaPrefixBytes := []byte(p.preambleMetaPrefix)
 	const maxPreambleLines = 50
+	var observedEnvironment bool
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if bytes.Equal(line, delimBytes) {
@@ -726,7 +713,14 @@ func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 			kv := string(line[len(metaPrefixBytes):])
 			if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
 				p.Mu.Lock()
-				p.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
+				key, value := kv[:eqIdx], kv[eqIdx+1:]
+				if key == envprobe.ObservationKey {
+					if observedEnvironment {
+						value = ""
+					}
+					observedEnvironment = true
+				}
+				p.preambleMeta[key] = value
 				p.Mu.Unlock()
 			}
 			continue

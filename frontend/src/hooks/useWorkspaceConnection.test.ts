@@ -3616,7 +3616,10 @@ describe('useWorkspaceConnection replay ownership', () => {
     const state = mountReplay({ seq: 7n, viewportHeight: 384 })
     await flushStream()
     const listMessages = vi.mocked(workerAgent.listAgentMessages)
-    listMessages.mockResolvedValue(create(ListAgentMessagesResponseSchema))
+    listMessages.mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+      messages: [...state.chatStore.getMessages(state.agentId)],
+      latestSeq: 23n,
+    }))
     emitCatchUpStart(state, 23n, { replayPageLimit: 8, messageReplaySkipped: false })
     await flushStream()
     listMessages.mockClear().mockResolvedValue(create(ListAgentMessagesResponseSchema, {
@@ -3711,6 +3714,34 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(listMessages.mock.calls[0]![2]?.signal?.aborted).toBe(false)
     oldest.resolve(pageReply(1n))
     await expect(home).resolves.toBe(true)
+  })
+
+  it('keeps an explicit oldest request when retraction empties the loaded window', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    acknowledgeReplay(state)
+    const oldest = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockReturnValue(oldest.promise)
+
+    const home = state.chatStore.jumpToOldestMessages('w1', state.agentId)
+    state.handles.at(-1)!.emit(receivedEvent({
+      agentId: state.agentId,
+      event: {
+        case: 'messagesRetracted',
+        value: { seqs: [7n] },
+      },
+    }))
+    expect(state.chatStore.getMessages(state.agentId)).toEqual([])
+    expect(listMessages.mock.calls[0]![2]?.signal?.aborted).toBe(false)
+
+    oldest.resolve(pageReply(1n))
+    await expect(home).resolves.toBe(true)
+    await flushStream()
+
+    expect(listMessages.mock.calls.map(([, request]) => request.anchor)).toEqual([MessagePageAnchor.OLDEST])
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([1n])
+    expect(state.chatStore.hasPendingLatestAnchor(state.agentId)).toBe(false)
   })
 
   function pageReply(seq: bigint) {
@@ -4814,7 +4845,7 @@ describe('useWorkspaceConnection replay ownership', () => {
       },
     }))
     expect(state.agentActivityStore.isBusy(state.agentId)).toBe(true)
-    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n)
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n, false, state.handles[0]?.handle)
     expect(state.settled).not.toHaveBeenCalled()
   })
 
@@ -4857,7 +4888,7 @@ describe('useWorkspaceConnection replay ownership', () => {
       },
     }))
     expect(state.agentActivityStore.publishedState(state.agentId)).toBe(AgentActivityState.WORKING)
-    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n)
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n, false, state.handles[0]?.handle)
     expect(state.settled).not.toHaveBeenCalled()
   })
 
@@ -4903,6 +4934,38 @@ describe('useWorkspaceConnection replay ownership', () => {
     await flushStream()
     return requestedEntry(state).replayId
   }
+
+  it('fences retracted messages from a demoted replay on the same handle', async () => {
+    const state = mountReplay({ seq: 1n })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const handle = state.handles[0]!
+    const removed = state.emitMessage({ type: 'assistant' }, { seq: 2n, replay: true })
+    expect(state.chatStore.getMessages('a1').map(message => message.seq)).toEqual([1n, 2n])
+
+    handle.emit(receivedEvent({
+      agentId: 'a1',
+      event: {
+        case: 'messagesRetracted',
+        value: {
+          seqs: [2n, 2n, 0n, -1n],
+        },
+      },
+    }))
+    expect(state.chatStore.getMessages('a1').map(message => message.seq)).toEqual([1n])
+
+    state.addAgent('other', { workerId: 'w1' })
+    await flushStream()
+    expect(state.agentSessionStore.acceptsReplay('a1', entry.replayId)).toBe(false)
+    expect(state.handles).toHaveLength(1)
+    handle.emit(receivedEvent({
+      agentId: 'a1',
+      replay: true,
+      replayId: entry.replayId,
+      event: { case: 'agentMessage', value: removed },
+    }))
+    expect(state.chatStore.getMessages('a1').map(message => message.seq)).toEqual([1n])
+  })
 
   describe('controlRequest guard for inactive agents', () => {
     function emitRequest(tabs: ReturnType<typeof mountReplay>, replay = false) {
@@ -5244,6 +5307,58 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.chatStore.getMessages('a1').map(message => message.id)).toEqual(['wire-message-1', 'wire-message-2'])
   })
 
+  it('drops a missed retry clear on promotion and still restores the current retry', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const emitRetry = (attempt: number, replayId?: bigint) => {
+      const frame = {
+        type: 'agent_session_info',
+        info: {
+          model_api_retry: { phase: 'running', attempt },
+        },
+      }
+      state.emitMessage(frame, replayId === undefined
+        ? { seq: -1n }
+        : { seq: -1n, replay: true, replayId })
+    }
+
+    state.handles[0]!.emit(receivedEvent({
+      agentId: state.agentId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.ACTIVE, agentSessionId: 'session-a' },
+      },
+    }))
+    emitRetry(2)
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual({ phase: 'running', attempt: 2 })
+    const replayId = await replaceReplay(state)
+    // An idle replacement can omit the retry key from its replay.
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toBeUndefined()
+
+    emitRetry(3, replayId)
+    state.handles[0]!.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.ACTIVE, agentSessionId: 'session-b' },
+      },
+    }))
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual({ phase: 'running', attempt: 3 })
+    emitRetry(4)
+    state.handles[0]!.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.INACTIVE },
+      },
+    }))
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual({ phase: 'running', attempt: 4 })
+  })
+
   it('compares stored history with live sequences on the same request', async () => {
     const state = mountReplay()
     await flushStream()
@@ -5448,7 +5563,7 @@ describe('useWorkspaceConnection replay ownership', () => {
         value: { latestSeq: 7n },
       },
     }))
-    expect(reconcile).toHaveBeenLastCalledWith('a1', 7n, 7n)
+    expect(reconcile).toHaveBeenLastCalledWith('a1', 7n, 7n, false, state.handles[0]?.handle)
     expect(state.chatStore.getMessages('a1').some(message => message.seq === 8n)).toBe(true)
   })
 

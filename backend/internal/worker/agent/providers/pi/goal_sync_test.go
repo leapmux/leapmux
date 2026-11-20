@@ -99,7 +99,8 @@ func TestPiGoalSnapshotUsesTheCurrentNativeBranch(t *testing.T) {
 
 func TestPiGoalDisplayEventsTriggerGoalRefresh(t *testing.T) {
 	t.Parallel()
-	rig, sink, goalPath := piGoalSyncRig(t)
+	clock := testutil.NewQuartzMock(t)
+	rig, sink, goalPath := piGoalSyncRigWithClock(t, clock)
 	a := rig.agent
 	a.Mu.Lock()
 	a.extensionCommands = map[string]bool{"goal-direct": true}
@@ -127,12 +128,16 @@ func TestPiGoalDisplayEventsTriggerGoalRefresh(t *testing.T) {
 		return ok && goal.Objective == "Widget updated"
 	}, 2*time.Second, time.Millisecond, "setWidget with goal key must trigger goal refresh")
 
-	// A different key leaves the goal reader idle.
-	beforeGoal, _ := sink.LastGoal()
-	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"other","statusText":"ignored"}`))
-	time.Sleep(50 * time.Millisecond)
-	afterGoal, _ := sink.LastGoal()
-	assert.Equal(t, beforeGoal, afterGoal, "setStatus with a non-goal key must not trigger a goal refresh")
+	// The goal reader increments its revision synchronously when a request schedules a read.
+	a.Mu.Lock()
+	beforeRevision := a.goal.revision
+	a.Mu.Unlock()
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"other"}`))
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"x","method":"setWidget","widgetKey":"other"}`))
+	a.Mu.Lock()
+	afterRevision := a.goal.revision
+	a.Mu.Unlock()
+	assert.Equal(t, beforeRevision, afterRevision, "non-goal display events schedule no goal read")
 }
 
 func TestPiGoalCommandRefreshesConfirmedState(t *testing.T) {

@@ -7,12 +7,14 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -606,7 +608,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutputLoop(scanner)
+		a.startOutputReader(scanner)
 
 		// Replicate the startup handshake from Start().
 		mode := cmp.Or(opts.PermissionMode(), contracts.ClaudeModeDefault)
@@ -682,7 +684,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-		go a.readOutputLoop(scanner)
+		a.startOutputReader(scanner)
 
 		cleanup := func() {
 			a.Stop()
@@ -803,7 +805,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
+	a.startOutputReader(scanner)
 
 	// Send a valid assistant NDJSON message to trigger output after delimiter.
 	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n"), agentapi.StopContext{}))
@@ -900,7 +902,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
+	a.startOutputReader(scanner)
 
 	// Send a valid assistant NDJSON message to trigger post-preamble output.
 	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n"), agentapi.StopContext{}))
@@ -1140,4 +1142,123 @@ func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.
 	assert.NotEqual(t, agentapi.OptionSettlementUnresolved,
 		a.SettingsSnapshot().Settlements[agentapi.OptionIDPermissionMode].State,
 		"a session whose mode the CLI acknowledged must report the axis as settled")
+}
+
+func TestClaudeReaderReservesTheFinalHoldBeforeStopAndWait(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	queue := sink.OutputQueue()
+	services := agentapi.NewOrderedProviderServices(queue, agentapi.NewProviderServices(sink))
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "exit 0")
+	require.NoError(t, cmd.Start())
+	a := &Agent{
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			Cmd: cmd, Ctx: t.Context(), ProcessDone: make(chan struct{}),
+		}),
+		sink:                   services,
+		readerFinalReservation: make(chan struct{}),
+	}
+	blocked := true
+	queue.Append(agentapi.OutputWrite{Label: "block Claude output", Run: func() error {
+		if blocked {
+			return errors.New("storage unavailable")
+		}
+		return nil
+	}})
+	a.readOutputLoop(bufio.NewScanner(strings.NewReader(
+		`{"type":"assistant","uuid":"final","is_api_error_message":true,"message":{"content":[{"type":"text","text":"EOF error"}]}}`,
+	)))
+	var rowsAtSentinel []agenttest.Message
+	queue.Append(agentapi.OutputWrite{Label: "observe the reader reservation", Run: func() error {
+		rowsAtSentinel = sink.Messages()
+		return nil
+	}})
+	deadline, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	waitDone := make(chan error, 1)
+	stopDone := make(chan struct{})
+	go func() { waitDone <- a.Wait() }()
+	go func() {
+		a.Stop()
+		close(stopDone)
+	}()
+	select {
+	case err := <-waitDone:
+		require.NoError(t, err)
+	case <-deadline.Done():
+		t.Fatal("Wait did not join the reader reservation")
+	}
+	select {
+	case <-stopDone:
+	case <-deadline.Done():
+		t.Fatal("Stop did not join the reader reservation")
+	}
+	blocked = false
+	require.NoError(t, agentapi.FlushPendingOutput(services))
+	require.Len(t, rowsAtSentinel, 1, "the reader reserved the final hold before the later writer")
+	assert.Equal(t, "final", rowsAtSentinel[0].IdempotencyKey)
+	assert.Len(t, sink.Messages(), 1, "Stop and Wait share the reader's reservation")
+}
+
+type claudeBlockingFinalReservationSink struct {
+	agenttest.Sink
+	reserving chan struct{}
+	resume    chan struct{}
+}
+
+func (sink *claudeBlockingFinalReservationSink) ReserveTranscriptOutput(queue *agentapi.OutputQueue, writes ...agentapi.OutputWrite) ([]*agentapi.OutputTicket, error) {
+	if len(writes) == 1 && writes[0].Label == "flush Claude API error at EOF" {
+		close(sink.reserving)
+		<-sink.resume
+	}
+	return sink.Sink.ReserveTranscriptOutput(queue, writes...)
+}
+
+func TestClaudeStopAndWaitJoinThePendingReaderReservation(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		sink := &claudeBlockingFinalReservationSink{reserving: make(chan struct{}), resume: make(chan struct{})}
+		queue := sink.OutputQueue()
+		services := agentapi.NewOrderedProviderServices(queue, agentapi.NewProviderServices(sink))
+		processDone := make(chan struct{})
+		a := &Agent{
+			Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), ProcessDone: processDone}),
+			sink:    services, readerFinalReservation: make(chan struct{}),
+		}
+		blocker := agentapi.NewOutputOwner()
+		queue.Append(agentapi.OutputWrite{Owner: blocker, Label: "block Claude output", Run: func() error {
+			return errors.New("storage unavailable")
+		}})
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"final","is_api_error_message":true,"message":{"content":[{"type":"text","text":"EOF error"}]}}`))
+		// ReadOutput reports process exit before the reader reserves its final write.
+		close(processDone)
+		go a.flushHeldAPIError()
+		<-sink.reserving
+		waited := make(chan error, 1)
+		stopped := make(chan struct{})
+		go func() { waited <- a.Wait() }()
+		go func() {
+			a.Stop()
+			close(stopped)
+		}()
+		synctest.Wait()
+		assert.Empty(t, waited, "Wait remains blocked until the reader publishes its reservation")
+		select {
+		case <-stopped:
+			t.Error("Stop returned before the reader reserved the final write")
+		default:
+		}
+		close(sink.resume)
+		require.NoError(t, <-waited)
+		<-stopped
+		var rowsAtSentinel []agenttest.Message
+		queue.Append(agentapi.OutputWrite{Label: "verify reader ordering", Run: func() error {
+			rowsAtSentinel = sink.Messages()
+			return nil
+		}})
+		queue.ClearOwner(blocker)
+		require.NoError(t, agentapi.FlushPendingOutput(services))
+		require.Len(t, rowsAtSentinel, 1)
+		assert.Equal(t, "final", rowsAtSentinel[0].IdempotencyKey)
+	})
 }

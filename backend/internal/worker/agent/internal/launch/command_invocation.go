@@ -35,7 +35,13 @@ func buildPosixCommand(shell string, spec shellLaunchSpec, prepared *PreparedLau
 		script.WriteString(posixLaunchEnvironment(shell, nil, spec.pins, true))
 	}
 	script.WriteString("__leapmux_invoke() {\n")
-	script.WriteString(protocolLine(shell, prepared.Delimiter, spec.EnvGated == nil))
+	if len(prepared.environmentProbe) == 0 {
+		script.WriteString(protocolLine(shell, prepared.Delimiter, spec.EnvGated == nil))
+	} else {
+		fmt.Fprintf(&script, "if [ \"$__lm_kind\" = external ] && %s; then\n%selse\n%sfi\n",
+			strings.Join(quotedArguments(prepared.environmentProbe, quote), " "),
+			protocolLine(shell, prepared.Delimiter, false), protocolLine(shell, prepared.Delimiter, spec.EnvGated == nil))
+	}
 	script.WriteString("case \"$__lm_kind\" in\n")
 	switch shell {
 	case "bash":
@@ -188,7 +194,33 @@ func buildPwshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 		writeArgs(gate.Args, true)
 		script.WriteString("}; ")
 	}
-	script.WriteString(protocolLine("pwsh", prepared.Delimiter, spec.EnvGated == nil))
+	if len(prepared.environmentProbe) == 0 {
+		script.WriteString(protocolLine("pwsh", prepared.Delimiter, spec.EnvGated == nil))
+	} else {
+		// PowerShell can buffer native output in its pipeline. Write the
+		// captured record through the same console stream as readiness.
+		fmt.Fprintf(&script, `$__lm_observed = $false
+if ($__lm_selected.Native) {
+  $PSNativeCommandUseErrorActionPreference = $false
+  try {
+    $__lm_probe_lines = @(& %s)
+    $__lm_observed = ($LASTEXITCODE -eq 0)
+  } catch {
+    $__lm_observed = $false
+  }
+}
+if ($__lm_observed) {
+  [Console]::Out.WriteLine('')
+  foreach ($__lm_probe_line in $__lm_probe_lines) {
+    if ($__lm_probe_line.Length -ne 0) { [Console]::Out.WriteLine($__lm_probe_line) }
+  }
+  %s
+} else {
+  %s
+}
+`, strings.Join(quotedArguments(prepared.environmentProbe, quote), " "),
+			protocolLine("pwsh", prepared.Delimiter, false), protocolLine("pwsh", prepared.Delimiter, spec.EnvGated == nil))
+	}
 	script.WriteString(`$global:LASTEXITCODE = $null
 $PSNativeCommandUseErrorActionPreference = $false
 if ($__lm_selected.Native) { $PSNativeCommandArgumentPassing = 'Legacy' }
@@ -208,7 +240,8 @@ func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocation
 	fmt.Fprintf(&script, "let __lm_selected = ([%s] | %%each {|name| let target = (leapmux-lookup $name false); if $target != null { {name: $name, target: $target} } } | %%take 1 | %%get -o 0)\n",
 		strings.Join(quotedArguments(prepared.candidates, nuQuote), ", "))
 	fmt.Fprintf(&script, "if $__lm_selected == null { %%print -e ''; %%print -e %s; %%exit 127 }\n", nuQuote(prepared.exhaustedMarker))
-	script.WriteString(nuLaunchArguments(spec.WrapSpec, prepared.Delimiter, prepared.MetaPrefix))
+	script.WriteString(nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix))
+	script.WriteString(prepared.nuReadiness(spec.EnvGated == nil, "$__lm_selected.target.type == 'external'"))
 	script.WriteString("if $__lm_selected.target.type == 'external' { ^$__lm_selected.target.path ...$__lm_args } else {\nmatch $__lm_selected.name {\n")
 	for _, name := range prepared.candidates {
 		files := invocations[name]
@@ -224,7 +257,7 @@ func buildNuSelection(spec shellLaunchSpec, prepared *PreparedLaunch, invocation
 	return script.String()
 }
 
-func nuLaunchArguments(spec WrapSpec, delimiter, metaPrefix string) string {
+func nuLaunchArguments(spec WrapSpec, metaPrefix string) string {
 	var script strings.Builder
 	fmt.Fprintf(&script, "let __lm_base = [%s]\n", strings.Join(quotedArguments(spec.BaseArgs, nuQuote), ", "))
 	if gate := spec.EnvGated; gate != nil {
@@ -234,8 +267,23 @@ func nuLaunchArguments(spec WrapSpec, delimiter, metaPrefix string) string {
 	} else {
 		script.WriteString("let __lm_args = $__lm_base\n")
 	}
-	script.WriteString(protocolLine("nu", delimiter, spec.EnvGated == nil))
 	return script.String()
+}
+
+// nuReadiness writes the helper's bytes unchanged and falls back to ordinary
+// framing if it could not observe the selected command's environment.
+func (p *PreparedLaunch) nuReadiness(first bool, external string) string {
+	ordinary := protocolLine("nu", p.Delimiter, first)
+	if len(p.environmentProbe) == 0 {
+		return ordinary
+	}
+	observe := fmt.Sprintf("let __lm_probe = (try { do { ^%s } | complete } catch { {exit_code: 127} })\nif $__lm_probe.exit_code == 0 { %%print -n $__lm_probe.stdout; %s} else { %s}\n",
+		strings.Join(quotedArguments(p.environmentProbe, nuQuote), " "),
+		protocolLine("nu", p.Delimiter, false), ordinary)
+	if external == "" {
+		return observe
+	}
+	return fmt.Sprintf("if %s {\n%s} else { %s}\n", external, observe, ordinary)
 }
 
 // Csh substitutes variables before evaluating a line. Keep each existence
@@ -261,21 +309,45 @@ func buildCshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 			script.WriteString(strings.TrimSuffix(protocolLine("csh", record, first), "\n"))
 			script.WriteString(recordTerminator)
 		}
+		writeReady := func(first bool) {
+			if len(prepared.environmentProbe) == 0 {
+				writeRecord(prepared.Delimiter, first)
+				return
+			}
+			if ordered {
+				script.WriteString("if ( \"$__lm_kind\" == external ) then\n")
+			}
+			script.WriteString(strings.Join(quotedArguments(prepared.environmentProbe, cshQuote), " ") + "\n")
+			script.WriteString("if ( $status == 0 ) then\n")
+			script.WriteString(protocolLine("csh", prepared.Delimiter, false))
+			script.WriteString("else\n")
+			script.WriteString(protocolLine("csh", prepared.Delimiter, first))
+			script.WriteString("endif\n")
+			if ordered {
+				script.WriteString("else\n")
+				script.WriteString(protocolLine("csh", prepared.Delimiter, first))
+				script.WriteString("endif\n")
+			}
+		}
 		if optional == nil {
-			writeRecord(prepared.Delimiter, true)
+			writeReady(true)
 			script.WriteString(dispatch(baseArgs) + "\n")
 			return
 		}
 		fmt.Fprintf(&script, "if ( $%s ) then\n", cshEnvGateVar)
 		writeRecord(prepared.MetaPrefix+optional.MetaKey+"=false", true)
-		writeRecord(prepared.Delimiter, false)
+		writeReady(false)
 		script.WriteString(dispatch(baseArgs) + "\nelse\n")
 		writeRecord(prepared.MetaPrefix+optional.MetaKey+"=true", true)
-		writeRecord(prepared.Delimiter, false)
+		writeReady(false)
 		script.WriteString(dispatch(argsWithOptional) + "\nendif\n")
 	}
 	if !ordered {
-		writeInvocation(" && ", func(args string) string {
+		terminator := " && "
+		if len(prepared.environmentProbe) != 0 {
+			terminator = "\n"
+		}
+		writeInvocation(terminator, func(args string) string {
 			return "exec " + cshQuote(spec.Launch.Program) + " " + args
 		})
 		return strings.TrimSuffix(script.String(), "\n")

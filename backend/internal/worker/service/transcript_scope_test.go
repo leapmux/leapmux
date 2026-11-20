@@ -90,10 +90,10 @@ func TestTranscriptScopeRetainsHistoricalAuthorityAndIndependentSpans(t *testing
 		assert.Equal(t, "native-a", row.AgentSessionID)
 		assert.True(t, row.TranscriptOnly)
 	}
-	live := requireRootOutputSink(t, svc.Output, "scope-root").tracker.ActiveSpans()
+	live := requireRootOutputSink(t, svc.Output, "scope-root").currentSpanTracker().ActiveSpans()
 	require.Len(t, live, 1)
 	assert.Equal(t, "new-live", live[0].SpanID)
-	childLive := requireChildOutputSink(t, requireRootOutputSink(t, svc.Output, "scope-root"), childID).tracker.ActiveSpans()
+	childLive := requireChildOutputSink(t, requireRootOutputSink(t, svc.Output, "scope-root"), childID).currentSpanTracker().ActiveSpans()
 	require.Len(t, childLive, 1)
 	assert.Equal(t, "child-live", childLive[0].SpanID)
 }
@@ -140,5 +140,5 @@ func TestTranscriptScopeRejectsForeignAuthorityAndCapturedRows(t *testing.T) {
 	writer.foreign = foreign.FrozenContent().Publication
 	_, err = wrapped.CaptureTranscript(agent.MessageContent{}, agent.SpanInfo{})
 	require.Error(t, err)
-	assert.Empty(t, requireRootOutputSink(t, svc.Output, "scope-reject").tracker.ActiveSpans())
+	assert.Empty(t, requireRootOutputSink(t, svc.Output, "scope-reject").currentSpanTracker().ActiveSpans())
 }

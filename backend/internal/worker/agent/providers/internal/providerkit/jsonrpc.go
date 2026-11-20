@@ -217,13 +217,9 @@ func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessa
 }
 
 func (b *JSONRPCProcess) SendNotification(method string, params json.RawMessage) error {
-	data, err := json.Marshal(jsonrpcMessage{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  params,
-	})
+	data, err := encodeJSONRPCNotification(method, params)
 	if err != nil {
-		return fmt.Errorf("marshal notification: %w", err)
+		return err
 	}
 
 	if err := b.writeJSONRPCMessage(data); err != nil {
@@ -231,6 +227,28 @@ func (b *JSONRPCProcess) SendNotification(method string, params json.RawMessage)
 	}
 
 	return nil
+}
+
+// EnqueueNotification sends the same wire frame as SendNotification without
+// waiting for the stdin writer. The returned channel reports the write result.
+func (b *JSONRPCProcess) EnqueueNotification(method string, params json.RawMessage) (<-chan error, error) {
+	data, err := encodeJSONRPCNotification(method, params)
+	if err != nil {
+		return nil, err
+	}
+	return b.EnqueueStdin(b.frameJSONRPCMessage(data))
+}
+
+func encodeJSONRPCNotification(method string, params json.RawMessage) ([]byte, error) {
+	data, err := json.Marshal(jsonrpcMessage{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal notification: %w", err)
+	}
+	return data, nil
 }
 
 func (b *JSONRPCProcess) SendResponse(id json.RawMessage, result any) error {

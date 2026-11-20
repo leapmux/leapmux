@@ -178,6 +178,36 @@ func TestSubscription_HappyPath_AdvanceCursorAndCallback(t *testing.T) {
 	assert.Equal(t, "a-1", got.GetAgentId())
 }
 
+func TestSubscription_ForwardsRetractionWithoutAdvancingAgentCursor(t *testing.T) {
+	const agentID = "a-1"
+	tr := &fakeTransport{}
+	agents := NewAgentCursor()
+	agents.Track(agentID, 15)
+	var delivered []*leapmuxv1.AgentEvent
+	sub := NewSubscription(tr, agents, NewTerminalCursor(), func(event *leapmuxv1.AgentEvent) {
+		delivered = append(delivered, event)
+	}, nil, nil)
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID}}}))
+
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: agentID,
+			Event: &leapmuxv1.AgentEvent_MessagesRetracted{
+				MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{19}},
+			},
+		}},
+	})
+	assert.Equal(t, int64(15), agents.Get(agentID))
+	pushAgentMessage(tr, agentID, 17)
+
+	require.Len(t, delivered, 2)
+	assert.Equal(t, []int64{19}, delivered[0].GetMessagesRetracted().GetSeqs())
+	assert.Equal(t, int64(17), delivered[1].GetAgentMessage().GetSeq())
+	assert.Equal(t, int64(17), agents.Get(agentID))
+}
+
 // TestSubscription_TurnEndNotifyDoesNotForward pins that AgentTurnEnd is a
 // UI-only notify frame: the CLI events stream must neither invoke onAgent nor
 // advance the agent cursor.

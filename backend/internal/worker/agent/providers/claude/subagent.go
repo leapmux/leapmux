@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -126,14 +125,10 @@ func (a *Agent) claudeHandleTaskEvent(content []byte) bool {
 		return false
 	}
 	switch ev.Subtype {
-	case contracts.ClaudeHiddenSystemSubtypeTaskStarted:
-		a.handleClaudeTaskStarted(&ev)
-		return true
-	case contracts.ClaudeHiddenSystemSubtypeTaskProgress:
-		a.handleClaudeTaskProgress(&ev)
-		return true
-	case contracts.ClaudeHiddenSystemSubtypeTaskNotification:
-		a.handleClaudeTaskNotification(&ev)
+	case contracts.ClaudeHiddenSystemSubtypeTaskStarted,
+		contracts.ClaudeHiddenSystemSubtypeTaskProgress,
+		contracts.ClaudeHiddenSystemSubtypeTaskNotification:
+		a.dispatchClaudeTaskEvent(&ev)
 		return true
 	case contracts.ClaudeHiddenSystemSubtypeTaskUpdated, contracts.ClaudeHiddenSystemSubtypeBackgroundTasksChanged:
 		// Consume both events without changing a row because the task start and end events drive the registry.
@@ -153,7 +148,7 @@ func (a *Agent) claudeHandleTaskEvent(content []byte) bool {
 		return true
 	case contracts.ClaudeHiddenSystemSubtypeSessionStateChanged:
 		// Consume this frame without timeline persistence.
-		// observeTurnFromOutput already reads its native turn state, and the turn flag exposes that state to the reader.
+		// Root turn state is handled before task dispatch.
 		// The CLI emits the frame at every turn transition, so storing it adds no reader information.
 		return true
 	default:
@@ -531,6 +526,7 @@ func (a *Agent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, kno
 		}
 		return true, err
 	}
+	a.replaceChildTranscript(childID)
 	return true, nil
 }
 
@@ -756,133 +752,115 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 	// rememberTaskChild ignores a blank taskID.
 	a.tasks.rememberTaskChild(taskID, childID)
 
-	// Resolve span metadata and reserve the tool color through the same helper used by the parent transcript.
-	// Use the child's tracker with the spawn span as parent.
-	// Open the tool's own span only after persistence below. See the ordering comment there.
-	childSink := a.sink.ChildSink(childID)
-	if msgType == claudeMsgTypeAssistant {
-		if toolUseID, report, ok := claudeSubagentHandback(env); ok {
-			if a.tasks.rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, env.TaskDescription, report) {
-				providerkit.PersistSubagentReport(childSink, agent.SubagentReportWrite{
-					ReportID: toolUseID,
-					Report:   agent.SubagentReport{Label: env.TaskDescription, Text: report},
-				})
-			}
-			return
-		}
-		if a.tasks.isHandbackEcho(spawnSpanID, env) {
-			return
-		}
-	}
-	if msgType == claudeMsgTypeUser && a.tasks.consumeHandbackToolResult(env) {
+	destination := a.childTranscript(childID)
+	if destination == nil {
 		return
 	}
-	spanInfo := claudeSpanInfoFor(childSink, msgType, env, spawnSpanID)
-	spanID, spanType := spanInfo.SpanID, spanInfo.SpanType
+	frame := destination.captureFrame(content, msgType, env)
+	wireSession := providerkit.StringField(content, "session_id")
+	retractions := claudeFrameRetractions{candidates: a.claudeRetractionCandidates(claudeEvictionKeys(content, msgType, frame.content.IdempotencyKey), wireSession, destination)}
+	a.rememberRevocableFrame(frame, wireSession)
+	a.submitClaudeConversationFrame(frame, "process Claude child frame", func(sequence agent.TranscriptSequence) error {
+		accepted, err := frame.admit()
+		if err != nil || !accepted {
+			return err
+		}
+		if err := retractions.apply(); err != nil {
+			return err
+		}
+		return a.persistClaudeChildFrame(sequence, frame, spawnSpanID, taskID)
+	})
+}
 
-	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
-	if msgType == claudeMsgTypeUser {
-		source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
-	}
-
-	if msgType == claudeMsgTypeResult {
-		// Claude Code 2.1.302 sends no child result. A build that forwards one closes the child's registry row here.
-		//
-		// After InterruptChild sends stop_task, mark the turn interrupted only when the result confirms that the stop affected it.
-		// The divider then displays "Turn interrupted", and the row reports interrupted.
-		// A child that ends before the CLI reads stop_task keeps its own outcome, as a root turn does.
-		// takeInterrupted consumes the mark regardless of the frame, so this path and task_notification cannot both claim the wording.
-		stopRequested := a.tasks.takeInterrupted(taskID)
-		interrupted := stopRequested && env.statesAbortedTurn()
-		turnEnd := agent.MessageContent{Original: content}
-		if interrupted {
-			turnEnd.Completion = agent.MessageCompletionInterrupted
-		}
-		if err := childSink.PersistTurnEnd(turnEnd, spanInfo); err != nil {
-			slog.Warn("claude route subagent turn-end failed", "child", childID, "error", err)
-		}
-		// Read IsError once for both registry-update branches so they select the same outcome.
-		//
-		// The preceding lookup resolves taskID through the child for every envelope.
-		// That lookup supports restarted runs whose task_started could not index the spawn span.
-		// An empty taskID here means that no run is identifiable, not merely that the tool-use index misses.
-		status := bgtask.StatusSucceeded
-		if env.IsError {
-			status = bgtask.StatusFailed
-		}
-		if interrupted {
-			status = bgtask.StatusInterrupted
-		}
-		if taskID != "" {
-			providerkit.LogRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(taskID, status, ""))
-			providerkit.LogRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(taskID, status))
-			// Remove the task index on this fallback close also.
-			// A task ending through result without task_notification must retain no index entry.
-			a.tasks.forgetTaskIndex(taskID)
-		} else {
-			// The result precedes task_started, so retain its final status under the spawn span.
-			// The later task_started then closes the row it creates.
-			// Otherwise it would leave a Running row after the final result already passed.
-			a.tasks.recordPendingTaskEnd(spawnSpanID, status)
-		}
-		// At this child's turn end, remove the restart intents that this child records.
-		// Its result controls that lifetime because the child transcript can outlive the root turn that starts it.
-		// The root's earlier turn end must preserve those intents.
-		a.tasks.clearClaudeRestarts(spawnSpanID)
-		return
-	}
-
-	// A forwarded replacement's supersedes names child rows the CLI evicted.
-	// A redelivered retracted frame inserts no row and changes no span.
-	childContent := agent.MessageContent{Original: content}
-	if key := claudeRevocableKey(msgType, env); key != "" {
-		childContent.IdempotencyKey = key
-		captured := childSink.CaptureMessage(childContent, agent.SpanInfo{})
-		retracted, err := childSink.IsMessageRetracted(captured, key)
-		if err != nil {
-			slog.Warn("claude route subagent retraction lookup failed", "child", childID, "error", err)
-		} else if retracted {
-			return
-		}
-		if keys := claudeEvictionKeys(content, msgType, key); len(keys) > 0 {
-			if err := childSink.RetractMessagesByIdempotencyKey(captured, keys); err != nil && !agent.OutputRetained(err) {
-				slog.Warn("claude route subagent retraction failed", "child", childID, "error", err)
-			}
-		}
-	}
-	if err := childSink.PersistMessage(source, childContent, spanInfo); err != nil {
-		slog.Warn("claude route subagent message failed", "child", childID, "error", err)
-	}
-	if spanType != "" {
-		childSink.SetSpanType(spanID, spanType)
-	}
-	// Open spans after persistence, as handlePersistableMessage does before processAssistantBlocks in the parent transcript.
-	// The sink derives span_lines from the spans already open at write time.
-	// Opening first would add the announcing tool_use row's own active line and an extra depth column with no preceding rail.
-	// Opening afterwards preserves parent depth and lets tool_result close the rail while the span remains open.
-	//
-	// Open every tool_use block because one assistant message can contain parallel calls and the following user envelope closes every result.
-	// A nested spawn is the exception.
-	// It owns no span in this child or the parent because its output belongs to a separate transcript.
-	if msgType == claudeMsgTypeAssistant {
-		// A child's SendMessage can prepare a restart, as the parent's SendMessage does.
-		// The agent owns those intents because task_started arrives on the root stream regardless of the sending transcript.
-		// Each intent retains the sending transcript's spawn span, so the root's turn end cannot remove the child's intent.
-		a.claudeArmRestartsFromBlocks(env, spawnSpanID)
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_use" && block.ID != "" {
-				childSink.SetSpanType(block.ID, block.Name)
-				if !claudeToolSpawnsSubagent(block.Name) {
-					childSink.OpenSpan(block.ID, spawnSpanID)
+func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, spawnSpanID, taskID string) error {
+	env, msgType := frame.envelope, frame.msgType
+	if frame.prepared == nil {
+		content := frame.content
+		if frame.live() {
+			switch msgType {
+			case claudeMsgTypeAssistant:
+				if toolUseID, report, ok := claudeSubagentHandback(env); ok {
+					if a.tasks.rememberHandbackToolUse(spawnSpanID, taskID, toolUseID, env.TaskDescription, report) {
+						providerkit.PersistSubagentReport(frame.destination.sink, agent.SubagentReportWrite{
+							ReportID: toolUseID,
+							Report:   agent.SubagentReport{Label: env.TaskDescription, Text: report},
+						})
+					}
+					return nil
+				}
+				if a.tasks.isHandbackEcho(spawnSpanID, env) {
+					return nil
+				}
+			case claudeMsgTypeUser:
+				if a.tasks.consumeHandbackToolResult(env) {
+					return nil
+				}
+			case claudeMsgTypeResult:
+				// The result must confirm the interruption. A result that
+				// finished before Claude read stop_task keeps its outcome.
+				if a.tasks.takeInterrupted(taskID) && env.statesAbortedTurn() {
+					content.Completion = agent.MessageCompletionInterrupted
 				}
 			}
 		}
+		span := claudeSpanInfoFor(frame.spans, msgType, env, spawnSpanID)
+		if err := frame.prepare(content, span, false); err != nil {
+			return err
+		}
 	}
-	// A user envelope may close multiple parallel tool_result spans in the
-	// child transcript.
-	if msgType == claudeMsgTypeUser {
-		claudeCloseToolResultSpans(childSink, env)
+	stored, err := frame.persist(sequence)
+	if err != nil || !stored {
+		return err
 	}
+	live := frame.live()
+	switch msgType {
+	case claudeMsgTypeAssistant:
+		if live {
+			// A child's SendMessage can prepare a restart in its own run.
+			a.claudeArmRestartsFromBlocks(env, spawnSpanID)
+		}
+		// The opener uses its parent depth. The result reads the rail while
+		// it remains open. Each parallel call owns its own rail.
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_use" && block.ID != "" {
+				frame.spans.SetSpanType(block.ID, block.Name)
+				if !claudeToolSpawnsSubagent(block.Name) {
+					frame.spans.OpenSpan(block.ID, spawnSpanID)
+				}
+			}
+		}
+	case claudeMsgTypeUser:
+		if live {
+			a.settleToolControls(env.ContentBlocks())
+		}
+		claudeCloseToolResultSpans(frame.spans, env)
+	case claudeMsgTypeResult:
+		if live {
+			a.finishClaudeChildResult(frame.prepared.FrozenContent().Completion, env.IsError, spawnSpanID, taskID)
+		}
+	}
+	return nil
+}
+
+func (a *Agent) finishClaudeChildResult(completion agent.MessageCompletion, isError bool, spawnSpanID, taskID string) {
+	// Claude Code 2.1.302 sends no child result. A build that forwards one
+	// closes the child's registry row here.
+	status := bgtask.StatusSucceeded
+	if isError {
+		status = bgtask.StatusFailed
+	}
+	if completion == agent.MessageCompletionInterrupted {
+		status = bgtask.StatusInterrupted
+	}
+	if taskID != "" {
+		providerkit.LogRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(taskID, status, ""))
+		providerkit.LogRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(taskID, status))
+		a.tasks.forgetTaskIndex(taskID)
+	} else {
+		// A result can precede task_started. The later start closes its row.
+		a.tasks.recordPendingTaskEnd(spawnSpanID, status)
+	}
+	a.tasks.clearClaudeRestarts(spawnSpanID)
 }
 
 func claudeSubagentHandback(env *messageEnvelope) (toolUseID, report string, ok bool) {

@@ -18,8 +18,8 @@ SELECT EXISTS (
 ) AS is_open;
 
 -- FindClosedAgentWithTranscriptForNativeSession links a selected native
--- session to the newest closed Worker tree that still holds messages. A root
--- with only retained child rows still owns a transcript worth reopening.
+-- session to the newest closed Worker tree that holds messages or eviction
+-- receipts. A descendant can hold the only surviving transcript data.
 -- name: FindClosedAgentWithTranscriptForNativeSession :one
 WITH RECURSIVE tree(root_id, id) AS (
   SELECT candidate.id, candidate.id FROM agents AS candidate
@@ -40,7 +40,10 @@ WHERE a.agent_provider = sqlc.arg(agent_provider)
   AND a.agent_session_id <> ''
   AND a.closed_at IS NOT NULL
   AND a.parent_agent_id IS NULL
-  AND EXISTS (SELECT 1 FROM messages AS m JOIN tree ON tree.id = m.agent_id WHERE tree.root_id = a.id)
+  AND (
+    EXISTS (SELECT 1 FROM messages AS m JOIN tree ON tree.id = m.agent_id WHERE tree.root_id = a.id)
+    OR EXISTS (SELECT 1 FROM agent_message_retractions AS r JOIN tree ON tree.id = r.agent_id WHERE tree.root_id = a.id)
+  )
 ORDER BY a.closed_at DESC, a.rowid DESC
 LIMIT 1;
 

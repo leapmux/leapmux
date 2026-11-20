@@ -69,10 +69,10 @@ const piGoalDisplayKey = "goal"
 // dispatch on these, so they stay out of contracts/pi-protocol.json.
 // https://github.com/leapmux/leapmux/issues/433
 const (
-	piEventQueueUpdate           = "queue_update"
-	piExtensionMethodSetStatus   = "setStatus"
-	piExtensionMethodSetWidget   = "setWidget"
-	piExtensionMethodSetTitle    = "setTitle"
+	piEventQueueUpdate             = "queue_update"
+	piExtensionMethodSetStatus     = "setStatus"
+	piExtensionMethodSetWidget     = "setWidget"
+	piExtensionMethodSetTitle      = "setTitle"
 	piExtensionMethodSetEditorText = "set_editor_text"
 )
 

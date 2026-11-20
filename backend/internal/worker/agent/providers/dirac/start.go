@@ -1,16 +1,22 @@
 package dirac
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"log/slog"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
@@ -21,6 +27,9 @@ import (
 // release in the middle of a session.
 const diracNoAutoUpdateEnv = "DIRAC_NO_AUTO_UPDATE=1"
 
+// Dirac uses each exported value exactly as the shell passes it to Node.
+var diracProfilePathVariables = map[string]string{"DIRAC_DIR": "", "HOME": "", "USERPROFILE": ""}
+
 // Start starts a Dirac ACP process and performs the handshake.
 //
 // `dirac --acp` is the launch. The provider route and the model come from the
@@ -28,6 +37,10 @@ const diracNoAutoUpdateEnv = "DIRAC_NO_AUTO_UPDATE=1"
 // which the E2E isolation recipe and a real installation both set. A resume
 // uses `session/load` to load its session and replay the native history.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	return startWithClock(ctx, opts, sink, quartz.NewReal())
+}
+
+func startWithClock(ctx context.Context, opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
 		Registration: Registration(),
 		ProviderName: "dirac",
@@ -35,6 +48,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		// --subagents option does not reach its ACP startup path.
 		BaseArgs:  []string{"--acp"},
 		PinnedEnv: []string{diracNoAutoUpdateEnv},
+		ObserveEnvironment: &launch.ObservationRequest{
+			PathVariables: diracProfilePathVariables,
+		},
 		SessionConfig: acp.SessionConfig{
 			NewMethod: acp.MethodSessionNew,
 			// Load restores the native session and replays its history.
@@ -42,11 +58,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			ResumeMethod: acp.MethodSessionLoad,
 		},
 		NewAgent: func() *Agent {
-			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir})}
+			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), resumedSession: opts.ResumeSessionID}
 		},
 		Base: func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
-			return a.configure(quartz.NewReal())
+			return a.configure(clock)
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
 			return a.ApplyPermissionModeStartup(handshake, opts, contracts.DiracModeAct, opts.Model())
@@ -95,60 +111,85 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 	}
 }
 
-// applyObservedProfile points the native root at the effective profile the
-// launch observed after the user's shell profile ran. A missing or unusable
-// observation keeps the profile the start resolved.
+// applyObservedProfile records the launch's candidate before ACP opens a
+// session. A checkpoint must also link the exact session to a task in it.
+// Child archive reads keep their existing profile resolution.
 func (a *Agent) applyObservedProfile() {
-	snapshot, ok := decodeDiracEnvironmentObservation(a.Process.PreambleMetaValue(diracEnvironmentMetaKey))
-	if !ok {
-		return
+	snapshot, ok := decodeDiracEnvironmentObservation(a.PreambleMetaValue(envprobe.ObservationKey))
+	if ok {
+		a.checkpointProfile = diracEffectiveHome(snapshot)
 	}
-	if root := diracEffectiveHome(snapshot); root != "" {
-		a.root = root
+	if a.checkpointProfile == "" {
+		slog.Debug("the Dirac launch profile could not be observed", "agent_id", a.AgentID())
+		return
 	}
 }
 
-// diracEnvironmentMetaKey is the preamble metadata key that carries the launch
-// environment observation record.
-const diracEnvironmentMetaKey = "environment"
-
-// decodeDiracEnvironmentObservation decodes the observation record the launch
-// preamble carries: an unpadded base64url JSON envprobe.Snapshot.
+// decodeDiracEnvironmentObservation requires exactly the inputs requested from
+// the native helper. An absent value and a reported empty value differ.
 func decodeDiracEnvironmentObservation(encoded string) (envprobe.Snapshot, bool) {
-	if encoded == "" {
+	if strings.ContainsAny(encoded, "\r\n") {
 		return envprobe.Snapshot{}, false
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
 	if err != nil {
 		return envprobe.Snapshot{}, false
 	}
-	var snapshot envprobe.Snapshot
-	if json.Unmarshal(raw, &snapshot) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	// Pointer values distinguish null from an exported empty string or a
+	// false presence flag. The helper reports every requested variable.
+	var wire struct {
+		Values     map[string]*string `json:"values"`
+		WorkingDir string             `json:"workingDir"`
+		Paths      map[string]*string `json:"paths"`
+		Present    map[string]*bool   `json:"present"`
+	}
+	count := len(diracProfilePathVariables)
+	if decoder.Decode(&wire) != nil || decoder.Decode(new(any)) != io.EOF ||
+		len(wire.Values) != count || len(wire.Paths) != count || len(wire.Present) != count ||
+		!absoluteDiracLaunchPath(wire.WorkingDir) {
 		return envprobe.Snapshot{}, false
+	}
+	snapshot := envprobe.Snapshot{
+		Values: make(map[string]string, count), WorkingDir: wire.WorkingDir,
+		Paths: make(map[string]string, count), Present: make(map[string]bool, count),
+	}
+	for name := range diracProfilePathVariables {
+		value, path, present := wire.Values[name], wire.Paths[name], wire.Present[name]
+		if value == nil || path == nil || present == nil || strings.ContainsRune(*value, 0) ||
+			(!*present && *value != "") || (*value == "" && *path != "") || (*value != "" && !absoluteDiracLaunchPath(*path)) {
+			return envprobe.Snapshot{}, false
+		}
+		snapshot.Values[name], snapshot.Paths[name], snapshot.Present[name] = *value, *path, *present
 	}
 	return snapshot, true
 }
 
-// diracEffectiveHome resolves the effective `data/` root from the observed
-// profile inputs. `DIRAC_DIR` wins, resolved against the launch's native
-// working directory when it is relative; then the platform home's `.dirac`.
+func absoluteDiracLaunchPath(path string) bool {
+	return filepath.IsAbs(path) && !strings.ContainsRune(path, 0)
+}
+
+// diracEffectiveHome applies Node's lexical path resolution before opening
+// the native archive. Node reads USERPROFILE on Windows and HOME on Unix.
+// With that variable unset it uses the current system user's home.
 func diracEffectiveHome(snapshot envprobe.Snapshot) string {
-	if dir := strings.TrimSpace(snapshot.Values["DIRAC_DIR"]); dir != "" {
-		if resolved := strings.TrimSpace(snapshot.Paths["DIRAC_DIR"]); resolved != "" {
-			return resolved
-		}
-		if filepath.IsAbs(dir) {
-			return dir
-		}
-		if snapshot.WorkingDir != "" {
-			return filepath.Join(snapshot.WorkingDir, dir)
-		}
+	if dir := snapshot.Paths["DIRAC_DIR"]; dir != "" {
+		return filepath.Clean(dir)
 	}
-	if home := strings.TrimSpace(snapshot.Values["HOME"]); home != "" {
-		return filepath.Join(home, ".dirac")
+	homeVariable := "HOME"
+	if runtime.GOOS == "windows" {
+		homeVariable = "USERPROFILE"
 	}
-	if home := strings.TrimSpace(snapshot.Values["USERPROFILE"]); home != "" {
-		return filepath.Join(home, ".dirac")
+	home := snapshot.Paths[homeVariable]
+	if !snapshot.Present[homeVariable] {
+		account, err := user.Current()
+		if err != nil || !absoluteDiracLaunchPath(account.HomeDir) {
+			return ""
+		}
+		home = account.HomeDir
+	} else if home == "" {
+		home = snapshot.WorkingDir
 	}
-	return ""
+	return filepath.Join(home, ".dirac")
 }

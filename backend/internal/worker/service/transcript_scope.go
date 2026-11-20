@@ -7,9 +7,10 @@ import (
 )
 
 type capturedTranscriptScope struct {
-	writer  agent.TranscriptServices
-	anchor  *transcriptOwner
-	tracker SpanTracker
+	writer       agent.TranscriptServices
+	anchor       *transcriptOwner
+	tracker      *SpanTracker
+	retainedLive bool
 }
 
 func (sink *agentOutputSink) TranscriptScopeFor(captured agent.CapturedTranscript) (agent.TranscriptScope, error) {
@@ -20,7 +21,7 @@ func (sink *agentOutputSink) TranscriptScopeFor(captured agent.CapturedTranscrip
 	if owner.sessionID == "" {
 		return nil, errors.New("the captured transcript has an invalid native session")
 	}
-	return &capturedTranscriptScope{writer: writer, anchor: owner}, nil
+	return &capturedTranscriptScope{writer: writer, anchor: owner, tracker: &SpanTracker{}}, nil
 }
 
 func (sink *agentOutputSink) HistoricalTranscriptScopeFor(captured agent.CapturedTranscript) (agent.TranscriptScope, error) {
@@ -37,7 +38,7 @@ func (sink *agentOutputSink) HistoricalTranscriptScopeFor(captured agent.Capture
 	historical.scope = &activityScope{publisher: owner.scope.publisher}
 	owner.activity.mu.Unlock()
 	historical.thread = &transcriptThread{}
-	return &capturedTranscriptScope{writer: writer, anchor: historical}, nil
+	return &capturedTranscriptScope{writer: writer, anchor: historical, tracker: &SpanTracker{}}, nil
 }
 
 func (sink *agentOutputSink) transcriptScopeAnchor(captured agent.CapturedTranscript) (agent.TranscriptServices, *transcriptOwner, error) {
@@ -67,7 +68,7 @@ func (scope *capturedTranscriptScope) CaptureTranscript(content agent.MessageCon
 	}
 	content = content.Clone()
 	content.AgentSessionID = scope.anchor.sessionID
-	content.Publication = &transcriptPublication{owner: scope.anchor.withSpanSnapshot(&scope.tracker, span)}
+	content.Publication = &transcriptPublication{owner: scope.anchor.withSpanSnapshot(scope.tracker, span)}
 	var captured agent.CapturedTranscript
 	if content.WriteReceipt != nil {
 		var captureErr error
@@ -89,8 +90,13 @@ func (scope *capturedTranscriptScope) CaptureTranscript(content agent.MessageCon
 }
 
 func (scope *capturedTranscriptScope) OpenSpan(id, parent string) { scope.tracker.OpenSpan(id, parent) }
-func (scope *capturedTranscriptScope) CloseSpan(id string)        { scope.tracker.CloseSpan(id) }
-func (scope *capturedTranscriptScope) ResetSpans()                { scope.tracker.Reset() }
+func (scope *capturedTranscriptScope) CloseSpan(id string) {
+	if scope.retainedLive {
+		scope.anchor.dropOutputTail(id)
+	}
+	scope.tracker.CloseSpan(id)
+}
+func (scope *capturedTranscriptScope) ResetSpans() { scope.tracker.Reset() }
 func (scope *capturedTranscriptScope) SetSpanType(id, kind string) {
 	scope.tracker.SetSpanType(id, kind)
 }
@@ -99,4 +105,16 @@ func (scope *capturedTranscriptScope) GetSpanType(id string) string {
 }
 func (scope *capturedTranscriptScope) ReserveSpanColor(id, parent string) int32 {
 	return scope.tracker.ReserveSpanColor(id, parent)
+}
+
+// TranscriptFrameSpans supplies geometry and effects for the captured lifetime.
+func (owner *transcriptOwner) TranscriptFrameSpans() agent.SpanServices {
+	return &capturedTranscriptScope{anchor: owner, tracker: owner.tracker, retainedLive: true}
+}
+
+// SnapshotTranscriptFrame takes geometry with the frame's original authority.
+func (owner *transcriptOwner) SnapshotTranscriptFrame(span agent.SpanInfo) agent.TranscriptPublication {
+	captured := owner.withSpanSnapshot(owner.tracker, span)
+	captured.frameAuthority = true
+	return &transcriptPublication{owner: captured}
 }

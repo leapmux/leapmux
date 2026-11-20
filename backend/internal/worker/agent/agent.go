@@ -648,8 +648,11 @@ type ChildServices interface {
 type ChildSinkLease struct {
 	Sink           ProviderServices
 	CaptureMessage func(MessageContent, SpanInfo) MessageContent
-	Activate       func()
-	Cleanup        func() bool
+	// RetainTranscriptSpans keeps mutable span geometry for admitted frames after lease replacement.
+	// It returns false if the lease already expired.
+	RetainTranscriptSpans func() bool
+	Activate              func()
+	Cleanup               func() bool
 }
 
 // BackgroundTaskServices owns the provider-neutral task registry.

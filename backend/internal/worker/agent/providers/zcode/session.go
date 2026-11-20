@@ -427,10 +427,14 @@ func (a *Agent) adoptCompleteZCodeSessionSnapshot(snap zcodeStateSnapshot, fresh
 	}
 	a.applyParsedStateSnapshotLocked(snap)
 	a.lastSeq = max(a.lastSeq, snap.Runtime.EventSeq)
-	if snap.Runtime.ActiveTurnID != "" && a.turns[snap.Runtime.ActiveTurnID] == nil {
+	newOwner := snap.Runtime.ActiveTurnID != "" && a.turns[snap.Runtime.ActiveTurnID] == nil
+	if newOwner {
 		a.createResumedZCodeTurnLocked(snap)
 	}
 	a.Mu.Unlock()
+	if newOwner {
+		a.publishZCodeModelAPIRetryLocked()
+	}
 	if replace {
 		a.sink.AdoptNativeSession(snap.Session.SessionID)
 		a.Mu.Lock()
@@ -461,7 +465,7 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 	a.nextToolOrder = 0
 	upserts := a.workflows.clear(agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted))
 	a.Mu.Unlock()
-	a.publishZCodeModelAPIRetry()
+	a.publishZCodeModelAPIRetryLocked()
 	a.upsertZCodeWorkflowRows(upserts)
 	a.withdrawPendingControls()
 	a.toolCallPrompts.Clear()

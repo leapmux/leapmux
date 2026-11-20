@@ -359,7 +359,7 @@ func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
 			continue
 		}
 		message := &s.messages[index]
-		if !message.stored {
+		if !message.stored || message.Retracted {
 			continue
 		}
 		if message.AgentSessionID != sessionID {
@@ -502,7 +502,7 @@ func (s *Sink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, error) {
 		return nil, nil
 	}
 	message := s.messages[seq-1]
-	if !message.stored || message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
+	if !message.stored || message.Retracted || message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
 		return nil, nil
 	}
 	return s.storedSpanRow(int(seq - 1)), nil
@@ -2246,4 +2246,13 @@ func (sink *Sink) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
 
 func (nop) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
 	return agent.ValidateTranscriptOutputTicket(ticket)
+}
+
+// SnapshotTranscriptFrame records geometry when an admitted frame executes.
+func (owner *testTranscriptOwner) SnapshotTranscriptFrame(agent.SpanInfo) agent.TranscriptPublication {
+	owner.sink.mu.Lock()
+	defer owner.sink.mu.Unlock()
+	snapshot := *owner
+	snapshot.spans = owner.sink.liveSpansLocked()
+	return &snapshot
 }

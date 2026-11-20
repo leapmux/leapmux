@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // writeDiracCheckpointStore lays out a minimal native archive for one session.
@@ -45,6 +47,11 @@ const diracUserMessageHistory = `{"offset":0,"type":"append_message","message":{
 
 func matchingHistory(taskID, sessionID string) string {
 	return fmt.Sprintf(`[{"id":%q,"ulid":%q,"ts":1,"task":"T","cwdOnTaskInitialization":"/w"}]`, taskID, sessionID)
+}
+
+func duplicateDiracHistory(taskID, sessionID string) string {
+	row := strings.Trim(matchingHistory(taskID, sessionID), "[]")
+	return "[" + row + "," + row + "]"
 }
 
 func TestProbeDiracCheckpointConfirmsAUsableCheckpoint(t *testing.T) {
@@ -90,9 +97,9 @@ func TestProbeDiracCheckpointConfirmsAUsableCheckpoint(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			writeDiracCheckpointStore(t, root, sessionID, tc.runtime, tc.history, taskID, tc.conversation)
-			ready, task := probeDiracCheckpoint(root, sessionID)
-			assert.True(t, task, "a linked task is active work")
-			assert.True(t, ready, "a safe, stable task with a plan/act mode, one matching index row and readable conversation is a usable checkpoint")
+			probe := probeDiracCheckpoint(root, sessionID, sessionstore.OpenArchiveRoot)
+			assert.True(t, probe.task, "a linked task is active work")
+			assert.True(t, probe.ready, "a safe, stable task with a plan/act mode, one matching index row and readable conversation is a usable checkpoint")
 		})
 	}
 }
@@ -153,7 +160,7 @@ func TestProbeDiracCheckpointRejectsAnUnusableCheckpoint(t *testing.T) {
 		{
 			name:         "duplicate task rows",
 			runtime:      runtimeConfig(taskID, "act"),
-			history:      matchingHistory(taskID, sessionID) + "," + matchingHistory(taskID, sessionID),
+			history:      duplicateDiracHistory(taskID, sessionID),
 			conversation: readable,
 			wantTask:     true,
 		},
@@ -190,9 +197,9 @@ func TestProbeDiracCheckpointRejectsAnUnusableCheckpoint(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			writeDiracCheckpointStore(t, root, sessionID, tc.runtime, tc.history, taskID, tc.conversation)
-			ready, task := probeDiracCheckpoint(root, sessionID)
-			assert.False(t, ready, "an unusable archive must not confirm a checkpoint")
-			assert.Equal(t, tc.wantTask, task, "the task flag separates active work from an idle session")
+			probe := probeDiracCheckpoint(root, sessionID, sessionstore.OpenArchiveRoot)
+			assert.False(t, probe.ready, "an unusable archive must not confirm a checkpoint")
+			assert.Equal(t, tc.wantTask, probe.task, "the task flag separates active work from an idle session")
 		})
 	}
 }
@@ -348,4 +355,90 @@ func waitForCalls(t *testing.T, condition func() bool) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
+}
+
+func TestDiracCheckpointRejectsIncompleteFirstOperationWithSeed(t *testing.T) {
+	t.Parallel()
+	seeds := map[string]string{
+		"api_conversation_history.baseline.jsonl": "{\"type\":\"baseline\",\"offset\":-1}\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n",
+		"api_conversation_history.json":           `[{"role":"user","content":[{"type":"text","text":"hi"}]}]`,
+	}
+	for name, seed := range seeds {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeDiracCheckpointStore(t, root, "session", runtimeConfig("task", "act"), matchingHistory("task", "session"), "task", map[string]string{
+				name:                             seed,
+				"api_conversation_history.jsonl": diracUserMessageHistory[:len(diracUserMessageHistory)-1],
+			})
+			probe := probeDiracCheckpoint(root, "session", sessionstore.OpenArchiveRoot)
+			assert.True(t, probe.task)
+			assert.False(t, probe.ready, "a seed cannot make an unfinished first operation safe")
+		})
+	}
+}
+
+type changingDiracCheckpointRoot struct {
+	sessionstore.ArchiveRoot
+	beforeOpen func(string)
+}
+
+func (r changingDiracCheckpointRoot) Open(path string) (*os.File, error) {
+	r.beforeOpen(path)
+	return r.ArchiveRoot.Open(path)
+}
+
+func (r changingDiracCheckpointRoot) OpenChild(path string) (sessionstore.ArchiveRoot, error) {
+	child, err := r.ArchiveRoot.OpenChild(path)
+	if err != nil {
+		return nil, err
+	}
+	return changingDiracCheckpointRoot{ArchiveRoot: child, beforeOpen: r.beforeOpen}, nil
+}
+
+func TestDiracCheckpointRejectsHistoryReplacedDuringConversationRead(t *testing.T) {
+	t.Parallel()
+	profile := t.TempDir()
+	writeDiracCheckpointStore(t, profile, "session", runtimeConfig("task", "act"), matchingHistory("task", "session"), "task", map[string]string{
+		"api_conversation_history.jsonl": diracUserMessageHistory,
+	})
+	root, err := sessionstore.OpenArchiveRoot(profile)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, root.Close()) })
+	index := filepath.Join(profile, "data", "state", "taskHistory.json")
+	var changed bool
+	archive := changingDiracCheckpointRoot{ArchiveRoot: root, beforeOpen: func(path string) {
+		if path == "api_conversation_history.jsonl" && !changed {
+			changed = true
+			require.NoError(t, os.Rename(index, index+".old"))
+			require.NoError(t, os.WriteFile(index, []byte(matchingHistory("task", "different-session")), 0o600))
+		}
+	}}
+	probe := evaluateDiracCheckpoint(archive, "session")
+	assert.True(t, changed)
+	assert.True(t, probe.task)
+	assert.False(t, probe.ready, "the index and conversation must belong to one archive observation")
+}
+
+func TestDiracCheckpointReportsAReadThatCannotComplete(t *testing.T) {
+	t.Parallel()
+	probe := probeDiracCheckpoint(t.TempDir(), "session", func(string) (sessionstore.ArchiveRoot, error) {
+		return nil, os.ErrPermission
+	})
+	assert.ErrorIs(t, probe.err, os.ErrPermission)
+	assert.False(t, probe.ready)
+
+	clock := testutil.NewQuartzMock(t)
+	cancel := &spyCancel{}
+	done := make(chan struct{})
+	go func() {
+		waitForDiracCheckpoint(diracCheckpointWait{
+			profile: "profile", sessionID: "session", promptActive: true, cancel: cancel.fn,
+			processDone: make(chan struct{}), ctx: t.Context(), clock: clock,
+			openArchive: func(string) (sessionstore.ArchiveRoot, error) { return nil, os.ErrPermission },
+		})
+		close(done)
+	}()
+	awaitDiracTestStop(t, done)
+	assert.Zero(t, cancel.calls.Load())
 }

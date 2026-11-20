@@ -3568,8 +3568,8 @@
       },
       "dirac": {
         "support": "supported",
-        "userNote": "Dirac restores model context from a saved native task, including an incomplete task.",
-        "detailNote": "Dirac 0.5.20 restores the saved task when session/load resolves its native task history entry. Complete E2E cases verify the original prompt and answer in the next model request for both completed and incomplete tasks. They also verify restored Worker rows. Complete-file acceptance: e2e-naTHwF. Native source: https://github.com/dirac-run/dirac/blob/157c7333a1ee9cda479c5c9f6644c011103e10ba/cli/src/agent/DiracAgent.ts. Dirac delays its task history index write and does not flush it on immediate stdin EOF. The tests require the persisted checkpoint before close. The separate immediate-close defect is tracked at https://github.com/leapmux/leapmux/issues/528.",
+        "userNote": "Dirac restores model context from a saved native task, including an incomplete task whose checkpoint becomes available during close.",
+        "detailNote": "Dirac 0.6.0 restored model context after closing with its second model request still pending. LeapMux waits for the matching task and session checkpoint before orderly shutdown. The reopened session kept the original prompt and progress in its next model request. The completed-task case also passed. Complete-file acceptance: e2e-gI2xEa.",
         "spec": "frontend/tests/e2e/dirac/model-context-on-resume.spec.ts",
         "audit": "covered",
         "testStatus": "passed",
@@ -11700,9 +11700,9 @@
       "dirac": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "The installed session/load path reattaches the native session ID and restores Worker rows. It loses prior native task model context, which belongs to the separate published feature.",
+        "detailNote": "Dirac 0.6.0 reopens the same native session and its saved Worker rows. The complete spec also verified its native context and transcript after a Worker restart and after a Hub and Worker restart. Complete-file acceptance: e2e-gI2xEa.",
         "spec": "frontend/tests/e2e/dirac/session-resume.spec.ts",
-        "audit": "source-verified",
+        "audit": "covered",
         "verified": true,
         "testStatus": "passed"
       },

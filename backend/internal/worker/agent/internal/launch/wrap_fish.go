@@ -43,7 +43,13 @@ func buildFishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 			strings.Join(conditions, "; or "), protocolLine("fish", prepared.MetaPrefix+gate.MetaKey+"=false", true),
 			protocolLine("fish", prepared.MetaPrefix+gate.MetaKey+"=true", true), strings.Join(quotedArguments(gate.Args, fishQuote), " "))
 	}
-	script.WriteString(protocolLine("fish", prepared.Delimiter, spec.EnvGated == nil))
+	if len(prepared.environmentProbe) == 0 {
+		script.WriteString(protocolLine("fish", prepared.Delimiter, spec.EnvGated == nil))
+	} else {
+		fmt.Fprintf(&script, "if test \"$__lm_kind\" = external; and command %s\n%selse\n%send\n",
+			strings.Join(quotedArguments(prepared.environmentProbe, fishQuote), " "),
+			protocolLine("fish", prepared.Delimiter, false), protocolLine("fish", prepared.Delimiter, spec.EnvGated == nil))
+	}
 	script.WriteString("if test \"$__lm_kind\" = external; exec \"$__lm_path\" $__lm_args; else; $__lm_selected $__lm_args; end\nbuiltin exit $status\n")
 	return script.String()
 }

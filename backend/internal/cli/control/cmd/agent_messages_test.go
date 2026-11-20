@@ -95,6 +95,66 @@ func TestLineEmitter_EmitReturnsAndLatchesWriteError(t *testing.T) {
 	require.ErrorIs(t, em.Err(), errWrite)
 }
 
+func TestLineEmitter_EmitFollowEventWritesRetractionThenMessage(t *testing.T) {
+	var buf bytes.Buffer
+	em := &lineEmitter{enc: json.NewEncoder(&buf)}
+
+	emitted, err := em.emitFollowEvent(&leapmuxv1.AgentEvent{
+		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
+			MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{19}},
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, emitted, "a deletion produces a follow record")
+	emitted, err = em.emitFollowEvent(&leapmuxv1.AgentEvent{
+		Event: &leapmuxv1.AgentEvent_AgentMessage{
+			AgentMessage: &leapmuxv1.AgentChatMessage{Id: "m-17", Seq: 17},
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, emitted)
+
+	dec := json.NewDecoder(&buf)
+	var retraction json.RawMessage
+	require.NoError(t, dec.Decode(&retraction))
+	assert.JSONEq(t, `{"type":"messages_retracted","seqs":[19]}`, string(retraction))
+	var message struct {
+		ID  string `json:"id"`
+		Seq int64  `json:"seq"`
+	}
+	require.NoError(t, dec.Decode(&message))
+	assert.Equal(t, "m-17", message.ID)
+	assert.Equal(t, int64(17), message.Seq)
+	assert.False(t, dec.More(), "each event produces one record")
+}
+
+func TestLineEmitter_EmitFollowEventIgnoresEmptyRetraction(t *testing.T) {
+	var buf bytes.Buffer
+	em := &lineEmitter{enc: json.NewEncoder(&buf)}
+
+	emitted, err := em.emitFollowEvent(&leapmuxv1.AgentEvent{
+		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
+			MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{},
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, emitted)
+	assert.Empty(t, buf.String())
+}
+
+func TestLineEmitter_EmitFollowEventReturnsRetractionWriteError(t *testing.T) {
+	errWrite := errors.New("disk full")
+	em := &lineEmitter{enc: json.NewEncoder(failingJSONLineWriter{err: errWrite})}
+
+	_, err := em.emitFollowEvent(&leapmuxv1.AgentEvent{
+		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
+			MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{19}},
+		},
+	})
+	require.ErrorIs(t, err, errWrite)
+	require.ErrorIs(t, em.Err(), errWrite)
+}
+
 // TestRenderAgentMessage_DecompressesContentToJSON pins the core UX
 // fix for `agent messages`: the zstd-compressed `content` blob must
 // surface as parsed JSON, not a base64 string. Otherwise users

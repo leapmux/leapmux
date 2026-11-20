@@ -115,6 +115,7 @@ function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {})
       fetchMessage,
       dispose,
       emit: (message: AgentChatMessage) => observers.forEach(observer => observer(message)),
+      changeWindow: (change: ChatWindowChange) => windowObservers.forEach(observer => observer(change)),
       replaceMessages: (next: AgentChatMessage[]) => batch(() => {
         const ids = new Set(next.map(message => message.id))
         const dropped = messages().filter(message => !ids.has(message.id))
@@ -776,6 +777,120 @@ describe('message context resolver', () => {
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeDefined()
     release()
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
+  })
+
+  it('discards off-window span and point replies that predate an exact retraction', async () => {
+    const opener = toolMessage('opener', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const { resolver, fetchSpan, fetchMessage } = f
+    const releaseSpan = resolver.retainSpan(opener)
+    const releasePoint = resolver.retainMessage(result.seq)
+    let finishSpan!: (rows: AgentChatMessage[]) => void
+    let finishPoint!: (row: AgentChatMessage) => void
+    fetchSpan.mockImplementationOnce(() => new Promise(resolve => finishSpan = resolve))
+    fetchMessage.mockImplementationOnce(() => new Promise(resolve => finishPoint = resolve))
+    const span = resolver.loadResult(opener)
+    const point = resolver.message(result.seq)
+
+    f.changeWindow({
+      kind: 'retraction',
+      includes: message => message.seq === result.seq,
+    })
+    finishSpan([opener, result])
+    finishPoint(result)
+    await span
+
+    expect(await point).toBeUndefined()
+    expect(resolver.peek(result.seq)).toBeUndefined()
+    expect(resolver.result(opener)).toBeUndefined()
+    expect(resolver.request(opener)?.message.id).toBe(opener.id)
+    releasePoint()
+    releaseSpan()
+  })
+
+  it('revalidates off-window span and point rows when the full watch is promoted', async () => {
+    const opener = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const point = toolMessage('point', 3n, 'result', { spanId: 'other-span' })
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const { resolver, fetchMessage, fetchSpan } = f
+    const releaseSpan = resolver.retainSpan(opener)
+    const releasePoint = resolver.retainMessage(point.seq)
+    fetchSpan.mockResolvedValueOnce([opener, result]).mockResolvedValueOnce([opener])
+    fetchMessage.mockResolvedValue(point)
+    await resolver.loadResult(opener)
+    await resolver.message(point.seq)
+    expect(resolver.result(opener)?.message.id).toBe(result.id)
+    expect(resolver.peek(point.seq)?.message.id).toBe(point.id)
+
+    const watch = new AbortController()
+    f.changeWindow({ kind: 'promotion', signal: watch.signal })
+    await vi.waitFor(() => {
+      expect(resolver.result(opener)).toBeUndefined()
+      expect(resolver.peek(point.seq)?.message.id).toBe(point.id)
+    })
+    expect(fetchSpan).toHaveBeenCalledTimes(2)
+    expect(fetchMessage).toHaveBeenCalledTimes(2)
+    expect(resolver.request(opener)?.message.id).toBe(opener.id)
+    releasePoint()
+    releaseSpan()
+  })
+
+  it.each(['aborted', 'empty'] as const)('reloads active span demand after a previous FULL lookup settled %s', async (outcome) => {
+    const opener = toolMessage('request', 1n, 'request')
+    const oldResult = toolMessage('old-result', 2n, 'result')
+    const currentResult = toolMessage('current-result', 3n, 'result')
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const { resolver, fetchSpan } = f
+    const release = resolver.retainRenderSpan(opener)
+    let finishPrevious!: (rows: AgentChatMessage[]) => void
+    fetchSpan
+      .mockResolvedValueOnce([opener, oldResult])
+      .mockImplementationOnce(() => new Promise(resolve => finishPrevious = resolve))
+      .mockResolvedValueOnce([opener, currentResult])
+    await resolver.loadResult(opener)
+    expect(resolver.result(opener)?.message.id).toBe(oldResult.id)
+
+    const previous = new AbortController()
+    f.changeWindow({ kind: 'promotion', signal: previous.signal })
+    const previousLookup = resolver.loadResult(opener)
+    if (outcome === 'aborted')
+      previous.abort()
+    finishPrevious(outcome === 'empty'
+      ? []
+      : [oldResult])
+    await previousLookup
+    expect(resolver.result(opener)).toBeUndefined()
+    expect(fetchSpan).toHaveBeenCalledTimes(2)
+
+    f.changeWindow({ kind: 'promotion', signal: new AbortController().signal })
+    expect(fetchSpan).toHaveBeenCalledTimes(3)
+    await vi.waitFor(() => expect(resolver.result(opener)?.message.id).toBe(currentResult.id))
+    release()
+  })
+
+  it('drops empty span lookup demand after the last view releases its lease', async () => {
+    const opener = toolMessage('request', 1n, 'request')
+    const f = fixture([opener], {
+      holdsNewest: () => false,
+    })
+    const releaseFirst = f.resolver.retainSpan(opener)
+    const releaseLast = f.resolver.retainRenderSpan(opener)
+    await f.resolver.loadResult(opener)
+    releaseFirst()
+    releaseLast()
+    await waitForRenderPrune()
+
+    f.changeWindow({ kind: 'promotion', signal: new AbortController().signal })
+
+    expect(f.fetchSpan).toHaveBeenCalledOnce()
   })
 
   it('keeps fetched data through a same-turn span lease transfer', async () => {

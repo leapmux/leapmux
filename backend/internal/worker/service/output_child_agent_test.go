@@ -828,7 +828,7 @@ func TestCleanupChildAgent_OrphanedTrackerPointerIsBenign(t *testing.T) {
 	fallback := svc.Output.trackerForSnapshot(childID)
 	_, lines, _ := fallback.Snapshot("", "", false)
 	assert.Equal(t, "[]", lines, "the orphan's span state is unobservable via snapshot")
-	assert.NotSame(t, retainedChildSink.tracker, fallback,
+	assert.NotSame(t, retainedChildSink.currentSpanTracker(), fallback,
 		"snapshot resolves to a fresh empty tracker, not the orphaned child tracker")
 }
 
@@ -979,7 +979,7 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	first := requireChildOutputSink(t, rootSink, childID)
-	firstTracker := first.tracker
+	firstTracker := first.currentSpanTracker()
 
 	// Final close: registry entry deleted, cached sink pruned.
 	rootSink.CleanupChildAgent(childID)
@@ -992,11 +992,11 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 
 	// The re-cached sink's tracker is a distinct allocation that the registry
 	// owns and the orphan sweep reaches.
-	assert.NotSame(t, firstTracker, second.tracker,
+	assert.NotSame(t, firstTracker, second.currentSpanTracker(),
 		"re-cached sink binds to a fresh tracker, not the orphaned one")
 	regTracker, _, regOK := svc.Output.trackers.get(childID)
 	require.True(t, regOK, "fresh registry entry exists for the re-cached child")
-	assert.Same(t, second.tracker, regTracker,
+	assert.Same(t, second.currentSpanTracker(), regTracker,
 		"the re-cached sink's tracker is the one the registry owns")
 }
 
@@ -1027,7 +1027,7 @@ func TestObsoleteParentCleanupKeepsTheReplacementChildAndHeldSettle(t *testing.T
 	assert.Same(t, currentChild, svc.Output.sinkForAgent(childID))
 	tracker, _, exists := svc.Output.trackers.get(childID)
 	require.True(t, exists, "obsolete cleanup retains the replacement tracker")
-	assert.Same(t, currentChild.tracker, tracker)
+	assert.Same(t, currentChild.currentSpanTracker(), tracker)
 	value, exists := svc.Output.activity.Load(childID)
 	require.True(t, exists, "obsolete cleanup retains the replacement activity")
 	assert.Same(t, activity, value)
@@ -1104,7 +1104,7 @@ func TestRetiredChildCapturedUncachedSinkKeepsReplacementMapsExact(t *testing.T)
 	probe := historical.CaptureMessage(agent.MessageContent{Original: []byte(`{"type":"assistant","text":"old unknown"}`)}, agent.SpanInfo{})
 	owner := probe.Publication.Owner().(*transcriptOwner)
 	assert.Empty(t, probe.AgentSessionID)
-	assert.NotSame(t, currentChild.tracker, owner.sink.tracker)
+	assert.NotSame(t, currentChild.currentSpanTracker(), owner.sink.currentSpanTracker())
 	assert.NotSame(t, activity, owner.activity)
 	assert.False(t, owner.IsCurrent())
 	for i, operation := range []string{"message", "notification", "divider"} {
@@ -1124,7 +1124,7 @@ func TestRetiredChildCapturedUncachedSinkKeepsReplacementMapsExact(t *testing.T)
 	assert.Equal(t, beforeTrackerCount, svc.Output.trackers.len())
 	tracker, _, exists := svc.Output.trackers.get(childID)
 	require.True(t, exists)
-	assert.Same(t, currentChild.tracker, tracker)
+	assert.Same(t, currentChild.currentSpanTracker(), tracker)
 	value, exists := svc.Output.activity.Load(childID)
 	require.True(t, exists)
 	assert.Same(t, activity, value)

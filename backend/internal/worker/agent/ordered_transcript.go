@@ -81,6 +81,99 @@ func FlushPendingOutput(writer TranscriptServices) error {
 	return err
 }
 
+// TranscriptSequence executes related writes at one queue position.
+type TranscriptSequence struct {
+	ticket *OutputTicket
+}
+
+// ReserveTranscriptSequence reserves a position before the caller lets it drain.
+// The callback owns its completed substeps and retains them if a write fails.
+func ReserveTranscriptSequence(writer TranscriptServices, label string, run func(TranscriptSequence) error) (func() error, error) {
+	queue := OutputQueueFor(writer)
+	if queue == nil {
+		return func() error { return run(TranscriptSequence{}) }, nil
+	}
+	var ready atomic.Pointer[OutputTicket]
+	tickets, err := writer.ReserveTranscriptOutput(queue, OutputWrite{Label: label, Run: func() error {
+		ticket := ready.Load()
+		if ticket == nil {
+			return ErrOutputInFlight
+		}
+		return run(TranscriptSequence{ticket: ticket})
+	}})
+	if err != nil {
+		return nil, err
+	}
+	ticket := tickets[0]
+	ready.Store(ticket)
+	return func() error {
+		err := queue.FlushAfterReady(ticket)
+		if ticket.Done() {
+			return nil
+		}
+		if err == nil {
+			err = ErrOutputInFlight
+		}
+		return &PendingOutputError{Err: err}
+	}, nil
+}
+
+// Persist writes an immutable operation at the active position without taking another ticket.
+func (sequence TranscriptSequence) Persist(operation CapturedTranscriptOperation) (bool, error) {
+	if operation.err != nil {
+		return false, operation.err
+	}
+	writer := operation.captured.TranscriptWriter()
+	if writer == nil {
+		return false, errors.New("the transcript operation has no writer")
+	}
+	var execution *outputExecution
+	if sequence.ticket != nil {
+		execution = &outputExecution{ticket: sequence.ticket, operation: operation.operation, source: operation.source}
+		if !execution.active() || OutputQueueFor(writer) != sequence.ticket.Queue() {
+			return false, errors.New("the transcript operation has no active position on its output queue")
+		}
+		if err := writer.ValidateTranscriptOutput(sequence.ticket); err != nil {
+			return false, err
+		}
+	}
+	return operation.captured.persistWithExecution(operation.operation, operation.source, execution)
+}
+
+// TranscriptFrameIsCurrent checks exact native lifetime authority for an admitted frame.
+func TranscriptFrameIsCurrent(content MessageContent) bool {
+	if content.Publication == nil {
+		return true
+	}
+	owner := content.Publication.Owner()
+	if frameOwner, ok := owner.(interface{ IsTranscriptFrameCurrent() bool }); ok {
+		return frameOwner.IsTranscriptFrameCurrent()
+	}
+	return owner.IsSessionCurrent()
+}
+
+// TranscriptFrameSpans returns span services for a frame's original lifetime.
+func TranscriptFrameSpans(content MessageContent, live SpanServices) SpanServices {
+	if content.Publication != nil {
+		if owner, ok := content.Publication.Owner().(interface{ TranscriptFrameSpans() SpanServices }); ok {
+			return owner.TranscriptFrameSpans()
+		}
+	}
+	return live
+}
+
+// CaptureTranscriptFrame takes geometry at execution while keeping admission-time authority.
+func CaptureTranscriptFrame(writer TranscriptServices, content MessageContent, span SpanInfo) (CapturedTranscript, error) {
+	if content.Publication != nil {
+		if owner, ok := content.Publication.Owner().(interface {
+			SnapshotTranscriptFrame(SpanInfo) TranscriptPublication
+		}); ok {
+			content.Publication = owner.SnapshotTranscriptFrame(span)
+		}
+	}
+	return CaptureTranscriptWithReceipt(writer, content, span)
+}
+
 // TranscriptMessage supplies one immutable message in an ordered batch.
 type TranscriptMessage struct {
 	Source  leapmuxv1.MessageSource
@@ -434,6 +527,14 @@ func DirectTranscript(writer TranscriptServices) TranscriptServices {
 	default:
 		return writer
 	}
+}
+
+// DirectProviderServices exposes provider effects when a sequence already owns their order.
+func DirectProviderServices(services ProviderServices) ProviderServices {
+	if ordered, ok := services.(*orderedProviderServices); ok {
+		return ordered.ProviderServices
+	}
+	return services
 }
 
 // OrderedTranscript shares one output queue with the caller's generation buffers.

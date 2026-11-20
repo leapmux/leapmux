@@ -22,9 +22,16 @@ import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
+import { createTestWatchHandle } from '~/test-support/watchEvents'
 
 const WS = 'ws-shell-exit'
 const WORKER = 'w-1'
+
+const watchHandle = createTestWatchHandle()
+function deliverWatchEvent(frame: Parameters<UseWatchEventsStreamsOpts['onEvent']>[1]): void {
+  streamOpts().onEvent(WORKER, frame, watchHandle)
+}
+
 const QUAKE_TERMINAL = 'q1'
 const TERMINAL_TAB = 't1'
 
@@ -258,7 +265,7 @@ describe('useWorkspaceConnection shell exit', () => {
       const keyId = quakeKeyId(AGENT_TAB as { workerId: string, workingDir: string })
       expect(s.quakeStore.entryFor(keyId)?.open, 'the panel is open before the exit').toBe(true)
 
-      streamOpts().onEvent(WORKER, terminalEvent(QUAKE_TERMINAL, event))
+      deliverWatchEvent(terminalEvent(QUAKE_TERMINAL, event))
 
       expect(s.quakeStore.entryFor(keyId), 'the panel retracts and lets go of the dead shell').toBeUndefined()
       expect(terminalView.disposed).toEqual([QUAKE_TERMINAL])
@@ -269,9 +276,9 @@ describe('useWorkspaceConnection shell exit', () => {
     it(`drops the queued frames of a quake terminal on ${shape}`, async () => {
       const s = await mount()
       expect(s.view.getTerminalTab(QUAKE_TERMINAL), 'the hook queues frames only for a terminal the view holds').toBeDefined()
-      streamOpts().onEvent(WORKER, snapshotFrame(QUAKE_TERMINAL, [1, 2]))
+      deliverWatchEvent(snapshotFrame(QUAKE_TERMINAL, [1, 2]))
 
-      streamOpts().onEvent(WORKER, terminalEvent(QUAKE_TERMINAL, event))
+      deliverWatchEvent(terminalEvent(QUAKE_TERMINAL, event))
       mountInstance(QUAKE_TERMINAL)
 
       expect(written, 'the store released the instance, so nothing may read the frames').toEqual([])
@@ -281,7 +288,7 @@ describe('useWorkspaceConnection shell exit', () => {
     it(`marks a terminal tab EXITED on ${shape}`, async () => {
       const s = await mount()
 
-      streamOpts().onEvent(WORKER, terminalEvent(TERMINAL_TAB, event))
+      deliverWatchEvent(terminalEvent(TERMINAL_TAB, event))
 
       expect(s.view.getTerminalTab(TERMINAL_TAB)?.status).toBe(TerminalStatus.EXITED)
       expect(terminalView.disposed, 'a terminal tab keeps its instance and offers a restart').toEqual([])
@@ -292,11 +299,11 @@ describe('useWorkspaceConnection shell exit', () => {
     // no reader.
     it(`drops the queued frames of a terminal tab that left the view on ${shape}`, async () => {
       const s = await mount()
-      streamOpts().onEvent(WORKER, snapshotFrame(TERMINAL_TAB, [4, 5]))
+      deliverWatchEvent(snapshotFrame(TERMINAL_TAB, [4, 5]))
       emitRemoveTab(TabType.TERMINAL, TERMINAL_TAB)
       expect(s.view.getTerminalTab(TERMINAL_TAB)).toBeUndefined()
 
-      streamOpts().onEvent(WORKER, terminalEvent(TERMINAL_TAB, event))
+      deliverWatchEvent(terminalEvent(TERMINAL_TAB, event))
       mountInstance(TERMINAL_TAB)
 
       expect(written).toEqual([])
@@ -307,8 +314,8 @@ describe('useWorkspaceConnection shell exit', () => {
     // only the departure of the tab itself can release the frames.
     it(`releases the queued frames when the tab closes after ${shape}`, async () => {
       const s = await mount()
-      streamOpts().onEvent(WORKER, snapshotFrame(TERMINAL_TAB, [4, 5]))
-      streamOpts().onEvent(WORKER, terminalEvent(TERMINAL_TAB, event))
+      deliverWatchEvent(snapshotFrame(TERMINAL_TAB, [4, 5]))
+      deliverWatchEvent(terminalEvent(TERMINAL_TAB, event))
 
       emitRemoveTab(TabType.TERMINAL, TERMINAL_TAB)
       mountInstance(TERMINAL_TAB)
@@ -322,9 +329,9 @@ describe('useWorkspaceConnection shell exit', () => {
     // tab stays, and its instance shows that screen when it mounts.
     it(`keeps the queued screen of a terminal tab on ${shape}`, async () => {
       const s = await mount()
-      streamOpts().onEvent(WORKER, snapshotFrame(TERMINAL_TAB, [7, 8, 9]))
+      deliverWatchEvent(snapshotFrame(TERMINAL_TAB, [7, 8, 9]))
 
-      streamOpts().onEvent(WORKER, terminalEvent(TERMINAL_TAB, event))
+      deliverWatchEvent(terminalEvent(TERMINAL_TAB, event))
       mountInstance(TERMINAL_TAB)
 
       expect(written).toEqual([
@@ -341,7 +348,7 @@ describe('useWorkspaceConnection shell exit', () => {
   // either.
   it('releases the queued frames of a live terminal whose tab closes', async () => {
     const s = await mount()
-    streamOpts().onEvent(WORKER, snapshotFrame(TERMINAL_TAB, [4, 5]))
+    deliverWatchEvent(snapshotFrame(TERMINAL_TAB, [4, 5]))
 
     emitRemoveTab(TabType.TERMINAL, TERMINAL_TAB)
     mountInstance(TERMINAL_TAB)
@@ -352,7 +359,7 @@ describe('useWorkspaceConnection shell exit', () => {
 
   it('releases the queued frames of a quake terminal whose last tab closes', async () => {
     const s = await mount()
-    streamOpts().onEvent(WORKER, snapshotFrame(QUAKE_TERMINAL, [1, 2]))
+    deliverWatchEvent(snapshotFrame(QUAKE_TERMINAL, [1, 2]))
 
     s.closeLastTabOfQuakeDirectory()
     expect(s.view.getTerminalTab(QUAKE_TERMINAL), 'the panel let go of the shell').toBeUndefined()
@@ -364,7 +371,7 @@ describe('useWorkspaceConnection shell exit', () => {
 
   it('keeps the queued frames of a terminal when another tab closes', async () => {
     const s = await mount()
-    streamOpts().onEvent(WORKER, snapshotFrame(TERMINAL_TAB, [7, 8]))
+    deliverWatchEvent(snapshotFrame(TERMINAL_TAB, [7, 8]))
 
     emitAddTab({
       type: TabType.TERMINAL,

@@ -36,6 +36,7 @@ type Agent struct {
 	// state, so nothing else needs to be read as evidence of one, and no frame
 	// the vendor adds later can start a turn that nothing ends.
 	sessionStateReported bool
+	nativeBusyRevision   uint64
 
 	// awaitingResult covers the input write and its reply. An unsuccessful write clears it unless native output proves a turn started.
 	// This prevents an older idle notification from releasing a queued prompt before the CLI reads it.
@@ -59,6 +60,9 @@ type Agent struct {
 	controlReplies          providerkit.Correlator[string]
 	heldAPIErrorMu          sync.Mutex
 	heldAPIError            *claudeHeldAPIError
+	transcripts             claudeTranscriptIndex
+	readerFinalReservation  chan struct{}
+	finalHoldOnce           sync.Once
 	apiRetry                providerkit.RetryResolution
 	confirmedPermissionMode string
 	// The request identity exists before its first write. A deferred request
@@ -96,7 +100,8 @@ type Agent struct {
 	// the model, and the effort. A value, not a pointer: Agent is
 	// built at many sites that do not go through Start, and a nil
 	// receiver would be reachable from every one of them.
-	tasks claudeTaskIndex
+	tasks       claudeTaskIndex
+	outputOrder claudeOutputOrder
 	// workflows draws the agent rows of Workflow runs. A value, not a pointer,
 	// for the same reason as tasks.
 	workflows claudeWorkflowRuns
@@ -104,16 +109,16 @@ type Agent struct {
 
 func (a *Agent) Stop() {
 	a.Process.Stop()
+	a.joinFinalHoldReservation()
 	a.apiRetry.Reset()
-	a.flushHeldAPIError()
 	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 }
 
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.joinFinalHoldReservation()
 	a.apiRetry.Reset()
-	a.flushHeldAPIError()
 	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
@@ -205,11 +210,15 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 // refusal answers -- so without it the older value can land second and latch a
 // turn that is over.
 func (a *Agent) PublishTurnActive() agent.TurnState {
+	return a.publishTurnActive(a.sink)
+}
+
+func (a *Agent) publishTurnActive(sink agent.TurnServices) agent.TurnState {
 	a.Mu.Lock()
 	active := a.turnActive
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishSteerableTurnActiveTo(sink, active, seq)
 }
 
 // armTurn records a turn that the CLI runs and this Worker did not start. The
@@ -229,24 +238,6 @@ func (a *Agent) armTurn() {
 	a.PublishTurnActive()
 }
 
-// noteSessionState applies one session_state_changed frame, and records that
-// this CLI publishes them at all.
-//
-// That record is what retires the output heuristic. The frame states the turn
-// state that armTurnFromOutput can only infer, so a build that sends it needs no
-// inference. Only the signals this file specifies can then start a turn.
-// A message that the vendor adds later stays inert.
-func (a *Agent) noteSessionState(state string) {
-	a.Mu.Lock()
-	a.sessionStateReported = true
-	a.Mu.Unlock()
-	if state == claudeSessionStateIdle {
-		a.noteSessionIdle()
-		return
-	}
-	a.armTurn()
-}
-
 // publishesSessionState reports whether this CLI stated its own turn state at
 // least once.
 func (a *Agent) publishesSessionState() bool {
@@ -257,19 +248,19 @@ func (a *Agent) publishesSessionState() bool {
 
 // noteSessionIdle applies the CLI's own idle report.
 //
-// An idle is stale while a sent input still awaits its result.
+// An idle is stale after a later native busy state or while a sent input awaits its result.
 // Claude can emit idle before it reads that input. Accepting that idle would release the queue into the new turn.
 // Every other idle clears the turn and any unused stop note.
-func (a *Agent) noteSessionIdle() {
+func (a *Agent) noteSessionIdle(busyRevision uint64, sink agent.TurnServices) {
 	a.Mu.Lock()
-	if a.awaitingResult {
+	if a.awaitingResult || a.nativeBusyRevision != busyRevision {
 		a.Mu.Unlock()
 		return
 	}
 	retired := a.disarmTurnLocked()
 	a.Mu.Unlock()
 	a.cancelControls(retired)
-	a.PublishTurnActive()
+	a.publishTurnActive(sink)
 }
 
 // disarmTurn ends the turn and publishes the inactive state.
@@ -279,7 +270,7 @@ func (a *Agent) disarmTurn() {
 	retired := a.disarmTurnLocked()
 	a.Mu.Unlock()
 	a.cancelControls(retired)
-	a.PublishTurnActive()
+	a.publishTurnActive(agent.DirectProviderServices(a.sink))
 }
 
 // disarmTurnLocked keeps the idle check and the turn change under the same lock.

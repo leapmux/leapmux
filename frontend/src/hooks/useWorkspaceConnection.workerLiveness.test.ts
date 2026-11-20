@@ -24,6 +24,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
+import { createTestWatchHandle } from '~/test-support/watchEvents'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -96,6 +97,12 @@ function streamOpts(): UseWatchEventsStreamsOpts {
 
 const WS = 'ws-worker-liveness'
 const WORKER = 'w-1'
+
+const watchHandle = createTestWatchHandle()
+function deliverWatchEvent(frame: Parameters<UseWatchEventsStreamsOpts['onEvent']>[1]): void {
+  streamOpts().onEvent(WORKER, frame, watchHandle)
+}
+
 const OTHER_WORKER = 'w-2'
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
@@ -300,13 +307,13 @@ describe('useWorkspaceConnection worker liveness', () => {
       },
     ])
 
-    streamOpts().onEvent(WORKER, terminalEvent('t-exited', {
+    deliverWatchEvent(terminalEvent('t-exited', {
       case: 'statusChange',
       value: { status: TerminalStatus.READY },
     }))
     expect(s.shown('t-exited')).toBe(TerminalStatus.READY)
 
-    streamOpts().onEvent(WORKER, terminalEvent('t-exited', {
+    deliverWatchEvent(terminalEvent('t-exited', {
       case: 'closed',
       value: { exitCode: 0 },
     }))
@@ -359,7 +366,7 @@ describe('useWorkspaceConnection worker liveness', () => {
     await flush()
     expect(listTerminals).toHaveBeenCalledOnce()
 
-    streamOpts().onEvent(WORKER, terminalEvent('t-live', {
+    deliverWatchEvent(terminalEvent('t-live', {
       case: 'data',
       value: {
         data: new Uint8Array([5, 6]),

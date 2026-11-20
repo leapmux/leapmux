@@ -8,6 +8,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/util/drain"
 )
@@ -1369,24 +1370,8 @@ func (h *OutputHandler) recordControlRequestsRemoved(agentID, rootAgentID string
 // broadcasts no AgentStatusChange, so before this existed a client that lost the
 // process kept whatever activity it last saw until some unrelated event
 // corrected it.
-func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string) {
-	var clearedAgents []string
-	h.sinksByAgent.Range(func(_, value interface{}) bool {
-		sink := value.(*agentOutputSink)
-		if sink.rootAgentID != rootAgentID {
-			return true
-		}
-		sink.sessionInfoMu.Lock()
-		cleared := false
-		for _, key := range liveSessionInfoKeys {
-			cleared = h.invalidateCachedLiveSessionInfoLocked(sink, key) || cleared
-		}
-		sink.sessionInfoMu.Unlock()
-		if cleared {
-			clearedAgents = append(clearedAgents, sink.agentID)
-		}
-		return true
-	})
+func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string, output agent.OutputEffectServices) {
+	clearedAgents := h.invalidateExitedProcessSessionInfo(rootAgentID, output)
 	h.resetAgentActivity(rootAgentID)
 	// Process exit can hold a lifecycle lock. Drain transport work outside that lock.
 	if len(clearedAgents) > 0 && h.beginActivityRefresh() {
@@ -1397,6 +1382,39 @@ func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string) {
 			}
 		}()
 	}
+}
+
+func (h *OutputHandler) invalidateExitedProcessSessionInfo(rootAgentID string, output agent.OutputEffectServices) []string {
+	mutation := h.transcriptMutationMutex(rootAgentID)
+	mutation.Lock()
+	defer mutation.Unlock()
+	value, registered := h.rootSinks.Load(rootAgentID)
+	if !registered {
+		return nil
+	}
+	root := value.(*agentOutputSink)
+	// The manager returns the original bundle from NewRootSink. A successor
+	// can have registered its own bundle before the old manager callback.
+	if output != agent.NewProviderServices(root) {
+		return nil
+	}
+	var clearedAgents []string
+	for _, sink := range root.originalSinkTree() {
+		if !sink.registeredCurrent() {
+			continue
+		}
+		sink.sessionInfoMu.Lock()
+		sink.modelAPIRetryProcessExited = true
+		cleared := false
+		for _, key := range processExitSessionInfoKeys {
+			cleared = h.invalidateCachedLiveSessionInfoLocked(sink, key) || cleared
+		}
+		sink.sessionInfoMu.Unlock()
+		if cleared {
+			clearedAgents = append(clearedAgents, sink.agentID)
+		}
+	}
+	return clearedAgents
 }
 
 // NoteAgentProcessStarted forces the agent idle as a NEW process takes over.

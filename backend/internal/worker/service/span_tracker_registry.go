@@ -35,12 +35,9 @@ const (
 //
 // # Pointer stability
 //
-// A sink captures its *SpanTracker pointer once at construction; the registry
-// keeps the SAME allocation for the entry's lifetime (a getOrCreate for an
-// existing id returns the stored pointer, never a fresh one). This preserves
-// the invariant that a sink's captured tracker stays valid even after a
-// concurrent reset, and it lets the sink bypass the map on the hot persist
-// path.
+// getOrCreate returns the registered pointer for the lifetime of an entry.
+// A native lifetime replacement can install a new pointer. An admitted frame
+// retains its original pointer while the live sink and registry use the new one.
 //
 // # Benign orphan after cleanup
 //
@@ -56,14 +53,10 @@ const (
 //
 // # Concurrency
 //
-// The persist hot path does not touch the registry: a sink captures its
-// *SpanTracker pointer once at construction and calls Snapshot on the pointer
-// directly. The registry is touched only on lifecycle (NewRootSink / ChildSink /
-// Cleanup) and on the read-only snapshot fallback (trackerForSnapshot). So
-// getOrCreate takes the write Lock. It runs at most once per id (a child sink
-// is cached on its root after the first call). A single critical section reads
-// and writes the one entry, so the tracker and the kind stay consistent and the
-// kind read cannot race a concurrent delete. The read-only methods (get, reset,
+// A sink reads its current pointer directly during persistence. Registry
+// lookups and mutations occur during lifetime changes and when a caller needs
+// the active tracker for a read-only snapshot. One registry entry keeps each
+// pointer and its kind together, so the kind read cannot race a concurrent delete. The read-only methods (get, reset,
 // rangeAll, len) take the RLock; they never mutate the map, so they admit
 // concurrent readers and only block the rare lifecycle writer.
 type spanTrackerRegistry struct {
@@ -110,6 +103,18 @@ func (r *spanTrackerRegistry) getOrCreate(id string, kind spanTrackerKind) *Span
 	t := &SpanTracker{}
 	r.byID[id] = spanTrackerEntry{tracker: t, kind: kind}
 	return t
+}
+
+// replace installs a new live tracker while admitted frames retain the old one.
+func (r *spanTrackerRegistry) replace(id string, kind spanTrackerKind) *SpanTracker {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current, found := r.byID[id]; found && current.kind != kind {
+		panic(fmt.Sprintf("spanTrackerRegistry: kind conflict for %q: registered as %s, requested %s", id, current.kind, kind))
+	}
+	tracker := &SpanTracker{}
+	r.byID[id] = spanTrackerEntry{tracker: tracker, kind: kind}
+	return tracker
 }
 
 // get returns the tracker and its kind, or (nil, 0, false) when id is unknown.
