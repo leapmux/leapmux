@@ -556,7 +556,9 @@ func runAgentGet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	withOptions := boolFlag(inv, "options") || inv.Printer.Format == cli.FormatJSON
-	return agentRowOf(info, withOptions), nil
+	result := agentRowOf(info, withOptions)
+	result.Settings = additionalAgentSettings(info.GetOptionGroups())
+	return result, nil
 }
 
 // agentInfo reads the Worker's record of the agent t.

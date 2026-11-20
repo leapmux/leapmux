@@ -341,7 +341,7 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
 
 ### Agents
 
-- `agent list` and `agent get` print each agent's state (`idle`, `working`, `waiting_for_user`), model, effort and git state. `agent get --options` also prints every option group with its choices.
+- `agent list` and `agent get` print each agent's state (`idle`, `working`, `waiting_for_user`), model, effort and git state. `agent get` also prints the provider's current settings. Add `--options` to see every option group and its choices in text. JSON includes the catalog automatically.
 - `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`. `--wait` waits for the reply; see [Waiting for agents](#waiting-for-agents). Three flags shape the message:
   - `--attach <file>` attaches a file. Repeat it for more files. A message with an attachment needs no text. The CLI refuses a file that it cannot read, more than 100 files, and a message whose text and files hold more than 10 MiB together. The Worker infers the type of each file from its name and its content, and it refuses a file that the agent's provider cannot read with `invalid_argument`. The error states the file.
   - `--at <time>` holds the message in the queue until a time: an RFC 3339 time with its offset, such as `2026-11-20T09:00:00+09:00` or `2026-11-20T00:00:00Z`, or `+` and a duration from now, such as `+10m` or `+1h30m`. The CLI assumes no time zone, so a time without an offset fails with `usage`, and so does a time that has passed. The result states the time in UTC as `scheduled_at`.

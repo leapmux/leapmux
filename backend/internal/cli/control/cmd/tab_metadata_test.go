@@ -20,6 +20,7 @@ type tabMetadataDispatcher struct {
 	mu             sync.Mutex
 	agentRequests  [][]string
 	viewerRequests []string
+	agents         []*leapmuxv1.AgentInfo
 }
 
 func (d *tabMetadataDispatcher) DispatchWith(_ context.Context, _ channel.Caller, request *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
@@ -33,10 +34,14 @@ func (d *tabMetadataDispatcher) DispatchWith(_ context.Context, _ channel.Caller
 		d.mu.Lock()
 		d.agentRequests = append(d.agentRequests, slices.Clone(input.GetTabIds()))
 		d.mu.Unlock()
-		writeProtoResponse(writer, &leapmuxv1.ListAgentsResponse{Agents: []*leapmuxv1.AgentInfo{
-			{Id: "agent-alpha", Title: "First review", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ActivityState: idle},
-			{Id: "agent-beta", Title: "Second review", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ActivityState: working},
-		}})
+		agents := d.agents
+		if agents == nil {
+			agents = []*leapmuxv1.AgentInfo{
+				{Id: "agent-alpha", Title: "First review", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ActivityState: idle},
+				{Id: "agent-beta", Title: "Second review", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ActivityState: working},
+			}
+		}
+		writeProtoResponse(writer, &leapmuxv1.ListAgentsResponse{Agents: agents})
 	case leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure:
 		writeProtoResponse(writer, &leapmuxv1.GetWorkerSystemInfoResponse{Name: "build-box"})
 	case leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure:

@@ -167,21 +167,22 @@ type agentRow struct {
 	State string `json:"state,omitempty" table:"STATE"`
 	// Status is the lifecycle of the agent's process: "active",
 	// "inactive", "starting" or "startup_failed".
-	Status          string        `json:"status" table:"STATUS"`
-	Model           string        `json:"model,omitempty" table:"MODEL"`
-	Effort          string        `json:"effort,omitempty"`
-	PermissionMode  string        `json:"permission_mode,omitempty"`
-	WorkerID        string        `json:"worker_id" table:"WORKER,short"`
-	WorkingDir      string        `json:"working_dir,omitempty"`
-	SessionID       string        `json:"session_id,omitempty"`
-	ParentAgentID   string        `json:"parent_agent_id,omitempty"`
-	BackgroundTasks int32         `json:"background_tasks,omitempty"`
-	CreatedAt       string        `json:"created_at,omitempty"`
-	ClosedAt        string        `json:"closed_at,omitempty"`
-	StartupError    string        `json:"startup_error,omitempty"`
-	StartupMessage  string        `json:"startup_message,omitempty"`
-	Git             *gitStatus    `json:"git,omitempty"`
-	Options         []optionGroup `json:"options,omitempty"`
+	Status          string         `json:"status" table:"STATUS"`
+	Model           string         `json:"model,omitempty" table:"MODEL"`
+	Effort          string         `json:"effort,omitempty"`
+	PermissionMode  string         `json:"permission_mode,omitempty"`
+	Settings        []agentSetting `json:"settings,omitempty"`
+	WorkerID        string         `json:"worker_id" table:"WORKER,short"`
+	WorkingDir      string         `json:"working_dir,omitempty"`
+	SessionID       string         `json:"session_id,omitempty"`
+	ParentAgentID   string         `json:"parent_agent_id,omitempty"`
+	BackgroundTasks int32          `json:"background_tasks,omitempty"`
+	CreatedAt       string         `json:"created_at,omitempty"`
+	ClosedAt        string         `json:"closed_at,omitempty"`
+	StartupError    string         `json:"startup_error,omitempty"`
+	StartupMessage  string         `json:"startup_message,omitempty"`
+	Git             *gitStatus     `json:"git,omitempty"`
+	Options         optionCatalog  `json:"options,omitempty"`
 }
 
 // agentRowOf projects an AgentInfo. withOptions includes the whole option
@@ -213,52 +214,4 @@ func agentRowOf(a *leapmuxv1.AgentInfo, withOptions bool) agentRow {
 		row.Options = optionGroupsOf(groups)
 	}
 	return row
-}
-
-// optionGroup is one configuration axis of an agent (a model, an effort,
-// a permission mode, or a provider's own axis) with its choices.
-type optionGroup struct {
-	ID      string   `json:"id" table:"ID"`
-	Label   string   `json:"label" table:"LABEL"`
-	Current string   `json:"current" table:"CURRENT"`
-	Default string   `json:"default,omitempty" table:"DEFAULT"`
-	Mutable bool     `json:"mutable" table:"MUTABLE"`
-	Order   int32    `json:"order,omitempty"`
-	Choices []option `json:"choices"`
-}
-
-// option is one choice of an option group. SubGroups are the axes that this
-// choice determines, such as the efforts that one model offers.
-type option struct {
-	ID            string        `json:"id" table:"ID"`
-	Name          string        `json:"name" table:"NAME"`
-	Description   string        `json:"description,omitempty" table:"DESCRIPTION"`
-	ContextWindow int64         `json:"context_window,omitempty"`
-	SubGroups     []optionGroup `json:"sub_groups,omitempty"`
-}
-
-func optionGroupsOf(groups []*leapmuxv1.AvailableOptionGroup) []optionGroup {
-	out := make([]optionGroup, 0, len(groups))
-	for _, g := range groups {
-		choices := make([]option, 0, len(g.GetOptions()))
-		for _, o := range g.GetOptions() {
-			choices = append(choices, option{
-				ID:            o.GetId(),
-				Name:          o.GetName(),
-				Description:   o.GetDescription(),
-				ContextWindow: o.GetContextWindow(),
-				SubGroups:     optionGroupsOf(o.GetSubGroups()),
-			})
-		}
-		out = append(out, optionGroup{
-			ID:      g.GetId(),
-			Label:   g.GetLabel(),
-			Current: g.GetCurrentValue(),
-			Default: g.GetDefaultValue(),
-			Mutable: g.GetMutable(),
-			Order:   g.GetOrder(),
-			Choices: choices,
-		})
-	}
-	return out
 }
