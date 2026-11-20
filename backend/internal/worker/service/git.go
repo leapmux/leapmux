@@ -527,6 +527,34 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			Worktrees: worktrees,
 		})
 	})
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorktreeRequest, sender channel.ResponseWriter) {
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		selector := r.GetSelector()
+		if target, ok := r.GetTarget().(*leapmuxv1.GetGitWorktreeRequest_Self); ok {
+			if !target.Self || r.GetRepoDir() != "" {
+				sendInvalidArgument(sender, "self takes its repository from the calling tab")
+				return
+			}
+			var err error
+			selector, err = svc.resolveCallingWorktree(ctx, caller)
+			if err != nil {
+				sendValidationError(sender, err)
+				return
+			}
+		}
+		info, worktree, err := svc.resolveGitWorktree(ctx, r.GetRepoDir(), selector)
+		if err != nil {
+			var ambiguity *worktreeAmbiguity
+			if errors.As(err, &ambiguity) {
+				sendProtoResponse(sender, &leapmuxv1.GetGitWorktreeResponse{AmbiguousPaths: ambiguity.paths})
+				return
+			}
+			sendValidationError(sender, err)
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.GetGitWorktreeResponse{Worktree: gitWorktreeProto(worktree), RepoRoot: info.RepoRoot})
+	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, dispatchTracked, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectLastTabCloseRequest, sender channel.ResponseWriter) {
 		// An absent tab reads as an empty id and an UNSPECIFIED type, which
@@ -3238,8 +3266,11 @@ func listRepositoryWorktrees(ctx context.Context, repository gitutil.Repository)
 	}
 	worktrees := make([]*leapmuxv1.GitWorktreeEntry, 0, len(entries))
 	for _, entry := range entries {
-		worktrees = append(worktrees, &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch,
-			IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason})
+		worktrees = append(worktrees, gitWorktreeProto(entry))
 	}
 	return worktrees, nil
+}
+
+func gitWorktreeProto(entry gitutil.WorktreeEntry) *leapmuxv1.GitWorktreeEntry {
+	return &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch, IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason}
 }

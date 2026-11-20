@@ -116,7 +116,12 @@ test.describe('Worktree Lifecycle', () => {
         rows: 24,
         workingDir: repoDir,
         gitSetup: {
-          mode: { case: 'useWorktreePath', value: worktreeDir },
+          mode: {
+            case: 'useWorktree',
+            value: {
+              selector: { case: 'path', value: worktreeDir },
+            },
+          },
         },
       },
     )

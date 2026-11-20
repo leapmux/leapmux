@@ -30,11 +30,12 @@ func (id worktreeDirectoryID) known() bool { return id.CreatedAtUnixNanos != 0 }
 // selectedWorktreeIdentity records the native checkout selected by an open.
 // CloseTab retains this proof after creation clears private runtime inputs.
 type selectedWorktreeIdentity struct {
-	Path       string
-	CommonDir  string
-	GitDir     string
-	CheckoutID worktreeDirectoryID
-	GitDirID   worktreeDirectoryID
+	Path           string
+	CommonDir      string
+	GitDir         string
+	CheckoutID     worktreeDirectoryID
+	GitDirID       worktreeDirectoryID
+	RequiredBranch string `json:",omitempty"`
 }
 
 func captureSelectedWorktree(info *gitPathInfo) (selectedWorktreeIdentity, error) {
@@ -56,6 +57,9 @@ func (selection selectedWorktreeIdentity) verify(info *gitPathInfo, removing boo
 	if !info.IsWorktree || !pathutil.SamePath(selection.Path, info.TopLevel) ||
 		!pathutil.SamePath(selection.CommonDir, info.CommonDir) || !pathutil.SamePath(selection.GitDir, info.GitDir) {
 		return errSelectedWorktreeChanged
+	}
+	if !removing && selection.RequiredBranch != "" && info.BranchName != selection.RequiredBranch {
+		return fmt.Errorf("%w because branch %q is no longer checked out there", errSelectedWorktreeChanged, selection.RequiredBranch)
 	}
 	if removing && (!selection.CheckoutID.known() || !selection.GitDirID.known()) {
 		return errSelectedWorktreeUnproved

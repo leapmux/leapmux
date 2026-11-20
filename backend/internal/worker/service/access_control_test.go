@@ -416,6 +416,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, func() proto.Message {
 			return &leapmuxv1.ListGitWorktreesRequest{Path: "/tmp"}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, func() proto.Message {
+			return &leapmuxv1.GetGitWorktreeRequest{Target: &leapmuxv1.GetGitWorktreeRequest_Self{Self: true}}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, func() proto.Message {
 			return &leapmuxv1.ReadGitFileRequest{Path: "/tmp/x", Ref: leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD}
 		}},

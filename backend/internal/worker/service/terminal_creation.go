@@ -54,9 +54,9 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 		shell = terminal.ResolveDefaultShell()
 	}
 	shellStartDir := expandTilde(r.GetShellStartDir())
-	workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
+	workingDir, err := svc.openGitWorkingDir(r.GetWorkingDir(), r.GetGitSetup(), caller)
 	if err != nil {
-		sendInvalidArgument(sender, err.Error())
+		sendValidationError(sender, err)
 		return
 	}
 

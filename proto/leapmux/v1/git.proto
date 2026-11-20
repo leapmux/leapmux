@@ -26,6 +26,9 @@ service WorkerGitService {
   rpc ListGitWorktrees(ListGitWorktreesRequest) returns (ListGitWorktreesResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
+  rpc GetGitWorktree(GetGitWorktreeRequest) returns (GetGitWorktreeResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
   rpc InspectBranchDeletion(InspectBranchDeletionRequest) returns (InspectBranchDeletionResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
@@ -59,9 +62,16 @@ service WorkerGitService {
 message GitSetup {
   oneof mode {
     GitCreateWorktree create_worktree = 1; // Create a git worktree before starting.
-    string use_worktree_path = 2;          // Use an existing worktree.
-    string checkout_branch = 3;            // Switch to a branch.
-    GitCreateBranch create_branch = 4;     // Create a branch and switch to it.
+    GitWorktreeSelector use_worktree = 2;  // Use an existing worktree.
+    string checkout_branch = 3;           // Switch to a branch.
+    GitCreateBranch create_branch = 4;    // Create a branch and switch to it.
+  }
+}
+
+message GitWorktreeSelector {
+  oneof selector {
+    string path = 1;    // Exact checkout path on the Worker.
+    string branch = 2;  // Exact attached local branch in the repository.
   }
 }
 
@@ -293,6 +303,20 @@ message ListGitWorktreesRequest {
 
 message ListGitWorktreesResponse {
   repeated GitWorktreeEntry worktrees = 1;
+}
+
+message GetGitWorktreeRequest {
+  string repo_dir = 1; // A directory inside the selected repository.
+  oneof target {
+    GitWorktreeSelector selector = 2;
+    bool self = 3; // The checkout containing the calling local tab.
+  }
+}
+
+message GetGitWorktreeResponse {
+  GitWorktreeEntry worktree = 1;
+  string repo_root = 2; // The verified main checkout or common Git directory.
+  repeated string ambiguous_paths = 3; // Sorted checkout paths when the selector matches several.
 }
 
 // InspectBranchDeletion returns the shared BranchGitState plus the

@@ -491,6 +491,10 @@ Three commands reach every LeapMux window that you have open, through the Worker
 - `file roots` reports the Worker's filesystem roots: `/` on a POSIX host, and each drive that carries a volume (`C:\`, `D:\`) on Windows. A WSL or Docker Worker runs a Linux binary, so it reports `/`.
 - `git status`, `git branches` and `git worktrees` take the directory with `--dir`, which defaults to the calling tab's working directory. `git read` prints a file as the last commit (`--ref head`) or the index (`--ref staged`) holds it; `exists` is `false` when the file is absent at that ref, which tells it apart from an empty file.
 
+`git worktree get branch:<branch>` finds an exact attached branch in the repository selected by `--dir` on the chosen Worker. It accepts the short branch name or a full `refs/heads/` ref. `git worktree get path:<path>` can take its repository from the path. `git worktree get self` finds the checkout that contains the calling local tab's working directory. A branch that exists without a checkout returns `not_found`. When several checkouts match, the CLI returns `ambiguous_target` and lists their `path:` selectors.
+
+Pass `--use-worktree branch:<branch>` to `agent open` or `terminal open` to start in that linked checkout. Select the repository with `--dir`. A command running in a local tab can use that tab's directory on the same Worker. Use `--use-worktree path:<path>` or a literal path to select the checkout directly. Workspace and tile flags still control tab placement. The Worker saves the selected checkout and checks it before launch. A branch selection also checks the attached branch.
+
 ### Tiles and layouts
 
 - `tile split`, `tile close`, `tile make-grid` and `tile remove-grid` change one tile. `tile close` and `tile remove-grid` refuse a tile that holds tabs until `--with-tabs close` or `--with-tabs move` says what happens to them.

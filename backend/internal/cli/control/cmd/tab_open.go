@@ -120,7 +120,7 @@ func (p placement) requireWorker() error {
 // working directory. At most one of the four modes applies.
 func addGitSetupFlags(fs *pflag.FlagSet) {
 	fs.String("worktree", "", "create a git worktree on this new branch and start in it")
-	fs.String("use-worktree", "", "start in this existing git worktree")
+	fs.String("use-worktree", "", "start in an existing git worktree by path, path:<path>, or branch:<branch>")
 	fs.String("checkout", "", "check out this existing branch first")
 	fs.String("new-branch", "", "create this branch and check it out first")
 	fs.String("base", "", "the branch that --worktree or --new-branch starts from (default: the current branch)")
@@ -156,7 +156,11 @@ func gitSetup(inv *cli.Invocation) (*leapmuxv1.GitSetup, error) {
 	case "--worktree":
 		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateWorktree{CreateWorktree: &leapmuxv1.GitCreateWorktree{Branch: value, BaseBranch: base}}}, nil
 	case "--use-worktree":
-		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktreePath{UseWorktreePath: rawValue}}, nil
+		selector, err := parseWorktreeSelector(rawValue, true)
+		if err != nil {
+			return nil, err
+		}
+		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktree{UseWorktree: selector}}, nil
 	case "--checkout":
 		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CheckoutBranch{CheckoutBranch: value}}, nil
 	default:
@@ -206,6 +210,13 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	if err := p.requireWorker(); err != nil {
 		return nil, err
 	}
+	dir := workingDir(inv)
+	if selector := setup.GetUseWorktree(); selector != nil {
+		dir, err = s.worktreeRepoDir(p.WorkerID, selector)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := maybePreflightWorker(s.ctx, s.c, p.WorkerID); err != nil {
 		return nil, err
 	}
@@ -228,7 +239,7 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 			Effort:         stringFlag(inv, "effort"),
 			Title:          stringFlag(inv, "title"),
 			PermissionMode: stringFlag(inv, "permission-mode"),
-			WorkingDir:     workingDir(inv),
+			WorkingDir:     dir,
 			InitialMessage: initialMessage,
 			SessionID:      stringFlag(inv, "resume"),
 			GitSetup:       setup,
@@ -274,6 +285,13 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	if err := p.requireWorker(); err != nil {
 		return nil, err
 	}
+	dir := workingDir(inv)
+	if selector := setup.GetUseWorktree(); selector != nil {
+		dir, err = s.worktreeRepoDir(p.WorkerID, selector)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := maybePreflightWorker(s.ctx, s.c, p.WorkerID); err != nil {
 		return nil, err
 	}
@@ -284,7 +302,7 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 			WorkspaceID:    p.WorkspaceID,
 			WorkerID:       p.WorkerID,
 			TileID:         p.TileID,
-			WorkingDir:     workingDir(inv),
+			WorkingDir:     dir,
 			Shell:          stringFlag(inv, "shell"),
 			ShellStartDir:  stringFlag(inv, "start-dir"),
 			Title:          stringFlag(inv, "title"),

@@ -272,9 +272,9 @@ func TestSeparateAdminPlacementUsesCommonAnchor(t *testing.T) {
 		wrong := changed
 		wrong.RepoGitDir = filepath.Join(base, "different-common-directory")
 		require.Error(t, operation.validateSavedCheckpoint(t.Context(), &intent, wrong), "a result cannot replace the saved plan's repository authority")
-		usePlan, err := svc.validateUseWorktreePath(t.Context(), selected, result.WorkingDir)
+		usePlan, err := svc.validateGitMode(t.Context(), selected, useWorktreePathSetup(result.WorkingDir))
 		require.NoError(t, err)
-		used, err := svc.executeUseWorktreePath(t.Context(), usePlan)
+		used, err := svc.executeUseWorktree(t.Context(), usePlan)
 		require.NoError(t, err)
 		assert.Equal(t, admin, used.RepoGitDir)
 		require.NoError(t, operation.validateSavedCheckpoint(t.Context(), &creationStartupIntent{Plan: usePlan}, used))

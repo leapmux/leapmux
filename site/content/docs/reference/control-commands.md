@@ -537,7 +537,7 @@ leapmux control agent open [flags]
 | `--request-id string` | an id of your choice that makes a retry safe: a second run with the same id and the same arguments creates nothing new |
 | `--dir string` | working directory of the agent (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--worktree string` | create a git worktree on this new branch and start in it |
-| `--use-worktree string` | start in this existing git worktree |
+| `--use-worktree string` | start in an existing git worktree by path, path:&lt;path&gt;, or branch:&lt;branch&gt; |
 | `--checkout string` | check out this existing branch first |
 | `--new-branch string` | create this branch and check it out first |
 | `--base string` | the branch that --worktree or --new-branch starts from (default: the current branch) |
@@ -1270,7 +1270,7 @@ leapmux control terminal open [flags]
 | `--title string` | tab title (default: the worker picks one) |
 | `--dir string` | working directory of the terminal (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--worktree string` | create a git worktree on this new branch and start in it |
-| `--use-worktree string` | start in this existing git worktree |
+| `--use-worktree string` | start in an existing git worktree by path, path:&lt;path&gt;, or branch:&lt;branch&gt; |
 | `--checkout string` | check out this existing branch first |
 | `--new-branch string` | create this branch and check it out first |
 | `--base string` | the branch that --worktree or --new-branch starts from (default: the current branch) |
@@ -1888,6 +1888,31 @@ leapmux control git push [flags]
 
 ```sh
 leapmux control git push --dir ~/src/app
+```
+
+## `leapmux control git worktree`
+
+Find an existing checked-out worktree.
+
+### `leapmux control git worktree get`
+
+Use path:&lt;path&gt;, branch:&lt;branch&gt;, or self. The worker matches the attached
+branch in the repository selected by --dir. A local tab can supply the
+repository directory for a branch on the same worker. An explicit path can
+select its own repository. Use self to find the calling local tab's checkout.
+
+```text
+leapmux control git worktree get <selector> [flags]
+```
+
+| Flag | Description |
+|---|---|
+| `--dir string` | repository directory on the selected worker (default: $LEAPMUX_CONTROL_WORKING_DIR) |
+| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+
+```sh
+leapmux control git worktree get branch:feature/login --dir ~/src/app
+leapmux control git worktree get self
 ```
 
 ## `leapmux control tile`

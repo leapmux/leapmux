@@ -1956,9 +1956,9 @@ func sendUnavailable(sender channel.ResponseWriter, msg string) {
 }
 
 // sendValidationError routes a validation failure to the most accurate
-// gRPC code: context cancellation/timeout (client disconnect, hub-side
-// deadline) maps to Canceled / DeadlineExceeded; everything else is the
-// caller's bad input → InvalidArgument. Without the split, a client
+// gRPC code. A canceled or expired context gets its own status. A worktree
+// lookup preserves its refusal, missing result, or execution failure. Other
+// validation errors describe invalid arguments. Without the split, a client
 // disconnect during a slow `git worktree list` validation surfaced as
 // "invalid_argument: context canceled", which is misleading both for
 // the user-facing toast and for any client-side telemetry that filters
@@ -1969,6 +1969,14 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 		_ = sender.SendError(int32(codes.Canceled), err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+	case errors.Is(err, errGitWorktreeReadScope):
+		sendPermissionDenied(sender, err.Error())
+	case errors.Is(err, errGitWorktreeNotFound):
+		sendNotFoundError(sender, err.Error())
+	case errors.Is(err, errGitWorktreeAmbiguous), errors.Is(err, errSelectedWorktreeChanged):
+		_ = sender.SendError(int32(codes.FailedPrecondition), err.Error())
+	case errors.Is(err, errGitWorktreeLookup):
+		sendInternalError(sender, err.Error())
 	default:
 		sendInvalidArgument(sender, err.Error())
 	}

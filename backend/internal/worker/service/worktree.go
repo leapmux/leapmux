@@ -15,7 +15,6 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
-	"github.com/leapmux/leapmux/util/validate"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -77,7 +76,7 @@ type gitModeKind int
 const (
 	gitModeUseCurrent gitModeKind = iota
 	gitModeCreateWorktree
-	gitModeUseWorktreePath
+	gitModeUseWorktree
 	gitModeCreateBranch
 	gitModeCheckoutBranch
 )
@@ -92,9 +91,8 @@ type gitModePlan struct {
 	// dir the user picked; for createWorktree it is the parent repo.
 	WorkingDir string
 
-	// PlannedWorkingDir is the working dir that the tab will ultimately
-	// run in. For createWorktree/useWorktreePath it differs from
-	// WorkingDir; for others it equals WorkingDir.
+	// PlannedWorkingDir is where the tab will run. Creating or selecting a
+	// worktree can choose a directory different from WorkingDir.
 	PlannedWorkingDir string
 
 	// RepoRoot supplies placement. RepoGitDir supplies stable identity
@@ -117,8 +115,7 @@ type gitModePlan struct {
 	// CheckoutTarget is the branch being switched to (checkoutBranch).
 	CheckoutTarget string
 
-	// WorktreePath is the on-disk path — planned (createWorktree) or
-	// validated existing (useWorktreePath).
+	// WorktreePath is the path of the new or selected worktree.
 	WorktreePath string
 	// SelectedWorktree identifies the checkout chosen by the existing-worktree mode.
 	SelectedWorktree *selectedWorktreeIdentity
@@ -131,7 +128,7 @@ func (p gitModePlan) PhaseLabel() string {
 	switch p.Mode {
 	case gitModeCreateWorktree:
 		return fmt.Sprintf("Creating worktree %q…", p.BranchName)
-	case gitModeUseWorktreePath:
+	case gitModeUseWorktree:
 		return fmt.Sprintf("Switching to worktree %q…", filepath.Base(p.WorktreePath))
 	case gitModeCreateBranch:
 		return fmt.Sprintf("Creating branch %q…", p.BranchName)
@@ -230,11 +227,8 @@ func (svc *Service) validateGitMode(ctx context.Context, workingDir string, setu
 			return gitModePlan{}, errors.New("create_worktree.branch is required")
 		}
 		return svc.validateCreateWorktree(ctx, workingDir, branch, mode.CreateWorktree.GetBaseBranch())
-	case *leapmuxv1.GitSetup_UseWorktreePath:
-		if mode.UseWorktreePath == "" {
-			return gitModePlan{}, errors.New("use_worktree_path is required")
-		}
-		return svc.validateUseWorktreePath(ctx, workingDir, mode.UseWorktreePath)
+	case *leapmuxv1.GitSetup_UseWorktree:
+		return svc.validateUseWorktree(ctx, workingDir, mode.UseWorktree)
 	case *leapmuxv1.GitSetup_CheckoutBranch:
 		if mode.CheckoutBranch == "" {
 			return gitModePlan{}, errors.New("checkout_branch is required")
@@ -358,78 +352,23 @@ func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, bran
 	}, nil
 }
 
-func (svc *Service) validateUseWorktreePath(ctx context.Context, workingDir, worktreePath string) (gitModePlan, error) {
-	sanitized, err := validate.ResolveLiteralPath(worktreePath, svc.HomeDir)
+func (svc *Service) validateUseWorktree(ctx context.Context, workingDir string, selector *leapmuxv1.GitWorktreeSelector) (gitModePlan, error) {
+	checkout, _, err := svc.resolveGitWorktree(ctx, workingDir, selector)
 	if err != nil {
-		return gitModePlan{}, fmt.Errorf("invalid worktree path: %w", err)
+		return gitModePlan{}, err
 	}
-
-	// Security: confirm the path is one this repo's `git worktree list`
-	// already knows about — prevents jumping to arbitrary dirs.
-	canonSanitized, err := filepath.EvalSymlinks(sanitized)
-	if err != nil {
-		return gitModePlan{}, fmt.Errorf(`path "%s" does not exist`, sanitized)
-	}
-	repo, err := gitutil.QueryWorktreePaths(ctx, workingDir)
-	if err != nil {
-		return gitModePlan{}, fmt.Errorf("read the selected repository: %w", err)
-	}
-	worktrees, err := listRepositoryWorktrees(ctx, gitutil.Repository{GitDir: repo.CommonDir})
-	if err != nil {
-		return gitModePlan{}, fmt.Errorf("failed to list worktrees: %w", err)
-	}
-	found := false
-	for _, wt := range worktrees {
-		// Skip the main-repo entry: `git worktree list` includes the
-		// repo root as IsMain=true, but the dialog intent is "open this
-		// LINKED worktree as the working dir." Allowing the main repo
-		// through would let ensureTrackedWorktree write a Worktree DB
-		// row whose worktree_path equals repo_root; a later
-		// CloseTab(REMOVE) would then attempt `git worktree remove`
-		// on the main repo (which git refuses) and `git branch -D`
-		// against the main-repo HEAD branch (which can succeed and
-		// destroy the user's primary branch). attachWorktreeIfPresent
-		// applies an IsWorktree gate for the same reason; this is the
-		// matching gate for the user-driven worktree-pick path.
-		if wt.GetIsMain() {
-			continue
-		}
-		// Fast path: when the git-reported worktree path is already
-		// canonical (the common case — git records the path as the user
-		// created it, and `pathutil.SamePath` handles Windows
-		// case-insensitivity), a direct compare avoids the syscall.
-		if pathutil.SamePath(canonSanitized, wt.GetPath()) {
-			found = true
-			break
-		}
-		// Deliberately NOT pathutil.Canonicalize here: that helper falls
-		// back to the raw input when EvalSymlinks fails, so a worktree
-		// path git lists but can't resolve (missing/broken) would still
-		// be compared by its unresolved form — weakening the gate
-		// against jumping to arbitrary dirs. Skip-on-resolve-failure is
-		// the conservative choice for a security check.
-		if canonWt, err := filepath.EvalSymlinks(wt.GetPath()); err == nil && pathutil.SamePath(canonSanitized, canonWt) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return gitModePlan{}, fmt.Errorf(`path "%s" is not a known worktree`, sanitized)
-	}
-	checkout, err := queryGitPathInfo(ctx, canonSanitized)
-	if err != nil {
-		return gitModePlan{}, fmt.Errorf("read the selected Git worktree: %w", err)
-	}
-	if !checkout.IsWorktree || !pathutil.SamePath(checkout.TopLevel, canonSanitized) || !pathutil.SamePath(checkout.CommonDir, repo.CommonDir) {
-		return gitModePlan{}, errSelectedWorktreeChanged
+	if !checkout.IsWorktree {
+		return gitModePlan{}, errors.New("select a linked worktree or open the main checkout as the working directory")
 	}
 	selection, err := captureSelectedWorktree(checkout)
 	if err != nil {
 		return gitModePlan{}, err
 	}
-
+	if selector.GetBranch() != "" {
+		selection.RequiredBranch = checkout.BranchName
+	}
 	return gitModePlan{
-		Mode:              gitModeUseWorktreePath,
+		Mode:              gitModeUseWorktree,
 		WorkingDir:        workingDir,
 		PlannedWorkingDir: checkout.TopLevel,
 		RepoRoot:          checkout.RepoRoot,
@@ -558,8 +497,8 @@ func (svc *Service) executeGitMode(ctx context.Context, plan gitModePlan) (gitMo
 	switch plan.Mode {
 	case gitModeCreateWorktree:
 		return svc.executeCreateWorktree(ctx, plan)
-	case gitModeUseWorktreePath:
-		return svc.executeUseWorktreePath(ctx, plan)
+	case gitModeUseWorktree:
+		return svc.executeUseWorktree(ctx, plan)
 	case gitModeCreateBranch:
 		return svc.executeCreateBranch(ctx, plan)
 	case gitModeCheckoutBranch:
@@ -671,7 +610,7 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	return result, nil
 }
 
-func (svc *Service) executeUseWorktreePath(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+func (svc *Service) executeUseWorktree(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	var result gitModeResult
 	var inserted *db.Worktree
 	err := svc.withGitIndexLock(plan.RepoGitDir, func() error {

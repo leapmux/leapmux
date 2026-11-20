@@ -479,6 +479,10 @@ func queryGitPath(ctx context.Context, dir, option string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return parseReportedGitPath(output, option)
+}
+
+func parseReportedGitPath(output, option string) (string, error) {
 	path, framed := strings.CutSuffix(output, "\n")
 	if !framed || path == "" || !filepath.IsAbs(path) {
 		return "", fmt.Errorf("git %s returned an invalid path response", option)
@@ -489,6 +493,27 @@ func queryGitPath(ctx context.Context, dir, option string) (string, error) {
 // QueryToplevel removes one framing LF, then canonicalizes the complete path.
 func QueryToplevel(ctx context.Context, dir string) (string, error) {
 	return queryGitPath(ctx, dir, "--show-toplevel")
+}
+
+// QueryCommonGitDir resolves the common Git directory from a checkout or bare repository.
+func QueryCommonGitDir(ctx context.Context, dir string) (string, error) {
+	const option = "--git-common-dir"
+	commonDir, err := queryGitPath(ctx, dir, option)
+	if err == nil || ctx.Err() != nil || !filepath.IsAbs(dir) {
+		return commonDir, err
+	}
+	// Git refuses implicit discovery of a bare repository. Check the exact
+	// supplied directory with --git-dir and keep the policy enabled.
+	repository := Repository{GitDir: dir}
+	bare, bareErr := repository.Output(ctx, "rev-parse", "--is-bare-repository")
+	if bareErr != nil || bare != "true\n" {
+		return "", err
+	}
+	output, err := repository.Output(ctx, "rev-parse", "--path-format=absolute", option)
+	if err != nil {
+		return "", err
+	}
+	return parseReportedGitPath(output, option)
 }
 
 // QueryWorktreePaths gives each unrestricted path its own output stream.
@@ -503,7 +528,7 @@ func QueryWorktreePaths(ctx context.Context, dir string) (WorktreePaths, error) 
 	if err != nil {
 		return WorktreePaths{}, err
 	}
-	paths.CommonDir, err = queryGitPath(ctx, dir, "--git-common-dir")
+	paths.CommonDir, err = QueryCommonGitDir(ctx, dir)
 	if err != nil {
 		return WorktreePaths{}, err
 	}

@@ -92,9 +92,9 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	agentID := r.GetCreation().GetTabId()
 	agent.TraceStartupPhase(agentID, "handler_begin")
 
-	workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
+	workingDir, err := svc.openGitWorkingDir(r.GetWorkingDir(), r.GetGitSetup(), caller)
 	if err != nil {
-		sendInvalidArgument(sender, err.Error())
+		sendValidationError(sender, err)
 		return
 	}
 

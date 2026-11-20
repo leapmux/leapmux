@@ -216,9 +216,8 @@ func TestGitModePlan_PhaseLabelPerMode(t *testing.T) {
 		want string
 	}{
 		{gitModePlan{Mode: gitModeCreateWorktree, BranchName: "feature/x"}, `Creating worktree "feature/x"…`},
-		// UseWorktreePath uses filepath.Base so the label shows the last
-		// component of the path (the leaf of a potentially deep branch name).
-		{gitModePlan{Mode: gitModeUseWorktreePath, WorktreePath: "/tmp/foo-worktrees/feature/bar"}, `Switching to worktree "bar"…`},
+		// The label for an existing worktree shows the last path component.
+		{gitModePlan{Mode: gitModeUseWorktree, WorktreePath: "/tmp/foo-worktrees/feature/bar"}, `Switching to worktree "bar"…`},
 		{gitModePlan{Mode: gitModeCreateBranch, BranchName: "feature/y"}, `Creating branch "feature/y"…`},
 		{gitModePlan{Mode: gitModeCheckoutBranch, CheckoutTarget: "main"}, `Switching to branch "main"…`},
 		{gitModePlan{Mode: gitModeUseCurrent}, ""},
@@ -255,7 +254,7 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 
 	plan, err := svc.validateGitMode(t.Context(), repoDir, useWorktreePathSetup(alias))
 	require.NoError(t, err)
-	assert.Equal(t, gitModeUseWorktreePath, plan.Mode)
+	assert.Equal(t, gitModeUseWorktree, plan.Mode)
 	assert.Equal(t, pathutil.Canonicalize(worktreeDir), plan.PlannedWorkingDir)
 	assert.Equal(t, plan.PlannedWorkingDir, plan.WorktreePath)
 
@@ -303,7 +302,7 @@ func TestSavedWorktreeRejectsADifferentCheckoutAtTheSamePath(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "add", "-b", "original", originalDir)
 	run(t, repoDir, "git", "worktree", "add", "-b", "replacement", replacementDir)
 	svc, _, _ := setupTestService(t)
-	plan, err := svc.validateUseWorktreePath(t.Context(), repoDir, originalDir)
+	plan, err := svc.validateGitMode(t.Context(), repoDir, useWorktreePathSetup(originalDir))
 	require.NoError(t, err)
 	result, err := svc.executeGitMode(t.Context(), plan)
 	require.NoError(t, err)
@@ -328,7 +327,7 @@ func TestSavedWorktreeRejectsARecreatedCheckout(t *testing.T) {
 	worktreeDir := filepath.Join(t.TempDir(), "checkout")
 	run(t, repoDir, "git", "worktree", "add", "-b", "recreated", worktreeDir)
 	svc, _, _ := setupTestService(t)
-	plan, err := svc.validateUseWorktreePath(t.Context(), repoDir, worktreeDir)
+	plan, err := svc.validateGitMode(t.Context(), repoDir, useWorktreePathSetup(worktreeDir))
 	require.NoError(t, err)
 	if !plan.SelectedWorktree.CheckoutID.known() || !plan.SelectedWorktree.GitDirID.known() {
 		t.Skip("the filesystem reports no creation identity for the test directories")
@@ -374,7 +373,7 @@ func TestValidateGitModePreservesSignificantWorktreePathSpace(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "add", "-b", "ordinary", ordinary)
 	run(t, repoDir, "git", "worktree", "add", "-b", "with-space", withSpace)
 	svc, _, _ := setupTestService(t)
-	plan, err := svc.validateUseWorktreePath(t.Context(), repoDir, withSpace)
+	plan, err := svc.validateGitMode(t.Context(), repoDir, useWorktreePathSetup(withSpace))
 	require.NoError(t, err)
 	assert.Equal(t, pathutil.Canonicalize(withSpace), plan.WorktreePath)
 }
@@ -727,7 +726,7 @@ func TestValidateGitModeMapsEachSetupCase(t *testing.T) {
 		{name: "create_worktree with an empty branch", dir: notRepo, setup: createWorktreeSetup("", "main"), wantErr: "create_worktree.branch is required"},
 		{name: "create_worktree with a nil message", dir: notRepo, setup: &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateWorktree{}}, wantErr: "create_worktree.branch is required"},
 		{name: "create_worktree", dir: repoDir, setup: createWorktreeSetup("feature/new", ""), mode: gitModeCreateWorktree},
-		{name: "use_worktree_path empty", dir: notRepo, setup: useWorktreePathSetup(""), wantErr: "use_worktree_path is required"},
+		{name: "empty worktree path", dir: notRepo, setup: useWorktreePathSetup(""), wantErr: "invalid worktree path: path is empty"},
 		{name: "checkout_branch empty", dir: notRepo, setup: checkoutBranchSetup(""), wantErr: "checkout_branch is required"},
 		{name: "create_branch with an empty name", dir: notRepo, setup: createBranchSetup("", "main"), wantErr: "create_branch.name is required"},
 		{name: "create_branch with a nil message", dir: notRepo, setup: &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateBranch{}}, wantErr: "create_branch.name is required"},

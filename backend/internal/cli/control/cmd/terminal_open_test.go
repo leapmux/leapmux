@@ -82,7 +82,20 @@ func TestTerminalOpenPreservesTheLiteralWorktreePath(t *testing.T) {
 			const path = "/src/worktrees/selected "
 			result, _, calls := openTerminalOnFakeWorker(t, transport.start, "", "--use-worktree", path)
 			_ = result.Data(t)
-			assert.Equal(t, path, requireOpenTerminalRequest(t, calls).GetGitSetup().GetUseWorktreePath())
+			assert.Equal(t, path, requireOpenTerminalRequest(t, calls).GetGitSetup().GetUseWorktree().GetPath())
+		})
+	}
+}
+
+func TestTerminalOpenSendsAnExactWorktreeBranch(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			result, _, calls := openTerminalOnFakeWorker(t, transport.start, "", "--use-worktree", "branch:origin/Feature")
+			_ = result.Data(t)
+			request := requireOpenTerminalRequest(t, calls)
+			assert.Equal(t, "/src/app", request.GetWorkingDir())
+			assert.Equal(t, "origin/Feature", request.GetGitSetup().GetUseWorktree().GetBranch())
+			assert.Empty(t, request.GetGitSetup().GetUseWorktree().GetPath())
 		})
 	}
 }

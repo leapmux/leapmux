@@ -605,7 +605,7 @@ func (op *creationOperation) validateSavedCheckpoint(ctx context.Context, intent
 	if expectedGitDir == "" || !pathutil.SamePath(info.CommonDir, expectedGitDir) {
 		return errors.New("the saved startup directory belongs to a different repository; existing files were kept")
 	}
-	if intent.Plan.Mode == gitModeUseWorktreePath {
+	if intent.Plan.Mode == gitModeUseWorktree {
 		selection := intent.Plan.SelectedWorktree
 		if selection == nil || result.WorktreeID == "" || !pathutil.SamePath(result.WorkingDir, selection.Path) {
 			return errSelectedWorktreeChanged

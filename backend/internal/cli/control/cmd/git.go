@@ -137,6 +137,7 @@ absolute path on the worker; the worker finds its repository.`,
 					&leapmuxv1.PushBranchRequest{WorkingDir: stringFlag(inv, "dir")}, &leapmuxv1.PushBranchResponse{})
 			},
 		}),
+		newGitWorktreeCommand(),
 	)
 }
 
@@ -298,15 +299,20 @@ func runGitBranches(inv *cli.Invocation) (any, error) {
 
 // gitWorktreeList is the result of `git worktrees`.
 type gitWorktreeList struct {
-	Worktrees []gitWorktree `json:"worktrees"`
+	Worktrees []GitWorktreeRow `json:"worktrees"`
 }
 
-type gitWorktree struct {
+// GitWorktreeRow is the display row shared by worktree listing and lookup.
+type GitWorktreeRow struct {
 	Path       string `json:"path" table:"PATH"`
 	Branch     string `json:"branch" table:"BRANCH"`
 	Main       bool   `json:"main" table:"MAIN"`
 	Locked     bool   `json:"locked" table:"LOCKED"`
 	LockReason string `json:"lock_reason,omitempty"`
+}
+
+func gitWorktreeOf(worktree *leapmuxv1.GitWorktreeEntry) GitWorktreeRow {
+	return GitWorktreeRow{Path: worktree.GetPath(), Branch: worktree.GetBranch(), Main: worktree.GetIsMain(), Locked: worktree.GetLocked(), LockReason: worktree.GetLockReason()}
 }
 
 func runGitWorktrees(inv *cli.Invocation) (any, error) {
@@ -318,9 +324,9 @@ func runGitWorktrees(inv *cli.Invocation) (any, error) {
 	if err := callOnWorker(inv, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, &leapmuxv1.ListGitWorktreesRequest{Path: dir}, &resp); err != nil {
 		return nil, err
 	}
-	out := gitWorktreeList{Worktrees: make([]gitWorktree, 0, len(resp.GetWorktrees()))}
+	out := gitWorktreeList{Worktrees: make([]GitWorktreeRow, 0, len(resp.GetWorktrees()))}
 	for _, w := range resp.GetWorktrees() {
-		out.Worktrees = append(out.Worktrees, gitWorktree{Path: w.GetPath(), Branch: w.GetBranch(), Main: w.GetIsMain(), Locked: w.GetLocked(), LockReason: w.GetLockReason()})
+		out.Worktrees = append(out.Worktrees, gitWorktreeOf(w))
 	}
 	return out, nil
 }
