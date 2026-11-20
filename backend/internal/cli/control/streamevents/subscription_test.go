@@ -570,9 +570,8 @@ func TestSubscription_TerminalDataAdvancesOffset(t *testing.T) {
 }
 
 // TestSubscription_CursorResetCallback fires when a TerminalData
-// frame carries `is_snapshot=true`. Consumers use this to emit a
-// notice and (optionally) reset their cursor before processing the
-// snapshot replay.
+// frame carries `is_snapshot=true`. The cursor already holds the new
+// offset when the callback runs before snapshot delivery.
 func TestSubscription_CursorResetCallback(t *testing.T) {
 	tr := &fakeTransport{}
 	agents := NewAgentCursor()

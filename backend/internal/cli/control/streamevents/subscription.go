@@ -753,12 +753,46 @@ func (s *Subscription) dispatchTerminalEvent(te *leapmuxv1.TerminalEvent) {
 		}
 	}
 	if data := te.GetData(); data != nil {
-		if data.GetIsSnapshot() && s.onCursorReset != nil {
-			s.onCursorReset(te.GetTerminalId())
+		te = s.acceptTerminalData(te, data)
+		if te == nil {
+			return
 		}
-		s.terminals.Update(te.GetTerminalId(), data.GetEndOffset())
 	}
 	if s.onTerminal != nil {
 		s.onTerminal(te)
+	}
+}
+
+// acceptTerminalData returns the portion of a frame beyond the cursor. A
+// replacement snapshot includes synthesized mode bytes outside that range,
+// so the subscriber receives it intact and begins at its new offset.
+func (s *Subscription) acceptTerminalData(event *leapmuxv1.TerminalEvent, data *leapmuxv1.TerminalData) *leapmuxv1.TerminalEvent {
+	id, end := event.GetTerminalId(), data.GetEndOffset()
+	if end < 0 {
+		return nil
+	}
+	if data.GetIsSnapshot() {
+		s.terminals.replace(id, end)
+		if s.onCursorReset != nil {
+			s.onCursorReset(id)
+		}
+		return event
+	}
+	start := end - int64(len(data.GetData()))
+	if start < 0 {
+		return nil
+	}
+	previous, advanced := s.terminals.advanceFrom(id, end)
+	if !advanced {
+		return nil
+	}
+	if previous <= start {
+		return event
+	}
+	return &leapmuxv1.TerminalEvent{
+		TerminalId: id,
+		Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+			Data: data.GetData()[previous-start:], EndOffset: end,
+		}},
 	}
 }

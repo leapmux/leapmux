@@ -77,8 +77,15 @@ func (c *Cursor[Entry]) Update(id string, value int64) int64 {
 // -- exactly one sees advanced=true. A separate Get-then-Update has a window between
 // the two locks where both readers see the stale value.
 func (c *Cursor[Entry]) Advance(id string, value int64) bool {
+	_, advanced := c.advanceFrom(id, value)
+	return advanced
+}
+
+// advanceFrom returns the prior cursor and advances it in the same operation.
+// A terminal uses the prior offset to trim the part of a chunk it has seen.
+func (c *Cursor[Entry]) advanceFrom(id string, value int64) (int64, bool) {
 	if id == "" {
-		return false
+		return 0, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -89,9 +96,20 @@ func (c *Cursor[Entry]) advanceLocked(id string, value int64) bool {
 	cur, ok := c.values[id]
 	if !ok || value > cur {
 		c.values[id] = value
-		return true
+		return cur, true
 	}
-	return false
+	return cur, false
+}
+
+// replace sets the absolute offset of a replacement snapshot. A new PTY can
+// report a lower offset than the terminal the snapshot replaced.
+func (c *Cursor[Entry]) replace(id string, value int64) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.values[id] = value
 }
 
 // Get returns the current cursor for id, or 0 if untracked.
@@ -244,14 +262,9 @@ func AgentWatchEntry(id string, seq int64) *leapmuxv1.WatchAgentEntry {
 	}
 }
 
-// TerminalCursor records the highest cumulative `end_offset` seen per
-// terminal_id. Behaves identically to AgentCursor, but the proto
-// contract for terminals (`backend/internal/worker/service/terminal.go`)
-// allows the worker to silently treat an `after_offset` past the
-// retention window or larger than the live counter as 0 — so cursor
-// resets aren't a CLI-side error, they're a normal state-rollover
-// event the consumer must handle. The Subscription layer flags those
-// frames via `is_snapshot=true`.
+// TerminalCursor records the expected end offset of each terminal. It
+// advances through live chunks and adopts the offset of a replacement
+// snapshot, including a lower offset after a restart.
 type TerminalCursor = Cursor[*leapmuxv1.WatchTerminalEntry]
 
 // NewTerminalCursor returns an empty cursor.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
@@ -209,4 +210,53 @@ func TestTerminalRejection_MapsEachReason(t *testing.T) {
 	assert.Equal(t, cli.CodeNotFound, cli.FromError(reject(leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND)).Code)
 	assert.Equal(t, cli.CodePermissionDenied, cli.FromError(reject(leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN)).Code)
 	assert.Equal(t, cli.CodeInternal, cli.FromError(reject(leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_UNSPECIFIED)).Code, "an unknown reason is durable")
+}
+
+func TestScreenFeedResumesAfterBytesDeliveredToTheWaiter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		tr := newFakeWatchTransport()
+		clock := testutil.NewQuartzMock(t)
+		newTimer := clock.Trap().NewTimer(screenFeedReconnectTimerTag)
+		defer newTimer.Close()
+		var wg sync.WaitGroup
+		defer func() {
+			cancel()
+			wg.Wait()
+		}()
+		out := make(chan screenFeedItem)
+		startScreenFeed(ctx, &wg, screenFeedSource{
+			openTransport: func(context.Context) (streamevents.Transport, func(), error) { return tr, func() {}, nil },
+			clock:         clock,
+		}, "t-1", 42, out)
+		<-tr.opened
+		requireTerminalEntry(t, tr.lastRequest(), 42)
+
+		oldCallbackDone := make(chan struct{})
+		go func() {
+			defer close(oldCallbackDone)
+			tr.push(terminalFrame("t-1", dataEvent("abc", 45, false)))
+		}()
+		synctest.Wait()
+		tr.endStream()
+		delay := testutil.WaitForTimer(t, ctx, newTimer)
+		clock.Advance(delay).MustWait(ctx)
+		<-tr.opened
+		requireTerminalEntry(t, tr.lastRequest(), 42)
+		synctest.Wait()
+
+		// The old callback cannot send to the waiter after reconnect.
+		var retired bool
+		select {
+		case <-oldCallbackDone:
+			retired = true
+		default:
+		}
+		assert.True(t, retired, "the ended stream must release its blocked callback")
+		if retired {
+			go tr.push(terminalFrame("t-1", dataEvent("abc", 45, false)))
+			item := <-out
+			assert.Equal(t, "abc", string(item.event.GetData().GetData()))
+		}
+	})
 }
