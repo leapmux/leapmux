@@ -1,7 +1,10 @@
 package crdt
 
 import (
+	"fmt"
+	"slices"
 	"sort"
+	"unicode/utf16"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -138,18 +141,79 @@ func buildChildrenIndex(state *leapmuxv1.UserCrdtState, includeTombstoned bool) 
 	return idx
 }
 
-// LiveOrderedChildren returns parentID's live children sorted by their
-// LexoRank position register so heir-finding sees the same left/upper
-// ordering the renderer does. `index` is the already-built parent →
-// children adjacency from LiveChildrenByParent.
-func LiveOrderedChildren(state *leapmuxv1.UserMaterialized, index map[string][]string, parentID string) []string {
-	ids := append([]string(nil), index[parentID]...)
-	sort.SliceStable(ids, func(i, j int) bool {
-		a := state.GetNodes()[ids[i]].GetPosition().GetValue()
-		b := state.GetNodes()[ids[j]].GetPosition().GetValue()
-		return a < b
+// GridCellPosition returns the position register for one grid cell.
+func GridCellPosition(row, col int) string {
+	return fmt.Sprintf("%d,%d", row, col)
+}
+
+// compareLayoutString follows the browser's UTF-16 code unit order.
+func compareLayoutString(a, b string) int {
+	return slices.Compare(utf16.Encode([]rune(a)), utf16.Encode([]rune(b)))
+}
+
+// LayoutChildIDs returns the children in display order. It takes a live
+// child index from either the canonical or materialized state. The result
+// includes an empty ID for each vacant grid cell.
+func LayoutChildIDs(nodes map[string]*leapmuxv1.NodeRecord, index map[string][]string, parentID string) []string {
+	parent := nodes[parentID]
+	if parent.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_GRID {
+		return gridChildIDs(nodes, index[parentID], parent.GetRows().GetValue(), parent.GetCols().GetValue())
+	}
+	ids := slices.Clone(index[parentID])
+	slices.SortFunc(ids, func(a, b string) int {
+		if order := compareLayoutString(nodes[a].GetPosition().GetValue(), nodes[b].GetPosition().GetValue()); order != 0 {
+			return order
+		}
+		return compareLayoutString(a, b)
 	})
 	return ids
+}
+
+func gridChildIDs(nodes map[string]*leapmuxv1.NodeRecord, children []string, rows, cols uint32) []string {
+	if rows > MaxGridDimension || cols > MaxGridDimension {
+		return nil
+	}
+	cells := make(map[string]string, len(children))
+	for _, childID := range children {
+		position := nodes[childID].GetPosition().GetValue()
+		if other := cells[position]; other == "" || compareLayoutString(childID, other) < 0 {
+			cells[position] = childID
+		}
+	}
+	ordered := make([]string, 0, int(rows*cols))
+	for row := range int(rows) {
+		for col := range int(cols) {
+			ordered = append(ordered, cells[GridCellPosition(row, col)])
+		}
+	}
+	return ordered
+}
+
+// FirstLiveLayoutLeaf returns the first leaf that can receive a tab. It
+// skips vacant cells and visits each node at most once.
+func FirstLiveLayoutLeaf(nodes map[string]*leapmuxv1.NodeRecord, index map[string][]string, rootID string) string {
+	visited := map[string]bool{}
+	var walk func(string) string
+	walk = func(nodeID string) string {
+		if nodeID == "" || visited[nodeID] {
+			return ""
+		}
+		visited[nodeID] = true
+		node := nodes[nodeID]
+		if node == nil || !HLCIsZero(node.GetTombstoneAt()) {
+			return ""
+		}
+		if node.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_LEAF {
+			return nodeID
+		}
+		for _, childID := range LayoutChildIDs(nodes, index, nodeID) {
+			if leaf := walk(childID); leaf != "" {
+				return leaf
+			}
+		}
+		return ""
+	}
+	return walk(rootID)
 }
 
 // DescendantsLeavesFirst enumerates every live descendant of nodeID
@@ -237,8 +301,8 @@ func LiveTabsInSubtree(state *leapmuxv1.UserMaterialized, subtreeRoot string) []
 // returns the first leaf in the left/upper-preferred adjacent sibling.
 // Returns "" when no heir exists (single-leaf workspace, malformed tree).
 //
-// Mirrors frontend/src/stores/layout.store.ts:findHeirTileId so the
-// CLI and the CloseTileDialog drop tabs in the same place.
+// It follows the browser's display order and skips vacant cells because
+// they have no tile that can receive a tab.
 func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID string) string {
 	if rootNodeID == "" || closingTileID == "" {
 		return ""
@@ -251,7 +315,8 @@ func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID
 	for i := len(path) - 2; i >= 0; i-- {
 		parentID := path[i]
 		childID := path[i+1]
-		siblings := LiveOrderedChildren(state, index, parentID)
+		siblings := LayoutChildIDs(state.GetNodes(), index, parentID)
+		siblings = slices.DeleteFunc(siblings, func(id string) bool { return id == "" })
 		idx := -1
 		for j, s := range siblings {
 			if s == childID {
@@ -271,7 +336,7 @@ func FindHeirTileID(state *leapmuxv1.UserMaterialized, closingTileID, rootNodeID
 		if adj == "" {
 			continue
 		}
-		if leaf := firstLeafID(state, index, adj); leaf != "" {
+		if leaf := FirstLiveLayoutLeaf(state.GetNodes(), index, adj); leaf != "" {
 			return leaf
 		}
 	}
@@ -299,31 +364,4 @@ func buildPathToNode(state *leapmuxv1.UserMaterialized, index map[string][]strin
 	}
 	*out = (*out)[:len(*out)-1]
 	return false
-}
-
-// firstLeafID walks the leftmost descent of subtreeRoot (preferring the
-// first LexoRank-ordered child at each level) and returns the first
-// LEAF-kinded id encountered. Used by FindHeirTileID to pick the
-// destination leaf inside a sibling subtree. Returns "" when the
-// subtree is malformed (no live leaves).
-func firstLeafID(state *leapmuxv1.UserMaterialized, index map[string][]string, subtreeRoot string) string {
-	rec := state.GetNodes()[subtreeRoot]
-	if rec == nil || !HLCIsZero(rec.GetTombstoneAt()) {
-		return ""
-	}
-	// Tile kinds: LEAF returns itself; SPLIT/GRID descend into the
-	// first ordered live child. UNSPECIFIED is treated as a leaf — in
-	// practice that only happens for the workspace root that was minted
-	// before kind was first written, which projection-side renders as
-	// a leaf anyway.
-	kind := rec.GetKind().GetValue()
-	if kind == leapmuxv1.NodeKind_NODE_KIND_LEAF || kind == leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
-		return subtreeRoot
-	}
-	for _, childID := range LiveOrderedChildren(state, index, subtreeRoot) {
-		if leaf := firstLeafID(state, index, childID); leaf != "" {
-			return leaf
-		}
-	}
-	return ""
 }

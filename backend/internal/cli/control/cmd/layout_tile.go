@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -548,7 +546,7 @@ func runTileMakeGrid(inv *cli.Invocation) (any, error) {
 			ops = append(ops,
 				opSetNodeKind(cc.bs, cellID, leapmuxv1.NodeKind_NODE_KIND_LEAF),
 				opSetNodeParentID(cc.bs, cellID, tileID),
-				opSetNodePosition(cc.bs, cellID, fmt.Sprintf("%d,%d", r, c)),
+				opSetNodePosition(cc.bs, cellID, crdt.GridCellPosition(r, c)),
 			)
 		}
 	}

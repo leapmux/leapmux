@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"sort"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -114,61 +112,37 @@ func projectLayoutNode(state *leapmuxv1.UserMaterialized, children map[string][]
 	case leapmuxv1.NodeKind_NODE_KIND_LEAF, leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED:
 		// These nodes carry no container fields.
 	}
-	for _, childID := range children[nodeID] {
-		if child := projectLayoutNode(state, children, childID); child != nil {
+	for _, childID := range crdt.LayoutChildIDs(state.GetNodes(), children, nodeID) {
+		child := projectLayoutNode(state, children, childID)
+		if child == nil && kind == leapmuxv1.NodeKind_NODE_KIND_GRID {
+			child = &layoutNode{Kind: enumToken(leapmuxv1.NodeKind_NODE_KIND_LEAF)}
+		}
+		if child != nil {
 			node.Children = append(node.Children, child)
 		}
+	}
+	switch kind {
+	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
+		switch len(node.Children) {
+		case 0:
+			return &layoutNode{Kind: enumToken(leapmuxv1.NodeKind_NODE_KIND_LEAF)}
+		case 1:
+			return node.Children[0]
+		}
+		node.Ratios = ratiosForLayoutSize(node.Ratios, len(node.Children))
+	case leapmuxv1.NodeKind_NODE_KIND_GRID:
+		if len(node.Children) > 0 {
+			node.RowRatios = ratiosForLayoutSize(node.RowRatios, int(node.Rows))
+			node.ColRatios = ratiosForLayoutSize(node.ColRatios, int(node.Cols))
+		}
+	case leapmuxv1.NodeKind_NODE_KIND_LEAF, leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED:
 	}
 	return node
 }
 
 // firstLiveLeaf walks the subtree rooted at rootNodeID and returns the
-// id of the first live leaf in depth-first order, with children
-// visited in (position, node_id) order so the result matches the
-// frontend's render-time leaf ordering. Returns "" when rootNodeID is
-// empty, tombstoned, missing, or has no reachable live leaf.
+// id of the first live leaf in depth-first display order. It returns ""
+// when the root is absent, tombstoned, or has no reachable live leaf.
 func firstLiveLeaf(state *leapmuxv1.UserMaterialized, rootNodeID string) string {
-	if rootNodeID == "" {
-		return ""
-	}
-	children := crdt.LiveChildrenByParent(state)
-	sorted := map[string]bool{}
-	sortKids := func(parent string) {
-		if sorted[parent] {
-			return
-		}
-		kids := children[parent]
-		sort.Slice(kids, func(i, j int) bool {
-			ri, rj := state.GetNodes()[kids[i]], state.GetNodes()[kids[j]]
-			pi, pj := ri.GetPosition().GetValue(), rj.GetPosition().GetValue()
-			if pi != pj {
-				return pi < pj
-			}
-			return kids[i] < kids[j]
-		})
-		sorted[parent] = true
-	}
-	visited := map[string]bool{}
-	var walk func(string) string
-	walk = func(nodeID string) string {
-		if nodeID == "" || visited[nodeID] {
-			return ""
-		}
-		visited[nodeID] = true
-		rec := state.GetNodes()[nodeID]
-		if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
-			return ""
-		}
-		if rec.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_LEAF {
-			return nodeID
-		}
-		sortKids(nodeID)
-		for _, child := range children[nodeID] {
-			if leaf := walk(child); leaf != "" {
-				return leaf
-			}
-		}
-		return ""
-	}
-	return walk(rootNodeID)
+	return crdt.FirstLiveLayoutLeaf(state.GetNodes(), crdt.LiveChildrenByParent(state), rootNodeID)
 }

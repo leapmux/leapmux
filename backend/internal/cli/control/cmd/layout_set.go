@@ -14,8 +14,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/lexorank"
 )
 
-// RunLayoutSet replaces the workspace's main layout with a tree read
-// from `--file` or `--stdin`. Implementation, per the plan's
+// runLayoutSet replaces the workspace's main layout with a tree read
+// from a file or standard input. Implementation, per the plan's
 // "wholesale rewrite under set-once / root-protection constraints":
 //
 //  1. Mutate the workspace root NodeRecord in place to match the
@@ -156,7 +156,7 @@ func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *layoutNode
 	firstLeaf := ""
 	if !target.isLeaf() {
 		var creationOps []*leapmuxv1.CrdtOp
-		creationOps, firstLeaf = synthesizeSubtree(bs, rootID, target.Children)
+		creationOps, firstLeaf = synthesizeSubtree(bs, rootID, target)
 		ops = append(ops, creationOps...)
 	} else {
 		firstLeaf = rootID
@@ -327,11 +327,8 @@ func validateAndNormalizeTree(t *layoutNode, path string) error {
 		if len(t.RowRatios) > 0 || len(t.ColRatios) > 0 {
 			return fmt.Errorf("%s: SPLIT nodes cannot specify row_ratios/col_ratios (those are for GRID)", path)
 		}
-		// Ratios are optional — when omitted, appendNodeShapeOps below
-		// skips the SetNodeRatios op and the renderer falls back to
-		// equal weights. When present, the slice must match the child
-		// count exactly so the projection's per-child fraction is
-		// unambiguous.
+		// The writer uses equal weights when the input omits ratios.
+		// Explicit ratios must have one value per child.
 		if len(t.Ratios) > 0 {
 			if len(t.Ratios) != len(t.Children) {
 				return fmt.Errorf("%s: SPLIT ratios length %d must match children count %d", path, len(t.Ratios), len(t.Children))
@@ -402,22 +399,14 @@ func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID strin
 		if dir := target.parsedDirection(); dir != leapmuxv1.SplitDirection_SPLIT_DIRECTION_UNSPECIFIED {
 			ops = append(ops, opSetNodeDirection(bs, nodeID, dir))
 		}
-		if len(target.Ratios) > 0 {
-			ops = append(ops, opSetNodeRatios(bs, nodeID, target.Ratios))
-		}
+		ops = append(ops, opSetNodeRatios(bs, nodeID, ratiosForLayoutSize(target.Ratios, len(target.Children))))
 	case leapmuxv1.NodeKind_NODE_KIND_GRID:
-		if target.Rows > 0 {
-			ops = append(ops, opSetNodeRows(bs, nodeID, target.Rows))
-		}
-		if target.Cols > 0 {
-			ops = append(ops, opSetNodeCols(bs, nodeID, target.Cols))
-		}
-		if len(target.RowRatios) > 0 {
-			ops = append(ops, opSetNodeRowRatios(bs, nodeID, target.RowRatios))
-		}
-		if len(target.ColRatios) > 0 {
-			ops = append(ops, opSetNodeColRatios(bs, nodeID, target.ColRatios))
-		}
+		ops = append(ops,
+			opSetNodeRows(bs, nodeID, target.Rows),
+			opSetNodeCols(bs, nodeID, target.Cols),
+			opSetNodeRowRatios(bs, nodeID, ratiosForLayoutSize(target.RowRatios, int(target.Rows))),
+			opSetNodeColRatios(bs, nodeID, ratiosForLayoutSize(target.ColRatios, int(target.Cols))),
+		)
 	default:
 		// LEAF has no shape registers to set, and validateTargetNode already
 		// rejected UNSPECIFIED, so the kind op appended above is the whole shape.
@@ -425,26 +414,33 @@ func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID strin
 	return ops
 }
 
-// synthesizeSubtree creates fresh nodes for `children` under
-// `parentID`. Returns the emitted ops plus the id of the first leaf
+// synthesizeSubtree creates the children of the validated parent under
+// parentID. Returns the emitted ops plus the id of the first leaf
 // encountered (depth-first, left-to-right) — that's where tabs are
 // migrated to so they pass the "tile_id resolves to a live leaf"
 // validator rule.
-func synthesizeSubtree(bs *CRDTBootstrap, parentID string, children []*layoutNode) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
-	pos := lexorank.First()
-	for _, child := range children {
+func synthesizeSubtree(bs *CRDTBootstrap, parentID string, parent *layoutNode) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
+	rank := lexorank.First()
+	grid := parent.parsedKind() == leapmuxv1.NodeKind_NODE_KIND_GRID
+	for index, child := range parent.Children {
+		position := rank
+		if grid {
+			cols := int(parent.Cols)
+			position = crdt.GridCellPosition(index/cols, index%cols)
+		} else {
+			rank = lexorank.After(rank)
+		}
 		childID := id.Generate()
 		ops = append(ops,
 			opSetNodeKind(bs, childID, child.parsedKind()),
 			opSetNodeParentID(bs, childID, parentID),
-			opSetNodePosition(bs, childID, pos),
+			opSetNodePosition(bs, childID, position),
 		)
-		pos = lexorank.After(pos)
 		ops = appendNodeShapeOps(ops, bs, childID, child)
 		if child.isLeaf() && firstLeaf == "" {
 			firstLeaf = childID
 		}
-		grandOps, deeperFirst := synthesizeSubtree(bs, childID, child.Children)
+		grandOps, deeperFirst := synthesizeSubtree(bs, childID, child)
 		ops = append(ops, grandOps...)
 		if firstLeaf == "" && deeperFirst != "" {
 			firstLeaf = deeperFirst

@@ -257,7 +257,10 @@ func (l layoutTree) renderNode(w io.Writer, node *layoutNode, indent string) err
 	if node == nil {
 		return nil
 	}
-	line := fmt.Sprintf("%s%s %s", indent, node.Kind, node.NodeID)
+	line := indent + node.Kind
+	if node.NodeID != "" {
+		line += " " + node.NodeID
+	}
 	switch node.Kind {
 	case "split":
 		line += fmt.Sprintf(" %v %v", node.Direction, node.Ratios)

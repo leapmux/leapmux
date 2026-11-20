@@ -165,6 +165,22 @@ func normalizeRatios(values []float64) ([]float64, error) {
 	return out, nil
 }
 
+// ratiosForLayoutSize fills missing weights the way the browser does and
+// normalizes the result for import. A size change can discard every
+// positive weight, in which case the remaining cells take equal weights.
+func ratiosForLayoutSize(values []float64, count int) []float64 {
+	if len(values) == count {
+		return values
+	}
+	resized := crdt.EqualRatios(count)
+	copy(resized, values)
+	normalized, err := normalizeRatios(resized)
+	if err != nil {
+		return crdt.EqualRatios(count)
+	}
+	return normalized
+}
+
 // validateSplitRatiosLength rejects --ratios whose length doesn't
 // match the SPLIT's live child count. Catches the mistake on the
 // client so the user gets a "ratios length N must match SPLIT child
