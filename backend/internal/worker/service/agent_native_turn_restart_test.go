@@ -416,13 +416,22 @@ func TestNativeTurnRestartStopsLaunchAfterPostlaunchReadFault(t *testing.T) {
 	svc, old, id := prepareNativeTurnRestart(t)
 	stale, err := svc.Queries.GetAgentByID(ctx, id)
 	require.NoError(t, err)
-	defer installRestartReadFault(svc, 1, errors.New("the postlaunch read failed"))()
+	var replacementStarted atomic.Bool
+	getAgent := svc.getAgentByIDFn
+	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
+		if agentID == id && replacementStarted.Load() {
+			return db.Agent{}, errors.New("the postlaunch read failed")
+		}
+		return getAgent(ctx, agentID)
+	}
 	newAgent := newNativeRestartProbeAgent(id)
 	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-		return svc.Agents.StartAgentWith(ctx, opts, sink,
+		settings, err := svc.Agents.StartAgentWith(ctx, opts, sink,
 			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 				return newAgent, nil
 			})
+		replacementStarted.Store(err == nil)
+		return settings, err
 	}
 
 	_, err = svc.restartAgentPreservingSession(stale, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)

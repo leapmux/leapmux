@@ -24,6 +24,7 @@ import (
 )
 
 const semanticJournalDeadline = 5 * time.Second
+const semanticRetirementTimerTag = "semantic history retirement"
 
 type semanticEventCapture struct {
 	mu                         sync.Mutex
@@ -31,6 +32,7 @@ type semanticEventCapture struct {
 	producersFinished          bool
 	journal                    atomic.Pointer[eventjournal.Journal]
 	retirements                drain.Counter
+	agentMutations             agentPublicationDrain
 }
 
 // EnableSemanticEvents is called at Worker bootstrap, before starting producers.
@@ -84,6 +86,13 @@ func (svc *Service) recordAgentFact(agentID string, event *leapmuxv1.AgentEvent)
 }
 
 func (svc *Service) retireTerminalEventHistory(terminalID string) {
+	svc.retireSemanticHistory(leapmuxv1.TabType_TAB_TYPE_TERMINAL, []string{terminalID}, func(ctx context.Context) bool {
+		return svc.TerminalStartup.waitForTabStartup(ctx, terminalID) == nil &&
+			svc.Terminals.WaitForTabPublishers(ctx, terminalID) == nil
+	})
+}
+
+func (svc *Service) retireSemanticHistory(tabType leapmuxv1.TabType, ids []string, join func(context.Context) bool) {
 	capture := &svc.semanticEvents
 	capture.mu.Lock()
 	journal := capture.journal.Load()
@@ -91,15 +100,32 @@ func (svc *Service) retireTerminalEventHistory(terminalID string) {
 		capture.mu.Unlock()
 		return
 	}
+	tabs := make([]eventjournal.Tab, len(ids))
+	for i, id := range ids {
+		tabs[i] = eventjournal.Tab{Type: tabType, ID: id}
+	}
+	// Track the seal and the producer join separately. The seal can report
+	// a gap while a transport callback still holds the producer join.
+	capture.retirements.Add()
 	capture.retirements.Add()
 	capture.mu.Unlock()
 	go func() {
 		defer capture.retirements.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), semanticJournalDeadline)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		drained := svc.TerminalStartup.waitForTabStartup(ctx, terminalID) == nil &&
-			svc.Terminals.WaitForTabPublishers(ctx, terminalID) == nil
-		journal.Seal(eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, ID: terminalID}, drained)
+		timer := svc.Clock.AfterFunc(semanticJournalDeadline, cancel, semanticRetirementTimerTag)
+		defer timer.Stop()
+		finished := make(chan bool, 1)
+		go func() {
+			defer capture.retirements.Done()
+			finished <- join(ctx)
+		}()
+		var drained bool
+		select {
+		case drained = <-finished:
+		case <-ctx.Done():
+		}
+		journal.Seal(tabs, drained)
 	}()
 }
 
@@ -130,7 +156,8 @@ func (svc *Service) FinalizeSemanticEvents(handlersFinished bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 		sealsFinished := drain.WaitBounded(capture.retirements.DoneChan(), budget, "")
-		if err := journal.Stop(ctx, capture.producersFinished && handlersFinished && sealsFinished && budget > 0); err != nil {
+		mutationsFinished := capture.agentMutations.waitAll(ctx) == nil
+		if err := journal.Stop(ctx, capture.producersFinished && handlersFinished && sealsFinished && mutationsFinished && budget > 0); err != nil {
 			slog.Warn("stop Worker event journal failed", "error", err)
 		}
 	}
@@ -180,24 +207,7 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		}
 		return true
 	}
-	checkAccess := func() bool {
-		if !checkOwner() {
-			return false
-		}
-		if tab.Type != leapmuxv1.TabType_TAB_TYPE_AGENT {
-			return true
-		}
-		allowed, err := svc.Queries.CanWatchAgentHistory(ctx, tab.ID)
-		if err != nil {
-			reportSemanticWatchError(ctx, sender, err)
-			return false
-		}
-		if !allowed {
-			sendSemanticWatchError(sender, codes.NotFound, eventjournal.ErrAdmission.Error())
-		}
-		return allowed
-	}
-	if !checkAccess() {
+	if !checkOwner() {
 		return
 	}
 	reader, ready, err := journal.Open(ctx, tab, req.GetAfterCursor())
@@ -205,20 +215,14 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 		reportSemanticWatchError(ctx, sender, err)
 		return
 	}
-	if !checkAccess() {
+	if !checkOwner() {
 		return
 	}
 	if !sendSemanticWatchFrame(sender, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: ready}}) {
 		return
 	}
 	after := ready.GetAfterSequence()
-	var recheck <-chan time.Time
-	if tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
-		ticker := svc.Clock.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		recheck = ticker.C
-	}
-	for ctx.Err() == nil && checkAccess() {
+	for ctx.Err() == nil && checkOwner() {
 		frames, changed, err := reader.Read(ctx, after)
 		if err != nil {
 			reportSemanticWatchError(ctx, sender, err)
@@ -253,7 +257,6 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 			select {
 			case <-ctx.Done():
 			case <-changed:
-			case <-recheck:
 			}
 		}
 	}

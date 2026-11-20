@@ -156,7 +156,7 @@ func TestNativePlanRecordingDoesNotChangeAReplacementSession(t *testing.T) {
 	answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim"})
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "replacement"}))
-	require.NoError(t, svc.finalizeControlResponse(answer))
+	require.NoError(t, svc.finalizeControlResponse(t.Context(), answer))
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	require.Equal(t, old.Options, current.Options, "recording an old answer cannot change the replacement's permission mode")

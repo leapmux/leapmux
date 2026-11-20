@@ -961,7 +961,7 @@ func (m *Manager) ApproveAutoReviewDenial(agentID string, entries []json.RawMess
 // BeginTurnRetry runs under the lifecycle lock, so the offer check addresses one
 // provider instance. Replace submits the history change under that lock.
 // Start confirms the change after the lock releases, so context clear remains available during a delayed reply.
-func (m *Manager) RetryTurn(agentID, turnID, model string) error {
+func (m *Manager) RetryTurn(agentID, turnID, model string, complete func()) error {
 	entry, release := m.lockRegistration(agentID)
 	p := entry.providerOrNil()
 	if p == nil {
@@ -991,6 +991,9 @@ func (m *Manager) RetryTurn(agentID, turnID, model string) error {
 	m.mu.Unlock()
 	go func() {
 		defer m.turnRetries.Done()
+		if complete != nil {
+			defer complete()
+		}
 		m.runTurnRetry(agentID, entry, retry)
 	}()
 	return nil
@@ -1040,6 +1043,25 @@ func (m *Manager) StopAgent(agentID string) bool {
 		p.Stop()
 	}
 	return ok
+}
+
+// WaitForAgentExit joins the registered process and its exit callback.
+// The caller closes startup admission and joins any existing startup first.
+func (m *Manager) WaitForAgentExit(ctx context.Context, agentID string) error {
+	m.mu.RLock()
+	entry := m.agents[agentID]
+	if entry == nil || entry.done == nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	done := entry.done
+	m.mu.RUnlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // StopAndWaitAgent stops the agent and waits for it to fully exit and be

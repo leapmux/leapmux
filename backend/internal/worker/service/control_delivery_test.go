@@ -85,7 +85,7 @@ func TestControlDeliveryRecoveryNeverRepeatsDelivery(t *testing.T) {
 			require.Equal(t, storedStateDelivered, row.State)
 			require.ErrorIs(t, resumeControlDelivery(row.State, func() error { return failure }), failure)
 			require.NoError(t, resumeControlDelivery(row.State, func() error {
-				completed, err := completeControlDelivery(svc.Queries, row.ID)
+				completed, err := completeControlDelivery(t.Context(), svc.Queries, row.ID)
 				assert.True(t, completed)
 				return err
 			}))
@@ -123,7 +123,7 @@ func TestControlDeliveryCompletionRequiresConfirmedDelivery(t *testing.T) {
 				OperationID: "operation", InstanceID: "instance", State: state,
 			})
 			require.NoError(t, err)
-			completed, err := completeControlDelivery(svc.Queries, "delivery")
+			completed, err := completeControlDelivery(t.Context(), svc.Queries, "delivery")
 			if state == storedStatePending || state == storedStateUncertain {
 				require.Error(t, err)
 				require.False(t, completed)

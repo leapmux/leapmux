@@ -88,3 +88,95 @@ claudeTest('replays a permission requested and resolved while the event client w
     await resumed.finished
   }
 })
+
+claudeTest('replays a closed agent and withdraws its offline permission request', async ({ native, leapmuxServer }) => {
+  const agentId = await selectedAgentTabId(native.page)
+  await chooseSettingsOption(native.page, 'permissionMode-default')
+  await waitForSettingsIdle(native.page)
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const dir = createTestDirectory('leapmux-closed-agent-event-')
+  const checkpoint = join(dir, 'checkpoint.json')
+  const args = [
+    '--tab',
+    agentId,
+    '--checkpoint',
+    checkpoint,
+    '--kind',
+    'stream,agent.request,agent.request_ended',
+  ]
+  const first = startControlEventStream(cli, args)
+  try {
+    await expect.poll(() => first.events().map(event => event.kind)).toContain('stream.ready')
+    await expect.poll(() => existsSync(checkpoint)).toBe(true)
+  }
+  finally {
+    first.child.kill('SIGINT')
+    await first.finished
+  }
+
+  const probe = join(dir, 'permission-probe.txt')
+  const command = `printf permitted > ${quotePosixShellArgument(probe)}`
+  await native.modelScript.queue({
+    toolCalls: [
+      bashToolCall(native.provider, 'closed-agent-permission', command),
+    ],
+  })
+  await native.modelScript.rule({
+    name: 'the permission stream closed',
+    when: { user: 'Tool permission stream closed before response received' },
+    respond: { text: 'The pending command was canceled.' },
+  })
+  await runCLI(cli, [
+    'agent',
+    'send',
+    agentId,
+    native.modelScript.prompt('Run the scripted command that requires permission.'),
+  ])
+  await waitForControlBanner(native.page)
+  const closed = await runCLI(cli, [
+    'tab',
+    'close',
+    agentId,
+    '--allow-busy',
+    '--worktree',
+    'keep',
+  ]) as { tombstoned: boolean, worker_close_error?: string }
+  expect(closed.tombstoned).toBe(true)
+  expect(closed.worker_close_error).toBeUndefined()
+  expect(existsSync(probe)).toBe(false)
+
+  const resumed = startControlEventStream(cli, args)
+  try {
+    expect(await resumed.finished, resumed.diagnostic()).toEqual({ code: 0, signal: null })
+    const events = resumed.events()
+    expect(events.map(event => event.kind)).toEqual([
+      'stream.ready',
+      'agent.request',
+      'agent.request_ended',
+      'stream.retired',
+    ])
+    const [, opened, ended, retired] = events
+    expect(opened).toMatchObject({ prompt: 'permission', replayed: true })
+    expect(ended).toMatchObject({ state: 'canceled', replayed: true })
+    expect(opened?.request_instance).toEqual(expect.any(String))
+    expect(ended?.request_instance).toBe(opened?.request_instance)
+    expect(opened?.request).toBeUndefined()
+    expect(ended?.request).toBeUndefined()
+    const saved = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
+    expect(saved.sequence).toBe(retired?.sequence)
+  }
+  finally {
+    resumed.child.kill()
+    await resumed.finished
+  }
+
+  const completed = startControlEventStream(cli, args)
+  try {
+    expect(await completed.finished, completed.diagnostic()).toEqual({ code: 0, signal: null })
+    expect(completed.events().map(event => event.kind)).toEqual(['stream.ready', 'stream.retired'])
+  }
+  finally {
+    completed.child.kill()
+    await completed.finished
+  }
+})

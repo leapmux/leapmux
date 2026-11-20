@@ -34,7 +34,7 @@ type observation struct {
 	fact           []byte
 	gap            leapmuxv1.SemanticWatchGapReason
 	requestOpening []byte
-	seal           bool
+	sealing        []Tab
 }
 
 func (s store) initialize(ctx context.Context, workerID string, owner userid.UserID, now time.Time) (row db.SemanticEventJournal, err error) {

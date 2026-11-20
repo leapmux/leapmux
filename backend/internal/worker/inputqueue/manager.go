@@ -18,6 +18,7 @@ import (
 type coordinator struct {
 	mu          sync.Mutex
 	draining    bool
+	dispatches  drain.Counter
 	steerPolicy agent.SteerPolicy
 	echoSteer   *pendingEchoSteer
 	// drainAgain records a drain request that arrived while the drain loop held
@@ -696,6 +697,12 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	defer m.endActivity()
 	c := m.coordinator(agentID)
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return Snapshot{}, ErrConflict
+	}
+	c.dispatches.Add()
+	defer c.dispatches.Done()
 	snapshot, err := m.store.Retry(ctx, agentID, inputID, confirmUncertain)
 	if err != nil {
 		m.unlockAndPublish(c)
@@ -752,6 +759,14 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
 		return Snapshot{}, ErrSteeringUnsupported
 	}
+	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return Snapshot{}, ErrConflict
+	}
+	c.dispatches.Add()
+	c.mu.Unlock()
+	defer c.dispatches.Done()
 	policy := m.dispatcher.SteerPolicy(agentID)
 	m.dispatcher.PrepareSteer(agentID)
 	c.mu.Lock()
@@ -1190,6 +1205,18 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	return err
 }
 
+// WaitForRetiredDispatch joins input dispatch admitted before RetireAgent.
+// It includes effects that publish after the coordinator releases its lock.
+func (m *Manager) WaitForRetiredDispatch(ctx context.Context, agentID string) error {
+	c := m.coordinator(agentID)
+	select {
+	case <-c.dispatches.DoneChan():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // RecoverState reconciles interrupted persisted state without dispatching
 // queued input. Bootstrap uses it before the Worker receives its owner.
 func (m *Manager) RecoverState(ctx context.Context) error {
@@ -1314,6 +1341,7 @@ func (m *Manager) scheduleDrainFrom(agentID string, admission agent.InputReadine
 		return
 	}
 	c.draining = true
+	c.dispatches.Add()
 	c.mu.Unlock()
 	if lease != nil {
 		lease.Release()
@@ -1321,6 +1349,7 @@ func (m *Manager) scheduleDrainFrom(agentID string, admission agent.InputReadine
 	}
 	go func() {
 		defer m.endActivity()
+		defer c.dispatches.Done()
 		m.drain(agentID, c)
 	}()
 }

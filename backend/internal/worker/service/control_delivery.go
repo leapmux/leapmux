@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -109,8 +110,8 @@ func resumeControlDelivery(state leapmuxv1.ControlDeliveryState, finalize func()
 
 // completeControlDelivery also accepts another finalizer's completed record.
 // A caller can use its existing transaction to commit operation effects and completion together.
-func completeControlDelivery(queries *db.Queries, deliveryID string) (bool, error) {
-	count, err := queries.SetControlDeliveryState(bgCtx(), db.SetControlDeliveryStateParams{ID: deliveryID, RequiredState: storedStateDelivered, State: storedStateCompleted})
+func completeControlDelivery(ctx context.Context, queries *db.Queries, deliveryID string) (bool, error) {
+	count, err := queries.SetControlDeliveryState(ctx, db.SetControlDeliveryStateParams{ID: deliveryID, RequiredState: storedStateDelivered, State: storedStateCompleted})
 	if err != nil {
 		return false, err
 	}

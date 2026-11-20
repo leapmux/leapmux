@@ -125,7 +125,7 @@ func (svc *Service) finishAutoReviewApproval(dbAgent db.Agent, row db.Message, c
 		if err := svc.Output.persistAutoReviewApproval(dbAgent.ID, dbAgent.AgentProvider, row.AgentSessionID, claim.ReviewID, key); err != nil {
 			return fmt.Errorf("write the approval notice: %w", err)
 		}
-		_, err := completeControlDelivery(svc.Queries, claim.DeliveryID)
+		_, err := completeControlDelivery(bgCtx(), svc.Queries, claim.DeliveryID)
 		return err
 	})
 }

@@ -240,7 +240,7 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if requestID != "" {
 		answer, err := readAnswer()
 		if err == nil {
-			return svc.resumeControlResponseFinalization(answer)
+			return svc.resumeControlResponseFinalization(bgCtx(), answer)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("read control response delivery: %w", err)
@@ -355,7 +355,7 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 		if err != nil {
 			return fmt.Errorf("read control response delivery: %w", err)
 		}
-		return svc.resumeControlResponseFinalization(answer)
+		return svc.resumeControlResponseFinalization(bgCtx(), answer)
 	}
 
 	svc.broadcastControlResponseState(dbAgent, requestID, claimToken)
@@ -368,7 +368,7 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if err != nil {
 		return err
 	}
-	return svc.resumeControlResponseFinalization(answer)
+	return svc.resumeControlResponseFinalization(bgCtx(), answer)
 }
 
 // approvedClearContext identifies an approval that requests a fresh context.

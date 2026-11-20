@@ -922,6 +922,16 @@ BEGIN
 END;
 -- +goose StatementEnd
 
+-- +goose StatementBegin
+CREATE TRIGGER semantic_event_agent_closed
+AFTER UPDATE OF closed_at ON agents
+WHEN OLD.closed_at IS NULL AND NEW.closed_at IS NOT NULL
+BEGIN
+    UPDATE semantic_event_tails SET resource_closed = TRUE
+    WHERE tab_type = 1 AND tab_id = NEW.id;
+END;
+-- +goose StatementEnd
+
 CREATE TABLE semantic_event_entries (
     ingest_order INTEGER PRIMARY KEY AUTOINCREMENT,
     -- TabType ordinal checked by the parent tail.
@@ -944,6 +954,7 @@ CREATE UNIQUE INDEX semantic_event_request_open_idx
     WHERE request_open_instance IS NOT NULL;
 
 -- +goose Down
+DROP TRIGGER IF EXISTS semantic_event_agent_closed;
 DROP TRIGGER IF EXISTS semantic_event_terminal_closed;
 DROP TABLE IF EXISTS semantic_event_entries;
 DROP TABLE IF EXISTS semantic_event_tails;

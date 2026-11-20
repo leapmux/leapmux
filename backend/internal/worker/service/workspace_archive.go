@@ -127,6 +127,17 @@ func (svc *Service) writeArchiveFlagsAndTearDown(
 	if err := observation.accept(requested.lockKeys()); err != nil {
 		return archiveTabSet{}, err
 	}
+	for _, id := range requested.agents {
+		rootID, err := svc.Queries.GetRootAgentID(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return archiveTabSet{}, fmt.Errorf("read agent %s archive root: %w", id, err)
+		}
+		finish := svc.semanticEvents.agentMutations.begin(rootID)
+		defer finish()
+	}
 	changed, err := svc.persistArchiveFlags(ctx, flag, requested)
 	if err != nil {
 		return archiveTabSet{}, err

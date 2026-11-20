@@ -753,7 +753,10 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 
 	rootTeardown := func() { svc.stopRootAgentTabForClose(bgCtx(), userID, agentID, dbAgent, action, linkPolicy) }
 	rootClose := func() (bool, error) {
-		retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID))
+		if svc.beforeAgentRetirementFn != nil {
+			svc.beforeAgentRetirementFn(agentID)
+		}
+		retirement, err := svc.retireAgentTree(bgCtx(), newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID))
 		descendants = retirement.Descendants
 		svc.applyTabCloseEffects(bgCtx(), newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID), retirement)
 		return retirement.RetiredLiveRow, err

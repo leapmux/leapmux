@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -188,6 +189,34 @@ func (queue *OutputQueue) HasPending() bool {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	return queue.running || len(queue.pending) != 0
+}
+
+// WaitForAdmittedWrites joins the writes and retries admitted before this
+// call. A write that does not finish before ctx ends leaves coverage unproved.
+func (queue *OutputQueue) WaitForAdmittedWrites(ctx context.Context) error {
+	owner := NewOutputOwner()
+	done := make(chan struct{})
+	ticket := &OutputTicket{write: OutputWrite{
+		Owner: owner, Label: "finish admitted output", Run: func() error {
+			close(done)
+			return nil
+		},
+	}}
+	ticket.queue.Store(queue)
+	queue.mu.Lock()
+	if !queue.running && len(queue.pending) == 0 {
+		queue.mu.Unlock()
+		return nil
+	}
+	queue.pending = append(queue.pending, ticket)
+	queue.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		queue.ClearOwner(owner)
+		return ctx.Err()
+	}
 }
 
 // HasOwner reports whether this buffer still owns a pending write.

@@ -88,8 +88,9 @@ func (s *session) runCheckpointedEvents(opts eventsOptions) error {
 }
 
 func (s *session) resolveCheckpointTab(selector string, saved *eventCheckpoint) (tabTarget, error) {
-	if saved != nil && saved.TabType == "terminal" && resolve.ExplicitID(resolve.KindTab, selector) == saved.TabID {
-		return tabTarget{ID: saved.TabID, Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkerID: saved.WorkerID}, nil
+	if saved != nil && resolve.ExplicitID(resolve.KindTab, selector) == saved.TabID {
+		tabType, _ := resolve.ParseTabType(saved.TabType)
+		return tabTarget{ID: saved.TabID, Type: tabType, WorkerID: saved.WorkerID}, nil
 	}
 	if !s.c.IsWorkerIPC() || strings.TrimSpace(selector) != resolve.SelfTarget {
 		return s.resolveTab(resolve.KindTab, selector, resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})

@@ -133,7 +133,7 @@ func TestInitialCommandPreservesExpandedPOSIXEnvironmentProfile(t *testing.T) {
 	receipt := filepath.Join(dir, "receipt")
 	term, err := Start(t.Context(), Options{
 		ID: "sh-profile", Shell: "/bin/sh", WorkingDir: dir, InitialCommandDir: dir,
-		InitialCommand: `printf '%s' "$LEAPMUX_TEST_PROFILE_VALUE" > "$LEAPMUX_TEST_RECEIPT"`,
+		InitialCommand: `printf '%s' "$LEAPMUX_TEST_PROFILE_VALUE" > "$LEAPMUX_TEST_RECEIPT.pending" && mv "$LEAPMUX_TEST_RECEIPT.pending" "$LEAPMUX_TEST_RECEIPT"`,
 		ExtraEnv: []string{
 			"ENV=${LEAPMUX_TEST_PROFILE_DIR}/profile", "LEAPMUX_TEST_PROFILE_DIR=" + dir,
 			"LEAPMUX_TEST_RECEIPT=" + receipt,
@@ -171,7 +171,7 @@ func TestInitialCommandKeepsZshTypesetState(t *testing.T) {
 		term.Stop()
 		term.Wait()
 	})
-	require.NoError(t, term.SendInput([]byte(`printf '%s' "$leapmux_probe_state" > "$LEAPMUX_TEST_RECEIPT"`+"\r")))
+	require.NoError(t, term.SendInput([]byte(`printf '%s' "$leapmux_probe_state" > "$LEAPMUX_TEST_RECEIPT.pending" && mv "$LEAPMUX_TEST_RECEIPT.pending" "$LEAPMUX_TEST_RECEIPT"`+"\r")))
 	testutil.RequireEventually(t, func() bool {
 		_, err := os.Stat(receipt)
 		return err == nil

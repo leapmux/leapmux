@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func TestLateClosedTerminalEventsCannotEvictALiveHistory(t *testing.T) {
 	_, err = db.New(database).CloseTerminal(t.Context(), closed.ID)
 	require.NoError(t, err)
 	journal.Record(closed, terminalBellFact())
-	journal.Seal(closed, true)
+	journal.Seal([]Tab{closed}, true)
 	_, _, err = journal.Open(t.Context(), live, checkpoint.GetCursor())
 	require.NoError(t, err)
 	tails, err := db.New(database).ListSemanticEventTails(t.Context())
@@ -109,7 +110,7 @@ func TestClosedTerminalHistorySealsAfterTheLastAdmittedFact(t *testing.T) {
 	require.Empty(t, page, "database closure alone does not seal the stream")
 
 	journal.Record(tab, terminalBellFact())
-	journal.Seal(tab, true)
+	journal.Seal([]Tab{tab}, true)
 	journal.Record(tab, terminalTitleFact("late stale publication"))
 	require.NoError(t, journal.barrier(t.Context()))
 	select {
@@ -185,7 +186,7 @@ func TestIncompletePublisherDrainReportsAGapBeforeRetirement(t *testing.T) {
 	_, err = db.New(database).CloseTerminal(t.Context(), tab.ID)
 	require.NoError(t, err)
 
-	journal.Seal(tab, false)
+	journal.Seal([]Tab{tab}, false)
 	journal.Record(tab, terminalBellFact())
 	reader, resumed, err := journal.Open(t.Context(), tab, initial.GetCursor())
 	require.NoError(t, err)
@@ -461,6 +462,38 @@ func TestJournalQueueOverflowLeavesARecoverableGap(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page, 1)
 	assert.Equal(t, leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP, page[0].GetGap().GetReason())
+}
+
+func TestJournalSealsALargeTreeWithoutConsumingThePublicationQueue(t *testing.T) {
+	t.Parallel()
+	closed, unrelated := terminalHistoryTab("closed"), terminalHistoryTab("unrelated")
+	database := openJournalDatabase(t, closed, unrelated)
+	journal := startTestJournal(t, database, quartz.NewReal(), "owner", defaultRetention())
+	_, closedStart, err := journal.Open(t.Context(), closed, nil)
+	require.NoError(t, err)
+	_, unrelatedStart, err := journal.Open(t.Context(), unrelated, nil)
+	require.NoError(t, err)
+	_, err = db.New(database).CloseTerminal(t.Context(), closed.ID)
+	require.NoError(t, err)
+
+	tabs := []Tab{closed}
+	for i := range maxPendingObservations + maxCommitBatch + 1 {
+		tabs = append(tabs, terminalHistoryTab("descendant-"+strconv.Itoa(i)))
+	}
+	blocker, err := database.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
+	journal.Seal(tabs, true)
+	require.NoError(t, blocker.Rollback())
+	reader, _, err := journal.Open(t.Context(), closed, closedStart.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(t.Context(), 0)
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.NotNil(t, page[0].GetRetired())
+	assert.Zero(t, page[0].GetRetired().GetFinalSequence())
+	_, _, err = journal.Open(t.Context(), unrelated, unrelatedStart.GetCursor())
+	require.NoError(t, err)
 }
 
 func TestJournalSeparatesAgentAndTerminalPositionsWithTheSameID(t *testing.T) {

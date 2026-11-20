@@ -125,6 +125,18 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 	if native != nil && len(native.GetContent()) == 0 {
 		return nil, errors.New("the native response is empty")
 	}
+	finish, err := svc.admitAgentMutation(bgCtx(), dbAgent)
+	if errors.Is(err, errAgentPublicationClosed) {
+		state, readErr := closedControlResponseState(bgCtx(), svc.Queries, dbAgent.ID, r.GetRequestId(), r.GetClaimToken())
+		if readErr != nil {
+			return nil, readErr
+		}
+		return &leapmuxv1.AnswerControlResponse{State: state}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	row, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: dbAgent.ID, RequestID: r.GetRequestId()})
 	if err != nil || row.ClaimToken != r.GetClaimToken() {
 		state, stateErr := controlResponseState(bgCtx(), svc.Queries, dbAgent.ID, r.GetRequestId(), r.GetClaimToken())

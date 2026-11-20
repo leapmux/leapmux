@@ -2175,7 +2175,7 @@ func TestRecordControlResponsePlanModeHandsTheExitModeToARunningDeferrer(t *test
 	plan.decision.Response.RequestID = "req-1"
 	plan.decision.Response.Response.Behavior = contracts.ControlAnswerBehaviorAllow
 
-	require.NoError(t, svc.recordControlResponsePlanMode("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
+	require.NoError(t, svc.recordControlResponsePlanMode(t.Context(), "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
 	assert.Equal(t, []string{contracts.ZCodeModeYolo}, deferrer.modes,
 		"an approved exit hands its chosen mode to the running provider that defers it")
 
@@ -2183,7 +2183,7 @@ func TestRecordControlResponsePlanModeHandsTheExitModeToARunningDeferrer(t *test
 	deferrer.modes = nil
 	plan.decision.Response.Response.Behavior = contracts.ControlAnswerBehaviorDeny
 	plan.resolution.PlanModeControl = agent.PlanModeControlNone
-	require.NoError(t, svc.recordControlResponsePlanMode("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
+	require.NoError(t, svc.recordControlResponsePlanMode(t.Context(), "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
 	assert.Empty(t, deferrer.modes, "no approval means no deferred mode")
 }
 
@@ -2418,7 +2418,7 @@ func TestResumeControlResponseFinalizationQueuesTheQuestionAnswerOnce(t *testing
 	require.NoError(t, err)
 	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, answer.FollowUpKind)
 
-	require.NoError(t, svc.resumeControlResponseFinalization(answer))
+	require.NoError(t, svc.resumeControlResponseFinalization(t.Context(), answer))
 	queue, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, queue.Items, 1)
@@ -2426,7 +2426,7 @@ func TestResumeControlResponseFinalizationQueuesTheQuestionAnswerOnce(t *testing
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, queue.Items[0].Kind)
 	assert.Equal(t, "Red", queue.Items[0].TextPreview)
 
-	require.NoError(t, svc.resumeControlResponseFinalization(answer))
+	require.NoError(t, svc.resumeControlResponseFinalization(t.Context(), answer))
 	again, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, queue.Items, again.Items, "the resumed finalization queues its input exactly once")

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -99,11 +100,11 @@ func (j *Journal) Record(tab Tab, fact *leapmuxv1.SemanticTabFact) {
 // Seal orders retirement after facts already admitted for the resource.
 // Call it after joining the publishers or after determining that their drain
 // cannot be verified.
-func (j *Journal) Seal(tab Tab, publishersFinished bool) {
-	if !tab.Valid() {
+func (j *Journal) Seal(tabs []Tab, publishersFinished bool) {
+	if len(tabs) == 0 {
 		return
 	}
-	item := observation{tab: tab, observed: j.clock.Now().UnixMilli(), seal: true}
+	item := observation{observed: j.clock.Now().UnixMilli(), sealing: slices.Clone(tabs)}
 	if !publishersFinished {
 		item.gap = leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT
 	}
@@ -203,9 +204,12 @@ func (j *Journal) writePublications(ctx context.Context) {
 		writeCtx, cancel := context.WithTimeout(ctx, journalWriteTimeout)
 		err := j.store.write(writeCtx, func(q *db.Queries) error {
 			for _, item := range batch {
-				if item.seal {
-					if err := j.store.seal(writeCtx, q, item); err != nil {
-						return err
+				if len(item.sealing) > 0 {
+					for _, tab := range item.sealing {
+						item.tab = tab
+						if err := j.store.seal(writeCtx, q, item); err != nil {
+							return err
+						}
 					}
 					continue
 				}

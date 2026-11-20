@@ -81,6 +81,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "this subagent cannot be messaged")
 				return
 			}
+			finish := svc.requireAgentMutation(sender, dbAgent)
+			if finish == nil {
+				return
+			}
+			defer finish()
 			content := r.GetContent()
 			isInterrupt := svc.Agents.Registry().IsInterrupt(dbAgent.AgentProvider, content)
 			var stop *agentStopRequest
@@ -696,6 +701,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendNotFoundError(sender, "agent not found")
 				return
 			}
+			finish := svc.requireAgentMutation(sender, dbAgent)
+			if finish == nil {
+				return
+			}
+			defer finish()
 			if dbAgent.ParentAgentID.Valid {
 				if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsInterrupt {
 					sendFailedPrecondition(sender, "this subagent cannot be interrupted")
@@ -850,7 +860,12 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "only a root agent offers a turn retry")
 				return
 			}
-			if err := svc.Agents.RetryTurn(agentID, turnID, model); err != nil {
+			finish := svc.requireAgentMutation(sender, dbAgent)
+			if finish == nil {
+				return
+			}
+			if err := svc.Agents.RetryTurn(agentID, turnID, model, finish); err != nil {
+				finish()
 				slog.Warn("retry agent turn failed", "agent_id", agentID, "error", err)
 				sendTurnRetryError(sender, err)
 				return
@@ -2633,6 +2648,14 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 	if currentStop != nil && !currentStop() {
 		return "", errStopTargetChanged
 	}
+	finish, admissionErr := svc.admitAgentMutation(bgCtx(), dbAgent)
+	if errors.Is(admissionErr, errAgentPublicationClosed) {
+		return "", errAgentClosedDuringLaunch
+	}
+	if admissionErr != nil {
+		return "", admissionErr
+	}
+	defer finish()
 	if err := svc.awaitAgentCreationCheckpoint(agentID); err != nil {
 		return "", err
 	}
@@ -2685,6 +2708,12 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		// Hold the startup before the stop, and announce the outcome after the
 		// entry is back. The hold ends before the lifecycle lock does.
 		defer svc.holdRelaunch(agentID, current.AgentProvider).settle()
+		current, readErr = svc.readOpenAgentForLaunch(agentID)
+		if readErr != nil {
+			rowUnavailable = errors.Is(readErr, errAgentClosedDuringLaunch) || errors.Is(readErr, errAgentArchivedDuringLaunch)
+			rowReadFailed = !rowUnavailable
+			return nil, false, readErr
+		}
 		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, current)
 		options := optionsFor(current)
 		agentOpts := svc.baseAgentOptions(agentID, current.WorkingDir, current.AgentProvider)
@@ -3180,10 +3209,15 @@ func (h relaunchHold) settle() {
 	if h.handle == nil {
 		return
 	}
+	finish := h.svc.semanticEvents.agentMutations.begin(h.handle.id)
+	defer finish()
 	h.release()
 	row, err := h.svc.getAgentByID(bgCtx(), h.handle.id)
 	if err != nil {
 		slog.Warn("could not read the agent to announce the end of its relaunch", "agent_id", h.handle.id, "error", err)
+		return
+	}
+	if row.ClosedAt.Valid {
 		return
 	}
 	if h.svc.Agents.HasAgent(row.ID) {

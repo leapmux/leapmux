@@ -742,6 +742,11 @@ func TestSemanticEventEnumColumnsMatchProto(t *testing.T) {
 	terminalRetirement, _, found = strings.Cut(terminalRetirement, "\nEND;")
 	require.True(t, found)
 	assert.Contains(t, terminalRetirement, fmt.Sprintf("WHERE tab_type = %d AND tab_id = NEW.id", leapmuxv1.TabType_TAB_TYPE_TERMINAL))
+	_, agentRetirement, found := strings.Cut(schema, "CREATE TRIGGER semantic_event_agent_closed")
+	require.True(t, found)
+	agentRetirement, _, found = strings.Cut(agentRetirement, "\nEND;")
+	require.True(t, found)
+	assert.Contains(t, agentRetirement, fmt.Sprintf("WHERE tab_type = %d AND tab_id = NEW.id", leapmuxv1.TabType_TAB_TYPE_AGENT))
 	assert.Contains(t, table("semantic_event_entries"), fmt.Sprintf(
 		"CHECK (gap_reason BETWEEN %d AND %d)",
 		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP,

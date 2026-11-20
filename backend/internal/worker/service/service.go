@@ -99,6 +99,8 @@ type Service struct {
 	scanTerminalProcesses  func(context.Context, []string) ([]terminal.TerminalProcesses, error)
 	// beforeAgentCloseTeardownFn holds a close after admission closes in tests.
 	beforeAgentCloseTeardownFn func(string)
+	// beforeAgentRetirementFn holds a close before the subtree transaction in tests.
+	beforeAgentRetirementFn func(string)
 	// beforeWorktreeRemovalFn controls the final removal boundary in tests.
 	beforeWorktreeRemovalFn func()
 	// afterTabStatusSetFn runs between SetTabStatus's set and its second read
@@ -797,6 +799,15 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 // startAgentWithTurnReset retires stopped-process controls and reconciles queue
 // activity around a process startup. The caller owns its lifecycle or startup.
 func (svc *Service) startAgentWithTurnReset(ctx context.Context, opts agent.Options, sink agent.ProviderServices, start agentLauncher) (map[string]string, error) {
+	finish := svc.semanticEvents.agentMutations.begin(opts.AgentID)
+	defer finish()
+	live, err := svc.Queries.CanWatchAgentHistory(ctx, opts.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("check the agent before starting its process: %w", err)
+	}
+	if !live || svc.AgentStartup.closing(opts.AgentID) {
+		return nil, errAgentClosedDuringLaunch
+	}
 	if err := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_AGENT, opts.AgentID, opts.WorkingDir); err != nil {
 		return nil, err
 	}
@@ -1313,7 +1324,7 @@ func (svc *Service) shutdown() {
 	// SetShuttingDown latch at the top of this function makes holdSettleLocked
 	// refuse.
 	// Output retries can publish completion and start an activity refresh. Stop them before the final activity drain.
-	svc.Output.StopOutputRetries()
+	outputFinished := svc.Output.StopOutputRetries()
 	svc.Output.CancelHeldSettles()
 
 	// Then join the deferred activity refreshes the exits above spawned. Each
@@ -1321,7 +1332,7 @@ func (svc *Service) shutdown() {
 	// context below is still live and before the caller closes the database.
 	// After StopAll, which is what produces the exits that spawn them.
 	activityFinished := svc.Output.waitActivityRefreshesUntil(svc.ShutdownDeadline)
-	svc.stopSemanticEventReaders(inputQueueFinished && nativeRestartsFinished && closesFinished && activityFinished &&
+	svc.stopSemanticEventReaders(inputQueueFinished && nativeRestartsFinished && closesFinished && outputFinished && activityFinished &&
 		len(agentStartups) == 0 && len(terminalStartups) == 0 && len(agentExits) == 0 && len(terminalExits) == 0)
 
 	// Cancel the background-task write context last, AFTER every drain. Any

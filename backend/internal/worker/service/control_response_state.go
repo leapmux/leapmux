@@ -13,14 +13,9 @@ import (
 )
 
 func controlResponseState(ctx context.Context, queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
-	answer, err := queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{
-		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-	})
-	if err == nil {
-		return controlDeliveryResponseState(answer.State)
-	}
+	state, err := storedControlResponseState(ctx, queries, agentID, requestID, claimToken)
 	if !errors.Is(err, sql.ErrNoRows) {
-		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, err
+		return state, err
 	}
 	currentClaim, err := queries.GetControlRequestClaim(ctx, db.GetControlRequestClaimParams{AgentID: agentID, RequestID: requestID})
 	if errors.Is(err, sql.ErrNoRows) || err == nil && currentClaim != claimToken {
@@ -32,6 +27,24 @@ func controlResponseState(ctx context.Context, queries *db.Queries, agentID, req
 	return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, nil
 }
 
+func storedControlResponseState(ctx context.Context, queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
+	answer, err := queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{
+		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
+	})
+	if err != nil {
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, err
+	}
+	return controlDeliveryResponseState(answer.State)
+}
+
+func closedControlResponseState(ctx context.Context, queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
+	state, err := storedControlResponseState(ctx, queries, agentID, requestID, claimToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, nil
+	}
+	return state, err
+}
+
 // recordControlResponse finishes recording a response that the Worker already
 // delivered for one request instance, and reports the state of the instance.
 // It sends nothing to the agent. A request with no saved response only
@@ -41,12 +54,24 @@ func (svc *Service) recordControlResponse(currentAgent db.Agent, request *leapmu
 	if requestID == "" {
 		return nil, errors.New("the control request ID is missing")
 	}
+	finish, err := svc.admitAgentMutation(bgCtx(), currentAgent)
+	if errors.Is(err, errAgentPublicationClosed) {
+		state, readErr := closedControlResponseState(bgCtx(), svc.Queries, currentAgent.ID, requestID, claimToken)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return &leapmuxv1.RecordControlResponseResponse{State: state}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	var operationErr error
 	answer, err := svc.Queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
 		AgentID: currentAgent.ID, RequestID: requestID, ClaimToken: claimToken,
 	})
 	if err == nil {
-		operationErr = svc.resumeControlResponseFinalization(answer)
+		operationErr = svc.resumeControlResponseFinalization(bgCtx(), answer)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		operationErr = err
 	}

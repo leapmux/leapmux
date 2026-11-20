@@ -14,10 +14,27 @@ import (
 
 // tabCloseRetirement retains the live-row proof from the actual close write.
 type tabCloseRetirement struct {
-	RetiredLiveRow bool
-	Descendants    []string
-	ClosedAgentIDs []string
-	PayloadRevoked bool
+	RetiredLiveRow  bool
+	Descendants     []string
+	ClosedAgentIDs  []string
+	RetiredAgentIDs []string
+	PayloadRevoked  bool
+}
+
+func (svc *Service) retireAgentTree(ctx context.Context, key ownedTabKey) (tabCloseRetirement, error) {
+	tx, err := svc.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return tabCloseRetirement{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	retirement, err := svc.retireTabResource(ctx, svc.Queries.WithTx(tx), key)
+	if err != nil {
+		return tabCloseRetirement{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return tabCloseRetirement{}, err
+	}
+	return retirement, nil
 }
 
 // retireTabResource writes SQL only. Its caller publishes effects after commit.
@@ -47,6 +64,9 @@ func (svc *Service) retireTabResource(ctx context.Context, q *db.Queries, key ow
 			}
 			if id == key.tabID {
 				retirement.RetiredLiveRow = retired
+			}
+			if retired {
+				retirement.RetiredAgentIDs = append(retirement.RetiredAgentIDs, id)
 			}
 			retirement.ClosedAgentIDs = append(retirement.ClosedAgentIDs, id)
 		}
@@ -85,6 +105,9 @@ func (svc *Service) applyTabCloseEffects(ctx context.Context, key ownedTabKey, r
 			if err := svc.InputQueue.RetireAgent(ctx, id); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 				slog.Warn("retire the input queue of a closed agent failed", "agent_id", id, "error", err)
 			}
+		}
+		if len(retirement.RetiredAgentIDs) != 0 {
+			svc.retireAgentEventHistory(key.tabID, retirement.RetiredAgentIDs)
 		}
 	}
 	if key.tabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL && retirement.RetiredLiveRow {

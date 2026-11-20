@@ -241,7 +241,7 @@ func TestControlPublicationWatcherCanPublishAnotherRequestSynchronously(t *testi
 						svc.Output.NoteAgentStopRequested(agentID, agentID).Delivered(target)
 					}
 				case "finalize":
-					err = svc.finalizeControlResponse(answer)
+					err = svc.finalizeControlResponse(t.Context(), answer)
 				}
 				completed <- err
 			}()

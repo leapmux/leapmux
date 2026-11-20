@@ -226,6 +226,7 @@ type OutputHandler struct {
 	// only until the shutdown deadline.
 	refreshLifecycleMu sync.Mutex
 	activityRefreshes  drain.Counter
+	activityByRoot     agentPublicationDrain
 
 	// newSettleTimer schedules the end of a settle's debounce window. Defaults to
 	// time.AfterFunc; a test replaces it to fire the window on demand, because a
@@ -819,10 +820,14 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	_ = h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+	_ = h.clearAgentControlRequests(bgCtx(), agentID)
+	h.CleanupAgent(agentID)
+}
+
+func (h *OutputHandler) clearAgentControlRequests(ctx context.Context, agentID string) error {
+	return h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(context.Context) ([]db.ControlRequest, error) {
 		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
 	})
-	h.CleanupAgent(agentID)
 }
 
 // rootTracker returns the SpanTracker for a ROOT main agent, creating one if
@@ -1134,11 +1139,13 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		// publishes land before the caller closes the database. A shutdown
 		// that already began admits nothing, and the refused edge is lost
 		// with the process.
-		if published && s.h.beginActivityRefresh() {
-			go func() {
-				defer s.h.activityRefreshes.Done()
-				s.BroadcastGitStatus()
-			}()
+		if published {
+			if finish := s.h.beginActivityRefresh(s.rootAgentID); finish != nil {
+				go func() {
+					defer finish()
+					s.BroadcastGitStatus()
+				}()
+			}
 		}
 	}()
 	if content.IdempotencyKey != "" {
@@ -1168,6 +1175,9 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		}
 	}
 	content.WriteReceipt.RecordStoredWrite(true)
+	end := &leapmuxv1.AgentEvent{
+		AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}},
+	}
 	owner.activity.mu.Lock()
 	if owner.currentLocked() {
 		s.sessionInfoMu.Lock()
@@ -1179,10 +1189,12 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		} else {
 			owner.activity.settledToolUses = nil
 		}
-		s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-			AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}},
-		})
+		s.h.watcher.EnqueueAgentEvent(s.agentID, end)
 		published = true
+	} else if _, stored := content.WriteReceipt.StoredMessageSequence(); (stored || content.IdempotencyKey != "") && s.h.watcher.recordAgentFact != nil {
+		// The stored row or native claim proves a completion of the older turn.
+		// Only the current scope can change live activity.
+		s.h.watcher.recordAgentFact(s.agentID, end)
 	}
 	owner.activity.mu.Unlock()
 	return nil

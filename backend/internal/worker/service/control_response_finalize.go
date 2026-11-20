@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -16,10 +17,13 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
-var errControlResponseAlreadyFinalized = errors.New("the control response is already finalized")
+var (
+	errControlResponseAlreadyFinalized = errors.New("the control response is already finalized")
+	errRetiredControlFollowUp          = errors.New("the closed agent cannot receive follow-up input")
+)
 
-func (svc *Service) resumeControlResponseFinalization(answer db.ControlResponseAnswer) error {
-	return resumeControlDelivery(answer.State, func() error { return svc.finalizeControlResponse(answer) })
+func (svc *Service) resumeControlResponseFinalization(ctx context.Context, answer db.ControlResponseAnswer) error {
+	return resumeControlDelivery(answer.State, func() error { return svc.finalizeControlResponse(ctx, answer) })
 }
 
 func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlResponseAnswer) (controlResponsePlan, error) {
@@ -72,7 +76,7 @@ func storedControlDecision(answer db.ControlResponseAnswer) *leapmuxv1.ControlDe
 
 // finalizeControlResponse commits the transcript, cancellation, and completion in one transaction.
 // Provider delivery occurs before this function. No database transaction waits for provider output.
-func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) error {
+func (svc *Service) finalizeControlResponse(ctx context.Context, answer db.ControlResponseAnswer) error {
 	agentID := answer.AgentID
 	plan, err := controlResponsePlanFromAnswer(svc.Agents.Registry(), answer)
 	if err != nil {
@@ -80,7 +84,7 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	}
 	provider := answer.AgentProvider
 	if !plan.isPlanPrompt() && !plan.exitPlanClearingContext() {
-		if err := svc.recordControlResponsePlanMode(agentID, provider, plan); err != nil {
+		if err := svc.recordControlResponsePlanMode(ctx, agentID, provider, plan); err != nil {
 			return err
 		}
 	}
@@ -98,7 +102,6 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 			agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE}, nil)
 		write = &prepared
 	}
-	ctx := bgCtx()
 	_, _, release := svc.Output.lockControlMutation(agentID, "")
 	publication := controlPublication{}
 	defer func() {
@@ -106,11 +109,14 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 			svc.Output.finishControlPublication(agentID, "", publication, release)
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var seq int64
 	var removed db.ControlRequest
 	apply := func(tx *sql.Tx) error {
 		queries := svc.Queries.WithTx(tx)
-		completed, err := completeControlDelivery(queries, answer.DeliveryID)
+		completed, err := completeControlDelivery(ctx, queries, answer.DeliveryID)
 		if err != nil {
 			return err
 		}
@@ -132,18 +138,47 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		}
 		return err
 	}
-	if answer.FollowUpKind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED {
-		_, err = svc.InputQueue.EnqueueWithMutation(ctx, inputqueue.NewItem{
-			ID: answer.InputID, AgentID: agentID, Kind: answer.FollowUpKind, Text: answer.FollowUp,
-		}, apply)
+	record := func() error {
+		tx, err := svc.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := apply(tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if answer.FollowUpKind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED {
+		err = record()
 	} else {
-		var tx *sql.Tx
-		tx, err = svc.DB.BeginTx(ctx, nil)
-		if err == nil {
-			defer func() { _ = tx.Rollback() }()
-			err = apply(tx)
-			if err == nil {
-				err = tx.Commit()
+		live, liveErr := svc.Queries.CanWatchAgentHistory(ctx, agentID)
+		if liveErr != nil {
+			return liveErr
+		}
+		if !live {
+			err = record()
+		} else {
+			_, err = svc.InputQueue.EnqueueWithMutation(ctx, inputqueue.NewItem{
+				ID: answer.InputID, AgentID: agentID, Kind: answer.FollowUpKind, Text: answer.FollowUp,
+			}, func(tx *sql.Tx) error {
+				live, err := svc.Queries.WithTx(tx).CanWatchAgentHistory(ctx, agentID)
+				if err != nil {
+					return err
+				}
+				if !live {
+					return errRetiredControlFollowUp
+				}
+				return apply(tx)
+			})
+			if err != nil {
+				live, liveErr = svc.Queries.CanWatchAgentHistory(ctx, agentID)
+				if liveErr != nil {
+					return errors.Join(err, liveErr)
+				}
+				if !live {
+					err = record()
+				}
 			}
 		}
 	}
@@ -174,20 +209,20 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	return nil
 }
 
-func (svc *Service) recordControlResponsePlanMode(agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) error {
+func (svc *Service) recordControlResponsePlanMode(ctx context.Context, agentID string, provider leapmuxv1.AgentProvider, plan controlResponsePlan) error {
 	if plan.resolution.PlanModeControl == agent.PlanModeControlNone {
 		return nil
 	}
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
-	current, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	current, err := svc.Queries.GetAgentByID(ctx, agentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if current.AgentProvider != provider || current.AgentSessionID != plan.requestMeta.AgentSessionID {
+	if current.ClosedAt.Valid || current.AgentProvider != provider || current.AgentSessionID != plan.requestMeta.AgentSessionID {
 		return nil
 	}
 	plugin := svc.Agents.Registry().Plugin(provider)
