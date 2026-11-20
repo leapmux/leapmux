@@ -288,17 +288,20 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
 			var dbMessages []db.Message
+			var nextReplyCursor int64
 			var queryErr error
 			if inputID := r.GetReplyInputId(); inputID != "" {
-				if plan.mode.descending() {
-					sendInvalidArgument(sender, "reply_input_id requires an oldest or after page")
+				if r.GetAnchor() != leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST ||
+					r.GetCursorSeq() != 0 || r.GetReplyCursor() < 0 {
+					sendInvalidArgument(sender, "select an oldest page and use only the reply cursor")
 					return
 				}
-				dbMessages, queryErr = svc.Queries.ListInputReplyMessages(ctx, db.ListInputReplyMessagesParams{
-					AgentID: agentID, InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-					InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*", CursorSeq: plan.bound, PageSize: plan.limit + 1,
-				})
+				dbMessages, nextReplyCursor, queryErr = svc.listExactInputReply(ctx, agentID, inputID, r.GetReplyCursor(), plan.limit)
 			} else {
+				if r.GetReplyCursor() != 0 {
+					sendInvalidArgument(sender, "reply_cursor requires an input ID")
+					return
+				}
 				dbMessages, queryErr = svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
 			}
 			if queryErr != nil {
@@ -353,6 +356,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				LatestSeq:       latestSeq,
 				BackgroundTasks: backgroundTasks,
 				Goal:            goal,
+				NextReplyCursor: nextReplyCursor,
 			})
 		})
 

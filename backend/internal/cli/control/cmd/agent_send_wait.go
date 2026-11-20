@@ -111,7 +111,7 @@ func workerReplyReader(c *control.Client, workerID, agentID string) replyReader 
 			return &resp, nil
 		},
 		readRowsAfter: func(ctx context.Context, afterSeq int64, replyInputID string) ([]*leapmuxv1.AgentChatMessage, error) {
-			return pageRowsAfter(afterSeq, func(req *leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
+			list := func(req *leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
 				req.AgentId, req.IncludeReplyText = agentID, true
 				req.ReplyInputId = replyInputID
 				var resp leapmuxv1.ListAgentMessagesResponse
@@ -119,7 +119,11 @@ func workerReplyReader(c *control.Client, workerID, agentID string) replyReader 
 					return nil, err
 				}
 				return &resp, nil
-			})
+			}
+			if replyInputID != "" {
+				return pageExactInputReply(list)
+			}
+			return pageRowsAfter(afterSeq, list)
 		},
 		latestSeq: func(ctx context.Context) (int64, error) {
 			var resp leapmuxv1.ListAgentMessagesResponse
@@ -130,6 +134,29 @@ func workerReplyReader(c *control.Client, workerID, agentID string) replyReader 
 			}
 			return latestSeqOf(&resp), nil
 		},
+	}
+}
+
+func pageExactInputReply(list func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error)) ([]*leapmuxv1.AgentChatMessage, error) {
+	var rows []*leapmuxv1.AgentChatMessage
+	var cursor int64
+	for {
+		resp, err := list(&leapmuxv1.ListAgentMessagesRequest{
+			Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, ReplyCursor: cursor,
+			Limit: contracts.MessagePageLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, resp.GetMessages()...)
+		if !resp.GetHasMore() {
+			return rows, nil
+		}
+		next := resp.GetNextReplyCursor()
+		if next <= cursor || len(resp.GetMessages()) == 0 {
+			return nil, cli.Newf(cli.CodeInternal, "the Worker's exact reply page did not advance")
+		}
+		cursor = next
 	}
 }
 

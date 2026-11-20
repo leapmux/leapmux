@@ -133,6 +133,13 @@ func (a *Agent) replaceConversationRecovery(run *kimiRun, next *kimiConversation
 
 func (a *Agent) publishConversationRecoveryState(run *kimiRun) {
 	if run.agentID == kimiMainAgentID {
+		if run.conversation != nil && run.conversationRecovery.Load() == nil {
+			for id, publication := range run.conversation.turns {
+				if turn := run.conversation.document.turns[id]; turn != nil && !turn.projectionPending {
+					a.scheduleExactReply(run, turn, publication)
+				}
+			}
+		}
 		a.PublishTurnActive()
 		return
 	}

@@ -139,27 +139,38 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 }
 
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.sendInputWithTracking(expected, content, attachments, false)
+	return err
+}
+
+var _ agent.InputReceiptSender = (*Agent)(nil)
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(nil, content, attachments, true)
+}
+
+func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment, tracked bool) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return errors.New("agent is stopped")
+		return agent.NativeInputReceipt{}, errors.New("agent is stopped")
 	}
 	inputState := a.inputStateLocked(kimiMainAgentID)
 	sessionID, busy, steerable, model := a.sessionID, inputState.Active, inputState.Steerable, a.settings.model
 	a.Mu.Unlock()
 	if sessionID == "" {
-		return errors.New("agent has no Kimi Code session")
+		return agent.NativeInputReceipt{}, errors.New("agent has no Kimi Code session")
 	}
 	if busy {
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: steerable}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: steerable}
 	}
 	parts, err := buildKimiContent(content, attachments, a.modelTakesImages(model))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	// The native turn header moves the turn flag, never this reply. The server
 	// replies once the turn launched, and a short turn can END before the reply
@@ -167,11 +178,24 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	// with no event left to clear it. A second message that slips in before
 	// the native turn header waits in the server's queue and runs next, which delivers
 	// it all the same.
-	reply, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
-	if err == nil && reply.Status == kimiPromptBlocked {
-		a.PublishTurnActive()
+	if err := kimiCheckID("session", sessionID); err != nil {
+		return agent.NativeInputReceipt{}, err
 	}
-	return err
+	submission, err := a.reservePromptSubmission(sessionID, kimiMainAgentID, tracked)
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	reply, err := a.submitReservedPrompt(submission, parts)
+	if err != nil && (!tracked || !a.hasObservedPrompt(submission)) {
+		return agent.NativeInputReceipt{}, err
+	}
+	if reply.Status == kimiPromptBlocked {
+		a.PublishTurnActive()
+		if tracked && !a.hasObservedPrompt(submission) {
+			a.retireKimiInput(submission.receipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+		}
+	}
+	return submission.receipt(), nil
 }
 
 // submitPrompt posts one prompt to one agent of the session.
@@ -179,7 +203,7 @@ func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) 
 	if err := kimiCheckID("session", sessionID); err != nil {
 		return kimiPromptReply{}, err
 	}
-	submission, err := a.reservePromptSubmission(sessionID, agentID)
+	submission, err := a.reservePromptSubmission(sessionID, agentID, false)
 	if err != nil {
 		return kimiPromptReply{}, err
 	}

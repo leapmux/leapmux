@@ -169,7 +169,7 @@ func TestEnumColumnIntegerChecksMatchTheirStorage(t *testing.T) {
 		labels = append(labels, column.label)
 	}
 	labels = append(labels, "messages.source", "messages.mark_type", "messages.assembled_kind", "messages.completion", "messages.input_turn_outcome", "agent_input_queue_state.pause_reason", "agent_input_queue_state.pause_owner")
-	labels = append(labels, "native_agent_inputs.retired_outcome")
+	labels = append(labels, "native_agent_inputs.retired_outcome", "native_agent_reply_turns.outcome")
 	for _, label := range labels {
 		t.Run(label, func(t *testing.T) {
 			table, column, found := strings.Cut(label, ".")
@@ -384,6 +384,13 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			check:        "CHECK (retired_outcome BETWEEN 1 AND 4)",
 			lastAccepted: int32(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputTurnOutcome_name),
+		},
+		{
+			column:       "native_agent_reply_turns.outcome",
+			check:        "CHECK (outcome BETWEEN 1 AND 3)",
+			lastAccepted: int32(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputTurnOutcome_name),
+			narrower:     "a canonical reply stores an observed native outcome; unproved is a local retirement",
 		},
 		{
 			column:       "agent_input_queue_state.pause_reason",

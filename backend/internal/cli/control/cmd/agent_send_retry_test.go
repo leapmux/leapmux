@@ -80,7 +80,18 @@ func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, r
 		w.transcriptRequests = append(w.transcriptRequests, &in)
 		rows := w.rows
 		if in.GetReplyInputId() != "" && in.GetReplyInputId() == w.exactInputID {
-			rows = w.exactRows
+			cursor := int(in.GetReplyCursor())
+			response := &leapmuxv1.ListAgentMessagesResponse{}
+			if cursor >= 0 && cursor < len(w.exactRows) {
+				response.Messages = w.exactRows[cursor : cursor+1]
+				response.HasMore = cursor+1 < len(w.exactRows)
+				if response.HasMore {
+					response.NextReplyCursor = int64(cursor + 1)
+				}
+			}
+			w.mu.Unlock()
+			writeProtoResponse(rw, response)
+			return
 		}
 		resp := transcriptPage(rows, &in)
 		w.mu.Unlock()
@@ -223,21 +234,23 @@ func TestAgentSendWaitOverIPC_ARetryReturnsItsCompletedTurnDuringALaterPrompt(t 
 	w.exactReply = &leapmuxv1.AgentInputTurnReply{
 		AcceptedSeq: 1, Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
 	}
-	w.exactRows = w.rows[1:2]
+	w.exactRows = []*leapmuxv1.AgentChatMessage{replyRow(5, "Canonical first fragment."), w.rows[1]}
 	startAgentWorker(t, id, w)
 
-	data := runControl(t, "agent", "send", id, "Run the first turn", "--wait", "--request-id", "completed-run").Data(t)
+	data := runControl(t, "agent", "send", id, "Run the first turn", "--wait", "--all", "--request-id", "completed-run").Data(t)
 	assert.Equal(t, inputID, data["input_id"])
 	assert.Equal(t, "delivered", data["message"])
 	assert.Equal(t, "waiting_for_user", data["state"], "the tab is waiting on later work")
 	assert.Equal(t, "completed", data["turn_outcome"])
-	assert.Equal(t, []any{"The first turn finished."}, data["replies"])
+	assert.Equal(t, []any{"Canonical first fragment.", "The first turn finished."}, data["replies"])
 	assert.Empty(t, w.enqueued)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	assert.True(t, slices.ContainsFunc(w.transcriptRequests, func(req *leapmuxv1.ListAgentMessagesRequest) bool {
-		return req.GetReplyInputId() == inputID && req.GetCursorSeq() == 1 && req.GetIncludeReplyText()
-	}), "the command must read the exact input's turn")
+	for _, cursor := range []int64{0, 1} {
+		assert.True(t, slices.ContainsFunc(w.transcriptRequests, func(req *leapmuxv1.ListAgentMessagesRequest) bool {
+			return req.GetReplyInputId() == inputID && req.GetReplyCursor() == cursor && req.GetIncludeReplyText()
+		}), "the command must advance the exact reply cursor")
+	}
 }
 
 func TestAgentSendWaitOverIPC_AFreshKeyDoesNotQueueBehindAPrompt(t *testing.T) {

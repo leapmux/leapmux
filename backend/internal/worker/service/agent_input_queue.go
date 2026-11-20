@@ -673,8 +673,22 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				switch {
 				case err == nil:
 					outcome := leapmuxv1.AgentInputTurnOutcome(state.Outcome)
+					canonical, err := svc.Queries.GetCanonicalInputReplyOutcome(ctx, db.GetCanonicalInputReplyOutcomeParams{
+						AgentID: r.GetAgentId(), InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+						InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
+					})
+					switch {
+					case err == nil:
+						outcome = leapmuxv1.AgentInputTurnOutcome(canonical.Outcome)
+						if canonical.MissingItems {
+							outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+						}
+					case !errors.Is(err, sql.ErrNoRows):
+						sendInternalError(sender, "failed to read the canonical input reply")
+						return
+					}
 					response.InputReply = &leapmuxv1.AgentInputTurnReply{
-						AcceptedSeq: state.AcceptedSeq, Outcome: outcome, WaitingForUser: state.Outcome == 0 && state.WaitingForUser,
+						AcceptedSeq: state.AcceptedSeq, Outcome: outcome, WaitingForUser: outcome == 0 && state.WaitingForUser,
 					}
 				case !errors.Is(err, sql.ErrNoRows):
 					sendQueueError(sender, err)

@@ -886,8 +886,11 @@ message ListAgentMessagesRequest {
   // Fill AgentChatMessage.reply_text on each agent row that holds a reply.
   // The browser extracts the text itself and leaves this unset.
   bool include_reply_text = 5;
-  // Restrict an OLDEST or AFTER page to the accepted input's own native turn.
+  // In an OLDEST page, select the accepted input's own native reply.
+  // Exact reply pages use native order and reply_cursor instead of cursor_seq.
   string reply_input_id = 6;
+  // The exclusive position returned by the previous exact reply page.
+  int64 reply_cursor = 7;
 }
 
 message ListAgentMessagesResponse {
@@ -926,6 +929,8 @@ message ListAgentMessagesResponse {
   // because the worker reads the row here and the browser applies the answer a
   // network round trip later.
   AgentGoalSnapshot goal = 6;
+  // The next position of an exact reply page. Zero means no more rows.
+  int64 next_reply_cursor = 7;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the

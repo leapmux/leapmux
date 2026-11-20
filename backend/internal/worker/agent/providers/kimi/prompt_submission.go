@@ -12,14 +12,32 @@ import (
 type kimiPromptSubmission struct {
 	id, sessionID, receiver string
 	observed                bool
+	tracked                 bool
+	turnID, itemID          string
+	consumingOpener         bool
+	conflictingConsumption  bool
 	ready                   func(agent.CapturedTranscript) error
 	readyCapture            agent.CapturedTranscript
 }
 
-func (a *Agent) reservePromptSubmission(sessionID, receiver string) (*kimiPromptSubmission, error) {
+func (a *Agent) reservePromptSubmission(sessionID, receiver string, tracked bool) (*kimiPromptSubmission, error) {
 	a.dispatchMu.Lock()
 	defer a.finishDispatch()
-	return a.registerPromptSubmissionLocked(sessionID, receiver)
+	submission, err := a.registerPromptSubmissionLocked(sessionID, receiver)
+	if err == nil {
+		submission.tracked = tracked
+	}
+	return submission, err
+}
+
+func (submission *kimiPromptSubmission) receipt() agent.NativeInputReceipt {
+	return agent.NativeInputReceipt{SessionID: submission.sessionID, InputID: submission.id}
+}
+
+func (a *Agent) hasObservedPrompt(submission *kimiPromptSubmission) bool {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	return submission.observed && !submission.conflictingConsumption
 }
 
 func (a *Agent) registerPromptSubmissionLocked(sessionID, receiver string) (*kimiPromptSubmission, error) {

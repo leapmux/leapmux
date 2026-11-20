@@ -770,6 +770,19 @@ func (services *orderedProviderServices) RetireNativeInputTurn(receipt NativeInp
 		return services.ProviderServices.RetireNativeInputTurn(receipt, outcome)
 	})
 }
+func (services *orderedProviderServices) PublishNativeReplyTurn(turn NativeReplyTurn) error {
+	turn.Items = slices.Clone(turn.Items)
+	turn.Inputs = slices.Clone(turn.Inputs)
+	return services.transcript.submit("publish canonical native reply", func() error {
+		return services.ProviderServices.PublishNativeReplyTurn(turn)
+	})
+}
+func (services *orderedProviderServices) SetNativeControlInputs(control NativeControlInputs) error {
+	control.InputIDs = slices.Clone(control.InputIDs)
+	return services.transcript.submit("bind native control inputs", func() error {
+		return services.ProviderServices.SetNativeControlInputs(control)
+	})
+}
 func (services *orderedProviderServices) ReportSteersEchoed(count int) {
 	if count <= 0 {
 		return

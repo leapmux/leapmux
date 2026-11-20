@@ -546,6 +546,8 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 	return nil
 }
 
+func (s *Sink) SetNativeControlInputs(agent.NativeControlInputs) error     { return nil }
+func (s *Sink) PublishNativeReplyTurn(agent.NativeReplyTurn) error         { return nil }
 func (s *Sink) BindNativeInputTurn(agent.NativeInputReceipt, string) error { return nil }
 func (s *Sink) RetireNativeInputTurn(agent.NativeInputReceipt, leapmuxv1.AgentInputTurnOutcome) error {
 	return nil
@@ -2069,6 +2071,8 @@ func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error) { retu
 func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)  { return false, nil }
 func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error     { return nil }
 func (nop) SetTurnState(agent.TurnState, uint64)                          {}
+func (nop) SetNativeControlInputs(agent.NativeControlInputs) error        { return nil }
+func (nop) PublishNativeReplyTurn(agent.NativeReplyTurn) error            { return nil }
 func (nop) BindNativeInputTurn(agent.NativeInputReceipt, string) error    { return nil }
 func (nop) RetireNativeInputTurn(agent.NativeInputReceipt, leapmuxv1.AgentInputTurnOutcome) error {
 	return nil

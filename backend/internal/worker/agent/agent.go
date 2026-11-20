@@ -75,6 +75,33 @@ type NativeInputReceipt struct {
 	InputID   string
 }
 
+// NativeReplyTurn describes a completed native turn in its canonical order.
+type NativeReplyTurn struct {
+	SessionID string
+	TurnID    string
+	Outcome   leapmuxv1.AgentInputTurnOutcome
+	Items     []NativeReplyItem
+	Inputs    []NativeReplyBoundary
+}
+
+type NativeReplyItem struct {
+	Ordinal    int64
+	MessageKey string
+}
+
+type NativeReplyBoundary struct {
+	InputID      string
+	AfterOrdinal int64
+}
+
+// NativeControlInputs identifies one pending request and the inputs it blocks.
+type NativeControlInputs struct {
+	SessionID  string
+	RequestID  string
+	InstanceID string
+	InputIDs   []string
+}
+
 // InputReceiptSender supplies the native identity needed to follow an input
 // through its own turn.
 type InputReceiptSender interface {
@@ -249,6 +276,8 @@ type PreparedTranscriptWriter interface {
 type TurnServices interface {
 	BindNativeInputTurn(receipt NativeInputReceipt, nativeTurnID string) error
 	RetireNativeInputTurn(receipt NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error
+	PublishNativeReplyTurn(turn NativeReplyTurn) error
+	SetNativeControlInputs(control NativeControlInputs) error
 	// SetTurnState publishes whether a turn is active. It is the only signal for
 	// that fact. Steerable states whether the active turn accepts steering.
 	// The Worker derives two answers from this state.

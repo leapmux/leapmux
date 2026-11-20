@@ -256,10 +256,36 @@ CREATE TABLE native_agent_inputs (
     agent_session_id TEXT NOT NULL CHECK (agent_session_id <> ''),
     native_input_id TEXT NOT NULL CHECK (native_input_id <> ''),
     native_turn_id TEXT NOT NULL DEFAULT '',
+    -- The consuming item's ordinal in an authoritative native snapshot.
+    reply_after_ordinal INTEGER CHECK (reply_after_ordinal IS NULL OR (reply_after_ordinal > 0 AND native_turn_id <> '')),
     retired_outcome INTEGER CHECK (retired_outcome IS NULL OR typeof(retired_outcome) = 'integer')
         CHECK (retired_outcome BETWEEN 1 AND 4),
     PRIMARY KEY (agent_id, agent_session_id, native_input_id)
 ) WITHOUT ROWID;
+-- An authoritative native snapshot can order replies differently from the
+-- sequence in which their transcript rows reached the Worker.
+CREATE TABLE native_agent_reply_turns (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL CHECK (agent_session_id <> ''),
+    native_turn_id TEXT NOT NULL CHECK (native_turn_id <> ''),
+    -- AgentInputTurnOutcome ordinal. Only a native end can finalize this row.
+    outcome INTEGER NOT NULL CHECK (typeof(outcome) = 'integer') CHECK (outcome BETWEEN 1 AND 3),
+    reply_count INTEGER NOT NULL CHECK (reply_count >= 0),
+    PRIMARY KEY (agent_id, agent_session_id, native_turn_id)
+) WITHOUT ROWID;
+
+CREATE TABLE native_agent_reply_items (
+    agent_id TEXT NOT NULL,
+    agent_session_id TEXT NOT NULL,
+    native_turn_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+    -- Preserve the missing ordinal if the native record is later withdrawn.
+    message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+    PRIMARY KEY (agent_id, agent_session_id, native_turn_id, ordinal),
+    FOREIGN KEY (agent_id, agent_session_id, native_turn_id)
+        REFERENCES native_agent_reply_turns(agent_id, agent_session_id, native_turn_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX idx_native_reply_items_message ON native_agent_reply_items(message_id);
 -- Serves the notification duplicate lookup, which reads only messages whose
 -- generated count identifies a journal or corrupt private storage. Partial
 -- (only counted rows) so the far-more-numerous ordinary inserts skip it, and
@@ -480,6 +506,16 @@ CREATE TABLE control_requests (
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_id, request_id)
 );
+
+-- Native providers can prove that a current control blocks particular inputs.
+CREATE TABLE native_agent_control_inputs (
+    agent_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    claim_token TEXT NOT NULL CHECK (claim_token <> ''),
+    native_input_id TEXT NOT NULL CHECK (native_input_id <> ''),
+    PRIMARY KEY (agent_id, request_id, claim_token, native_input_id),
+    FOREIGN KEY (agent_id, request_id) REFERENCES control_requests(agent_id, request_id) ON DELETE CASCADE
+) WITHOUT ROWID;
 
 -- One ledger owns delivery state for every durable control operation.
 -- ControlDeliveryKind and ControlDeliveryState supply the ordinals below.
@@ -988,11 +1024,14 @@ DROP TABLE IF EXISTS agent_input_queue_attachments;
 DROP TABLE IF EXISTS agent_input_queue_items;
 DROP TABLE IF EXISTS agent_input_queue_state;
 DROP TABLE IF EXISTS agent_turn_ends;
+DROP TABLE IF EXISTS native_agent_reply_items;
+DROP TABLE IF EXISTS native_agent_reply_turns;
 DROP TABLE IF EXISTS native_agent_inputs;
 DROP TABLE IF EXISTS agent_message_retractions;
 DROP VIEW IF EXISTS control_response_answers;
 DROP TABLE IF EXISTS control_response_payloads;
 DROP TABLE IF EXISTS control_deliveries;
+DROP TABLE IF EXISTS native_agent_control_inputs;
 DROP TABLE IF EXISTS control_requests;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_update;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_insert;
